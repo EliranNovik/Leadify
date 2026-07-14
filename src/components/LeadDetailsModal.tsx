@@ -388,7 +388,6 @@ const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({ isOpen, onClose, le
                   isSuperuser={isSuperuser}
                   setShowDeleteModal={() => {}}
                   duplicateContacts={duplicateContacts}
-                  setIsDuplicateModalOpen={() => {}}
                   setIsDuplicateDropdownOpen={() => {}}
                   isDuplicateDropdownOpen={false}
                   setShowSubLeadDrawer={() => {}}

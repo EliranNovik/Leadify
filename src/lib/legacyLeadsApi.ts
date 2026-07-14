@@ -83,6 +83,49 @@ const looksLikeEmail = (s: string) => s.includes("@");
 const hasLeadPrefix = (s: string) => /^[LC]/i.test(s.trim());
 const stripLeadPrefix = (s: string) => s.trim().replace(/^[LC]/i, "");
 
+/** Quote a PostgREST `.or()` filter value (needed for patterns like L1234%). */
+function quoteFilterValue(value: string): string {
+  return `"${String(value).replace(/"/g, '')}"`;
+}
+
+/**
+ * Match legacy lead_number / manual_id whether stored bare ("1234") or with L/C prefix ("L1234").
+ * digit-only header search must find L-prefixed values without typing the prefix.
+ */
+function buildLegacyLeadNumberOrFilter(
+  searchDigits: string,
+  mode: 'prefix' | 'exact',
+): string {
+  const digits = String(searchDigits || '').replace(/\D/g, '');
+  if (!digits) return '';
+
+  if (mode === 'exact') {
+    return [
+      `lead_number.eq.${quoteFilterValue(digits)}`,
+      `lead_number.eq.${quoteFilterValue(`L${digits}`)}`,
+      `lead_number.eq.${quoteFilterValue(`C${digits}`)}`,
+      `lead_number.ilike.${quoteFilterValue(`${digits}/%`)}`,
+      `lead_number.ilike.${quoteFilterValue(`L${digits}/%`)}`,
+      `lead_number.ilike.${quoteFilterValue(`C${digits}/%`)}`,
+      `manual_id.eq.${quoteFilterValue(digits)}`,
+      `manual_id.eq.${quoteFilterValue(`L${digits}`)}`,
+      `manual_id.eq.${quoteFilterValue(`C${digits}`)}`,
+    ].join(',');
+  }
+
+  // Prefix + contains so "1234" matches "L1234", "C1234", "1234", "L12345", etc.
+  return [
+    `lead_number.ilike.${quoteFilterValue(`${digits}%`)}`,
+    `lead_number.ilike.${quoteFilterValue(`L${digits}%`)}`,
+    `lead_number.ilike.${quoteFilterValue(`C${digits}%`)}`,
+    `lead_number.ilike.${quoteFilterValue(`%${digits}%`)}`,
+    `manual_id.ilike.${quoteFilterValue(`${digits}%`)}`,
+    `manual_id.ilike.${quoteFilterValue(`L${digits}%`)}`,
+    `manual_id.ilike.${quoteFilterValue(`C${digits}%`)}`,
+    `manual_id.ilike.${quoteFilterValue(`%${digits}%`)}`,
+  ].join(',');
+}
+
 function parseSubLead(raw: string): { master: number | null; suffix: number | null } {
   const t = raw.trim();
   if (!t.includes("/")) return { master: null, suffix: null };
@@ -124,17 +167,16 @@ function detectIntent(query: string): SearchIntent | null {
   // Lead intent triggers:
   // - explicit prefix L/C
   // - contains "/" (sub-lead)
-  // - pure numeric length 1-6 and not phone-like
-  // - 4-6 digits without prefix are likely lead numbers (not phone numbers which are usually 7+ digits or start with 0)
+  // - pure 3–10 digit numbers (always treat as lead — do NOT divert to phone because
+  //   digits start with 5; that blocked 4-digit legacy lead_number search without L)
   const isPureNumeric = rawNoPrefix.length > 0 && /^\d+$/.test(rawNoPrefix) && rawNoPrefix === d;
   const startsWithZero = d.startsWith("0") && d.length >= 3;
-  const isPhoneLikeDigits =
-    startsWithZero ||
-    d.startsWith("5") ||
-    d.startsWith("972") ||
-    d.startsWith("00972");
+  const isInternationalPhone =
+    d.startsWith("972") || d.startsWith("00972");
+  // Pure digit lead numbers are preferred over phone for 3–10 digits (including those
+  // starting with 5). Phone wins only for 0… locals, intl prefixes, or very long numbers.
   const isLikelyLeadNumber =
-    isPureNumeric && d.length >= 4 && d.length <= 10 && !isPhoneLikeDigits;
+    isPureNumeric && d.length >= 3 && d.length <= 10 && !startsWithZero && !isInternationalPhone;
 
   const leadLike = hasPrefix || raw.includes("/") || isLikelyLeadNumber;
 
@@ -326,12 +368,12 @@ async function searchLegacyLeads(intent: SearchIntent, opts: Required<SearchOpti
     const numericOnly = /^\d+$/.test(intent.raw.trim());
     if (numericOnly) {
       const digits = intent.raw.trim();
+      const leadNumberOr = buildLegacyLeadNumberOrFilter(digits, 'prefix');
       qb = qb.or(
         [
-          `lead_number.ilike.${digits}%`,
-          `manual_id.ilike.${digits}%`,
-          `name.ilike.${digits}%`,
-        ].join(","),
+          leadNumberOr,
+          `name.ilike.${quoteFilterValue(`${digits}%`)}`,
+        ].filter(Boolean).join(","),
       );
     } else if (intent.variants.length > 1) {
       qb = qb.or(intent.variants.map((v) => `name.ilike.${v}%`).join(","));
@@ -459,17 +501,25 @@ async function findContactsForLeadSearch(
       searchDigits.length >= 7 && searchDigits.length <= 10 && /^\d+$/.test(searchDigits);
 
     if (isPrefixQuery) {
-      // Search by lead_number prefix for 1-5 digit queries
-      // This allows prefix matching for all lead number lengths
-      const { data: prefixData } = await withTimeout(
+      // Search by lead_number / manual_id for 1-5 digit queries, including L/C-prefixed values
+      // (legacy lead_number is often stored as "L1234" — bare digits must still match).
+      const prefixOr = buildLegacyLeadNumberOrFilter(searchDigits, 'prefix');
+      const { data: prefixData, error: prefixError } = await withTimeout(
         supabase
           .from("leads_lead")
           .select(LEGACY_LEAD_SEARCH_SELECT)
-          .ilike("lead_number", `${searchDigits}%`)
-          .limit(20), // Limit to avoid too many results
+          .or(prefixOr)
+          .limit(30),
         opts.timeoutMs,
         "legacy prefix search timeout",
-      ).catch(() => ({ data: [] as any[] }));
+      ).catch((err) => {
+        console.warn('[legacyLeadsApi] legacy prefix search failed:', err?.message || err);
+        return { data: [] as any[], error: err };
+      });
+
+      if (prefixError) {
+        console.warn('[legacyLeadsApi] legacy prefix search error:', prefixError);
+      }
 
       if (prefixData && prefixData.length) {
         legacyLeads.push(...prefixData);
@@ -478,46 +528,37 @@ async function findContactsForLeadSearch(
       // For 6-digit queries, match the exact master lead AND any of its subleads (e.g.
       // "L209994/2"). Without the sublead patterns, typing the 6th digit can make a sublead
       // that was visible during the 5-digit prefix search disappear entirely.
-      const exactOrSublead = [
-        `lead_number.eq.${searchDigits}`,
-        `lead_number.eq.L${searchDigits}`,
-        `lead_number.eq.C${searchDigits}`,
-        `lead_number.ilike.${searchDigits}/%`,
-        `lead_number.ilike.L${searchDigits}/%`,
-        `lead_number.ilike.C${searchDigits}/%`,
-      ].join(",");
+      const exactOrSublead = buildLegacyLeadNumberOrFilter(searchDigits, 'exact');
       const { data: exactLeadNumberData } = await withTimeout(
         supabase
           .from("leads_lead")
           .select(LEGACY_LEAD_SEARCH_SELECT)
           .or(exactOrSublead)
-          .limit(20),
+          .limit(30),
         opts.timeoutMs,
         "legacy 6-digit lead_number search timeout",
-      ).catch(() => ({ data: [] as any[] }));
+      ).catch((err) => {
+        console.warn('[legacyLeadsApi] legacy 6-digit search failed:', err?.message || err);
+        return { data: [] as any[] };
+      });
 
       if (exactLeadNumberData && exactLeadNumberData.length) {
         legacyLeads.push(...exactLeadNumberData);
       }
     } else if (isLongLeadNumberQuery) {
-      const exactOrSublead = [
-        `lead_number.eq.${searchDigits}`,
-        `lead_number.eq.L${searchDigits}`,
-        `lead_number.eq.C${searchDigits}`,
-        `lead_number.ilike.${searchDigits}/%`,
-        `lead_number.ilike.L${searchDigits}/%`,
-        `lead_number.ilike.C${searchDigits}/%`,
-        `manual_id.eq.${searchDigits}`,
-      ].join(",");
+      const exactOrSublead = buildLegacyLeadNumberOrFilter(searchDigits, 'exact');
       const { data: longLeadNumberData } = await withTimeout(
         supabase
           .from("leads_lead")
           .select(LEGACY_LEAD_SEARCH_SELECT)
           .or(exactOrSublead)
-          .limit(20),
+          .limit(30),
         opts.timeoutMs,
         "legacy long lead_number search timeout",
-      ).catch(() => ({ data: [] as any[] }));
+      ).catch((err) => {
+        console.warn('[legacyLeadsApi] legacy long lead_number search failed:', err?.message || err);
+        return { data: [] as any[] };
+      });
 
       if (longLeadNumberData && longLeadNumberData.length) {
         legacyLeads.push(...longLeadNumberData);
@@ -853,9 +894,10 @@ function scoreResult(intent: SearchIntent, r: CombinedLead): number {
   } else if (intent.kind === "lead") {
     const q = lower(intent.raw);
     const qNoPrefix = lower(stripLeadPrefix(intent.raw));
-    if (leadNum === q || leadNum === qNoPrefix) s += 100;
-    else if (leadNum.startsWith(qNoPrefix)) s += 70;
-    else if (leadNum.includes(qNoPrefix)) s += 40;
+    const leadNumNoPrefix = lower(stripLeadPrefix(String(r.lead_number || "")));
+    if (leadNum === q || leadNum === qNoPrefix || leadNumNoPrefix === qNoPrefix) s += 100;
+    else if (leadNum.startsWith(q) || leadNum.startsWith(qNoPrefix) || leadNumNoPrefix.startsWith(qNoPrefix)) s += 70;
+    else if (leadNum.includes(qNoPrefix) || leadNumNoPrefix.includes(qNoPrefix)) s += 40;
   } else if (intent.kind === "phone") {
     if (qDigits && (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits))) {
       const pd = digitsOnly(r.phone || "");
@@ -893,7 +935,8 @@ function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
   if (intent.kind === "email") return !(em === q || em.startsWith(q));
   if (intent.kind === "lead") {
     const qNo = lower(stripLeadPrefix(intent.raw));
-    return !(ld === q || ld === qNo || ld.startsWith(qNo));
+    const ldNo = lower(stripLeadPrefix(String(r.lead_number || "")));
+    return !(ld === q || ld === qNo || ld.startsWith(qNo) || ldNo === qNo || ldNo.startsWith(qNo));
   }
   if (intent.kind === "phone") {
     return !(qDigits && (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits)));
@@ -1223,13 +1266,12 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       });
     }
 
-    // 5) Add legacy lead itself if found (even if no contacts)
-    legacyLeadsFetched.forEach((l: any) => {
-      const legacy = legacyMap.get(l.id);
-      const formattedNumber = legacy?.formattedLeadNumber;
-      // Use the legacy from map (which has formattedLeadNumber) or the original l
-      const legacyToMap = legacy || l;
-      const r = mapLegacyLeadRow(legacyToMap, formattedNumber);
+    // 5) Add every legacy lead found (direct lead_number search + junction refetch).
+    // Prefer legacyMap — it already contains direct hits with formattedLeadNumber, even if
+    // fetchLegacyLeadsByIds timed out or returned empty.
+    Array.from(legacyMap.values()).forEach((l: any) => {
+      const formattedNumber = l?.formattedLeadNumber;
+      const r = mapLegacyLeadRow(l, formattedNumber);
 
       // For lead number searches, enrich the legacy lead with contact information if name is empty
       if (intent.kind === "lead" && (!r.name || r.name.trim() === "")) {

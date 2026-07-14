@@ -16,6 +16,12 @@ import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
 import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
+import {
+  findDuplicateContacts as findDuplicateContactsApi,
+  getDuplicateContactsStorageKey,
+  persistDuplicateContactsCache,
+  type DuplicateContactMatch,
+} from '../lib/duplicateContactsApi';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
 import { displaySymbolForPaymentSave } from '../lib/paymentPlanCurrency';
@@ -61,8 +67,6 @@ import {
   Squares2X2Icon,
   MagnifyingGlassIcon,
   ChevronRightIcon,
-  MapPinIcon,
-  XCircleIcon,
   ExclamationTriangleIcon,
   BanknotesIcon,
   FolderIcon,
@@ -852,370 +856,10 @@ const Clients: React.FC<ClientsProps> = ({
       return;
     }
 
-    // Clear state immediately before starting async work
     setDuplicateContacts([]);
 
     try {
-      const isLegacyLead = clientToUse.lead_type === 'legacy' || clientToUse.id?.toString().startsWith('legacy_');
-      const currentLeadId = isLegacyLead
-        ? (typeof clientToUse.id === 'string' ? clientToUse.id.replace('legacy_', '') : String(clientToUse.id))
-        : clientToUse.id;
-
-      // Normalize phone numbers for comparison
-      const normalizePhone = (phone: string | null | undefined): string => {
-        if (!phone) return '';
-        return phone.replace(/\D/g, '');
-      };
-
-      // Step 1: Get all contacts for the current lead
-      const leadContactsResult = await supabase
-        .from('lead_leadcontact')
-        .select('contact_id, main, newlead_id, lead_id')
-        .or(isLegacyLead
-          ? `lead_id.eq.${currentLeadId}`
-          : `newlead_id.eq.${currentLeadId}`
-        );
-
-      const leadContacts = leadContactsResult.data;
-      // Lead contacts fetched
-      if (false) console.log('🔍 findDuplicateContacts: Lead contacts fetched', {
-        leadContactsCount: leadContacts?.length,
-        currentLeadId,
-        isLegacyLead
-      });
-
-      if (!leadContacts || leadContacts.length === 0) {
-        console.log('⚠️ findDuplicateContacts: No lead contacts found');
-        setDuplicateContacts([]);
-        persistDuplicateContacts(clientToUse, []);
-        return;
-      }
-
-      const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
-
-      if (contactIds.length === 0) {
-        console.log('⚠️ findDuplicateContacts: No contact IDs');
-        setDuplicateContacts([]);
-        persistDuplicateContacts(clientToUse, []);
-        return;
-      }
-
-      // Step 2: Fetch only the specific contacts we need
-      const currentContactsResult = await supabase
-        .from('leads_contact')
-        .select('id, name, email, phone, mobile')
-        .in('id', contactIds);
-
-      const currentContacts = currentContactsResult.data || [];
-      // Current contacts
-      if (false) console.log('🔍 findDuplicateContacts: Current contacts', {
-        currentContactsCount: currentContacts.length,
-        currentContacts: currentContacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone }))
-      });
-
-      if (currentContacts.length === 0) {
-        console.log('⚠️ findDuplicateContacts: No current contacts found');
-        setDuplicateContacts([]);
-        persistDuplicateContacts(clientToUse, []);
-        return;
-      }
-
-      // Step 2: Build all search filters at once and combine into single query
-      const allFilters: string[] = [];
-      const contactFilterMap = new Map<number, string[]>(); // Map contact ID to its filters
-
-      for (const currentContact of currentContacts) {
-        const filters: string[] = [];
-
-        if (currentContact.email) {
-          filters.push(`email.eq.${currentContact.email}`);
-        }
-        if (currentContact.name) {
-          filters.push(`name.ilike.%${currentContact.name}%`);
-        }
-        if (currentContact.phone) {
-          const normalizedPhone = normalizePhone(currentContact.phone);
-          if (normalizedPhone) {
-            filters.push(`phone.eq.${currentContact.phone}`);
-            filters.push(`mobile.eq.${currentContact.phone}`);
-          }
-        }
-        if (currentContact.mobile) {
-          const normalizedMobile = normalizePhone(currentContact.mobile);
-          if (normalizedMobile) {
-            filters.push(`phone.eq.${currentContact.mobile}`);
-            filters.push(`mobile.eq.${currentContact.mobile}`);
-          }
-        }
-
-        if (filters.length > 0) {
-          allFilters.push(...filters);
-          contactFilterMap.set(currentContact.id, filters);
-        }
-      }
-
-      if (allFilters.length === 0) {
-        setDuplicateContacts([]);
-        persistDuplicateContacts(clientToUse, []);
-        return;
-      }
-
-      // Step 3: Single query to find all duplicate contacts
-      const { data: allDuplicateContacts } = await supabase
-        .from('leads_contact')
-        .select('id, name, email, phone, mobile, country_id, misc_country!country_id(id, name)')
-        .or(allFilters.join(','));
-
-      const duplicateContacts = (allDuplicateContacts || []).filter(
-        dc => !contactIds.includes(dc.id)
-      );
-
-      if (duplicateContacts.length === 0) {
-        setDuplicateContacts([]);
-        persistDuplicateContacts(clientToUse, []);
-        return;
-      }
-
-      // Step 4: Get all relationships in parallel
-      const duplicateContactIds = duplicateContacts.map(dc => dc.id);
-      const { data: relationships } = await supabase
-        .from('lead_leadcontact')
-        .select('contact_id, newlead_id, lead_id')
-        .in('contact_id', duplicateContactIds);
-
-      if (!relationships || relationships.length === 0) {
-        setDuplicateContacts([]);
-        persistDuplicateContacts(clientToUse, []);
-        return;
-      }
-
-      // Step 5: Collect all lead IDs and fetch in parallel
-      const newLeadIds = [...new Set(relationships.map(r => r.newlead_id).filter(Boolean))] as string[];
-      const legacyLeadIds = [...new Set(relationships.map(r => r.lead_id).filter(Boolean))] as number[];
-
-      // Fetch leads with category and source joins (no separate batch fetch)
-      const [newLeadsResult, legacyLeadsResult] = await Promise.all([
-        newLeadIds.length > 0
-          ? supabase
-            .from('leads')
-            .select(`
-              id,
-              lead_number,
-              name,
-              stage,
-              category,
-              category_id,
-              master_id,
-              status,
-              topic,
-              source_id,
-              misc_category!fk_leads_category_id ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
-              misc_leadsource!fk_leads_source_id ( id, name )
-            `)
-            .in('id', newLeadIds)
-            .is('master_id', null)
-          : Promise.resolve({ data: [] }),
-        legacyLeadIds.length > 0
-          ? supabase
-            .from('leads_lead')
-            .select(`
-              id,
-              name,
-              stage,
-              category_id,
-              category,
-              master_id,
-              status,
-              topic,
-              source_id,
-              misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
-              misc_leadsource!leads_lead_source_id_fkey ( id, name )
-            `)
-            .in('id', legacyLeadIds)
-            .is('master_id', null)
-          : Promise.resolve({ data: [] })
-      ]);
-
-      const newLeads = newLeadsResult.data || [];
-      const legacyLeads = legacyLeadsResult.data || [];
-
-      // Step 6: Build duplicate matches (category and source from joins on leads)
-      const duplicateMatches: Array<{
-        contactId: number;
-        contactName: string;
-        contactEmail: string | null;
-        contactPhone: string | null;
-        contactMobile: string | null;
-        contactCountry: string | null;
-        leadId: string | number;
-        leadNumber: string;
-        leadName: string;
-        leadType: 'new' | 'legacy';
-        matchingFields: string[];
-        stage: string | number | null;
-        category: string | null;
-        topic: string | null;
-        source: string | null;
-        status: string | number | null;
-      }> = [];
-
-      const processedLeads = new Set<string>(); // Track processed leads to avoid duplicates
-
-      // Process new leads
-      for (const duplicateContact of duplicateContacts) {
-        const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
-
-        for (const rel of contactRelationships) {
-          if (rel.newlead_id) {
-            const lead = newLeads.find(l => l.id === rel.newlead_id);
-            if (lead && lead.id !== currentLeadId && !processedLeads.has(`new_${lead.id}`)) {
-              // Find which current contact matches this duplicate
-              const matchingCurrentContact = currentContacts.find(cc => {
-                const contactFilters = contactFilterMap.get(cc.id) || [];
-                return contactFilters.some(filter => {
-                  if (filter.includes('email.eq.') && duplicateContact.email) {
-                    return filter.includes(duplicateContact.email);
-                  }
-                  if (filter.includes('phone.eq.') || filter.includes('mobile.eq.')) {
-                    const normalized = normalizePhone(duplicateContact.phone || duplicateContact.mobile);
-                    return normalized && (normalizePhone(cc.phone) === normalized || normalizePhone(cc.mobile) === normalized);
-                  }
-                  return false;
-                });
-              });
-
-              if (matchingCurrentContact) {
-                const matchingFields: string[] = [];
-                if (matchingCurrentContact.email && duplicateContact.email &&
-                  matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
-                  matchingFields.push('email');
-                }
-                const normCurrentPhone = normalizePhone(matchingCurrentContact.phone);
-                const normCurrentMobile = normalizePhone(matchingCurrentContact.mobile);
-                const normDupPhone = normalizePhone(duplicateContact.phone);
-                const normDupMobile = normalizePhone(duplicateContact.mobile);
-
-                if (normCurrentPhone && normDupPhone && normCurrentPhone === normDupPhone) {
-                  matchingFields.push('phone');
-                }
-                if (normCurrentMobile && normDupMobile && normCurrentMobile === normDupMobile) {
-                  matchingFields.push('mobile');
-                }
-                if (normCurrentPhone && normDupMobile && normCurrentPhone === normDupMobile) {
-                  matchingFields.push('phone/mobile');
-                }
-                if (normCurrentMobile && normDupPhone && normCurrentMobile === normDupPhone) {
-                  matchingFields.push('mobile/phone');
-                }
-
-                if (matchingFields.length > 0) {
-                  processedLeads.add(`new_${lead.id}`);
-                  duplicateMatches.push({
-                    contactId: duplicateContact.id,
-                    contactName: duplicateContact.name || 'Unknown',
-                    contactEmail: duplicateContact.email,
-                    contactPhone: duplicateContact.phone,
-                    contactMobile: duplicateContact.mobile,
-                    contactCountry: (duplicateContact.misc_country as any)?.name || null,
-                    leadId: lead.id,
-                    leadNumber: lead.lead_number || String(lead.id),
-                    leadName: lead.name || 'Unknown',
-                    leadType: 'new',
-                    matchingFields,
-                    stage: (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null,
-                    category: getCategoryDisplayFromJoin(lead) ?? lead.category ?? null,
-                    topic: lead.topic || null,
-                    source: getSourceDisplayFromJoin(lead) ?? null,
-                    status: lead.status || null,
-                  });
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Process legacy leads
-      for (const duplicateContact of duplicateContacts) {
-        const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
-
-        for (const rel of contactRelationships) {
-          if (rel.lead_id) {
-            const lead = legacyLeads.find(l => l.id === rel.lead_id);
-            if (lead && String(lead.id) !== String(currentLeadId) && !processedLeads.has(`legacy_${lead.id}`)) {
-              // Find which current contact matches this duplicate
-              const matchingCurrentContact = currentContacts.find(cc => {
-                const contactFilters = contactFilterMap.get(cc.id) || [];
-                return contactFilters.some(filter => {
-                  if (filter.includes('email.eq.') && duplicateContact.email) {
-                    return filter.includes(duplicateContact.email);
-                  }
-                  if (filter.includes('phone.eq.') || filter.includes('mobile.eq.')) {
-                    const normalized = normalizePhone(duplicateContact.phone || duplicateContact.mobile);
-                    return normalized && (normalizePhone(cc.phone) === normalized || normalizePhone(cc.mobile) === normalized);
-                  }
-                  return false;
-                });
-              });
-
-              if (matchingCurrentContact) {
-                const matchingFields: string[] = [];
-                if (matchingCurrentContact.email && duplicateContact.email &&
-                  matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
-                  matchingFields.push('email');
-                }
-                const normCurrentPhone = normalizePhone(matchingCurrentContact.phone);
-                const normCurrentMobile = normalizePhone(matchingCurrentContact.mobile);
-                const normDupPhone = normalizePhone(duplicateContact.phone);
-                const normDupMobile = normalizePhone(duplicateContact.mobile);
-
-                if (normCurrentPhone && normDupPhone && normCurrentPhone === normDupPhone) {
-                  matchingFields.push('phone');
-                }
-                if (normCurrentMobile && normDupMobile && normCurrentMobile === normDupMobile) {
-                  matchingFields.push('mobile');
-                }
-                if (normCurrentPhone && normDupMobile && normCurrentPhone === normDupMobile) {
-                  matchingFields.push('phone/mobile');
-                }
-                if (normCurrentMobile && normDupPhone && normCurrentMobile === normDupPhone) {
-                  matchingFields.push('mobile/phone');
-                }
-
-                if (matchingFields.length > 0) {
-                  processedLeads.add(`legacy_${lead.id}`);
-                  duplicateMatches.push({
-                    contactId: duplicateContact.id,
-                    contactName: duplicateContact.name || 'Unknown',
-                    contactEmail: duplicateContact.email,
-                    contactPhone: duplicateContact.phone,
-                    contactMobile: duplicateContact.mobile,
-                    contactCountry: (duplicateContact.misc_country as any)?.name || null,
-                    leadId: `legacy_${lead.id}`,
-                    leadNumber: String(lead.id),
-                    leadName: lead.name || 'Unknown',
-                    leadType: 'legacy',
-                    matchingFields,
-                    stage: (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null,
-                    category: getCategoryDisplayFromJoin(lead) ?? (lead.category_id ? getCategoryName(lead.category_id) : null),
-                    topic: lead.topic || null,
-                    source: getSourceDisplayFromJoin(lead) ?? null,
-                    status: lead.status || null,
-                  });
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Deduplicate by leadNumber
-      const uniqueMatches = Array.from(
-        new Map(
-          duplicateMatches.map(m => [m.leadNumber, m])
-        ).values()
-      );
-
+      const uniqueMatches = await findDuplicateContactsApi(clientToUse);
       setDuplicateContacts(uniqueMatches);
       persistDuplicateContacts(clientToUse, uniqueMatches);
     } catch (error) {
@@ -1511,14 +1155,10 @@ const Clients: React.FC<ClientsProps> = ({
   }, []);
 
   // Persist duplicate contacts so they don't need refetch when navigating back
-  const persistDuplicateContacts = useCallback((client: any, duplicates: typeof duplicateContacts) => {
-    try {
-      const keyToUse = getClientStorageKey(client);
-      if (keyToUse) {
-        sessionStorage.setItem(`clientsPage_duplicateContacts_${keyToUse}`, JSON.stringify(duplicates));
-      }
-    } catch (error) {
-      console.error('Error persisting duplicate contacts:', error);
+  const persistDuplicateContacts = useCallback((client: any, duplicates: DuplicateContactMatch[]) => {
+    const keyToUse = getDuplicateContactsStorageKey(client) || getClientStorageKey(client);
+    if (keyToUse) {
+      persistDuplicateContactsCache(keyToUse, duplicates);
     }
   }, [getClientStorageKey]);
 
@@ -1582,27 +1222,8 @@ const Clients: React.FC<ClientsProps> = ({
       setIsProgressCollapsed(true);
     }
   }, []);
-  const [duplicateContacts, setDuplicateContacts] = useState<Array<{
-    contactId: number;
-    contactName: string;
-    contactEmail: string | null;
-    contactPhone: string | null;
-    contactMobile: string | null;
-    contactCountry: string | null;
-    leadId: string | number;
-    leadNumber: string;
-    leadName: string;
-    leadType: 'new' | 'legacy';
-    matchingFields: string[];
-    stage: string | number | null;
-    category: string | null;
-    topic: string | null;
-    source: string | null;
-    status: string | number | null;
-  }>>([]);
-  const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
+  const [duplicateContacts, setDuplicateContacts] = useState<DuplicateContactMatch[]>([]);
   const [isDuplicateDropdownOpen, setIsDuplicateDropdownOpen] = useState(false);
-  const [copyingContactId, setCopyingContactId] = useState<number | null>(null);
   const { instance } = useMsal();
   const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
   const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
@@ -2749,6 +2370,14 @@ const Clients: React.FC<ClientsProps> = ({
     if (!leadIdentifier) return;
     const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
     navigate(`/clients/${encodedIdentifier}/history`);
+  };
+
+  const handleDuplicatesClick = () => {
+    const leadIdentifier = getLeadIdentifier();
+    if (!leadIdentifier) return;
+    const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
+    navigate(`/clients/${encodedIdentifier}/duplicates`);
+    setIsDuplicateDropdownOpen(false);
   };
 
   // Handler for Payment Received - new Client !!!
@@ -14007,104 +13636,7 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  // Function to copy a duplicate contact to the current lead
-  const handleCopyDuplicateContact = async (duplicateContact: typeof duplicateContacts[0]) => {
-    if (!selectedClient?.id) {
-      toast.error('No lead selected');
-      return;
-    }
-
-    setCopyingContactId(duplicateContact.contactId);
-
-    try {
-      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const currentLeadId = isLegacyLead
-        ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
-        : selectedClient.id;
-
-      // Get the next available contact ID
-      const { data: maxContactId } = await supabase
-        .from('leads_contact')
-        .select('id')
-        .order('id', { ascending: false })
-        .limit(1)
-        .single();
-
-      const newContactId = maxContactId ? maxContactId.id + 1 : 1;
-      const currentDate = new Date().toISOString().split('T')[0];
-
-      // Create the contact
-      const contactInsertData: any = {
-        id: newContactId,
-        name: duplicateContact.contactName || '',
-        mobile: duplicateContact.contactMobile || null,
-        phone: duplicateContact.contactPhone || null,
-        email: duplicateContact.contactEmail || null,
-        cdate: currentDate,
-        udate: currentDate
-      };
-
-      // For new leads, add newlead_id
-      if (!isLegacyLead) {
-        contactInsertData.newlead_id = currentLeadId;
-      }
-
-      const { error: contactError } = await supabase
-        .from('leads_contact')
-        .insert([contactInsertData]);
-
-      if (contactError) {
-        console.error('Error creating contact:', contactError);
-        toast.error('Failed to create contact');
-        return;
-      }
-
-      // Get the next available relationship ID
-      const { data: maxRelationshipId } = await supabase
-        .from('lead_leadcontact')
-        .select('id')
-        .order('id', { ascending: false })
-        .limit(1)
-        .single();
-
-      const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
-
-      // Create the relationship
-      const relationshipInsertData: any = {
-        id: newRelationshipId,
-        contact_id: newContactId,
-        main: 'false'
-      };
-
-      if (isLegacyLead) {
-        relationshipInsertData.lead_id = currentLeadId;
-      } else {
-        relationshipInsertData.newlead_id = currentLeadId;
-      }
-
-      const { error: relationshipError } = await supabase
-        .from('lead_leadcontact')
-        .insert([relationshipInsertData]);
-
-      if (relationshipError) {
-        console.error('Error creating contact relationship:', relationshipError);
-        toast.error('Failed to link contact to lead');
-        return;
-      }
-
-      toast.success(`Contact "${duplicateContact.contactName}" copied successfully`);
-
-      // Refresh client data to show the new contact
-      if (refreshClientData) {
-        await refreshClientData(selectedClient.id);
-      }
-    } catch (error: any) {
-      console.error('Error copying contact:', error);
-      toast.error(error?.message || 'Failed to copy contact');
-    } finally {
-      setCopyingContactId(null);
-    }
-  };
+;
 
   // ===== TOP PRIORITY: Check unactivation status FIRST, before any other logic =====
   // This must be checked immediately to prevent flickering and ensure badge is always shown
@@ -14583,7 +14115,7 @@ const Clients: React.FC<ClientsProps> = ({
                     <div className="relative">
                       {duplicateContacts.length === 1 ? (
                         <button
-                          onClick={() => setIsDuplicateModalOpen(true)}
+                          onClick={handleDuplicatesClick}
                           className="btn btn-circle btn-warning btn-sm relative min-h-8 h-8 w-8"
                           title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
                         >
@@ -14649,7 +14181,7 @@ const Clients: React.FC<ClientsProps> = ({
                         <div className="relative">
                           {duplicateContacts.length === 1 ? (
                             <button
-                              onClick={() => setIsDuplicateModalOpen(true)}
+                              onClick={handleDuplicatesClick}
                               className="btn btn-circle btn-warning btn-sm relative"
                               title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
                             >
@@ -14703,8 +14235,7 @@ const Clients: React.FC<ClientsProps> = ({
                                   <div className="p-3 border-t border-gray-200 bg-gray-50">
                                     <button
                                       onClick={() => {
-                                        setIsDuplicateModalOpen(true);
-                                        setIsDuplicateDropdownOpen(false);
+                                        handleDuplicatesClick();
                                       }}
                                       className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
                                     >
@@ -14853,7 +14384,6 @@ const Clients: React.FC<ClientsProps> = ({
             isSuperuser={isSuperuser}
             setShowDeleteModal={setShowDeleteModal}
             duplicateContacts={duplicateContacts}
-            setIsDuplicateModalOpen={setIsDuplicateModalOpen}
             setIsDuplicateDropdownOpen={setIsDuplicateDropdownOpen}
             isDuplicateDropdownOpen={isDuplicateDropdownOpen}
             setShowSubLeadDrawer={setShowSubLeadDrawer}
@@ -17187,199 +16717,6 @@ const Clients: React.FC<ClientsProps> = ({
                       value={deactivateNotesDescription}
                       onChange={(e) => setDeactivateNotesDescription(e.target.value)}
                     />
-                  </div>
-                </div>
-          </MobileBottomSheet>
-
-          {/* Duplicate Contacts Modal */}
-          <MobileBottomSheet
-            open={isDuplicateModalOpen}
-            onClose={() => setIsDuplicateModalOpen(false)}
-            title="Duplicate Contacts"
-            mobileFullHeight
-            zIndex={320}
-            {...DESKTOP_CENTER_MODAL_PROPS}
-            footer={
-              <button type="button" className="btn btn-outline w-full max-md:min-h-12 md:ml-auto md:w-auto md:min-w-[6.5rem]" onClick={() => setIsDuplicateModalOpen(false)}>
-                Close
-              </button>
-            }
-          >
-                <div className="space-y-4">
-                  <p className="text-sm md:text-base text-gray-600">
-                    The following contacts have matching data (email, phone, or mobile) and are associated with other leads:
-                  </p>
-
-                  {/* Mobile: horizontal scroll, Desktop: 3-column grid */}
-                  <div className="overflow-x-auto md:overflow-x-visible -mx-2 sm:-mx-4 md:-mx-0 px-2 sm:px-4 md:px-0">
-                    <div className="flex md:grid md:grid-cols-3 gap-3 sm:gap-4 min-w-max md:min-w-0 pb-4">
-                      {duplicateContacts.map((dup, idx) => {
-                        // Helper to get stage badge
-                        const getStageBadgeForDuplicate = (stage: string | number | null) => {
-                          if (!stage && stage !== 0) {
-                            return <span className="badge badge-outline">No Stage</span>;
-                          }
-                          const stageStr = String(stage);
-                          const stageName = getStageName(stageStr);
-                          const stageColour = getStageColour(stageStr);
-                          const badgeTextColour = getContrastingTextColor(stageColour);
-                          const backgroundColor = stageColour || '#3f28cd';
-                          const textColor = stageColour ? badgeTextColour : '#ffffff';
-
-                          return (
-                            <span
-                              className="stage-badge badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
-                              style={{
-                                backgroundColor,
-                                borderColor: backgroundColor,
-                                color: textColor,
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                display: 'inline-block',
-                              }}
-                              title={stageName}
-                            >
-                              {stageName}
-                            </span>
-                          );
-                        };
-
-                        // Helper to get status icon
-                        const getStatusIcon = (status: string | number | null, leadType: 'new' | 'legacy') => {
-                          const isInactive = leadType === 'legacy'
-                            ? (status === 10 || status === '10' || Number(status) === 10)
-                            : (status === 'inactive');
-
-                          if (isInactive) {
-                            return <XCircleIcon className="h-7 w-7 text-error" title="Inactive" />;
-                          } else {
-                            return <CheckCircleIcon className="h-7 w-7 text-success" title="Active" />;
-                          }
-                        };
-
-                        // Check if lead is inactive for styling
-                        const isInactive = dup.leadType === 'legacy'
-                          ? (dup.status === 10 || dup.status === '10' || Number(dup.status) === 10)
-                          : (dup.status === 'inactive');
-
-                        const cardClasses = [
-                          'card',
-                          'shadow-lg',
-                          'hover:shadow-2xl',
-                          'transition-all',
-                          'duration-300',
-                          'ease-in-out',
-                          'transform',
-                          'hover:-translate-y-1',
-                          'cursor-pointer',
-                          'group',
-                          'border',
-                          isInactive ? 'bg-red-50 border-red-200' : 'bg-base-100 border-base-200',
-                        ].join(' ');
-
-                        return (
-                          <div key={`${dup.contactId}-${dup.leadId}-${idx}`} className="flex-shrink-0 w-80 md:w-auto md:flex-shrink">
-                            <div
-                              className={cardClasses}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigate(`/clients/${dup.leadNumber}`);
-                                setIsDuplicateModalOpen(false);
-                              }}
-                            >
-                              <div className="card-body p-5 relative">
-                                <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-2 gap-2">
-                                  <div className="flex items-center gap-2 order-2 md:order-1">
-                                    <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
-                                      {dup.leadName}
-                                    </h2>
-                                  </div>
-                                  <div className="flex items-center gap-2 flex-shrink-0 order-1 md:order-2">
-                                    {getStageBadgeForDuplicate(dup.stage)}
-                                    {getStatusIcon(dup.status, dup.leadType)}
-                                  </div>
-                                </div>
-
-                                <p className="text-sm text-base-content/60 font-mono mb-4">
-                                  #{dup.leadNumber}
-                                </p>
-
-                                <div className="text-sm text-base-content/80 mb-3">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="font-semibold">Contact:</span>
-                                    <span className="truncate font-medium">{dup.contactName}</span>
-                                  </div>
-                                </div>
-
-                                <div className="divider my-0"></div>
-
-                                {(dup.category || dup.topic || dup.source) && (
-                                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-                                    {dup.category && (
-                                      <div className="flex items-center gap-2" title="Category">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                                        </svg>
-                                        <span className="truncate">{dup.category}</span>
-                                      </div>
-                                    )}
-                                    {dup.topic && (
-                                      <div className="flex items-center gap-2" title="Topic">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                                        </svg>
-                                        <span className="truncate">{dup.topic}</span>
-                                      </div>
-                                    )}
-                                    {dup.source && (
-                                      <div className="flex items-center gap-2" title="Source">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                        </svg>
-                                        <span className="truncate">{dup.source}</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-base-200/50 flex-1">
-                                  <div className="mb-2">
-                                    <span className="badge badge-success text-xs">match</span>
-                                  </div>
-                                  <div className="grid grid-cols-1 gap-3 text-lg">
-                                    {dup.contactEmail && (
-                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Email">
-                                        <EnvelopeIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                        <span className="truncate font-semibold">{dup.contactEmail}</span>
-                                      </div>
-                                    )}
-                                    {dup.contactPhone && (
-                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Phone">
-                                        <PhoneIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                        <span className="truncate font-semibold">{dup.contactPhone}</span>
-                                      </div>
-                                    )}
-                                    {dup.contactMobile && (
-                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Mobile">
-                                        <PhoneIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                        <span className="truncate font-semibold">{dup.contactMobile}</span>
-                                      </div>
-                                    )}
-                                    {dup.contactCountry && (
-                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Country">
-                                        <MapPinIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                        <span className="truncate font-semibold">{dup.contactCountry}</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
                   </div>
                 </div>
           </MobileBottomSheet>

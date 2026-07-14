@@ -1,0 +1,260 @@
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { CheckIcon } from '@heroicons/react/24/outline';
+import { supabase } from '../lib/supabase';
+import {
+  ENTRY_KIOSK_DEFAULT_LOCATION_ID,
+  announceClockInKioskSuccess,
+  buildClockInEntryPath,
+  validateClockInKioskToken,
+} from '../lib/clockInKioskApi';
+import {
+  fetchClockInGateProfile,
+  fetchIsEmployeeClockedIn,
+} from '../lib/employeeClockInGate';
+import { clearClockInGateCache } from '../lib/clockInGateCache';
+
+type EntryStatus =
+  | 'loading'
+  | 'connecting'
+  | 'need_login'
+  | 'clocking_in'
+  | 'success'
+  | 'already_in'
+  | 'no_employee'
+  | 'error';
+
+async function resolveEmployeeDisplayName(employeeId: number | null, fallbackEmail?: string | null) {
+  if (employeeId != null) {
+    const { data } = await supabase
+      .from('tenants_employee')
+      .select('display_name, official_name')
+      .eq('id', employeeId)
+      .maybeSingle();
+    const name =
+      (data as { official_name?: string | null; display_name?: string | null } | null)?.official_name
+      || (data as { display_name?: string | null } | null)?.display_name;
+    if (name?.trim()) return name.trim();
+  }
+  if (fallbackEmail?.trim()) {
+    const local = fallbackEmail.split('@')[0]?.replace(/[._]/g, ' ');
+    if (local) return local.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return 'Employee';
+}
+
+/**
+ * Public scan landing page opened from the entry-kiosk QR.
+ * Validates token via backend, then auto clock-ins (or sends user to login first).
+ */
+const ClockInEntryPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  const token = (searchParams.get('token') || '').trim();
+  const locationIdRaw = Number(searchParams.get('locationId') || ENTRY_KIOSK_DEFAULT_LOCATION_ID);
+  const locationId = Number.isFinite(locationIdRaw) && locationIdRaw > 0
+    ? Math.trunc(locationIdRaw)
+    : ENTRY_KIOSK_DEFAULT_LOCATION_ID;
+
+  const [status, setStatus] = useState<EntryStatus>('loading');
+  const [message, setMessage] = useState('Connecting…');
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [clockTime, setClockTime] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!token) {
+        if (!cancelled) {
+          setStatus('error');
+          setMessage('Missing QR token. Please scan the screen again.');
+        }
+        return;
+      }
+
+      setStatus('connecting');
+      setMessage('Connecting to entry…');
+
+      const validation = await validateClockInKioskToken(token, locationId);
+      if (cancelled) return;
+      if (!validation.success || !validation.valid) {
+        setStatus('error');
+        setMessage(validation.error || 'QR code expired — scan the screen again.');
+        return;
+      }
+
+      const resolvedLocationId = validation.locationId ?? locationId;
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (cancelled) return;
+
+      if (!session?.user) {
+        const returnPath = buildClockInEntryPath(resolvedLocationId, token);
+        setStatus('need_login');
+        setMessage('Sign in to finish clock-in…');
+        navigate('/login', {
+          replace: true,
+          state: { from: returnPath },
+        });
+        return;
+      }
+
+      setStatus('clocking_in');
+      setMessage('Clocking you in…');
+
+      const profile = await fetchClockInGateProfile(session.user.id);
+      if (cancelled) return;
+      if (profile.isExternalUser) {
+        setStatus('success');
+        setMessage('Signed in. External accounts skip office clock-in.');
+        window.setTimeout(() => navigate('/', { replace: true }), 1200);
+        return;
+      }
+      if (profile.employeeId == null) {
+        setStatus('no_employee');
+        setMessage('Your account is not linked to an employee profile. Contact an admin.');
+        return;
+      }
+
+      const name = await resolveEmployeeDisplayName(profile.employeeId, session.user.email);
+      if (cancelled) return;
+      setDisplayName(name);
+
+      const alreadyIn = await fetchIsEmployeeClockedIn(profile.employeeId);
+      if (cancelled) return;
+      if (alreadyIn) {
+        setStatus('already_in');
+        setMessage('You are already clocked in.');
+        window.setTimeout(() => navigate('/', { replace: true }), 1400);
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const payload = {
+        employee_id: profile.employeeId,
+        user_id: session.user.id,
+        clock_in_time: nowIso,
+        clock_in_location_id: resolvedLocationId,
+        notes: 'Entry kiosk QR',
+        is_active: true,
+        manually: false,
+        approved: true,
+        declined: false,
+      };
+
+      let { error } = await supabase.from('employee_clock_in').insert(payload).select('id').single();
+      if (error) {
+        const { clock_in_location_id: _drop, ...withoutPreset } = payload;
+        const retry = await supabase.from('employee_clock_in').insert(withoutPreset).select('id').single();
+        error = retry.error;
+      }
+      if (cancelled) return;
+
+      if (error) {
+        console.error('Entry kiosk clock-in failed:', error);
+        setStatus('error');
+        setMessage(error.message || 'Failed to clock in. Please try again from the CRM.');
+        return;
+      }
+
+      const timeLabel = new Date(nowIso).toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      setClockTime(timeLabel);
+      setStatus('success');
+      setMessage('You are clocked in');
+
+      void announceClockInKioskSuccess(resolvedLocationId, name).catch((err) => {
+        console.warn('Kiosk announce failed:', err);
+      });
+
+      // Session is already authenticated; gate will open after this insert.
+      clearClockInGateCache();
+
+      window.setTimeout(() => navigate('/', { replace: true }), 1600);
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, locationId, navigate]);
+
+  const title =
+    status === 'error'
+      ? 'Clock-in failed'
+      : status === 'already_in'
+        ? 'Already clocked in'
+        : status === 'need_login'
+          ? 'Sign in required'
+          : status === 'no_employee'
+            ? 'Account not linked'
+            : status === 'success'
+              ? 'You are in'
+              : status === 'connecting'
+                ? 'Connecting…'
+                : 'Entry clock-in';
+
+  return (
+    <div
+      className="flex min-h-[100dvh] items-center justify-center px-4 py-10"
+      style={{
+        background:
+          'radial-gradient(ellipse 80% 55% at 50% 10%, rgba(74, 110, 190, 0.28), transparent 55%), linear-gradient(180deg, #0a1630 0%, #02060f 100%)',
+      }}
+    >
+      <div className="w-full max-w-md rounded-[28px] bg-white/95 p-8 text-center shadow-[0_30px_70px_rgba(0,0,0,0.4)]">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          Office entry
+        </p>
+        <h1 className="mt-3 text-2xl font-bold text-slate-900">{title}</h1>
+
+        {status === 'success' ? (
+          <div className="mt-6 flex flex-col items-center">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/15 ring-2 ring-emerald-500/50">
+              <CheckIcon className="h-8 w-8 text-emerald-600" strokeWidth={2.5} />
+            </div>
+            {displayName ? (
+              <p className="text-xl font-semibold text-slate-900">{displayName}</p>
+            ) : null}
+            <p className="mt-1 text-sm text-emerald-700">{message}</p>
+            {clockTime ? (
+              <p className="mt-4 text-3xl font-semibold tabular-nums text-slate-800">{clockTime}</p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-slate-600">{message}</p>
+        )}
+
+        {(status === 'loading' || status === 'connecting' || status === 'clocking_in' || status === 'need_login') && (
+          <div className="mt-6 flex justify-center">
+            <span className="loading loading-spinner loading-md text-sky-700" />
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="mt-6 flex flex-col gap-3">
+            <Link to="/login" className="btn btn-primary btn-sm">
+              Go to login
+            </Link>
+            <p className="text-xs text-slate-400">Scan the tablet QR again if it rotated.</p>
+          </div>
+        )}
+
+        {status === 'no_employee' && (
+          <Link to="/" className="btn btn-ghost btn-sm mt-6">
+            Open CRM
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ClockInEntryPage;

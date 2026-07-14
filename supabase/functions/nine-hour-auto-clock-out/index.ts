@@ -151,7 +151,6 @@ serve(async (req) => {
   const summary = {
     checked: 0,
     clockedOut: 0,
-    signedOut: 0,
     endOfDayClockOuts: 0,
     skipped: 0,
     errors: [] as { employeeId: number; message: string }[],
@@ -231,11 +230,8 @@ serve(async (req) => {
           summary.clockedOut += 1;
           summary.endOfDayClockOuts += 1;
 
-          const { error: signOutError } = await admin.auth.admin.signOut(record.user_id, 'global');
-          if (signOutError) throw signOutError;
-          summary.signedOut += 1;
-
-          console.log(LOG_PREFIX, `employee=${record.employee_id} end-of-day clocked out + signed out`);
+          // Keep auth session — gate blocks CRM until next clock-in.
+          console.log(LOG_PREFIX, `employee=${record.employee_id} end-of-day clocked out (session kept)`);
           continue;
         }
 
@@ -307,11 +303,8 @@ serve(async (req) => {
 
         summary.clockedOut += 1;
 
-        const { error: signOutError } = await admin.auth.admin.signOut(record.user_id, 'global');
-        if (signOutError) throw signOutError;
-        summary.signedOut += 1;
-
-        console.log(LOG_PREFIX, `employee=${record.employee_id} clocked out + signed out`);
+        // Keep auth session — gate blocks CRM until next clock-in.
+        console.log(LOG_PREFIX, `employee=${record.employee_id} clocked out (session kept)`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         summary.errors.push({ employeeId: record.employee_id, message });

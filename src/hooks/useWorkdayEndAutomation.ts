@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import { subscribeClockInOptIn } from '../lib/clockInOptInCrossTab';
 import { fetchActiveClockInRecord } from '../lib/employeeClockOut';
-import { clockOutAndSignOut, getTodayDateKey } from '../lib/employeeClockInOvertime';
+import { clockOutKeepSession, getTodayDateKey } from '../lib/employeeClockInOvertime';
 import {
   fetchWorkdayEndOptInFromDb,
   hasContinuedWorkdayEndToday,
@@ -120,8 +120,9 @@ export function useWorkdayEndAutomation({
         autoLogoutInFlightRef.current = false;
         return;
       }
-      await clockOutAndSignOut(employeeId);
-      window.location.href = '/login';
+      await clockOutKeepSession(employeeId);
+      // Stay signed in — clock-in gate will block until they clock in again.
+      window.location.href = '/';
     } catch (error) {
       console.error('Workday-end auto logout failed:', error);
       const message = error instanceof Error ? error.message : 'Failed to clock out';

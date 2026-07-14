@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { subscribeClockInOptIn } from '../lib/clockInOptInCrossTab';
 import { fetchActiveClockInRecord } from '../lib/employeeClockOut';
 import {
-  clockOutAndSignOut,
+  clockOutKeepSession,
   fetchOvertimeOptInFromDb,
   fetchTodayClockedMs,
   getTodayDateKey,
@@ -125,8 +125,9 @@ export function useNineHourOvertimeAutomation({
         autoLogoutInFlightRef.current = false;
         return;
       }
-      await clockOutAndSignOut(employeeId);
-      window.location.href = '/login';
+      await clockOutKeepSession(employeeId);
+      // Stay signed in — clock-in gate will block until they clock in again.
+      window.location.href = '/';
     } catch (error) {
       console.error('Nine-hour overtime auto logout failed:', error);
       const message = error instanceof Error ? error.message : 'Failed to clock out';

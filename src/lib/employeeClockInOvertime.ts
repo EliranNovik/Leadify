@@ -131,12 +131,19 @@ export function formatCountdownSeconds(totalSeconds: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-export async function clockOutAndSignOut(employeeId: number): Promise<void> {
+/**
+ * Clock out and clear the gate cache. Keeps the Supabase session signed in
+ * so the user lands on the clock-in gate (QR / manual) without re-authenticating.
+ */
+export async function clockOutKeepSession(employeeId: number): Promise<void> {
   const record = await fetchActiveClockInRecord(employeeId);
   if (record) {
     await clockOutEmployeeRecord(record);
   }
   clearClockInGateCache();
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
+}
+
+/** @deprecated Prefer clockOutKeepSession — no longer signs out of Supabase. */
+export async function clockOutAndSignOut(employeeId: number): Promise<void> {
+  await clockOutKeepSession(employeeId);
 }

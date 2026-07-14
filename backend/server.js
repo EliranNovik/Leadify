@@ -24,6 +24,7 @@ const pelecardPaymentRoutes = require('./src/routes/pelecardPaymentRoutes');
 const nineHourAutoClockOutRoutes = require('./src/routes/nineHourAutoClockOutRoutes');
 const clientBookingRoutes = require('./src/routes/clientBookingRoutes');
 const adminImpersonationRoutes = require('./src/routes/adminImpersonationRoutes');
+const clockInKioskRoutes = require('./src/routes/clockInKioskRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
 const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
 const { startBoiExchangeRatesScheduler } = require('./src/services/boiExchangeRatesScheduler');
@@ -415,6 +416,7 @@ app.use('/api/payment-plan-invoice-automation', paymentPlanInvoiceAutomationRout
 app.use('/api/payments/pelecard', pelecardPaymentRoutes);
 app.use('/api/nine-hour-auto-clock-out', nineHourAutoClockOutRoutes);
 app.use('/api/client-booking', clientBookingRoutes);
+app.use('/api/clock-in-kiosk', clockInKioskRoutes);
 app.use('/api', adminImpersonationRoutes);
 
 // Pelecard hosted checkout theme (must be publicly reachable HTTPS for CssURL)

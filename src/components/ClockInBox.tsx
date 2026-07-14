@@ -5,6 +5,7 @@ import ManualClockInApprovalModal from './ManualClockInApprovalModal';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useAdminRole } from '../hooks/useAdminRole';
+import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import { resolveWorkplaceName } from '../lib/clockInLocations';
 import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
 import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
@@ -22,6 +23,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
 }) => {
   const { user } = useAuthContext();
   const { isSuperUser } = useAdminRole();
+  const gate = useOptionalClockInGate();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isApprovalModalOpen, setIsApprovalModalOpen] = useState(false);
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
@@ -333,6 +335,10 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
         onClose={handleCloseModal}
         employeeId={employeeId}
         userId={user.id}
+        onClockInSuccess={() => {
+          void gate?.refreshClockInGate();
+          void fetchClockInStatus();
+        }}
       />
 
       {isSuperUser && (

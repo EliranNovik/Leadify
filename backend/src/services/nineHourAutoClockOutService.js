@@ -231,11 +231,6 @@ function shouldEnforceWorkdayEnd(lastSeenAt, hasWorkdayEndOptIn, now = Date.now(
   return !hasRecentPresence(lastSeenAt, now);
 }
 
-async function signOutAuthUser(userId) {
-  const { error } = await supabase.auth.admin.signOut(userId, 'global');
-  if (error) throw error;
-}
-
 async function runNineHourAutoClockOut() {
   const workDate = jerusalemDateKey();
   const { data: activeRecords, error } = await supabase
@@ -248,7 +243,6 @@ async function runNineHourAutoClockOut() {
   const summary = {
     checked: activeRecords?.length ?? 0,
     clockedOut: 0,
-    signedOut: 0,
     endOfDayClockOuts: 0,
     whatsappSent: 0,
     whatsappSkipped: 0,
@@ -286,11 +280,9 @@ async function runNineHourAutoClockOut() {
         summary.clockedOut += 1;
         summary.endOfDayClockOuts += 1;
 
-        await signOutAuthUser(record.user_id);
-        summary.signedOut += 1;
-
+        // Keep auth session — client gate blocks CRM until next clock-in.
         console.log(
-          `[NineHourAutoClockOut] employee=${record.employee_id} end-of-day clock out + signed out`,
+          `[NineHourAutoClockOut] employee=${record.employee_id} end-of-day clock out (session kept)`,
         );
         continue;
       }
@@ -323,11 +315,9 @@ async function runNineHourAutoClockOut() {
       await clockOutActiveRecord(record);
       summary.clockedOut += 1;
 
-      await signOutAuthUser(record.user_id);
-      summary.signedOut += 1;
-
+      // Keep auth session — client gate blocks CRM until next clock-in.
       console.log(
-        `[NineHourAutoClockOut] employee=${record.employee_id} totalMs=${totalMs} clocked out + signed out`,
+        `[NineHourAutoClockOut] employee=${record.employee_id} totalMs=${totalMs} clocked out (session kept)`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

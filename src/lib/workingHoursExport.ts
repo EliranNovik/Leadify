@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx-js-style';
 import { supabase } from './supabase';
 import {
   dateRangeToIsoBounds,
+  eachDayInRange,
   formatClockTime,
   formatWorkingHoursDateLabel,
   sumClockDurations,
@@ -17,6 +18,15 @@ import {
   type EmployeeUnavailabilityEntry,
 } from './employeeUnavailabilities';
 import { isClockInRecordCounted } from './employeeClockInApproval';
+import {
+  buildHolidayMapForRange,
+  countHolidayOrEveDaysInRange,
+  countWeekendDaysInRange,
+  dayHasPremium150Holiday,
+  getHolidayEveNamesForDate,
+  getQualifyingHolidayNamesForDate,
+  isIsraeliWeekendIso,
+} from './employeeExtraHours';
 
 export type ClockInExportRecord = {
   id?: number;
@@ -184,10 +194,15 @@ export function groupClockInTotalsByEmployee(
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 
+const EXPORT_WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
 export function formatExportDateDdMm(dateKey: string): string {
-  const [, month, day] = dateKey.split('-');
-  if (!month || !day) return dateKey;
-  return `${day}.${month}`;
+  const [year, month, day] = dateKey.split('-').map(Number);
+  if (!year || !month || !day) return dateKey;
+  const weekday = EXPORT_WEEKDAY_SHORT[new Date(year, month - 1, day).getDay()] ?? '';
+  const dd = String(day).padStart(2, '0');
+  const mm = String(month).padStart(2, '0');
+  return weekday ? `${dd}.${mm} ${weekday}` : `${dd}.${mm}`;
 }
 
 export function formatExportDateDdMmYyyy(dateKey: string): string {
@@ -198,7 +213,7 @@ export function formatExportDateDdMmYyyy(dateKey: string): string {
 
 export function formatExportDurationHhMm(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '00:00';
-  const totalMinutes = Math.floor(ms / MS_PER_MINUTE);
+  const totalMinutes = Math.round(ms / MS_PER_MINUTE);
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   const hoursLabel = hours < 10 ? String(hours).padStart(2, '0') : String(hours);
@@ -436,6 +451,22 @@ const MERGED_EXPORT_STATIC_COLUMNS = ['Total duration'] as const;
 const MERGED_EXPORT_FONT_SIZE = 14;
 const MERGED_EXPORT_CELL_STYLE = { font: { sz: MERGED_EXPORT_FONT_SIZE } };
 const MERGED_EXPORT_BOLD_CELL_STYLE = { font: { bold: true, sz: MERGED_EXPORT_FONT_SIZE } };
+const MERGED_EXPORT_WEEKEND_CELL_STYLE = {
+  font: { sz: MERGED_EXPORT_FONT_SIZE },
+  fill: { patternType: 'solid', fgColor: { rgb: 'F3F4F6' } },
+};
+const MERGED_EXPORT_HOLIDAY_CELL_STYLE = {
+  font: { sz: MERGED_EXPORT_FONT_SIZE },
+  fill: { patternType: 'solid', fgColor: { rgb: 'FEF3C7' } }, // soft amber
+};
+const MERGED_EXPORT_SICK_CELL_STYLE = {
+  font: { sz: MERGED_EXPORT_FONT_SIZE },
+  fill: { patternType: 'solid', fgColor: { rgb: 'FFEDD5' } }, // light orange
+};
+const MERGED_EXPORT_VACATION_CELL_STYLE = {
+  font: { sz: MERGED_EXPORT_FONT_SIZE },
+  fill: { patternType: 'solid', fgColor: { rgb: 'DCFCE7' } }, // light green
+};
 
 const EXPORT_STATIC_COLUMNS_AFTER_CLOCK = [
   'Total duration',
@@ -504,7 +535,19 @@ export type MergedTimeUnavailabilityExportRow = {
   workplacesOut: string;
   source: string;
   notes: string;
+  isWeekend?: boolean;
+  isHoliday?: boolean;
+  isSickDay?: boolean;
+  isVacationDay?: boolean;
+  holidayNames?: string[];
+  holidaySuffix?: string;
 };
+
+function joinUnavailabilityLabels(parts: string[]): string {
+  const cleaned = parts.map((p) => p.trim()).filter(Boolean);
+  if (cleaned.length === 0) return '—';
+  return cleaned.join(', ');
+}
 
 function clockSourceLabel(hasManual: boolean, hasAutomatic: boolean): string {
   if (hasManual && hasAutomatic) return 'Manual, Automatic';
@@ -513,7 +556,7 @@ function clockSourceLabel(hasManual: boolean, hasAutomatic: boolean): string {
   return '—';
 }
 
-/** One Excel row per calendar day — clock-in/out and unavailabilities on the same date merged. */
+/** One Excel row per calendar day in range — includes Fri/Sat/holidays even with no clock data. */
 export function buildMergedTimeAndUnavailabilityExportRows(
   clockRecords: ClockInExportRecord[],
   unavailabilities: EmployeeUnavailabilityEntry[],
@@ -522,34 +565,80 @@ export function buildMergedTimeAndUnavailabilityExportRows(
 ): MergedTimeUnavailabilityExportRow[] {
   const dailyClock = aggregateClockInRecordsByDay(clockRecords);
   const clockByDate = new Map(dailyClock.map((row) => [row.dateKey, row]));
+  const holidayMap = buildHolidayMapForRange(dateFrom, dateTo);
 
-  const unavailByDate = new Map<string, { types: string[]; reasons: string[] }>();
+  const unavailByDate = new Map<
+    string,
+    { types: string[]; typeKeys: Set<string>; reasons: string[] }
+  >();
   for (const row of expandUnavailabilitiesToDailyRows(unavailabilities, dateFrom, dateTo)) {
+    // General absences are kept in the system but not shown in the Excel Absence column.
+    if (row.unavailability_type === 'general') continue;
+
     const type = unavailabilityTypeLabel(row.unavailability_type);
     const reason = unavailabilityReasonText(row);
     const reasonText = reason === '—' ? '' : reason;
     const bucket = unavailByDate.get(row.date);
     if (bucket) {
       if (!bucket.types.includes(type)) bucket.types.push(type);
+      bucket.typeKeys.add(row.unavailability_type);
       if (reasonText && !bucket.reasons.includes(reasonText)) bucket.reasons.push(reasonText);
     } else {
       unavailByDate.set(row.date, {
         types: [type],
+        typeKeys: new Set([row.unavailability_type]),
         reasons: reasonText ? [reasonText] : [],
       });
     }
   }
 
-  const allDateKeys = new Set([...clockByDate.keys(), ...unavailByDate.keys()]);
   const rows: MergedTimeUnavailabilityExportRow[] = [];
 
-  for (const dateKey of allDateKeys) {
+  for (const dateKey of eachDayInRange(dateFrom, dateTo)) {
     const clock = clockByDate.get(dateKey);
     const unavail = unavailByDate.get(dateKey);
+    const isWeekend = isIsraeliWeekendIso(dateKey);
+    const holidayNames = getQualifyingHolidayNamesForDate(dateKey, holidayMap);
+    const holidayEveNames = getHolidayEveNamesForDate(dateKey, holidayMap);
+    const isHoliday =
+      holidayNames.length > 0 ||
+      holidayEveNames.length > 0 ||
+      dayHasPremium150Holiday(dateKey, holidayMap);
+    const isSickDay = Boolean(unavail?.typeKeys.has('sick_days'));
+    const isVacationDay = Boolean(unavail?.typeKeys.has('vacation'));
+
+    const unavailLabels: string[] = [];
+    if (isWeekend) unavailLabels.push('Weekend');
+    for (const name of holidayNames) {
+      const holidayLabel = `Holiday — ${name}`;
+      if (!unavailLabels.includes(holidayLabel) && !unavailLabels.includes(name)) {
+        unavailLabels.push(holidayLabel);
+      }
+    }
+    for (const name of holidayEveNames) {
+      if (holidayNames.includes(name)) continue;
+      const eveLabel = `Holiday eve — ${name}`;
+      if (!unavailLabels.includes(eveLabel)) {
+        unavailLabels.push(eveLabel);
+      }
+    }
+    if (unavail) {
+      for (const type of unavail.types) {
+        if (!unavailLabels.includes(type)) unavailLabels.push(type);
+      }
+    }
+
+    const labelNames = [
+      ...holidayNames,
+      ...holidayEveNames.filter((n) => !holidayNames.includes(n)),
+    ];
+    const holidaySuffix =
+      labelNames.length > 0 ? ` (${labelNames.join(', ')})` : '';
+
     rows.push({
       dateKey,
       date: formatWorkingHoursDateLabel(dateKey),
-      unavailability: unavail ? unavail.types.join(', ') : '—',
+      unavailability: joinUnavailabilityLabels(unavailLabels),
       unavailabilityReason:
         unavail && unavail.reasons.length > 0 ? unavail.reasons.join('; ') : '—',
       clockSessions: clock?.sessions ?? [],
@@ -561,10 +650,15 @@ export function buildMergedTimeAndUnavailabilityExportRows(
       workplacesOut: clock?.workplacesOut ?? '—',
       source: clock ? clockSourceLabel(clock.hasManual, clock.hasAutomatic) : '—',
       notes: clock?.notes ?? '—',
+      isWeekend,
+      isHoliday,
+      isSickDay,
+      isVacationDay,
+      holidayNames,
+      holidaySuffix,
     });
   }
 
-  rows.sort((a, b) => sortDateKeysAsc(a.dateKey, b.dateKey));
   return rows;
 }
 
@@ -581,7 +675,7 @@ export function buildEmployeeMergedTimeAndUnavailabilityExportRows(
   employeeName: string,
   department: string,
 ): EmployeeMergedTimeUnavailabilityExportRow[] {
-  const rows = buildMergedTimeAndUnavailabilityExportRows(
+  return buildMergedTimeAndUnavailabilityExportRows(
     clockRecords,
     unavailabilities,
     dateFrom,
@@ -591,30 +685,6 @@ export function buildEmployeeMergedTimeAndUnavailabilityExportRows(
     employeeName,
     department,
   }));
-
-  if (rows.length > 0) {
-    return rows;
-  }
-
-  return [
-    {
-      employeeName,
-      department,
-      dateKey: dateFrom,
-      date: '—',
-      unavailability: '—',
-      unavailabilityReason: '—',
-      clockSessions: [],
-      clockIns: '—',
-      clockOuts: '—',
-      totalDurationMs: 0,
-      totalDuration: '—',
-      workplacesIn: '—',
-      workplacesOut: '—',
-      source: '—',
-      notes: '—',
-    },
-  ];
 }
 
 function mergedExportFilename(dateFrom: string, dateTo: string): string {
@@ -627,11 +697,13 @@ export type EmployeeTimeUnavailabilityExportBundle = {
   department: string;
   rows: MergedTimeUnavailabilityExportRow[];
   periodTotalMs: number;
+  baseHoursMs?: number;
   extraHours125Ms?: number;
   extraHours150Ms?: number;
   deficitHoursMs?: number;
   sickDays?: number;
   vacationDays?: number;
+  daysWorked?: number;
 };
 
 export function exportAllEmployeesMergedTimeAndUnavailabilitiesToExcel(
@@ -648,18 +720,30 @@ export function exportAllEmployeesMergedTimeAndUnavailabilitiesToExcel(
   for (const employee of employees) {
     const sortedRows = [...employee.rows].sort((a, b) => sortDateKeysAsc(a.dateKey, b.dateKey));
     const maxSessions = Math.max(1, maxClockSessionsCount(sortedRows.map((row) => row.clockSessions)));
-    const { exportColumns, rows, dataRowCount, footer } = buildMergedExportSheetRows(sortedRows, maxSessions, {
+    const { exportColumns, rows, dataRowCount, footer, weekendRowIndexes, holidayRowIndexes, sickRowIndexes, vacationRowIndexes } =
+      buildMergedExportSheetRows(sortedRows, maxSessions, {
       periodTotalMs: employee.periodTotalMs,
+      baseHoursMs: employee.baseHoursMs,
       extraHours125Ms: employee.extraHours125Ms,
       extraHours150Ms: employee.extraHours150Ms,
       deficitHoursMs: employee.deficitHoursMs,
       sickDays: employee.sickDays,
       vacationDays: employee.vacationDays,
+      daysWorked: employee.daysWorked,
       dateFrom: options.dateFrom,
       dateTo: options.dateTo,
     });
 
-    const ws = createMergedExportWorksheet(exportColumns, rows, dataRowCount, footer);
+    const ws = createMergedExportWorksheet(
+      exportColumns,
+      rows,
+      dataRowCount,
+      footer,
+      weekendRowIndexes,
+      holidayRowIndexes,
+      sickRowIndexes,
+      vacationRowIndexes,
+    );
     const sheetName = sanitizeSheetName(employee.employeeName, usedSheetNames);
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   }
@@ -673,11 +757,15 @@ function buildMergedExportSheetRows(
   maxSessions: number,
   options: {
     periodTotalMs?: number;
+    baseHoursMs?: number;
     extraHours125Ms?: number;
     extraHours150Ms?: number;
     deficitHoursMs?: number;
     sickDays?: number;
     vacationDays?: number;
+    weekendDays?: number;
+    holidayDays?: number;
+    daysWorked?: number;
     dateFrom?: string;
     dateTo?: string;
   },
@@ -687,54 +775,100 @@ function buildMergedExportSheetRows(
   dataRowCount: number;
   footer: {
     hasPeriodTotal: boolean;
+    hasBaseHours: boolean;
     hasExtra125: boolean;
     hasExtra150: boolean;
     hasDeficit: boolean;
     hasSickDays: boolean;
     hasVacationDays: boolean;
+    hasWeekendDays: boolean;
+    hasHolidayDays: boolean;
+    hasDaysWorked: boolean;
   };
+  weekendRowIndexes: number[];
+  holidayRowIndexes: number[];
+  sickRowIndexes: number[];
+  vacationRowIndexes: number[];
 } {
   const exportColumns = [
     'Date',
-    'Unavailability',
+    'Absence',
     ...clockSessionColumnHeadersSlim(maxSessions),
     ...MERGED_EXPORT_STATIC_COLUMNS,
   ];
 
-  const rows = mergedRows.map((row) => ({
-    Date: row.date === '—' ? '—' : formatExportDateDdMm(row.dateKey),
-    Unavailability: row.unavailability === '—' ? '' : row.unavailability,
-    ...clockSessionColumnValuesSlim(row.clockSessions, maxSessions),
-    'Total duration':
-      row.totalDurationMs > 0 ? formatExportDurationHhMm(row.totalDurationMs) : '',
-  }));
+  const weekendRowIndexes: number[] = [];
+  const holidayRowIndexes: number[] = [];
+  const sickRowIndexes: number[] = [];
+  const vacationRowIndexes: number[] = [];
+  const rows = mergedRows.map((row, index) => {
+    if (row.isWeekend) weekendRowIndexes.push(index);
+    if (row.isVacationDay) vacationRowIndexes.push(index);
+    if (row.isSickDay) sickRowIndexes.push(index);
+    if (row.isHoliday) holidayRowIndexes.push(index);
+    return {
+      Date:
+        row.date === '—'
+          ? '—'
+          : `${formatExportDateDdMm(row.dateKey)}${row.holidaySuffix ?? ''}`,
+      Absence: row.unavailability === '—' ? '' : row.unavailability,
+      ...clockSessionColumnValuesSlim(row.clockSessions, maxSessions),
+      'Total duration':
+        row.totalDurationMs > 0 ? formatExportDurationHhMm(row.totalDurationMs) : '',
+    };
+  });
 
   const hasPeriodTotal = Boolean(options.dateFrom && options.dateTo);
+  const hasBaseHours = options.baseHoursMs !== undefined;
   const hasExtra125 = options.extraHours125Ms !== undefined;
   const hasExtra150 = options.extraHours150Ms !== undefined;
   const hasDeficit = options.deficitHoursMs !== undefined;
   const hasSickDays = options.sickDays !== undefined;
   const hasVacationDays = options.vacationDays !== undefined;
+  const hasDaysWorked = options.daysWorked !== undefined;
+
+  let weekendDays = options.weekendDays;
+  let holidayDays = options.holidayDays;
+  if (hasPeriodTotal && options.dateFrom && options.dateTo) {
+    const holidayMap = buildHolidayMapForRange(options.dateFrom, options.dateTo);
+    if (weekendDays === undefined) {
+      weekendDays = countWeekendDaysInRange(options.dateFrom, options.dateTo);
+    }
+    if (holidayDays === undefined) {
+      holidayDays = countHolidayOrEveDaysInRange(options.dateFrom, options.dateTo, holidayMap);
+    }
+  }
+  const hasWeekendDays = weekendDays !== undefined;
+  const hasHolidayDays = holidayDays !== undefined;
 
   if (hasPeriodTotal) {
     const emptyClock = emptyClockSessionColumnValuesSlim(maxSessions);
     rows.push({
       Date: '',
-      Unavailability: '',
+      Absence: '',
       ...emptyClock,
       'Total duration': '',
     });
     rows.push({
       Date: `Period total (${formatExportDateDdMmYyyy(options.dateFrom!)} – ${formatExportDateDdMmYyyy(options.dateTo!)})`,
-      Unavailability: '',
+      Absence: '',
       ...emptyClock,
       'Total duration': formatExportDurationHhMm(options.periodTotalMs ?? 0),
     });
 
+    if (hasBaseHours) {
+      rows.push({
+        Date: 'Total hours base',
+        Absence: '',
+        ...emptyClock,
+        'Total duration': formatExportDurationHhMm(options.baseHoursMs ?? 0),
+      });
+    }
+
     if (hasExtra125) {
       rows.push({
         Date: 'Extra hours 125%',
-        Unavailability: '',
+        Absence: '',
         ...emptyClock,
         'Total duration': formatExportDurationHhMm(options.extraHours125Ms ?? 0),
       });
@@ -743,7 +877,7 @@ function buildMergedExportSheetRows(
     if (hasExtra150) {
       rows.push({
         Date: 'Extra hours 150%',
-        Unavailability: '',
+        Absence: '',
         ...emptyClock,
         'Total duration': formatExportDurationHhMm(options.extraHours150Ms ?? 0),
       });
@@ -752,7 +886,7 @@ function buildMergedExportSheetRows(
     if (hasDeficit) {
       rows.push({
         Date: '-hours',
-        Unavailability: '',
+        Absence: '',
         ...emptyClock,
         'Total duration': formatExportDurationHhMm(options.deficitHoursMs ?? 0),
       });
@@ -761,7 +895,7 @@ function buildMergedExportSheetRows(
     if (hasSickDays) {
       rows.push({
         Date: 'Sick days',
-        Unavailability: '',
+        Absence: '',
         ...emptyClock,
         'Total duration': String(options.sickDays ?? 0),
       });
@@ -770,9 +904,36 @@ function buildMergedExportSheetRows(
     if (hasVacationDays) {
       rows.push({
         Date: 'Vacation',
-        Unavailability: '',
+        Absence: '',
         ...emptyClock,
         'Total duration': String(options.vacationDays ?? 0),
+      });
+    }
+
+    if (hasWeekendDays) {
+      rows.push({
+        Date: 'Weekends',
+        Absence: '',
+        ...emptyClock,
+        'Total duration': String(weekendDays ?? 0),
+      });
+    }
+
+    if (hasHolidayDays) {
+      rows.push({
+        Date: 'Holidays',
+        Absence: '',
+        ...emptyClock,
+        'Total duration': String(holidayDays ?? 0),
+      });
+    }
+
+    if (hasDaysWorked) {
+      rows.push({
+        Date: 'Total days worked',
+        Absence: '',
+        ...emptyClock,
+        'Total duration': String(options.daysWorked ?? 0),
       });
     }
   }
@@ -783,12 +944,20 @@ function buildMergedExportSheetRows(
     dataRowCount: mergedRows.length,
     footer: {
       hasPeriodTotal,
+      hasBaseHours,
       hasExtra125,
       hasExtra150,
       hasDeficit,
       hasSickDays,
       hasVacationDays,
+      hasWeekendDays,
+      hasHolidayDays,
+      hasDaysWorked,
     },
+    weekendRowIndexes,
+    holidayRowIndexes,
+    sickRowIndexes,
+    vacationRowIndexes,
   };
 }
 
@@ -814,12 +983,20 @@ function applyMergedExportWorksheetStyles(
   rows: Record<string, string>[],
   footer: {
     hasPeriodTotal: boolean;
+    hasBaseHours: boolean;
     hasExtra125: boolean;
     hasExtra150: boolean;
     hasDeficit: boolean;
     hasSickDays: boolean;
     hasVacationDays: boolean;
+    hasWeekendDays: boolean;
+    hasHolidayDays: boolean;
+    hasDaysWorked: boolean;
   },
+  weekendRowIndexes: number[] = [],
+  holidayRowIndexes: number[] = [],
+  sickRowIndexes: number[] = [],
+  vacationRowIndexes: number[] = [],
 ): void {
   const rangeRef = ws['!ref'];
   if (rangeRef) {
@@ -837,7 +1014,26 @@ function applyMergedExportWorksheetStyles(
     if (ws[headerAddr]) ws[headerAddr].s = { ...MERGED_EXPORT_BOLD_CELL_STYLE };
   }
 
-  if (!footer.hasPeriodTotal) return;
+  const paintRows = (indexes: number[], style: Record<string, unknown>) => {
+    for (const dataIndex of indexes) {
+      const sheetRow = dataIndex + 1; // header is row 0
+      for (let c = 0; c < exportColumns.length; c++) {
+        const addr = XLSX.utils.encode_cell({ r: sheetRow, c });
+        if (ws[addr]) ws[addr].s = { ...style };
+      }
+    }
+  };
+
+  // Later paints win on overlap: holiday > sick > vacation > weekend
+  paintRows(weekendRowIndexes, MERGED_EXPORT_WEEKEND_CELL_STYLE);
+  paintRows(vacationRowIndexes, MERGED_EXPORT_VACATION_CELL_STYLE);
+  paintRows(sickRowIndexes, MERGED_EXPORT_SICK_CELL_STYLE);
+  paintRows(holidayRowIndexes, MERGED_EXPORT_HOLIDAY_CELL_STYLE);
+
+  if (!footer.hasPeriodTotal) {
+    ws['!cols'] = applyMergedExportColumnWidths(exportColumns, rows);
+    return;
+  }
 
   const totalDurationCol = exportColumns.indexOf('Total duration');
   const boldCell = (row: number, col: number) => {
@@ -850,6 +1046,12 @@ function applyMergedExportWorksheetStyles(
   boldCell(summaryRow, 0);
   if (totalDurationCol >= 0) boldCell(summaryRow, totalDurationCol);
   summaryRow += 1;
+
+  if (footer.hasBaseHours) {
+    boldCell(summaryRow, 0);
+    if (totalDurationCol >= 0) boldCell(summaryRow, totalDurationCol);
+    summaryRow += 1;
+  }
 
   if (footer.hasExtra125) {
     boldCell(summaryRow, 0);
@@ -878,6 +1080,24 @@ function applyMergedExportWorksheetStyles(
   if (footer.hasVacationDays) {
     boldCell(summaryRow, 0);
     if (totalDurationCol >= 0) boldCell(summaryRow, totalDurationCol);
+    summaryRow += 1;
+  }
+
+  if (footer.hasWeekendDays) {
+    boldCell(summaryRow, 0);
+    if (totalDurationCol >= 0) boldCell(summaryRow, totalDurationCol);
+    summaryRow += 1;
+  }
+
+  if (footer.hasHolidayDays) {
+    boldCell(summaryRow, 0);
+    if (totalDurationCol >= 0) boldCell(summaryRow, totalDurationCol);
+    summaryRow += 1;
+  }
+
+  if (footer.hasDaysWorked) {
+    boldCell(summaryRow, 0);
+    if (totalDurationCol >= 0) boldCell(summaryRow, totalDurationCol);
   }
 
   ws['!cols'] = applyMergedExportColumnWidths(exportColumns, rows);
@@ -889,15 +1109,33 @@ function createMergedExportWorksheet(
   dataRowCount: number,
   footer: {
     hasPeriodTotal: boolean;
+    hasBaseHours: boolean;
     hasExtra125: boolean;
     hasExtra150: boolean;
     hasDeficit: boolean;
     hasSickDays: boolean;
     hasVacationDays: boolean;
+    hasWeekendDays: boolean;
+    hasHolidayDays: boolean;
+    hasDaysWorked: boolean;
   },
+  weekendRowIndexes: number[] = [],
+  holidayRowIndexes: number[] = [],
+  sickRowIndexes: number[] = [],
+  vacationRowIndexes: number[] = [],
 ): XLSX.WorkSheet {
   const ws = XLSX.utils.json_to_sheet(rows, { header: exportColumns });
-  applyMergedExportWorksheetStyles(ws, exportColumns, dataRowCount, rows, footer);
+  applyMergedExportWorksheetStyles(
+    ws,
+    exportColumns,
+    dataRowCount,
+    rows,
+    footer,
+    weekendRowIndexes,
+    holidayRowIndexes,
+    sickRowIndexes,
+    vacationRowIndexes,
+  );
   return ws;
 }
 
@@ -909,27 +1147,49 @@ export function exportMergedTimeAndUnavailabilitiesToExcel(
     dateFrom: string;
     dateTo: string;
     periodTotalMs: number;
+    baseHoursMs?: number;
     extraHours125Ms?: number;
     extraHours150Ms?: number;
     deficitHoursMs?: number;
     sickDays?: number;
     vacationDays?: number;
+    daysWorked?: number;
     filenameSuffix?: string;
   },
 ): void {
   const maxSessions = Math.max(1, maxClockSessionsCount(mergedRows.map((row) => row.clockSessions)));
-  const { exportColumns, rows, dataRowCount, footer } = buildMergedExportSheetRows(mergedRows, maxSessions, {
-    periodTotalMs: options.periodTotalMs,
-    extraHours125Ms: options.extraHours125Ms,
-    extraHours150Ms: options.extraHours150Ms,
-    deficitHoursMs: options.deficitHoursMs,
-    sickDays: options.sickDays,
-    vacationDays: options.vacationDays,
-    dateFrom: options.dateFrom,
-    dateTo: options.dateTo,
-  });
+  const {
+    exportColumns,
+    rows,
+    dataRowCount,
+    footer,
+    weekendRowIndexes,
+    holidayRowIndexes,
+    sickRowIndexes,
+    vacationRowIndexes,
+  } = buildMergedExportSheetRows(mergedRows, maxSessions, {
+      periodTotalMs: options.periodTotalMs,
+      baseHoursMs: options.baseHoursMs,
+      extraHours125Ms: options.extraHours125Ms,
+      extraHours150Ms: options.extraHours150Ms,
+      deficitHoursMs: options.deficitHoursMs,
+      sickDays: options.sickDays,
+      vacationDays: options.vacationDays,
+      daysWorked: options.daysWorked,
+      dateFrom: options.dateFrom,
+      dateTo: options.dateTo,
+    });
 
-  const ws = createMergedExportWorksheet(exportColumns, rows, dataRowCount, footer);
+  const ws = createMergedExportWorksheet(
+    exportColumns,
+    rows,
+    dataRowCount,
+    footer,
+    weekendRowIndexes,
+    holidayRowIndexes,
+    sickRowIndexes,
+    vacationRowIndexes,
+  );
   const wb = XLSX.utils.book_new();
   const usedSheetNames = new Set<string>();
   const sheetName = sanitizeSheetName(options.employeeName.trim() || 'Employee', usedSheetNames);

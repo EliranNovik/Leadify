@@ -77,6 +77,7 @@ export const LazyAboutPage = lazy(() => import('../pages/AboutPage'));
 export const LazyDocumentsPage = lazy(() => import('../pages/DocumentsPage'));
 export const LazyContactPage = lazy(() => import('../pages/ContactPage'));
 export const LazyContactBridgePage = lazy(() => import('../pages/ContactBridgePage'));
+export const LazyDuplicateContactsPage = lazy(() => import('../pages/DuplicateContactsPage'));
 export const LazyHowItWorksPage = lazy(() => import('../pages/HowItWorksPage'));
 export const LazyMeetingSummaryTestPage = lazy(() => import('../pages/MeetingSummaryTestPage'));
 export const LazySimpleTestPage = lazy(() => import('../pages/SimpleTestPage'));
@@ -96,4 +97,6 @@ export const LazyPortalLoginPage = lazy(() => import('../pages/portal/PortalLogi
 export const LazyPortalAboutPage = lazy(() => import('../pages/portal/PortalAboutPage'));
 export const LazyPortalCasePage = lazy(() => import('../pages/portal/PortalCasePage'));
 export const LazyPublicBookingPage = lazy(() => import('../pages/PublicBookingPage'));
+export const LazyEntryKioskPage = lazy(() => import('../pages/EntryKioskPage'));
+export const LazyClockInEntryPage = lazy(() => import('../pages/ClockInEntryPage'));
 export const LazyInternalMeetingDocumentsPage = lazy(() => import('../pages/InternalMeetingDocumentsPage'));

@@ -53,6 +53,7 @@ import {
   buildHolidayMapForRange,
   calculateEmployeeExtraHoursForRange,
   calculateExtraHoursByEmployee,
+  countPaidUnavailabilityWorkdays,
   formatExtraHoursDuration,
   preloadHolidayMapsForRange,
 } from '../lib/employeeExtraHours';
@@ -218,31 +219,51 @@ const EmployeeUnavailabilitiesReport = () => {
       }
 
       const documentsList: DocumentData[] = [];
-      const filterFromDate = new Date(fromDate);
-      const filterToDate = new Date(toDate);
-
+      const unavailByEmployee = new Map<number, typeof reasonsData>();
       for (const reason of reasonsData) {
-        const employeeId = reason.employee_id;
+        const list = unavailByEmployee.get(reason.employee_id);
+        if (list) list.push(reason);
+        else unavailByEmployee.set(reason.employee_id, [reason]);
+      }
+
+      for (const [employeeId, entries] of unavailByEmployee) {
         if (!employeeMap.has(employeeId)) continue;
-
         const empData = employeeMap.get(employeeId)!;
-        const employeeName = empData.employeeName;
 
-        const startDate = new Date(reason.start_date);
-        const endDate = reason.end_date ? new Date(reason.end_date) : startDate;
-        const overlapStart = startDate > filterFromDate ? startDate : filterFromDate;
-        const overlapEnd = endDate < filterToDate ? endDate : filterToDate;
-        const daysDiff =
-          Math.ceil((overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+        empData.sickDays = countPaidUnavailabilityWorkdays(
+          entries,
+          'sick_days',
+          fromDate,
+          toDate,
+          holidayMap,
+        );
+        empData.vacationDays = countPaidUnavailabilityWorkdays(
+          entries,
+          'vacation',
+          fromDate,
+          toDate,
+          holidayMap,
+        );
 
-        if (reason.unavailability_type === 'sick_days') {
-          empData.sickDays += daysDiff;
-          if (reason.document_url) {
+        for (const reason of entries) {
+          if (reason.unavailability_type === 'general') {
+            const startDate = new Date(reason.start_date);
+            const endDate = reason.end_date ? new Date(reason.end_date) : startDate;
+            const filterFromDate = new Date(fromDate);
+            const filterToDate = new Date(toDate);
+            const overlapStart = startDate > filterFromDate ? startDate : filterFromDate;
+            const overlapEnd = endDate < filterToDate ? endDate : filterToDate;
+            const daysDiff =
+              Math.ceil((overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+            empData.generalDays += Math.max(0, daysDiff);
+          }
+
+          if (reason.unavailability_type === 'sick_days' && reason.document_url) {
             empData.hasDocuments = true;
             documentsList.push({
               id: reason.id,
               employeeId,
-              employeeName: employeeName || 'Unknown',
+              employeeName: empData.employeeName || 'Unknown',
               documentUrl: reason.document_url,
               uploadedAt: reason.created_at,
               sickDaysReason: reason.sick_days_reason || '',
@@ -250,10 +271,6 @@ const EmployeeUnavailabilitiesReport = () => {
               endDate: reason.end_date,
             });
           }
-        } else if (reason.unavailability_type === 'vacation') {
-          empData.vacationDays += daysDiff;
-        } else if (reason.unavailability_type === 'general') {
-          empData.generalDays += daysDiff;
         }
       }
 
@@ -265,13 +282,6 @@ const EmployeeUnavailabilitiesReport = () => {
         const list = clockRecordsByEmployee.get(employeeId);
         if (list) list.push(record);
         else clockRecordsByEmployee.set(employeeId, [record]);
-      }
-
-      const unavailByEmployee = new Map<number, typeof reasonsData>();
-      for (const reason of reasonsData) {
-        const list = unavailByEmployee.get(reason.employee_id);
-        if (list) list.push(reason);
-        else unavailByEmployee.set(reason.employee_id, [reason]);
       }
 
       const extraHoursByEmployee = calculateExtraHoursByEmployee(
@@ -414,23 +424,14 @@ const EmployeeUnavailabilitiesReport = () => {
     return combined;
   }, [detailRecords, detailUnavailabilities, fromDate, toDate]);
 
-  const handleDetailExport = () => {
+  const handleDetailExport = async () => {
     if (!selectedEmployee) {
       toast.error('No employee selected');
       return;
     }
-    const mergedRows = buildMergedTimeAndUnavailabilityExportRows(
-      detailRecords,
-      detailUnavailabilities,
-      fromDate,
-      toDate,
-    );
-    if (mergedRows.length === 0) {
-      toast.error('No data to export');
-      return;
-    }
     setDetailExporting(true);
     try {
+      await preloadHolidayMapsForRange(fromDate, toDate);
       const countedRecords = filterCountedClockInRecords(detailRecords);
       const extraHours = calculateEmployeeExtraHoursForRange(
         detailRecords,
@@ -439,17 +440,25 @@ const EmployeeUnavailabilitiesReport = () => {
         toDate,
         detailUnavailabilities,
       );
+      const mergedRows = buildMergedTimeAndUnavailabilityExportRows(
+        detailRecords,
+        detailUnavailabilities,
+        fromDate,
+        toDate,
+      );
       exportMergedTimeAndUnavailabilitiesToExcel(mergedRows, {
         employeeName: selectedEmployee.employeeName,
         department: selectedEmployee.departmentName || '—',
         dateFrom: fromDate,
         dateTo: toDate,
         periodTotalMs: sumCountedClockDurationsMs(countedRecords),
+        baseHoursMs: extraHours.baseHoursMs,
         extraHours125Ms: extraHours.extraHours125Ms,
         extraHours150Ms: extraHours.extraHours150Ms,
         deficitHoursMs: extraHours.deficitHoursMs,
         sickDays: selectedEmployee.sickDays,
         vacationDays: selectedEmployee.vacationDays,
+        daysWorked: selectedEmployee.daysWorked,
         filenameSuffix: selectedEmployee.employeeName,
       });
       toast.success('Time and unavailabilities exported successfully');
@@ -472,6 +481,7 @@ const EmployeeUnavailabilitiesReport = () => {
       const [clockRecords, allUnavailabilities] = await Promise.all([
         fetchClockInRecordsInRangeForReport(fromDate, toDate),
         fetchAllUnavailabilitiesInRange(fromDate, toDate),
+        preloadHolidayMapsForRange(fromDate, toDate),
       ]);
 
       const clockByEmployee = new Map<number, ClockInExportRecord[]>();
@@ -520,11 +530,13 @@ const EmployeeUnavailabilitiesReport = () => {
           department: emp.departmentName || '—',
           rows: mergedRows.map(({ employeeName, department, ...row }) => row),
           periodTotalMs: sumCountedClockDurationsMs(countedRecords),
+          baseHoursMs: extraHours?.baseHoursMs ?? 0,
           extraHours125Ms: extraHours?.extraHours125Ms ?? 0,
           extraHours150Ms: extraHours?.extraHours150Ms ?? 0,
           deficitHoursMs: extraHours?.deficitHoursMs ?? 0,
           sickDays: emp.sickDays,
           vacationDays: emp.vacationDays,
+          daysWorked: emp.daysWorked,
         };
       });
 
@@ -877,7 +889,7 @@ const EmployeeUnavailabilitiesReport = () => {
               <button
                 type="button"
                 className="btn btn-sm btn-primary"
-                onClick={handleDetailExport}
+                onClick={() => void handleDetailExport()}
                 disabled={detailLoading || detailExporting || detailTableRows.length === 0}
               >
                 {detailExporting ? (

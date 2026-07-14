@@ -25,10 +25,12 @@ import {
 } from '../lib/employeeClockInApproval';
 import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
+import { setClockInGateBlocksDataAccess } from '../lib/clockInGateFetchPolicy';
 import {
   type HomeWfhApprovalSnapshot,
   useHomeWfhApprovalAutoClockIn,
 } from '../hooks/useHomeWfhApprovalAutoClockIn';
+import { useOptionalClockInGate } from '../hooks/useClockInGate';
 
 interface ClockInModalProps {
   isOpen: boolean;
@@ -64,6 +66,8 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
   onSignOut,
 }) => {
   const { user, userFullName } = useAuthContext();
+  const gate = useOptionalClockInGate();
+  const refreshClockInGate = gate?.refreshClockInGate;
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentRecord, setCurrentRecord] = useState<ClockInRecord | null>(null);
   const [location, setLocation] = useState<ClockInLocationData>(EMPTY_CLOCK_IN_LOCATION);
@@ -173,18 +177,6 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
           if (!required) {
             onClockInSuccess?.();
           }
-        }
-        if (action === 'out') {
-          clearClockInGateCache();
-          const { error } = await supabase.auth.signOut();
-          if (error) {
-            console.error('Error signing out after clock-out:', error);
-            toast.error('Clocked out but failed to sign out');
-            onClose();
-            return;
-          }
-          window.location.href = '/login';
-          return;
         }
         if (!required) {
           onClose();
@@ -473,7 +465,17 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
         persistLastSelectedWorkplaceId(clockOutLocationId);
       }
 
-      setSuccessAction('out');
+      // Immediately flip to the clock-in gate (keep session). Don't wait for modal auto-close.
+      clearClockInGateCache();
+      setClockInGateBlocksDataAccess(true);
+      try {
+        await refreshClockInGate?.();
+      } catch (gateError) {
+        console.error('Clock-in gate refresh after clock-out failed:', gateError);
+      }
+      onClockInSuccess?.();
+      onClose();
+      toast.success('Clocked out');
     } catch (error: any) {
       console.error('Error clocking out:', error);
       toast.error(error.message || 'Failed to clock out');
@@ -541,7 +543,9 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
               {successAction === 'approval' ? (
                 <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>Waiting for admin approval.</p>
               ) : successAction === 'out' ? (
-                <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>Signing you out…</p>
+                <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>
+                  Returning to clock-in…
+                </p>
               ) : selectedWorkplaceName ? (
                 <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>{selectedWorkplaceName}</p>
               ) : null}

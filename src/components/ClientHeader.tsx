@@ -238,6 +238,12 @@ const HEADER_ACTION_BAR_TAGS_BTN =
 const HEADER_ACTION_BAR_FLAGS_BTN =
     `${HEADER_ACTION_BAR_BADGE_BTN} disabled:pointer-events-none disabled:opacity-40 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-300 dark:hover:bg-amber-900/30`;
 
+const HEADER_ACTION_BAR_DUPLICATES_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} text-orange-700 hover:bg-orange-50 hover:text-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/30`;
+
+const HEADER_DUPLICATES_BTN_CLASS =
+    'btn btn-circle btn-ghost relative shrink-0 border border-orange-200/80 bg-orange-50 text-orange-700 hover:border-orange-300 hover:bg-orange-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-orange-800/50 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
+
 const MORE_ACTIONS_SECTION_LABEL =
     'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/40';
 
@@ -273,7 +279,7 @@ const TEAM_CARD_VISIBLE_COLLAPSED = 2;
 const TEAM_PANEL_MORE_BTN =
     'w-full rounded-lg border-0 bg-base-200/80 px-3 py-2 text-center text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content/80';
 
-/** Stage workflow actions — unified size on desktop hover bar and mobile. */
+/** Stage workflow actions — unified size on desktop and mobile. */
 const STAGE_ACTION_BTN_BASE =
     'btn btn-md min-h-11 rounded-full px-5 gap-2 text-sm font-semibold whitespace-nowrap border-0 shadow-sm';
 
@@ -310,7 +316,6 @@ interface ClientHeaderProps {
     isSuperuser: boolean;
     setShowDeleteModal: (show: boolean) => void;
     duplicateContacts: any[];
-    setIsDuplicateModalOpen: (isOpen: boolean) => void;
     setIsDuplicateDropdownOpen: (isOpen: boolean) => void;
     isDuplicateDropdownOpen: boolean;
     setShowSubLeadDrawer: (show: boolean) => void;
@@ -392,7 +397,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     isSuperuser,
     setShowDeleteModal,
     duplicateContacts,
-    setIsDuplicateModalOpen,
     setIsDuplicateDropdownOpen,
     isDuplicateDropdownOpen,
     setShowSubLeadDrawer,
@@ -489,43 +493,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [handlerActiveRingNonce, setHandlerActiveRingNonce] = useState(0);
     const [assignedTeamPanelOpen, setAssignedTeamPanelOpen] = useState(false);
     const [headerFinancialDetailsOpen, setHeaderFinancialDetailsOpen] = useState(false);
-    const [headerActionsHoverOpen, setHeaderActionsHoverOpen] = useState(false);
-    const headerHoverLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const activeHandlerLeadRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    const handleHeaderHoverEnter = useCallback(() => {
-        if (headerHoverLeaveTimerRef.current) {
-            clearTimeout(headerHoverLeaveTimerRef.current);
-            headerHoverLeaveTimerRef.current = null;
-        }
-        setHeaderActionsHoverOpen(true);
-    }, []);
-
-    const handleHeaderHoverLeave = useCallback(() => {
-        if (headerHoverLeaveTimerRef.current) {
-            clearTimeout(headerHoverLeaveTimerRef.current);
-        }
-        headerHoverLeaveTimerRef.current = setTimeout(() => {
-            setHeaderActionsHoverOpen(false);
-            headerHoverLeaveTimerRef.current = null;
-        }, 220);
-    }, []);
-
-    useEffect(
-        () => () => {
-            if (headerHoverLeaveTimerRef.current) {
-                clearTimeout(headerHoverLeaveTimerRef.current);
-            }
-        },
-        [],
-    );
 
     useEffect(() => {
         setAssignedTeamPanelOpen(false);
         setHeaderFinancialDetailsOpen(false);
         setMoreActionsSheetOpen(false);
         setInactiveNotesExpanded(false);
-        setHeaderActionsHoverOpen(false);
     }, [selectedClient?.id]);
     /** Latest row identity + active_handler_type for poll + realtime client-side match (avoids stale closures). */
     const leadHandlerSyncRef = useRef<{
@@ -2358,6 +2332,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         navigate(`/clients/${encodedIdentifier}/history`);
     };
 
+    const handleDuplicatesClick = () => {
+        if (!leadIdentifier) return;
+        const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
+        navigate(`/clients/${encodedIdentifier}/duplicates`);
+        setIsDuplicateDropdownOpen(false);
+    };
+
     const goToFlaggedExpertOpinion = () => {
         onSwitchClientTab?.('expert');
         window.setTimeout(() => {
@@ -2509,7 +2490,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                           label: `Duplicate contacts (${duplicateContacts.length})`,
                           iconTone: 'warning',
                           onClick: () => {
-                              setIsDuplicateModalOpen(true);
+                              handleDuplicatesClick();
                               closeMoreActionsSheet();
                           },
                       }),
@@ -2744,22 +2725,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </span>
                             )}
                         </button>
-                        <button
-                            type="button"
-                            onClick={handleHistoryClick}
-                            className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
-                            title="View History"
-                            aria-label="View History"
-                        >
-                            <ArchiveBoxIcon className="h-5 w-5" />
-                        </button>
                     </>
                 )}
-                {dup && (
+                {dup ? (
                     <button
                         type="button"
-                        onClick={() => setIsDuplicateModalOpen(true)}
-                        className="btn btn-circle btn-warning btn-sm"
+                        onClick={handleDuplicatesClick}
+                        className={HEADER_DUPLICATES_BTN_CLASS}
                         title={
                             duplicateContacts.length === 1
                                 ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
@@ -2767,7 +2739,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         }
                         aria-label="Duplicate contacts"
                     >
-                        <DocumentDuplicateIcon className="w-5 h-5" />
+                        <DocumentDuplicateIcon className="h-5 w-5" />
+                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
+                            {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
+                        </span>
+                    </button>
+                ) : null}
+                {!hideHistoryAndTimeline && (
+                    <button
+                        type="button"
+                        onClick={handleHistoryClick}
+                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                        title="View History"
+                        aria-label="View History"
+                    >
+                        <ArchiveBoxIcon className="h-5 w-5" />
                     </button>
                 )}
             </div>
@@ -2778,40 +2764,62 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         tagsBtnClass: string,
         flagsBtnClass: string,
         iconClass = 'h-5 w-5',
-    ) =>
-        !hideHistoryAndTimeline ? (
+        duplicatesBtnClass?: string,
+    ) => (
             <>
-                <button
-                    type="button"
-                    onClick={() => setTagsModalOpen(true)}
-                    className={tagsBtnClass}
-                    title="Tags"
-                    aria-label="Tags"
-                >
-                    <TagIcon className={iconClass} />
-                    {tagsCount > 0 && (
-                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
-                            {tagsCount > 99 ? '99+' : tagsCount}
+                {!hideHistoryAndTimeline ? (
+                    <>
+                        <button
+                            type="button"
+                            onClick={() => setTagsModalOpen(true)}
+                            className={tagsBtnClass}
+                            title="Tags"
+                            aria-label="Tags"
+                        >
+                            <TagIcon className={iconClass} />
+                            {tagsCount > 0 && (
+                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
+                                    {tagsCount > 99 ? '99+' : tagsCount}
+                                </span>
+                            )}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={openFlaggedConversationsModal}
+                            disabled={!publicUserId}
+                            className={flagsBtnClass}
+                            title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
+                            aria-label="Flagged items"
+                        >
+                            <FlagIcon className={iconClass} />
+                            {totalFlagBadge > 0 && (
+                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
+                                    {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
+                                </span>
+                            )}
+                        </button>
+                    </>
+                ) : null}
+                {duplicateContacts && duplicateContacts.length > 0 ? (
+                    <button
+                        type="button"
+                        onClick={handleDuplicatesClick}
+                        className={duplicatesBtnClass || HEADER_ACTION_BAR_DUPLICATES_BTN}
+                        title={
+                            duplicateContacts.length === 1
+                                ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
+                                : `${duplicateContacts.length} Duplicate Contacts`
+                        }
+                        aria-label="Duplicate contacts"
+                    >
+                        <DocumentDuplicateIcon className={iconClass} />
+                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
+                            {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
                         </span>
-                    )}
-                </button>
-                <button
-                    type="button"
-                    onClick={openFlaggedConversationsModal}
-                    disabled={!publicUserId}
-                    className={flagsBtnClass}
-                    title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
-                    aria-label="Flagged items"
-                >
-                    <FlagIcon className={iconClass} />
-                    {totalFlagBadge > 0 && (
-                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
-                            {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
-                        </span>
-                    )}
-                </button>
+                    </button>
+                ) : null}
             </>
-        ) : null;
+        );
 
     const renderHeaderDocsButton = () => (
         <button
@@ -2899,6 +2907,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         HEADER_ACTION_BAR_TAGS_BTN,
                         HEADER_ACTION_BAR_FLAGS_BTN,
                         HEADER_ACTION_ICON,
+                        HEADER_ACTION_BAR_DUPLICATES_BTN,
                     )}
                 </div>
 
@@ -2997,8 +3006,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             ? 'relative w-full'
                             : `${CLIENT_HEADER_SHELL} relative mt-5 md:mt-7`
                     }
-                    onMouseEnter={handleHeaderHoverEnter}
-                    onMouseLeave={handleHeaderHoverLeave}
                 >
                     <div
                         className={
@@ -3303,11 +3310,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         )}
                     </div>
 
-                    {/* Desktop: left profile card + total + team */}
+                    {/* Desktop: dense single-strip header */}
                     <div className="relative hidden md:block md:w-full">
-                    <div className="flex w-full items-start gap-3">
-                    <div className={`${CLIENT_HEADER_CARD} flex min-w-0 flex-1 flex-col gap-2.5`}>
-                        <div className="flex min-w-0 items-start justify-between gap-4">
+                    <div className={`${CLIENT_HEADER_CARD} w-full`}>
+                        <div className="flex w-full min-w-0 items-center justify-between gap-4">
                             <div className="min-w-0 flex-1 text-left">
                                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                                     <div className="min-w-0">
@@ -3355,6 +3361,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <div className="flex shrink-0 items-center">{renderStageBadge('desktop')}</div>
                                 </div>
                             </div>
+                            <div className="flex w-fit shrink-0 items-start gap-4">
                             {!hideTotalValueBadge ? (
                                 <div className="w-fit max-w-[min(100%,14rem)] shrink-0 text-right sm:max-w-xs">
                             {(() => {
@@ -3592,10 +3599,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             })()}
                                 </div>
                             ) : null}
-                        </div>
-                    </div>
 
-                    <div className="w-fit shrink-0 self-start">
+                    <div className={`w-fit shrink-0 ${!hideTotalValueBadge ? 'border-l border-base-200/70 pl-4' : ''}`.trim()}>
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -3839,7 +3844,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         ) => (
                             <div
                                 key={entry.key}
-                                className={`${CLIENT_HEADER_CARD} flex w-full min-w-[10.5rem] max-w-[18rem] shrink-0 flex-col justify-center`}
+                                className="flex shrink-0 items-center"
                             >
                                 {renderTeamMemberContent(entry, options)}
                             </div>
@@ -3856,16 +3861,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         });
 
                         return (
-                            <div className="flex w-fit max-w-[18rem] shrink-0 flex-col items-stretch gap-2">
+                            <div className="flex w-fit max-w-[28rem] shrink-0 flex-col items-end gap-1.5">
                                 {teamEntries.length === 0 ? (
-                                    <div
-                                        className={`${CLIENT_HEADER_CARD} flex w-full min-w-[10.5rem] flex-col justify-center`}
-                                    >
-                                        <span className="text-sm text-base-content/45">No team assigned</span>
-                                    </div>
+                                    <span className="text-sm text-base-content/45">No team assigned</span>
                                 ) : (
                                     <>
-                                        <div className="flex w-full flex-col gap-2">
+                                        <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
                                             {visibleTeamEntries.map((entry) =>
                                                 renderTeamMemberCard(entry, teamMemberCardOptions(entry)),
                                             )}
@@ -3881,9 +3882,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             ) : null}
                                         </div>
                                         {assignedTeamPanelOpen && showDualHandlerToggle ? (
-                                            <div
-                                                className={`${CLIENT_HEADER_CARD} flex w-fit shrink-0 items-center justify-center`}
-                                            >
+                                            <div className="flex w-fit shrink-0 items-center justify-center">
                                                 <div className="inline-flex h-10 min-w-[8.25rem] items-stretch gap-0.5 rounded-full border border-base-300/50 bg-base-200/90 p-1 shadow-inner">
                                                     <button
                                                         type="button"
@@ -3944,25 +3943,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         );
                     })()}
                     </div>
+                            </div>
+                        </div>
+                    </div>
                     </div>
 
                     <div className="mt-2.5 flex w-full min-w-0 flex-wrap items-center gap-2">
                         {renderClientMetaBadges()}
                     </div>
 
-                    <div
-                        className={`absolute inset-x-0 top-[calc(100%-10px)] z-30 hidden flex-col items-stretch gap-2 overflow-visible pt-3 pb-12 transition-[opacity,transform] duration-300 ease-out md:flex ${
-                            headerActionsHoverOpen
-                                ? 'pointer-events-auto translate-y-0 opacity-100'
-                                : 'pointer-events-none -translate-y-0.5 opacity-0'
-                        }`}
-                        aria-hidden={!headerActionsHoverOpen}
-                    >
+                    <div className="mt-3 hidden w-full flex-col items-stretch gap-2 md:flex">
                         <div className="flex w-full flex-wrap items-center gap-2">
-                            <div className="pointer-events-auto shrink-0">
+                            <div className="shrink-0">
                                 {renderSegmentedHeaderActions()}
                             </div>
-                            <div className="pointer-events-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+                            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
                                     {(() => {
                                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                                         const isUnactivated = isLegacy
@@ -4343,12 +4338,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             </div>
                         </div>
                         {dropdownsContent ? (
-                            <div className={`pointer-events-auto relative z-10 shrink-0 pt-1 ${HEADER_ROLE_ASSIGN_WIDTH_CLASS}`}>
+                            <div className={`relative z-10 shrink-0 pt-1 ${HEADER_ROLE_ASSIGN_WIDTH_CLASS}`}>
                                 {dropdownsContent}
                             </div>
                         ) : null}
                     </div>
-                </div>
 
                 {/* Case inactive — centred banner under the header white box */}
                 {(() => {

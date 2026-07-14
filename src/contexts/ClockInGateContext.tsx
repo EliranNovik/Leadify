@@ -49,6 +49,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
   );
   const [adminBypassActive, setAdminBypassActive] = useState(false);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const refreshQueuedRef = useRef(false);
 
   useLayoutEffect(() => {
     if (!userId) {
@@ -72,9 +73,13 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
       return;
     }
 
+    // Coalesce concurrent calls, but always run one trailing refresh so a
+    // clock-out that lands mid-flight is not skipped with a stale result.
     if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
       await refreshInFlightRef.current;
-      return;
+      if (!refreshQueuedRef.current) return;
+      refreshQueuedRef.current = false;
     }
 
     const run = (async () => {
@@ -128,6 +133,11 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
       await run;
     } finally {
       refreshInFlightRef.current = null;
+    }
+
+    if (refreshQueuedRef.current) {
+      refreshQueuedRef.current = false;
+      await refreshClockInGate();
     }
   }, [user?.id, supabaseSessionReady]);
 

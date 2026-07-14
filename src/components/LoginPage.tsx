@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import {
   AtSymbolIcon,
@@ -40,7 +40,21 @@ const LoginPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const year = new Date().getFullYear();
+
+  const resolvePostLoginPath = (): string => {
+    const fromState = (location.state as { from?: string } | null)?.from;
+    if (typeof fromState === 'string' && fromState.startsWith('/') && !fromState.startsWith('//')) {
+      return fromState;
+    }
+    const params = new URLSearchParams(location.search);
+    const redirect = params.get('redirect');
+    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      return redirect;
+    }
+    return '/';
+  };
 
   useEffect(() => {
     const html = document.documentElement;
@@ -75,7 +89,7 @@ const LoginPage: React.FC = () => {
         void preCheckExternalUser(data.user.id);
       }
 
-      navigate('/', { replace: true });
+      navigate(resolvePostLoginPath(), { replace: true });
     }
     setLoading(false);
   };
@@ -338,7 +352,7 @@ const LoginPage: React.FC = () => {
         onClose={() => setIsAdminModalOpen(false)}
         onWorkerSignedIn={() => {
           setIsAdminModalOpen(false);
-          navigate('/', { replace: true });
+          navigate(resolvePostLoginPath(), { replace: true });
         }}
       />
     </div>

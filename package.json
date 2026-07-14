@@ -51,6 +51,7 @@
     "plyr": "^3.8.4",
     "postcss": "^8.4.38",
     "puppeteer": "^24.15.0",
+    "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
     "react-big-calendar": "^1.19.4",
     "react-confetti": "^6.4.0",
@@ -71,6 +72,7 @@
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
     "tailwindcss": "^3.4.17",
+    "uqr": "^0.1.3",
     "xlsx": "^0.18.5",
     "xlsx-js-style": "^1.2.0"
   },

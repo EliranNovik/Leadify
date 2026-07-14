@@ -245,7 +245,6 @@ const ExternalUserLeadDetailsModal: React.FC<ExternalUserLeadDetailsModalProps> 
                   isSuperuser={isSuperuser}
                   setShowDeleteModal={() => {}}
                   duplicateContacts={[]}
-                  setIsDuplicateModalOpen={() => {}}
                   setIsDuplicateDropdownOpen={() => {}}
                   isDuplicateDropdownOpen={false}
                   setShowSubLeadDrawer={() => {}}

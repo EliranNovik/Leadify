@@ -38,11 +38,13 @@ import {
   LazyCaseManagerPageNew,
   LazyClients,
   LazyCloserSuperPipelinePage,
+  LazyClockInEntryPage,
   LazyCollectionDueReportPage,
   LazyCollectionFinancesReport,
   LazyCollectionPage,
   LazyContactPage,
   LazyContactBridgePage,
+  LazyDuplicateContactsPage,
   LazyContractPage,
   LazyCreateNewLead,
   LazyCTIPopupPage,
@@ -58,6 +60,7 @@ import {
   LazyEmployeePerformancePage,
   LazyEmployeeSalariesReport,
   LazyEmployeeUnavailabilitiesReport,
+  LazyEntryKioskPage,
   LazyExpertPage,
   LazyExternalFirmsReportPage,
   LazyExternalUserAccessLogsPage,
@@ -198,10 +201,19 @@ const AppContentInner: React.FC = () => {
   const [rmqInitialScrollToMessageId, setRmqInitialScrollToMessageId] = useState<number | undefined>();
   const [selectedClient, setSelectedClient] = useState<any>(null);
 
-  const isClientDetailPage = useMemo(
-    () => isClientsPage && !!selectedClient,
-    [isClientsPage, selectedClient],
-  );
+  const isClientDetailPage = useMemo(() => {
+    if (!isClientsPage || !selectedClient) return false;
+    // Client subpages (timeline / history / duplicates / …) render their own layout and need
+    // normal main padding so content isn't hidden under the fixed app Header.
+    if (
+      /^\/clients\/[^/]+\/(duplicates|timeline|history|master|contract)(\/|$)/.test(
+        location.pathname,
+      )
+    ) {
+      return false;
+    }
+    return true;
+  }, [isClientsPage, selectedClient, location.pathname]);
 
   // Clear selectedClient when navigating away from Clients page to prevent flash of stale client data
   useEffect(() => {
@@ -658,6 +670,8 @@ const AppContentInner: React.FC = () => {
       <Route path="/payment/:token" element={<RouteSuspense><LazyPaymentPage /></RouteSuspense>} />
       <Route path="/poa/:token" element={<RouteSuspense><LazyPoaPage /></RouteSuspense>} />
       <Route path="/book/:token" element={<RouteSuspense><LazyPublicBookingPage /></RouteSuspense>} />
+      <Route path="/entry-kiosk" element={<RouteSuspense><LazyEntryKioskPage /></RouteSuspense>} />
+      <Route path="/clock-in/entry" element={<RouteSuspense><LazyClockInEntryPage /></RouteSuspense>} />
       <Route path="/portal/:leadRef/case" element={<RouteSuspense><LazyPortalCasePage /></RouteSuspense>} />
       <Route path="/portal/:leadRef/about" element={<RouteSuspense><LazyPortalAboutPage /></RouteSuspense>} />
       <Route path="/portal/:leadRef" element={<RouteSuspense><LazyPortalLoginPage /></RouteSuspense>} />
@@ -983,6 +997,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients/:lead_number/timeline" element={<RouteSuspense><LazyTimelinePage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/history" element={<RouteSuspense><LazyHistoryPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/duplicates" element={<RouteSuspense><LazyDuplicateContactsPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/calendar" element={<RouteSuspense><LazyCalendarPage /></RouteSuspense>} />
                     <Route path="/calendar/internal-meeting-documents" element={<RouteSuspense><LazyInternalMeetingDocumentsPage /></RouteSuspense>} />

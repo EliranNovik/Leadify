@@ -110,7 +110,9 @@ export function looksLikePhoneSearchQuery(raw: string): boolean {
   if (d.startsWith('00972') && d.length >= 6) return true;
   if (d.startsWith('972') && d.length >= 5) return true;
   if (d.startsWith('0') && d.length >= 3) return true;
-  if (d.startsWith('5') && d.length >= 2) return true;
+  // Pure digits starting with 5 that are short (2–6) collide with lead_number searches;
+  // only treat longer local mobiles (7+) as phone-like without formatting.
+  if (d.startsWith('5') && d.length >= 7) return true;
   if (d.length >= 7) return true;
 
   return false;
