@@ -10,7 +10,7 @@ import {
 } from '../lib/clockInKioskApi';
 
 const OFFICE_LABEL = 'RAMAT GAN';
-const QR_RENDER_SIZE = 512;
+const QR_RENDER_SIZE = 640;
 const EVENT_POLL_MS = 1_400;
 const SUCCESS_FLASH_MS = 3_600;
 
@@ -264,11 +264,11 @@ const EntryKioskPage: React.FC = () => {
           height: 3.25rem;
         }
         .kiosk-clock {
-          font-size: 2rem;
+          font-size: 2.6rem;
           line-height: 1.1;
         }
         .kiosk-date {
-          font-size: 0.9rem;
+          font-size: 1.15rem;
         }
         .kiosk-meta {
           display: flex;
@@ -277,12 +277,18 @@ const EntryKioskPage: React.FC = () => {
           text-align: right;
         }
         .kiosk-location {
-          font-size: 0.8rem;
-          margin-top: 0.25rem;
+          position: absolute;
+          right: 0.15rem;
+          bottom: -1.85rem;
+          z-index: 2;
+          font-size: 0.85rem;
+          margin: 0;
           padding: 0;
           letter-spacing: 0.14em;
           background: none;
           border-radius: 0;
+          white-space: nowrap;
+          pointer-events: none;
         }
         .kiosk-title {
           margin-top: 0;
@@ -321,13 +327,13 @@ const EntryKioskPage: React.FC = () => {
         }
         .kiosk-qr-shell {
           position: relative;
-          width: min(100cqi, 100cqb, 520px);
+          width: min(100cqi, 100cqb, 620px);
           max-width: 100%;
           aspect-ratio: 1 / 1;
         }
         @supports not (width: 1cqi) {
           .kiosk-qr-shell {
-            width: min(78vw, 62vh, 520px);
+            width: min(88vw, 72vh, 620px);
           }
         }
         .kiosk-scan-ring {
@@ -374,22 +380,22 @@ const EntryKioskPage: React.FC = () => {
           display: block;
         }
 
-        /* Always hide camera hint on short tablet heights — frees QR room */
         .kiosk-camera-hint {
-          display: none;
+          display: inline-flex;
+          margin-bottom: 0.65rem;
         }
 
         /* 10" landscape sweet spot (iPad / Android tablets) */
         @media (orientation: landscape) and (max-height: 900px) and (min-width: 900px) {
           .kiosk-header { padding-block: 0.55rem; }
           .kiosk-logo { height: 3.35rem; }
-          .kiosk-clock { font-size: 2.15rem; }
-          .kiosk-date { font-size: 0.95rem; }
+          .kiosk-clock { font-size: 2.75rem; }
+          .kiosk-date { font-size: 1.2rem; }
           .kiosk-title { font-size: 2rem; margin-top: 0.35rem; }
           .kiosk-sub { font-size: 1rem; }
           .kiosk-countdown { width: 5.75rem; height: 5.75rem; }
           .kiosk-countdown-num { font-size: 1.6rem; }
-          .kiosk-qr-shell { width: min(100cqi, 100cqb, 540px); }
+          .kiosk-qr-shell { width: min(100cqi, 100cqb, 640px); }
           .kiosk-qr-frame { padding: 14px; border-radius: 24px; }
           .kiosk-main { padding-bottom: 2.25rem; }
         }
@@ -398,13 +404,13 @@ const EntryKioskPage: React.FC = () => {
         @media (orientation: landscape) and (max-height: 820px) {
           .kiosk-header { padding-block: 0.45rem; }
           .kiosk-logo { height: 3rem; }
-          .kiosk-clock { font-size: 1.9rem; }
-          .kiosk-date { font-size: 0.85rem; }
+          .kiosk-clock { font-size: 2.45rem; }
+          .kiosk-date { font-size: 1.1rem; }
           .kiosk-title { font-size: 1.7rem; margin-top: 0.25rem; }
           .kiosk-sub { font-size: 0.9rem; margin-top: 0.2rem; }
           .kiosk-countdown { width: 5rem; height: 5rem; }
           .kiosk-countdown-num { font-size: 1.35rem; }
-          .kiosk-qr-shell { width: min(100cqi, 100cqb, 500px); }
+          .kiosk-qr-shell { width: min(100cqi, 100cqb, 580px); }
           .kiosk-qr-frame { padding: 12px; }
           .kiosk-main { padding-bottom: 2rem; }
         }
@@ -412,35 +418,31 @@ const EntryKioskPage: React.FC = () => {
         /* Very short landscape — drop subtitle before shrinking QR further */
         @media (orientation: landscape) and (max-height: 740px) {
           .kiosk-sub { display: none; }
-          .kiosk-qr-shell { width: min(100cqi, 100cqb, 460px); }
+          .kiosk-qr-shell { width: min(100cqi, 100cqb, 540px); }
         }
 
         /* 10" portrait (tablet upright) — QR can use more width */
         @media (orientation: portrait) and (max-width: 900px) {
           .kiosk-logo { height: 3.5rem; }
-          .kiosk-clock { font-size: 2.25rem; }
-          .kiosk-date { font-size: 1rem; }
+          .kiosk-clock { font-size: 2.85rem; }
+          .kiosk-date { font-size: 1.25rem; }
           .kiosk-title { font-size: 2.1rem; }
           .kiosk-sub { font-size: 1.05rem; }
           .kiosk-countdown { width: 6rem; height: 6rem; }
           .kiosk-countdown-num { font-size: 1.65rem; }
-          .kiosk-qr-shell { width: min(100cqi, 100cqb, 560px); }
-          .kiosk-camera-hint { display: none; }
+          .kiosk-qr-shell { width: min(100cqi, 100cqb, 640px); }
         }
 
         /* Large desktop preview — don't let chrome balloon; keep QR capped */
         @media (min-height: 960px) and (min-width: 1200px) {
           .kiosk-logo { height: 3.75rem; }
-          .kiosk-clock { font-size: 2.4rem; }
-          .kiosk-date { font-size: 1.05rem; }
+          .kiosk-clock { font-size: 3rem; }
+          .kiosk-date { font-size: 1.3rem; }
           .kiosk-title { font-size: 2.5rem; }
           .kiosk-sub { font-size: 1.1rem; }
           .kiosk-countdown { width: 6.5rem; height: 6.5rem; }
           .kiosk-countdown-num { font-size: 1.75rem; }
-          .kiosk-qr-shell { width: min(100cqi, 100cqb, 520px); }
-          .kiosk-camera-hint {
-            display: inline-flex;
-          }
+          .kiosk-qr-shell { width: min(100cqi, 100cqb, 620px); }
         }
       `}</style>
 
@@ -501,52 +503,44 @@ const EntryKioskPage: React.FC = () => {
           <p className="kiosk-date mt-0.5 text-[var(--kiosk-muted)]">
             {formatDate(now)}
           </p>
-          <p className="kiosk-location font-semibold uppercase text-[var(--kiosk-gold)]">
-            {OFFICE_LABEL}
-          </p>
         </div>
       </header>
 
       <main className="kiosk-main relative z-10 flex min-h-0 flex-1 flex-col items-stretch px-3 sm:px-8">
-        <div className="kiosk-welcome-block mx-auto flex w-full max-w-xl shrink-0 flex-col items-center px-1 text-center">
-          <h1 className="kiosk-title font-bold tracking-tight text-white">
-            Welcome to the office
-          </h1>
-          <p className="kiosk-sub text-[var(--kiosk-muted)]">
-            Scan with your phone
-          </p>
-        </div>
-
         <div className="kiosk-qr-slot">
-          <div className="kiosk-qr-shell">
-            <div className="kiosk-scan-ring" aria-hidden />
-            <div className="kiosk-qr-frame">
-              {loading && !qrUrl ? (
-                <div className="kiosk-qr-placeholder flex items-center justify-center">
-                  <span className="loading loading-spinner loading-lg text-slate-400" />
-                </div>
-              ) : qrUrl ? (
-                <MorphingQrCode
-                  value={qrUrl}
-                  size={QR_RENDER_SIZE}
-                  fgColor="#0f172a"
-                  bgColor="#ffffff"
-                />
-              ) : (
-                <div className="kiosk-qr-placeholder flex items-center justify-center p-4 text-center text-sm text-slate-500">
-                  {error || 'Waiting for QR…'}
-                </div>
-              )}
+          <div className="flex flex-col items-center">
+            <div className="kiosk-camera-hint items-center gap-2 text-xs text-[var(--kiosk-muted)] sm:text-sm">
+              <CameraIcon className="h-4 w-4 text-[var(--kiosk-gold)] sm:h-5 sm:w-5" aria-hidden />
+              <span>Point your camera at the QR code</span>
+            </div>
+            <div className="kiosk-qr-shell">
+              <div className="kiosk-scan-ring" aria-hidden />
+              <div className="kiosk-qr-frame">
+                {loading && !qrUrl ? (
+                  <div className="kiosk-qr-placeholder flex items-center justify-center">
+                    <span className="loading loading-spinner loading-lg text-slate-400" />
+                  </div>
+                ) : qrUrl ? (
+                  <MorphingQrCode
+                    value={qrUrl}
+                    size={QR_RENDER_SIZE}
+                    fgColor="#0f172a"
+                    bgColor="#ffffff"
+                  />
+                ) : (
+                  <div className="kiosk-qr-placeholder flex items-center justify-center p-4 text-center text-sm text-slate-500">
+                    {error || 'Waiting for QR…'}
+                  </div>
+                )}
+              </div>
+              <p className="kiosk-location font-semibold uppercase text-[var(--kiosk-gold)]">
+                {OFFICE_LABEL}
+              </p>
             </div>
           </div>
         </div>
 
         <div className="kiosk-footer mx-auto flex w-full shrink-0 flex-col items-center">
-          <div className="kiosk-camera-hint inline-flex items-center gap-2 text-xs text-[var(--kiosk-muted)] sm:text-sm">
-            <CameraIcon className="h-4 w-4 text-[var(--kiosk-gold)] sm:h-5 sm:w-5" aria-hidden />
-            <span>Point your camera at the QR code</span>
-          </div>
-
           <div
             className="kiosk-countdown relative flex items-center justify-center"
             role="timer"
@@ -599,6 +593,10 @@ const EntryKioskPage: React.FC = () => {
           <p className="kiosk-secure text-[9px] text-[var(--kiosk-muted)] sm:text-[10px]">Secure connection</p>
         </div>
       </div>
+
+      <p className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 text-center text-[10px] tracking-wide text-[var(--kiosk-muted)] sm:bottom-5 sm:text-xs">
+        © {new Date().getFullYear()} · RMQ 2.0
+      </p>
     </div>
   );
 };
