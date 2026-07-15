@@ -7,6 +7,7 @@ import {
   salaryAvatarGradientStyle,
   type ActiveStaffEmployee,
 } from '../../lib/employeeSalaries';
+import type { AdminCrudEmbedProps } from './FirmsManager';
 
 const UserTableEmail: React.FC<{
   email: string;
@@ -47,7 +48,7 @@ const UserTableEmail: React.FC<{
   );
 };
 
-const UsersManager: React.FC = () => {
+const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
   const [employeeById, setEmployeeById] = useState<Record<string, ActiveStaffEmployee>>({});
 
   useEffect(() => {
@@ -288,6 +289,13 @@ const UsersManager: React.FC = () => {
       pageSize={50}
       sortColumn="created_at"
       auditUserIdSource="crm"
+      listHidden={Boolean(embed)}
+      hideTitle={Boolean(embed)}
+      hideAddButton={Boolean(embed)}
+      externalAddOpen={embed?.addDrawerOpen}
+      onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
+      onRecordCreated={embed?.onRecordCreated}
+      onRecordSaved={embed?.onRecordSaved}
     />
   );
 };

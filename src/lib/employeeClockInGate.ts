@@ -12,6 +12,14 @@ export type ClockInGateProfile = {
   employeeId: number | null;
 };
 
+export type FetchClockInGateProfileResult = {
+  profile: ClockInGateProfile;
+  /** True when a `users` row was returned (not an empty RLS/auth miss). */
+  userRowFound: boolean;
+  /** True when the Supabase query itself failed. */
+  queryFailed: boolean;
+};
+
 function parseExternFlag(extern: unknown): boolean {
   return (
     extern === true
@@ -22,25 +30,113 @@ function parseExternFlag(extern: unknown): boolean {
   );
 }
 
-export async function fetchClockInGateProfile(authUserId: string): Promise<ClockInGateProfile> {
+function toEmployeeId(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function profileFromRow(row: { employee_id?: unknown; extern?: unknown } | null): ClockInGateProfile {
+  return {
+    isExternalUser: parseExternFlag(row?.extern),
+    employeeId: toEmployeeId(row?.employee_id),
+  };
+}
+
+async function queryClockInGateProfileRow(
+  authUserId: string,
+  email?: string | null,
+): Promise<{ row: { employee_id?: unknown; extern?: unknown } | null; error: unknown | null }> {
   const { data, error } = await supabase
     .from('users')
     .select('employee_id, extern')
     .eq('auth_id', authUserId)
     .maybeSingle();
 
-  if (error) {
-    console.error('Clock-in gate: failed to load user profile', error);
-    return { isExternalUser: false, employeeId: null };
+  if (!error && data) {
+    return { row: data, error: null };
   }
 
-  const employeeId = data?.employee_id != null && data.employee_id !== ''
-    ? Number(data.employee_id)
-    : null;
+  // Same fallback as AuthContext — some accounts resolve by email when auth_id lags.
+  if (email) {
+    const byEmail = await supabase
+      .from('users')
+      .select('employee_id, extern')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (!byEmail.error && byEmail.data) {
+      return { row: byEmail.data, error: null };
+    }
+
+    if (error) {
+      return { row: null, error };
+    }
+    if (byEmail.error) {
+      return { row: null, error: byEmail.error };
+    }
+  }
+
+  if (error) {
+    return { row: null, error };
+  }
+
+  return { row: null, error: null };
+}
+
+/**
+ * Loads clock-in gate profile for the signed-in auth user.
+ *
+ * Important: an empty result ({ data: null, error: null }) can mean either
+ * "no users row" OR a transient JWT/RLS miss. Callers must not treat that as
+ * a confirmed unlinked account without retry / prior-state guards.
+ */
+export async function fetchClockInGateProfile(
+  authUserId: string,
+  options?: { email?: string | null; retryOnEmpty?: boolean },
+): Promise<FetchClockInGateProfileResult> {
+  const email = options?.email ?? null;
+  const retryOnEmpty = options?.retryOnEmpty !== false;
+
+  let { row, error } = await queryClockInGateProfileRow(authUserId, email);
+
+  if (error) {
+    console.error('Clock-in gate: failed to load user profile', error);
+    return {
+      profile: { isExternalUser: false, employeeId: null },
+      userRowFound: false,
+      queryFailed: true,
+    };
+  }
+
+  if (!row && retryOnEmpty) {
+    // Empty can be a race: session marked ready before the JWT is attached to PostgREST.
+    await new Promise((r) => setTimeout(r, 200));
+    await supabase.auth.getSession().catch(() => null);
+    const retry = await queryClockInGateProfileRow(authUserId, email);
+    if (retry.error) {
+      console.error('Clock-in gate: failed to load user profile (retry)', retry.error);
+      return {
+        profile: { isExternalUser: false, employeeId: null },
+        userRowFound: false,
+        queryFailed: true,
+      };
+    }
+    row = retry.row;
+  }
+
+  if (!row) {
+    return {
+      profile: { isExternalUser: false, employeeId: null },
+      userRowFound: false,
+      queryFailed: false,
+    };
+  }
 
   return {
-    isExternalUser: parseExternFlag(data?.extern),
-    employeeId: Number.isFinite(employeeId) ? employeeId : null,
+    profile: profileFromRow(row),
+    userRowFound: true,
+    queryFailed: false,
   };
 }
 

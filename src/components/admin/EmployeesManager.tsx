@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
 import { supabase } from '../../lib/supabase';
 import { getSalaryEmployeeInitials, salaryAvatarGradientStyle } from '../../lib/employeeSalaries';
+import type { AdminCrudEmbedProps } from './FirmsManager';
 
 const EmployeeTableDisplayName: React.FC<{ value: unknown; record: Record<string, unknown> }> = ({
   value,
@@ -75,7 +76,7 @@ const getRoleDisplayName = (roleCode: string): string => {
   return roleMap[roleCode] || roleCode || 'No role';
 };
 
-const EmployeesManager: React.FC = () => {
+const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
   const [departments, setDepartments] = useState<Array<{ value: string; label: string }>>([]);
   const [users, setUsers] = useState<Array<{ value: string; label: string }>>([]);
   const [mainCategories, setMainCategories] = useState<Array<{ value: string; label: string }>>([]);
@@ -386,8 +387,15 @@ const EmployeesManager: React.FC = () => {
       description="Manage company employees and their roles"
       pageSize={50}
       sortColumn="id"
+      listHidden={Boolean(embed)}
+      hideTitle={Boolean(embed)}
+      hideAddButton={Boolean(embed)}
+      externalAddOpen={embed?.addDrawerOpen}
+      onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
+      onRecordCreated={embed?.onRecordCreated}
+      onRecordSaved={embed?.onRecordSaved}
     />
   );
 };
 
-export default EmployeesManager; 
+export default EmployeesManager;

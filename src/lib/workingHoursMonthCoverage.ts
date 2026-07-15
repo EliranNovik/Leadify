@@ -79,13 +79,13 @@ export function buildWorkingHoursMonthCoverage(
     const holidayNames = [...(holidayMap.get(day) ?? [])];
     let status: WorkingHoursDayCoverageStatus;
 
-    if (day > asOfDate) {
+    if (!isIsraeliWorkdayIso(day)) {
+      // Fri/Sat always shown as weekend (never count as missing), even if future.
+      status = 'weekend';
+    } else if (day > asOfDate) {
       status = 'future';
     } else if (covered.has(day)) {
       status = 'filled';
-    } else if (!isIsraeliWorkdayIso(day)) {
-      // Fri/Sat are never required — even on holidays.
-      status = 'weekend';
     } else if (holidayNames.length > 0) {
       // Sun–Thu holidays may still require clock-in / unavailability.
       status = 'holiday';

@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import { coerceEmployeeWorksFromHome } from './clockInLocations';
+import { normalizeEmployeeMinHours } from './employeeLeadReporting';
 import type { UnavailabilityType } from './employeeUnavailabilities';
 
 export const CONTRIBUTION_DEPARTMENT_ROLES = ['Sales', 'Handlers', 'Partners', 'Marketing', 'Finance'] as const;
@@ -52,13 +54,18 @@ export interface OrganizationEmployee {
   email: string;
   phone: string | null;
   mobile: string | null;
+  employee_mobile: string | null;
   phone_ext: string | null;
   linkedin_url: string | null;
+  chat_background_image_url: string | null;
   diplom: string | null;
   school: string | null;
   bonuses_role: string | null;
   department: string | null;
   department_id: number | null;
+  min_hours: number;
+  works_from_home: boolean;
+  is_superuser: boolean;
   fieldRoles: ContributionDepartmentRole[];
   chatUserId: string | null;
   isClockedIn: boolean;
@@ -249,6 +256,7 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
           employee_id,
           is_active,
           is_staff,
+          is_superuser,
           tenants_employee!employee_id(
             id,
             display_name,
@@ -257,12 +265,16 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
             photo,
             phone,
             mobile,
+            employee_mobile,
             phone_ext,
             linkedin_url,
+            chat_background_image_url,
             diplom,
             school,
             bonuses_role,
             department_id,
+            min_hours,
+            works_from_home,
             tenant_departement!department_id(
               id,
               name
@@ -319,6 +331,11 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
         ? employee.school[0]
         : (employee.school || null);
 
+      const isSuperuser =
+        user.is_superuser === true ||
+        user.is_superuser === 'true' ||
+        user.is_superuser === 1;
+
       uniqueEmployeesMap.set(employeeId, {
         id: employeeId,
         display_name: displayName,
@@ -327,13 +344,18 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
         email: user.email,
         phone: employee.phone || null,
         mobile: employee.mobile || null,
+        employee_mobile: employee.employee_mobile || null,
         phone_ext: employee.phone_ext || null,
         linkedin_url: employee.linkedin_url || null,
+        chat_background_image_url: employee.chat_background_image_url || null,
         diplom: employee.diplom || null,
         school: schoolValue,
         bonuses_role: employee.bonuses_role || null,
         department: dept?.name || null,
         department_id: employee.department_id || dept?.id || null,
+        min_hours: normalizeEmployeeMinHours(employee.min_hours),
+        works_from_home: coerceEmployeeWorksFromHome(employee.works_from_home),
+        is_superuser: isSuperuser,
         fieldRoles,
         chatUserId: user.id ? String(user.id) : null,
         isClockedIn: false,
@@ -358,7 +380,7 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
         .eq('is_active', true),
       supabase
         .from('employee_unavailability_reasons')
-        .select('employee_id, unavailability_type, start_date, end_date')
+        .select('employee_id, unavailability_type, start_date, end_date, approved, declined')
         .in('employee_id', employeeIds)
         .lte('start_date', today),
     ]);
@@ -375,6 +397,9 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
       const id = Number(row.employee_id);
       const type = row.unavailability_type as UnavailabilityType;
       if (Number.isNaN(id) || !type) continue;
+      // Only approved leave counts toward org live status (pending/declined ignored)
+      if ((row as { declined?: boolean }).declined === true) continue;
+      if ((row as { approved?: boolean }).approved !== true) continue;
       if (!unavailabilityOverlapsDay(row.start_date, row.end_date, today)) continue;
 
       unavailabilityByEmployee.set(
@@ -452,6 +477,7 @@ export function employeeMatchesSearch(employee: OrganizationEmployee, searchTerm
     roleLabel.includes(query) ||
     fieldRoleLabels.includes(query) ||
     (employee.phone || '').includes(searchTerm.trim()) ||
-    (employee.mobile || '').includes(searchTerm.trim())
+    (employee.mobile || '').includes(searchTerm.trim()) ||
+    (employee.employee_mobile || '').includes(searchTerm.trim())
   );
 }

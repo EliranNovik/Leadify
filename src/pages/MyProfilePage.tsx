@@ -22,6 +22,7 @@ import { FaLinkedin } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
 import WorkingHoursTab from '../components/profile/WorkingHoursTab';
 import MyDocumentsTab from '../components/profile/MyDocumentsTab';
+import MyContribution from '../components/MyContribution';
 
 // Default images if none provided
 const DEFAULT_BANNER = 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80';
@@ -433,7 +434,7 @@ const MyProfilePage: React.FC = () => {
             {/* Main Content Area */}
             <div
               className={`flex-1 w-full py-6 md:py-8 mt-12 md:mt-16 px-4 md:px-6 ${
-                activeTab === 'Working Hours' || activeTab === 'Documents' ? '' : 'max-w-5xl mx-auto'
+                activeTab === 'Working Hours' || activeTab === 'Documents' || activeTab === 'Contribution' ? '' : 'max-w-5xl mx-auto'
               }`}
             >
                 {activeTab === 'About' && (
@@ -579,7 +580,13 @@ const MyProfilePage: React.FC = () => {
                       employeeName={profile.official_name || profile.display_name}
                     />
                 )}
-                {activeTab !== 'About' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && (
+                {activeTab === 'Contribution' && profile?.id && (
+                    <MyContribution
+                      employeeId={profile.id}
+                      employeeName={profile.official_name || profile.display_name}
+                    />
+                )}
+                {activeTab !== 'About' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && activeTab !== 'Contribution' && (
                     <div className="rounded-[18px] bg-white py-20 text-center text-gray-400 shadow-sm">
                         <HashtagIcon className="w-16 h-16 mx-auto mb-4 opacity-20" />
                         <p>This tab is a placeholder for visual demonstration.</p>

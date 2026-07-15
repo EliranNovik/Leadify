@@ -345,9 +345,72 @@ html,
   height: 0;
 }
 
-/* Client detail: ClientHeader provides top inset (see CLIENT_HEADER_APP_INSET). */
+/* Client detail: ClientHeader provides top inset (mobile APP_INSET / desktop TOP_BAND). */
 .app-main-scroll.clients-detail-scroll {
   padding-top: 0 !important;
+}
+
+/*
+ * Full-bleed client top strip: continuous white under the fixed navbar, edge-to-edge
+ * (including under the floating sidebar). Content is cleared via inner padding / spacer.
+ */
+.client-header-top-band {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  margin: 0;
+  background: #fff;
+  /* Sit flush under the fixed navbar — shared white plate, no grey gap */
+  margin-top: 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: none;
+}
+html.dark .client-header-top-band {
+  background: hsl(var(--b1));
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.client-header-top-band__navbar-spacer {
+  /* Header height (3rem) + breathing room so the top box sits clearly below the navbar */
+  height: 4.25rem;
+  width: 100%;
+  pointer-events: none;
+  background: transparent;
+}
+.client-header-top-band__body {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.75rem 1.25rem 0.75rem;
+}
+.client-header-top-band__meta {
+  width: 100%;
+  box-sizing: border-box;
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
+  background: #f8fafc;
+  padding: 0.55rem 1.25rem 0.7rem;
+}
+html.dark .client-header-top-band__meta {
+  border-top-color: rgba(255, 255, 255, 0.08);
+  background: hsl(var(--b2) / 0.55);
+}
+@media (min-width: 768px) {
+  .client-header-top-band__body,
+  .client-header-top-band__meta {
+    /* left-4 + w-20 + gap — keep category/action rows clear of the floating sidebar */
+    padding-left: 10rem;
+    padding-right: 1.5rem;
+  }
+}
+@media (min-width: 1280px) {
+  .client-header-top-band__body,
+  .client-header-top-band__meta {
+    padding-right: 2.5rem;
+  }
+}
+
+/* On client detail, keep navbar white continuous with the top band (no bottom rule). */
+body:has(main.clients-detail-scroll) .navbar {
+  border-bottom-width: 0 !important;
+  box-shadow: none !important;
 }
 
 /* Subtle shadow for active tab on mobile */

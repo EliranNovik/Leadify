@@ -60,6 +60,7 @@ import {
   LazyEmployeePerformancePage,
   LazyEmployeeSalariesReport,
   LazyEmployeeUnavailabilitiesReport,
+  LazyHrManagementPage,
   LazyEntryKioskPage,
   LazyExpertPage,
   LazyExternalFirmsReportPage,
@@ -963,7 +964,7 @@ const AppContentInner: React.FC = () => {
                 />
               </div>
               <div
-                className={`flex min-h-0 flex-1 flex-col overflow-hidden ${useGreyAppBackground ? 'bg-transparent' : 'bg-base-100'} ${useStaffSidebarInset ? 'md:pl-24' : ''}`}
+                className={`flex min-h-0 flex-1 flex-col overflow-hidden ${useGreyAppBackground ? 'bg-transparent' : 'bg-base-100'} ${useStaffSidebarInset && !isClientDetailPage ? 'md:pl-24' : ''}`}
               >
                 <Header
                   onMenuClick={handleMenuClick}
@@ -976,6 +977,7 @@ const AppContentInner: React.FC = () => {
                   onOpenWhatsApp={handleOpenWhatsApp}
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
+                  clearFloatingSidebar={isClientDetailPage}
                 />
                 <main
                   className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 ${
@@ -1038,6 +1040,8 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/edit-contracts" element={<RouteSuspense><LazyEditContractsPage /></RouteSuspense>} />
                     <Route path="/reports/reassign-leads" element={<RouteSuspense><LazyReassignLeadsPage /></RouteSuspense>} />
                     <Route path="/reports/employee-unavailabilities" element={<RouteSuspense><LazyEmployeeUnavailabilitiesReport /></RouteSuspense>} />
+                    <Route path="/reports/hr-management" element={<RouteSuspense><LazyHrManagementPage /></RouteSuspense>} />
+                    <Route path="/reports/hr-management/employees/:employeeId" element={<RouteSuspense><LazyHrManagementPage /></RouteSuspense>} />
                     <Route path="/reports/employee-salaries" element={<RouteSuspense><LazyEmployeeSalariesReport /></RouteSuspense>} />
                     <Route path="/reports/employee-info" element={<RouteSuspense><LazyEmployeeInfoReport /></RouteSuspense>} />
                     <Route path="/reports/employee-lead-allocations" element={<RouteSuspense><LazyEmployeeLeadAllocationsReportPage /></RouteSuspense>} />

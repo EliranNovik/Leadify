@@ -58,6 +58,8 @@ function getLast30DaysRange(): { from: string; to: string } {
 export interface MyContributionProps {
   employeeId: number | null;
   employeeName: string;
+  /** When true (e.g. HR employee file), skip outer card — sit on parent white panel. */
+  embedded?: boolean;
 }
 
 interface EmployeeRowData {
@@ -153,7 +155,11 @@ const GiveawayPopover: React.FC<{
   );
 };
 
-const MyContribution: React.FC<MyContributionProps> = ({ employeeId, employeeName }) => {
+const MyContribution: React.FC<MyContributionProps> = ({
+  employeeId,
+  employeeName,
+  embedded = false,
+}) => {
   const { from: defaultFrom, to: defaultTo } = getLast30DaysRange();
   const [fromDate, setFromDate] = useState(defaultFrom);
   const [toDate, setToDate] = useState(defaultTo);
@@ -907,9 +913,21 @@ const MyContribution: React.FC<MyContributionProps> = ({ employeeId, employeeNam
   }
 
   return (
-    <div className="rounded-2xl shadow-xl border border-base-200 bg-base-100 overflow-visible md:shadow-lg md:border-gray-200 md:bg-white">
+    <div
+      className={
+        embedded
+          ? 'overflow-visible'
+          : 'rounded-2xl shadow-xl border border-base-200 bg-base-100 overflow-visible md:shadow-lg md:border-gray-200 md:bg-white'
+      }
+    >
       {/* Header: same on all viewports */}
-      <div className="p-4 md:p-4 border-b border-base-200 flex flex-wrap items-center justify-between gap-3 bg-gradient-to-r from-base-200/50 to-transparent md:bg-white md:border-gray-200">
+      <div
+        className={
+          embedded
+            ? 'pb-4 mb-1 flex flex-wrap items-center justify-between gap-3 border-b border-gray-100'
+            : 'p-4 md:p-4 border-b border-base-200 flex flex-wrap items-center justify-between gap-3 bg-gradient-to-r from-base-200/50 to-transparent md:bg-white md:border-gray-200'
+        }
+      >
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center flex-shrink-0 shadow-md">
             <CurrencyDollarIcon className="w-5 h-5 text-primary-content" />
@@ -945,7 +963,7 @@ const MyContribution: React.FC<MyContributionProps> = ({ employeeId, employeeNam
       </div>
 
       {/* Mobile: stylish box/card view */}
-      <div className="md:hidden p-4 space-y-4">
+      <div className={embedded ? 'md:hidden pt-4 space-y-4' : 'md:hidden p-4 space-y-4'}>
         {loading && (
           <div className="flex flex-col items-center justify-center py-12 text-base-content/60 gap-3">
             <span className="loading loading-spinner loading-lg text-primary" />

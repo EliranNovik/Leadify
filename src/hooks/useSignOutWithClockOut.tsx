@@ -54,8 +54,10 @@ export function useSignOutWithClockOut(options: UseSignOutWithClockOutOptions = 
     }
 
     try {
-      const profile = await fetchClockInGateProfile(user.id);
-      if (profile.isExternalUser || profile.employeeId == null) {
+      const { profile, userRowFound, queryFailed } = await fetchClockInGateProfile(user.id, {
+        email: user.email,
+      });
+      if (queryFailed || !userRowFound || profile.isExternalUser || profile.employeeId == null) {
         await performSignOut();
         return;
       }
@@ -77,7 +79,7 @@ export function useSignOutWithClockOut(options: UseSignOutWithClockOutOptions = 
       console.error('Sign-out clock-in check failed:', error);
       await performSignOut();
     }
-  }, [user?.id, performSignOut]);
+  }, [user?.id, user?.email, performSignOut]);
 
   const handleClockOutAndSignOut = useCallback(async () => {
     if (!pending) return;

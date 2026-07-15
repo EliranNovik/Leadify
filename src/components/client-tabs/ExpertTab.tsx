@@ -2584,7 +2584,7 @@ ${combinedText}`;
 
 
   return (
-    <div className="p-3 sm:p-4 md:p-6">
+    <div className="p-1 sm:p-2 md:p-3">
       <div className="flex items-start justify-between gap-4 mb-6">
         <ClientTabPageHeader
           className="mb-0 flex-1"

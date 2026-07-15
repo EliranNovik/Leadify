@@ -14891,11 +14891,11 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Tab Content */}
           <div
             ref={tabContentRef}
-            className="w-full min-h-[50vh] bg-gray-100 dark:bg-base-300"
+            className="w-full min-h-[50vh] bg-gray-100 dark:bg-base-300 md:pl-28"
           >
             <div
               key={`${activeTab}-${interactionCount}`}
-              className="pt-4 sm:pt-5 md:pt-6 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6"
+              className="pl-2 pr-2 sm:pl-3 sm:pr-3 md:pr-3 lg:pr-4 pt-4 sm:pt-5 md:pt-5 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6"
             >
               {ActiveComponent && selectedClient && (
                 <div className="md:pb-0 pb-32">

@@ -48,7 +48,7 @@ import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import TeamStatusModal from './TeamStatusModal';
 import ManualClockInApprovalModal from './ManualClockInApprovalModal';
-import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
+import { fetchCombinedPendingHrApprovalCount } from '../lib/hrApprovals';
 import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
@@ -79,6 +79,8 @@ interface HeaderProps {
   onOpenEmailThread?: () => void;
   onOpenWhatsApp?: () => void;
   onOpenMessaging?: () => void;
+  /** When the shell has no md:pl-24 (client detail), pad header chrome clear of the floating sidebar. */
+  clearFloatingSidebar?: boolean;
 }
 
 interface Notification {
@@ -164,7 +166,7 @@ interface RMQMessage {
 
 // Mock notifications removed - now using only RMQ messages
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging, clearFloatingSidebar = false }) => {
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
   // Dark mode: Tailwind `dark` class is set for both dark and Dark 2 themes
@@ -551,7 +553,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       return;
     }
     try {
-      const count = await fetchPendingManualClockInCount();
+      const count = await fetchCombinedPendingHrApprovalCount();
       setPendingClockInApprovalCount(count);
     } catch (err) {
       console.error('Header pending clock-in approvals:', err);
@@ -742,9 +744,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       });
       items.push({
         id: 'clock_in_approval',
-        label: 'Clock-in approval',
-        description: 'Review manual clock-in and clock-out requests',
-        keywords: ['clock', 'clock-in', 'clock-out', 'approval', 'manual', 'working hours', 'timesheet'],
+        label: 'HR Approvals',
+        description: 'Review manual clock-in, WFH, and leave requests',
+        keywords: [
+          'clock',
+          'clock-in',
+          'clock-out',
+          'approval',
+          'manual',
+          'working hours',
+          'timesheet',
+          'leave',
+          'sick',
+          'vacation',
+          'hr',
+        ],
         icon: ClipboardDocumentCheckIcon,
         badge: pendingClockInApprovalCount > 0 ? pendingClockInApprovalCount : null,
         onSelect: () => {
@@ -3663,7 +3677,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className="navbar navbar-safe-x flex-nowrap md:px-0 h-11 md:h-12 md:max-h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0"
+        className={`navbar navbar-safe-x flex-nowrap md:px-0 h-11 md:h-12 md:max-h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0 ${clearFloatingSidebar ? 'md:pl-2 md:pr-6 lg:pr-8 border-b-0 shadow-none' : ''}`}
       >
         {/* Left section with menu and logo */}
         <div className={`shrink-0 flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
@@ -3921,7 +3935,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           {renderAdminBypassControls('md:hidden ml-1 shrink-0')}
 
           {/* Desktop: hamburger flush left, RMQ logo next to it */}
-          <div className="hidden md:flex items-center h-10 pl-0 md:pl-1">
+          <div className="hidden md:flex items-center h-10 pl-0 md:pl-0">
             <button
               ref={buttonRef}
               type="button"
@@ -3937,11 +3951,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             >
               <Bars3Icon className="w-6 h-6" />
             </button>
-            <Link to="/" className="flex items-center ml-2" onClick={() => setShowQuickActionsDropdown(false)}>
+            <Link to="/" className="flex items-center ml-1.5" onClick={() => setShowQuickActionsDropdown(false)}>
               <span className="text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
             {/* Desktop only: profile image + name + dropdown next to RMQ */}
-            <div className="hidden md:block relative ml-4 flex items-center flex-shrink-0" ref={profileDropdownRefDesktop}>
+            <div className="hidden md:block relative ml-3 flex items-center flex-shrink-0" ref={profileDropdownRefDesktop}>
               <button
                 type="button"
                 className="btn btn-ghost gap-2 min-h-0 h-9 w-auto min-w-[2.25rem] pl-2 pr-2 rounded-full flex items-center justify-start flex-shrink-0"

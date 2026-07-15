@@ -22,7 +22,10 @@ export function useManualClockInApprovalLiveRefresh({
   useRealtimeRefresh({
     channelName: `manual-clock-in-approval-live-${channelSuffix}`,
     enabled,
-    tables: [{ table: 'employee_clock_in', event: '*' }],
+    tables: [
+      { table: 'employee_clock_in', event: '*' },
+      { table: 'employee_unavailability_reasons', event: '*' },
+    ],
     onChange,
     debounceMs,
     refreshOnFocus: true,

@@ -62,7 +62,7 @@ const PaymentSummaryCard: React.FC<Props> = ({
           <p className="text-xs text-white/80 leading-relaxed max-w-sm">{summary.topic}</p>
         )}
 
-        <div className="w-full max-w-xs space-y-2.5 text-sm text-white/75">
+        <div className="w-full max-w-xs rounded-2xl border border-white/20 bg-white/10 px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] backdrop-blur-[6px] space-y-2.5 text-sm text-white/80">
           <div className="flex justify-between">
             <span>Subtotal</span>
             <span className="text-white">{formatMoneyAmount(summary.subtotal, summary.currencySymbol)}</span>

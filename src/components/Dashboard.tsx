@@ -26,6 +26,11 @@ import {
   resolveStage60SignTimestamp,
   toSignCalendarDateKey,
 } from '../lib/stage60SignDate';
+import {
+  applyDashboardCostTargetsToDepartments,
+  departmentScoreboardExpected,
+  fetchDashboardDepartmentCostTargets,
+} from '../lib/dashboardDepartmentCostTargets';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
 import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
@@ -61,7 +66,22 @@ function getDashboardTeamAvailabilityCacheTtlMs(): number {
 /** Virtual column for leads/payments outside the main scoreboard departments. */
 const SCOREBOARD_OTHER_COLUMN = 'Other';
 
+/** Scoreboard period after Last 30d (toggled via Filter by → Last 3m). Displayed as monthly average. */
+const SCOREBOARD_LAST_3M = 'Last 3m';
+/** Months in the Last 3m averaging window. */
+const SCOREBOARD_LAST_3M_MONTHS = 3;
+
 const createEmptyScoreboardRow = () => ({ count: 0, amount: 0, expected: 0 });
+
+/** Monthly average for a 3-month rolling window total. */
+function scoreboardThreeMonthAverage(totalAmount: number): number {
+  return (totalAmount || 0) / SCOREBOARD_LAST_3M_MONTHS;
+}
+
+/** Calendar start date for rolling “Last 3 months” (ISO YYYY-MM-DD). */
+function getLast3MonthsStartDate(todayStr: string): string {
+  return DateTime.fromISO(todayStr, { zone: 'utc' }).minus({ months: 3 }).toISODate() || todayStr;
+}
 
 /** Today / Week / Last 30d row index (index 0 = General). */
 function getScoreboardPeriodDeptIndex(departmentId: number | null | undefined, departmentIds: number[]): number {
@@ -85,7 +105,7 @@ function buildScoreboardPeriodRows(departmentTargets: any[]) {
     ...departmentTargets.map((dept) => ({
       count: 0,
       amount: 0,
-      expected: parseFloat(dept.min_income || '0'),
+      expected: departmentScoreboardExpected(dept),
     })),
     { count: 0, amount: 0, expected: 0 },
     createEmptyScoreboardRow(),
@@ -97,7 +117,7 @@ function buildScoreboardMonthRows(departmentTargets: any[]) {
     ...departmentTargets.map((dept) => ({
       count: 0,
       amount: 0,
-      expected: parseFloat(dept.min_income || '0'),
+      expected: departmentScoreboardExpected(dept),
     })),
     { count: 0, amount: 0, expected: 0 },
     createEmptyScoreboardRow(),
@@ -513,6 +533,8 @@ const Dashboard: React.FC = () => {
             vacation_reason,
             general_reason,
             created_at,
+            approved,
+            declined,
             tenants_employee!employee_id(
               id,
               display_name,
@@ -569,8 +591,10 @@ const Dashboard: React.FC = () => {
         return `${employeeId}_${date}_${time}`;
       };
 
-      // Process data from employee_unavailability_reasons table
+      // Process data from employee_unavailability_reasons table (approved leave only)
       unavailabilityReasons.forEach((reason: any) => {
+        if (reason.declined === true) return;
+        if (reason.approved !== true) return;
         const employee = reason.tenants_employee;
         if (!employee) return;
 
@@ -3053,6 +3077,20 @@ const Dashboard: React.FC = () => {
     departmentTargets.sort((a: any, b: any) => a.id - b.id);
     const departmentIds = departmentTargets.map((d: any) => d.id);
 
+    try {
+      const costByDept = await fetchDashboardDepartmentCostTargets(
+        departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') })),
+        { salesDeptIdsToExclude },
+      );
+      departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costByDept);
+    } catch (costErr) {
+      console.error('[Dashboard] department cost targets failed:', costErr);
+      departmentTargets = departmentTargets.map((dept: any) => ({
+        ...dept,
+        cost_target: parseFloat(dept.min_income || '0') || 0,
+      }));
+    }
+
     const categoryNameToDataMap = new Map<string, any>();
     (allCategoriesData || []).forEach((category: any) => {
       if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
@@ -3060,7 +3098,7 @@ const Dashboard: React.FC = () => {
 
     const targetMap: { [key: number]: number } = {};
     departmentTargets.forEach((dept: any) => {
-      targetMap[dept.id] = parseFloat(dept.min_income || '0');
+      targetMap[dept.id] = departmentScoreboardExpected(dept);
     });
 
     return { departmentTargets, departmentIds, allCategoriesData: allCategoriesData || null, categoryNameToDataMap, targetMap, selectedMonthName };
@@ -3145,6 +3183,20 @@ const Dashboard: React.FC = () => {
         (allCategoriesData || []).forEach((category: any) => {
           if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
         });
+
+        try {
+          const costByDept = await fetchDashboardDepartmentCostTargets(
+            departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') })),
+            { salesDeptIdsToExclude },
+          );
+          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costByDept);
+        } catch (costErr) {
+          console.error('[Dashboard Agreement Signed] department cost targets failed:', costErr);
+          departmentTargets = departmentTargets.map((dept: any) => ({
+            ...dept,
+            cost_target: parseFloat(dept.min_income || '0') || 0,
+          }));
+        }
       }
 
       // Log which departments are important
@@ -3162,7 +3214,7 @@ const Dashboard: React.FC = () => {
 
       const targetMap = shared?.targetMap ?? (() => {
         const t: { [key: number]: number } = {};
-        departmentTargets?.forEach((dept: any) => { t[dept.id] = parseFloat(dept.min_income || '0'); });
+        departmentTargets?.forEach((dept: any) => { t[dept.id] = departmentScoreboardExpected(dept); });
         return t;
       })();
       // Initialize data structure dynamically based on actual departments
@@ -3171,12 +3223,14 @@ const Dashboard: React.FC = () => {
         Yesterday: buildScoreboardPeriodRows(departmentTargets),
         Week: buildScoreboardPeriodRows(departmentTargets),
         "Last 30d": buildScoreboardPeriodRows(departmentTargets),
+        [SCOREBOARD_LAST_3M]: buildScoreboardPeriodRows(departmentTargets),
         [selectedMonthName]: buildScoreboardMonthRows(departmentTargets),
       };
 
       // Calculate date ranges (Asia/Jerusalem — matches SignedSalesReportPage)
       const { todayStr, yesterdayStr, oneWeekAgoStr, thirtyDaysAgoStr: last30dStartDate } =
         getJerusalemScoreboardDates(today);
+      const last3mStartDate = getLast3MonthsStartDate(todayStr);
       const effectiveLast30dEnd = todayStr;
 
       // Fix timezone issue: Use UTC to avoid timezone conversion problems
@@ -3190,7 +3244,7 @@ const Dashboard: React.FC = () => {
       let allStage60InWindow: any[] = [];
       let stageFetchError: any = null;
       try {
-        allStage60InWindow = await fetchStage60RecordsInRange(last30dStartDate, effectiveLast30dEnd);
+        allStage60InWindow = await fetchStage60RecordsInRange(last3mStartDate, effectiveLast30dEnd);
       } catch (err: any) {
         stageFetchError = err;
       }
@@ -3600,6 +3654,13 @@ const Dashboard: React.FC = () => {
             newAgreementData["Last 30d"][0].count++;
             newAgreementData["Last 30d"][0].amount += amountAfterFee;
           }
+
+          if (recordDateOnly >= last3mStartDate && recordDateOnly <= todayStr) {
+            newAgreementData[SCOREBOARD_LAST_3M][deptIndex].count++;
+            newAgreementData[SCOREBOARD_LAST_3M][deptIndex].amount += amountAfterFee;
+            newAgreementData[SCOREBOARD_LAST_3M][0].count++;
+            newAgreementData[SCOREBOARD_LAST_3M][0].amount += amountAfterFee;
+          }
         }
       }
 
@@ -3687,6 +3748,14 @@ const Dashboard: React.FC = () => {
       newAgreementData["Last 30d"][totalIndexToday] = {
         count: last30TotalCount,
         amount: last30TotalAmount,
+        expected: 0
+      };
+
+      const last3mTotalCount = newAgreementData[SCOREBOARD_LAST_3M][0].count;
+      const last3mTotalAmount = Math.ceil(newAgreementData[SCOREBOARD_LAST_3M][0].amount);
+      newAgreementData[SCOREBOARD_LAST_3M][totalIndexToday] = {
+        count: last3mTotalCount,
+        amount: last3mTotalAmount,
         expected: 0
       };
 
@@ -3899,6 +3968,20 @@ const Dashboard: React.FC = () => {
           .order('name', { ascending: true });
         if (categoriesError) console.error('Error fetching categories for invoiced department mapping:', categoriesError);
         allCategoriesData = categoriesData || null;
+
+        try {
+          const costByDept = await fetchDashboardDepartmentCostTargets(
+            departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') })),
+            { salesDeptIdsToExclude: [12, 14, 15] },
+          );
+          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costByDept);
+        } catch (costErr) {
+          console.error('[Dashboard Invoiced] department cost targets failed:', costErr);
+          departmentTargets = departmentTargets.map((dept: any) => ({
+            ...dept,
+            cost_target: parseFloat(dept.min_income || '0') || 0,
+          }));
+        }
       }
 
       const categoryNameToDataMap = shared?.categoryNameToDataMap ?? new Map<string, any>();
@@ -3911,10 +3994,10 @@ const Dashboard: React.FC = () => {
       // BOI as-of conversion for invoiced totals (paid → payment time; unpaid → due date)
       const boiConverter = await createBoiDateRateConverter();
 
-      // Create target map (department ID -> min_income)
+      // Create target map (department ID -> employee cost target)
       const targetMap: { [key: number]: number } = {};
       departmentTargets.forEach(dept => {
-        targetMap[dept.id] = parseFloat(dept.min_income || '0');
+        targetMap[dept.id] = departmentScoreboardExpected(dept);
       });
 
       // Calculate date ranges
@@ -3928,6 +4011,7 @@ const Dashboard: React.FC = () => {
       // IMPORTANT: Last 30d should be inclusive of both start and end dates
       // If today is Jan 11, 30 days ago is Dec 12, so range is Dec 12 to Jan 11 (inclusive) = 31 days total
       const effectiveThirtyDaysAgo = thirtyDaysAgoStr;
+      const last3mStartDate = getLast3MonthsStartDate(todayStr);
 
       // Calculate date ranges for invoiced data
       const yesterday = new Date(today);
@@ -3943,6 +4027,7 @@ const Dashboard: React.FC = () => {
         Yesterday: buildScoreboardPeriodRows(departmentTargets),
         Week: buildScoreboardPeriodRows(departmentTargets),
         "Last 30d": buildScoreboardPeriodRows(departmentTargets),
+        [SCOREBOARD_LAST_3M]: buildScoreboardPeriodRows(departmentTargets),
         [selectedMonthName]: buildScoreboardMonthRows(departmentTargets),
       };
 
@@ -4361,6 +4446,13 @@ const Dashboard: React.FC = () => {
           newInvoicedData["Last 30d"][0].amount += amountInNIS;
         }
 
+        if (dueDate >= last3mStartDate && dueDate <= todayStr) {
+          newInvoicedData[SCOREBOARD_LAST_3M][deptIndex].count += 1;
+          newInvoicedData[SCOREBOARD_LAST_3M][deptIndex].amount += amountInNIS;
+          newInvoicedData[SCOREBOARD_LAST_3M][0].count += 1;
+          newInvoicedData[SCOREBOARD_LAST_3M][0].amount += amountInNIS;
+        }
+
         // Check if it's in selected month
         if (dueDate >= startOfMonthStr && dueDate <= endOfMonthStr) {
           const monthDeptIndex = getScoreboardMonthDeptIndex(departmentId, departmentIds);
@@ -4471,6 +4563,13 @@ const Dashboard: React.FC = () => {
           newInvoicedData["Last 30d"][0].amount += amountInNIS;
         }
 
+        if (dueDate >= last3mStartDate && dueDate <= todayStr) {
+          newInvoicedData[SCOREBOARD_LAST_3M][deptIndex].count += 1;
+          newInvoicedData[SCOREBOARD_LAST_3M][deptIndex].amount += amountInNIS;
+          newInvoicedData[SCOREBOARD_LAST_3M][0].count += 1;
+          newInvoicedData[SCOREBOARD_LAST_3M][0].amount += amountInNIS;
+        }
+
         // Check if it's in selected month
         if (dueDate >= startOfMonthStr && dueDate <= endOfMonthStr) {
           const monthDeptIndex = getScoreboardMonthDeptIndex(departmentId, departmentIds);
@@ -4502,6 +4601,10 @@ const Dashboard: React.FC = () => {
       const last30TotalCount = newInvoicedData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
       const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
+
+      const last3mTotalCount = newInvoicedData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const last3mTotalAmount = Math.ceil(newInvoicedData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
+      newInvoicedData[SCOREBOARD_LAST_3M][totalIndexToday] = { count: last3mTotalCount, amount: last3mTotalAmount, expected: 0 };
 
       // Current month totals
       const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.count, 0);
@@ -4581,6 +4684,7 @@ const Dashboard: React.FC = () => {
   // Column visibility for Department Performance table (desktop) - simplified to rows only
   const [showTodayCols, setShowTodayCols] = React.useState(true);
   const [showLast30Cols, setShowLast30Cols] = React.useState(true);
+  const [showLast3MonthsCols, setShowLast3MonthsCols] = React.useState(true);
   const [showLastMonthCols, setShowLastMonthCols] = React.useState(true);
 
   // Filter mode: 'today' or 'week' - controls which data is shown in "Today" column
@@ -4611,7 +4715,7 @@ const Dashboard: React.FC = () => {
   const loadScoreboardData = useCallback(
     async (opts?: { background?: boolean }) => {
       const periodKey = `${selectedYear}-${selectedMonth}`;
-      const cacheKey = `dashboard-scoreboard:v5:${periodKey}`;
+      const cacheKey = `dashboard-scoreboard:v15:${periodKey}`;
       const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
 
       if (cached) {
@@ -5185,6 +5289,7 @@ const Dashboard: React.FC = () => {
       else visibleColumns.push('Today');
     }
     if (showLast30Cols) visibleColumns.push('Last 30d');
+    if (showLast3MonthsCols) visibleColumns.push(SCOREBOARD_LAST_3M);
     if (showLastMonthCols) visibleColumns.push(selectedMonth);
 
     const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } = tableType === 'agreement' ? agreementData : invoicedData;
@@ -5194,21 +5299,35 @@ const Dashboard: React.FC = () => {
     const getDeptData = (deptName: string, periodKey: 'Today' | 'Week' | 'Yesterday' | 'Last 30d' | string) => {
       const deptIndexInNames = departmentNames.indexOf(deptName);
       const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : categories.indexOf(deptName);
-      const isMonth = periodKey === selectedMonth;
-      const row = isMonth ? dataSource[selectedMonth]?.[dataIndex] : dataSource[periodKey]?.[dataIndex + 1];
+      const isMonthLayout = periodKey === selectedMonth;
+      const row = isMonthLayout ? dataSource[periodKey]?.[dataIndex] : dataSource[periodKey]?.[dataIndex + 1];
       return row || { count: 0, amount: 0, expected: 0 };
     };
 
-    const getTotalData = (periodKey: 'Today' | 'Week' | 'Last 30d' | string) => {
-      const isMonth = periodKey === selectedMonth;
-      const row = isMonth ? dataSource[selectedMonth]?.[totalIndexMonth] : dataSource[periodKey]?.[totalIndexToday];
+    const getTotalData = (periodKey: 'Today' | 'Yesterday' | 'Week' | 'Last 30d' | string) => {
+      const isMonthLayout = periodKey === selectedMonth;
+      const row = isMonthLayout ? dataSource[periodKey]?.[totalIndexMonth] : dataSource[periodKey]?.[totalIndexToday];
       return row || { count: 0, amount: 0, expected: 0 };
     };
 
     const mobilePeriods = [
-      { key: 'Today' as const, label: todayFilterMode === 'week' ? 'Week' : 'Today', dataKey: todayFilterMode === 'week' ? 'Week' : 'Today' },
-      { key: 'Last 30d' as const, label: 'Last 30d', dataKey: 'Last 30d' },
-      { key: selectedMonth, label: selectedMonth, dataKey: selectedMonth },
+      ...(showTodayCols
+        ? [{
+            key: 'Today' as const,
+            label: todayFilterMode === 'week' ? 'Week' : 'Today',
+            dataKey: todayFilterMode === 'week' ? 'Week' : 'Today',
+          }]
+        : []),
+      ...(showLast30Cols
+        ? [{ key: 'Last 30d' as const, label: 'Last 30d', dataKey: 'Last 30d' }]
+        : []),
+      ...(showLast3MonthsCols
+        ? [{ key: SCOREBOARD_LAST_3M as const, label: SCOREBOARD_LAST_3M, dataKey: SCOREBOARD_LAST_3M }]
+        : []),
+      ...(showLastMonthCols
+        ? [{ key: selectedMonth, label: selectedMonth, dataKey: selectedMonth }]
+        : []),
+      // Always keep Target month visible at the end (independent of This Month filter)
       { key: `Target ${selectedMonth}`, label: `Target ${selectedMonth}`, dataKey: `Target ${selectedMonth}` },
     ];
 
@@ -5218,7 +5337,7 @@ const Dashboard: React.FC = () => {
         {/* Mobile: departments as rows, periods as columns */}
         <div className="md:hidden overflow-x-auto w-full min-w-0 px-2 pb-2">
           <table className="w-full min-w-[600px] text-sm table-fixed">
-            <thead className="bg-white border-b border-slate-200 sticky top-0">
+            <thead className="bg-white sticky top-0">
               <tr>
                 <th className="text-left px-1.5 py-2 font-semibold text-slate-700 w-[96px]">Department</th>
                 {mobilePeriods.map((p) => (
@@ -5277,14 +5396,17 @@ const Dashboard: React.FC = () => {
                     const row = deptName === 'Total'
                       ? getTotalData(p.dataKey)
                       : getDeptData(deptName, p.dataKey);
+                    const displayAmount = p.key === SCOREBOARD_LAST_3M
+                      ? scoreboardThreeMonthAverage(row.amount || 0)
+                      : (row.amount || 0);
                     return (
                       <td key={`${deptName}-${p.key}`} className="px-1.5 py-2 text-center">
                         <div className="inline-flex flex-col items-center gap-0.5">
-                          <div className="badge badge-ghost text-[11px] font-semibold px-1.5 py-1 leading-none">
+                          <div className="badge badge-ghost text-[11px] font-semibold px-1.5 py-1 leading-none border-0">
                             {row.count || 0}
                           </div>
                           <div className="text-[13px] font-semibold text-slate-800 whitespace-nowrap leading-tight">
-                            ₪{Math.ceil(row.amount || 0).toLocaleString()}
+                            ₪{Math.ceil(displayAmount).toLocaleString()}
                           </div>
                         </div>
                       </td>
@@ -5299,7 +5421,7 @@ const Dashboard: React.FC = () => {
         {/* Desktop: existing layout */}
         <div className="hidden md:block overflow-x-auto w-full min-w-0">
           <table className="min-w-full text-xs md:text-sm w-full">
-            <thead className="bg-white border-b border-slate-200">
+            <thead className="bg-white">
               <tr>
                 <th className="text-left px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
                 {categories.map(category => {
@@ -5320,7 +5442,7 @@ const Dashboard: React.FC = () => {
                 const isYesterday = columnType === 'Yesterday';
                 const isWeek = columnType === 'Week';
                 const isLast30 = columnType === 'Last 30d';
-                const isThisMonth = columnType === selectedMonth;
+                const isLast3m = columnType === SCOREBOARD_LAST_3M;
 
                 return (
                   <React.Fragment key={columnType}>
@@ -5333,14 +5455,18 @@ const Dashboard: React.FC = () => {
                           isYesterday ? dataSource["Yesterday"]?.[dataIndex + 1] :
                             isWeek ? dataSource["Week"]?.[dataIndex + 1] :
                               isLast30 ? dataSource["Last 30d"]?.[dataIndex + 1] :
-                                dataSource[selectedMonth]?.[dataIndex];
+                                isLast3m ? dataSource[SCOREBOARD_LAST_3M]?.[dataIndex + 1] :
+                                  dataSource[selectedMonth]?.[dataIndex];
                         const amount = data?.amount ?? 0;
+                        const displayAmount = isLast3m ? scoreboardThreeMonthAverage(amount) : amount;
                         return (
                           <td key={`${category}-combined`} className="px-0.5 md:px-5 py-1 md:py-3 text-center">
                             <div className="space-y-0.5 md:space-y-1">
-                              <div className="badge text-[10px] md:text-xs font-semibold px-0.5 md:px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200">{data?.count ?? 0}</div>
+                              <div className="badge text-[10px] md:text-xs font-semibold px-0.5 md:px-2 py-0.5 bg-slate-100 text-slate-700 border-0">{data?.count ?? 0}</div>
                               <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
-                              <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">₪{Math.ceil(amount).toLocaleString()}</div>
+                              <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
+                                ₪{Math.ceil(displayAmount).toLocaleString()}
+                              </div>
                             </div>
                           </td>
                         );
@@ -5348,53 +5474,72 @@ const Dashboard: React.FC = () => {
                       <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-slate-700">
                         <div className="space-y-0.5 md:space-y-1">
                           <div className="flex items-center justify-center">
-                            <div className="badge text-[10px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-0.5 md:px-2 py-0.5 border border-slate-200">
+                            <div className="badge text-[10px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-0.5 md:px-2 py-0.5 border-0">
                               {isToday ? (dataSource["Today"]?.[totalIndexToday]?.count ?? 0) :
                                 isWeek ? (dataSource["Week"]?.[totalIndexToday]?.count ?? 0) :
                                   isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.count ?? 0) :
-                                    (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0)}
+                                    isLast3m ? (dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.count ?? 0) :
+                                      (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0)}
                             </div>
                           </div>
                           <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
                           <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
-                            ₪{Math.ceil(isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
-                              isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
-                                isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
-                                  (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0)).toLocaleString()}
+                            ₪{Math.ceil(
+                              isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
+                                isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
+                                  isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
+                                    isLast3m ? scoreboardThreeMonthAverage(dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.amount ?? 0) :
+                                      (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0)
+                            ).toLocaleString()}
                           </div>
                         </div>
                       </td>
                     </tr>
-                    {isThisMonth && (
-                      <tr className="bg-white border border-slate-200">
-                        <td className="px-0.5 md:px-5 py-1 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {columnType}</td>
-                        {categories.map((category) => {
-                          const data = getDeptData(category, selectedMonth);
-                          const amount = data.amount ?? 0;
-                          const target = data.expected ?? 0;
-                          const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                          return (
-                            <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
-                              {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
-                            </td>
-                          );
-                        })}
-                        <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
-                          {(() => {
-                            const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
-                            const mainDeptCount = otherIdx >= 0 ? otherIdx : departmentNames.length;
-                            const totalTarget = dataSource[selectedMonth]?.slice(0, mainDeptCount).reduce(
-                              (sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0),
-                              0,
-                            ) || 0;
-                            return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
-                          })()}
-                        </td>
-                      </tr>
-                    )}
                   </React.Fragment>
                 );
               })}
+              {/* Always keep Target month at the bottom (independent of This Month filter) */}
+              <tr className="bg-white border border-slate-200">
+                <td className="px-0.5 md:px-5 py-1 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {selectedMonth}</td>
+                {categories.map((category) => {
+                  const data = getDeptData(category, selectedMonth);
+                  const amount = data.amount ?? 0;
+                  const target = data.expected ?? 0;
+                  const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                  return (
+                    <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
+                      {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
+                    </td>
+                  );
+                })}
+                <td
+                  className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold whitespace-nowrap ${(() => {
+                    const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
+                    const mainDeptCount = otherIdx >= 0 ? otherIdx : departmentNames.length;
+                    const totalTarget =
+                      dataSource[selectedMonth]?.slice(0, mainDeptCount).reduce(
+                        (sum: number, item: { count: number; amount: number; expected: number }) =>
+                          sum + (item.expected || 0),
+                        0,
+                      ) || 0;
+                    const totalAmount = dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0;
+                    if (!(totalTarget > 0)) return 'text-slate-700';
+                    return totalAmount >= totalTarget ? 'text-green-600' : 'text-red-600';
+                  })()}`}
+                >
+                  {(() => {
+                    const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
+                    const mainDeptCount = otherIdx >= 0 ? otherIdx : departmentNames.length;
+                    const totalTarget =
+                      dataSource[selectedMonth]?.slice(0, mainDeptCount).reduce(
+                        (sum: number, item: { count: number; amount: number; expected: number }) =>
+                          sum + (item.expected || 0),
+                        0,
+                      ) || 0;
+                    return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
+                  })()}
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -7409,6 +7554,7 @@ const Dashboard: React.FC = () => {
                           Week
                         </button>
                         <button className={`btn btn-xs ${showLast30Cols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                        <button className={`btn btn-xs ${showLast3MonthsCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast3MonthsCols(v => !v)}>Last 3m</button>
                         <button className={`btn btn-xs ${showLastMonthCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                         <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
                         <details className="dropdown dropdown-end">
@@ -7491,6 +7637,7 @@ const Dashboard: React.FC = () => {
                           Week
                         </button>
                         <button className={`btn btn-xs ${showLast30Cols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                        <button className={`btn btn-xs ${showLast3MonthsCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast3MonthsCols(v => !v)}>Last 3m</button>
                         <button className={`btn btn-xs ${showLastMonthCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                         <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
                         <details className="dropdown dropdown-end">

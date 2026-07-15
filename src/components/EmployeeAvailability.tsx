@@ -379,13 +379,15 @@ const EmployeeAvailability: React.FC = () => {
         }
       }
 
-      // Prepare reason data based on type
+      // Prepare reason data based on type (pending management approval)
       const reasonData: any = {
         employee_id: currentEmployeeId,
         unavailability_type: newUnavailableTime.unavailabilityType,
         start_date: dateString,
         start_time: newUnavailableTime.startTime,
         end_time: newUnavailableTime.endTime,
+        approved: false,
+        declined: false,
       };
 
       if (newUnavailableTime.unavailabilityType === 'sick_days') {
@@ -449,7 +451,7 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      toast.success('Unavailable time saved successfully');
+      toast.success('Request saved — waiting for management approval');
       setShowAddModal(false);
       setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
       fetchUnavailableTimes(); // Refresh the list
@@ -656,12 +658,14 @@ const EmployeeAvailability: React.FC = () => {
         }
       }
 
-      // Prepare reason data based on type
+      // Prepare reason data based on type (pending management approval)
       const reasonData: any = {
         employee_id: currentEmployeeId,
         unavailability_type: newUnavailableRange.unavailabilityType,
         start_date: newUnavailableRange.startDate,
         end_date: newUnavailableRange.endDate,
+        approved: false,
+        declined: false,
       };
 
       if (newUnavailableRange.unavailabilityType === 'sick_days') {
@@ -734,7 +738,7 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      toast.success('Unavailable range saved successfully');
+      toast.success('Request saved — waiting for management approval');
       setShowAddRangeModal(false);
       setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
       fetchUnavailableTimes(); // Refresh the list

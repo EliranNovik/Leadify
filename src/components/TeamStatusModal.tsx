@@ -12,6 +12,7 @@ import {
   ChatBubbleLeftRightIcon,
   EnvelopeIcon,
   ClockIcon,
+  ArrowLeftOnRectangleIcon,
   FunnelIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
@@ -182,7 +183,7 @@ function Avatar({ name, photoUrl }: { name: string; photoUrl?: string | null }) 
       <img
         src={photoUrl}
         alt=""
-        className="w-10 h-10 rounded-full object-cover ring-2 ring-base-200 shrink-0"
+        className="w-12 h-12 rounded-full object-cover ring-2 ring-base-200 shrink-0"
         onError={() => setImgFailed(true)}
       />
     );
@@ -191,7 +192,7 @@ function Avatar({ name, photoUrl }: { name: string; photoUrl?: string | null }) 
   const initials = getInitials(name);
   return (
     <span
-      className={`w-10 h-10 rounded-full font-semibold inline-flex items-center justify-center ring-2 ring-base-200 shrink-0 text-base ${avatarColorClass(name)}`}
+      className={`w-12 h-12 rounded-full font-semibold inline-flex items-center justify-center ring-2 ring-base-200 shrink-0 text-base ${avatarColorClass(name)}`}
       aria-label={name}
     >
       {initials || <UserIcon className="w-5 h-5" />}
@@ -287,27 +288,31 @@ function EmployeeUnavailabilityBlock({ entries }: { entries: EmployeeUnavailabil
 function EmployeeMobileCard({
   emp,
   onMessage,
+  showContactActions = true,
 }: {
   emp: EmployeeRow;
   onMessage: () => void;
+  showContactActions?: boolean;
 }) {
   return (
-    <article className="rounded-[18px] bg-white px-4 py-3.5">
+    <article className="rounded-[18px] bg-white px-4 py-3.5 border border-gray-100">
       <div className="flex items-start gap-3">
         <Avatar name={emp.display_name} photoUrl={emp.photo_url} />
         <div className="min-w-0 flex-1">
           <div className="font-semibold text-base truncate">{emp.display_name}</div>
           {emp.department && (
-            <div className="text-sm text-base-content/50 truncate">{emp.department}</div>
+            <div className="text-sm font-bold text-base-content/50 truncate">{emp.department}</div>
           )}
           <div className="mt-2">
             <ClockStatusCell clockIn={emp.clockIn} />
           </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <EmployeeEmailButton email={emp.email} />
-          <EmployeeMessageButton chatUserId={emp.chatUserId} onMessage={onMessage} />
-        </div>
+        {showContactActions && (
+          <div className="flex items-center gap-1 shrink-0">
+            <EmployeeEmailButton email={emp.email} />
+            <EmployeeMessageButton chatUserId={emp.chatUserId} onMessage={onMessage} />
+          </div>
+        )}
       </div>
       {emp.clockIn && (
         <p className="mt-2 text-sm text-base-content/65">
@@ -402,13 +407,15 @@ function EmployeeUnavailabilityCells({ entries }: { entries: EmployeeUnavailabil
 function ClockStatusCell({ clockIn }: { clockIn: ClockInRow | null }) {
   if (!clockIn) {
     return (
-      <span className="inline-flex items-center rounded-full px-3 py-1.5 text-sm font-medium bg-gray-100 text-gray-500">
+      <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium bg-gray-100 text-gray-500">
+        <ArrowLeftOnRectangleIcon className="h-5 w-5 shrink-0" aria-hidden />
         Clocked out
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center rounded-full px-3 py-1.5 text-sm font-medium bg-green-100/90 text-green-800">
+    <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium bg-green-100/90 text-green-800">
+      <ClockIcon className="h-5 w-5 shrink-0" aria-hidden />
       Clocked in
     </span>
   );
@@ -475,6 +482,35 @@ function EmployeeEmailButton({ email }: { email: string | null }) {
 
 // ─── Filter pill ──────────────────────────────────────────────────────────────
 
+const hrFilterSelectClass =
+  'rounded-full border border-gray-200 bg-white px-3.5 py-2 text-sm text-gray-800 min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-emerald-500/30';
+
+function parseEmbeddedStatusValue(value: string): ActiveFilter {
+  if (value === 'all') return { kind: 'all' };
+  if (
+    value === 'clocked_in' ||
+    value === 'clocked_out' ||
+    value === 'unavailable' ||
+    value === 'available' ||
+    value === 'not_clocked_in_available'
+  ) {
+    return { kind: value };
+  }
+  return { kind: 'all' };
+}
+
+function parseEmbeddedWhereValue(value: string): ActiveFilter {
+  if (!value || value === 'all') return { kind: 'all' };
+  return { kind: 'workplace', name: value };
+}
+
+function parseEmbeddedTypeValue(value: string): ActiveFilter {
+  if (value === 'sick_days' || value === 'vacation' || value === 'general') {
+    return { kind: 'unavail_type', type: value };
+  }
+  return { kind: 'all' };
+}
+
 const PILL_BASE = 'rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors border whitespace-nowrap';
 const PILL_INACTIVE = 'bg-white text-base-content/55 border-base-200 hover:border-base-content/30 hover:text-base-content';
 
@@ -534,6 +570,24 @@ const TEAM_STATUS_TABLE_STYLES = `
   .team-status-table-shell table.team-status-results-table thead th {
     background-color: #ececec !important;
   }
+
+  .team-status-table-shell--embedded table.team-status-results-table thead tr,
+  .team-status-table-shell--embedded table.team-status-results-table thead th {
+    background-color: #ffffff !important;
+  }
+
+  .team-status-table-shell--embedded table tbody td {
+    border-top: 1px solid #e5e7eb !important;
+    border-bottom: 1px solid #e5e7eb !important;
+  }
+
+  .team-status-table-shell--embedded table tbody td:first-child {
+    border-left: 1px solid #e5e7eb !important;
+  }
+
+  .team-status-table-shell--embedded table tbody td:last-child {
+    border-right: 1px solid #e5e7eb !important;
+  }
 `;
 
 function FilterPill({
@@ -561,12 +615,19 @@ function FilterPill({
 // ─── Main modal ───────────────────────────────────────────────────────────────
 
 interface TeamStatusModalProps {
-  isOpen: boolean;
-  onClose: () => void;
+  isOpen?: boolean;
+  onClose?: () => void;
+  /** Render inline (e.g. HR Management tab) instead of a full-screen modal. */
+  embedded?: boolean;
 }
 
-const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) => {
+const TeamStatusModal: React.FC<TeamStatusModalProps> = ({
+  isOpen = false,
+  onClose,
+  embedded = false,
+}) => {
   const { isSuperUser } = useAdminRole();
+  const active = embedded || isOpen;
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -675,13 +736,13 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
   }, []);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!active) return;
     const today = todayIso();
     setSearch('');
     setActiveFilter({ kind: 'all' });
     setSelectedDate(today);
     setMobileToolsOpen(false);
-  }, [isOpen]);
+  }, [active]);
 
   useEffect(() => {
     if (!mobileToolsOpen) return;
@@ -701,15 +762,14 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
   }, [mobileToolsOpen]);
 
   useEffect(() => {
-    if (isOpen && !isSuperUser) {
-      onClose();
-    }
-  }, [isOpen, isSuperUser, onClose]);
+    if (embedded || !isOpen || isSuperUser) return;
+    onClose?.();
+  }, [embedded, isOpen, isSuperUser, onClose]);
 
   useEffect(() => {
-    if (!isOpen || !isSuperUser) return;
+    if (!active || !isSuperUser) return;
     void load(selectedDate);
-  }, [isOpen, isSuperUser, selectedDate, load]);
+  }, [active, isSuperUser, selectedDate, load]);
 
   // Derive unique workplace names from clocked-in employees
   const workplaces = useMemo(() => {
@@ -798,12 +858,12 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
 
   const [jerusalemNow, setJerusalemNow] = useState(() => new Date());
   useEffect(() => {
-    if (!isOpen) return;
+    if (!active) return;
     const tick = () => setJerusalemNow(new Date());
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [isOpen]);
+  }, [active]);
 
   const jerusalemTime = useMemo(
     () => jerusalemNow.toLocaleTimeString('en-GB', {
@@ -829,18 +889,27 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
     setRmqOpen(true);
   }
 
-  if (!isOpen || !isSuperUser || typeof window === 'undefined') return null;
+  if (!active || !isSuperUser) return null;
+  if (!embedded && typeof window === 'undefined') return null;
 
   const curKey = filterKey(activeFilter);
 
-  return createPortal(
-    <div className="fixed inset-0 z-[200] flex flex-col overflow-hidden bg-base-100" role="dialog" aria-modal="true">
+  const content = (
+    <div
+      className={
+        embedded
+          ? 'flex flex-col bg-base-100'
+          : 'fixed inset-0 z-[200] flex flex-col overflow-hidden bg-base-100'
+      }
+      role={embedded ? undefined : 'dialog'}
+      aria-modal={embedded ? undefined : true}
+    >
       {/* Header */}
       <div className="shrink-0 bg-base-100 px-4 py-3 sm:px-5 sm:py-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center shrink-0">
-              <UserGroupIcon className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gray-200 rounded-lg flex items-center justify-center shrink-0">
+              <UserGroupIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
             </div>
             <div className="min-w-0">
               <h2 className="text-lg sm:text-xl font-bold leading-tight">Team Status</h2>
@@ -873,7 +942,7 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
                 </p>
               </button>
             )}
-            <div className="rounded-xl bg-gradient-to-br from-violet-600 via-purple-600 to-indigo-600 px-2.5 py-1.5 sm:px-3 sm:py-2 text-white shadow-md">
+            <div className="rounded-xl bg-emerald-600 px-2.5 py-1.5 sm:px-3 sm:py-2 text-white shadow-md">
               <div className="flex items-center justify-end gap-1 text-[8px] sm:text-[9px] font-semibold uppercase tracking-wider text-white/70">
                 <ClockIcon className="w-2.5 h-2.5 sm:w-3 sm:h-3 shrink-0" aria-hidden />
                 Tel Aviv
@@ -882,9 +951,11 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
                 {jerusalemTime}
               </p>
             </div>
-            <button type="button" className="btn btn-ghost btn-sm btn-circle shrink-0" onClick={onClose}>
-              <XMarkIcon className="w-5 h-5" />
-            </button>
+            {!embedded && (
+              <button type="button" className="btn btn-ghost btn-sm btn-circle shrink-0" onClick={onClose}>
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -894,6 +965,106 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
       </div>
 
       {/* Toolbar */}
+      {embedded ? (
+        <div className="flex flex-wrap items-end gap-3 px-4 py-3 sm:px-5 border-b border-gray-100 shrink-0">
+          <div className="relative min-w-[14rem] flex-1 max-w-sm">
+            <span className="text-sm font-medium text-gray-600 mb-1 block">Search</span>
+            <div className="relative">
+              <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search employees…"
+                className="w-full rounded-full border border-gray-200 bg-white py-2 pl-9 pr-4 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              />
+            </div>
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-gray-600">Date</span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setSelectedDate((d) => shiftIsoDate(d, -1))}
+                className="btn btn-sm btn-ghost btn-circle shrink-0"
+                title="Previous day"
+              >
+                <ChevronLeftIcon className="w-5 h-5" />
+              </button>
+              <input
+                type="date"
+                className={hrFilterSelectClass}
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setSelectedDate((d) => shiftIsoDate(d, 1))}
+                className="btn btn-sm btn-ghost btn-circle shrink-0"
+                title="Next day"
+              >
+                <ChevronRightIcon className="w-5 h-5" />
+              </button>
+            </div>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-gray-600">Status</span>
+            <select
+              className={`${hrFilterSelectClass} min-w-[12rem]`}
+              value={
+                activeFilter.kind === 'clocked_in' ||
+                activeFilter.kind === 'clocked_out' ||
+                activeFilter.kind === 'unavailable' ||
+                activeFilter.kind === 'available' ||
+                activeFilter.kind === 'not_clocked_in_available'
+                  ? activeFilter.kind
+                  : 'all'
+              }
+              onChange={(e) => setActiveFilter(parseEmbeddedStatusValue(e.target.value))}
+            >
+              <option value="all">All statuses</option>
+              {filterOptions
+                .filter((o) => o.section === 'status')
+                .map((opt) => (
+                  <option key={filterKey(opt.filter)} value={filterKey(opt.filter)}>
+                    {opt.label}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-gray-600">Where</span>
+            <select
+              className={`${hrFilterSelectClass} min-w-[12rem]`}
+              value={activeFilter.kind === 'workplace' ? activeFilter.name : 'all'}
+              onChange={(e) => setActiveFilter(parseEmbeddedWhereValue(e.target.value))}
+            >
+              <option value="all">All locations</option>
+              {workplaces.map((wp) => (
+                <option key={wp} value={wp}>
+                  {wp}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-gray-600">Type</span>
+            <select
+              className={`${hrFilterSelectClass} min-w-[10rem]`}
+              value={activeFilter.kind === 'unavail_type' ? activeFilter.type : 'all'}
+              onChange={(e) => setActiveFilter(parseEmbeddedTypeValue(e.target.value))}
+            >
+              <option value="all">All types</option>
+              <option value="sick_days">Sick days</option>
+              <option value="vacation">Vacation</option>
+              <option value="general">General</option>
+            </select>
+          </label>
+          {!showLiveClockIn && (
+            <span className="text-xs text-gray-500 pb-2">Clock-in status shown only for today</span>
+          )}
+        </div>
+      ) : (
       <div className="flex flex-col gap-3 px-4 py-3 sm:px-5 border-b border-base-200 bg-base-200/20 shrink-0" ref={mobileToolsRef}>
         <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center md:justify-start md:gap-12 w-full">
           <div className="relative hidden md:block w-64 max-w-full shrink-0">
@@ -1076,15 +1247,67 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
           )}
         </div>
       </div>
+      )}
 
       {/* Results */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y bg-[#ececec] px-4 md:px-5 py-4">
+      <div
+        className={
+          embedded
+            ? 'px-4 md:px-5 py-4 bg-white'
+            : 'flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y px-4 md:px-5 py-4 bg-[#ececec]'
+        }
+      >
         {loading ? (
           <div className="flex justify-center py-20">
             <span className="loading loading-spinner loading-lg text-primary" />
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-20 text-base-content/45">No employees match your filter.</div>
+        ) : embedded ? (
+          <div className="overflow-x-auto">
+            <table className="table w-full text-base">
+              <thead>
+                <tr className="text-sm uppercase tracking-wider text-gray-500">
+                  <th className="bg-transparent font-semibold">Employee</th>
+                  <th className="bg-transparent font-semibold">Clock-in status</th>
+                  <th className="bg-transparent font-semibold">Clocked in at</th>
+                  <th className="bg-transparent font-semibold">Clocked in from</th>
+                  <th className="bg-transparent font-semibold">Unavailability type</th>
+                  <th className="bg-transparent font-semibold">Unavailable time</th>
+                  <th className="bg-transparent font-semibold">Unavailability</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((emp) => (
+                  <tr key={emp.id} className="hover">
+                    <td className="font-medium text-base text-gray-900 whitespace-nowrap">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Avatar name={emp.display_name} photoUrl={emp.photo_url} />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate">{emp.display_name}</div>
+                          {emp.department && (
+                            <div className="text-sm font-bold text-gray-500 truncate">
+                              {emp.department}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="text-base text-gray-700">
+                      <ClockStatusCell clockIn={emp.clockIn} />
+                    </td>
+                    <td className="text-base text-gray-700 whitespace-nowrap">
+                      <ClockedInAtCell clockIn={emp.clockIn} />
+                    </td>
+                    <td className="text-base text-gray-700">
+                      <ClockedInFromCell workplaceName={emp.workplaceName} />
+                    </td>
+                    <EmployeeUnavailabilityCells entries={emp.unavailabilities} />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <>
             <div className="md:hidden flex flex-col gap-2.5 pb-1">
@@ -1093,6 +1316,7 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
                   key={emp.id}
                   emp={emp}
                   onMessage={() => openEmployeeChat(emp)}
+                  showContactActions
                 />
               ))}
             </div>
@@ -1135,7 +1359,7 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
                         <div className="min-w-0 flex-1">
                           <div className="font-semibold text-base truncate">{emp.display_name}</div>
                           {emp.department && (
-                            <div className="text-sm text-base-content/50 truncate">{emp.department}</div>
+                            <div className="text-sm font-bold text-base-content/50 truncate">{emp.department}</div>
                           )}
                         </div>
                       </div>
@@ -1167,7 +1391,7 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
           </>
         )}
       </div>
-      <style>{TEAM_STATUS_TABLE_STYLES}</style>
+      {!embedded && <style>{TEAM_STATUS_TABLE_STYLES}</style>}
       <RMQMessagesPage
         isOpen={rmqOpen}
         initialUserId={rmqChatUserId || undefined}
@@ -1176,9 +1400,11 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
           setRmqChatUserId(null);
         }}
       />
-    </div>,
-    document.body,
+    </div>
   );
+
+  if (embedded) return content;
+  return createPortal(content, document.body);
 };
 
 export default TeamStatusModal;

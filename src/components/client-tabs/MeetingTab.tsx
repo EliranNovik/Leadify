@@ -7125,7 +7125,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="px-1 sm:px-4 md:px-6 py-2 sm:py-4 md:py-6 space-y-10 sm:space-y-16">
+    <div className="px-1 sm:px-2 md:px-3 py-2 sm:py-3 md:py-3 space-y-10 sm:space-y-16">
       <ClientTabPageHeader
         className="mb-14"
         icon={CalendarIcon}

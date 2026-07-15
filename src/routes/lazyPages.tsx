@@ -39,6 +39,7 @@ export const LazySalesContributionPage = lazy(() => import('../pages/SalesContri
 export const LazyEditContractsPage = lazy(() => import('../pages/EditContractsPage'));
 export const LazyReassignLeadsPage = lazy(() => import('../pages/ReassignLeadsPage'));
 export const LazyEmployeeUnavailabilitiesReport = lazy(() => import('../pages/EmployeeUnavailabilitiesReport'));
+export const LazyHrManagementPage = lazy(() => import('../pages/HrManagementPage'));
 export const LazyEmployeeSalariesReport = lazy(() => import('../pages/EmployeeSalariesReport'));
 export const LazyEmployeeInfoReport = lazy(() => import('../pages/EmployeeInfoReport'));
 export const LazyEmployeeLeadReportingPage = lazy(() => import('../pages/EmployeeLeadReportingPage'));

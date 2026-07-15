@@ -1279,12 +1279,18 @@ export function SubEffortsLogModal({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 md:px-6 md:pb-6">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(280px,340px)_1fr] lg:grid-cols-[minmax(300px,360px)_1fr]">
-            {/* Workflow — separate white box */}
-            <div className={mobileStep === 'details' ? 'hidden md:block' : 'block md:overflow-visible'}>
-              <div className="overflow-visible rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:p-5">
-                <div className="mb-3 flex items-center justify-between gap-2 px-0.5">
+        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 md:overflow-hidden md:px-6 md:pb-6">
+          <div className="grid grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(280px,340px)_1fr] lg:grid-cols-[minmax(300px,360px)_1fr]">
+            {/* Workflow — independent scroll on desktop */}
+            <div
+              className={
+                mobileStep === 'details'
+                  ? 'hidden md:flex md:h-full md:min-h-0 md:flex-col'
+                  : 'block md:flex md:h-full md:min-h-0 md:flex-col'
+              }
+            >
+              <div className="flex flex-col overflow-visible rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:h-full md:min-h-0 md:overflow-hidden md:p-5">
+                <div className="mb-3 flex shrink-0 items-center justify-between gap-2 px-0.5">
                   <div>
                     <span className="text-base font-semibold text-base-content/80 md:text-lg">Workflow</span>
                   </div>
@@ -1293,7 +1299,7 @@ export function SubEffortsLogModal({
                   ) : null}
                 </div>
                 {timelineRows.length ? (
-                  <div>
+                  <div className="min-h-0 md:flex-1 md:overflow-y-auto md:overscroll-y-contain">
                     {timelineRows.map((r: any, index: number) => {
                       const rowId = String(r?.id);
                       const isSelected = selectedRow?.id != null && String(selectedRow.id) === rowId;
@@ -1326,13 +1332,13 @@ export function SubEffortsLogModal({
                     })}
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-base-content/50">
+                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-base-content/50 md:flex-1">
                     {emptySubEffortsMessage}
                   </div>
                 )}
 
                 {onAddSubEffort ? (
-                  <div className="mt-4 border-t border-gray-200/80 pt-4">
+                  <div className="mt-4 shrink-0 border-t border-gray-200/80 pt-4">
                     <div className="dropdown dropdown-top dropdown-end w-full">
                       <button
                         type="button"
@@ -1382,10 +1388,15 @@ export function SubEffortsLogModal({
               </div>
             </div>
 
-            {/* Detail panels — each section its own white box */}
-            <div className={mobileStep === 'details' ? 'block' : 'hidden md:block'}>
-              <div className="flex min-h-full flex-col space-y-4">
-                {selectedRow ? (
+            {/* Detail panels — scrolls independently on desktop */}
+            <div
+              className={
+                mobileStep === 'details'
+                  ? 'block md:h-full md:min-h-0 md:overflow-y-auto md:overscroll-y-contain'
+                  : 'hidden md:block md:h-full md:min-h-0 md:overflow-y-auto md:overscroll-y-contain'
+              }
+            >
+              <div className="flex min-h-full flex-col space-y-4">                {selectedRow ? (
                   <>
                     <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
                       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">

@@ -97,6 +97,13 @@ import EditFieldModal, {
     EditFieldLabel,
 } from './EditFieldModal';
 import ClientPortalAdminCard from './portal/ClientPortalAdminCard';
+import LeadEmployeeCostBadges from './LeadEmployeeCostBadges';
+import LeadEmployeeCostModal from './LeadEmployeeCostModal';
+import {
+    fetchLeadEmployeeCostSummary,
+    resolveLeadTotalValueNis,
+    type LeadEmployeeCostSummary,
+} from '../lib/leadEmployeeCost';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -162,9 +169,21 @@ const normalizeTagsValue = (value: unknown): string[] => {
 /** External Firms report — shared header / panel styling */
 const CLIENT_HEADER_CARD = 'rounded-[18px] bg-white shadow-sm px-4 py-3.5 sm:px-5 sm:py-4';
 const CLIENT_HEADER_SHELL = `${CLIENT_HEADER_CARD} w-full`;
-/** Clears fixed app Header (clients-detail-scroll sets main padding-top: 0). */
-const CLIENT_HEADER_APP_INSET =
-    'pt-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+1rem)] md:pt-[calc(3rem+1.25rem)]';
+/** Clears fixed app Header on mobile (clients-detail-scroll sets main padding-top: 0). */
+const CLIENT_HEADER_APP_INSET_MOBILE =
+    'pt-[calc(env(safe-area-inset-top,0px)+2.75rem+1.75rem)]';
+/**
+ * Clear floating staff sidebar: left-4 (1rem) + w-20 (5rem) + gap.
+ * Use pl-* only (not px-*) so page right-padding utilities never override left inset.
+ */
+const CLIENT_HEADER_SIDEBAR_PAD = 'md:pl-40';
+/** Right + mobile left page padding — never sets md:pl so sidebar pad stays intact. */
+const CLIENT_HEADER_PAGE_X = 'pl-3 pr-3 sm:pl-4 sm:pr-4 md:pr-6 lg:pr-8 xl:pr-10';
+/**
+ * Desktop top strip — edge-to-edge white.
+ * Uses a dedicated spacer for the fixed navbar height so the name never sits under it.
+ */
+const CLIENT_HEADER_TOP_BAND = 'client-header-top-band w-full bg-white dark:bg-base-100';
 
 const CLIENT_HEADER_SECTION_LABEL =
     'text-[11px] font-semibold uppercase tracking-widest text-base-content/40';
@@ -180,6 +199,13 @@ const META_BADGE_WHITE =
 const META_BADGE_WHITE_BTN =
     `${META_BADGE_WHITE} border-0 font-sans transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:shadow-md`;
 
+/** Compact chips docked to the bottom of the client header top band. */
+const META_BADGE_CONNECTED =
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full border border-base-200/70 bg-white px-3 py-1.5 text-[13px] font-medium text-base-content/80 shadow-none dark:border-base-300/50 dark:bg-base-100';
+
+const META_BADGE_CONNECTED_BTN =
+    `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:border-base-300 hover:bg-base-50 dark:hover:bg-base-200/40`;
+
 const CLIENT_HEADER_LEAD_NUMBER =
     'mt-0 block text-sm font-medium tabular-nums text-gray-500 dark:text-base-content/45';
 
@@ -189,36 +215,35 @@ const META_ICON_CATEGORY = 'h-6 w-6 shrink-0 text-amber-600';
 const META_ICON_TOPIC = 'h-6 w-6 shrink-0 text-emerald-600';
 const META_ICON_APPLICANTS = 'h-6 w-6 shrink-0 text-rose-600';
 
-const HEADER_ACTION_ICON = 'h-7 w-7 shrink-0';
+const HEADER_ACTION_ICON = 'h-6 w-6 shrink-0';
 
-const HEADER_ACTION_BAR_OVAL =
-    'inline-flex min-w-0 flex-wrap items-center gap-3 rounded-[20px] border border-base-200/50 bg-white px-5 py-3 shadow-sm dark:border-base-300/45 dark:bg-base-100';
-
-const HEADER_ACTION_BAR_BADGE_BTN =
-    'inline-flex pointer-events-auto relative shrink-0 items-center justify-center rounded-full border-0 bg-transparent p-0 h-7 w-7 min-h-0 min-w-0 text-base-content/75 transition-colors duration-150';
+/** Perfect circle badge for each header action icon. */
+const HEADER_ACTION_BAR_ROUND_BADGE =
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative !h-12 !w-12 !min-h-12 !min-w-12 !max-h-12 !max-w-12 shrink-0 overflow-hidden border border-base-200/50 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 dark:border-base-300/45 dark:!bg-base-100';
 
 const HEADER_ACTION_BAR_CALL_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-gray-700/55 dark:hover:text-gray-100`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} hover:!bg-gray-100 hover:text-gray-800 dark:hover:!bg-gray-700/55 dark:hover:text-gray-100`;
 
 const HEADER_ACTION_BAR_WHATSAPP_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-900/35`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} text-emerald-700 hover:!bg-emerald-50 hover:text-emerald-800 dark:text-emerald-300 dark:hover:!bg-emerald-900/35`;
 
 const HEADER_ACTION_BAR_EMAIL_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} text-sky-700 hover:bg-sky-50 hover:text-sky-800 dark:text-sky-300 dark:hover:bg-sky-900/35`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} text-sky-700 hover:!bg-sky-50 hover:text-sky-800 dark:text-sky-300 dark:hover:!bg-sky-900/35`;
 
 const HEADER_ACTION_BAR_DOCS_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-indigo-50 hover:text-indigo-700 dark:hover:bg-indigo-900/30 dark:hover:text-indigo-200`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} hover:!bg-indigo-50 hover:text-indigo-700 dark:hover:!bg-indigo-900/30 dark:hover:text-indigo-200`;
 
 const HEADER_ACTION_BAR_TIMELINE_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-cyan-50 hover:text-cyan-800 dark:hover:bg-cyan-900/30 dark:hover:text-cyan-200`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} hover:!bg-cyan-50 hover:text-cyan-800 dark:hover:!bg-cyan-900/30 dark:hover:text-cyan-200`;
 
 const HEADER_ACTION_BAR_HISTORY_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-700/55 dark:hover:text-slate-100`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} hover:!bg-slate-100 hover:text-slate-800 dark:hover:!bg-slate-700/55 dark:hover:text-slate-100`;
 
-const HEADER_ACTION_BAR_MORE_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-violet-50 hover:text-violet-800 dark:hover:bg-violet-900/30 dark:hover:text-violet-200`;
+/** Round badge for the Actions drawer trigger. */
+const HEADER_ACTION_BAR_MORE_BADGE =
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative !h-12 !w-12 !min-h-12 !min-w-12 !max-h-12 !max-w-12 shrink-0 overflow-hidden border border-base-200/50 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 hover:!bg-violet-50 hover:text-violet-800 dark:border-base-300/45 dark:!bg-base-100 dark:hover:!bg-violet-900/30 dark:hover:text-violet-200';
 
-const HEADER_ACTION_BAR_BTN = HEADER_ACTION_BAR_BADGE_BTN;
+const HEADER_ACTION_BAR_BTN = HEADER_ACTION_BAR_ROUND_BADGE;
 
 const CONTACT_MODAL_LINK =
     'inline-flex items-center gap-1 text-sm font-medium text-base-content/65 transition-colors hover:text-primary';
@@ -233,22 +258,22 @@ const HEADER_FLAGS_BTN_CLASS =
     'btn btn-circle btn-ghost relative shrink-0 border border-amber-200/80 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 min-h-[2.5rem] min-w-[2.5rem] p-0 disabled:pointer-events-none disabled:opacity-40 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
 
 const HEADER_ACTION_BAR_TAGS_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} text-purple-700 hover:bg-purple-50 hover:text-purple-800 dark:text-purple-300 dark:hover:bg-purple-900/30`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} text-purple-700 hover:!bg-purple-50 hover:text-purple-800 dark:text-purple-300 dark:hover:!bg-purple-900/30`;
 
 const HEADER_ACTION_BAR_FLAGS_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} disabled:pointer-events-none disabled:opacity-40 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-300 dark:hover:bg-amber-900/30`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} disabled:pointer-events-none disabled:opacity-40 text-amber-700 hover:!bg-amber-50 hover:text-amber-800 dark:text-amber-300 dark:hover:!bg-amber-900/30`;
 
 const HEADER_ACTION_BAR_DUPLICATES_BTN =
-    `${HEADER_ACTION_BAR_BADGE_BTN} text-orange-700 hover:bg-orange-50 hover:text-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/30`;
+    `${HEADER_ACTION_BAR_ROUND_BADGE} text-orange-700 hover:!bg-orange-50 hover:text-orange-800 dark:text-orange-300 dark:hover:!bg-orange-900/30`;
 
 const HEADER_DUPLICATES_BTN_CLASS =
     'btn btn-circle btn-ghost relative shrink-0 border border-orange-200/80 bg-orange-50 text-orange-700 hover:border-orange-300 hover:bg-orange-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-orange-800/50 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
 
 const MORE_ACTIONS_SECTION_LABEL =
-    'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/40';
+    'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500 dark:text-gray-400';
 
 const MORE_ACTIONS_SHEET_ITEM =
-    'group flex w-full items-center gap-3 rounded-2xl border border-base-200/55 bg-white px-3.5 py-3 text-left text-[15px] font-medium leading-snug text-base-content/90 shadow-sm transition-all hover:border-base-300/70 hover:shadow-md active:scale-[0.995] dark:border-base-300/40 dark:bg-base-100';
+    'group flex w-full items-center gap-3 rounded-2xl border border-transparent bg-transparent px-3.5 py-3 text-left text-[15px] font-medium leading-snug text-base-content/90 transition-all hover:border-base-200/80 hover:bg-base-200/70 hover:shadow-sm active:scale-[0.995] dark:hover:border-base-300/40 dark:hover:bg-base-200/35';
 
 const MORE_ACTIONS_ICON_BOX =
     'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors';
@@ -270,9 +295,6 @@ const MORE_ACTIONS_ICON_TONE_PRIMARY =
 
 const MORE_ACTIONS_ICON_TONE_PURPLE =
     'bg-purple-50 text-purple-700 group-hover:bg-purple-100 dark:bg-purple-900/25 dark:text-purple-300';
-
-const MORE_ACTIONS_DROPDOWN_LIST =
-    'flex flex-col gap-2 [&_li]:list-none [&_li>a]:group [&_li>a]:flex [&_li>a]:w-full [&_li>a]:items-center [&_li>a]:gap-3 [&_li>a]:rounded-2xl [&_li>a]:border [&_li>a]:border-base-200/55 [&_li>a]:bg-white [&_li>a]:px-3.5 [&_li>a]:py-3 [&_li>a]:text-left [&_li>a]:text-[15px] [&_li>a]:font-medium [&_li>a]:leading-snug [&_li>a]:text-base-content/90 [&_li>a]:shadow-sm [&_li>a]:transition-all [&_li>a]:hover:border-base-300/70 [&_li>a]:hover:shadow-md [&_li>a>svg]:box-content [&_li>a>svg]:h-5 [&_li>a>svg]:w-5 [&_li>a>svg]:shrink-0 [&_li>a>svg]:rounded-xl [&_li>a>svg]:bg-base-200/70 [&_li>a>svg]:p-2.5 [&_li>a>svg]:text-base-content/70 [&_li:not(:has(a))]:rounded-2xl [&_li:not(:has(a))]:border [&_li:not(:has(a))]:border-dashed [&_li:not(:has(a))]:border-base-200/70 [&_li:not(:has(a))]:bg-white/80 [&_li:not(:has(a))]:px-3.5 [&_li:not(:has(a))]:py-3 [&_li:not(:has(a))]:text-sm [&_li:not(:has(a))]:text-base-content/55';
 
 const TEAM_CARD_VISIBLE_COLLAPSED = 2;
 
@@ -494,13 +516,73 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [assignedTeamPanelOpen, setAssignedTeamPanelOpen] = useState(false);
     const [headerFinancialDetailsOpen, setHeaderFinancialDetailsOpen] = useState(false);
     const activeHandlerLeadRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [leadEmployeeCostSummary, setLeadEmployeeCostSummary] =
+        useState<LeadEmployeeCostSummary | null>(null);
+    const [leadEmployeeCostLoading, setLeadEmployeeCostLoading] = useState(false);
+    const [leadEmployeeCostModalOpen, setLeadEmployeeCostModalOpen] = useState(false);
+    const [leadEmployeeCostModalMode, setLeadEmployeeCostModalMode] = useState<
+        'overview' | 'warning'
+    >('overview');
+    const leadEmployeeCostFetchIdRef = useRef(0);
 
     useEffect(() => {
         setAssignedTeamPanelOpen(false);
         setHeaderFinancialDetailsOpen(false);
         setMoreActionsSheetOpen(false);
         setInactiveNotesExpanded(false);
+        setLeadEmployeeCostModalOpen(false);
+        setLeadEmployeeCostSummary(null);
     }, [selectedClient?.id]);
+
+    useEffect(() => {
+        if (!selectedClient?.id) {
+            setLeadEmployeeCostSummary(null);
+            setLeadEmployeeCostLoading(false);
+            return;
+        }
+
+        const fetchId = ++leadEmployeeCostFetchIdRef.current;
+        setLeadEmployeeCostLoading(true);
+
+        const leadTotalValueNis = resolveLeadTotalValueNis(selectedClient, {
+            hasPaymentPlan,
+            paymentPlanBaseTotal,
+        });
+
+        void fetchLeadEmployeeCostSummary({
+            client: selectedClient,
+            leadTotalValueNis,
+        })
+            .then((summary) => {
+                if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
+                setLeadEmployeeCostSummary(summary);
+            })
+            .catch((err) => {
+                console.error('[ClientHeader] lead employee cost fetch failed:', err);
+                if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
+                setLeadEmployeeCostSummary(null);
+            })
+            .finally(() => {
+                if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
+                setLeadEmployeeCostLoading(false);
+            });
+    }, [
+        selectedClient?.id,
+        selectedClient?.balance,
+        selectedClient?.proposal_total,
+        selectedClient?.total,
+        selectedClient?.total_base,
+        selectedClient?.currency_id,
+        selectedClient?.lead_type,
+        hasPaymentPlan,
+        paymentPlanBaseTotal,
+    ]);
+
+    const openLeadEmployeeCostModal = useCallback((mode: 'overview' | 'warning') => {
+        setLeadEmployeeCostModalMode(mode);
+        setLeadEmployeeCostModalOpen(true);
+    }, []);
+
     /** Latest row identity + active_handler_type for poll + realtime client-side match (avoids stale closures). */
     const leadHandlerSyncRef = useRef<{
         clientId: string | number;
@@ -2389,46 +2471,70 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const applicantsCount =
         (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
 
-    const renderClientMetaBadges = () => (
-        <>
-            <button
-                type="button"
-                className={`${META_BADGE_WHITE_BTN} ${disableCategoryModal ? 'cursor-default hover:shadow-sm' : ''}`}
-                onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
-            >
-                <GlobeAltIcon className={META_ICON_LANGUAGE} aria-hidden />
-                <span className="truncate">{displayLanguageChip}</span>
-            </button>
-            <span className={META_BADGE_WHITE}>
-                <LinkIcon className={META_ICON_SOURCE} aria-hidden />
-                <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">
-                    {displaySourceChip}
+    const renderClientMetaBadges = (variant: 'floating' | 'connected' = 'floating') => {
+        const badge = variant === 'connected' ? META_BADGE_CONNECTED : META_BADGE_WHITE;
+        const badgeBtn = variant === 'connected' ? META_BADGE_CONNECTED_BTN : META_BADGE_WHITE_BTN;
+        const iconTone =
+            variant === 'connected'
+                ? 'h-4 w-4 shrink-0'
+                : undefined;
+        const languageIcon = iconTone ? `${iconTone} text-sky-600` : META_ICON_LANGUAGE;
+        const sourceIcon = iconTone ? `${iconTone} text-violet-600` : META_ICON_SOURCE;
+        const applicantsIcon = iconTone ? `${iconTone} text-rose-600` : META_ICON_APPLICANTS;
+        const categoryIcon = iconTone ? `${iconTone} text-amber-600` : META_ICON_CATEGORY;
+        const topicIcon = iconTone ? `${iconTone} text-emerald-600` : META_ICON_TOPIC;
+        const idleHover =
+            disableCategoryModal
+                ? variant === 'connected'
+                    ? 'cursor-default'
+                    : 'cursor-default hover:shadow-sm'
+                : '';
+
+        return (
+            <>
+                <button
+                    type="button"
+                    className={`${badgeBtn} ${idleHover}`}
+                    onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
+                >
+                    <GlobeAltIcon className={languageIcon} aria-hidden />
+                    <span className="truncate">{displayLanguageChip}</span>
+                </button>
+                <span className={badge}>
+                    <LinkIcon className={sourceIcon} aria-hidden />
+                    <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">
+                        {displaySourceChip}
+                    </span>
                 </span>
-            </span>
-            {applicantsCount != null && Number(applicantsCount) > 0 ? (
-                <span className={META_BADGE_WHITE} title="Applicants">
-                    <UserIcon className={META_ICON_APPLICANTS} aria-hidden />
-                    {applicantsCount}
-                </span>
-            ) : null}
-            <button
-                type="button"
-                className={`${META_BADGE_WHITE_BTN} ${disableCategoryModal ? 'cursor-default hover:shadow-sm' : ''}`}
-                onClick={disableCategoryModal ? undefined : () => openMetaModal('category')}
-            >
-                <RectangleStackIcon className={META_ICON_CATEGORY} aria-hidden />
-                <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">{displayCategory}</span>
-            </button>
-            <button
-                type="button"
-                className={`${META_BADGE_WHITE_BTN} ${disableCategoryModal ? 'cursor-default hover:shadow-sm' : ''}`}
-                onClick={disableCategoryModal ? undefined : () => openMetaModal('topic')}
-            >
-                <DocumentTextIcon className={META_ICON_TOPIC} aria-hidden />
-                <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">{displayTopicChip}</span>
-            </button>
-        </>
-    );
+                {applicantsCount != null && Number(applicantsCount) > 0 ? (
+                    <span className={badge} title="Applicants">
+                        <UserIcon className={applicantsIcon} aria-hidden />
+                        {applicantsCount}
+                    </span>
+                ) : null}
+                <button
+                    type="button"
+                    className={`${badgeBtn} ${idleHover}`}
+                    onClick={disableCategoryModal ? undefined : () => openMetaModal('category')}
+                >
+                    <RectangleStackIcon className={categoryIcon} aria-hidden />
+                    <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">
+                        {displayCategory}
+                    </span>
+                </button>
+                <button
+                    type="button"
+                    className={`${badgeBtn} ${idleHover}`}
+                    onClick={disableCategoryModal ? undefined : () => openMetaModal('topic')}
+                >
+                    <DocumentTextIcon className={topicIcon} aria-hidden />
+                    <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">
+                        {displayTopicChip}
+                    </span>
+                </button>
+            </>
+        );
+    };
 
     const renderMoreActionRow = ({
         icon: Icon,
@@ -2495,10 +2601,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                           },
                       }),
                   )
-                : null}
-
-            {!hideActionsDropdown && dropdownItems
-                ? renderMoreActionSection('Workflow', <div className={MORE_ACTIONS_DROPDOWN_LIST}>{dropdownItems}</div>)
                 : null}
 
             {!hideActionsDropdown ? (
@@ -2847,73 +2949,56 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return renderCompactHistoryIconRow();
         }
 
-        const hasContactActions =
-            Boolean(displayPhone) ||
-            Boolean(displayEmail) ||
-            (Boolean(onOpenWhatsAppForContact) && Boolean(displayPhone));
-
         return (
             <div className={`flex flex-wrap items-center gap-2 ${wrapperClassName}`.trim()}>
-                {hasContactActions ? (
-                    <div className={HEADER_ACTION_BAR_OVAL}>
-                        {displayPhone ? (
-                            <button
-                                type="button"
-                                className={HEADER_ACTION_BAR_CALL_BTN}
-                                title="Call"
-                                aria-label="Call"
-                                onClick={handleCallPrimaryPhone}
-                            >
-                                <PhoneArrowUpRightIcon className={HEADER_ACTION_ICON} aria-hidden />
-                            </button>
-                        ) : null}
-                        {onOpenWhatsAppForContact && displayPhone ? (
-                            <button
-                                type="button"
-                                className={HEADER_ACTION_BAR_WHATSAPP_BTN}
-                                title="WhatsApp"
-                                aria-label="WhatsApp"
-                                onClick={() => void handleHeaderWhatsAppClick()}
-                            >
-                                <FaWhatsapp className={HEADER_ACTION_ICON} aria-hidden />
-                            </button>
-                        ) : null}
-                        {displayEmail ? (
-                            <button
-                                type="button"
-                                className={HEADER_ACTION_BAR_EMAIL_BTN}
-                                title="Email"
-                                aria-label="Email"
-                                onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                            >
-                                <EnvelopeIcon className={HEADER_ACTION_ICON} aria-hidden />
-                            </button>
-                        ) : null}
-                    </div>
+                {displayPhone ? (
+                    <button
+                        type="button"
+                        className={HEADER_ACTION_BAR_CALL_BTN}
+                        title="Call"
+                        aria-label="Call"
+                        onClick={handleCallPrimaryPhone}
+                    >
+                        <PhoneArrowUpRightIcon className={HEADER_ACTION_ICON} aria-hidden />
+                    </button>
+                ) : null}
+                {onOpenWhatsAppForContact && displayPhone ? (
+                    <button
+                        type="button"
+                        className={HEADER_ACTION_BAR_WHATSAPP_BTN}
+                        title="WhatsApp"
+                        aria-label="WhatsApp"
+                        onClick={() => void handleHeaderWhatsAppClick()}
+                    >
+                        <FaWhatsapp className={HEADER_ACTION_ICON} aria-hidden />
+                    </button>
+                ) : null}
+                {displayEmail ? (
+                    <button
+                        type="button"
+                        className={HEADER_ACTION_BAR_EMAIL_BTN}
+                        title="Email"
+                        aria-label="Email"
+                        onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                    >
+                        <EnvelopeIcon className={HEADER_ACTION_ICON} aria-hidden />
+                    </button>
                 ) : null}
 
-                {!hideHistoryAndTimeline ? (
-                    <div className={HEADER_ACTION_BAR_OVAL}>
-                        {renderTimelineHistoryButtons(
-                            HEADER_ACTION_BAR_TIMELINE_BTN,
-                            HEADER_ACTION_BAR_HISTORY_BTN,
-                        )}
-                    </div>
-                ) : null}
+                {renderTimelineHistoryButtons(
+                    HEADER_ACTION_BAR_TIMELINE_BTN,
+                    HEADER_ACTION_BAR_HISTORY_BTN,
+                )}
 
-                <div className={HEADER_ACTION_BAR_OVAL}>
-                    {renderHeaderDocsButton()}
-                    {renderTagsFlagsButtons(
-                        HEADER_ACTION_BAR_TAGS_BTN,
-                        HEADER_ACTION_BAR_FLAGS_BTN,
-                        HEADER_ACTION_ICON,
-                        HEADER_ACTION_BAR_DUPLICATES_BTN,
-                    )}
-                </div>
+                {renderHeaderDocsButton()}
+                {renderTagsFlagsButtons(
+                    HEADER_ACTION_BAR_TAGS_BTN,
+                    HEADER_ACTION_BAR_FLAGS_BTN,
+                    HEADER_ACTION_ICON,
+                    HEADER_ACTION_BAR_DUPLICATES_BTN,
+                )}
 
-                <div className={HEADER_ACTION_BAR_OVAL}>
-                    {renderMoreActionsTrigger(HEADER_ACTION_BAR_MORE_BTN)}
-                </div>
+                {renderMoreActionsTrigger(HEADER_ACTION_BAR_MORE_BADGE)}
             </div>
         );
     };
@@ -2996,7 +3081,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         <div
             className={
                 connectToAppHeader
-                    ? `w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 ${CLIENT_HEADER_APP_INSET}`
+                    ? 'w-full min-w-0'
                     : 'w-full min-w-0 space-y-4'
             }
         >
@@ -3015,8 +3100,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         }
                     >
                     {/* Mobile: SaaS header — identity, contact card, stage + chips */}
-                    <div className="flex w-full flex-col gap-5 md:hidden">
-                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2">
+                    <div
+                        className={
+                            connectToAppHeader
+                                ? `flex w-full flex-col gap-5 md:hidden ${CLIENT_HEADER_APP_INSET_MOBILE} ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                                : 'flex w-full flex-col gap-5 md:hidden'
+                        }
+                    >                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2">
                             <div className="flex w-full min-w-0 items-start gap-3">
                                 <div className="min-w-0 flex-1 pr-1 text-left">
                                     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -3231,7 +3321,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return (
                                 <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
-                                        <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
+                                        <div className="flex items-center justify-end gap-2">
+                                            <span
+                                                onClick={(e) => e.stopPropagation()}
+                                                onKeyDown={(e) => e.stopPropagation()}
+                                            >
+                                                <LeadEmployeeCostBadges
+                                                    summary={leadEmployeeCostSummary}
+                                                    loading={leadEmployeeCostLoading}
+                                                    onOpenOverview={() => openLeadEmployeeCostModal('overview')}
+                                                    onOpenWarning={() => openLeadEmployeeCostModal('warning')}
+                                                    isSuperuser={isSuperuser}
+                                                />
+                                            </span>
+                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
+                                        </div>
                                         <div className="flex flex-col items-end">
                                             <p className="inline-flex items-center gap-2 text-3xl font-bold leading-none tracking-tight text-base-content/95">
                                                 <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
@@ -3312,16 +3416,43 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                     {/* Desktop: dense single-strip header */}
                     <div className="relative hidden md:block md:w-full">
-                    <div className={`${CLIENT_HEADER_CARD} w-full`}>
-                        <div className="flex w-full min-w-0 items-center justify-between gap-4">
-                            <div className="min-w-0 flex-1 text-left">
+                    <div
+                        className={
+                            connectToAppHeader
+                                ? CLIENT_HEADER_TOP_BAND
+                                : `${CLIENT_HEADER_CARD} w-full`
+                        }
+                    >
+                        {connectToAppHeader ? (
+                            <div className="client-header-top-band__navbar-spacer" aria-hidden />
+                        ) : null}
+                        <div
+                            className={
+                                connectToAppHeader
+                                    ? 'client-header-top-band__body'
+                                    : undefined
+                            }
+                        >
+                        <div
+                            className={
+                                connectToAppHeader
+                                    ? 'flex w-full min-w-0 items-center justify-center gap-6 lg:gap-10'
+                                    : 'flex w-full min-w-0 items-center justify-between gap-4'
+                            }
+                        >
+                            <div
+                                className={
+                                    connectToAppHeader
+                                        ? 'min-w-0 shrink text-left'
+                                        : 'min-w-0 max-w-[55%] shrink-0 flex-1 text-left sm:max-w-none'
+                                }
+                            >
                                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-                                    <div className="min-w-0">
+                                    <div className="min-w-0 shrink">
                                         <div className="flex min-w-0 items-center gap-1.5">
-                                            <h1 className="min-w-0 text-lg font-bold leading-tight tracking-tight text-base-content/95 sm:text-xl">
+                                            <h1 className="min-w-0 max-w-full text-lg font-bold leading-tight tracking-tight text-base-content/95 sm:text-xl">
                                                 {renderClickableClientName('w-full font-bold sm:text-xl')}
-                                            </h1>
-                                            {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                            </h1>                                            {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
                                                 <button
                                                     onClick={() => {
                                                         if (isSubLead && masterLeadNumber) {
@@ -3498,12 +3629,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                                 return (
                                     <>
+                                        <div className="flex w-full items-center justify-end gap-2">
+                                            <LeadEmployeeCostBadges
+                                                summary={leadEmployeeCostSummary}
+                                                loading={leadEmployeeCostLoading}
+                                                onOpenOverview={() => openLeadEmployeeCostModal('overview')}
+                                                onOpenWarning={() => openLeadEmployeeCostModal('warning')}
+                                                isSuperuser={isSuperuser}
+                                            />
+                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
+                                        </div>
                                         <button
                                             type="button"
                                             className="w-full text-right"
                                             onClick={() => setIsBalanceModalOpen(true)}
                                         >
-                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
                                             <div className="flex flex-col items-end">
                                                 <p className="inline-flex items-center gap-2 text-2xl font-bold leading-none tracking-tight text-base-content/95 sm:text-3xl">
                                                     <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
@@ -3946,13 +4086,29 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             </div>
                         </div>
                     </div>
+                        {connectToAppHeader ? (
+                            <div className="client-header-top-band__meta">
+                                <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-1.5 sm:gap-2">
+                                    {renderClientMetaBadges('connected')}
+                                </div>
+                            </div>
+                        ) : null}
+                    </div>
                     </div>
 
+                    {!connectToAppHeader ? (
                     <div className="mt-2.5 flex w-full min-w-0 flex-wrap items-center gap-2">
                         {renderClientMetaBadges()}
                     </div>
+                    ) : null}
 
-                    <div className="mt-3 hidden w-full flex-col items-stretch gap-2 md:flex">
+                    <div
+                        className={
+                            connectToAppHeader
+                                ? `mt-3 hidden w-full flex-col items-stretch gap-2 md:flex ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                                : 'mt-3 hidden w-full flex-col items-stretch gap-2 md:flex'
+                        }
+                    >
                         <div className="flex w-full flex-wrap items-center gap-2">
                             <div className="shrink-0">
                                 {renderSegmentedHeaderActions()}
@@ -4369,7 +4525,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     const unactivatedEmployee = unactivatedBy ? getEmployeeById(unactivatedBy) : null;
 
                     return (
-                        <div className="mt-2 w-full rounded-[18px] bg-red-50 px-4 py-3 text-red-800 shadow-sm dark:bg-red-900/20 dark:text-red-200">
+                        <div
+                            className={
+                                connectToAppHeader
+                                    ? `mt-2 w-full ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                                    : 'mt-2 w-full'
+                            }
+                        >
+                        <div className="w-full rounded-[18px] bg-red-50 px-4 py-3 text-red-800 shadow-sm dark:bg-red-900/20 dark:text-red-200">
                             <div className="flex flex-col items-center gap-2 text-center">
                                 <span className="inline-flex items-center justify-center gap-2 text-lg font-semibold md:text-xl">
                                     <NoSymbolIcon className="h-6 w-6 shrink-0 md:h-7 md:w-7" aria-hidden />
@@ -4436,12 +4599,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 )}
                             </div>
                         </div>
+                        </div>
                     );
                 })()}
 
                 {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row (btn-md + text-base for tap targets) */}
-                <div className="mt-7 flex w-full flex-wrap items-center gap-4 md:hidden">
-                    {/* Check if case is unactivated - show message instead of buttons */}
+                <div
+                    className={
+                        connectToAppHeader
+                            ? `mt-7 flex w-full flex-wrap items-center gap-4 md:hidden ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                            : 'mt-7 flex w-full flex-wrap items-center gap-4 md:hidden'
+                    }
+                >                    {/* Check if case is unactivated - show message instead of buttons */}
                     {(() => {
                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                         const isUnactivated = isLegacy
@@ -4835,8 +5004,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 </div>
 
                 {/* Mobile: assigned team */}
-                <div className="mt-7 pt-6 md:hidden w-full px-1 sm:px-2">
-                    {(() => {
+                <div
+                    className={
+                        connectToAppHeader
+                            ? `mt-7 pt-6 md:hidden w-full ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                            : 'mt-7 pt-6 md:hidden w-full px-1 sm:px-2'
+                    }
+                >                    {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
                         const getCloserDisplay = (): string => {
@@ -5410,6 +5584,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>,
                         document.body
                     )}
+            {selectedClient && (
+                <LeadEmployeeCostModal
+                    open={leadEmployeeCostModalOpen}
+                    onClose={() => setLeadEmployeeCostModalOpen(false)}
+                    loading={leadEmployeeCostLoading}
+                    summary={leadEmployeeCostSummary}
+                    mode={leadEmployeeCostModalMode}
+                    isSuperuser={isSuperuser}
+                />
+            )}
             {!openEditLeadDrawerProp && selectedClient && (
                 <EditLeadDrawer
                     isOpen={editLeadDrawerOpen}

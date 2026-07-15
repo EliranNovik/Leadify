@@ -35,6 +35,11 @@ function readCachedGateState(userId: string | undefined) {
   if (!cached) {
     return { status: 'loading' as ClockInGateStatus, employeeId: null };
   }
+  // Never hydrate "Account not linked" from cache — that status was often written
+  // from transient query/RLS misses and caused false flashes for linked users.
+  if (cached.status === 'no_employee') {
+    return { status: 'loading' as ClockInGateStatus, employeeId: null };
+  }
   return { status: cached.status, employeeId: cached.employeeId };
 }
 
@@ -50,6 +55,8 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
   const [adminBypassActive, setAdminBypassActive] = useState(false);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const refreshQueuedRef = useRef(false);
+  const employeeIdRef = useRef<number | null>(employeeId);
+  employeeIdRef.current = employeeId;
 
   useLayoutEffect(() => {
     if (!userId) {
@@ -57,19 +64,25 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
       return;
     }
     const cached = readClockInGateCache(userId);
-    if (cached) {
+    if (cached && cached.status !== 'no_employee') {
       setClockInGateBlocksDataAccess(
-        cached.status === 'blocked' || cached.status === 'no_employee',
+        cached.status === 'blocked',
       );
     }
   }, [userId]);
 
   const refreshClockInGate = useCallback(async () => {
-    if (!user?.id || !supabaseSessionReady) {
+    if (!user?.id) {
       setStatus('loading');
       setEmployeeId(null);
       setAdminBypassActive(false);
       setClockInGateBlocksDataAccess(false);
+      return;
+    }
+
+    // Session briefly not ready (token refresh / remount) — keep last known gate
+    // state instead of flashing "not linked" or clearing employeeId.
+    if (!supabaseSessionReady) {
       return;
     }
 
@@ -85,10 +98,24 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
     const run = (async () => {
       setStatus((prev) => (prev === 'loading' ? 'loading' : prev));
       try {
-        const profile = await fetchClockInGateProfile(user.id);
+        const priorEmployeeId =
+          employeeIdRef.current
+          ?? readClockInGateCache(user.id)?.employeeId
+          ?? null;
+
+        const { profile, userRowFound, queryFailed } = await fetchClockInGateProfile(user.id, {
+          email: user.email,
+        });
+
+        if (queryFailed) {
+          // Never treat a transient query failure as "account not linked".
+          console.warn('Clock-in gate: profile query failed; keeping prior status');
+          return;
+        }
+
         const bypass = readAdminClockInBypass(user.id);
         if (bypass) {
-          const effectiveEmployeeId = bypass.targetEmployeeId ?? profile.employeeId;
+          const effectiveEmployeeId = bypass.targetEmployeeId ?? profile.employeeId ?? priorEmployeeId;
           setEmployeeId(effectiveEmployeeId);
           setAdminBypassActive(true);
           setStatus('allowed');
@@ -98,22 +125,49 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         }
 
         setAdminBypassActive(false);
-        setEmployeeId(profile.employeeId);
 
-        if (profile.isExternalUser) {
+        if (profile.isExternalUser && userRowFound) {
+          setEmployeeId(profile.employeeId);
           setStatus('exempt');
           setClockInGateBlocksDataAccess(false);
           writeClockInGateCache(user.id, 'exempt', profile.employeeId);
           return;
         }
 
-        if (profile.employeeId == null) {
+        // Empty row after retry often means JWT/RLS race, not a real unlink.
+        // Only confirm "no employee" when we either read a row without employee_id,
+        // or found no row and never previously knew a linked employee.
+        if (!userRowFound) {
+          if (priorEmployeeId != null) {
+            console.warn(
+              'Clock-in gate: users row missing temporarily; keeping employee',
+              priorEmployeeId,
+            );
+            setEmployeeId(priorEmployeeId);
+            const stillIn = await fetchIsEmployeeClockedIn(priorEmployeeId);
+            const nextStatus: ClockInGateStatus = stillIn ? 'allowed' : 'blocked';
+            setStatus(nextStatus);
+            setClockInGateBlocksDataAccess(nextStatus === 'blocked');
+            writeClockInGateCache(user.id, nextStatus, priorEmployeeId);
+            return;
+          }
+
+          setEmployeeId(null);
           setStatus('no_employee');
           setClockInGateBlocksDataAccess(true);
           writeClockInGateCache(user.id, 'no_employee', null);
           return;
         }
 
+        if (profile.employeeId == null) {
+          setEmployeeId(null);
+          setStatus('no_employee');
+          setClockInGateBlocksDataAccess(true);
+          writeClockInGateCache(user.id, 'no_employee', null);
+          return;
+        }
+
+        setEmployeeId(profile.employeeId);
         const isClockedIn = await fetchIsEmployeeClockedIn(profile.employeeId);
         const nextStatus = resolveClockInGateStatus(profile, isClockedIn);
         setStatus(nextStatus);
@@ -121,10 +175,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         writeClockInGateCache(user.id, nextStatus, profile.employeeId);
       } catch (error) {
         console.error('Clock-in gate refresh failed:', error);
-        setAdminBypassActive(false);
-        setStatus('blocked');
-        setClockInGateBlocksDataAccess(true);
-        writeClockInGateCache(user.id, 'blocked', null);
+        // Keep prior linked state; don't poison cache with fake blocked/unlinked.
       }
     })();
 
@@ -139,7 +190,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
       refreshQueuedRef.current = false;
       await refreshClockInGate();
     }
-  }, [user?.id, supabaseSessionReady]);
+  }, [user?.id, user?.email, supabaseSessionReady]);
 
   useEffect(() => {
     void refreshClockInGate();

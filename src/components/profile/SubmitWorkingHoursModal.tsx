@@ -4,6 +4,9 @@ import { toast } from 'react-hot-toast';
 import {
   expandUnavailabilitiesToDailyRows,
   fetchEmployeeUnavailabilitiesInRange,
+  filterCountedUnavailability,
+  countUnavailabilityApprovalBlockers,
+  hasUnavailabilityApprovalBlockers,
 } from '../../lib/employeeUnavailabilities';
 import {
   monthRange,
@@ -17,6 +20,7 @@ import {
 import {
   countClockInApprovalBlockers,
   clockInApprovalSubmitBlockMessage,
+  filterCountedClockInRecords,
   hasClockInApprovalBlockers,
   normalizeClockInApprovalFields,
 } from '../../lib/employeeClockInApproval';
@@ -43,9 +47,23 @@ function countMissingDaysForMonth(
   return buildWorkingHoursMonthCoverage(
     targetYear,
     targetMonth,
-    records,
-    unavailabilities,
+    filterCountedClockInRecords(records.map(normalizeClockInApprovalFields)),
+    filterCountedUnavailability(unavailabilities),
   ).missingCount;
+}
+
+function combinedApprovalBlockers(
+  records: ClockInExportRecord[],
+  unavailabilities: Awaited<ReturnType<typeof fetchEmployeeUnavailabilitiesInRange>>,
+) {
+  const clock = countClockInApprovalBlockers(
+    records.map((row) => normalizeClockInApprovalFields(row)),
+  );
+  const leave = countUnavailabilityApprovalBlockers(unavailabilities);
+  return {
+    pendingCount: clock.pendingCount + leave.pendingCount,
+    declinedCount: clock.declinedCount + leave.declinedCount,
+  };
 }
 
 interface SubmitWorkingHoursModalProps {
@@ -98,11 +116,15 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
       ]);
       setExistingSubmission(existing);
       const normalizedRecords = monthRecords.map((row) => normalizeClockInApprovalFields(row));
-      setApprovalBlockers(countClockInApprovalBlockers(normalizedRecords));
-      setPeriodTotal(sumClockDurations(monthRecords));
+      setApprovalBlockers(combinedApprovalBlockers(normalizedRecords, monthUnavail));
+      setPeriodTotal(sumClockDurations(filterCountedClockInRecords(normalizedRecords)));
       setMissingDays(countMissingDaysForMonth(submitYear, submitMonth, monthRecords, monthUnavail));
       setUnavailabilityDays(
-        expandUnavailabilitiesToDailyRows(monthUnavail, range.from, range.to).length,
+        expandUnavailabilitiesToDailyRows(
+          filterCountedUnavailability(monthUnavail),
+          range.from,
+          range.to,
+        ).length,
       );
     } catch (err) {
       console.error('SubmitWorkingHoursModal preview:', err);
@@ -139,11 +161,13 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
         fetchEmployeeUnavailabilitiesInRange(employeeId, range.from, range.to),
       ]);
       const normalizedRecords = monthRecords.map((row) => normalizeClockInApprovalFields(row));
-      if (hasClockInApprovalBlockers(normalizedRecords)) {
-        const message = clockInApprovalSubmitBlockMessage(
-          countClockInApprovalBlockers(normalizedRecords),
-        );
-        toast.error(message ?? 'Cannot submit while manual entries need approval.');
+      const blockers = combinedApprovalBlockers(normalizedRecords, monthUnavail);
+      if (
+        hasClockInApprovalBlockers(normalizedRecords) ||
+        hasUnavailabilityApprovalBlockers(monthUnavail)
+      ) {
+        const message = clockInApprovalSubmitBlockMessage(blockers);
+        toast.error(message ?? 'Cannot submit while entries need approval.');
         return;
       }
       const submission = await submitWorkingHoursMonth({
@@ -151,7 +175,7 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
         userId,
         year: submitYear,
         month: submitMonth,
-        periodTotal: sumClockDurations(monthRecords),
+        periodTotal: sumClockDurations(filterCountedClockInRecords(normalizedRecords)),
         missingDays: countMissingDaysForMonth(submitYear, submitMonth, monthRecords, monthUnavail),
       });
       toast.success(`Working hours for ${monthLabel} ${submitYear} submitted.`);

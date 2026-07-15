@@ -119,15 +119,23 @@ const ClockInEntryPage: React.FC = () => {
       setStatus('clocking_in');
       setMessage('Clocking you in…');
 
-      const profile = await fetchClockInGateProfile(session.user.id);
+      const profileResult = await fetchClockInGateProfile(session.user.id, {
+        email: session.user.email,
+      });
       if (cancelled) return;
+      if (profileResult.queryFailed) {
+        setStatus('error');
+        setMessage('Could not verify your employee profile. Please try again.');
+        return;
+      }
+      const profile = profileResult.profile;
       if (profile.isExternalUser) {
         setStatus('success');
         setMessage('Signed in. External accounts skip office clock-in.');
         window.setTimeout(() => navigate('/', { replace: true }), 1200);
         return;
       }
-      if (profile.employeeId == null) {
+      if (!profileResult.userRowFound || profile.employeeId == null) {
         setStatus('no_employee');
         setMessage('Your account is not linked to an employee profile. Contact an admin.');
         return;

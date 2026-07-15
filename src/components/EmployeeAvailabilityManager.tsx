@@ -251,13 +251,16 @@ const EmployeeAvailabilityManager: React.FC = () => {
         }
       }
 
-      // Prepare reason data based on type
+      // Admin/manager creates leave as already approved
       const reasonData: any = {
         employee_id: parseInt(selectedEmployee.id),
         unavailability_type: newUnavailableTime.unavailabilityType,
         start_date: dateString,
         start_time: newUnavailableTime.startTime,
         end_time: newUnavailableTime.endTime,
+        approved: true,
+        declined: false,
+        approved_at: new Date().toISOString(),
       };
 
       if (newUnavailableTime.unavailabilityType === 'sick_days') {
@@ -355,12 +358,15 @@ const EmployeeAvailabilityManager: React.FC = () => {
         }
       }
 
-      // Prepare reason data based on type
+      // Admin/manager creates leave as already approved
       const reasonData: any = {
         employee_id: parseInt(selectedEmployee.id),
         unavailability_type: newUnavailableRange.unavailabilityType,
         start_date: newUnavailableRange.startDate,
         end_date: newUnavailableRange.endDate,
+        approved: true,
+        declined: false,
+        approved_at: new Date().toISOString(),
       };
 
       if (newUnavailableRange.unavailabilityType === 'sick_days') {

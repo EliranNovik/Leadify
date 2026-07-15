@@ -20,8 +20,10 @@ const SOCIAL_LINKS = [
 ] as const;
 
 /** Same footer as PublicContractView — firm branding, addresses, copyright. */
-const PortalFooter: React.FC = () => (
-  <footer className="mt-8 bg-blue-950 text-white print-hide md:mt-24 mb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] md:mb-0">
+const PortalFooter: React.FC<{ className?: string }> = ({ className = '' }) => (
+  <footer
+    className={`mt-8 bg-blue-950 text-white print-hide md:mt-24 mb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] md:mb-0 ${className}`.trim()}
+  >
     <div className="mx-auto max-w-5xl px-4 py-8 md:px-8 md:py-20">
       <div className="flex flex-col items-center justify-center gap-4 md:gap-8">
         <div className="space-y-2 text-center md:space-y-3">

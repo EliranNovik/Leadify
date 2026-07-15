@@ -99,7 +99,7 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }, [utmParams]);
 
   return (
-    <div className="p-2 sm:p-4 md:p-6 space-y-8">
+    <div className="p-1 sm:p-2 md:p-3 space-y-8">
       <ClientTabPageHeader
         className="mb-0"
         icon={MegaphoneIcon}

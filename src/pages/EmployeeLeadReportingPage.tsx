@@ -10,6 +10,7 @@ import LeadAllocationSliders, {
   type LeadAllocationRow,
 } from '../components/employeeLeadReporting/LeadAllocationSliders';
 import AddLeadToAllocationModal from '../components/employeeLeadReporting/AddLeadToAllocationModal';
+import LeadAllocationBudgetAssistModal from '../components/employeeLeadReporting/LeadAllocationBudgetAssistModal';
 import {
   addLeadToAllocationBuckets,
   allocationRowFromCombinedLead,
@@ -17,15 +18,22 @@ import {
   fetchCurrentEmployeeContext,
   fetchDailyActivity,
   fetchDailyAllocation,
+  fetchDailyClockInMsByEmployee,
   formatAllocationPercent,
   getJerusalemTodayIsoDate,
   isDailyAllocationValid,
   leadActivityKey,
   rebalanceFlexAllocationBuckets,
   saveDailyAllocation,
+  setLeadAllocationPercent,
   syncAllocationTo100,
   type AllocationItemInput,
 } from '../lib/employeeLeadReporting';
+import {
+  evaluateDailyLeadAllocationBudgets,
+  type LeadAllocationBudgetHint,
+  type LeadAllocationBudgetViolation,
+} from '../lib/leadAllocationBudget';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 
 function activityToRow(
@@ -88,6 +96,11 @@ const EmployeeLeadReportingPage: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editSnapshot, setEditSnapshot] = useState<LeadAllocationChangeState | null>(null);
   const [addLeadModalOpen, setAddLeadModalOpen] = useState(false);
+  const [dayWorkedMs, setDayWorkedMs] = useState(0);
+  const [budgetHints, setBudgetHints] = useState<LeadAllocationBudgetHint[]>([]);
+  const [budgetViolations, setBudgetViolations] = useState<LeadAllocationBudgetViolation[]>([]);
+  const [budgetAssistOpen, setBudgetAssistOpen] = useState(false);
+  const [checkingBudget, setCheckingBudget] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -100,13 +113,17 @@ const EmployeeLeadReportingPage: React.FC = () => {
         setLastSavedAt(null);
         setIsEditing(true);
         setEditSnapshot(null);
+        setDayWorkedMs(0);
         return;
       }
 
-      const [activity, allocation] = await Promise.all([
+      const [activity, allocation, clockInMsByEmployee] = await Promise.all([
         fetchDailyActivity(ctx.employeeId, workDate),
         fetchDailyAllocation(ctx.employeeId, workDate),
+        fetchDailyClockInMsByEmployee(workDate),
       ]);
+
+      setDayWorkedMs(clockInMsByEmployee.get(ctx.employeeId) ?? 0);
 
       const savedByKey = new Map<string, AllocationItemInput>();
       for (const item of allocation?.items || []) {
@@ -212,6 +229,50 @@ const EmployeeLeadReportingPage: React.FC = () => {
     toast.success(`Added #${newRow.lead_number}`);
   };
 
+  const refreshBudgetHints = useCallback(
+    async (nextRows: LeadAllocationRow[], workedMs: number) => {
+      if (!employeeContext) {
+        setBudgetHints([]);
+        return;
+      }
+      const leads = nextRows
+        .filter((row) => row.included && row.percent > 0)
+        .map((row) => ({
+          key: row.key,
+          lead_type: row.lead_type,
+          new_lead_id: row.new_lead_id,
+          legacy_lead_id: row.legacy_lead_id,
+          lead_number: row.lead_number,
+          client_name: row.client_name,
+          percent: row.percent,
+        }));
+      if (leads.length === 0 || !(workedMs > 0)) {
+        setBudgetHints([]);
+        return;
+      }
+      try {
+        const result = await evaluateDailyLeadAllocationBudgets({
+          employeeId: employeeContext.employeeId,
+          workDate,
+          dayWorkedMs: workedMs,
+          leads,
+        });
+        setBudgetHints(result.hints);
+      } catch (error) {
+        console.warn('[EmployeeLeadReportingPage] budget hint refresh failed:', error);
+      }
+    },
+    [employeeContext, workDate],
+  );
+
+  useEffect(() => {
+    if (loading || isAllocationLocked) return;
+    const timer = window.setTimeout(() => {
+      void refreshBudgetHints(rows, dayWorkedMs);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [loading, isAllocationLocked, rows, dayWorkedMs, refreshBudgetHints]);
+
   const handleSave = async () => {
     if (!employeeContext) return;
     if (!canSave) {
@@ -220,7 +281,37 @@ const EmployeeLeadReportingPage: React.FC = () => {
     }
 
     setSaving(true);
+    setCheckingBudget(true);
     try {
+      const leadsForBudget = includedRows.map((row) => ({
+        key: row.key,
+        lead_type: row.lead_type,
+        new_lead_id: row.new_lead_id,
+        legacy_lead_id: row.legacy_lead_id,
+        lead_number: row.lead_number,
+        client_name: row.client_name,
+        percent: row.percent,
+      }));
+
+      const budget = await evaluateDailyLeadAllocationBudgets({
+        employeeId: employeeContext.employeeId,
+        workDate,
+        dayWorkedMs,
+        leads: leadsForBudget,
+      });
+      setBudgetHints(budget.hints);
+
+      if (budget.violations.length > 0) {
+        setBudgetViolations(budget.violations);
+        setBudgetAssistOpen(true);
+        toast.error(
+          budget.violations.length === 1
+            ? `Lead #${budget.violations[0].lead_number} is over the employee cost budget.`
+            : `${budget.violations.length} leads are over the employee cost budget.`,
+        );
+        return;
+      }
+
       const items: AllocationItemInput[] = includedRows.map((row) => ({
         lead_type: row.lead_type,
         new_lead_id: row.new_lead_id,
@@ -242,13 +333,42 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setOtherWorkPercent(saved.other_work_percent);
       setIsEditing(false);
       setEditSnapshot(null);
+      setBudgetViolations([]);
+      setBudgetAssistOpen(false);
       toast.success('Daily allocation saved.');
     } catch (error) {
       console.error('[EmployeeLeadReportingPage] save failed:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to save allocation.');
     } finally {
+      setCheckingBudget(false);
       setSaving(false);
     }
+  };
+
+  const handleApplyMaxBudget = () => {
+    if (budgetViolations.length === 0) {
+      setBudgetAssistOpen(false);
+      return;
+    }
+
+    let nextRows = rows;
+    let nextOther = otherWorkPercent;
+    for (const violation of budgetViolations) {
+      const result = setLeadAllocationPercent(
+        nextRows,
+        violation.key,
+        violation.maxAllowedPercent,
+      );
+      nextRows = result.rows;
+      nextOther = result.otherWorkPercent;
+    }
+
+    setRows(nextRows);
+    setOtherWorkPercent(nextOther);
+    setBudgetAssistOpen(false);
+    setBudgetViolations([]);
+    toast.success('Sliders set to the max available on budget. Review and save again.');
+    void refreshBudgetHints(nextRows, dayWorkedMs);
   };
 
   if (loading) {
@@ -305,6 +425,15 @@ const EmployeeLeadReportingPage: React.FC = () => {
             onChange={handleAllocationChange}
             onAddLead={() => setAddLeadModalOpen(true)}
             readOnly={isAllocationLocked}
+            dayWorkedMs={dayWorkedMs}
+            budgetHintsByKey={Object.fromEntries(budgetHints.map((h) => [h.key, h]))}
+            onApplyLeadMaxBudget={(leadKey, maxAllowedPercent) => {
+              const result = setLeadAllocationPercent(rows, leadKey, maxAllowedPercent);
+              setRows(result.rows);
+              setOtherWorkPercent(result.otherWorkPercent);
+              toast.success('Slider set to max available for this lead.');
+              void refreshBudgetHints(result.rows, dayWorkedMs);
+            }}
           />
 
           <AddLeadToAllocationModal
@@ -312,6 +441,13 @@ const EmployeeLeadReportingPage: React.FC = () => {
             onClose={() => setAddLeadModalOpen(false)}
             existingKeys={existingLeadKeys}
             onAdd={handleAddLead}
+          />
+
+          <LeadAllocationBudgetAssistModal
+            open={budgetAssistOpen}
+            violations={budgetViolations}
+            onClose={() => setBudgetAssistOpen(false)}
+            onApplyMaxAllowed={handleApplyMaxBudget}
           />
 
           {rows.length === 0 && (
@@ -353,7 +489,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
               <button
                 type="button"
                 className="btn btn-primary rounded-full px-6 shadow-sm"
-                disabled={isAllocationLocked ? saving : !canSave || saving}
+                disabled={isAllocationLocked ? saving : !canSave || saving || checkingBudget}
                 onClick={() => {
                   if (isAllocationLocked) {
                     handleStartEdit();
@@ -362,7 +498,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
                   void handleSave();
                 }}
               >
-                {saving ? (
+                {saving || checkingBudget ? (
                   <span className="loading loading-spinner loading-sm" />
                 ) : isAllocationLocked ? (
                   'Edit'

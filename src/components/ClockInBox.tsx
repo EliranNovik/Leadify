@@ -7,7 +7,7 @@ import { useAuthContext } from '../contexts/AuthContext';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import { resolveWorkplaceName } from '../lib/clockInLocations';
-import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
+import { fetchCombinedPendingHrApprovalCount } from '../lib/hrApprovals';
 import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
 
 interface ClockInBoxProps {
@@ -127,7 +127,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
       return;
     }
     try {
-      const count = await fetchPendingManualClockInCount();
+      const count = await fetchCombinedPendingHrApprovalCount();
       setPendingApprovalCount(count);
     } catch (error) {
       console.error('Error fetching pending approvals:', error);

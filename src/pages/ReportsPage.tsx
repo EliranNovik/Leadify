@@ -8322,6 +8322,7 @@ const reports: ReportSection[] = [
     items: [
       { label: 'Edit Contracts', icon: DocumentTextIcon, route: '/reports/edit-contracts' },
       { label: 'Re-assign leads', icon: ArrowPathIcon, route: '/reports/reassign-leads' },
+      { label: 'HR Management', icon: UsersIcon, route: '/reports/hr-management' },
       { label: 'Employee Unavailabilities', icon: CalendarIcon, route: '/reports/employee-unavailabilities' },
       { label: 'Employee Salaries', icon: CurrencyDollarIconOutline, route: '/reports/employee-salaries' },
       { label: 'Leads Report', icon: ClipboardDocumentListIcon, route: '/reports/leads-report' },

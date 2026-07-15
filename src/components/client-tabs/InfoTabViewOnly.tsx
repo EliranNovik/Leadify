@@ -289,7 +289,7 @@ const InfoTabViewOnly: React.FC<ClientTabProps> = ({ client }) => {
   const currentSection = isLegacy ? sectionEligibility : (client.section_eligibility ?? '');
 
   return (
-    <div className="p-2 sm:p-4 md:p-6 space-y-2 sm:space-y-3">
+    <div className="p-1 sm:p-2 md:p-3 space-y-2 sm:space-y-3">
       <ClientTabPageHeader
         className="mb-2"
         icon={InformationCircleIcon}

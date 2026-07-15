@@ -523,13 +523,15 @@ export function setLeadAllocationPercent(
   leadKey: string,
   nextValue: number,
 ): LeadAllocationBucketsState {
-  const value = normalizeAllocationPercent(nextValue);
+  // Allow hundredths so budget "max minutes" can land between whole percents.
+  const value =
+    Math.round(clampAllocationPercent(nextValue) * 100) / 100;
   const otherIncludedSum = rows
     .filter((row) => row.included && row.key !== leadKey)
     .reduce((sum, row) => sum + row.percent, 0);
   const clampedValue = Math.min(
     value,
-    normalizeAllocationPercent(100 - otherIncludedSum),
+    Math.round(clampAllocationPercent(100 - otherIncludedSum) * 100) / 100,
   );
 
   const nextRows = rows.map((row) =>
@@ -1041,6 +1043,43 @@ export function workedMsToCostNis(
   return Math.round(hourRate * billableHours * 100) / 100;
 }
 
+/** Standard workdays used to derive salary → hourly rate (avg monthly salary ÷ monthly hours). */
+export const SALARY_COST_WORKING_DAYS_PER_MONTH = 22;
+
+/** Hourly rate from average monthly salary: salary ÷ (min hours × workdays/month). */
+export function salaryToHourlyRateNis(
+  avgMonthlySalaryNis: number | null | undefined,
+  minHours: number,
+  workingDaysPerMonth: number = SALARY_COST_WORKING_DAYS_PER_MONTH,
+): number | null {
+  if (avgMonthlySalaryNis == null || !Number.isFinite(avgMonthlySalaryNis) || avgMonthlySalaryNis <= 0) {
+    return null;
+  }
+  const hoursPerMonth = normalizeEmployeeMinHours(minHours) * workingDaysPerMonth;
+  if (hoursPerMonth <= 0) return null;
+  return Math.round((avgMonthlySalaryNis / hoursPerMonth) * 100) / 100;
+}
+
+/** Lead/row cost as a percent of average monthly salary (total cost = salary). */
+export function salaryPercentToCostNis(
+  avgMonthlySalaryNis: number | null | undefined,
+  percent: number,
+): number | null {
+  if (avgMonthlySalaryNis == null || !Number.isFinite(avgMonthlySalaryNis)) return null;
+  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  return Math.round(((avgMonthlySalaryNis * safePercent) / 100) * 100) / 100;
+}
+
+/** Row cost from allocated worked time × derived salary hourly rate (no overtime markup). */
+export function workedMsAtHourlyRateToCostNis(
+  workedMs: number,
+  hourRateNis: number | null | undefined,
+): number | null {
+  if (hourRateNis == null || !Number.isFinite(hourRateNis)) return null;
+  const hours = Math.max(0, workedMs) / (1000 * 60 * 60);
+  return Math.round(hours * hourRateNis * 100) / 100;
+}
+
 export function allocationPercentToCostNis(
   totalWorkedMs: number,
   percent: number,
@@ -1175,6 +1214,8 @@ export function listMissingLeadReportingEmployees(params: {
   clockInMsByEmployee: Map<number, number>;
   departmentId?: number | null;
   employeeSearch?: string;
+  /** Average monthly gross salary (last 6 months). Total cost = salary when provided. */
+  avgMonthlySalaryByEmployee?: Map<number, number>;
 }): MissingLeadReportingEmployee[] {
   const search = params.employeeSearch?.trim().toLowerCase() || '';
   const departmentId = params.departmentId ?? null;
@@ -1186,10 +1227,15 @@ export function listMissingLeadReportingEmployees(params: {
     if (params.reportedEmployeeIds.has(employee.employeeId)) continue;
 
     const workedMs = params.clockInMsByEmployee.get(employee.employeeId) ?? 0;
+    const avgSalary = params.avgMonthlySalaryByEmployee?.get(employee.employeeId);
+    const costNis =
+      avgSalary != null && Number.isFinite(avgSalary) && avgSalary > 0
+        ? Math.round(avgSalary * 100) / 100
+        : workedMsToCostNis(workedMs, employee.hourRate, employee.minHours);
     rows.push({
       ...employee,
       workedMs,
-      costNis: workedMsToCostNis(workedMs, employee.hourRate, employee.minHours),
+      costNis,
     });
   }
 

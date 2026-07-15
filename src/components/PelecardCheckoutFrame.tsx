@@ -11,6 +11,8 @@ interface PelecardCheckoutFrameProps {
   onCheckoutNavigate?: (pathWithQuery: string) => void;
   /** Extra classes on the iframe shell (e.g. full-bleed on mobile). */
   shellClassName?: string;
+  /** Desktop: stretch iframe to fill column height down to the footer. */
+  fillColumn?: boolean;
 }
 
 function CheckoutSkeleton() {
@@ -70,8 +72,10 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   title = 'Payment',
   onCheckoutNavigate,
   shellClassName = '',
+  fillColumn = false,
 }) => {
   const isLgViewport = useIsLgViewport();
+  const fillDesktop = fillColumn && isLgViewport;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [iframeHeight, setIframeHeight] = useState(() =>
@@ -116,6 +120,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
         if (Number.isFinite(n) && n > 400) next = n;
       }
       if (next != null) {
+        if (isLgViewportNow() && fillColumn) return;
         const isLg = isLgViewportNow();
         const cap = isLg ? IFRAME_HEIGHT_MAX_DESKTOP : IFRAME_HEIGHT_MAX_MOBILE;
         const buffer = isLg ? IFRAME_HEIGHT_BUFFER_DESKTOP : IFRAME_HEIGHT_BUFFER_MOBILE;
@@ -128,7 +133,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [fillColumn]);
 
   const handleLoad = useCallback(() => {
     setIframeLoaded(true);
@@ -189,7 +194,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
       )}
 
       {paymentUrl && !loading && !error && (
-        <div className={IFRAME_SCROLL_SHELL_CLASS}>
+        <div className={`${IFRAME_SCROLL_SHELL_CLASS} ${fillDesktop ? 'lg:!h-full' : ''}`.trim()}>
           {showIframeLoading && (
             <div className="flex flex-col items-center justify-center px-4 sm:px-6 min-h-[280px] max-lg:min-h-[320px] bg-white lg:sticky lg:top-0 lg:z-10 lg:min-h-full">
               <CheckoutSkeleton />
@@ -201,12 +206,14 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
             title={title}
             src={paymentUrl}
             className={`w-full border-0 bg-transparent block ${
-              isLgViewport ? 'lg:!h-full lg:!min-h-0' : 'max-lg:!min-h-0'
+              fillDesktop || isLgViewport ? 'lg:!h-full lg:!min-h-0' : 'max-lg:!min-h-0'
             }`}
             style={
-              isLgViewport
-                ? { height: iframeHeight, minHeight: 0 }
-                : { height: iframeHeight, minHeight: iframeHeight, maxHeight: 'none' }
+              fillDesktop
+                ? { height: '100%', minHeight: 0 }
+                : isLgViewport
+                  ? { height: iframeHeight, minHeight: 0 }
+                  : { height: iframeHeight, minHeight: iframeHeight, maxHeight: 'none' }
             }
             scrolling={isLgViewport ? 'yes' : 'no'}
             allow="payment; publickey-credentials-get"

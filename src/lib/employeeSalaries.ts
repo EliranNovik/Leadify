@@ -10,6 +10,7 @@ export interface SalaryEntryRow {
   recordId?: number;
   gross_salary: number;
   net_salary: number | null;
+  min_hours: number;
 }
 
 export interface ActiveStaffEmployee {
@@ -225,6 +226,7 @@ export async function fetchActiveStaffSalaryRows(
       .select(`
         id,
         bonuses_role,
+        min_hours,
         tenant_departement!department_id ( name )
       `)
       .in('id', employeeIds),
@@ -243,6 +245,7 @@ export async function fetchActiveStaffSalaryRows(
     (metaRes.data || []).map((emp: {
       id: number;
       bonuses_role: string | null;
+      min_hours: number | null;
       tenant_departement: { name: string } | Array<{ name: string }> | null;
     }) => [emp.id, emp]),
   );
@@ -274,6 +277,7 @@ export async function fetchActiveStaffSalaryRows(
         recordId: existing?.id,
         gross_salary: existing?.gross_salary ?? 0,
         net_salary: existing?.net_salary ?? null,
+        min_hours: normalizeEmployeeMinHours(meta?.min_hours),
       };
     })
     .sort((a, b) => a.employee_name.localeCompare(b.employee_name, undefined, { sensitivity: 'base' }));
@@ -328,4 +332,70 @@ export async function saveActiveStaffSalaryRows(
   }
 
   return toSave.length;
+}
+
+/** Inclusive calendar months ending at `ref` month, going back `monthCount` months (same window idea as Sales Contribution last-N-months). */
+export function enumerateLastNCalendarMonths(
+  monthCount: number,
+  ref: Date = new Date(),
+): { month: number; year: number }[] {
+  const n = Math.max(1, Math.floor(monthCount));
+  const pairs: { month: number; year: number }[] = [];
+  let y = ref.getFullYear();
+  let m = ref.getMonth() + 1; // 1-12
+  for (let i = 0; i < n; i++) {
+    pairs.push({ month: m, year: y });
+    m -= 1;
+    if (m < 1) {
+      m = 12;
+      y -= 1;
+    }
+  }
+  return pairs.reverse();
+}
+
+/**
+ * Average monthly gross salary over the last N calendar months (default 6),
+ * matching Sales Contribution’s `totalSalaryCost` averaging from `employee_salary`.
+ */
+export async function fetchAverageGrossSalaryLastMonths(
+  employeeIds: number[],
+  monthCount = 6,
+  ref: Date = new Date(),
+): Promise<Map<number, number>> {
+  const result = new Map<number, number>();
+  if (employeeIds.length === 0) return result;
+
+  const months = enumerateLastNCalendarMonths(monthCount, ref);
+  const allowed = new Set(months.map((p) => `${p.year}-${p.month}`));
+  const denom = months.length;
+  const minYear = Math.min(...months.map((p) => p.year));
+  const maxYear = Math.max(...months.map((p) => p.year));
+
+  const { data, error } = await supabase
+    .from('employee_salary')
+    .select('employee_id, gross_salary, salary_month, salary_year')
+    .in('employee_id', employeeIds)
+    .gte('salary_year', minYear)
+    .lte('salary_year', maxYear);
+
+  if (error || !data) {
+    if (error) console.error('fetchAverageGrossSalaryLastMonths:', error);
+    return result;
+  }
+
+  const sumByEmp = new Map<number, number>();
+  for (const row of data) {
+    const yr = Number(row.salary_year);
+    const mo = Number(row.salary_month);
+    if (!allowed.has(`${yr}-${mo}`)) continue;
+    const eid = Number(row.employee_id);
+    sumByEmp.set(eid, (sumByEmp.get(eid) ?? 0) + Number(row.gross_salary || 0));
+  }
+
+  for (const eid of employeeIds) {
+    const sum = sumByEmp.get(eid);
+    result.set(eid, denom > 0 && sum != null ? sum / denom : 0);
+  }
+  return result;
 }

@@ -7146,7 +7146,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [composeTemplateDropdownOpen]);
 
   return (
-    <div className="px-1 py-2 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen w-full max-w-7xl mx-auto">
+    <div className="px-1 py-2 md:p-3 lg:p-4 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen w-full">
       <div className="relative w-full flex-1 min-w-0">
         {/* Loading indicator — only block UI when timeline is completely empty */}
         {interactionsLoading && sortedInteractions.length === 0 ? (

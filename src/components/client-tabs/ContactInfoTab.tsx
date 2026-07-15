@@ -3639,7 +3639,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   return (
     <Fragment>
       <div className="w-full overflow-x-hidden overflow-y-auto">
-        <div className="p-2 sm:p-4 md:p-6 max-w-full">
+        <div className="p-1 sm:p-2 md:p-3 max-w-full">
           <ClientTabPageHeader
             className="mb-6"
             icon={UserIcon}

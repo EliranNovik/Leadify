@@ -719,17 +719,17 @@ const PaymentPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-white">
-      <div className="flex flex-1 flex-col lg:flex-row overflow-x-hidden lg:min-h-0">
+    <div className="min-h-[100dvh] flex flex-col bg-white">
+      <div className="flex flex-1 flex-col lg:flex-row overflow-x-hidden min-h-0">
       <div className="hidden lg:flex lg:w-[40%] lg:shrink-0 lg:self-stretch lg:min-h-0">
         <aside
-          className="relative flex flex-1 flex-col w-full min-h-full text-white overflow-hidden overflow-y-auto"
+          className="relative flex flex-1 flex-col w-full h-full min-h-full text-white overflow-hidden overflow-y-auto"
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
           <CheckoutSummaryLogo className="absolute top-4 left-6 xl:top-5 xl:left-8 z-10" />
-          <div className="relative flex flex-col min-h-full items-center px-10 xl:px-12 py-10 xl:py-12 z-[1]">
-          <div className="flex w-full max-w-md flex-col text-left pt-14 xl:pt-16">
+          <div className="relative flex flex-col flex-1 min-h-full items-center px-10 xl:px-12 py-10 xl:py-12 z-[1]">
+          <div className="flex w-full max-w-md flex-1 flex-col text-left pt-14 xl:pt-16">
           <div className="flex flex-1 flex-col">
             <CheckoutSummaryHeading summary={summaryData} />
             {summaryData && (
@@ -754,7 +754,7 @@ const PaymentPage: React.FC = () => {
         </aside>
       </div>
 
-      <main className="relative flex-1 flex flex-col w-full max-lg:overflow-visible lg:min-h-0 lg:overflow-y-auto lg:overflow-hidden bg-white">
+      <main className="relative flex-1 flex flex-col w-full max-lg:overflow-visible lg:min-h-0 lg:overflow-hidden bg-white">
         <div className="pointer-events-none absolute top-8 right-12 xl:right-16 z-20 hidden lg:block">
           <CheckoutSecuredStamp />
         </div>
@@ -785,7 +785,7 @@ const PaymentPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="checkout-payment relative max-lg:shrink-0 max-lg:flex-none flex flex-col w-full max-w-4xl mx-auto px-4 sm:px-6 lg:flex-1 lg:min-h-0 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-4 sm:py-6 lg:pt-6 lg:pb-2 max-lg:pb-8">
+        <div className="checkout-payment relative max-lg:shrink-0 max-lg:flex-none flex flex-col w-full max-w-4xl mx-auto px-4 sm:px-6 lg:flex-1 lg:min-h-0 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-4 sm:py-6 lg:pt-6 lg:pb-0 max-lg:pb-8">
           <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-4 tracking-tight shrink-0">
             Payment information
           </h2>
@@ -805,6 +805,7 @@ const PaymentPage: React.FC = () => {
               onRetry={() => loadPelecardSession({ forceNew: true })}
               onCheckoutNavigate={(path) => navigate(path)}
               title="Secure payment"
+              fillColumn
               shellClassName="max-lg:h-auto max-lg:flex-none lg:flex-1 lg:min-h-0 lg:h-full"
             />
           )}
@@ -812,7 +813,7 @@ const PaymentPage: React.FC = () => {
       </main>
       </div>
 
-      <PortalFooter />
+      <PortalFooter className="!mt-0 shrink-0" />
 
       <PublicPageContactButtons />
       {walletDebug && <PaymentWalletDebugPanel paymentUrl={paymentUrl} />}

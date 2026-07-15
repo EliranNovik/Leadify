@@ -149,3 +149,56 @@ export function dateRangeToIsoBounds(from: string, to: string): { start: string;
   const end = new Date(`${to}T23:59:59.999`);
   return { start: start.toISOString(), end: end.toISOString() };
 }
+
+/** Daily total vs employee min_hours: under (red) + 3 green overshoot stages. */
+export type DurationVsMinHoursTone = 'under' | 'met' | 'over' | 'far_over';
+
+const MS_PER_MINUTE = 60 * 1000;
+/** At min or within this slack → simple green. */
+const CLOSELY_OVER_MS = 30 * MS_PER_MINUTE;
+/** Up to this overshoot → mid green; beyond → darkest green. */
+const MODERATELY_OVER_MS = 90 * MS_PER_MINUTE;
+
+export function durationVsMinHoursTone(
+  workedMs: number,
+  minHours: number,
+): DurationVsMinHoursTone {
+  const safeMin = Number.isFinite(minHours) && minHours > 0 ? minHours : 8;
+  const minMs = safeMin * 60 * 60 * 1000;
+  const worked = Math.max(0, workedMs);
+  if (worked < minMs) return 'under';
+  const overMs = worked - minMs;
+  if (overMs < CLOSELY_OVER_MS) return 'met';
+  if (overMs < MODERATELY_OVER_MS) return 'over';
+  return 'far_over';
+}
+
+export function durationVsMinHoursBadgeClass(tone: DurationVsMinHoursTone): string {
+  switch (tone) {
+    case 'under':
+      return 'bg-red-100 text-red-700';
+    case 'met':
+      return 'bg-emerald-100 text-emerald-700';
+    case 'over':
+      return 'bg-emerald-300 text-emerald-900';
+    case 'far_over':
+      return 'bg-emerald-700 text-white';
+  }
+}
+
+export function durationVsMinHoursTitle(
+  tone: DurationVsMinHoursTone,
+  minHours: number,
+): string {
+  const safeMin = Number.isFinite(minHours) && minHours > 0 ? minHours : 8;
+  switch (tone) {
+    case 'under':
+      return `Under daily min hours (${safeMin}h)`;
+    case 'met':
+      return `At or just over daily min hours (${safeMin}h)`;
+    case 'over':
+      return `Moderately over daily min hours (${safeMin}h)`;
+    case 'far_over':
+      return `Well over daily min hours (${safeMin}h)`;
+  }
+}

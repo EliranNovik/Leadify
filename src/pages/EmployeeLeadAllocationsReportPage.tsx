@@ -13,7 +13,6 @@ import {
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import {
-  allocationPercentToCostNis,
   allocationPercentToWorkedMs,
   buildClientRouteFromAllocationRow,
   compareWorkedHoursToMin,
@@ -28,13 +27,15 @@ import {
   formatAllocationWorkedDuration,
   getJerusalemTodayIsoDate,
   minHoursToMs,
-  workedMsToCostNis,
+  salaryToHourlyRateNis,
+  workedMsAtHourlyRateToCostNis,
   type AllocationReportRow,
   type ClockedOutEmployeeRef,
   type MissingLeadReportingEmployee,
 } from '../lib/employeeLeadReporting';
 import { fetchClockInRecordsInRange } from '../lib/workingHoursExport';
 import {
+  fetchAverageGrossSalaryLastMonths,
   getSalaryEmployeeInitials,
   salaryAvatarGradientStyle,
 } from '../lib/employeeSalaries';
@@ -52,7 +53,10 @@ type EmployeeAllocationGroup = {
   employeePhotoUrl: string | null;
   departmentName: string | null;
   minHours: number;
-  hourRate: number | null;
+  /** Average monthly gross salary (last 6 months). Total cost = this salary. */
+  avgMonthlySalaryNis: number | null;
+  /** Salary ÷ (min hours × 22 workdays). */
+  salaryHourRateNis: number | null;
   totalWorkedMs: number;
   rows: AllocationReportRow[];
 };
@@ -350,7 +354,7 @@ function MissingReportingModal({
 
 function EmployeeAllocationHeader({ group }: { group: EmployeeAllocationGroup }) {
   const comparison = compareWorkedHoursToMin(group.totalWorkedMs, group.minHours);
-  const totalCostNis = workedMsToCostNis(group.totalWorkedMs, group.hourRate, group.minHours);
+  const totalCostNis = sumEmployeeAllocationRowCostsNis(group);
   const minMs = minHoursToMs(group.minHours);
   const progressPercent =
     minMs > 0 ? Math.min(100, Math.round((group.totalWorkedMs / minMs) * 100)) : 0;
@@ -420,9 +424,9 @@ function EmployeeAllocationHeader({ group }: { group: EmployeeAllocationGroup })
               <p className="text-lg font-bold leading-tight text-gray-900">
                 {formatAllocationCostNis(totalCostNis)}
               </p>
-              {group.hourRate != null ? (
+              {group.salaryHourRateNis != null ? (
                 <p className="mt-0.5 text-xs text-gray-500">
-                  {formatAllocationCostNis(group.hourRate)}/h
+                  {formatAllocationCostNis(group.salaryHourRateNis)}/h
                 </p>
               ) : null}
             </div>
@@ -436,19 +440,27 @@ function EmployeeAllocationHeader({ group }: { group: EmployeeAllocationGroup })
 function groupRowsByEmployee(
   rows: AllocationReportRow[],
   clockInMsByEmployee: Map<number, number>,
+  avgMonthlySalaryByEmployee: Map<number, number>,
 ): EmployeeAllocationGroup[] {
   const map = new Map<number, EmployeeAllocationGroup>();
 
   for (const row of rows) {
     let group = map.get(row.employee_id);
     if (!group) {
+      const avgSalaryRaw = avgMonthlySalaryByEmployee.get(row.employee_id);
+      const avgMonthlySalaryNis =
+        avgSalaryRaw != null && Number.isFinite(avgSalaryRaw) && avgSalaryRaw > 0
+          ? Math.round(avgSalaryRaw * 100) / 100
+          : null;
+      const minHours = row.employee_min_hours;
       group = {
         employeeId: row.employee_id,
         employeeName: row.employee_name,
         employeePhotoUrl: row.employee_photo_url,
         departmentName: row.department_name,
-        minHours: row.employee_min_hours,
-        hourRate: row.employee_hour_rate,
+        minHours,
+        avgMonthlySalaryNis,
+        salaryHourRateNis: salaryToHourlyRateNis(avgMonthlySalaryNis, minHours),
         totalWorkedMs: clockInMsByEmployee.get(row.employee_id) ?? 0,
         rows: [],
       };
@@ -472,26 +484,31 @@ function allocationRowKey(row: AllocationReportRow): string {
   return `${row.allocation_id}-${row.is_other_work ? 'other' : row.lead_number}-${row.percent}`;
 }
 
+/** Sum of lead-row costs: each row’s allocated hours × salary hourly rate. */
+function sumEmployeeAllocationRowCostsNis(group: EmployeeAllocationGroup): number | null {
+  if (group.salaryHourRateNis == null) return null;
+  let total = 0;
+  for (const row of group.rows) {
+    const workedMs = allocationPercentToWorkedMs(group.totalWorkedMs, row.percent);
+    const rowCost = workedMsAtHourlyRateToCostNis(workedMs, group.salaryHourRateNis);
+    if (rowCost != null) total += rowCost;
+  }
+  return Math.round(total * 100) / 100;
+}
+
 type AllocationReportRowCardProps = {
   row: AllocationReportRow;
   totalWorkedMs: number;
-  hourRate: number | null;
-  minHours: number;
+  salaryHourRateNis: number | null;
 };
 
 function AllocationReportRowCard({
   row,
   totalWorkedMs,
-  hourRate,
-  minHours,
+  salaryHourRateNis,
 }: AllocationReportRowCardProps) {
   const workedMs = allocationPercentToWorkedMs(totalWorkedMs, row.percent);
-  const rowCostNis = allocationPercentToCostNis(
-    totalWorkedMs,
-    row.percent,
-    hourRate,
-    minHours,
-  );
+  const rowCostNis = workedMsAtHourlyRateToCostNis(workedMs, salaryHourRateNis);
 
   return (
     <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
@@ -550,7 +567,7 @@ function AllocationReportRowCard({
           <p className="text-xs font-semibold uppercase tracking-wider text-gray-600 lg:hidden">
             Submitted
           </p>
-          <p className="text-sm text-gray-800">{formatSubmittedAt(row.submitted_at)}</p>
+          <p className="text-sm text-gray-500">{formatSubmittedAt(row.submitted_at)}</p>
         </div>
       </div>
     </div>
@@ -581,8 +598,7 @@ function EmployeeAllocationSection({ group }: EmployeeAllocationSectionProps) {
             key={allocationRowKey(row)}
             row={row}
             totalWorkedMs={group.totalWorkedMs}
-            hourRate={group.hourRate}
-            minHours={group.minHours}
+            salaryHourRateNis={group.salaryHourRateNis}
           />
         ))}
       </div>
@@ -606,6 +622,9 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     Map<number, ClockedOutEmployeeRef>
   >(() => new Map());
   const [reportedEmployeeIds, setReportedEmployeeIds] = useState<Set<number>>(() => new Set());
+  const [avgMonthlySalaryByEmployee, setAvgMonthlySalaryByEmployee] = useState<Map<number, number>>(
+    () => new Map(),
+  );
   const [missingReportingModalOpen, setMissingReportingModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -692,10 +711,21 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         fetchClockInRecordsInRange(workDate, workDate),
         fetchSubmittedAllocationEmployeeIds(workDate),
       ]);
+      const clockInMs = buildDailyClockInMsByEmployee(clockRecords);
+      const clockedOut = collectClockedOutEmployeesForDay(clockRecords);
+      const employeeIds = Array.from(
+        new Set([
+          ...data.map((row) => row.employee_id),
+          ...Array.from(clockedOut.keys()),
+        ]),
+      );
+      const salaryMap = await fetchAverageGrossSalaryLastMonths(employeeIds, 6);
+
       setRows(data);
-      setClockInMsByEmployee(buildDailyClockInMsByEmployee(clockRecords));
-      setClockedOutEmployees(collectClockedOutEmployeesForDay(clockRecords));
+      setClockInMsByEmployee(clockInMs);
+      setClockedOutEmployees(clockedOut);
       setReportedEmployeeIds(submittedEmployeeIds);
+      setAvgMonthlySalaryByEmployee(salaryMap);
     } catch (error) {
       console.error('[EmployeeLeadAllocationsReport] load failed:', error);
       toast.error('Failed to load allocation report.');
@@ -703,6 +733,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       setClockInMsByEmployee(new Map());
       setClockedOutEmployees(new Map());
       setReportedEmployeeIds(new Set());
+      setAvgMonthlySalaryByEmployee(new Map());
     } finally {
       setLoading(false);
     }
@@ -714,8 +745,8 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   }, [permissionsLoaded, isSuperUser, loadReport]);
 
   const employeeGroups = useMemo(
-    () => groupRowsByEmployee(rows, clockInMsByEmployee),
-    [rows, clockInMsByEmployee],
+    () => groupRowsByEmployee(rows, clockInMsByEmployee, avgMonthlySalaryByEmployee),
+    [rows, clockInMsByEmployee, avgMonthlySalaryByEmployee],
   );
 
   const missingReportingEmployees = useMemo(
@@ -726,8 +757,16 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         clockInMsByEmployee,
         departmentId: departmentId ? Number(departmentId) : null,
         employeeSearch,
+        avgMonthlySalaryByEmployee,
       }),
-    [clockedOutEmployees, reportedEmployeeIds, clockInMsByEmployee, departmentId, employeeSearch],
+    [
+      clockedOutEmployees,
+      reportedEmployeeIds,
+      clockInMsByEmployee,
+      departmentId,
+      employeeSearch,
+      avgMonthlySalaryByEmployee,
+    ],
   );
 
   const reportTotals = useMemo(() => {
@@ -737,9 +776,9 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
 
     for (const group of employeeGroups) {
       totalWorkedMs += group.totalWorkedMs;
-      const cost = workedMsToCostNis(group.totalWorkedMs, group.hourRate, group.minHours);
-      if (cost != null) {
-        totalCostNis += cost;
+      const employeeCost = sumEmployeeAllocationRowCostsNis(group);
+      if (employeeCost != null) {
+        totalCostNis += employeeCost;
         hasAnyCost = true;
       }
     }
@@ -748,7 +787,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       employeeCount: employeeGroups.length,
       missingReportingCount: missingReportingEmployees.length,
       totalWorkedMs,
-      totalCostNis: hasAnyCost ? totalCostNis : null,
+      totalCostNis: hasAnyCost ? Math.round(totalCostNis * 100) / 100 : null,
     };
   }, [employeeGroups, missingReportingEmployees.length]);
 

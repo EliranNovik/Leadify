@@ -3,6 +3,16 @@ import { assertDateEditableForEmployee } from './employeeWorkingHoursSubmissions
 
 export type UnavailabilityType = 'sick_days' | 'vacation' | 'general';
 
+export type UnavailabilityApprovalStatus = 'approved' | 'pending' | 'declined';
+
+export type UnavailabilityApprovalFields = {
+  approved?: boolean | null;
+  declined?: boolean | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  decline_note?: string | null;
+};
+
 export type EmployeeUnavailabilityEntry = {
   id: number;
   employee_id: number;
@@ -16,7 +26,116 @@ export type EmployeeUnavailabilityEntry = {
   start_time: string | null;
   end_time: string | null;
   created_at: string;
+  approved?: boolean;
+  declined?: boolean;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  decline_note?: string | null;
 };
+
+export const UNAVAILABILITY_SELECT = `
+  id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
+  general_reason, document_url, start_date, end_date, start_time, end_time, created_at,
+  approved, declined, approved_by, approved_at, decline_note
+`;
+
+/** Pending leave insert defaults (employee self-service). */
+export function pendingUnavailabilityApprovalFields(): {
+  approved: false;
+  declined: false;
+  approved_by: null;
+  approved_at: null;
+  decline_note: null;
+} {
+  return {
+    approved: false,
+    declined: false,
+    approved_by: null,
+    approved_at: null,
+    decline_note: null,
+  };
+}
+
+/** Manager/HR creates leave already approved. */
+export function approvedUnavailabilityApprovalFields(approverAuthUserId?: string | null): {
+  approved: true;
+  declined: false;
+  approved_by: string | null;
+  approved_at: string;
+  decline_note: null;
+} {
+  return {
+    approved: true,
+    declined: false,
+    approved_by: approverAuthUserId ?? null,
+    approved_at: new Date().toISOString(),
+    decline_note: null,
+  };
+}
+
+export function normalizeUnavailabilityApprovalFields<T extends UnavailabilityApprovalFields>(
+  entry: T,
+): T & { approved: boolean; declined: boolean } {
+  return {
+    ...entry,
+    approved: entry.approved === true,
+    declined: entry.declined === true,
+  };
+}
+
+export function getUnavailabilityApprovalStatus(
+  entry: UnavailabilityApprovalFields,
+): UnavailabilityApprovalStatus {
+  if (entry.declined === true) return 'declined';
+  if (entry.approved === true) return 'approved';
+  return 'pending';
+}
+
+export function isUnavailabilityCounted(entry: UnavailabilityApprovalFields): boolean {
+  return getUnavailabilityApprovalStatus(entry) === 'approved';
+}
+
+export function filterCountedUnavailability<T extends UnavailabilityApprovalFields>(
+  entries: T[],
+): T[] {
+  return entries.filter(isUnavailabilityCounted);
+}
+
+export function countUnavailabilityApprovalBlockers(
+  entries: UnavailabilityApprovalFields[],
+): { pendingCount: number; declinedCount: number } {
+  let pendingCount = 0;
+  let declinedCount = 0;
+  for (const entry of entries) {
+    const status = getUnavailabilityApprovalStatus(entry);
+    if (status === 'pending') pendingCount += 1;
+    else if (status === 'declined') declinedCount += 1;
+  }
+  return { pendingCount, declinedCount };
+}
+
+export function hasUnavailabilityApprovalBlockers(
+  entries: UnavailabilityApprovalFields[],
+): boolean {
+  const { pendingCount, declinedCount } = countUnavailabilityApprovalBlockers(entries);
+  return pendingCount > 0 || declinedCount > 0;
+}
+
+export function unavailabilityApprovalWatermarkLabel(
+  status: UnavailabilityApprovalStatus,
+): string | null {
+  if (status === 'pending') return 'Waiting for approval';
+  if (status === 'declined') return 'Declined';
+  if (status === 'approved') return 'Approved';
+  return null;
+}
+
+export function unavailabilityApprovalLabelClass(status: UnavailabilityApprovalStatus): string {
+  if (status === 'pending') return 'text-sky-700';
+  if (status === 'declined') return 'text-red-700';
+  if (status === 'approved') return 'text-emerald-700';
+  return '';
+}
 
 export function unavailabilityTypeLabel(type: UnavailabilityType | string): string {
   switch (type) {
@@ -49,13 +168,13 @@ export function unavailabilityTypeShortLabel(type: UnavailabilityType | string):
 export function unavailabilityTypeBadgeClass(type: UnavailabilityType | string): string {
   switch (type) {
     case 'sick_days':
-      return 'bg-orange-100 text-orange-700 border border-orange-200';
+      return 'bg-orange-100 text-orange-700 border-0';
     case 'vacation':
-      return 'bg-green-100 text-green-700 border border-green-200';
+      return 'bg-green-100 text-green-700 border-0';
     case 'general':
-      return 'bg-slate-100 text-slate-700 border border-slate-200';
+      return 'bg-slate-100 text-slate-700 border-0';
     default:
-      return 'bg-gray-100 text-gray-700 border border-gray-200';
+      return 'bg-gray-100 text-gray-700 border-0';
   }
 }
 
@@ -181,6 +300,7 @@ function buildReasonUpdateFields(
     vacation_reason: type === 'vacation' ? reason : null,
     general_reason: type === 'general' ? reason : null,
     document_url: documentUrl,
+    ...pendingUnavailabilityApprovalFields(),
   };
 }
 
@@ -200,6 +320,11 @@ function cloneEntryFieldsForInsert(
     end_date: endDate,
     start_time: entry.start_time,
     end_time: entry.end_time,
+    approved: entry.approved === true,
+    declined: entry.declined === true,
+    approved_by: entry.approved_by ?? null,
+    approved_at: entry.approved_at ?? null,
+    decline_note: entry.decline_note ?? null,
   };
 }
 
@@ -279,7 +404,7 @@ export async function deleteUnavailabilityDay(
   if (insertError) throw insertError;
 }
 
-/** Update fields for one day row; splits multi-day records when needed. */
+/** Update fields for one day row; splits multi-day records when needed. Resets to pending. */
 export async function updateUnavailabilityDayRow(
   entry: EmployeeUnavailabilityEntry,
   day: string,
@@ -371,6 +496,10 @@ function rangesOverlap(
   return startDate <= filterToDate && endDate >= filterFromDate;
 }
 
+function mapUnavailabilityRows(data: unknown): EmployeeUnavailabilityEntry[] {
+  return ((data || []) as EmployeeUnavailabilityEntry[]).map(normalizeUnavailabilityApprovalFields);
+}
+
 export async function fetchEmployeeUnavailabilitiesInRange(
   employeeId: number,
   dateFrom: string,
@@ -378,16 +507,13 @@ export async function fetchEmployeeUnavailabilitiesInRange(
 ): Promise<EmployeeUnavailabilityEntry[]> {
   const { data, error } = await supabase
     .from('employee_unavailability_reasons')
-    .select(
-      `id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
-       general_reason, document_url, start_date, end_date, start_time, end_time, created_at`,
-    )
+    .select(UNAVAILABILITY_SELECT)
     .eq('employee_id', employeeId)
     .order('start_date', { ascending: false });
 
   if (error) throw error;
 
-  return ((data || []) as EmployeeUnavailabilityEntry[]).filter((row) =>
+  return mapUnavailabilityRows(data).filter((row) =>
     rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
   );
 }
@@ -399,17 +525,14 @@ export async function fetchAllUnavailabilitiesInRange(
 ): Promise<EmployeeUnavailabilityEntry[]> {
   const { data, error } = await supabase
     .from('employee_unavailability_reasons')
-    .select(
-      `id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
-       general_reason, document_url, start_date, end_date, start_time, end_time, created_at`,
-    )
+    .select(UNAVAILABILITY_SELECT)
     .lte('start_date', dateTo)
     .or(`end_date.gte.${dateFrom},end_date.is.null`)
     .order('start_date', { ascending: true });
 
   if (error) throw error;
 
-  return ((data || []) as EmployeeUnavailabilityEntry[]).filter((row) =>
+  return mapUnavailabilityRows(data).filter((row) =>
     rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
   );
 }
@@ -423,6 +546,8 @@ export type UnavailabilityReasonReportRow = {
   start_date: string;
   end_date: string | null;
   created_at: string;
+  approved?: boolean;
+  declined?: boolean;
 };
 
 /** Lightweight fetch for the unavailabilities report summary (no employee join). */
@@ -433,7 +558,8 @@ export async function fetchUnavailabilityReasonsForReportInRange(
   const { data, error } = await supabase
     .from('employee_unavailability_reasons')
     .select(
-      `id, employee_id, unavailability_type, sick_days_reason, document_url, start_date, end_date, created_at`,
+      `id, employee_id, unavailability_type, sick_days_reason, document_url, start_date, end_date, created_at,
+       approved, declined`,
     )
     .lte('start_date', dateTo)
     .or(`end_date.gte.${dateFrom},end_date.is.null`)
@@ -441,9 +567,13 @@ export async function fetchUnavailabilityReasonsForReportInRange(
 
   if (error) throw error;
 
-  return ((data || []) as UnavailabilityReasonReportRow[]).filter((row) =>
-    rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
-  );
+  return ((data || []) as UnavailabilityReasonReportRow[])
+    .map((row) => ({
+      ...row,
+      approved: row.approved === true,
+      declined: row.declined === true,
+    }))
+    .filter((row) => rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo));
 }
 
 export type EmployeeUnavailabilityDocument = EmployeeUnavailabilityEntry & {
@@ -456,17 +586,14 @@ export async function fetchEmployeeUnavailabilityDocuments(
 ): Promise<EmployeeUnavailabilityDocument[]> {
   const { data, error } = await supabase
     .from('employee_unavailability_reasons')
-    .select(
-      `id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
-       general_reason, document_url, start_date, end_date, start_time, end_time, created_at`,
-    )
+    .select(UNAVAILABILITY_SELECT)
     .eq('employee_id', employeeId)
     .not('document_url', 'is', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
 
-  return ((data || []) as EmployeeUnavailabilityEntry[])
+  return mapUnavailabilityRows(data)
     .filter((row) => Boolean(row.document_url?.trim()))
     .map((row) => ({ ...row, document_url: row.document_url!.trim() }));
 }

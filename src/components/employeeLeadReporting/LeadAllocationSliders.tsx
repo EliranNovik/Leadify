@@ -5,11 +5,15 @@ import {
   dailyAllocationGrandTotal,
   buildClientRouteFromAllocationRow,
   formatAllocationPercent,
+  formatAllocationWorkedDuration,
+  allocationPercentToWorkedMs,
   setLeadAllocationPercent,
   setOtherWorkAllocationPercent,
   toggleLeadAllocationIncluded,
   type LeadAllocationRowState,
 } from '../../lib/employeeLeadReporting';
+import type { LeadAllocationBudgetHint } from '../../lib/leadAllocationBudget';
+import { formatBudgetAllocationDuration } from '../../lib/leadAllocationBudget';
 
 export type LeadAllocationRow = LeadAllocationRowState;
 
@@ -24,6 +28,11 @@ type LeadAllocationSlidersProps = {
   onChange: (state: LeadAllocationChangeState) => void;
   onAddLead?: () => void;
   readOnly?: boolean;
+  /** Total clocked-in ms for the work day; used to show allocated time next to %. */
+  dayWorkedMs?: number;
+  /** Per-lead cost-budget hints (14% of 87% of lead value). */
+  budgetHintsByKey?: Record<string, LeadAllocationBudgetHint>;
+  onApplyLeadMaxBudget?: (leadKey: string, maxAllowedPercent: number) => void;
 };
 
 const ALLOCATION_RANGE_CLASS =
@@ -33,9 +42,15 @@ type AllocationPercentInputProps = {
   value: number;
   onChange: (percent: number) => void;
   readOnly?: boolean;
+  allocatedLabel?: string | null;
 };
 
-function AllocationPercentInput({ value, onChange, readOnly = false }: AllocationPercentInputProps) {
+function AllocationPercentInput({
+  value,
+  onChange,
+  readOnly = false,
+  allocatedLabel = null,
+}: AllocationPercentInputProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const displayed = formatAllocationPercent(value);
@@ -52,36 +67,45 @@ function AllocationPercentInput({ value, onChange, readOnly = false }: Allocatio
     setEditing(false);
   };
 
+  const timeBeside = allocatedLabel ? (
+    <span className="text-[11px] font-medium tabular-nums text-gray-500">· {allocatedLabel}</span>
+  ) : null;
+
   if (readOnly) {
     return (
-      <span className="w-[4.5rem] shrink-0 text-right text-sm font-semibold text-gray-800">
-        {displayed}%
+      <span className="min-w-[5.5rem] shrink-0 whitespace-nowrap text-right text-sm font-semibold text-gray-800">
+        {displayed}%{timeBeside}
       </span>
     );
   }
 
   if (editing) {
     return (
-      <div className="flex w-[4.5rem] shrink-0 items-center justify-end gap-0.5">
-        <input
-          type="number"
-          min={0}
-          max={100}
-          step={1}
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => commit(draft)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              commit(draft);
-            }
-            if (e.key === 'Escape') setEditing(false);
-          }}
-          className="input input-bordered input-sm h-8 w-12 min-h-8 px-1 text-right text-sm font-semibold text-gray-800"
-        />
-        <span className="text-sm font-semibold text-gray-500">%</span>
+      <div className="flex min-w-[5.5rem] shrink-0 flex-col items-end gap-0.5">
+        <div className="flex items-center justify-end gap-0.5">
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={1}
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => commit(draft)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commit(draft);
+              }
+              if (e.key === 'Escape') setEditing(false);
+            }}
+            className="input input-bordered input-sm h-8 w-12 min-h-8 px-1 text-right text-sm font-semibold text-gray-800"
+          />
+          <span className="text-sm font-semibold text-gray-500">%</span>
+        </div>
+        {allocatedLabel ? (
+          <span className="text-[11px] font-medium tabular-nums text-gray-500">{allocatedLabel}</span>
+        ) : null}
       </div>
     );
   }
@@ -93,10 +117,10 @@ function AllocationPercentInput({ value, onChange, readOnly = false }: Allocatio
         setDraft(displayed);
         setEditing(true);
       }}
-      className="w-[4.5rem] shrink-0 rounded-md px-1 py-0.5 text-right text-sm font-semibold text-gray-800 transition-colors hover:bg-gray-100 hover:text-primary"
+      className="min-w-[5.5rem] shrink-0 whitespace-nowrap rounded-md px-1 py-0.5 text-right text-sm font-semibold text-gray-800 transition-colors hover:bg-gray-100 hover:text-primary"
       title="Click to edit percentage"
     >
-      {displayed}%
+      {displayed}%{timeBeside}
     </button>
   );
 }
@@ -106,6 +130,7 @@ type AllocationPercentSliderProps = {
   onChange: (percent: number) => void;
   variant?: 'primary' | 'neutral';
   readOnly?: boolean;
+  allocatedLabel?: string | null;
 };
 
 function AllocationPercentSlider({
@@ -113,6 +138,7 @@ function AllocationPercentSlider({
   onChange,
   variant = 'primary',
   readOnly = false,
+  allocatedLabel = null,
 }: AllocationPercentSliderProps) {
   const roundedValue = Math.round(value);
 
@@ -130,7 +156,12 @@ function AllocationPercentSlider({
           readOnly ? 'pointer-events-none opacity-60' : ''
         }`}
       />
-      <AllocationPercentInput value={roundedValue} onChange={onChange} readOnly={readOnly} />
+      <AllocationPercentInput
+        value={roundedValue}
+        onChange={onChange}
+        readOnly={readOnly}
+        allocatedLabel={allocatedLabel}
+      />
     </div>
   );
 }
@@ -153,10 +184,22 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
   onChange,
   onAddLead,
   readOnly = false,
+  dayWorkedMs = 0,
+  budgetHintsByKey = {},
+  onApplyLeadMaxBudget,
 }) => {
   const includedRows = rows.filter((row) => row.included);
   const grandTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
   const isTotalValid = Math.abs(grandTotal - 100) <= 0.01;
+
+  const allocatedTimeLabel = (percent: number) => {
+    if (!(dayWorkedMs > 0) || !(percent > 0)) {
+      return dayWorkedMs > 0 ? '0m' : null;
+    }
+    return formatAllocationWorkedDuration(
+      allocationPercentToWorkedMs(dayWorkedMs, percent),
+    );
+  };
 
   const applyChange = (next: LeadAllocationChangeState) => {
     onChange(next);
@@ -178,7 +221,13 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-white px-5 py-3.5 shadow-sm">
         <p className="text-sm text-gray-600">
-          Allocate your day across other work and leads.
+          Allocate your day across other work and leads. Lead allocations cannot exceed the employee
+          cost budget (14% of 87% of lead value).
+          {dayWorkedMs > 0 ? (
+            <span className="ml-1 text-gray-400">
+              · Clocked {formatAllocationWorkedDuration(dayWorkedMs)} today
+            </span>
+          ) : null}
         </p>
         <div
           className={`inline-flex items-center gap-2.5 rounded-full pl-2.5 pr-4 py-1.5 shadow-sm ${
@@ -219,6 +268,7 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
             onChange={setOtherWork}
             variant="neutral"
             readOnly={readOnly}
+            allocatedLabel={allocatedTimeLabel(otherWorkPercent)}
           />
         </div>
       </div>
@@ -254,15 +304,19 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
           {rows.map((row) => {
             const route = buildClientRouteFromAllocationRow(row);
             const viewedLabel = formatViewedAt(row.last_viewed_at);
+            const budgetHint = budgetHintsByKey[row.key];
+            const overBudget = Boolean(row.included && budgetHint?.overBudget);
             return (
               <div
                 key={row.key}
                 className={`rounded-[18px] bg-white px-5 py-4 shadow-sm transition-all ${
-                  row.included
-                    ? row.pinned
-                      ? 'ring-2 ring-primary/20'
-                      : 'ring-2 ring-primary/15'
-                    : 'opacity-80'
+                  overBudget
+                    ? 'ring-2 ring-amber-300/80'
+                    : row.included
+                      ? row.pinned
+                        ? 'ring-2 ring-primary/20'
+                        : 'ring-2 ring-primary/15'
+                      : 'opacity-80'
                 }`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -292,6 +346,35 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                           {viewedLabel ? `Last ${viewedLabel}` : ''}
                         </span>
                       )}
+                      {overBudget && budgetHint ? (
+                        <span className="mt-1.5 block text-xs font-medium text-amber-700">
+                          Over budget — max{' '}
+                          {budgetHint.maxAllowedPercent > 0 &&
+                          budgetHint.maxAllowedPercent < 1
+                            ? budgetHint.maxAllowedPercent.toFixed(2)
+                            : formatAllocationPercent(budgetHint.maxAllowedPercent)}
+                          %
+                          {budgetHint.maxAllocatedMs > 0
+                            ? ` (${formatBudgetAllocationDuration(budgetHint.maxAllocatedMs)})`
+                            : ' (0m)'}
+                          {!readOnly && onApplyLeadMaxBudget ? (
+                            <>
+                              {' · '}
+                              <button
+                                type="button"
+                                className="underline hover:text-amber-900"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  onApplyLeadMaxBudget(row.key, budgetHint.maxAllowedPercent);
+                                }}
+                              >
+                                Set to max
+                              </button>
+                            </>
+                          ) : null}
+                        </span>
+                      ) : null}
                     </span>
                   </label>
 
@@ -300,6 +383,7 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                       value={row.percent}
                       onChange={(percent) => setLeadPercent(row.key, percent)}
                       readOnly={readOnly}
+                      allocatedLabel={allocatedTimeLabel(row.percent)}
                     />
                   )}
                 </div>

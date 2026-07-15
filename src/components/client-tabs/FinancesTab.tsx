@@ -5153,7 +5153,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   if (!financePlan) {
     return (
       <>
-        <div className="p-2 sm:p-4 md:p-6">
+        <div className="p-1 sm:p-2 md:p-3">
           <ClientTabPageHeader
             icon={BanknotesIcon}
             title="Finances"
@@ -6451,7 +6451,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   return (
     <>
-      <div className="overflow-x-auto w-full p-2 sm:p-4 md:p-6">
+      <div className="overflow-x-auto w-full p-1 sm:p-2 md:p-3">
         <ClientTabPageHeader
           icon={BanknotesIcon}
           title="Finances"

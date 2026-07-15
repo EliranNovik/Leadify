@@ -6,20 +6,30 @@ import {
   TrashIcon,
 } from '@heroicons/react/24/outline';
 import {
+  CheckBadgeIcon,
+  ClockIcon as ClockSolidIcon,
+  XCircleIcon,
+} from '@heroicons/react/24/solid';
+import {
+  durationVsMinHoursBadgeClass,
+  durationVsMinHoursTitle,
+  durationVsMinHoursTone,
   formatWorkingHoursDateLabel,
   formatWorkingHoursWeekday,
   sumClockDurations,
 } from '../../lib/employeeClockInFormat';
 import {
-  clockInApprovalLabelClass,
   clockInApprovalRowClass,
   clockInApprovalWatermarkLabel,
   filterCountedClockInRecords,
   formatDayDeclineNotes,
   getDayClockInApprovalStatus,
 } from '../../lib/employeeClockInApproval';
+import { sumCountedClockDurationsMs } from '../../lib/workingHoursExport';
 import {
   documentNameFromUrl,
+  getUnavailabilityApprovalStatus,
+  unavailabilityApprovalWatermarkLabel,
   unavailabilityReasonText,
   unavailabilityTypeLabel,
   type EmployeeUnavailabilityDayRow,
@@ -28,6 +38,49 @@ import type { DailyClockInSummary } from '../../lib/workingHoursExport';
 import UnavailabilityTypeBadge from '../UnavailabilityTypeBadge';
 import { DocumentFileGlyph } from '../../lib/documentFileGlyphs';
 
+type DayApprovalDisplayStatus = 'approved' | 'pending' | 'declined';
+
+const DAY_APPROVAL_ORDER: DayApprovalDisplayStatus[] = ['declined', 'pending', 'approved'];
+
+function collectDayApprovalStatuses(params: {
+  hasManualClock: boolean;
+  clockApprovalStatus: ReturnType<typeof getDayClockInApprovalStatus>;
+  unavailabilities: EmployeeUnavailabilityDayRow[];
+}): DayApprovalDisplayStatus[] {
+  const found = new Set<DayApprovalDisplayStatus>();
+  if (params.hasManualClock && clockInApprovalWatermarkLabel(params.clockApprovalStatus)) {
+    found.add(params.clockApprovalStatus);
+  }
+  for (const unavail of params.unavailabilities) {
+    const leaveStatus = getUnavailabilityApprovalStatus(unavail);
+    if (unavailabilityApprovalWatermarkLabel(leaveStatus)) found.add(leaveStatus);
+  }
+  return DAY_APPROVAL_ORDER.filter((status) => found.has(status));
+}
+
+function MobileApprovalStatusLabel({ status }: { status: DayApprovalDisplayStatus }) {
+  const label =
+    status === 'pending'
+      ? 'Waiting for approval'
+      : status === 'declined'
+        ? 'Declined'
+        : 'Approved';
+  const colorClass =
+    status === 'pending'
+      ? 'text-sky-700'
+      : status === 'declined'
+        ? 'text-red-700'
+        : 'text-emerald-700';
+  const Icon =
+    status === 'pending' ? ClockSolidIcon : status === 'declined' ? XCircleIcon : CheckBadgeIcon;
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-medium ${colorClass}`}>
+      <Icon className="h-5 w-5 shrink-0" aria-hidden />
+      {label}
+    </span>
+  );
+}
+
 export type WorkingHoursMobileDayRow = {
   dateKey: string;
   date: string;
@@ -35,6 +88,8 @@ export type WorkingHoursMobileDayRow = {
   unavailabilities: EmployeeUnavailabilityDayRow[];
   isMissingPlaceholder?: boolean;
   isHolidayPlaceholder?: boolean;
+  isWeekendPlaceholder?: boolean;
+  isWeekend?: boolean;
   holidayNames?: string[];
 };
 
@@ -64,6 +119,7 @@ type WorkingHoursMobileListProps = {
   deletingRowKey: string | null;
   deletingClockInDay: string | null;
   recordsByDay: Map<string, ClockInRow[]>;
+  minHours: number;
   getWeekAccentColor: (weekNum: number) => string;
   isRowLocked: (dateKey: string) => boolean;
   onToggleBulkSelect: (dateKey: string) => void;
@@ -92,6 +148,26 @@ function MobileDateLabel({ dateKey, muted = false }: { dateKey: string; muted?: 
   );
 }
 
+function MobileTimeList({ value }: { value: string }) {
+  const parts = value.split(', ').filter(Boolean);
+  if (parts.length === 0) return <span className="text-gray-400">—</span>;
+  const showIndex = parts.length > 1;
+  return (
+    <div className="flex flex-col gap-0.5">
+      {parts.map((part, i) => (
+        <span key={`${part}-${i}`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          {showIndex ? (
+            <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-gray-100 px-1.5 text-[11px] font-semibold tabular-nums text-gray-600">
+              {i + 1}
+            </span>
+          ) : null}
+          {part}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function MobileField({
   label,
   children,
@@ -109,29 +185,15 @@ function MobileField({
   );
 }
 
-function MobileApprovalBadges({
-  hasManual,
-  approvalStatus,
-}: {
-  hasManual: boolean;
-  approvalStatus: ReturnType<typeof getDayClockInApprovalStatus>;
-}) {
+function MobileManualEntryBadge({ hasManual }: { hasManual: boolean }) {
   if (!hasManual) return null;
-  const label = clockInApprovalWatermarkLabel(approvalStatus);
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span
-        className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
-        title="Manual entry"
-      >
-        <PencilSquareIcon className="w-3.5 h-3.5" />
-      </span>
-      {label && (
-        <span className={`text-xs font-medium ${clockInApprovalLabelClass(approvalStatus)}`}>
-          {label}
-        </span>
-      )}
-    </div>
+    <span
+      className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
+      title="Manual entry"
+    >
+      <PencilSquareIcon className="w-3.5 h-3.5" />
+    </span>
   );
 }
 
@@ -241,6 +303,7 @@ export default function WorkingHoursMobileList({
   deletingRowKey,
   deletingClockInDay,
   recordsByDay,
+  minHours,
   getWeekAccentColor,
   isRowLocked,
   onToggleBulkSelect,
@@ -287,20 +350,31 @@ export default function WorkingHoursMobileList({
           </div>
         ) : null;
 
-        const isPlaceholder = row.isMissingPlaceholder || row.isHolidayPlaceholder;
-        const isBulkSelectable = bulkSelectMode && isPlaceholder && !isMonthSubmitted;
+        const isPlaceholder =
+          row.isMissingPlaceholder || row.isHolidayPlaceholder || row.isWeekendPlaceholder;
+        const isWeekend = row.isWeekendPlaceholder === true;
+        const isBulkSelectable =
+          bulkSelectMode &&
+          (row.isMissingPlaceholder || row.isHolidayPlaceholder) &&
+          !isMonthSubmitted;
         const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
         const readOnly = isRowLocked(row.dateKey);
 
         if (isPlaceholder) {
           const isHoliday = row.isHolidayPlaceholder;
           const holidayLabel = row.holidayNames?.[0];
-          const hintText = isHoliday
-            ? holidayLabel
-              ? `${holidayLabel} — no entry yet`
-              : 'Holiday — no entry yet'
-            : 'No entry yet';
-          const cardBg = isHoliday ? 'bg-[#f5f3ff]' : 'bg-[#f3f4f6]';
+          const hintText = isWeekend
+            ? 'Weekend'
+            : isHoliday
+              ? holidayLabel
+                ? `${holidayLabel} — no entry yet`
+                : 'Holiday — no entry yet'
+              : 'No entry yet';
+          const cardBg = isWeekend
+            ? 'bg-slate-100'
+            : isHoliday
+              ? 'bg-[#f5f3ff]'
+              : 'bg-[#f3f4f6]';
 
           return (
             <React.Fragment key={row.dateKey}>
@@ -316,7 +390,9 @@ export default function WorkingHoursMobileList({
                 role={isBulkSelectable ? 'button' : undefined}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <MobileDateLabel dateKey={row.dateKey} muted />
+                  <div className="space-y-1.5 min-w-0">
+                    <MobileDateLabel dateKey={row.dateKey} muted />
+                  </div>
                   {isBulkSelectable && (
                     <input
                       type="checkbox"
@@ -328,8 +404,10 @@ export default function WorkingHoursMobileList({
                     />
                   )}
                 </div>
-                <p className="text-base italic text-gray-500">{hintText}</p>
-                {!isMonthSubmitted && !bulkSelectMode && (
+                <p className={`text-base text-center ${isWeekend ? 'font-semibold text-slate-600' : 'italic text-gray-500'}`}>
+                  {hintText}
+                </p>
+                {!isMonthSubmitted && !bulkSelectMode && !isWeekend && (
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -374,12 +452,16 @@ export default function WorkingHoursMobileList({
               <div className="flex items-start justify-between gap-2">
                 <div className="space-y-1.5 min-w-0">
                   <MobileDateLabel dateKey={row.dateKey} />
-                  {row.clock?.hasManual && (
-                    <MobileApprovalBadges
-                      hasManual={row.clock.hasManual}
-                      approvalStatus={approvalStatus}
-                    />
-                  )}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <MobileManualEntryBadge hasManual={row.clock?.hasManual === true} />
+                    {collectDayApprovalStatuses({
+                      hasManualClock: row.clock?.hasManual === true,
+                      clockApprovalStatus: approvalStatus,
+                      unavailabilities: row.unavailabilities,
+                    }).map((status) => (
+                      <MobileApprovalStatusLabel key={status} status={status} />
+                    ))}
+                  </div>
                   {declineNotes && (
                     <p className="text-xs font-medium leading-snug text-red-700">{declineNotes}</p>
                   )}
@@ -405,18 +487,28 @@ export default function WorkingHoursMobileList({
                 </MobileField>
                 <MobileField label="Total">
                   {hasClock ? (
-                    <span className="inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold bg-primary/10 text-primary w-fit">
-                      {sumClockDurations(filterCountedClockInRecords(dayRecords))}
-                    </span>
+                    (() => {
+                      const counted = filterCountedClockInRecords(dayRecords);
+                      const workedMs = sumCountedClockDurationsMs(counted);
+                      const tone = durationVsMinHoursTone(workedMs, minHours);
+                      return (
+                        <span
+                          className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold w-fit ${durationVsMinHoursBadgeClass(tone)}`}
+                          title={durationVsMinHoursTitle(tone, minHours)}
+                        >
+                          {sumClockDurations(counted)}
+                        </span>
+                      );
+                    })()
                   ) : (
                     <span className="text-gray-400">—</span>
                   )}
                 </MobileField>
                 <MobileField label="Clock in">
-                  {hasClock ? row.clock!.clockIns : <span className="text-gray-400">—</span>}
+                  {hasClock ? <MobileTimeList value={row.clock!.clockIns} /> : <span className="text-gray-400">—</span>}
                 </MobileField>
                 <MobileField label="Clock out">
-                  {hasClock ? row.clock!.clockOuts : <span className="text-gray-400">—</span>}
+                  {hasClock ? <MobileTimeList value={row.clock!.clockOuts} /> : <span className="text-gray-400">—</span>}
                 </MobileField>
                 <MobileField label="Workplace">
                   {hasClock ? row.clock!.workplacesIn : <span className="text-gray-400">—</span>}
