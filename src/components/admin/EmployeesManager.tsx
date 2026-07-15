@@ -358,6 +358,13 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       ]
     },
     {
+      name: 'date_of_birth',
+      label: 'Date of Birth',
+      type: 'date' as const,
+      required: false,
+      hideInTable: true,
+    },
+    {
       name: 'worker_id',
       label: 'Worker ID',
       type: 'text' as const,

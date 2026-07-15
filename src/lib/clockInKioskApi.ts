@@ -1,4 +1,5 @@
 import { buildApiUrl, getFrontendBaseUrl } from './api';
+import { buildBackendApiUrl } from './backendApiBase';
 
 export const ENTRY_KIOSK_DEFAULT_LOCATION_ID = 1;
 
@@ -39,11 +40,25 @@ export type ClockInKioskValidateResponse = {
   error?: string;
 };
 
+export type ClockInKioskFlashAction = 'in' | 'out';
+
+export type ClockInKioskWelcomeMeeting = {
+  id: number;
+  time: string | null;
+  title: string;
+  location: string | null;
+  isVirtual?: boolean;
+  colorIndex?: number;
+};
+
 export type ClockInKioskRecentEvent = {
   id: string;
   locationId: number;
   employeeName: string;
   photoUrl?: string | null;
+  employeeId?: number | null;
+  action?: ClockInKioskFlashAction;
+  meetings?: ClockInKioskWelcomeMeeting[];
   at: string;
 };
 
@@ -96,19 +111,20 @@ export async function announceClockInKioskSuccess(
   locationId: number,
   employeeName: string,
   photoUrl?: string | null,
+  employeeId?: number | null,
+  action: ClockInKioskFlashAction = 'in',
 ): Promise<{ success: boolean; error?: string }> {
   const payload = JSON.stringify({
     locationId,
     employeeName,
     photoUrl: photoUrl || null,
+    employeeId: employeeId ?? null,
+    action,
   });
   const urls = [buildApiUrl('/api/clock-in-kiosk/announce')];
 
-  // In DEV, also announce to production so a local tablet that dual-polls can see it
-  // when the QR still points at the production host.
-  if (import.meta.env.DEV) {
-    urls.push('https://leadify-crm-backend.onrender.com/api/clock-in-kiosk/announce');
-  }
+  // Prefer localhost only in DEV — do not fan-out to production unless explicitly needed.
+  // (Prod announce remains available for dual-host phone/tablet setups via Vite proxy target.)
 
   let anyOk = false;
   let lastError: string | undefined;
@@ -191,4 +207,89 @@ export function buildClockInEntryPath(locationId: number, token: string): string
     token,
   });
   return `/clock-in/entry?${params.toString()}`;
+}
+
+export type EntryKioskDisplaySettings = {
+  officeLabel: string;
+  showClockDate: boolean;
+  showWeather: boolean;
+  showMeetingsToday: boolean;
+  showBirthdays: boolean;
+  showAnnouncements: boolean;
+  showGadgets: boolean;
+  weatherCity: string;
+};
+
+export type EntryKioskDisplayAnnouncement = {
+  id: number;
+  title: string | null;
+  body: string;
+  sortOrder: number;
+};
+
+export type EntryKioskDisplayGadget = {
+  id: number;
+  label: string;
+  body: string | null;
+  iconKey: string | null;
+  sortOrder: number;
+};
+
+export type EntryKioskDisplayBirthday = {
+  id: number;
+  name: string;
+  photoUrl: string | null;
+};
+
+export type EntryKioskDisplayMeeting = {
+  id: number;
+  time: string | null;
+  clientName: string | null;
+  leadNumber: string | null;
+  isCurrent?: boolean;
+};
+
+export type EntryKioskDisplayWeather = {
+  city: string;
+  temperatureC: number | null;
+  weatherCode: number | null;
+  label: string;
+  fetchedAt: string;
+};
+
+export type EntryKioskDisplayResponse = {
+  success: boolean;
+  locationId?: number;
+  settings?: EntryKioskDisplaySettings;
+  announcements?: EntryKioskDisplayAnnouncement[];
+  gadgets?: EntryKioskDisplayGadget[];
+  birthdays?: EntryKioskDisplayBirthday[];
+  meetings?: EntryKioskDisplayMeeting[];
+  weather?: EntryKioskDisplayWeather | null;
+  inOfficeCount?: number;
+  error?: string;
+};
+
+export async function fetchEntryKioskDisplay(
+  locationId: number = ENTRY_KIOSK_DEFAULT_LOCATION_ID,
+): Promise<EntryKioskDisplayResponse> {
+  const query = `locationId=${encodeURIComponent(String(locationId))}`;
+  const url = buildBackendApiUrl(`/api/clock-in-kiosk/display?${query}`);
+
+  try {
+    const res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = (await res.json().catch(() => ({}))) as EntryKioskDisplayResponse;
+    if (!res.ok || !body.success) {
+      return {
+        success: false,
+        error: body.error || `Failed to load kiosk display (${res.status})`,
+      };
+    }
+    return body;
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Kiosk display fetch failed',
+    };
+  }
 }

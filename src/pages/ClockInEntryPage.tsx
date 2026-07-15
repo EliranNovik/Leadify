@@ -7,11 +7,13 @@ import {
   announceClockInKioskSuccess,
   buildClockInEntryPath,
   validateClockInKioskToken,
+  type ClockInKioskFlashAction,
 } from '../lib/clockInKioskApi';
+import { fetchClockInGateProfile } from '../lib/employeeClockInGate';
 import {
-  fetchClockInGateProfile,
-  fetchIsEmployeeClockedIn,
-} from '../lib/employeeClockInGate';
+  clockOutEmployeeRecord,
+  fetchActiveClockInRecord,
+} from '../lib/employeeClockOut';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
 
 type EntryStatus =
@@ -19,8 +21,8 @@ type EntryStatus =
   | 'connecting'
   | 'need_login'
   | 'clocking_in'
+  | 'clocking_out'
   | 'success'
-  | 'already_in'
   | 'no_employee'
   | 'error';
 
@@ -58,7 +60,7 @@ async function resolveEmployeeProfile(employeeId: number | null, fallbackEmail?:
 
 /**
  * Public scan landing page opened from the entry-kiosk QR.
- * Validates token via backend, then auto clock-ins (or sends user to login first).
+ * Validates token via backend, then clocks in or out based on current status.
  */
 const ClockInEntryPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -74,6 +76,7 @@ const ClockInEntryPage: React.FC = () => {
   const [message, setMessage] = useState('Connecting…');
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [clockTime, setClockTime] = useState<string | null>(null);
+  const [action, setAction] = useState<ClockInKioskFlashAction>('in');
 
   useEffect(() => {
     let cancelled = false;
@@ -108,16 +111,13 @@ const ClockInEntryPage: React.FC = () => {
       if (!session?.user) {
         const returnPath = buildClockInEntryPath(resolvedLocationId, token);
         setStatus('need_login');
-        setMessage('Sign in to finish clock-in…');
+        setMessage('Sign in to finish…');
         navigate('/login', {
           replace: true,
           state: { from: returnPath },
         });
         return;
       }
-
-      setStatus('clocking_in');
-      setMessage('Clocking you in…');
 
       const profileResult = await fetchClockInGateProfile(session.user.id, {
         email: session.user.email,
@@ -145,20 +145,65 @@ const ClockInEntryPage: React.FC = () => {
       if (cancelled) return;
       setDisplayName(name);
 
-      const alreadyIn = await fetchIsEmployeeClockedIn(profile.employeeId);
+      const activeRecord = await fetchActiveClockInRecord(profile.employeeId);
       if (cancelled) return;
-      if (alreadyIn) {
-        setStatus('already_in');
-        setMessage('You are already clocked in.');
-        // Still flash the tablet so staff see the scan worked.
-        void announceClockInKioskSuccess(resolvedLocationId, name, photoUrl).catch((err) => {
+
+      const nowIso = new Date().toISOString();
+      const timeLabel = new Date(nowIso).toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+
+      if (activeRecord) {
+        setStatus('clocking_out');
+        setMessage('Clocking you out…');
+        setAction('out');
+
+        try {
+          await clockOutEmployeeRecord({
+            ...activeRecord,
+            clock_in_location_id: activeRecord.clock_in_location_id || resolvedLocationId,
+          });
+        } catch (err) {
+          console.error('Entry kiosk clock-out failed:', err);
+          if (!cancelled) {
+            setStatus('error');
+            setMessage(
+              err instanceof Error
+                ? err.message
+                : 'Failed to clock out. Please try again from the CRM.',
+            );
+          }
+          return;
+        }
+        if (cancelled) return;
+
+        setClockTime(timeLabel);
+        setStatus('success');
+        setMessage('You are clocked out');
+        clearClockInGateCache();
+
+        try {
+          await announceClockInKioskSuccess(
+            resolvedLocationId,
+            name,
+            photoUrl,
+            profile.employeeId,
+            'out',
+          );
+        } catch (err) {
           console.warn('Kiosk announce failed:', err);
-        });
-        window.setTimeout(() => navigate('/', { replace: true }), 1400);
+        }
+
+        window.setTimeout(() => navigate('/', { replace: true }), 1600);
         return;
       }
 
-      const nowIso = new Date().toISOString();
+      setStatus('clocking_in');
+      setMessage('Clocking you in…');
+      setAction('in');
+
       const payload = {
         employee_id: profile.employeeId,
         user_id: session.user.id,
@@ -186,23 +231,22 @@ const ClockInEntryPage: React.FC = () => {
         return;
       }
 
-      const timeLabel = new Date(nowIso).toLocaleTimeString('en-GB', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      });
       setClockTime(timeLabel);
       setStatus('success');
       setMessage('You are clocked in');
+      clearClockInGateCache();
 
       try {
-        await announceClockInKioskSuccess(resolvedLocationId, name, photoUrl);
+        await announceClockInKioskSuccess(
+          resolvedLocationId,
+          name,
+          photoUrl,
+          profile.employeeId,
+          'in',
+        );
       } catch (err) {
         console.warn('Kiosk announce failed:', err);
       }
-
-      // Session is already authenticated; gate will open after this insert.
-      clearClockInGateCache();
 
       window.setTimeout(() => navigate('/', { replace: true }), 1600);
     };
@@ -215,18 +259,20 @@ const ClockInEntryPage: React.FC = () => {
 
   const title =
     status === 'error'
-      ? 'Clock-in failed'
-      : status === 'already_in'
-        ? 'Already clocked in'
-        : status === 'need_login'
-          ? 'Sign in required'
-          : status === 'no_employee'
-            ? 'Account not linked'
-            : status === 'success'
-              ? 'You are in'
-              : status === 'connecting'
-                ? 'Connecting…'
-                : 'Entry clock-in';
+      ? 'Clock failed'
+      : status === 'need_login'
+        ? 'Sign in required'
+        : status === 'no_employee'
+          ? 'Account not linked'
+          : status === 'success'
+            ? action === 'out'
+              ? 'You are out'
+              : 'You are in'
+            : status === 'connecting'
+              ? 'Connecting…'
+              : status === 'clocking_out'
+                ? 'Clocking out…'
+                : 'Office entry';
 
   return (
     <div
@@ -244,13 +290,25 @@ const ClockInEntryPage: React.FC = () => {
 
         {status === 'success' ? (
           <div className="mt-6 flex flex-col items-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/15 ring-2 ring-emerald-500/50">
-              <CheckIcon className="h-8 w-8 text-emerald-600" strokeWidth={2.5} />
+            <div
+              className={[
+                'mb-4 flex h-16 w-16 items-center justify-center rounded-full ring-2',
+                action === 'out'
+                  ? 'bg-amber-500/15 ring-amber-500/50'
+                  : 'bg-emerald-500/15 ring-emerald-500/50',
+              ].join(' ')}
+            >
+              <CheckIcon
+                className={`h-8 w-8 ${action === 'out' ? 'text-amber-600' : 'text-emerald-600'}`}
+                strokeWidth={2.5}
+              />
             </div>
             {displayName ? (
               <p className="text-xl font-semibold text-slate-900">{displayName}</p>
             ) : null}
-            <p className="mt-1 text-sm text-emerald-700">{message}</p>
+            <p className={`mt-1 text-sm ${action === 'out' ? 'text-amber-700' : 'text-emerald-700'}`}>
+              {message}
+            </p>
             {clockTime ? (
               <p className="mt-4 text-3xl font-semibold tabular-nums text-slate-800">{clockTime}</p>
             ) : null}
@@ -259,7 +317,11 @@ const ClockInEntryPage: React.FC = () => {
           <p className="mt-3 text-sm text-slate-600">{message}</p>
         )}
 
-        {(status === 'loading' || status === 'connecting' || status === 'clocking_in' || status === 'need_login') && (
+        {(status === 'loading'
+          || status === 'connecting'
+          || status === 'clocking_in'
+          || status === 'clocking_out'
+          || status === 'need_login') && (
           <div className="mt-6 flex justify-center">
             <span className="loading loading-spinner loading-md text-sky-700" />
           </div>

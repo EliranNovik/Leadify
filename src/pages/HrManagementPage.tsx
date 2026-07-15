@@ -101,9 +101,10 @@ import WorkingHoursTab from '../components/profile/WorkingHoursTab';
 import MyDocumentsTab from '../components/profile/MyDocumentsTab';
 import MyContribution from '../components/MyContribution';
 import EmployeeSalariesManager from '../components/admin/EmployeeSalariesManager';
+import HrEntryKioskPanel from '../components/hr/HrEntryKioskPanel';
 import RMQMessagesPage from './RMQMessagesPage';
 
-type HubTab = 'overview' | 'approvals' | 'employees' | 'hours' | 'leave' | 'status' | 'salaries';
+type HubTab = 'overview' | 'approvals' | 'employees' | 'hours' | 'leave' | 'status' | 'salaries' | 'entry-kiosk';
 type FileTab = 'about' | 'working-hours' | 'documents' | 'contribution';
 
 type HoursBoardEmployee = {
@@ -249,6 +250,7 @@ const HUB_TABS: Array<{ id: HubTab; label: string; icon: React.ElementType }> = 
   { id: 'leave', label: 'Leave', icon: CalendarDaysIcon },
   { id: 'status', label: 'Status', icon: SignalIcon },
   { id: 'salaries', label: 'Salaries', icon: BanknotesIcon },
+  { id: 'entry-kiosk', label: 'Entry kiosk', icon: DevicePhoneMobileIcon },
 ];
 
 const FILE_TABS: Array<{ id: FileTab; label: string }> = [
@@ -282,6 +284,7 @@ function parseHubTab(raw: string | null): HubTab {
     raw === 'leave' ||
     raw === 'status' ||
     raw === 'salaries' ||
+    raw === 'entry-kiosk' ||
     raw === 'overview'
   ) {
     return raw;
@@ -1290,6 +1293,18 @@ export default function HrManagementPage() {
                       <dt className="text-sm md:text-base text-gray-500 mb-0.5">Role</dt>
                       <dd className="text-base md:text-lg font-medium text-gray-900">
                         {getBonusesRoleDisplayName(emp.bonuses_role) || '—'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm md:text-base text-gray-500 mb-0.5">Date of birth</dt>
+                      <dd className="text-base md:text-lg font-medium text-gray-900">
+                        {emp.date_of_birth
+                          ? new Date(`${emp.date_of_birth}T12:00:00`).toLocaleDateString('en-GB', {
+                              day: 'numeric',
+                              month: 'long',
+                              year: 'numeric',
+                            })
+                          : '—'}
                       </dd>
                     </div>
                     <div className="sm:col-span-2">
@@ -2461,6 +2476,12 @@ export default function HrManagementPage() {
                 void loadHubData();
               }}
             />
+          </div>
+        )}
+
+        {hubTab === 'entry-kiosk' && (
+          <div className="rounded-2xl bg-white border border-gray-200 p-4 md:p-6 shadow-sm">
+            <HrEntryKioskPanel />
           </div>
         )}
       </div>

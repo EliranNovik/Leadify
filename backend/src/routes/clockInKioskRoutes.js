@@ -15,4 +15,7 @@ router.post('/announce', clockInKioskController.announce);
 /** GET /api/clock-in-kiosk/recent-event?locationId=1 — tablet polls for success flash. */
 router.get('/recent-event', clockInKioskController.recentEvent);
 
+/** GET /api/clock-in-kiosk/display?locationId=1 — tablet widgets + settings bundle. */
+router.get('/display', clockInKioskController.display);
+
 module.exports = router;

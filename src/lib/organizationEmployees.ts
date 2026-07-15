@@ -66,6 +66,7 @@ export interface OrganizationEmployee {
   min_hours: number;
   works_from_home: boolean;
   is_superuser: boolean;
+  date_of_birth: string | null;
   fieldRoles: ContributionDepartmentRole[];
   chatUserId: string | null;
   isClockedIn: boolean;
@@ -275,6 +276,7 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
             department_id,
             min_hours,
             works_from_home,
+            date_of_birth,
             tenant_departement!department_id(
               id,
               name
@@ -356,6 +358,7 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
         min_hours: normalizeEmployeeMinHours(employee.min_hours),
         works_from_home: coerceEmployeeWorksFromHome(employee.works_from_home),
         is_superuser: isSuperuser,
+        date_of_birth: employee.date_of_birth || null,
         fieldRoles,
         chatUserId: user.id ? String(user.id) : null,
         isClockedIn: false,

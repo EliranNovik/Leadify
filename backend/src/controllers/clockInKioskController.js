@@ -1,5 +1,6 @@
 const clockInKioskTokenService = require('../services/clockInKioskTokenService');
 const clockInKioskEvents = require('../services/clockInKioskEvents');
+const entryKioskDisplayService = require('../services/entryKioskDisplayService');
 
 /** Simple in-memory rate limit for validate / announce (per IP). */
 const validateHits = new Map();
@@ -101,8 +102,14 @@ async function announce(req, res) {
       });
     }
 
-    const { locationId, employeeName, photoUrl } = req.body || {};
-    const event = await clockInKioskEvents.announce({ locationId, employeeName, photoUrl });
+    const { locationId, employeeName, photoUrl, employeeId, action } = req.body || {};
+    const event = await clockInKioskEvents.announce({
+      locationId,
+      employeeName,
+      photoUrl,
+      employeeId,
+      action,
+    });
     res.json({ success: true, event });
   } catch (error) {
     console.error('POST /api/clock-in-kiosk/announce failed:', error);
@@ -129,9 +136,25 @@ async function recentEvent(req, res) {
   }
 }
 
+async function display(req, res) {
+  try {
+    const locationId = req.query.locationId ?? entryKioskDisplayService.DEFAULT_LOCATION_ID;
+    const bundle = await entryKioskDisplayService.getDisplayBundle(locationId);
+    res.json({ success: true, ...bundle });
+  } catch (error) {
+    console.error('GET /api/clock-in-kiosk/display failed:', error);
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      success: false,
+      error: error.message || 'Failed to load kiosk display',
+    });
+  }
+}
+
 module.exports = {
   getCurrent,
   validate,
   announce,
   recentEvent,
+  display,
 };

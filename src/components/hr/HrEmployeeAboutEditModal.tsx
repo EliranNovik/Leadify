@@ -47,6 +47,7 @@ export type HrEmployeeAboutForm = {
   min_hours: string;
   school: string;
   diplom: string;
+  date_of_birth: string;
 };
 
 function formFromEmployee(emp: OrganizationEmployee): HrEmployeeAboutForm {
@@ -65,6 +66,7 @@ function formFromEmployee(emp: OrganizationEmployee): HrEmployeeAboutForm {
     min_hours: String(emp.min_hours ?? 8),
     school: emp.school || '',
     diplom: emp.diplom || '',
+    date_of_birth: emp.date_of_birth || '',
   };
 }
 
@@ -199,6 +201,7 @@ export default function HrEmployeeAboutEditModal({ open, employee, onClose, onSa
           min_hours: minHoursNum,
           school: schoolValue,
           diplom: form.diplom.trim() || null,
+          date_of_birth: form.date_of_birth.trim() || null,
         })
         .eq('id', employee.id);
 
@@ -329,6 +332,15 @@ export default function HrEmployeeAboutEditModal({ open, employee, onClose, onSa
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="form-control">
+                <span className="label-text text-gray-500">Date of birth</span>
+                <input
+                  type="date"
+                  className="input input-bordered"
+                  value={form.date_of_birth}
+                  onChange={(e) => setField('date_of_birth', e.target.value)}
+                />
               </label>
               <label className="form-control sm:col-span-2">
                 <span className="label-text text-gray-500">LinkedIn</span>
