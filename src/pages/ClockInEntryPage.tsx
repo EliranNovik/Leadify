@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { CheckIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import {
   ENTRY_KIOSK_DEFAULT_LOCATION_ID,
@@ -15,6 +14,10 @@ import {
   fetchActiveClockInRecord,
 } from '../lib/employeeClockOut';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
+import KioskWelcomeGoodbyeModal, {
+  KIOSK_WELCOME_DURATION_MS,
+  KIOSK_WELCOME_DURATION_SEC,
+} from '../components/kiosk/KioskWelcomeGoodbyeModal';
 
 type EntryStatus =
   | 'loading'
@@ -61,6 +64,7 @@ async function resolveEmployeeProfile(employeeId: number | null, fallbackEmail?:
 /**
  * Public scan landing page opened from the entry-kiosk QR.
  * Validates token via backend, then clocks in or out based on current status.
+ * Office QR path: no geolocation prompt — workplace comes from the kiosk location.
  */
 const ClockInEntryPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -75,11 +79,57 @@ const ClockInEntryPage: React.FC = () => {
   const [status, setStatus] = useState<EntryStatus>('loading');
   const [message, setMessage] = useState('Connecting…');
   const [displayName, setDisplayName] = useState<string | null>(null);
-  const [clockTime, setClockTime] = useState<string | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [clockedAt, setClockedAt] = useState<string | null>(null);
   const [action, setAction] = useState<ClockInKioskFlashAction>('in');
+  const [secondsLeft, setSecondsLeft] = useState(KIOSK_WELCOME_DURATION_SEC);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    if (status !== 'success') return undefined;
+    const clock = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(clock);
+  }, [status]);
 
   useEffect(() => {
     let cancelled = false;
+
+    const finishSuccess = (
+      nextAction: ClockInKioskFlashAction,
+      name: string,
+      nextPhotoUrl: string | null,
+      employeeId: number,
+      resolvedLocationId: number,
+      atIso: string,
+    ) => {
+      if (cancelled) return;
+      setAction(nextAction);
+      setDisplayName(name);
+      setPhotoUrl(nextPhotoUrl);
+      setClockedAt(atIso);
+      setStatus('success');
+      setMessage(nextAction === 'out' ? 'You are clocked out' : 'You are clocked in');
+      setSecondsLeft(KIOSK_WELCOME_DURATION_SEC);
+      clearClockInGateCache();
+
+      void announceClockInKioskSuccess(
+        resolvedLocationId,
+        name,
+        nextPhotoUrl,
+        employeeId,
+        nextAction,
+      ).catch((err) => console.warn('Kiosk announce failed:', err));
+
+      const tick = window.setInterval(() => {
+        if (cancelled) return;
+        setSecondsLeft((prev) => Math.max(0, prev - 1));
+      }, 1000);
+
+      window.setTimeout(() => {
+        window.clearInterval(tick);
+        if (!cancelled) navigate('/', { replace: true });
+      }, KIOSK_WELCOME_DURATION_MS);
+    };
 
     const run = async () => {
       if (!token) {
@@ -93,8 +143,12 @@ const ClockInEntryPage: React.FC = () => {
       setStatus('connecting');
       setMessage('Connecting to entry…');
 
-      const validation = await validateClockInKioskToken(token, locationId);
+      const [validation, sessionResult] = await Promise.all([
+        validateClockInKioskToken(token, locationId),
+        supabase.auth.getSession(),
+      ]);
       if (cancelled) return;
+
       if (!validation.success || !validation.valid) {
         setStatus('error');
         setMessage(validation.error || 'QR code expired — scan the screen again.');
@@ -102,11 +156,7 @@ const ClockInEntryPage: React.FC = () => {
       }
 
       const resolvedLocationId = validation.locationId ?? locationId;
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (cancelled) return;
+      const session = sessionResult.data.session;
 
       if (!session?.user) {
         const returnPath = buildClockInEntryPath(resolvedLocationId, token);
@@ -132,7 +182,7 @@ const ClockInEntryPage: React.FC = () => {
       if (profile.isExternalUser) {
         setStatus('success');
         setMessage('Signed in. External accounts skip office clock-in.');
-        window.setTimeout(() => navigate('/', { replace: true }), 1200);
+        window.setTimeout(() => navigate('/', { replace: true }), 900);
         return;
       }
       if (!profileResult.userRowFound || profile.employeeId == null) {
@@ -141,19 +191,18 @@ const ClockInEntryPage: React.FC = () => {
         return;
       }
 
-      const { name, photoUrl } = await resolveEmployeeProfile(profile.employeeId, session.user.email);
+      const employeeId = profile.employeeId;
+      const [profileInfo, activeRecord] = await Promise.all([
+        resolveEmployeeProfile(employeeId, session.user.email),
+        fetchActiveClockInRecord(employeeId),
+      ]);
       if (cancelled) return;
-      setDisplayName(name);
 
-      const activeRecord = await fetchActiveClockInRecord(profile.employeeId);
-      if (cancelled) return;
+      const { name, photoUrl: nextPhotoUrl } = profileInfo;
+      setDisplayName(name);
+      setPhotoUrl(nextPhotoUrl);
 
       const nowIso = new Date().toISOString();
-      const timeLabel = new Date(nowIso).toLocaleTimeString('en-GB', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      });
 
       if (activeRecord) {
         setStatus('clocking_out');
@@ -161,10 +210,13 @@ const ClockInEntryPage: React.FC = () => {
         setAction('out');
 
         try {
-          await clockOutEmployeeRecord({
-            ...activeRecord,
-            clock_in_location_id: activeRecord.clock_in_location_id || resolvedLocationId,
-          });
+          await clockOutEmployeeRecord(
+            {
+              ...activeRecord,
+              clock_in_location_id: activeRecord.clock_in_location_id || resolvedLocationId,
+            },
+            { skipGeolocation: true },
+          );
         } catch (err) {
           console.error('Entry kiosk clock-out failed:', err);
           if (!cancelled) {
@@ -177,26 +229,8 @@ const ClockInEntryPage: React.FC = () => {
           }
           return;
         }
-        if (cancelled) return;
 
-        setClockTime(timeLabel);
-        setStatus('success');
-        setMessage('You are clocked out');
-        clearClockInGateCache();
-
-        try {
-          await announceClockInKioskSuccess(
-            resolvedLocationId,
-            name,
-            photoUrl,
-            profile.employeeId,
-            'out',
-          );
-        } catch (err) {
-          console.warn('Kiosk announce failed:', err);
-        }
-
-        window.setTimeout(() => navigate('/', { replace: true }), 1600);
+        finishSuccess('out', name, nextPhotoUrl, employeeId, resolvedLocationId, nowIso);
         return;
       }
 
@@ -205,7 +239,7 @@ const ClockInEntryPage: React.FC = () => {
       setAction('in');
 
       const payload = {
-        employee_id: profile.employeeId,
+        employee_id: employeeId,
         user_id: session.user.id,
         clock_in_time: nowIso,
         clock_in_location_id: resolvedLocationId,
@@ -231,24 +265,7 @@ const ClockInEntryPage: React.FC = () => {
         return;
       }
 
-      setClockTime(timeLabel);
-      setStatus('success');
-      setMessage('You are clocked in');
-      clearClockInGateCache();
-
-      try {
-        await announceClockInKioskSuccess(
-          resolvedLocationId,
-          name,
-          photoUrl,
-          profile.employeeId,
-          'in',
-        );
-      } catch (err) {
-        console.warn('Kiosk announce failed:', err);
-      }
-
-      window.setTimeout(() => navigate('/', { replace: true }), 1600);
+      finishSuccess('in', name, nextPhotoUrl, employeeId, resolvedLocationId, nowIso);
     };
 
     void run();
@@ -257,6 +274,21 @@ const ClockInEntryPage: React.FC = () => {
     };
   }, [token, locationId, navigate]);
 
+  if (status === 'success' && displayName && clockedAt) {
+    return (
+      <KioskWelcomeGoodbyeModal
+        action={action}
+        employeeName={displayName}
+        photoUrl={photoUrl}
+        clockedAt={clockedAt}
+        secondsLeft={secondsLeft}
+        totalSeconds={KIOSK_WELCOME_DURATION_SEC}
+        now={now}
+        variant="page"
+      />
+    );
+  }
+
   const title =
     status === 'error'
       ? 'Clock failed'
@@ -264,15 +296,11 @@ const ClockInEntryPage: React.FC = () => {
         ? 'Sign in required'
         : status === 'no_employee'
           ? 'Account not linked'
-          : status === 'success'
-            ? action === 'out'
-              ? 'You are out'
-              : 'You are in'
-            : status === 'connecting'
-              ? 'Connecting…'
-              : status === 'clocking_out'
-                ? 'Clocking out…'
-                : 'Office entry';
+          : status === 'connecting'
+            ? 'Connecting…'
+            : status === 'clocking_out'
+              ? 'Clocking out…'
+              : 'Office entry';
 
   return (
     <div
@@ -282,40 +310,12 @@ const ClockInEntryPage: React.FC = () => {
           'radial-gradient(ellipse 80% 55% at 50% 10%, rgba(74, 110, 190, 0.28), transparent 55%), linear-gradient(180deg, #0a1630 0%, #02060f 100%)',
       }}
     >
-      <div className="w-full max-w-md rounded-[28px] bg-white/95 p-8 text-center shadow-[0_30px_70px_rgba(0,0,0,0.4)]">
+      <div className="w-full max-w-md rounded-[28px] bg-white/95 p-8 text-center shadow-[0_30px_70px_rgba(0,0,0,0.4)] border-0 outline-none">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
           Office entry
         </p>
         <h1 className="mt-3 text-2xl font-bold text-slate-900">{title}</h1>
-
-        {status === 'success' ? (
-          <div className="mt-6 flex flex-col items-center">
-            <div
-              className={[
-                'mb-4 flex h-16 w-16 items-center justify-center rounded-full ring-2',
-                action === 'out'
-                  ? 'bg-amber-500/15 ring-amber-500/50'
-                  : 'bg-emerald-500/15 ring-emerald-500/50',
-              ].join(' ')}
-            >
-              <CheckIcon
-                className={`h-8 w-8 ${action === 'out' ? 'text-amber-600' : 'text-emerald-600'}`}
-                strokeWidth={2.5}
-              />
-            </div>
-            {displayName ? (
-              <p className="text-xl font-semibold text-slate-900">{displayName}</p>
-            ) : null}
-            <p className={`mt-1 text-sm ${action === 'out' ? 'text-amber-700' : 'text-emerald-700'}`}>
-              {message}
-            </p>
-            {clockTime ? (
-              <p className="mt-4 text-3xl font-semibold tabular-nums text-slate-800">{clockTime}</p>
-            ) : null}
-          </div>
-        ) : (
-          <p className="mt-3 text-sm text-slate-600">{message}</p>
-        )}
+        <p className="mt-3 text-sm text-slate-600">{message}</p>
 
         {(status === 'loading'
           || status === 'connecting'

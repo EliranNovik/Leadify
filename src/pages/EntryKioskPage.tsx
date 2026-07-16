@@ -3,9 +3,7 @@ import {
   ArrowLeftIcon,
   CakeIcon,
   CalendarDaysIcon,
-  ClockIcon,
   CloudIcon,
-  DevicePhoneMobileIcon,
   MegaphoneIcon,
   UserGroupIcon,
   UsersIcon,
@@ -14,6 +12,10 @@ import {
 import MorphingQrCode from '../components/MorphingQrCode';
 import KioskDocumentShell from '../components/kiosk/KioskDocumentShell';
 import KioskPairingScreen from '../components/kiosk/KioskPairingScreen';
+import KioskWelcomeGoodbyeModal, {
+  KIOSK_WELCOME_DURATION_MS,
+  KIOSK_WELCOME_DURATION_SEC,
+} from '../components/kiosk/KioskWelcomeGoodbyeModal';
 import '../components/kiosk/kiosk-shell.css';
 import {
   ENTRY_KIOSK_DEFAULT_LOCATION_ID,
@@ -38,9 +40,9 @@ const EVENT_POLL_MS = 1_400;
 const DISPLAY_POLL_MS = 60_000;
 const KIOSK_STATE_POLL_MS = 2_000;
 const KIOSK_HEARTBEAT_MS = 30_000;
-const KIOSK_SUCCESS_MS = 5_000;
-const SUCCESS_FLASH_MS = 5_000;
-const SUCCESS_FLASH_SEC = 5;
+const KIOSK_SUCCESS_MS = KIOSK_WELCOME_DURATION_MS;
+const KIOSK_SUCCESS_SEC = KIOSK_WELCOME_DURATION_SEC;
+const DOCUMENT_DONE_MS = 5_000;
 const MEETINGS_IDLE_MS = 15_000;
 
 type DeviceUiMode = 'checking' | 'unpaired' | 'attendance' | 'document' | 'success' | 'locked';
@@ -60,8 +62,6 @@ function participantInitials(name: string) {
     .map((part) => part[0]?.toUpperCase() ?? '')
     .join('') || '•';
 }
-
-const MEETING_DOT_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fb923c'];
 
 function formatClock(now: Date) {
   return now.toLocaleTimeString('en-GB', {
@@ -93,7 +93,7 @@ const EntryKioskPage: React.FC = () => {
   const [now, setNow] = useState(() => new Date());
   const [online, setOnline] = useState(true);
   const [successFlash, setSuccessFlash] = useState<ClockInKioskRecentEvent | null>(null);
-  const [welcomeSecondsLeft, setWelcomeSecondsLeft] = useState(SUCCESS_FLASH_SEC);
+  const [welcomeSecondsLeft, setWelcomeSecondsLeft] = useState(KIOSK_SUCCESS_SEC);
   const [display, setDisplay] = useState<EntryKioskDisplayResponse | null>(null);
   const [meetingsScreenOpen, setMeetingsScreenOpen] = useState(false);
   const [meetingsDetail, setMeetingsDetail] = useState<EntryKioskMeetingDetail[]>([]);
@@ -216,7 +216,7 @@ const EntryKioskPage: React.FC = () => {
     kioskSuccessTimerRef.current = window.setTimeout(() => {
       setKioskSuccessMessage(null);
       setDeviceUiMode('attendance');
-    }, KIOSK_SUCCESS_MS);
+    }, DOCUMENT_DONE_MS);
   }, []);
 
   const handleKioskDocumentCancelled = useCallback(() => {
@@ -368,7 +368,7 @@ const EntryKioskPage: React.FC = () => {
       if (!event?.id || event.id === lastEventIdRef.current) return;
       lastEventIdRef.current = event.id;
       setSuccessFlash(event);
-      setWelcomeSecondsLeft(SUCCESS_FLASH_SEC);
+      setWelcomeSecondsLeft(KIOSK_SUCCESS_SEC);
       if (successTimerRef.current) window.clearTimeout(successTimerRef.current);
       if (welcomeTickRef.current) window.clearInterval(welcomeTickRef.current);
       welcomeTickRef.current = window.setInterval(() => {
@@ -376,12 +376,12 @@ const EntryKioskPage: React.FC = () => {
       }, 1000);
       successTimerRef.current = window.setTimeout(() => {
         setSuccessFlash(null);
-        setWelcomeSecondsLeft(SUCCESS_FLASH_SEC);
+        setWelcomeSecondsLeft(KIOSK_SUCCESS_SEC);
         if (welcomeTickRef.current) {
           window.clearInterval(welcomeTickRef.current);
           welcomeTickRef.current = null;
         }
-      }, SUCCESS_FLASH_MS);
+      }, KIOSK_SUCCESS_MS);
     };
 
     const pollOnce = async () => {
@@ -448,7 +448,7 @@ const EntryKioskPage: React.FC = () => {
     return Math.min(1, Math.max(0, secondsLeft / totalSec));
   }, [secondsLeft, totalRotateMs]);
 
-  const ringR = 46;
+  const ringR = 50;
   const ringC = 2 * Math.PI * ringR;
   const ringOffset = ringC * (1 - progress);
 
@@ -554,8 +554,8 @@ const EntryKioskPage: React.FC = () => {
         </svg>
       </div>
       {deviceUiMode === 'success' && kioskSuccessMessage ? (
-        <div className="kiosk-success-overlay" role="status" aria-live="polite">
-          <div className="kiosk-success-card">
+        <div className="kiosk-doc-done-overlay" role="status" aria-live="polite">
+          <div className="kiosk-doc-done-card">
             <h2>Done</h2>
             <p>{kioskSuccessMessage}</p>
           </div>
@@ -606,233 +606,6 @@ const EntryKioskPage: React.FC = () => {
           bottom: -14%;
           animation: kiosk-wave-drift 34s ease-in-out infinite;
         }
-        @keyframes kiosk-success-in {
-          0% { opacity: 0; transform: translateY(12px) scale(0.96); }
-          100% { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        @keyframes kiosk-confetti-pop {
-          0% { opacity: 0; transform: scale(0.4); }
-          40% { opacity: 1; transform: scale(1); }
-          100% { opacity: 0.85; }
-        }
-        .kiosk-success-backdrop {
-          position: fixed;
-          inset: 0;
-          z-index: 100;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 1.25rem;
-          background: rgba(2, 6, 15, 0.82);
-          backdrop-filter: blur(14px);
-          -webkit-backdrop-filter: blur(14px);
-        }
-        .kiosk-success-card {
-          width: min(420px, 94vw);
-          border-radius: 28px;
-          background: linear-gradient(180deg, #121826 0%, #0b1220 100%);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          box-shadow: 0 40px 100px rgba(0, 0, 0, 0.55);
-          padding: 1.75rem 1.5rem 1.35rem;
-          text-align: center;
-          animation: kiosk-success-in 320ms ease-out;
-          color: #f8fafc;
-        }
-        .kiosk-success-photo-wrap {
-          position: relative;
-          width: 112px;
-          height: 112px;
-          margin: 0 auto 0.85rem;
-        }
-        .kiosk-success-photo-wrap::before {
-          content: '';
-          position: absolute;
-          inset: -10px;
-          border-radius: 9999px;
-          background: radial-gradient(circle, rgba(16, 185, 129, 0.35), transparent 70%);
-          z-index: 0;
-        }
-        .kiosk-success-dot {
-          position: absolute;
-          width: 0.45rem;
-          height: 0.45rem;
-          border-radius: 9999px;
-          animation: kiosk-confetti-pop 700ms ease-out both;
-          z-index: 2;
-        }
-        .kiosk-success-photo {
-          position: relative;
-          z-index: 1;
-          width: 112px;
-          height: 112px;
-          border-radius: 9999px;
-          object-fit: cover;
-          border: 3px solid rgba(255, 255, 255, 0.9);
-          background: #1e293b;
-          box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.35), 0 12px 32px rgba(0, 0, 0, 0.35);
-        }
-        .kiosk-success-photo-fallback {
-          position: relative;
-          z-index: 1;
-          width: 112px;
-          height: 112px;
-          border-radius: 9999px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: linear-gradient(145deg, #1e3a5f, #0f172a);
-          color: #d8b15a;
-          font-size: 2.25rem;
-          font-weight: 700;
-          letter-spacing: 0.04em;
-          border: 3px solid rgba(255, 255, 255, 0.9);
-          box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.35), 0 12px 32px rgba(0, 0, 0, 0.35);
-        }
-        .kiosk-success-welcome {
-          font-size: 1.35rem;
-          font-weight: 700;
-          color: #34d399;
-          letter-spacing: 0.01em;
-        }
-        .kiosk-success-name {
-          margin-top: 0.2rem;
-          font-size: 1.85rem;
-          font-weight: 800;
-          letter-spacing: -0.02em;
-          color: #fff;
-          line-height: 1.15;
-        }
-        .kiosk-success-clocked {
-          margin-top: 0.55rem;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 0.35rem;
-          font-size: 0.92rem;
-          color: #d8b15a;
-        }
-        .kiosk-success-clocked strong {
-          color: #34d399;
-          font-weight: 700;
-          font-variant-numeric: tabular-nums;
-        }
-        .kiosk-success-divider {
-          margin: 1.15rem 0 0.85rem;
-          border: 0;
-          border-top: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        .kiosk-success-meetings-label {
-          font-size: 0.68rem;
-          font-weight: 700;
-          letter-spacing: 0.16em;
-          text-transform: uppercase;
-          color: #94a3b8;
-          margin-bottom: 0.55rem;
-        }
-        .kiosk-success-meetings {
-          display: flex;
-          flex-direction: column;
-          gap: 0.4rem;
-          text-align: left;
-          max-height: 11.5rem;
-          overflow-y: auto;
-        }
-        .kiosk-success-meeting {
-          display: flex;
-          align-items: center;
-          gap: 0.55rem;
-          padding: 0.55rem 0.7rem;
-          border-radius: 12px;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-        }
-        .kiosk-success-meeting-time {
-          flex-shrink: 0;
-          width: 2.75rem;
-          font-size: 0.82rem;
-          font-weight: 700;
-          color: #d8b15a;
-          font-variant-numeric: tabular-nums;
-        }
-        .kiosk-success-meeting-dot {
-          width: 0.45rem;
-          height: 0.45rem;
-          border-radius: 9999px;
-          flex-shrink: 0;
-        }
-        .kiosk-success-meeting-body {
-          min-width: 0;
-          flex: 1 1 auto;
-        }
-        .kiosk-success-meeting-title {
-          font-size: 0.88rem;
-          font-weight: 600;
-          color: #f8fafc;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .kiosk-success-meeting-loc {
-          font-size: 0.72rem;
-          color: #94a3b8;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .kiosk-success-meeting-icon {
-          width: 1.1rem;
-          height: 1.1rem;
-          color: #94a3b8;
-          flex-shrink: 0;
-        }
-        .kiosk-success-empty-meetings {
-          font-size: 0.85rem;
-          color: #94a3b8;
-          padding: 0.35rem 0 0.15rem;
-        }
-        .kiosk-success-footer-msg {
-          margin-top: 1rem;
-          font-size: 0.95rem;
-          font-weight: 500;
-          color: rgba(248, 250, 252, 0.92);
-        }
-        .kiosk-success-timer {
-          margin-top: 0.85rem;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 0.35rem;
-        }
-        .kiosk-success-timer-ring {
-          position: relative;
-          width: 3.25rem;
-          height: 3.25rem;
-        }
-        .kiosk-success-timer-num {
-          position: absolute;
-          inset: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 1.05rem;
-          font-weight: 700;
-          color: #fff;
-          font-variant-numeric: tabular-nums;
-        }
-        .kiosk-success-timer-label {
-          font-size: 0.68rem;
-          letter-spacing: 0.1em;
-          text-transform: uppercase;
-          color: #94a3b8;
-        }
-        .kiosk-success-now {
-          margin-top: 0.65rem;
-          font-size: 1.35rem;
-          font-weight: 700;
-          color: #fff;
-          font-variant-numeric: tabular-nums;
-          letter-spacing: 0.02em;
-        }
 
         /*
           Primary target: ~10" tablet kiosk (landscape ~1024×768–1366×800).
@@ -847,21 +620,21 @@ const EntryKioskPage: React.FC = () => {
           height: 3.25rem;
         }
         .kiosk-clock {
-          font-size: 2.6rem;
+          font-size: 3.25rem;
           line-height: 1.1;
         }
         .kiosk-date {
-          font-size: 1.15rem;
+          font-size: 1.05rem;
         }
         .kiosk-weather {
-          margin-top: 0.45rem;
-          font-size: 0.95rem;
+          margin-top: 0.35rem;
+          font-size: 1.05rem;
           line-height: 1.25;
-          color: rgba(248, 250, 252, 0.9);
+          color: var(--kiosk-muted);
         }
         .kiosk-weather-detail {
           margin-top: 0.15rem;
-          font-size: 0.78rem;
+          font-size: 0.95rem;
           color: var(--kiosk-muted);
         }
         .kiosk-meta {
@@ -885,12 +658,12 @@ const EntryKioskPage: React.FC = () => {
           flex-shrink: 0;
         }
         .kiosk-countdown {
-          width: 5rem;
-          height: 5rem;
+          width: 6.25rem;
+          height: 6.25rem;
           flex-shrink: 0;
         }
         .kiosk-countdown-num {
-          font-size: 1.35rem;
+          font-size: 1.45rem;
         }
         .kiosk-main {
           padding-bottom: 2.75rem;
@@ -906,14 +679,15 @@ const EntryKioskPage: React.FC = () => {
           overflow: hidden;
         }
         .kiosk-info-strip {
-          width: min(920px, 100%);
-          margin: 0.75rem auto 0;
-          border-radius: 18px;
+          width: min(1100px, 100%);
+          margin: 0.85rem auto 0;
+          border-radius: 20px;
           border: none;
           background: rgba(8, 16, 34, 0.82);
           backdrop-filter: blur(12px);
           -webkit-backdrop-filter: blur(12px);
-          padding: 0.85rem 1rem;
+          padding: 1.45rem 1.35rem;
+          min-height: 7.25rem;
           display: grid;
           grid-template-columns: repeat(var(--kiosk-info-cols, 3), minmax(0, 1fr));
           gap: 0;
@@ -923,30 +697,39 @@ const EntryKioskPage: React.FC = () => {
         }
         .kiosk-info-col {
           min-width: 0;
-          padding: 0.15rem 0.9rem;
+          padding: 0.35rem 1.1rem;
           display: flex;
           flex-direction: column;
-          gap: 0.45rem;
+          justify-content: center;
+          gap: 0.65rem;
         }
         .kiosk-info-col + .kiosk-info-col {
           border-left: 1px solid rgba(255, 255, 255, 0.12);
         }
+        .kiosk-info-label-row {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 0.65rem;
+          min-width: 0;
+        }
         .kiosk-info-label {
-          font-size: 0.68rem;
+          font-size: 0.95rem;
           font-weight: 700;
           letter-spacing: 0.14em;
           text-transform: uppercase;
           color: var(--kiosk-gold);
+          flex-shrink: 0;
         }
         .kiosk-info-item {
           display: flex;
           align-items: flex-start;
-          gap: 0.65rem;
+          gap: 0.75rem;
           min-width: 0;
         }
         .kiosk-info-icon {
-          width: 1.85rem;
-          height: 1.85rem;
+          width: 2.85rem;
+          height: 2.85rem;
           flex-shrink: 0;
           color: var(--kiosk-gold);
           margin-top: 0.05rem;
@@ -955,53 +738,60 @@ const EntryKioskPage: React.FC = () => {
           min-width: 0;
           display: flex;
           flex-direction: column;
-          gap: 0.1rem;
+          gap: 0.15rem;
         }
         .kiosk-info-primary {
-          font-size: 0.95rem;
+          font-size: 1.15rem;
           font-weight: 700;
-          line-height: 1.25;
+          line-height: 1.3;
           color: #fff;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
         .kiosk-info-secondary {
-          font-size: 0.82rem;
-          line-height: 1.3;
+          font-size: 0.98rem;
+          line-height: 1.35;
           color: var(--kiosk-gold);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
         .kiosk-info-empty {
-          font-size: 0.82rem;
+          font-size: 0.98rem;
           color: var(--kiosk-muted);
-          line-height: 1.3;
+          line-height: 1.35;
         }
         .kiosk-info-meetings {
           display: flex;
           flex-direction: column;
-          gap: 0.28rem;
+          gap: 0.35rem;
           min-width: 0;
         }
         .kiosk-info-meeting-row {
           display: flex;
-          align-items: center;
-          gap: 0.4rem;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.2rem;
           min-width: 0;
-          font-size: 0.82rem;
-          line-height: 1.25;
+          font-size: 1.12rem;
+          line-height: 1.3;
           color: rgba(248, 250, 252, 0.92);
+        }
+        .kiosk-info-meeting-meta {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          min-width: 0;
         }
         .kiosk-info-meeting-type-badge {
           flex-shrink: 0;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          padding: 0.12rem 0.38rem;
+          padding: 0.18rem 0.45rem;
           border-radius: 9999px;
-          font-size: 0.58rem;
+          font-size: 0.68rem;
           font-weight: 800;
           letter-spacing: 0.06em;
           text-transform: uppercase;
@@ -1018,10 +808,12 @@ const EntryKioskPage: React.FC = () => {
           flex-shrink: 0;
           color: var(--kiosk-gold);
           font-variant-numeric: tabular-nums;
-          font-weight: 600;
+          font-weight: 700;
+          font-size: 1.28rem;
         }
         .kiosk-info-meeting-name {
           min-width: 0;
+          max-width: 100%;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -1044,9 +836,14 @@ const EntryKioskPage: React.FC = () => {
           transform: scale(0.99);
         }
         .kiosk-info-tap-hint {
-          font-size: 0.68rem;
+          font-size: 0.78rem;
           color: var(--kiosk-muted);
-          letter-spacing: 0.06em;
+          letter-spacing: 0.04em;
+          white-space: nowrap;
+          text-align: right;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         .kiosk-meetings-screen {
@@ -1302,7 +1099,8 @@ const EntryKioskPage: React.FC = () => {
           .kiosk-info-strip {
             grid-template-columns: 1fr;
             gap: 0.75rem;
-            padding: 0.75rem;
+            padding: 1rem;
+            min-height: 0;
           }
           .kiosk-info-col + .kiosk-info-col {
             border-left: none;
@@ -1326,13 +1124,12 @@ const EntryKioskPage: React.FC = () => {
           display: flex;
           flex-direction: column;
           align-items: center;
-          /* Account for camera hint + office label so the square QR fits above the strip */
-          width: min(100cqi, calc(100cqb - 3.75rem), 480px);
+          width: min(100cqi, calc(100cqb - 1.25rem), 580px);
           max-width: 100%;
         }
         @supports not (width: 1cqi) {
           .kiosk-qr-block {
-            width: min(68vw, 48vh, 480px);
+            width: min(76vw, 56vh, 580px);
           }
         }
         .kiosk-qr-shell {
@@ -1385,38 +1182,17 @@ const EntryKioskPage: React.FC = () => {
           display: block;
         }
 
-        .kiosk-scan-hint {
-          margin: 0 0 0.75rem;
-          max-width: 22rem;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 0.4rem;
-          text-align: center;
-          font-size: 0.82rem;
-          line-height: 1.35;
-          font-weight: 500;
-          letter-spacing: 0.02em;
-          color: var(--kiosk-muted);
-        }
-        .kiosk-scan-hint-icon {
-          width: 1.1rem;
-          height: 1.1rem;
-          flex-shrink: 0;
-          color: var(--kiosk-gold);
-        }
-
         /* 10" landscape sweet spot (iPad / Android tablets) */
         @media (orientation: landscape) and (max-height: 900px) and (min-width: 900px) {
           .kiosk-header { padding-block: 0.55rem; }
           .kiosk-logo { height: 3.35rem; }
-          .kiosk-clock { font-size: 2.75rem; }
+          .kiosk-clock { font-size: 3.4rem; }
           .kiosk-date { font-size: 1.2rem; }
           .kiosk-title { font-size: 2rem; margin-top: 0.35rem; }
           .kiosk-sub { font-size: 1rem; }
-          .kiosk-countdown { width: 5rem; height: 5rem; }
-          .kiosk-countdown-num { font-size: 1.35rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 3.75rem), 460px); }
+          .kiosk-countdown { width: 6.25rem; height: 6.25rem; }
+          .kiosk-countdown-num { font-size: 1.45rem; }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 560px); }
           .kiosk-qr-frame { padding: 14px; border-radius: 24px; }
           .kiosk-main { padding-bottom: 2.75rem; }
         }
@@ -1425,13 +1201,14 @@ const EntryKioskPage: React.FC = () => {
         @media (orientation: landscape) and (max-height: 820px) {
           .kiosk-header { padding-block: 0.45rem; }
           .kiosk-logo { height: 3rem; }
-          .kiosk-clock { font-size: 2.45rem; }
-          .kiosk-date { font-size: 1.1rem; }
+          .kiosk-clock { font-size: 3.05rem; }
+          .kiosk-date { font-size: 1rem; }
+          .kiosk-weather { font-size: 1rem; }
           .kiosk-title { font-size: 1.7rem; margin-top: 0.25rem; }
           .kiosk-sub { font-size: 0.9rem; margin-top: 0.2rem; }
-          .kiosk-countdown { width: 4.5rem; height: 4.5rem; }
-          .kiosk-countdown-num { font-size: 1.25rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 3.5rem), 420px); }
+          .kiosk-countdown { width: 5.75rem; height: 5.75rem; }
+          .kiosk-countdown-num { font-size: 1.35rem; }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2rem), 520px); }
           .kiosk-qr-frame { padding: 12px; }
           .kiosk-main { padding-bottom: 2.5rem; }
         }
@@ -1439,159 +1216,48 @@ const EntryKioskPage: React.FC = () => {
         /* Very short landscape — drop subtitle before shrinking QR further */
         @media (orientation: landscape) and (max-height: 740px) {
           .kiosk-sub { display: none; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.75rem), 380px); }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 1.5rem), 480px); }
         }
 
         /* 10" portrait (tablet upright) — QR can use more width */
         @media (orientation: portrait) and (max-width: 900px) {
           .kiosk-logo { height: 3.5rem; }
-          .kiosk-clock { font-size: 2.85rem; }
-          .kiosk-date { font-size: 1.25rem; }
+          .kiosk-clock { font-size: 3.5rem; }
+          .kiosk-date { font-size: 1.1rem; }
+          .kiosk-weather { font-size: 1.1rem; }
           .kiosk-title { font-size: 2.1rem; }
           .kiosk-sub { font-size: 1.05rem; }
-          .kiosk-countdown { width: 5rem; height: 5rem; }
-          .kiosk-countdown-num { font-size: 1.35rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 3.75rem), 480px); }
+          .kiosk-countdown { width: 6.25rem; height: 6.25rem; }
+          .kiosk-countdown-num { font-size: 1.45rem; }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 570px); }
         }
 
         /* Large desktop preview — don't let chrome balloon; keep QR capped */
         @media (min-height: 960px) and (min-width: 1200px) {
           .kiosk-logo { height: 3.75rem; }
-          .kiosk-clock { font-size: 3rem; }
-          .kiosk-date { font-size: 1.3rem; }
+          .kiosk-clock { font-size: 3.75rem; }
+          .kiosk-date { font-size: 1.15rem; }
+          .kiosk-weather { font-size: 1.15rem; }
           .kiosk-title { font-size: 2.5rem; }
           .kiosk-sub { font-size: 1.1rem; }
-          .kiosk-countdown { width: 5.5rem; height: 5.5rem; }
-          .kiosk-countdown-num { font-size: 1.5rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 3.75rem), 500px); }
+          .kiosk-countdown { width: 6.75rem; height: 6.75rem; }
+          .kiosk-countdown-num { font-size: 1.55rem; }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 600px); }
         }
       `}</style>
 
       {successFlash ? (
-        <div className="kiosk-success-backdrop" role="dialog" aria-live="polite" aria-label="Employee clocked in">
-          <div className="kiosk-success-card">
-            <div className="kiosk-success-photo-wrap">
-              <span className="kiosk-success-dot" style={{ top: '8%', left: '4%', background: '#fb923c' }} />
-              <span className="kiosk-success-dot" style={{ top: '2%', right: '18%', background: '#34d399' }} />
-              <span className="kiosk-success-dot" style={{ bottom: '14%', left: '0%', background: '#60a5fa' }} />
-              <span className="kiosk-success-dot" style={{ bottom: '6%', right: '6%', background: '#a78bfa' }} />
-              {successFlash.photoUrl ? (
-                <img
-                  src={successFlash.photoUrl}
-                  alt=""
-                  className="kiosk-success-photo"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                    const fallback = e.currentTarget.nextElementSibling;
-                    if (fallback instanceof HTMLElement) fallback.style.display = 'flex';
-                  }}
-                />
-              ) : null}
-              <div
-                className="kiosk-success-photo-fallback"
-                style={successFlash.photoUrl ? { display: 'none' } : undefined}
-                aria-hidden={Boolean(successFlash.photoUrl)}
-              >
-                {(successFlash.employeeName || 'E')
-                  .split(/\s+/)
-                  .filter(Boolean)
-                  .slice(0, 2)
-                  .map((part) => part[0]?.toUpperCase() ?? '')
-                  .join('') || '•'}
-              </div>
-            </div>
-
-            <p
-              className="kiosk-success-welcome"
-              style={successFlash.action === 'out' ? { color: '#fbbf24' } : undefined}
-            >
-              {successFlash.action === 'out' ? 'Goodbye' : 'Welcome'}
-            </p>
-            <p className="kiosk-success-name">{successFlash.employeeName || 'Employee'}</p>
-            <p className="kiosk-success-clocked">
-              <ClockIcon className="h-4 w-4" aria-hidden />
-              <span>
-                {successFlash.action === 'out' ? 'Clocked out at' : 'Clocked in at'}{' '}
-                <strong
-                  style={successFlash.action === 'out' ? { color: '#fbbf24' } : undefined}
-                >
-                  {formatClock(new Date(successFlash.at || Date.now()))}
-                </strong>
-              </span>
-            </p>
-
-            {successFlash.action === 'out' ? (
-              <>
-                <hr className="kiosk-success-divider" />
-                <p className="kiosk-success-footer-msg" style={{ marginTop: '0.35rem' }}>
-                  See you next time!
-                </p>
-              </>
-            ) : (
-              <>
-                <hr className="kiosk-success-divider" />
-
-                <p className="kiosk-success-meetings-label">Meetings today</p>
-                {(successFlash.meetings?.length ?? 0) > 0 ? (
-                  <div className="kiosk-success-meetings">
-                    {successFlash.meetings?.map((m) => {
-                      const MeetingIcon = m.isVirtual ? VideoCameraIcon : UserGroupIcon;
-                      const dotColor = MEETING_DOT_COLORS[(m.colorIndex ?? 0) % MEETING_DOT_COLORS.length];
-                      return (
-                        <div key={m.id} className="kiosk-success-meeting">
-                          <span className="kiosk-success-meeting-time">{m.time || '—'}</span>
-                          <span className="kiosk-success-meeting-dot" style={{ background: dotColor }} />
-                          <div className="kiosk-success-meeting-body">
-                            <p className="kiosk-success-meeting-title">{m.title}</p>
-                            {m.location ? (
-                              <p className="kiosk-success-meeting-loc">{m.location}</p>
-                            ) : null}
-                          </div>
-                          <MeetingIcon className="kiosk-success-meeting-icon" aria-hidden />
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="kiosk-success-empty-meetings">No meetings scheduled today</p>
-                )}
-
-                <p className="kiosk-success-footer-msg">Have a productive day!</p>
-              </>
-            )}
-
-            <div className="kiosk-success-timer" aria-label={`${welcomeSecondsLeft} seconds remaining`}>
-              <div className="kiosk-success-timer-ring">
-                <svg className="absolute inset-0 -rotate-90" viewBox="0 0 48 48" aria-hidden>
-                  <circle
-                    cx="24"
-                    cy="24"
-                    r="20"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.12)"
-                    strokeWidth="3.5"
-                  />
-                  <circle
-                    cx="24"
-                    cy="24"
-                    r="20"
-                    fill="none"
-                    stroke={successFlash.action === 'out' ? '#fbbf24' : '#34d399'}
-                    strokeWidth="3.5"
-                    strokeLinecap="round"
-                    strokeDasharray={2 * Math.PI * 20}
-                    strokeDashoffset={2 * Math.PI * 20 * (1 - welcomeSecondsLeft / SUCCESS_FLASH_SEC)}
-                    style={{ transition: 'stroke-dashoffset 0.9s linear' }}
-                  />
-                </svg>
-                <span className="kiosk-success-timer-num">{welcomeSecondsLeft}</span>
-              </div>
-              <span className="kiosk-success-timer-label">Closing</span>
-            </div>
-
-            <p className="kiosk-success-now">{formatClock(now)}</p>
-          </div>
-        </div>
+        <KioskWelcomeGoodbyeModal
+          action={successFlash.action === 'out' ? 'out' : 'in'}
+          employeeName={successFlash.employeeName || 'Employee'}
+          photoUrl={successFlash.photoUrl}
+          clockedAt={successFlash.at || new Date().toISOString()}
+          meetings={successFlash.meetings}
+          secondsLeft={welcomeSecondsLeft}
+          totalSeconds={KIOSK_SUCCESS_SEC}
+          now={now}
+          variant="overlay"
+        />
       ) : null}
 
       {meetingsScreenOpen ? (
@@ -1730,18 +1396,15 @@ const EntryKioskPage: React.FC = () => {
           {showWeather ? (
             <div className="kiosk-weather">
               {display?.weather ? (
-                <>
-                  <p className="inline-flex items-center justify-end gap-1.5">
-                    <CloudIcon className="h-8 w-8 shrink-0 text-[var(--kiosk-gold)]" aria-hidden />
-                    <span>
-                      {display.weather.city}
-                      {display.weather.temperatureC != null
-                        ? ` · ${Math.round(display.weather.temperatureC)}°C`
-                        : ''}
-                    </span>
-                  </p>
-                  <p className="kiosk-weather-detail">{display.weather.label}</p>
-                </>
+                <p className="inline-flex items-center justify-end gap-1.5">
+                  <CloudIcon className="h-8 w-8 shrink-0 text-[var(--kiosk-gold)]" aria-hidden />
+                  <span>
+                    {display.weather.city}
+                    {display.weather.temperatureC != null
+                      ? ` · ${Math.round(display.weather.temperatureC)}°C`
+                      : ''}
+                  </span>
+                </p>
               ) : (
                 <p className="kiosk-weather-detail">Loading weather…</p>
               )}
@@ -1754,10 +1417,6 @@ const EntryKioskPage: React.FC = () => {
         <div className="kiosk-center">
           <div className="kiosk-qr-slot">
             <div className="flex flex-col items-center">
-              <p className="kiosk-scan-hint">
-                <DevicePhoneMobileIcon className="kiosk-scan-hint-icon" aria-hidden />
-                Scan to clock in or clock out
-              </p>
               <div className="kiosk-qr-block">
                 <div className="kiosk-qr-shell">
                   <div className="kiosk-scan-ring" aria-hidden />
@@ -1797,12 +1456,19 @@ const EntryKioskPage: React.FC = () => {
                   onClick={() => void openMeetingsScreen()}
                   aria-label="View all meetings today"
                 >
-                  <p className="kiosk-info-label">Next meeting</p>
+                  <div className="kiosk-info-label-row">
+                    <p className="kiosk-info-label">Next meeting</p>
+                    <span className="kiosk-info-tap-hint">
+                      {(display?.meetings?.length ?? 0) > 0
+                        ? 'Tap for full schedule →'
+                        : 'Tap to view schedule →'}
+                    </span>
+                  </div>
                   {(display?.meetings?.length ?? 0) > 0 ? (
                     <div className="kiosk-info-item">
                       <CalendarDaysIcon className="kiosk-info-icon" aria-hidden />
                       <div className="kiosk-info-meetings">
-                        {display?.meetings?.map((m) => {
+                        {display?.meetings?.slice(0, 2).map((m) => {
                           const typeStyle =
                             MEETING_TYPE_STYLES[m.typeCode || 'other'] || MEETING_TYPE_STYLES.other;
                           const leadLabel = m.clientName || m.title || 'Meeting';
@@ -1815,23 +1481,24 @@ const EntryKioskPage: React.FC = () => {
                                 m.isPast ? 'is-past' : '',
                               ].join(' ')}
                             >
-                              <span className="kiosk-info-meeting-time">{m.time || '—'}</span>
-                              <span
-                                className="kiosk-info-meeting-type-badge"
-                                style={{
-                                  background: typeStyle.bg,
-                                  color: typeStyle.color,
-                                }}
-                              >
-                                {typeStyle.label}
-                              </span>
+                              <div className="kiosk-info-meeting-meta">
+                                <span className="kiosk-info-meeting-time">{m.time || '—'}</span>
+                                <span
+                                  className="kiosk-info-meeting-type-badge"
+                                  style={{
+                                    background: typeStyle.bg,
+                                    color: typeStyle.color,
+                                  }}
+                                >
+                                  {typeStyle.label}
+                                </span>
+                              </div>
                               <span className="kiosk-info-meeting-name">
                                 {[leadLabel, m.leadNumber].filter(Boolean).join(' · ')}
                               </span>
                             </div>
                           );
                         })}
-                        <span className="kiosk-info-tap-hint">Tap for full schedule →</span>
                       </div>
                     </div>
                   ) : (
@@ -1839,7 +1506,6 @@ const EntryKioskPage: React.FC = () => {
                       <CalendarDaysIcon className="kiosk-info-icon" aria-hidden />
                       <div className="kiosk-info-text">
                         <p className="kiosk-info-empty">No meetings scheduled today</p>
-                        <span className="kiosk-info-tap-hint">Tap to view schedule →</span>
                       </div>
                     </div>
                   )}
@@ -1904,7 +1570,7 @@ const EntryKioskPage: React.FC = () => {
                   r={ringR}
                   fill="none"
                   stroke="rgba(255,255,255,0.12)"
-                  strokeWidth="5"
+                  strokeWidth="4.5"
                 />
                 <circle
                   cx="56"
@@ -1912,7 +1578,7 @@ const EntryKioskPage: React.FC = () => {
                   r={ringR}
                   fill="none"
                   stroke="var(--kiosk-gold)"
-                  strokeWidth="5"
+                  strokeWidth="4.5"
                   strokeLinecap="round"
                   strokeDasharray={ringC}
                   strokeDashoffset={ringOffset}
@@ -1934,9 +1600,9 @@ const EntryKioskPage: React.FC = () => {
         </div>
       </main>
 
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex max-w-[70vw] items-center gap-2.5 sm:bottom-5 sm:left-8">
-        <UsersIcon className="h-5 w-5 shrink-0 text-[var(--kiosk-gold)] sm:h-6 sm:w-6" aria-hidden />
-        <p className="text-sm font-medium text-white/90 sm:text-base">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex max-w-[70vw] items-center gap-3 sm:bottom-5 sm:left-8">
+        <UsersIcon className="h-7 w-7 shrink-0 text-[var(--kiosk-gold)] sm:h-8 sm:w-8" aria-hidden />
+        <p className="text-lg font-semibold text-white/90 sm:text-xl">
           {display?.inOfficeCount ?? 0}{' '}
           {(display?.inOfficeCount ?? 0) === 1 ? 'employee' : 'employees'} in office
         </p>

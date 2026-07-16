@@ -30,20 +30,24 @@ export async function fetchActiveClockInRecord(
   return data ?? null;
 }
 
-export async function clockOutEmployeeRecord(record: ActiveClockInRecord): Promise<void> {
+export async function clockOutEmployeeRecord(
+  record: ActiveClockInRecord,
+  options?: { skipGeolocation?: boolean },
+): Promise<void> {
   const clockOutLocationId = record.clock_in_location_id;
   if (!clockOutLocationId) {
     throw new Error('Missing workplace for clock-out');
   }
 
-  const outLocation = await detectClockInLocation();
   const baseUpdate = {
     clock_out_time: new Date().toISOString(),
     is_active: false,
     notes: null,
     clock_out_location_id: clockOutLocationId,
   };
-  const gpsFields = locationToDbFields(outLocation, 'clock_out_');
+  const gpsFields = options?.skipGeolocation
+    ? {}
+    : locationToDbFields(await detectClockInLocation(), 'clock_out_');
 
   let { error } = await supabase
     .from('employee_clock_in')

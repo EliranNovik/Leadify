@@ -77,7 +77,7 @@
   color: #475569;
 }
 
-.kiosk-success-overlay {
+.kiosk-doc-done-overlay {
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -88,7 +88,7 @@
   padding: 2rem;
 }
 
-.kiosk-success-card {
+.kiosk-doc-done-card {
   max-width: 24rem;
   text-align: center;
   padding: 2rem;
@@ -97,14 +97,14 @@
   border: 1px solid rgba(52, 211, 153, 0.35);
 }
 
-.kiosk-success-card h2 {
+.kiosk-doc-done-card h2 {
   font-size: 1.35rem;
   font-weight: 700;
   color: #34d399;
   margin-bottom: 0.5rem;
 }
 
-.kiosk-success-card p {
+.kiosk-doc-done-card p {
   color: #cbd5e1;
   font-size: 0.95rem;
 }
