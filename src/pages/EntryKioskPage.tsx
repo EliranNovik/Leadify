@@ -224,6 +224,11 @@ const EntryKioskPage: React.FC = () => {
     setDeviceUiMode('attendance');
   }, []);
 
+  const handleKioskPaired = useCallback(() => {
+    setDeviceUiMode('checking');
+    void fetchKioskState().then(applyKioskState);
+  }, [applyKioskState]);
+
   useEffect(() => {
     if (deviceUiMode !== 'document' || !documentSession) return undefined;
 
@@ -473,10 +478,7 @@ const EntryKioskPage: React.FC = () => {
       <div className="entry-kiosk relative flex h-[100dvh] flex-col overflow-hidden bg-[#0a1628] text-white">
         <KioskPairingScreen
           locationId={ENTRY_KIOSK_DEFAULT_LOCATION_ID}
-          onPaired={() => {
-            setDeviceUiMode('checking');
-            void fetchKioskState().then(applyKioskState);
-          }}
+          onPaired={handleKioskPaired}
         />
       </div>
     );
