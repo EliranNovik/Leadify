@@ -234,6 +234,8 @@ const corsAllowedHeaders = [
   'Authorization',
   'X-Requested-With',
   'ngrok-skip-browser-warning',
+  // Entry / display kiosk device auth (browser sends this on cross-origin API calls)
+  'X-Kiosk-Device-Token',
 ];
 
 app.use(cors({
