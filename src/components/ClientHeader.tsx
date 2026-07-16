@@ -217,9 +217,9 @@ const META_ICON_APPLICANTS = 'h-6 w-6 shrink-0 text-rose-600';
 
 const HEADER_ACTION_ICON = 'h-6 w-6 shrink-0';
 
-/** Perfect circle badge for each header action icon. */
+/** Perfect circle badge for each header action icon. overflow-visible so count badges aren’t clipped. */
 const HEADER_ACTION_BAR_ROUND_BADGE =
-    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative !h-12 !w-12 !min-h-12 !min-w-12 !max-h-12 !max-w-12 shrink-0 overflow-hidden border border-base-200/50 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 dark:border-base-300/45 dark:!bg-base-100';
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative !h-12 !w-12 !min-h-12 !min-w-12 !max-h-12 !max-w-12 shrink-0 !overflow-visible border border-base-200/50 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 dark:border-base-300/45 dark:!bg-base-100';
 
 const HEADER_ACTION_BAR_CALL_BTN =
     `${HEADER_ACTION_BAR_ROUND_BADGE} hover:!bg-gray-100 hover:text-gray-800 dark:hover:!bg-gray-700/55 dark:hover:text-gray-100`;
@@ -241,7 +241,7 @@ const HEADER_ACTION_BAR_HISTORY_BTN =
 
 /** Round badge for the Actions drawer trigger. */
 const HEADER_ACTION_BAR_MORE_BADGE =
-    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative !h-12 !w-12 !min-h-12 !min-w-12 !max-h-12 !max-w-12 shrink-0 overflow-hidden border border-base-200/50 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 hover:!bg-violet-50 hover:text-violet-800 dark:border-base-300/45 dark:!bg-base-100 dark:hover:!bg-violet-900/30 dark:hover:text-violet-200';
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative !h-12 !w-12 !min-h-12 !min-w-12 !max-h-12 !max-w-12 shrink-0 !overflow-visible border border-base-200/50 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 hover:!bg-violet-50 hover:text-violet-800 dark:border-base-300/45 dark:!bg-base-100 dark:hover:!bg-violet-900/30 dark:hover:text-violet-200';
 
 const HEADER_ACTION_BAR_BTN = HEADER_ACTION_BAR_ROUND_BADGE;
 
@@ -252,10 +252,10 @@ const CONTACT_MODAL_LINK_WHATSAPP =
     'inline-flex items-center gap-1 text-sm font-medium text-emerald-600 transition-colors hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300';
 
 const HEADER_TAGS_BTN_CLASS =
-    'btn btn-circle btn-ghost relative shrink-0 border border-purple-200/80 bg-purple-50 text-purple-700 hover:border-purple-300 hover:bg-purple-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-purple-800/50 dark:bg-purple-900/30 dark:text-purple-200 dark:hover:bg-purple-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
+    'btn btn-circle btn-ghost relative shrink-0 !overflow-visible border border-purple-200/80 bg-purple-50 text-purple-700 hover:border-purple-300 hover:bg-purple-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-purple-800/50 dark:bg-purple-900/30 dark:text-purple-200 dark:hover:bg-purple-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
 
 const HEADER_FLAGS_BTN_CLASS =
-    'btn btn-circle btn-ghost relative shrink-0 border border-amber-200/80 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 min-h-[2.5rem] min-w-[2.5rem] p-0 disabled:pointer-events-none disabled:opacity-40 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
+    'btn btn-circle btn-ghost relative shrink-0 !overflow-visible border border-amber-200/80 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 min-h-[2.5rem] min-w-[2.5rem] p-0 disabled:pointer-events-none disabled:opacity-40 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
 
 const HEADER_ACTION_BAR_TAGS_BTN =
     `${HEADER_ACTION_BAR_ROUND_BADGE} text-purple-700 hover:!bg-purple-50 hover:text-purple-800 dark:text-purple-300 dark:hover:!bg-purple-900/30`;
@@ -267,7 +267,7 @@ const HEADER_ACTION_BAR_DUPLICATES_BTN =
     `${HEADER_ACTION_BAR_ROUND_BADGE} text-orange-700 hover:!bg-orange-50 hover:text-orange-800 dark:text-orange-300 dark:hover:!bg-orange-900/30`;
 
 const HEADER_DUPLICATES_BTN_CLASS =
-    'btn btn-circle btn-ghost relative shrink-0 border border-orange-200/80 bg-orange-50 text-orange-700 hover:border-orange-300 hover:bg-orange-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-orange-800/50 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
+    'btn btn-circle btn-ghost relative shrink-0 !overflow-visible border border-orange-200/80 bg-orange-50 text-orange-700 hover:border-orange-300 hover:bg-orange-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-orange-800/50 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
 
 const MORE_ACTIONS_SECTION_LABEL =
     'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500 dark:text-gray-400';
@@ -303,7 +303,7 @@ const TEAM_PANEL_MORE_BTN =
 
 /** Stage workflow actions — unified size on desktop and mobile. */
 const STAGE_ACTION_BTN_BASE =
-    'btn btn-md min-h-11 rounded-full px-5 gap-2 text-sm font-semibold whitespace-nowrap border-0 shadow-sm';
+    'btn btn-md min-h-11 !overflow-visible rounded-full px-5 gap-2 text-sm font-semibold whitespace-nowrap border-0 shadow-sm';
 
 const STAGE_ACTION_BTN_CLASS =
     `${STAGE_ACTION_BTN_BASE} bg-gray-900 text-white hover:bg-gray-800 dark:bg-gray-950 dark:hover:bg-gray-900`;
@@ -2772,14 +2772,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <button
                         type="button"
                         onClick={openHeaderDocumentsModal}
-                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                        className="btn btn-ghost btn-sm relative h-auto min-h-0 overflow-visible p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
                         title="Case documents on OneDrive"
                         aria-label="Case documents"
                     >
                         <DocumentArrowUpIcon className="h-6 w-6" />
                         {headerSupabaseDocumentsCount > 0 && (
                             <span
-                                className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
+                                className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
                                 style={{ backgroundColor: '#3a3a3a' }}
                             >
                                 {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
@@ -2807,7 +2807,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         >
                             <TagIcon className="h-5 w-5" />
                             {tagsCount > 0 && (
-                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
+                                <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
                                     {tagsCount > 99 ? '99+' : tagsCount}
                                 </span>
                             )}
@@ -2822,7 +2822,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         >
                             <FlagIcon className="h-5 w-5" />
                             {totalFlagBadge > 0 && (
-                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
+                                <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
                                     {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
                                 </span>
                             )}
@@ -2842,7 +2842,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         aria-label="Duplicate contacts"
                     >
                         <DocumentDuplicateIcon className="h-5 w-5" />
-                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
+                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
                             {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
                         </span>
                     </button>
@@ -2880,7 +2880,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         >
                             <TagIcon className={iconClass} />
                             {tagsCount > 0 && (
-                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
+                                <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
                                     {tagsCount > 99 ? '99+' : tagsCount}
                                 </span>
                             )}
@@ -2895,7 +2895,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         >
                             <FlagIcon className={iconClass} />
                             {totalFlagBadge > 0 && (
-                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
+                                <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
                                     {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
                                 </span>
                             )}
@@ -2915,7 +2915,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         aria-label="Duplicate contacts"
                     >
                         <DocumentDuplicateIcon className={iconClass} />
-                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
+                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
                             {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
                         </span>
                     </button>
@@ -2935,7 +2935,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             <DocumentArrowUpIcon className={HEADER_ACTION_ICON} aria-hidden />
             {headerSupabaseDocumentsCount > 0 && (
                 <span
-                    className="absolute -right-1 -top-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-[10px] font-bold text-white"
+                    className="absolute -right-1 -top-1 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-[10px] font-bold text-white"
                     style={{ backgroundColor: '#3a3a3a' }}
                 >
                     {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
@@ -3127,13 +3127,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                                             }
                                                         }}
-                                                        className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                                        className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
                                                         title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
                                                         aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
                                                     >
                                                         <Squares2X2Icon className="h-6 w-6" />
                                                         <span
-                                                            className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                            className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
                                                             style={{ backgroundColor: '#3a3a3a' }}
                                                         >
                                                             {(subLeadsCount || 0) + 1}
@@ -3468,7 +3468,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                                         }
                                                     }}
-                                                    className="btn btn-square btn-sm btn-ghost relative shrink-0 border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                                    className="btn btn-square btn-sm btn-ghost relative shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
                                                     title={
                                                         isSubLead
                                                             ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
@@ -3477,7 +3477,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 >
                                                     <Squares2X2Icon className="w-6 h-6" />
                                                     <span
-                                                        className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                        className="absolute -top-1 -right-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
                                                         style={{ backgroundColor: '#3a3a3a' }}
                                                     >
                                                         {(subLeadsCount || 0) + 1}
@@ -4272,7 +4272,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                     <DocumentCheckIcon className="w-5 h-5" />
                                                                     Sub efforts
                                                                     {(leadSubEfforts?.length ?? 0) > 0 ? (
-                                                                        <span className="badge badge-sm badge-primary min-h-5 h-5 px-1.5">
+                                                                        <span className="badge badge-sm badge-primary min-h-5 h-5 shrink-0 px-1.5">
                                                                             {leadSubEfforts.length}
                                                                         </span>
                                                                     ) : null}
@@ -4784,8 +4784,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             >
                                                 <DocumentCheckIcon className="w-5 h-5" />
                                                 Sub efforts
-                                                {(leadSubEfforts?.length ?? 0) > 0 ? (
-                                                    <span className="badge badge-sm badge-primary min-h-5 h-5 px-1.5">
+                                                    {(leadSubEfforts?.length ?? 0) > 0 ? (
+                                                    <span className="badge badge-sm badge-primary min-h-5 h-5 shrink-0 px-1.5">
                                                         {leadSubEfforts.length}
                                                     </span>
                                                 ) : null}
@@ -5625,7 +5625,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         open={isSubEffortsModalOpen}
                         onClose={() => setIsSubEffortsModalOpen(false)}
                         rows={leadSubEfforts}
-                        leadNumber={selectedClient?.lead_number ?? null}
+                        leadNumber={headerDocsLeadNumber || selectedClient?.lead_number || null}
+                        clientId={(selectedClient as any)?.id ?? null}
                         initialSelectedRowId={subEffortsModalRowId}
                         onRefresh={() => void fetchLeadSubEfforts()}
                         categoryLinkedCount={subEfforts.length}

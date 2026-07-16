@@ -17,6 +17,7 @@ import {
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
   ClipboardDocumentIcon,
+  ComputerDesktopIcon,
   EyeIcon,
   PlusIcon,
   SparklesIcon,
@@ -25,6 +26,7 @@ import {
 import { SparklesIcon as SparklesIconSolid } from '@heroicons/react/24/solid';
 import TemplatePoaDoc from './documents/TemplatePoaDoc';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from '../ContractAiReviewPanel';
+import DisplayOnKioskModal from '../kiosk/DisplayOnKioskModal';
 import type { PoaDocController } from './PoaFormPrimitives';
 import {
   POA_FIELD_CATALOG,
@@ -247,6 +249,7 @@ const PoaDocumentEditor: React.FC = () => {
   const [insertPanelOpen, setInsertPanelOpen] = useState(false);
   const [fieldsPanelOpen, setFieldsPanelOpen] = useState(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  const [showKioskModal, setShowKioskModal] = useState(false);
   const [historyNav, setHistoryNav] = useState({ canUndo: false, canRedo: false });
   const [showAiReviewPanel, setShowAiReviewPanel] = useState(false);
   const [aiReviewNotes, setAiReviewNotes] = useState<string | null>(null);
@@ -1288,6 +1291,20 @@ const PoaDocumentEditor: React.FC = () => {
                     <ClipboardDocumentIcon className="h-4 w-4 shrink-0 text-gray-500" />
                     Copy link
                   </button>
+                  {data?.poa?.secure_token ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                      onClick={() => {
+                        setShowKioskModal(true);
+                        setActionsMenuOpen(false);
+                      }}
+                    >
+                      <ComputerDesktopIcon className="h-4 w-4 shrink-0 text-gray-500" />
+                      Display on kiosk
+                    </button>
+                  ) : null}
                   <a
                     role="menuitem"
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
@@ -1553,6 +1570,19 @@ const PoaDocumentEditor: React.FC = () => {
             <span className="text-sm font-semibold tracking-tight">AI Review</span>
           </button>
         </div>
+      ) : null}
+
+      {data?.poa?.secure_token ? (
+        <DisplayOnKioskModal
+          open={showKioskModal}
+          onClose={() => setShowKioskModal(false)}
+          resource={{
+            resourceType: 'poa',
+            resourceId: String(data.poa.id),
+            resourceToken: data.poa.secure_token,
+          }}
+          title="Display POA on kiosk"
+        />
       ) : null}
     </div>
   );

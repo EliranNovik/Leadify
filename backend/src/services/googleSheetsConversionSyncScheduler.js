@@ -84,7 +84,7 @@ async function runSyncCycle(trigger = 'scheduled') {
     return payload;
   } catch (error) {
     console.error('❌ Google Sheets conversion sync failed:', error.message || error);
-    throw error;
+    return null;
   } finally {
     isRunning = false;
   }
@@ -108,8 +108,16 @@ function startGoogleSheetsConversionSyncScheduler() {
     `⏰ Google Sheets conversion sync scheduler: every ${intervalMinutes} minute(s) (BadLeads + QLeads + HQLeads + SalesLeads)`,
   );
 
-  setTimeout(() => runSyncCycle('initial'), 30 * 1000);
-  schedulerHandle = setInterval(() => runSyncCycle('interval'), intervalMs);
+  setTimeout(() => {
+    void runSyncCycle('initial').catch((error) => {
+      console.error('❌ Google Sheets conversion sync initial run failed:', error?.message || error);
+    });
+  }, 30 * 1000);
+  schedulerHandle = setInterval(() => {
+    void runSyncCycle('interval').catch((error) => {
+      console.error('❌ Google Sheets conversion sync interval failed:', error?.message || error);
+    });
+  }, intervalMs);
 }
 
 function stopGoogleSheetsConversionSyncScheduler() {

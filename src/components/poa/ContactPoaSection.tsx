@@ -7,6 +7,7 @@ import {
   PlusIcon,
   ClipboardDocumentIcon,
   ArrowTopRightOnSquareIcon,
+  ComputerDesktopIcon,
   TrashIcon,
   XMarkIcon,
   ChevronDownIcon,
@@ -33,6 +34,7 @@ import {
 } from '../../lib/poaTemplatesApi';
 import { buildTemplatePrefill } from '../../lib/poaTemplateFields';
 import { POA_STATUS_LABELS, buildPoaPrefill } from '../../lib/poaTypes';
+import DisplayOnKioskModal from '../kiosk/DisplayOnKioskModal';
 
 interface ContactInfo {
   name?: string | null;
@@ -80,6 +82,7 @@ const ContactPoaSection: React.FC<Props> = ({
   const [selectedValue, setSelectedValue] = useState<string>('');
   const [creating, setCreating] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [kioskPoa, setKioskPoa] = useState<PoaListItem | null>(null);
 
   // Built-in POA types we no longer offer in the picker.
   const HIDDEN_TYPE_KEYS = ['standard_hebrew'];
@@ -277,6 +280,15 @@ const ContactPoaSection: React.FC<Props> = ({
                   >
                     <ClipboardDocumentIcon className="w-3.5 h-3.5" />
                     Copy link
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-primary btn-xs gap-1"
+                    disabled={poa.status === 'cancelled'}
+                    onClick={() => setKioskPoa(poa)}
+                  >
+                    <ComputerDesktopIcon className="w-3.5 h-3.5" />
+                    Kiosk
                   </button>
                   {poa.template_id ? (
                     <button
@@ -490,6 +502,19 @@ const ContactPoaSection: React.FC<Props> = ({
           </div>,
           document.body,
         )}
+
+      {kioskPoa ? (
+        <DisplayOnKioskModal
+          open
+          onClose={() => setKioskPoa(null)}
+          resource={{
+            resourceType: 'poa',
+            resourceId: String(kioskPoa.id),
+            resourceToken: kioskPoa.secure_token,
+          }}
+          title="Display POA on kiosk"
+        />
+      ) : null}
     </div>
   );
 };

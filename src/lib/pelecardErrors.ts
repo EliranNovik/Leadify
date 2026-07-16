@@ -77,10 +77,10 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
     return {
       title: 'Payment could not be completed',
       explanation:
-        'Pelecard or the card network rejected this charge before approval. With a required ID field this often means the terminal is missing acquirer configuration for internet checkout with ID (Shva vector 41), not that the ID itself was wrong.',
+        'Pelecard or the card network rejected this charge before approval. This often means the terminal is missing acquirer configuration for internet checkout (Shva vector 41 / CNP), not a problem with the card details you entered.',
       actions: [
-        'Check that ID / passport and CVV are entered correctly, then try again in one browser tab.',
-        'Contact our office if the problem continues — Pelecard may need to enable internet/CNP with ID on the terminal.',
+        'Check that card number, expiry, and CVV are entered correctly, then try again in one browser tab.',
+        'Contact our office if the problem continues — Pelecard may need to enable internet/CNP on the terminal.',
       ],
     };
   }

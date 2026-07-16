@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  ComputerDesktopIcon,
   PaperAirplaneIcon,
   PencilSquareIcon,
   PrinterIcon,
@@ -13,6 +14,7 @@ export type ProformaViewActionButtonsProps = {
   onSend: () => void;
   onShare: () => void;
   onDelete: () => void;
+  onDisplayOnKiosk?: () => void;
   sending?: boolean;
   sharing?: boolean;
   editTitle?: string;
@@ -27,6 +29,7 @@ const ProformaViewActionButtons: React.FC<ProformaViewActionButtonsProps> = ({
   onSend,
   onShare,
   onDelete,
+  onDisplayOnKiosk,
   sending = false,
   sharing = false,
   editTitle = 'Edit proforma',
@@ -75,7 +78,7 @@ const ProformaViewActionButtons: React.FC<ProformaViewActionButtonsProps> = ({
 
       <button
         type="button"
-        className="inline-flex h-10 items-center gap-2 rounded-r-xl px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50"
+        className={`inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 ${onDisplayOnKiosk ? '' : 'rounded-r-xl'}`}
         onClick={onShare}
         disabled={sharing}
         title="Share link with client"
@@ -87,6 +90,21 @@ const ProformaViewActionButtons: React.FC<ProformaViewActionButtonsProps> = ({
         )}
         Share
       </button>
+
+      {onDisplayOnKiosk ? (
+        <>
+          <div className="h-6 w-px bg-slate-200" aria-hidden />
+          <button
+            type="button"
+            className="inline-flex h-10 items-center gap-2 rounded-r-xl px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[0.98]"
+            onClick={onDisplayOnKiosk}
+            title="Display payment on lobby kiosk"
+          >
+            <ComputerDesktopIcon className={iconClass} />
+            Kiosk
+          </button>
+        </>
+      ) : null}
     </div>
 
     <button

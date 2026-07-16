@@ -3,6 +3,7 @@ import {
   ArrowTopRightOnSquareIcon,
   CakeIcon,
   CloudIcon,
+  ComputerDesktopIcon,
   MegaphoneIcon,
   PlusIcon,
   SparklesIcon,
@@ -24,6 +25,13 @@ import {
   type EntryKioskGadget,
   type EntryKioskSettings,
 } from '../../lib/entryKioskHr';
+import {
+  cancelKioskDisplaySession,
+  listKioskDevices,
+  pairKioskDevice,
+  updateKioskDevice,
+  type KioskDevice,
+} from '../../lib/kioskDisplayApi';
 
 type ToggleKey =
   | 'show_clock_date'
@@ -69,6 +77,25 @@ export default function HrEntryKioskPanel() {
   const [gadgetForm, setGadgetForm] = useState(emptyGadget);
   const [editingAnnouncementId, setEditingAnnouncementId] = useState<number | null>(null);
   const [editingGadgetId, setEditingGadgetId] = useState<number | null>(null);
+  const [kioskDevices, setKioskDevices] = useState<KioskDevice[]>([]);
+  const [kioskDevicesLoading, setKioskDevicesLoading] = useState(false);
+  const [pairingCode, setPairingCode] = useState('');
+  const [pairingName, setPairingName] = useState('');
+  const [pairing, setPairing] = useState(false);
+  const [pairedTokenHint, setPairedTokenHint] = useState<string | null>(null);
+
+  const loadKioskDevices = useCallback(async () => {
+    setKioskDevicesLoading(true);
+    try {
+      const result = await listKioskDevices();
+      if (!result.success) throw new Error(result.error || 'Failed to load kiosks');
+      setKioskDevices(result.devices || []);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load kiosks');
+    } finally {
+      setKioskDevicesLoading(false);
+    }
+  }, []);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -81,13 +108,14 @@ export default function HrEntryKioskPanel() {
       setSettings(settingsRow);
       setAnnouncements(announcementRows);
       setGadgets(gadgetRows);
+      await loadKioskDevices();
     } catch (err) {
       console.error('HrEntryKioskPanel load:', err);
       toast.error('Failed to load entry kiosk settings');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadKioskDevices]);
 
   useEffect(() => {
     void loadAll();
@@ -509,6 +537,154 @@ export default function HrEntryKioskPanel() {
                   >
                     <TrashIcon className="h-4 w-4" />
                   </button>
+                </div>
+              </li>
+            ))
+          )}
+        </ul>
+      </section>
+
+      <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <ComputerDesktopIcon className="h-5 w-5 text-indigo-600" />
+          <h2 className="text-lg font-semibold text-gray-900">Kiosk devices</h2>
+        </div>
+        <p className="text-sm text-gray-500 mb-4">
+          Pair lobby tablets using the 6-digit code shown on the unregistered kiosk screen.
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-[7rem_1fr_auto] items-end">
+          <label className="form-control">
+            <span className="label-text text-xs font-medium text-gray-600">Pairing code</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              className="input input-bordered input-sm font-mono"
+              value={pairingCode}
+              onChange={(e) => setPairingCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="123456"
+            />
+          </label>
+          <label className="form-control">
+            <span className="label-text text-xs font-medium text-gray-600">Device name</span>
+            <input
+              type="text"
+              className="input input-bordered input-sm"
+              value={pairingName}
+              onChange={(e) => setPairingName(e.target.value)}
+              placeholder="Ramat Gan lobby"
+            />
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm rounded-full"
+            disabled={pairing || pairingCode.length < 6 || !pairingName.trim()}
+            onClick={async () => {
+              setPairing(true);
+              setPairedTokenHint(null);
+              try {
+                const result = await pairKioskDevice({
+                  code: pairingCode.trim(),
+                  name: pairingName.trim(),
+                  locationId: settings?.location_id ?? 1,
+                });
+                if (!result.success) throw new Error(result.error || 'Pairing failed');
+                toast.success(`Paired ${result.device?.name || 'kiosk'}`);
+                setPairingCode('');
+                setPairingName('');
+                if (result.deviceToken) {
+                  setPairedTokenHint(
+                    'Tablet should register automatically. If not, refresh the kiosk page within a few seconds.',
+                  );
+                }
+                await loadKioskDevices();
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : 'Pairing failed');
+              } finally {
+                setPairing(false);
+              }
+            }}
+          >
+            {pairing ? <span className="loading loading-spinner loading-xs" /> : 'Pair device'}
+          </button>
+        </div>
+
+        {pairedTokenHint ? (
+          <p className="mt-3 text-xs text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2">{pairedTokenHint}</p>
+        ) : null}
+
+        <ul className="mt-5 divide-y divide-gray-100 rounded-xl border border-gray-200">
+          {kioskDevicesLoading ? (
+            <li className="px-4 py-6 text-center">
+              <span className="loading loading-spinner loading-sm" />
+            </li>
+          ) : kioskDevices.length === 0 ? (
+            <li className="px-4 py-6 text-center text-sm text-gray-500">No kiosk devices paired yet</li>
+          ) : (
+            kioskDevices.map((device) => (
+              <li key={device.id} className="flex items-start justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="font-medium text-gray-900">{device.name}</p>
+                  <p className="text-xs text-gray-500">
+                    {device.status === 'revoked' ? 'Revoked' : 'Active'}
+                    {device.last_seen_at
+                      ? ` · last seen ${new Date(device.last_seen_at).toLocaleString('en-GB', {
+                          day: '2-digit',
+                          month: 'short',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}`
+                      : ' · not seen yet'}
+                  </p>
+                  {device.activeSession ? (
+                    <p className="mt-1 text-xs text-amber-700">
+                      Showing {device.activeSession.resourceType} until{' '}
+                      {new Date(device.activeSession.expiresAt).toLocaleTimeString('en-GB', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-1">
+                  {device.activeSession ? (
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-outline btn-error"
+                      onClick={async () => {
+                        try {
+                          const result = await cancelKioskDisplaySession(device.activeSession!.id);
+                          if (!result.success) throw new Error(result.error || 'Failed to stop session');
+                          toast.success('Kiosk session stopped');
+                          await loadKioskDevices();
+                        } catch (err) {
+                          toast.error(err instanceof Error ? err.message : 'Failed to stop session');
+                        }
+                      }}
+                    >
+                      Stop session
+                    </button>
+                  ) : null}
+                  {device.status === 'active' ? (
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost text-red-600"
+                      onClick={async () => {
+                        if (!window.confirm(`Revoke kiosk "${device.name}"?`)) return;
+                        try {
+                          const result = await updateKioskDevice(device.id, { status: 'revoked' });
+                          if (!result.success) throw new Error(result.error || 'Failed to revoke');
+                          toast.success('Device revoked');
+                          await loadKioskDevices();
+                        } catch (err) {
+                          toast.error(err instanceof Error ? err.message : 'Failed to revoke');
+                        }
+                      }}
+                    >
+                      Revoke
+                    </button>
+                  ) : null}
                 </div>
               </li>
             ))

@@ -246,7 +246,33 @@ export type EntryKioskDisplayMeeting = {
   time: string | null;
   clientName: string | null;
   leadNumber: string | null;
+  title?: string;
+  typeCode?: 'im' | 'active' | 'potential' | 'other';
   isCurrent?: boolean;
+  isPast?: boolean;
+};
+
+export type EntryKioskMeetingParticipant = {
+  name: string;
+  photoUrl: string | null;
+  employeeId?: number | null;
+};
+
+export type EntryKioskMeetingDetail = EntryKioskDisplayMeeting & {
+  type: string;
+  typeCode: 'im' | 'active' | 'potential' | 'other';
+  title: string;
+  participants: EntryKioskMeetingParticipant[];
+  location: string | null;
+  isVirtual?: boolean;
+};
+
+export type EntryKioskMeetingsTodayResponse = {
+  success: boolean;
+  locationId?: number;
+  date?: string;
+  meetings?: EntryKioskMeetingDetail[];
+  error?: string;
 };
 
 export type EntryKioskDisplayWeather = {
@@ -290,6 +316,30 @@ export async function fetchEntryKioskDisplay(
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Kiosk display fetch failed',
+    };
+  }
+}
+
+export async function fetchEntryKioskMeetingsToday(
+  locationId: number = ENTRY_KIOSK_DEFAULT_LOCATION_ID,
+): Promise<EntryKioskMeetingsTodayResponse> {
+  const query = `locationId=${encodeURIComponent(String(locationId))}`;
+  const url = buildBackendApiUrl(`/api/clock-in-kiosk/meetings-today?${query}`);
+
+  try {
+    const res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = (await res.json().catch(() => ({}))) as EntryKioskMeetingsTodayResponse;
+    if (!res.ok || !body.success) {
+      return {
+        success: false,
+        error: body.error || `Failed to load meetings today (${res.status})`,
+      };
+    }
+    return body;
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Meetings today fetch failed',
     };
   }
 }

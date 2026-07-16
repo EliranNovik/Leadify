@@ -14,8 +14,6 @@ import {
   SparklesIcon,
   TrashIcon,
   PencilSquareIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import {
@@ -25,12 +23,18 @@ import {
   buildStaffMeetingDocumentStoragePath,
   resolveCaseDocumentUploadContentType,
 } from '../lib/caseDocumentsStorage';
-import { isSequenceOfEventsSlug } from '../lib/staffMeetingDocuments';
+import { isSequenceOfEventsClassification, isSequenceOfEventsSlug, mergeSequenceOfEventsClassifications } from '../lib/staffMeetingDocuments';
 import { initialsFromUploaderName, resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
-import { resolveLeadSubEffortIdentityFromRefs } from '../lib/leadSubEfforts';
+import {
+  leadSubEffortSavedUpdatedAt,
+  leadSubEffortSavedUpdatedBy,
+  resolveLeadSubEffortIdentityFromRefs,
+} from '../lib/leadSubEfforts';
+import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
+import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerModal';
 
 type CaseDocumentAiSummaryStatus = 'pending' | 'ready' | 'failed' | 'skipped';
 
@@ -472,18 +476,9 @@ export type DocumentPreviewItem = {
   downloadUrl: string;
   fileType: string;
   lastModified?: string;
+  /** Storage object path for document comment threads. */
+  storagePath?: string | null;
 };
-
-function formatDocumentPreviewDate(dateString: string) {
-  const d = new Date(dateString);
-  if (Number.isNaN(d.getTime())) return dateString;
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}.${mm}.${yy}, ${hh}:${min}`;
-}
 
 export async function shareDocumentPreviewItem(
   item: Pick<DocumentPreviewItem, 'name' | 'downloadUrl'>,
@@ -535,356 +530,48 @@ export async function shareDocumentPreviewItem(
   toast.error('Sharing is not available in this browser.');
 }
 
-async function downloadPreviewFile(item: Pick<DocumentPreviewItem, 'downloadUrl' | 'name'>): Promise<void> {
-  const response = await fetch(item.downloadUrl);
-  if (!response.ok) throw new Error('Download failed');
-  const blob = await response.blob();
-  const objectUrl = window.URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = objectUrl;
-  link.download = item.name;
-  link.click();
-  window.URL.revokeObjectURL(objectUrl);
-}
-
 export type DocumentPreviewModalProps = {
   isOpen: boolean;
   onClose: () => void;
   documents: DocumentPreviewItem[];
   initialIndex?: number;
+  /** When provided, shows an edit-name control in the header. */
+  onRename?: (doc: DocumentPreviewItem, newName: string) => Promise<void> | void;
 };
 
-/** Full-screen document preview (same UI as the gallery inside DocumentModal). */
+/** Full-screen document preview — thin wrapper around DocumentViewerModal. */
 export function DocumentPreviewModal({
   isOpen,
   onClose,
   documents,
   initialIndex = 0,
+  onRename,
 }: DocumentPreviewModalProps) {
-  const documentsRef = useRef(documents);
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [sharing, setSharing] = useState(false);
+  const viewerDocs: DocumentViewerItem[] = documents.map((d) => ({
+    id: d.id,
+    name: d.name,
+    url: d.downloadUrl,
+    fileType: d.fileType,
+    lastModified: d.lastModified,
+    storagePath: d.storagePath ?? null,
+  }));
 
-  useEffect(() => {
-    documentsRef.current = documents;
-  }, [documents]);
-
-  useEffect(() => {
-    if (!isOpen || documents.length === 0) {
-      setPreviewIndex(null);
-      return;
-    }
-    setPreviewIndex(Math.min(Math.max(0, initialIndex), documents.length - 1));
-  }, [isOpen, documents, initialIndex]);
-
-  const previewDocument =
-    previewIndex !== null && documents[previewIndex] != null ? documents[previewIndex] : null;
-
-  useEffect(() => {
-    if (previewIndex === null) return;
-    if (documents.length === 0) {
-      setPreviewIndex(null);
-      return;
-    }
-    if (previewIndex >= documents.length) {
-      setPreviewIndex(documents.length - 1);
-    }
-  }, [documents.length, previewIndex]);
-
-  const previewGoPrev = useCallback(() => {
-    setPreviewIndex((i) => {
-      if (i === null) return null;
-      const len = documentsRef.current.length;
-      if (len === 0) return null;
-      return (i - 1 + len) % len;
-    });
-  }, []);
-
-  const previewGoNext = useCallback(() => {
-    setPreviewIndex((i) => {
-      if (i === null) return null;
-      const len = documentsRef.current.length;
-      if (len === 0) return null;
-      return (i + 1) % len;
-    });
-  }, []);
-
-  const previewActiveId =
-    previewIndex !== null && documents[previewIndex] != null ? String(documents[previewIndex].id) : null;
-
-  useEffect(() => {
-    if (previewIndex === null || !previewActiveId) return;
-    const id = `doc-preview-thumb-${previewActiveId}`;
-    requestAnimationFrame(() => {
-      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    });
-  }, [previewIndex, previewActiveId]);
-
-  const lastPreviewWheelNavRef = useRef(0);
-  const handlePreviewStageWheel = useCallback(
-    (e: React.WheelEvent<HTMLDivElement>) => {
-      if (!previewDocument?.fileType.includes('image/')) return;
-      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
-      if (Math.abs(e.deltaX) < 12) return;
-      const now = Date.now();
-      if (now - lastPreviewWheelNavRef.current < 400) return;
-      lastPreviewWheelNavRef.current = now;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.deltaX > 0) previewGoNext();
-      else previewGoPrev();
-    },
-    [previewDocument, previewGoNext, previewGoPrev],
-  );
-
-  const handleClose = useCallback(() => {
-    setPreviewIndex(null);
-    onClose();
-  }, [onClose]);
-
-  const handleDownload = useCallback(async () => {
-    if (!previewDocument || downloading) return;
-    setDownloading(true);
-    try {
-      await downloadPreviewFile(previewDocument);
-    } catch (err) {
-      console.error('Download error:', err);
-      toast.error('Download failed. Please try again.');
-    } finally {
-      setDownloading(false);
-    }
-  }, [previewDocument, downloading]);
-
-  const handleShare = useCallback(async () => {
-    if (!previewDocument || sharing) return;
-    setSharing(true);
-    try {
-      await shareDocumentPreviewItem(previewDocument);
-    } finally {
-      setSharing(false);
-    }
-  }, [previewDocument, sharing]);
-
-  useEffect(() => {
-    if (!isOpen || previewIndex === null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-        return;
+  return (
+    <DocumentViewerModal
+      isOpen={isOpen && documents.length > 0}
+      onClose={onClose}
+      documents={viewerDocs}
+      initialIndex={initialIndex}
+      onRename={
+        onRename
+          ? async (item, newName) => {
+              const src = documents.find((d) => d.id === item.id);
+              if (!src) return;
+              await onRename(src, newName);
+            }
+          : undefined
       }
-      if (documents.length <= 1) return;
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        previewGoPrev();
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        previewGoNext();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, previewIndex, documents.length, handleClose, previewGoPrev, previewGoNext]);
-
-  if (!isOpen || !previewDocument || previewIndex === null) {
-    return null;
-  }
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[1200] flex flex-col bg-base-100"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Document preview"
-    >
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-base-300 bg-base-100 px-4 py-3 md:px-6">
-        <div className="min-w-0 flex-1">
-          {previewDocument.lastModified ? (
-            <p className="text-xs text-base-content/55 tabular-nums">
-              Uploaded {formatDocumentPreviewDate(previewDocument.lastModified)}
-            </p>
-          ) : null}
-          <h2 className="mt-0.5 truncate text-lg font-semibold md:text-xl">{previewDocument.name}</h2>
-          {documents.length > 1 ? (
-            <p className="mt-0.5 text-xs text-base-content/60 tabular-nums">
-              {previewIndex + 1} / {documents.length}
-            </p>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            className="btn btn-ghost btn-circle shrink-0"
-            onClick={() => void handleShare()}
-            disabled={sharing || !previewDocument.downloadUrl}
-            aria-label={`Share ${previewDocument.name}`}
-            title="Share"
-          >
-            {sharing ? (
-              <span className="loading loading-spinner loading-sm" />
-            ) : (
-              <ShareIcon className="h-6 w-6" />
-            )}
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-circle shrink-0"
-            onClick={() => void handleDownload()}
-            disabled={downloading}
-            aria-label={`Download ${previewDocument.name}`}
-            title="Download"
-          >
-            {downloading ? (
-              <span className="loading loading-spinner loading-sm" />
-            ) : (
-              <ArrowDownTrayIcon className="h-6 w-6" />
-            )}
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-circle shrink-0"
-            onClick={handleClose}
-            aria-label="Close preview"
-          >
-            <XMarkIcon className="h-6 w-6" />
-          </button>
-        </div>
-      </header>
-
-      <div className="flex min-h-0 flex-1 items-stretch">
-        {documents.length > 1 ? (
-          <button
-            type="button"
-            className="hidden w-12 shrink-0 items-center justify-center border-r border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
-            aria-label="Previous file"
-            onClick={previewGoPrev}
-          >
-            <ChevronLeftIcon className="h-9 w-9 lg:h-10 lg:w-10" />
-          </button>
-        ) : null}
-
-        <div
-          className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-900"
-          onWheel={handlePreviewStageWheel}
-        >
-          <div
-            className={`flex min-h-0 w-full flex-1 p-3 md:p-6 ${
-              previewDocument.fileType.includes('pdf')
-                ? 'min-h-0 flex-col overflow-hidden'
-                : 'items-center justify-center overflow-auto'
-            }`}
-          >
-            {previewDocument.fileType.includes('image/') ? (
-              <img
-                src={previewDocument.downloadUrl}
-                alt={previewDocument.name}
-                className="max-h-full max-w-full object-contain"
-              />
-            ) : previewDocument.fileType.includes('pdf') ? (
-              <iframe
-                src={previewDocument.downloadUrl}
-                className="min-h-0 w-full flex-1 border-0"
-                title={previewDocument.name}
-              />
-            ) : (
-              <div className="flex flex-col items-center justify-center gap-3 px-4 text-center text-neutral-200">
-                <DocumentIcon className="h-16 w-16 shrink-0 opacity-80" />
-                <p className="text-sm">Preview not available for this file type.</p>
-                <a
-                  href={previewDocument.downloadUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-sm btn-primary"
-                >
-                  <ArrowDownTrayIcon className="h-4 w-4" />
-                  Download
-                </a>
-              </div>
-            )}
-          </div>
-          {documents.length > 1 ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center gap-3 md:hidden">
-              <button
-                type="button"
-                className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
-                aria-label="Previous file"
-                onClick={previewGoPrev}
-              >
-                <ChevronLeftIcon className="h-6 w-6" />
-              </button>
-              <button
-                type="button"
-                className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
-                aria-label="Next file"
-                onClick={previewGoNext}
-              >
-                <ChevronRightIcon className="h-6 w-6" />
-              </button>
-            </div>
-          ) : null}
-        </div>
-
-        {documents.length > 1 ? (
-          <button
-            type="button"
-            className="hidden w-12 shrink-0 items-center justify-center border-l border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
-            aria-label="Next file"
-            onClick={previewGoNext}
-          >
-            <ChevronRightIcon className="h-9 w-9 lg:h-10 lg:w-10" />
-          </button>
-        ) : null}
-      </div>
-
-      {documents.length > 1 ? (
-        <footer className="shrink-0 border-t border-base-300 bg-base-200/50 px-2 py-3 dark:bg-base-300/30">
-          <div
-            className="mx-auto flex max-w-[100vw] gap-2 overflow-x-auto overflow-y-hidden pb-1 [-webkit-overflow-scrolling:touch]"
-            onWheel={(e) => {
-              if (!e.shiftKey) return;
-              e.currentTarget.scrollLeft += e.deltaY;
-              e.preventDefault();
-            }}
-          >
-            {documents.map((d, i) => {
-              const isActive = i === previewIndex;
-              const isImg = d.fileType.includes('image/');
-              return (
-                <button
-                  key={d.id}
-                  id={`doc-preview-thumb-${d.id}`}
-                  type="button"
-                  onClick={() => setPreviewIndex(i)}
-                  title={d.name}
-                  className={`shrink-0 rounded-lg border-2 p-0.5 transition ${
-                    isActive
-                      ? 'border-primary shadow-md ring-2 ring-primary/40'
-                      : 'border-transparent opacity-75 hover:opacity-100'
-                  }`}
-                >
-                  {isImg ? (
-                    <img
-                      src={d.downloadUrl}
-                      alt=""
-                      className="h-16 w-16 rounded-md object-cover md:h-20 md:w-20"
-                      loading="lazy"
-                      draggable={false}
-                    />
-                  ) : (
-                    <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-md bg-base-300 md:h-20 md:w-20">
-                      <div className="flex origin-center scale-[0.42] items-center justify-center">
-                        <DocumentFileGlyph fileType={d.fileType} fileName={d.name} />
-                      </div>
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </footer>
-      ) : null}
-    </div>,
-    document.body,
+    />
   );
 }
 
@@ -989,6 +676,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const [classificationsError, setClassificationsError] = useState<string | null>(null);
   /** Latest classifications for classification labels in fetch (avoids extra DB round-trip when already loaded). */
   const classificationsRef = useRef<CaseClassificationRow[]>([]);
+  /** Alias classification ids → canonical tab id (Sequence of Events portal/CRM duplicates). */
+  const classificationCanonicalByAliasRef = useRef<Map<string, string>>(new Map());
+  /** Canonical tab id → all classification ids that belong on that tab. */
+  const classificationAliasesByCanonicalRef = useRef<Map<string, Set<string>>>(new Map());
   /** Which category tab is selected when browsing the document list (case documents only). */
   const [activeBrowseCategoryId, setActiveBrowseCategoryId] = useState<string | null>(null);
   const lastBrowseLeadRef = useRef<string | null>(null);
@@ -1029,6 +720,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       if (qErr) {
         console.error('case_document_classifications:', qErr);
         setClassificationsError(qErr.message);
+        classificationCanonicalByAliasRef.current = new Map();
+        classificationAliasesByCanonicalRef.current = new Map();
         setClassifications([]);
         return;
       }
@@ -1041,7 +734,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             (isSequenceOfEventsSlug(restrictSlug) && isSequenceOfEventsSlug(c.slug)),
         );
       }
-      setClassifications(rows);
+      const merged = mergeSequenceOfEventsClassifications(rows);
+      classificationCanonicalByAliasRef.current = merged.canonicalIdByAlias;
+      classificationAliasesByCanonicalRef.current = merged.aliasIdsByCanonical;
+      setClassifications(merged.tabs);
     })();
     return () => {
       cancelled = true;
@@ -1056,9 +752,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     documentsRef.current = documents;
   }, [documents]);
 
-  const previewDocument =
-    previewIndex !== null && documents[previewIndex] != null ? documents[previewIndex] : null;
-
   useEffect(() => {
     if (previewIndex === null) return;
     if (documents.length === 0) {
@@ -1070,72 +763,62 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     }
   }, [documents.length, previewIndex]);
 
-  const previewGoPrev = useCallback(() => {
-    setPreviewIndex((i) => {
-      if (i === null) return null;
-      const len = documentsRef.current.length;
-      if (len === 0) return null;
-      return (i - 1 + len) % len;
-    });
-  }, []);
+  const handleRenamePreviewDocument = useCallback(
+    async (item: DocumentViewerItem, newName: string) => {
+      const doc = documents.find((d) => d.id === item.id);
+      if (!doc) throw new Error('Document not found');
+      const trimmed = newName.trim();
+      if (!trimmed) throw new Error('Name is required');
 
-  const previewGoNext = useCallback(() => {
-    setPreviewIndex((i) => {
-      if (i === null) return null;
-      const len = documentsRef.current.length;
-      if (len === 0) return null;
-      return (i + 1) % len;
-    });
-  }, []);
+      if (doc.source === 'subeffort') {
+        const rowId = doc.subEffortRowId;
+        const path = doc.storagePath?.trim() || '';
+        if (!rowId || !path) throw new Error('This document cannot be renamed.');
 
-  /** Avoid re-running when `documents` is refreshed (poll) but the same file is still selected. */
-  const previewActiveId =
-    previewIndex !== null && documents[previewIndex] != null ? String(documents[previewIndex].id) : null;
+        const { data: seRow, error: seFetchErr } = await supabase
+          .from('lead_sub_efforts')
+          .select('document_url')
+          .eq('id', rowId)
+          .maybeSingle();
+        if (seFetchErr) throw seFetchErr;
 
-  useEffect(() => {
-    if (previewIndex === null || !previewActiveId) return;
-    const id = `doc-preview-thumb-${previewActiveId}`;
-    requestAnimationFrame(() => {
-      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    });
-  }, [previewIndex, previewActiveId]);
+        const normalizeDocItems = (raw: unknown): any[] => {
+          if (!raw) return [];
+          if (Array.isArray(raw)) return raw as any[];
+          if (typeof raw === 'string') {
+            try {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) return parsed as any[];
+            } catch {
+              /* ignore */
+            }
+            return [{ url: raw }];
+          }
+          if (typeof raw === 'object') return [raw as any];
+          return [];
+        };
 
-  /** Horizontal swipe / trackpad only; cooldown prevents rapid cycling. Vertical wheel scrolls the image area. */
-  const lastPreviewWheelNavRef = useRef(0);
-  const handlePreviewStageWheel = useCallback(
-    (e: React.WheelEvent<HTMLDivElement>) => {
-      if (!previewDocument?.fileType.includes('image/')) return;
-      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
-      if (Math.abs(e.deltaX) < 12) return;
-      const now = Date.now();
-      if (now - lastPreviewWheelNavRef.current < 400) return;
-      lastPreviewWheelNavRef.current = now;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.deltaX > 0) previewGoNext();
-      else previewGoPrev();
+        const items = normalizeDocItems((seRow as any)?.document_url);
+        const next = items.map((it) =>
+          String((it as any)?.path || '') === path ? { ...it, name: trimmed } : it,
+        );
+        const { error: seUpdErr } = await supabase
+          .from('lead_sub_efforts')
+          .update({ document_url: next })
+          .eq('id', rowId);
+        if (seUpdErr) throw seUpdErr;
+      } else {
+        const dbId = doc.caseDocDbId || doc.id;
+        const table = isStaffMeetingDocs ? 'staff_meeting_documents' : 'lead_case_documents';
+        const { error } = await supabase.from(table).update({ file_name: trimmed }).eq('id', dbId);
+        if (error) throw error;
+      }
+
+      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, name: trimmed } : d)));
+      setSummaryModalDoc((prev) => (prev?.id === doc.id ? { ...prev, name: trimmed } : prev));
     },
-    [previewDocument, previewGoNext, previewGoPrev],
+    [documents, isStaffMeetingDocs],
   );
-
-  useEffect(() => {
-    if (previewIndex === null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setPreviewIndex(null);
-        return;
-      }
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        previewGoPrev();
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        previewGoNext();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [previewIndex, previewGoPrev, previewGoNext]);
 
   /** Refresh AI summary fields for pending rows while the documents tray is open (not only when the summary dialog is open). */
   useEffect(() => {
@@ -1218,7 +901,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     const tryApplyInitialSlug = (): boolean => {
       const slug = initialClassificationSlugToApplyRef.current?.trim();
       if (!slug) return false;
-      const match = classifications.find((c) => c.slug === slug);
+      const match = classifications.find(
+        (c) =>
+          c.slug === slug ||
+          (isSequenceOfEventsSlug(slug) && isSequenceOfEventsSlug(c.slug)),
+      );
       if (match) {
         setActiveBrowseCategoryId(match.id);
         initialClassificationSlugToApplyRef.current = null;
@@ -1261,7 +948,15 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     if (!requireCaseDocumentClassification || activeBrowseCategoryId === null) {
       return documents;
     }
-    return documents.filter((d) => d.caseClassificationId === activeBrowseCategoryId);
+    const aliasIds =
+      classificationAliasesByCanonicalRef.current.get(activeBrowseCategoryId) ??
+      new Set([activeBrowseCategoryId]);
+    return documents.filter((d) => {
+      const cid = d.caseClassificationId;
+      if (!cid) return false;
+      if (aliasIds.has(cid)) return true;
+      return classificationCanonicalByAliasRef.current.get(cid) === activeBrowseCategoryId;
+    });
   }, [documents, requireCaseDocumentClassification, activeBrowseCategoryId]);
 
   const caseUploadBlocked = useMemo(
@@ -1390,7 +1085,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         return;
       }
 
-      const list = (rows ?? []) as {
+      let list = (rows ?? []) as {
         id: string;
         storage_path: string;
         file_name: string;
@@ -1404,6 +1099,59 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         ai_summary_error: string | null;
       }[];
 
+      // Client portal Sequence of Events uploads use onedrive_subfolder = null. When browsing a
+      // named folder (e.g. ClientHeader), merge those SOE rows into the Sequence of Events tab.
+      if (subKey && requireCaseDocumentClassification) {
+        const soeIds = new Set<string>();
+        for (const c of classificationsRef.current) {
+          if (!isSequenceOfEventsClassification(c)) continue;
+          soeIds.add(c.id);
+          const aliases = classificationAliasesByCanonicalRef.current.get(c.id);
+          if (aliases) for (const id of aliases) soeIds.add(id);
+        }
+        for (const [aliasId, canonicalId] of classificationCanonicalByAliasRef.current) {
+          if (soeIds.has(canonicalId)) soeIds.add(aliasId);
+        }
+        if (soeIds.size === 0) {
+          const { data: catRows } = await supabase
+            .from('case_document_classifications')
+            .select('id, slug, label');
+          for (const c of (catRows ?? []) as { id: string; slug: string; label: string }[]) {
+            if (isSequenceOfEventsClassification(c)) soeIds.add(c.id);
+          }
+        }
+
+        if (soeIds.size > 0) {
+          const { data: portalRows, error: portalErr } = await supabase
+            .from('lead_case_documents')
+            .select(
+              'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
+            )
+            .eq('lead_number', leadNumber)
+            .is('onedrive_subfolder', null)
+            .in('classification_id', [...soeIds])
+            .not('storage_path', 'is', null)
+            .order('created_at', { ascending: false });
+
+          if (portalErr) {
+            console.warn('portal sequence-of-events docs fetch:', portalErr.message);
+          } else {
+            const existingIds = new Set(list.map((r) => r.id));
+            const existingPaths = new Set(
+              list.map((r) => r.storage_path.trim()).filter(Boolean),
+            );
+            for (const r of (portalRows ?? []) as typeof list) {
+              const path = r.storage_path?.trim() || '';
+              if (existingIds.has(r.id)) continue;
+              if (path && existingPaths.has(path)) continue;
+              list.push(r);
+              existingIds.add(r.id);
+              if (path) existingPaths.add(path);
+            }
+          }
+        }
+      }
+
       let idToLabel = new Map<string, string>(classificationsRef.current.map((c) => [c.id, c.label]));
       if (idToLabel.size === 0) {
         const { data: catRows } = await supabase.from('case_document_classifications').select('id, label');
@@ -1411,6 +1159,15 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           (catRows || []).map((c: { id: string; label: string }) => [c.id, c.label]),
         );
       }
+      for (const [aliasId, canonicalId] of classificationCanonicalByAliasRef.current) {
+        const label = idToLabel.get(canonicalId);
+        if (label && !idToLabel.has(aliasId)) idToLabel.set(aliasId, label);
+      }
+
+      const toCanonicalClassificationId = (cid: string | null | undefined): string | null => {
+        if (!cid) return null;
+        return classificationCanonicalByAliasRef.current.get(cid) ?? cid;
+      };
 
       const uploaderKeys = [...new Set(list.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
       const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
@@ -1426,7 +1183,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           }
 
           const url = signed?.signedUrl?.trim() || '';
-          const cid = r.classification_id;
+          const cid = toCanonicalClassificationId(r.classification_id);
           const rawUploader = r.uploaded_by?.trim() || null;
           const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
           const mime =
@@ -1473,7 +1230,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           let q = supabase
             .from('lead_sub_efforts')
             .select(
-              `id, created_at, created_by, document_url,
+              `id, created_at, created_by, updated_by, updated_at, document_url,
                sub_efforts ( id, name, case_document_classification_id ),
                tenants_employee ( id, display_name, photo_url )`,
             )
@@ -1517,12 +1274,44 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               return 'application/octet-stream';
             };
 
+            // Prefer updated_by (actual uploader), never tenants_employee.display_name from
+            // employee_id — that FK stays on whoever provisioned/owns the row (often a lead role).
+            const seUploaderKeys = [
+              ...new Set(
+                ((seRows || []) as any[])
+                  .map((r) => leadSubEffortSavedUpdatedBy(r) || String(r?.created_by ?? '').trim() || '')
+                  .filter(Boolean),
+              ),
+            ];
+            const seUploaderMap = await resolveUploaderDisplayByKey(seUploaderKeys);
+
             for (const r of (seRows || []) as any[]) {
-              const categoryId = r?.sub_efforts?.case_document_classification_id ?? null;
+              const categoryId = toCanonicalClassificationId(
+                r?.sub_efforts?.case_document_classification_id ?? null,
+              );
               if (!categoryId) continue; // only show when mapped to a category
-              const who = r?.tenants_employee?.display_name ?? r?.created_by ?? null;
-              const photo = r?.tenants_employee?.photo_url ?? null;
-              const createdAt = r?.created_at ?? new Date().toISOString();
+              const whoRaw =
+                leadSubEffortSavedUpdatedBy(r) || String(r?.created_by ?? '').trim() || null;
+              const resolvedWho = whoRaw ? seUploaderMap.get(whoRaw) : undefined;
+              const who = resolvedWho?.name ?? whoRaw;
+              const emp = Array.isArray(r?.tenants_employee)
+                ? r.tenants_employee[0]
+                : r?.tenants_employee;
+              const empName = String(emp?.display_name ?? '').trim().toLowerCase();
+              const whoKey = String(who ?? '').trim().toLowerCase();
+              // Only trust the row's employee photo when it matches the updater name.
+              const matchedEmpPhoto =
+                whoKey && empName && empName === whoKey
+                  ? (typeof emp?.photo_url === 'string' ? emp.photo_url.trim() : '')
+                  : '';
+              const photo =
+                resolvedWho?.photoUrl?.trim() ||
+                matchedEmpPhoto ||
+                null;
+              const createdAt =
+                leadSubEffortSavedUpdatedAt(r) ||
+                r?.created_at ||
+                new Date().toISOString();
               const items = normalizeDocItems(r?.document_url);
               for (const it of items) {
                 const path = (it as any)?.path as string | undefined;
@@ -1570,7 +1359,16 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         }
       }
 
-      setDocuments([...subEffortDocuments, ...mappedDocuments]);
+      // Prefer case-document rows when the same storage path also appears on a sub-effort.
+      const casePaths = new Set(
+        mappedDocuments.map((d) => d.storagePath?.trim()).filter(Boolean) as string[],
+      );
+      const uniqueSubEffortDocuments = subEffortDocuments.filter((d) => {
+        const p = d.storagePath?.trim();
+        return !p || !casePaths.has(p);
+      });
+
+      setDocuments([...uniqueSubEffortDocuments, ...mappedDocuments]);
     } catch (err) {
       console.error('Error fetching documents:', err);
       setError(`Failed to fetch documents: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -1641,62 +1439,91 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         return documents[prevIdx]?.id === doc.id ? null : prevIdx;
       });
 
-      if (doc.source === 'subeffort') {
-        const rowId = doc.subEffortRowId;
-        const path = doc.storagePath?.trim() || '';
-        if (!rowId || !path) {
-          throw new Error('This sub-effort document cannot be deleted (missing storage path).');
-        }
+      const path = doc.storagePath?.trim() || '';
 
-        const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
-        if (rmErr) throw rmErr;
-
-        const { data: seRow, error: seFetchErr } = await supabase
-          .from('lead_sub_efforts')
-          .select('document_url')
-          .eq('id', rowId)
-          .maybeSingle();
-        if (seFetchErr) throw seFetchErr;
-
-        const normalizeDocItems = (raw: unknown): any[] => {
-          if (!raw) return [];
-          if (Array.isArray(raw)) return raw as any[];
-          if (typeof raw === 'string') {
-            try {
-              const parsed = JSON.parse(raw);
-              if (Array.isArray(parsed)) return parsed as any[];
-            } catch {
-              /* ignore */
-            }
-            return [{ url: raw }];
+      const normalizeDocItems = (raw: unknown): any[] => {
+        if (!raw) return [];
+        if (Array.isArray(raw)) return raw as any[];
+        if (typeof raw === 'string') {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed as any[];
+          } catch {
+            /* ignore */
           }
-          if (typeof raw === 'object') return [raw as any];
-          return [];
-        };
+          return [{ url: raw }];
+        }
+        if (typeof raw === 'object') return [raw as any];
+        return [];
+      };
 
-        const items = normalizeDocItems((seRow as any)?.document_url);
-        const next = items.filter((it) => String((it as any)?.path || '') !== path);
+      /** Remove this storage path from every lead_sub_efforts row for this lead. */
+      const stripPathFromLeadSubEfforts = async (storagePath: string) => {
+        if (!storagePath || isStaffMeetingDocs) return;
+        const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
+          clientId,
+          leadNumber,
+        });
+        if (!legacyLeadId && !newLeadId) return;
 
-        const { error: seUpdErr } = await supabase.from('lead_sub_efforts').update({ document_url: next }).eq('id', rowId);
-        if (seUpdErr) throw seUpdErr;
-      } else {
+        let q = supabase.from('lead_sub_efforts').select('id, document_url');
+        if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+        else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+
+        const { data: seRows, error: seErr } = await q;
+        if (seErr) {
+          console.warn('lead_sub_efforts strip on delete:', seErr.message);
+          return;
+        }
+
+        for (const row of (seRows || []) as { id: number; document_url: unknown }[]) {
+          const items = normalizeDocItems(row.document_url);
+          if (!items.some((it) => String((it as any)?.path || '') === storagePath)) continue;
+          const next = items.filter((it) => String((it as any)?.path || '') !== storagePath);
+          const { error: seUpdErr } = await supabase
+            .from('lead_sub_efforts')
+            .update({ document_url: next })
+            .eq('id', row.id);
+          if (seUpdErr) throw seUpdErr;
+        }
+      };
+
+      if (isStaffMeetingDocs) {
         const dbId = doc.caseDocDbId || doc.id;
-        const path = doc.storagePath?.trim() || '';
         if (!path) throw new Error('Missing storage path for this document.');
-
         const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
         if (rmErr) throw rmErr;
-
-        if (isStaffMeetingDocs) {
-          const { error: delErr } = await supabase.from('staff_meeting_documents').delete().eq('id', dbId);
-          if (delErr) throw delErr;
-        } else {
-          const { error: delErr } = await supabase.from('lead_case_documents').delete().eq('id', dbId);
-          if (delErr) throw delErr;
-        }
+        const { error: delErr } = await supabase.from('staff_meeting_documents').delete().eq('id', dbId);
+        if (delErr) throw delErr;
+        setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+        toast.success('Deleted');
+        return;
       }
 
-      setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+      if (!path) {
+        throw new Error('Missing storage path for this document.');
+      }
+
+      // Remove storage object once, then clear both case docs + sub-effort attachments.
+      const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
+      if (rmErr) throw rmErr;
+
+      const { error: delCaseErr } = await supabase
+        .from('lead_case_documents')
+        .delete()
+        .eq('lead_number', leadNumber)
+        .eq('storage_path', path);
+      if (delCaseErr) throw delCaseErr;
+
+      await stripPathFromLeadSubEfforts(path);
+
+      setDocuments((prev) =>
+        prev.filter((d) => {
+          if (d.id === doc.id) return false;
+          if (d.storagePath?.trim() === path) return false;
+          return true;
+        }),
+      );
       toast.success('Deleted');
     } catch (e: any) {
       console.error('Delete document:', e);
@@ -1733,23 +1560,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     return `${dd}.${mm}.${yy}, ${hh}:${min}`;
   };
 
-  // Helper function to get current user's full name
+  // Same actor identity as SubEfforts / stage changes (prefer tenants_employee.display_name).
   const getCurrentUserName = async (): Promise<string> => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.id) return 'Unknown';
-      
-      const { data: userData, error } = await supabase
-        .from('users')
-        .select('full_name')
-        .eq('auth_id', user.id)
-        .single();
-      
-      if (error || !userData?.full_name) {
-        return user?.email || 'Unknown';
-      }
-      
-      return userData.full_name;
+      const actor = await fetchStageActorInfo();
+      return actor.fullName?.trim() || 'Unknown';
     } catch (error) {
       console.error('Error getting user name:', error);
       return 'Unknown';
@@ -2154,7 +1969,14 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     aria-label="Document categories"
                   >
                     {classifications.map((c) => {
-                      const count = documents.filter((d) => d.caseClassificationId === c.id).length;
+                      const aliasIds =
+                        classificationAliasesByCanonicalRef.current.get(c.id) ?? new Set([c.id]);
+                      const count = documents.filter((d) => {
+                        const cid = d.caseClassificationId;
+                        if (!cid) return false;
+                        if (aliasIds.has(cid)) return true;
+                        return classificationCanonicalByAliasRef.current.get(cid) === c.id;
+                      }).length;
                       const active = activeBrowseCategoryId === c.id;
                       return (
                         <button
@@ -2532,167 +2354,20 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
     </div>
 
-      {/* Full-screen preview + bottom carousel (above documents drawer & summary dialog) */}
-      {previewDocument && previewIndex !== null && (
-        <div
-          className="fixed inset-0 z-[1200] flex flex-col bg-base-100"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Document preview"
-        >
-          <header className="flex shrink-0 items-center justify-between gap-3 border-b border-base-300 bg-base-100 px-4 py-3 md:px-6">
-            <div className="min-w-0 flex-1">
-              <p className="text-xs text-base-content/55 tabular-nums">
-                Uploaded {formatDate(previewDocument.lastModified)}
-              </p>
-              <h2 className="mt-0.5 truncate text-lg font-semibold md:text-xl">{previewDocument.name}</h2>
-              <p className="mt-0.5 text-xs text-base-content/60 tabular-nums">
-                {previewIndex + 1} / {documents.length}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                className="btn btn-ghost btn-circle shrink-0"
-                onClick={() => void handleDownload(previewDocument)}
-                disabled={downloading.includes(previewDocument.id)}
-                aria-label={`Download ${previewDocument.name}`}
-                title="Download"
-              >
-                {downloading.includes(previewDocument.id) ? (
-                  <span className="loading loading-spinner loading-sm" />
-                ) : (
-                  <ArrowDownTrayIcon className="h-6 w-6" />
-                )}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-circle shrink-0"
-                onClick={() => setPreviewIndex(null)}
-                aria-label="Close preview"
-              >
-                <XMarkIcon className="h-6 w-6" />
-              </button>
-            </div>
-          </header>
-
-          <div className="flex min-h-0 flex-1 items-stretch">
-            <button
-              type="button"
-              className="hidden w-12 shrink-0 items-center justify-center border-r border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
-              aria-label="Previous file"
-              onClick={previewGoPrev}
-            >
-              <ChevronLeftIcon className="h-9 w-9 lg:h-10 lg:w-10" />
-            </button>
-
-            <div
-              className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-900"
-              onWheel={handlePreviewStageWheel}
-            >
-              <div
-                className={`flex min-h-0 w-full flex-1 p-3 md:p-6 ${
-                  previewDocument.fileType.includes('pdf')
-                    ? 'min-h-0 flex-col overflow-hidden'
-                    : 'items-center justify-center overflow-auto'
-                }`}
-              >
-                {previewDocument.fileType.includes('image/') ? (
-                  <img
-                    src={previewDocument.downloadUrl}
-                    alt={previewDocument.name}
-                    className="max-h-full max-w-full object-contain"
-                  />
-                ) : previewDocument.fileType.includes('pdf') ? (
-                  <iframe
-                    src={previewDocument.downloadUrl}
-                    className="min-h-0 w-full flex-1 border-0"
-                    title={previewDocument.name}
-                  />
-                ) : (
-                  <div className="flex flex-col items-center justify-center gap-3 px-4 text-center text-neutral-200">
-                    <DocumentIcon className="h-16 w-16 shrink-0 opacity-80" />
-                    <p className="text-sm">Preview not available for this file type.</p>
-                  </div>
-                )}
-              </div>
-              <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center gap-3 md:hidden">
-                <button
-                  type="button"
-                  className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
-                  aria-label="Previous file"
-                  onClick={previewGoPrev}
-                >
-                  <ChevronLeftIcon className="h-6 w-6" />
-                </button>
-                <button
-                  type="button"
-                  className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
-                  aria-label="Next file"
-                  onClick={previewGoNext}
-                >
-                  <ChevronRightIcon className="h-6 w-6" />
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="hidden w-12 shrink-0 items-center justify-center border-l border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
-              aria-label="Next file"
-              onClick={previewGoNext}
-            >
-              <ChevronRightIcon className="h-9 w-9 lg:h-10 lg:w-10" />
-            </button>
-          </div>
-
-          <footer className="shrink-0 border-t border-base-300 bg-base-200/50 px-2 py-3 dark:bg-base-300/30">
-            <div
-              className="mx-auto flex max-w-[100vw] gap-2 overflow-x-auto overflow-y-hidden pb-1 [-webkit-overflow-scrolling:touch]"
-              onWheel={(e) => {
-                if (!e.shiftKey) return;
-                e.currentTarget.scrollLeft += e.deltaY;
-                e.preventDefault();
-              }}
-            >
-              {documents.map((d, i) => {
-                const isActive = i === previewIndex;
-                const isImg = d.fileType.includes('image/');
-                return (
-                  <button
-                    key={d.id}
-                    id={`doc-preview-thumb-${d.id}`}
-                    type="button"
-                    onClick={() => setPreviewIndex(i)}
-                    title={d.name}
-                    className={`shrink-0 rounded-lg border-2 p-0.5 transition ${
-                      isActive
-                        ? 'border-primary shadow-md ring-2 ring-primary/40'
-                        : 'border-transparent opacity-75 hover:opacity-100'
-                    }`}
-                  >
-                    {isImg ? (
-                      <img
-                        src={d.downloadUrl}
-                        alt=""
-                        className="h-16 w-16 rounded-md object-cover md:h-20 md:w-20"
-                        loading="lazy"
-                        draggable={false}
-                      />
-                    ) : (
-                      <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-md bg-base-300 md:h-20 md:w-20">
-                        <div className="flex origin-center scale-[0.42] items-center justify-center">
-                          <DocumentFileGlyph fileType={d.fileType} fileName={d.name} />
-                        </div>
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </footer>
-        </div>
-      )}
+      <DocumentViewerModal
+        isOpen={previewIndex !== null && documents.length > 0}
+        onClose={() => setPreviewIndex(null)}
+        documents={documents.map((d) => ({
+          id: d.id,
+          name: d.name,
+          url: d.downloadUrl,
+          fileType: d.fileType,
+          lastModified: d.lastModified,
+          storagePath: d.storagePath ?? null,
+        }))}
+        initialIndex={previewIndex ?? 0}
+        onRename={handleRenamePreviewDocument}
+      />
     </>,
     window.document.body
   );

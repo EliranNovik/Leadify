@@ -151,10 +151,26 @@ async function display(req, res) {
   }
 }
 
+async function meetingsToday(req, res) {
+  try {
+    const locationId = req.query.locationId ?? entryKioskDisplayService.DEFAULT_LOCATION_ID;
+    const bundle = await entryKioskDisplayService.getMeetingsTodayBundle(locationId);
+    res.json({ success: true, ...bundle });
+  } catch (error) {
+    console.error('GET /api/clock-in-kiosk/meetings-today failed:', error);
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      success: false,
+      error: error.message || 'Failed to load meetings today',
+    });
+  }
+}
+
 module.exports = {
   getCurrent,
   validate,
   announce,
   recentEvent,
   display,
+  meetingsToday,
 };

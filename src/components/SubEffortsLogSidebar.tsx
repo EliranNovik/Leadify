@@ -107,16 +107,18 @@ export function SubEffortsLogSidebar({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="fixed right-0 top-1/2 z-[240] flex -translate-y-1/2 flex-col items-center gap-1.5 rounded-l-2xl border border-r-0 border-base-200 bg-base-100 px-3.5 py-4 shadow-lg transition hover:bg-base-200/60 active:scale-[0.98] dark:border-base-300 md:px-4 md:py-5"
+          className="fixed right-0 top-1/2 z-[240] flex -translate-y-1/2 flex-col items-center gap-1.5 overflow-visible rounded-l-2xl border border-r-0 border-base-200 bg-base-100 px-3.5 py-4 shadow-lg transition hover:bg-base-200/60 active:scale-[0.98] dark:border-base-300 md:px-4 md:py-5"
           aria-label="Open sub efforts log"
           title="Sub efforts log"
         >
-          <DocumentCheckIcon className="h-7 w-7 text-primary md:h-8 md:w-8" />
-          {count > 0 && (
-            <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-full bg-primary px-1.5 text-xs font-bold text-primary-content">
-              {count > 99 ? '99+' : count}
-            </span>
-          )}
+          <span className="relative inline-flex">
+            <DocumentCheckIcon className="h-7 w-7 text-primary md:h-8 md:w-8" />
+            {count > 0 && (
+              <span className="absolute -left-2.5 -top-2.5 z-10 flex h-6 min-w-[1.5rem] items-center justify-center rounded-full bg-primary px-1.5 text-xs font-bold text-primary-content shadow-sm">
+                {count > 99 ? '99+' : count}
+              </span>
+            )}
+          </span>
         </button>
       )}
 

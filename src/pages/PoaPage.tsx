@@ -54,8 +54,14 @@ function CenteredCard({ children }: { children: React.ReactNode }) {
   );
 }
 
-const PoaPage: React.FC = () => {
-  const { token } = useParams<{ token: string }>();
+const PoaPage: React.FC<{
+  kioskMode?: boolean;
+  tokenOverride?: string;
+  onKioskTokenChange?: (token: string) => void;
+  onKioskComplete?: () => void;
+}> = ({ kioskMode = false, tokenOverride, onKioskTokenChange, onKioskComplete }) => {
+  const { token: routeToken } = useParams<{ token: string }>();
+  const token = tokenOverride ?? routeToken;
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
@@ -124,17 +130,26 @@ const PoaPage: React.FC = () => {
     setAdvancing(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
     window.setTimeout(() => {
+      if (kioskMode && onKioskTokenChange) {
+        onKioskTokenChange(nextUnsigned.secure_token);
+        setAdvancing(false);
+        return;
+      }
       navigate(`/poa/${encodeURIComponent(nextUnsigned.secure_token)}`);
     }, 700);
-  }, [nextUnsigned, navigate]);
+  }, [nextUnsigned, navigate, kioskMode, onKioskTokenChange]);
 
   const goToPoa = useCallback(
     (secureToken: string) => {
       if (!secureToken || secureToken === token) return;
       window.scrollTo({ top: 0, behavior: 'smooth' });
+      if (kioskMode && onKioskTokenChange) {
+        onKioskTokenChange(secureToken);
+        return;
+      }
       navigate(`/poa/${encodeURIComponent(secureToken)}`);
     },
-    [token, navigate],
+    [token, navigate, kioskMode, onKioskTokenChange],
   );
   const meta = getPoaTypeMeta(data?.type.key);
   const Renderer = getPoaDocRenderer(data?.type.key);
@@ -233,17 +248,23 @@ const PoaPage: React.FC = () => {
         toast.success('Signed. Opening the next document…');
         setAdvancing(true);
         window.setTimeout(() => {
+          if (kioskMode && onKioskTokenChange) {
+            onKioskTokenChange(next!.secure_token);
+            setAdvancing(false);
+            return;
+          }
           navigate(`/poa/${encodeURIComponent(next!.secure_token)}`);
         }, 1100);
       } else {
         toast.success('All documents signed.');
+        if (kioskMode) onKioskComplete?.();
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not submit. Please try again.');
     } finally {
       setSubmitting(false);
     }
-  }, [token, meta, template, data, values, signatures, navigate]);
+  }, [token, meta, template, data, values, signatures, navigate, kioskMode, onKioskTokenChange, onKioskComplete]);
 
   const handleShare = useCallback(async () => {
     const url = typeof window !== 'undefined' ? window.location.href : '';

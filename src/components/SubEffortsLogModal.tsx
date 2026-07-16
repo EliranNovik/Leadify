@@ -7,11 +7,15 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DocumentIcon,
+  EllipsisVerticalIcon,
   EyeIcon,
+  FolderIcon,
+  FolderPlusIcon,
   PlusIcon,
   QuestionMarkCircleIcon,
   LockClosedIcon,
   PencilSquareIcon,
+  TrashIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { CheckCircleIcon as CheckCircleSolidIcon } from '@heroicons/react/24/solid';
@@ -23,8 +27,28 @@ import { resolveCaseDocumentUploadContentType } from '../lib/caseDocumentsStorag
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { compareSubEffortDisplayOrder, dedupeLeadSubEffortRows, defaultClientVisibleFromTemplate, hasLeadSubEffortSavedUpdate, leadSubEffortInternalFromTemplate, leadSubEffortSavedUpdatedAt, leadSubEffortSavedUpdatedBy } from '../lib/leadSubEfforts';
 import { DocumentPreviewModal, type DocumentPreviewItem } from './DocumentModal';
+import { SequenceOfEventsDocumentsModal } from './SequenceOfEventsDocumentsModal';
+import {
+  CASE_DOCUMENT_CATEGORY_META,
+  fetchCaseCategoryDocumentCount,
+  type CaseDocumentCategoryKey,
+} from '../lib/sequenceOfEventsDocuments';
 
 type LeadSubEffortRow = any;
+
+const SUB_EFFORT_DOC_CATEGORIES: CaseDocumentCategoryKey[] = [
+  'sequence_of_events',
+  'legal_claims',
+  'expert',
+  'contract',
+];
+
+const emptyCategoryCounts = (): Record<CaseDocumentCategoryKey, number> => ({
+  sequence_of_events: 0,
+  legal_claims: 0,
+  expert: 0,
+  contract: 0,
+});
 
 const SUB_EFFORTS_DOCS_BUCKET = 'lead-sub-efforts-documents';
 
@@ -45,6 +69,7 @@ type ResolvedDoc = {
   isImage: boolean;
   isPdf: boolean;
   path?: string;
+  folder_id?: string | null;
 };
 
 function formatDateTime(value: any): string {
@@ -73,6 +98,18 @@ type DocItem = {
   path?: string;
   name?: string;
   mimeType?: string;
+  /** Optional folder id from lead_sub_effort_folders; null/missing = unfiled. */
+  folder_id?: string | null;
+};
+
+type SubEffortFolder = {
+  id: string;
+  lead_sub_effort_id: number;
+  title: string;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+  sort_order: number;
 };
 
 function normalizeDocItems(documentUrl: any): DocItem[] {
@@ -121,11 +158,19 @@ function normalizeDocItems(documentUrl: any): DocItem[] {
           : typeof (documentUrl as any).contentType === 'string'
             ? (documentUrl as any).contentType
             : undefined;
+      const folderRaw = (documentUrl as any).folder_id;
+      const folder_id =
+        typeof folderRaw === 'string' && folderRaw.trim()
+          ? folderRaw.trim()
+          : folderRaw === null
+            ? null
+            : undefined;
       const item: DocItem = {};
       if (url) item.url = url;
       if (path) item.path = path;
       if (name) item.name = name;
       if (mimeType) item.mimeType = mimeType;
+      if (folder_id !== undefined) item.folder_id = folder_id;
       return [item].filter((i) => i.url || i.path);
     }
     const out: DocItem[] = [];
@@ -586,10 +631,11 @@ function resolvedDocsToPreviewItems(docs: ResolvedDoc[]): DocumentPreviewItem[] 
   return docs
     .filter((d) => !!d.url)
     .map((d, i) => ({
-      id: d.raw || String(i),
+      id: d.path || d.raw || String(i),
       name: d.name,
       downloadUrl: d.url,
       fileType: d.mimeType || inferMimeFromName(d.name),
+      storagePath: d.path || null,
     }));
 }
 
@@ -609,7 +655,16 @@ function resolveSubEffortDocs(documentUrl: unknown, signedUrls: Map<string, stri
         mimeType === 'application/pdf' ||
         (url ? isPdfUrl(url) : false) ||
         (name ? isPdfUrl(name) : false);
-      return { raw, url, name, mimeType, isImage, isPdf, path: d.path };
+      return {
+        raw,
+        url,
+        name,
+        mimeType,
+        isImage,
+        isPdf,
+        path: d.path,
+        folder_id: d.folder_id ?? null,
+      };
     })
     .filter(Boolean) as ResolvedDoc[];
 }
@@ -619,6 +674,7 @@ export function SubEffortsLogModal({
   onClose,
   rows,
   leadNumber,
+  clientId = null,
   caseDocumentsSubfolder = CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
   initialSelectedRowId,
   onRefresh,
@@ -633,6 +689,8 @@ export function SubEffortsLogModal({
   onClose: () => void;
   rows: LeadSubEffortRow[];
   leadNumber?: string | null;
+  /** Stable client id for resolving sub-effort Sequence of Events attachments. */
+  clientId?: string | null;
   caseDocumentsSubfolder?: string | null;
   initialSelectedRowId?: string | number | null;
   onRefresh?: () => void;
@@ -661,10 +719,30 @@ export function SubEffortsLogModal({
   const [caseDocsLoading, setCaseDocsLoading] = useState(false);
   const [selectedCaseDocIds, setSelectedCaseDocIds] = useState<Set<string>>(() => new Set());
   const [isAttaching, setIsAttaching] = useState(false);
+  const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<DocumentPreviewItem[]>([]);
   const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
+  const [renamingDocKey, setRenamingDocKey] = useState<string | null>(null);
+  const [renameDocValue, setRenameDocValue] = useState('');
+  const [renameDocSaving, setRenameDocSaving] = useState(false);
+  const [folders, setFolders] = useState<SubEffortFolder[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [folderModalOpen, setFolderModalOpen] = useState(false);
+  const [folderModalMode, setFolderModalMode] = useState<'create' | 'edit'>('create');
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [folderTitleDraft, setFolderTitleDraft] = useState('');
+  const [folderNoteDraft, setFolderNoteDraft] = useState('');
+  const [folderSaving, setFolderSaving] = useState(false);
+  const [dragDocKey, setDragDocKey] = useState<string | null>(null);
+  const [dropTargetFolderId, setDropTargetFolderId] = useState<string | null | undefined>(undefined);
+  const [moveMenuDocKey, setMoveMenuDocKey] = useState<string | null>(null);
+  const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
   const [descriptionRow, setDescriptionRow] = useState<any | null>(null);
+  const [categoryModalOpen, setCategoryModalOpen] = useState<CaseDocumentCategoryKey | null>(null);
+  const [categoryCounts, setCategoryCounts] = useState(emptyCategoryCounts);
+  const [categoryCountsLoading, setCategoryCountsLoading] = useState(false);
   const [orderedTimelineRows, setOrderedTimelineRows] = useState<LeadSubEffortRow[]>([]);
   const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
   const [dragOverRowId, setDragOverRowId] = useState<string | null>(null);
@@ -688,6 +766,62 @@ export function SubEffortsLogModal({
   React.useEffect(() => {
     setOrderedTimelineRows(timelineRowsFromProps);
   }, [timelineRowsFromProps]);
+
+  React.useEffect(() => {
+    if (!moveMenuDocKey && !folderMenuId) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-sub-effort-menu]')) return;
+      setMoveMenuDocKey(null);
+      setFolderMenuId(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMoveMenuDocKey(null);
+        setFolderMenuId(null);
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [moveMenuDocKey, folderMenuId]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const lead = leadNumber?.trim();
+    if (!lead) {
+      setCategoryCounts(emptyCategoryCounts());
+      return;
+    }
+    let cancelled = false;
+    setCategoryCountsLoading(true);
+    void (async () => {
+      try {
+        const entries = await Promise.all(
+          SUB_EFFORT_DOC_CATEGORIES.map(async (key) => {
+            const count = await fetchCaseCategoryDocumentCount(key, lead, clientId);
+            return [key, count] as const;
+          }),
+        );
+        if (!cancelled) {
+          const next = emptyCategoryCounts();
+          for (const [key, count] of entries) next[key] = count;
+          setCategoryCounts(next);
+        }
+      } catch {
+        if (!cancelled) setCategoryCounts(emptyCategoryCounts());
+      } finally {
+        if (!cancelled) setCategoryCountsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, leadNumber, clientId, categoryModalOpen]);
 
   const timelineRows = orderedTimelineRows;
   const currentSubEffortRowId = useMemo(() => findCurrentSubEffortRowId(timelineRows), [timelineRows]);
@@ -890,18 +1024,322 @@ export function SubEffortsLogModal({
     [selectedRow, signedUrls],
   );
 
+  React.useEffect(() => {
+    setRenamingDocKey(null);
+    setRenameDocValue('');
+    setRenameDocSaving(false);
+    setActiveFolderId(null);
+    setMoveMenuDocKey(null);
+    setFolderMenuId(null);
+    setDragDocKey(null);
+    setDropTargetFolderId(undefined);
+  }, [selectedRow?.id]);
+
+  const loadFolders = useCallback(async (subEffortId: number | string) => {
+    setFoldersLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('lead_sub_effort_folders')
+        .select('id, lead_sub_effort_id, title, note, created_by, created_at, sort_order')
+        .eq('lead_sub_effort_id', subEffortId)
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      setFolders((data as SubEffortFolder[]) ?? []);
+    } catch (e) {
+      console.error('Error loading sub-effort folders:', e);
+      setFolders([]);
+    } finally {
+      setFoldersLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!open || !selectedRow?.id) {
+      setFolders([]);
+      return;
+    }
+    void loadFolders(selectedRow.id);
+  }, [open, selectedRow?.id, loadFolders]);
+
+  const activeFolder = useMemo(
+    () => (activeFolderId ? folders.find((f) => f.id === activeFolderId) ?? null : null),
+    [activeFolderId, folders],
+  );
+
+  React.useEffect(() => {
+    if (activeFolderId && folders.length > 0 && !folders.some((f) => f.id === activeFolderId)) {
+      setActiveFolderId(null);
+    }
+  }, [activeFolderId, folders]);
+
+  const visibleDocs = useMemo(() => {
+    if (activeFolderId) {
+      return resolvedDocs.filter((d) => d.folder_id === activeFolderId);
+    }
+    return resolvedDocs.filter((d) => !d.folder_id);
+  }, [resolvedDocs, activeFolderId]);
+
+  const downloadAllDocuments = useCallback(async () => {
+    if (isDownloadingAll) return;
+    const scope = activeFolderId ? visibleDocs : resolvedDocs;
+    const ready = scope.filter((d) => !!(d.url || d.raw));
+    if (!ready.length) {
+      toast.error('No documents to download');
+      return;
+    }
+
+    setIsDownloadingAll(true);
+    toast.loading(`Downloading ${ready.length} document${ready.length === 1 ? '' : 's'}…`, {
+      id: 'se-download-all',
+    });
+
+    let successCount = 0;
+    let errorCount = 0;
+    try {
+      for (const doc of ready) {
+        try {
+          const href = doc.url || doc.raw;
+          if (!href) {
+            errorCount++;
+            continue;
+          }
+          const link = document.createElement('a');
+          link.href = href;
+          link.download = doc.name || 'document';
+          link.target = '_blank';
+          link.rel = 'noreferrer';
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          successCount++;
+          await new Promise((r) => setTimeout(r, 250));
+        } catch (err) {
+          console.error('downloadAllDocuments item:', err);
+          errorCount++;
+        }
+      }
+
+      if (successCount > 0 && errorCount === 0) {
+        toast.success(`Downloaded ${successCount} document${successCount === 1 ? '' : 's'}`, {
+          id: 'se-download-all',
+        });
+      } else if (successCount > 0) {
+        toast.success(`Downloaded ${successCount}, ${errorCount} failed`, { id: 'se-download-all' });
+      } else {
+        toast.error('Failed to download documents', { id: 'se-download-all' });
+      }
+    } finally {
+      setIsDownloadingAll(false);
+    }
+  }, [activeFolderId, isDownloadingAll, resolvedDocs, visibleDocs]);
+
   const openDocPreview = useCallback(
     (doc: ResolvedDoc) => {
       if (!doc.url) return;
-      const items = resolvedDocsToPreviewItems(resolvedDocs);
-      const docId = doc.raw || doc.url;
+      const items = resolvedDocsToPreviewItems(visibleDocs);
+      const docId = doc.path || doc.raw || doc.url;
       const idx = items.findIndex((item) => item.id === docId);
       setPreviewItems(items);
       setPreviewInitialIndex(idx >= 0 ? idx : 0);
       setPreviewOpen(true);
     },
-    [resolvedDocs],
+    [visibleDocs],
   );
+
+  const renameSubEffortDocument = useCallback(
+    async (docKey: string, newName: string) => {
+      if (!selectedRow?.id) throw new Error('No sub-effort selected');
+      const trimmed = newName.trim();
+      if (!trimmed) throw new Error('Name is required');
+
+      const existingItems = normalizeDocItems(selectedRow.document_url);
+      let found = false;
+      const next = existingItems.map((it) => {
+        const key = String(it.path || it.url || '').trim();
+        if (key && key === docKey) {
+          found = true;
+          return { ...it, name: trimmed };
+        }
+        return it;
+      });
+      if (!found) throw new Error('Document not found');
+
+      const actor = await fetchStageActorInfo();
+      const { error } = await supabase
+        .from('lead_sub_efforts')
+        .update({ document_url: next, updated_by: actor.fullName })
+        .eq('id', selectedRow.id);
+      if (error) throw error;
+
+      setPreviewItems((prev) => prev.map((p) => (p.id === docKey ? { ...p, name: trimmed } : p)));
+      onRefresh?.();
+    },
+    [selectedRow, onRefresh],
+  );
+
+  const moveDocToFolder = useCallback(
+    async (docKey: string, targetFolderId: string | null) => {
+      if (!selectedRow?.id) return;
+      const existingItems = normalizeDocItems(selectedRow.document_url);
+      let found = false;
+      const next = existingItems.map((it) => {
+        const key = String(it.path || it.url || '').trim();
+        if (key && key === docKey) {
+          found = true;
+          const current = it.folder_id ?? null;
+          if (current === targetFolderId) return it;
+          return { ...it, folder_id: targetFolderId };
+        }
+        return it;
+      });
+      if (!found) {
+        toast.error('Document not found');
+        return;
+      }
+
+      try {
+        const actor = await fetchStageActorInfo();
+        const { error } = await supabase
+          .from('lead_sub_efforts')
+          .update({ document_url: next, updated_by: actor.fullName })
+          .eq('id', selectedRow.id);
+        if (error) throw error;
+        toast.success(targetFolderId ? 'Moved to folder' : 'Moved to Unfiled');
+        setMoveMenuDocKey(null);
+        onRefresh?.();
+      } catch (e: any) {
+        console.error('moveDocToFolder:', e);
+        toast.error(e?.message || 'Failed to move document');
+      }
+    },
+    [selectedRow, onRefresh],
+  );
+
+  const openCreateFolderModal = () => {
+    setFolderModalMode('create');
+    setEditingFolderId(null);
+    setFolderTitleDraft('');
+    setFolderNoteDraft('');
+    setFolderModalOpen(true);
+  };
+
+  const openEditFolderModal = (folder: SubEffortFolder) => {
+    setFolderModalMode('edit');
+    setEditingFolderId(folder.id);
+    setFolderTitleDraft(folder.title || '');
+    setFolderNoteDraft(folder.note || '');
+    setFolderModalOpen(true);
+    setFolderMenuId(null);
+  };
+
+  const saveFolderModal = async () => {
+    if (!selectedRow?.id || folderSaving) return;
+    const title = folderTitleDraft.trim();
+    if (!title) {
+      toast.error('Folder title is required');
+      return;
+    }
+    const note = folderNoteDraft.trim() || null;
+    setFolderSaving(true);
+    try {
+      if (folderModalMode === 'create') {
+        const actor = await fetchStageActorInfo();
+        const maxSort = folders.reduce((m, f) => Math.max(m, Number(f.sort_order) || 0), -1);
+        const { error } = await supabase.from('lead_sub_effort_folders').insert({
+          lead_sub_effort_id: selectedRow.id,
+          title,
+          note,
+          created_by: actor.fullName,
+          sort_order: maxSort + 1,
+        });
+        if (error) throw error;
+        toast.success('Folder created');
+      } else if (editingFolderId) {
+        const { error } = await supabase
+          .from('lead_sub_effort_folders')
+          .update({ title, note })
+          .eq('id', editingFolderId);
+        if (error) throw error;
+        toast.success('Folder updated');
+      }
+      setFolderModalOpen(false);
+      await loadFolders(selectedRow.id);
+    } catch (e: any) {
+      console.error('saveFolderModal:', e);
+      toast.error(e?.message || 'Failed to save folder');
+    } finally {
+      setFolderSaving(false);
+    }
+  };
+
+  const deleteFolder = async (folder: SubEffortFolder) => {
+    if (!selectedRow?.id) return;
+    const ok = window.confirm(
+      `Delete folder “${folder.title}”? Documents inside will move to Unfiled.`,
+    );
+    if (!ok) return;
+    setFolderMenuId(null);
+    try {
+      const existingItems = normalizeDocItems(selectedRow.document_url);
+      const next = existingItems.map((it) =>
+        it.folder_id === folder.id ? { ...it, folder_id: null } : it,
+      );
+      const actor = await fetchStageActorInfo();
+      const { error: docsError } = await supabase
+        .from('lead_sub_efforts')
+        .update({ document_url: next, updated_by: actor.fullName })
+        .eq('id', selectedRow.id);
+      if (docsError) throw docsError;
+
+      const { error } = await supabase.from('lead_sub_effort_folders').delete().eq('id', folder.id);
+      if (error) throw error;
+
+      if (activeFolderId === folder.id) setActiveFolderId(null);
+      toast.success('Folder deleted');
+      await loadFolders(selectedRow.id);
+      onRefresh?.();
+    } catch (e: any) {
+      console.error('deleteFolder:', e);
+      toast.error(e?.message || 'Failed to delete folder');
+    }
+  };
+
+  const startInlineRename = (doc: ResolvedDoc) => {
+    const key = String(doc.path || doc.raw || '').trim();
+    if (!key) {
+      toast.error('This document cannot be renamed');
+      return;
+    }
+    setRenamingDocKey(key);
+    setRenameDocValue(doc.name);
+  };
+
+  const cancelInlineRename = () => {
+    setRenamingDocKey(null);
+    setRenameDocValue('');
+    setRenameDocSaving(false);
+  };
+
+  const saveInlineRename = async () => {
+    if (!renamingDocKey || renameDocSaving) return;
+    const trimmed = renameDocValue.trim();
+    if (!trimmed) {
+      toast.error('Name is required');
+      return;
+    }
+    setRenameDocSaving(true);
+    try {
+      await renameSubEffortDocument(renamingDocKey, trimmed);
+      toast.success('Name updated');
+      cancelInlineRename();
+    } catch (e: any) {
+      console.error('Rename sub-effort document:', e);
+      toast.error(e?.message || 'Failed to rename');
+      setRenameDocSaving(false);
+    }
+  };
 
   // Sync selection only when the modal opens — not when rows refresh after save.
   React.useEffect(() => {
@@ -1081,11 +1519,15 @@ export function SubEffortsLogModal({
       // Merge into existing document_url (store paths; modal will sign them for display)
       const existingItems = normalizeDocItems(selectedRow?.document_url);
       const existingKeySet = new Set(existingItems.map((d) => d.path || d.url).filter(Boolean) as string[]);
-      const addedItems: DocItem[] = Array.from(files).map((file, idx) => ({
-        path: uploadedPaths[idx],
-        name: file.name,
-        mimeType: uploadedMimeTypes[idx],
-      }));
+      const addedItems: DocItem[] = Array.from(files).map((file, idx) => {
+        const item: DocItem = {
+          path: uploadedPaths[idx],
+          name: file.name,
+          mimeType: uploadedMimeTypes[idx],
+        };
+        if (activeFolderId) item.folder_id = activeFolderId;
+        return item;
+      });
       const mergedItems = [
         ...existingItems,
         ...addedItems.filter((d) => {
@@ -1186,11 +1628,15 @@ export function SubEffortsLogModal({
       const picked = caseDocs.filter((d) => selectedCaseDocIds.has(d.id));
       const addedItems: DocItem[] = picked
         .filter((d) => d.storage_path?.trim())
-        .map((d) => ({
-          path: d.storage_path.trim(),
-          name: d.file_name || undefined,
-          mimeType: d.mime_type || inferMimeFromName(d.file_name),
-        }))
+        .map((d) => {
+          const item: DocItem = {
+            path: d.storage_path.trim(),
+            name: d.file_name || undefined,
+            mimeType: d.mime_type || inferMimeFromName(d.file_name),
+          };
+          if (activeFolderId) item.folder_id = activeFolderId;
+          return item;
+        })
         .filter((d) => d.path && !existingKeySet.has(String(d.path)));
 
       const merged = [...existingItems, ...addedItems];
@@ -1263,7 +1709,27 @@ export function SubEffortsLogModal({
               </button>
             ) : null}
             <div className="min-w-0">
-              <div className="text-xl font-bold tracking-tight text-base-content/95">Sub efforts</div>
+              <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+                <div className="text-xl font-bold tracking-tight text-base-content/95">Sub efforts</div>
+                {SUB_EFFORT_DOC_CATEGORIES.map((key) => {
+                  const meta = CASE_DOCUMENT_CATEGORY_META[key];
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setCategoryModalOpen(key)}
+                      disabled={!leadNumber?.trim()}
+                      className="inline-flex h-auto min-h-0 shrink-0 touch-manipulation select-none items-center gap-2 whitespace-nowrap rounded-lg border-0 bg-gray-700 px-3 py-2 text-sm font-bold text-white shadow-none transition-colors hover:bg-gray-800 disabled:opacity-50"
+                      title={`${meta.title} documents`}
+                    >
+                      <span className="max-w-[10rem] truncate sm:max-w-[14rem]">{meta.title}</span>
+                      <span className="ml-0 inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-gray-700">
+                        {categoryCountsLoading ? '…' : categoryCounts[key]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
               <div className="text-xs text-base-content/50 truncate">
                 {rows?.length ? `${rows.length} step${rows.length === 1 ? '' : 's'} in this case` : 'No steps yet'}
               </div>
@@ -1488,35 +1954,35 @@ export function SubEffortsLogModal({
                       <div className="mt-4 flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          className="btn btn-ghost btn-sm h-9 gap-1.5 rounded-full border-none px-4 font-medium text-gray-700 shadow-none hover:bg-gray-100"
+                          className="btn btn-ghost btn-sm h-10 gap-2 rounded-full border-none px-4 text-sm font-medium text-gray-700 shadow-none hover:bg-gray-100"
                           onClick={() => openNotesEditor('internal')}
                         >
-                          <PencilSquareIcon className="w-4 h-4" />
+                          <PencilSquareIcon className="h-5 w-5" />
                           Add note
                         </button>
                         <button
                           type="button"
-                          className="btn btn-ghost btn-sm h-9 gap-1.5 rounded-full border-none px-4 font-medium text-gray-700 shadow-none hover:bg-gray-100"
+                          className="btn btn-ghost btn-sm h-10 gap-2 rounded-full border-none px-4 text-sm font-medium text-gray-700 shadow-none hover:bg-gray-100"
                           disabled={isUploading || !selectedRow?.id}
                           onClick={() => fileInputRef.current?.click()}
                         >
                           {isUploading ? (
-                            <span className="loading loading-spinner loading-xs" />
+                            <span className="loading loading-spinner loading-sm" />
                           ) : (
-                            <ArrowUpTrayIcon className="w-4 h-4" />
+                            <ArrowUpTrayIcon className="h-5 w-5" />
                           )}
                           Upload document
                         </button>
                         <button
                           type="button"
-                          className={`btn btn-sm h-9 gap-1.5 rounded-full px-4 font-semibold ${
+                          className={`btn btn-sm h-10 gap-1.5 rounded-full px-4 text-sm font-semibold ${
                             selectedIsActive ? 'btn-primary' : 'bg-white text-gray-700 shadow-sm hover:bg-gray-50'
                           }`}
                           onClick={() => void toggleComplete()}
                           disabled={isMarkingComplete}
                         >
                           {isMarkingComplete ? (
-                            <span className="loading loading-spinner loading-xs" />
+                            <span className="loading loading-spinner loading-sm" />
                           ) : null}
                           {selectedIsActive ? 'Mark complete' : 'Reopen'}
                         </button>
@@ -1527,16 +1993,16 @@ export function SubEffortsLogModal({
                       <div>
                         <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
                           <div className="flex items-center gap-2">
-                            <LockClosedIcon className="h-4 w-4 text-base-content/40" />
-                            <span className="text-sm font-semibold text-base-content/75">Internal notes</span>
+                            <LockClosedIcon className="h-5 w-5 text-base-content/40" />
+                            <span className="text-base font-semibold text-base-content/80">Internal notes</span>
                           </div>
                           <button
                             type="button"
-                            className="btn btn-ghost btn-xs btn-square shrink-0"
+                            className="btn btn-ghost btn-sm btn-square h-9 w-9 shrink-0"
                             onClick={() => openNotesEditor('internal')}
                             aria-label="Edit internal notes"
                           >
-                            <PencilSquareIcon className="w-4 h-4" />
+                            <PencilSquareIcon className="h-5 w-5" />
                           </button>
                         </div>
                         <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
@@ -1561,16 +2027,16 @@ export function SubEffortsLogModal({
                       <div>
                         <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
                           <div className="flex items-center gap-2">
-                            <EyeIcon className="h-4 w-4 text-base-content/40" />
-                            <span className="text-sm font-semibold text-base-content/75">Client notes</span>
+                            <EyeIcon className="h-5 w-5 text-base-content/40" />
+                            <span className="text-base font-semibold text-base-content/80">Client notes</span>
                           </div>
                           <button
                             type="button"
-                            className="btn btn-ghost btn-xs btn-square shrink-0"
+                            className="btn btn-ghost btn-sm btn-square h-9 w-9 shrink-0"
                             onClick={() => openNotesEditor('client')}
                             aria-label="Edit client notes"
                           >
-                            <PencilSquareIcon className="w-4 h-4" />
+                            <PencilSquareIcon className="h-5 w-5" />
                           </button>
                         </div>
                         <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
@@ -1595,19 +2061,90 @@ export function SubEffortsLogModal({
 
                     <div>
                       <div className="mb-2 flex items-center justify-between gap-3 px-0.5">
-                        <div className="flex items-center gap-2">
-                          <DocumentIcon className="h-4 w-4 text-base-content/40" />
-                          <span className="text-sm font-semibold text-base-content/75">Documents</span>
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          {activeFolder ? (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm btn-square h-10 w-10 shrink-0"
+                                onClick={() => setActiveFolderId(null)}
+                                aria-label="Back to folders"
+                                title="Back"
+                              >
+                                <ChevronLeftIcon className="h-6 w-6" />
+                              </button>
+                              <FolderIcon className="h-6 w-6 shrink-0 text-amber-500/90" />
+                              <span className="truncate text-base font-semibold text-base-content/85 md:text-lg">
+                                {activeFolder.title}
+                              </span>
+                              {activeFolder.note ? (
+                                <span
+                                  className="badge badge-ghost badge-sm max-w-[9rem] truncate font-normal"
+                                  title={activeFolder.note}
+                                >
+                                  {activeFolder.note}
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm btn-square shrink-0"
+                                onClick={() => openEditFolderModal(activeFolder)}
+                                aria-label="Edit folder"
+                                title="Edit folder"
+                              >
+                                <PencilSquareIcon className="h-5 w-5" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <DocumentIcon className="h-5 w-5 text-base-content/40" />
+                              <span className="text-base font-semibold text-base-content/75">Documents</span>
+                            </>
+                          )}
                         </div>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-xs gap-1 rounded-full px-2.5 text-base-content/60 hover:bg-white hover:shadow-sm"
-                          onClick={() => void openAttachFromCaseDocs()}
-                          disabled={!selectedRow?.id}
-                        >
-                          <PlusIcon className="w-3.5 h-3.5" />
-                          Attach from case
-                        </button>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {!activeFolderId ? (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm h-10 gap-1.5 rounded-full px-3.5 text-sm font-medium text-base-content/70 hover:bg-white hover:shadow-sm"
+                              onClick={openCreateFolderModal}
+                              disabled={!selectedRow?.id}
+                            >
+                              <FolderPlusIcon className="h-5 w-5" />
+                              New folder
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm h-10 gap-1.5 rounded-full px-3.5 text-sm font-medium text-base-content/70 hover:bg-white hover:shadow-sm"
+                            onClick={() => void openAttachFromCaseDocs()}
+                            disabled={!selectedRow?.id}
+                          >
+                            <PlusIcon className="h-5 w-5" />
+                            Attach from case
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm h-10 gap-1.5 rounded-full px-3.5 text-sm font-medium text-base-content/70 hover:bg-white hover:shadow-sm"
+                            onClick={() => void downloadAllDocuments()}
+                            disabled={
+                              isDownloadingAll ||
+                              !(activeFolderId ? visibleDocs.length : resolvedDocs.length)
+                            }
+                            title={
+                              activeFolderId
+                                ? 'Download all documents in this folder'
+                                : 'Download all documents'
+                            }
+                          >
+                            {isDownloadingAll ? (
+                              <span className="loading loading-spinner loading-sm" />
+                            ) : (
+                              <ArrowDownTrayIcon className="h-5 w-5" />
+                            )}
+                            Download all
+                          </button>
+                        </div>
                       </div>
                       <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
                     {(() => {
@@ -1616,57 +2153,234 @@ export function SubEffortsLogModal({
                       const uploadedAt = savedUpdate
                         ? formatDateTime(leadSubEffortSavedUpdatedAt(selectedRow))
                         : null;
-                      const hasAny = resolvedDocs.length > 0;
-                      const hasReady = resolvedDocs.some((d) => d.url);
+                      const hasVisibleDocs = visibleDocs.length > 0;
+                      const hasReadyVisible = visibleDocs.some((d) => d.url);
+                      const showFolders = !activeFolderId;
+                      const hasFolders = folders.length > 0;
+                      const isEmptyRoot = showFolders && !hasFolders && !hasVisibleDocs && !foldersLoading;
+                      const isEmptyFolder = !!activeFolderId && !hasVisibleDocs;
 
-                      if (!hasAny) {
+                      const renderDocRow = (doc: ResolvedDoc, idx: number) => {
+                        const href = doc.url || doc.raw;
+                        const canPreview = !!doc.url;
+                        const typeLabel = formatFileTypeLabel(doc.mimeType, doc.name);
+                        const docKey = String(doc.path || doc.raw || '').trim();
+                        const moveOpen = moveMenuDocKey === docKey;
                         return (
                           <div
-                            className={`flex min-h-[200px] flex-col items-center justify-center rounded-xl border border-dashed px-5 py-12 text-center transition ${
-                              isDraggingDocs
-                                ? 'border-primary/40 bg-primary/5'
-                                : 'border-gray-200 bg-gray-50/50 hover:border-gray-300'
+                            key={`${doc.raw}-${idx}`}
+                            className={`flex flex-col gap-3 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center ${
+                              dragDocKey === docKey ? 'opacity-60' : ''
                             }`}
-                            onDragEnter={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(true);
+                            draggable={!!docKey}
+                            onDragStart={(e) => {
+                              if (!docKey) return;
+                              e.dataTransfer.setData('application/x-sub-effort-doc', docKey);
+                              e.dataTransfer.effectAllowed = 'move';
+                              setDragDocKey(docKey);
+                              setMoveMenuDocKey(null);
                             }}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(true);
-                            }}
-                            onDragLeave={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(false);
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(false);
-                              void handleUploadFiles(e.dataTransfer?.files ?? null);
-                            }}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => fileInputRef.current?.click()}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+                            onDragEnd={() => {
+                              setDragDocKey(null);
+                              setDropTargetFolderId(undefined);
                             }}
                           >
-                            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm">
-                              <ArrowUpTrayIcon className="h-5 w-5 text-base-content/40" />
+                            <div className="flex min-w-0 flex-1 items-center gap-3">
+                              <button
+                                type="button"
+                                disabled={!canPreview}
+                                onClick={() => openDocPreview(doc)}
+                                className={`flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gray-100 ${
+                                  canPreview ? 'cursor-pointer hover:ring-2 hover:ring-primary/20' : 'cursor-default'
+                                }`}
+                                aria-label={canPreview ? `Preview ${doc.name}` : undefined}
+                              >
+                                {doc.isImage && canPreview ? (
+                                  <img
+                                    src={doc.url}
+                                    alt=""
+                                    className="h-full w-full object-cover"
+                                    loading="lazy"
+                                  />
+                                ) : doc.isPdf ? (
+                                  <DocumentIcon className="h-6 w-6 text-red-500/80" />
+                                ) : (
+                                  <DocumentIcon className="h-6 w-6 text-slate-400" />
+                                )}
+                              </button>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex min-w-0 items-center gap-1">
+                                  <div className="truncate text-base font-semibold text-base-content/85">
+                                    {doc.name}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-circle btn-sm shrink-0"
+                                    onClick={() => startInlineRename(doc)}
+                                    aria-label={`Rename ${doc.name}`}
+                                    title="Rename"
+                                  >
+                                    <PencilSquareIcon className="h-5 w-5" />
+                                  </button>
+                                </div>
+                                <div className="mt-0.5 text-xs text-base-content/45">
+                                  {typeLabel}
+                                  {uploadedAt ? (
+                                    <>
+                                      <span className="mx-1.5 text-base-content/20">·</span>
+                                      {uploadedAt}
+                                    </>
+                                  ) : null}
+                                  {uploader ? (
+                                    <>
+                                      <span className="mx-1.5 text-base-content/20">·</span>
+                                      {uploader}
+                                    </>
+                                  ) : null}
+                                </div>
+                              </div>
                             </div>
-                            <p className="text-sm font-medium text-base-content/70">No documents uploaded yet</p>
-                            <p className="mt-1 text-xs text-base-content/45">
-                              Upload a file or attach from the case
-                            </p>
+                            <div className="relative flex shrink-0 items-center gap-1.5 sm:pl-2">
+                              {canPreview ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openDocPreview(doc)}
+                                  className="btn btn-ghost btn-sm h-10 rounded-full px-4 text-sm font-medium"
+                                >
+                                  Preview
+                                </button>
+                              ) : null}
+                              <a
+                                href={href}
+                                target="_blank"
+                                rel="noreferrer"
+                                download={doc.name}
+                                className="btn btn-ghost btn-sm h-10 gap-1.5 rounded-full px-4 text-sm font-medium"
+                              >
+                                <ArrowDownTrayIcon className="h-5 w-5" />
+                                Download
+                              </a>
+                              {docKey && (folders.length > 0 || activeFolderId) ? (
+                                <div className="relative" data-sub-effort-menu>
+                                  <button
+                                    type="button"
+                                    className={`inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
+                                      moveOpen
+                                        ? 'bg-gray-900 text-white shadow-sm'
+                                        : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'
+                                    }`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setFolderMenuId(null);
+                                      setMoveMenuDocKey((prev) => (prev === docKey ? null : docKey));
+                                    }}
+                                    aria-label="Document options"
+                                    aria-expanded={moveOpen}
+                                    aria-haspopup="menu"
+                                    title="More options"
+                                  >
+                                    <EllipsisVerticalIcon className="h-5 w-5" />
+                                  </button>
+                                  {moveOpen ? (
+                                    <div
+                                      role="menu"
+                                      className="absolute right-0 z-30 mt-2 w-56 overflow-hidden rounded-2xl border border-gray-200/80 bg-white/95 p-1.5 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/5 backdrop-blur-sm"
+                                    >
+                                      <div className="px-2.5 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-400">
+                                        Move to
+                                      </div>
+                                      {activeFolderId ? (
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                                          onClick={() => void moveDocToFolder(docKey, null)}
+                                        >
+                                          <DocumentIcon className="h-4 w-4 shrink-0 text-gray-400" />
+                                          Unfiled
+                                        </button>
+                                      ) : null}
+                                      {folders
+                                        .filter((f) => f.id !== (doc.folder_id ?? null))
+                                        .map((f) => (
+                                          <button
+                                            key={f.id}
+                                            type="button"
+                                            role="menuitem"
+                                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                                            onClick={() => void moveDocToFolder(docKey, f.id)}
+                                          >
+                                            <FolderIcon className="h-4 w-4 shrink-0 text-amber-500" />
+                                            <span className="min-w-0 truncate">{f.title}</span>
+                                          </button>
+                                        ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      };
+
+                      const fileDropHandlers = {
+                        onDragEnter: (e: React.DragEvent) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (e.dataTransfer.types.includes('Files')) setIsDraggingDocs(true);
+                        },
+                        onDragOver: (e: React.DragEvent) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (e.dataTransfer.types.includes('Files')) setIsDraggingDocs(true);
+                        },
+                        onDragLeave: (e: React.DragEvent) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDraggingDocs(false);
+                        },
+                        onDrop: (e: React.DragEvent) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setIsDraggingDocs(false);
+                          const movedKey = e.dataTransfer.getData('application/x-sub-effort-doc');
+                          if (movedKey) return;
+                          if (e.dataTransfer.files?.length) {
+                            void handleUploadFiles(e.dataTransfer.files);
+                          }
+                        },
+                      };
+
+                      if (isEmptyRoot) {
+                        return (
+                          <div className="space-y-3">
+                            <div
+                              className={`flex min-h-[160px] flex-col items-center justify-center rounded-xl border border-dashed px-5 py-10 text-center transition ${
+                                isDraggingDocs
+                                  ? 'border-primary/40 bg-primary/5'
+                                  : 'border-gray-200 bg-gray-50/50 hover:border-gray-300'
+                              }`}
+                              {...fileDropHandlers}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => fileInputRef.current?.click()}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+                              }}
+                            >
+                              <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm">
+                                <ArrowUpTrayIcon className="h-5 w-5 text-base-content/40" />
+                              </div>
+                              <p className="text-sm font-medium text-base-content/70">No documents uploaded yet</p>
+                              <p className="mt-1 text-xs text-base-content/45">
+                                Upload a file, attach from the case, or create a folder
+                              </p>
+                            </div>
                           </div>
                         );
                       }
 
-                      if (!hasReady) {
+                      if (hasVisibleDocs && !hasReadyVisible) {
                         return (
                           <div className="flex items-center gap-3 py-6 text-sm text-base-content/50">
                             <span className="loading loading-spinner loading-sm" />
@@ -1677,83 +2391,184 @@ export function SubEffortsLogModal({
 
                       return (
                         <div className="space-y-3">
-                          <div className="divide-y divide-gray-100">
-                            {resolvedDocs.map((doc, idx) => {
-                              const href = doc.url || doc.raw;
-                              const canPreview = !!doc.url;
-                              const typeLabel = formatFileTypeLabel(doc.mimeType, doc.name);
-                              return (
-                                <div
-                                  key={`${doc.raw}-${idx}`}
-                                  className="flex flex-col gap-3 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center"
-                                >
-                                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                          {showFolders ? (
+                            <div className="space-y-2">
+                              {foldersLoading ? (
+                                <div className="flex items-center gap-2 py-2 text-xs text-base-content/45">
+                                  <span className="loading loading-spinner loading-xs" />
+                                  Loading folders…
+                                </div>
+                              ) : null}
+                              {folders.map((folder) => {
+                                const count = resolvedDocs.filter((d) => d.folder_id === folder.id).length;
+                                const isDropTarget = dropTargetFolderId === folder.id;
+                                const menuOpen = folderMenuId === folder.id;
+                                return (
+                                  <div
+                                    key={folder.id}
+                                    className={`group relative flex items-center gap-3 rounded-xl border px-3 py-2.5 transition ${
+                                      isDropTarget
+                                        ? 'border-primary/50 bg-primary/5'
+                                        : 'border-gray-100 bg-gray-50/60 hover:border-gray-200 hover:bg-gray-50'
+                                    }`}
+                                    onDragEnter={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (dragDocKey || e.dataTransfer.types.includes('application/x-sub-effort-doc')) {
+                                        setDropTargetFolderId(folder.id);
+                                      }
+                                    }}
+                                    onDragOver={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      e.dataTransfer.dropEffect = 'move';
+                                      setDropTargetFolderId(folder.id);
+                                    }}
+                                    onDragLeave={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setDropTargetFolderId((prev) => (prev === folder.id ? undefined : prev));
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setDropTargetFolderId(undefined);
+                                      const key =
+                                        e.dataTransfer.getData('application/x-sub-effort-doc') || dragDocKey;
+                                      if (key) void moveDocToFolder(key, folder.id);
+                                    }}
+                                  >
                                     <button
                                       type="button"
-                                      disabled={!canPreview}
-                                      onClick={() => openDocPreview(doc)}
-                                      className={`flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gray-100 ${
-                                        canPreview ? 'cursor-pointer hover:ring-2 hover:ring-primary/20' : 'cursor-default'
-                                      }`}
-                                      aria-label={canPreview ? `Preview ${doc.name}` : undefined}
+                                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                                      onClick={() => {
+                                        setActiveFolderId(folder.id);
+                                        setFolderMenuId(null);
+                                        setMoveMenuDocKey(null);
+                                      }}
                                     >
-                                      {doc.isImage && canPreview ? (
-                                        <img
-                                          src={doc.url}
-                                          alt=""
-                                          className="h-full w-full object-cover"
-                                          loading="lazy"
-                                        />
-                                      ) : doc.isPdf ? (
-                                        <DocumentIcon className="h-6 w-6 text-red-500/80" />
-                                      ) : (
-                                        <DocumentIcon className="h-6 w-6 text-slate-400" />
-                                      )}
+                                      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                                        <FolderIcon className="h-7 w-7" />
+                                      </span>
+                                      <span className="min-w-0 flex-1">
+                                        <span className="flex items-center gap-2">
+                                          <span className="truncate text-base font-semibold text-base-content/85">
+                                            {folder.title}
+                                          </span>
+                                          {folder.note ? (
+                                            <span
+                                              className="badge badge-ghost badge-sm max-w-[8rem] truncate font-normal"
+                                              title={folder.note}
+                                            >
+                                              {folder.note}
+                                            </span>
+                                          ) : null}
+                                        </span>
+                                        <span className="mt-0.5 block text-sm text-gray-500">
+                                          {folder.created_by ? folder.created_by : 'Unknown'}
+                                          <span className="mx-1.5 text-gray-300">·</span>
+                                          {formatDateTime(folder.created_at)}
+                                        </span>
+                                      </span>
                                     </button>
-                                    <div className="min-w-0">
-                                      <div className="truncate text-sm font-semibold text-base-content/85">{doc.name}</div>
-                                      <div className="mt-0.5 text-xs text-base-content/45">
-                                        {typeLabel}
-                                        {uploadedAt ? (
-                                          <>
-                                            <span className="mx-1.5 text-base-content/20">·</span>
-                                            {uploadedAt}
-                                          </>
-                                        ) : null}
-                                        {uploader ? (
-                                          <>
-                                            <span className="mx-1.5 text-base-content/20">·</span>
-                                            {uploader}
-                                          </>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-1.5 sm:pl-2">
-                                    {canPreview ? (
+                                    <div className="relative flex shrink-0 items-center gap-2" data-sub-effort-menu>
+                                      <span className="badge badge-sm tabular-nums border-0 bg-gray-600 font-medium text-white">
+                                        {count}
+                                      </span>
                                       <button
                                         type="button"
-                                        onClick={() => openDocPreview(doc)}
-                                        className="btn btn-ghost btn-xs h-8 rounded-full px-3"
+                                        className={`inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
+                                          menuOpen
+                                            ? 'bg-gray-900 text-white shadow-sm'
+                                            : 'text-gray-500 opacity-80 hover:bg-white hover:text-gray-800 hover:opacity-100 group-hover:opacity-100'
+                                        }`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMoveMenuDocKey(null);
+                                          setFolderMenuId((prev) => (prev === folder.id ? null : folder.id));
+                                        }}
+                                        aria-label="Folder options"
+                                        aria-expanded={menuOpen}
+                                        aria-haspopup="menu"
                                       >
-                                        Preview
+                                        <EllipsisVerticalIcon className="h-5 w-5" />
                                       </button>
-                                    ) : null}
-                                    <a
-                                      href={href}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      download={doc.name}
-                                      className="btn btn-ghost btn-xs h-8 gap-1 rounded-full px-3"
-                                    >
-                                      <ArrowDownTrayIcon className="h-3.5 w-3.5" />
-                                      Download
-                                    </a>
+                                      {menuOpen ? (
+                                        <div
+                                          role="menu"
+                                          className="absolute right-0 top-full z-30 mt-2 w-44 overflow-hidden rounded-2xl border border-gray-200/80 bg-white/95 p-1.5 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/5 backdrop-blur-sm"
+                                        >
+                                          <button
+                                            type="button"
+                                            role="menuitem"
+                                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                                            onClick={() => openEditFolderModal(folder)}
+                                          >
+                                            <PencilSquareIcon className="h-4 w-4 shrink-0 text-gray-400" />
+                                            Edit
+                                          </button>
+                                          <button
+                                            type="button"
+                                            role="menuitem"
+                                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
+                                            onClick={() => void deleteFolder(folder)}
+                                          >
+                                            <TrashIcon className="h-4 w-4 shrink-0" />
+                                            Delete
+                                          </button>
+                                        </div>
+                                      ) : null}
+                                    </div>
                                   </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+
+                          {activeFolderId ? (
+                            <div
+                              className={`mb-1 rounded-lg border border-dashed px-3 py-2 text-center text-xs transition ${
+                                dropTargetFolderId === null
+                                  ? 'border-primary/50 bg-primary/5 text-primary'
+                                  : 'border-transparent text-base-content/40'
+                              }`}
+                              onDragEnter={(e) => {
+                                e.preventDefault();
+                                if (dragDocKey || e.dataTransfer.types.includes('application/x-sub-effort-doc')) {
+                                  setDropTargetFolderId(null);
+                                }
+                              }}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = 'move';
+                                setDropTargetFolderId(null);
+                              }}
+                              onDragLeave={() => setDropTargetFolderId(undefined)}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                setDropTargetFolderId(undefined);
+                                const key =
+                                  e.dataTransfer.getData('application/x-sub-effort-doc') || dragDocKey;
+                                if (key) void moveDocToFolder(key, null);
+                              }}
+                            >
+                              {dragDocKey ? 'Drop here to move to Unfiled' : null}
+                            </div>
+                          ) : null}
+
+                          {isEmptyFolder ? (
+                            <div className="py-4 text-center text-sm text-base-content/45">
+                              This folder is empty
+                            </div>
+                          ) : hasVisibleDocs ? (
+                            <div className="divide-y divide-gray-100">
+                              {visibleDocs.map((doc, idx) => renderDocRow(doc, idx))}
+                            </div>
+                          ) : showFolders && hasFolders ? (
+                            <div className="py-1 text-center text-xs text-base-content/40">
+                              Unfiled documents will appear here
+                            </div>
+                          ) : null}
 
                           <div
                             className={`flex min-h-[100px] flex-col items-center justify-center rounded-xl border border-dashed px-4 py-8 text-center transition ${
@@ -1761,27 +2576,7 @@ export function SubEffortsLogModal({
                                 ? 'border-primary/40 bg-primary/5'
                                 : 'border-gray-200 bg-gray-50/40 hover:border-gray-300'
                             }`}
-                            onDragEnter={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(true);
-                            }}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(true);
-                            }}
-                            onDragLeave={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(false);
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsDraggingDocs(false);
-                              void handleUploadFiles(e.dataTransfer?.files ?? null);
-                            }}
+                            {...fileDropHandlers}
                             role="button"
                             tabIndex={0}
                             onClick={() => fileInputRef.current?.click()}
@@ -1790,7 +2585,9 @@ export function SubEffortsLogModal({
                             }}
                           >
                             <span className="text-xs font-medium text-base-content/45">
-                              Drop more files here or click to upload
+                              {activeFolder
+                                ? `Drop files into “${activeFolder.title}” or click to upload`
+                                : 'Drop more files here or click to upload'}
                             </span>
                           </div>
                         </div>
@@ -1872,6 +2669,141 @@ export function SubEffortsLogModal({
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setIsNotesModalOpen(false)} />
+        </div>
+      ) : null}
+
+      {folderModalOpen ? (
+        <div className="modal modal-open z-[310]">
+          <div className="modal-box max-w-md">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold">
+                {folderModalMode === 'create' ? 'New folder' : 'Edit folder'}
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => (folderSaving ? null : setFolderModalOpen(false))}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              <label className="form-control w-full">
+                <span className="label-text text-xs font-medium">Title</span>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  value={folderTitleDraft}
+                  onChange={(e) => setFolderTitleDraft(e.target.value)}
+                  placeholder="Folder name"
+                  autoFocus
+                  disabled={folderSaving}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void saveFolderModal();
+                    }
+                  }}
+                />
+              </label>
+              <label className="form-control w-full">
+                <span className="label-text text-xs font-medium">Note (optional)</span>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  value={folderNoteDraft}
+                  onChange={(e) => setFolderNoteDraft(e.target.value)}
+                  placeholder="Tip text on the folder badge"
+                  disabled={folderSaving}
+                />
+              </label>
+            </div>
+            <div className="modal-action">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setFolderModalOpen(false)}
+                disabled={folderSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void saveFolderModal()}
+                disabled={folderSaving || !folderTitleDraft.trim()}
+              >
+                {folderSaving ? 'Saving…' : folderModalMode === 'create' ? 'Create' : 'Save'}
+              </button>
+            </div>
+          </div>
+          <div
+            className="modal-backdrop"
+            onClick={() => (folderSaving ? null : setFolderModalOpen(false))}
+          />
+        </div>
+      ) : null}
+
+      {renamingDocKey ? (
+        <div className="modal modal-open z-[310]">
+          <div className="modal-box max-w-md">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold">Rename document</div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => (renameDocSaving ? null : cancelInlineRename())}
+                aria-label="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="mt-4">
+              <label className="form-control w-full">
+                <span className="label-text text-xs font-medium">File name</span>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  value={renameDocValue}
+                  onChange={(e) => setRenameDocValue(e.target.value)}
+                  placeholder="Document name"
+                  autoFocus
+                  disabled={renameDocSaving}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void saveInlineRename();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (!renameDocSaving) cancelInlineRename();
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <div className="modal-action">
+              <button
+                type="button"
+                className="btn"
+                onClick={cancelInlineRename}
+                disabled={renameDocSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void saveInlineRename()}
+                disabled={renameDocSaving || !renameDocValue.trim()}
+              >
+                {renameDocSaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+          <div
+            className="modal-backdrop"
+            onClick={() => (renameDocSaving ? null : cancelInlineRename())}
+          />
         </div>
       ) : null}
 
@@ -2002,6 +2934,9 @@ export function SubEffortsLogModal({
         }}
         documents={previewItems}
         initialIndex={previewInitialIndex}
+        onRename={async (item, newName) => {
+          await renameSubEffortDocument(item.id, newName);
+        }}
       />
 
       {descriptionRow ? (
@@ -2038,6 +2973,22 @@ export function SubEffortsLogModal({
           />
         </div>
       ) : null}
+
+      {SUB_EFFORT_DOC_CATEGORIES.map((key) => (
+        <SequenceOfEventsDocumentsModal
+          key={key}
+          open={categoryModalOpen === key}
+          onClose={() => setCategoryModalOpen(null)}
+          leadNumber={leadNumber}
+          clientId={clientId}
+          subEffortRows={timelineRows}
+          targetSubEffortId={selectedRow?.id ?? null}
+          activeFolderId={activeFolderId}
+          onAttached={() => onRefresh?.()}
+          category={key}
+          title={CASE_DOCUMENT_CATEGORY_META[key].title}
+        />
+      ))}
     </>
   );
 }

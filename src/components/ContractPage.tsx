@@ -12,7 +12,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
-import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon, SparklesIcon, ChatBubbleLeftRightIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, Bars3BottomLeftIcon, Bars3BottomRightIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon, SparklesIcon, ChatBubbleLeftRightIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, Bars3BottomLeftIcon, Bars3BottomRightIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import {
   fetchLeadMeetingSummaries,
@@ -34,6 +34,7 @@ import { getFrontendBaseUrl } from '../lib/api';
 import ContractDetailsAndPricingModal from './ContractDetailsAndPricingModal';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
 import CallOptionsModal from './CallOptionsModal';
+import DisplayOnKioskModal from './kiosk/DisplayOnKioskModal';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 
@@ -1612,6 +1613,7 @@ const ContractPage: React.FC = () => {
 
   // Contract Details & Pricing Modal state
   const [showDetailsAndPricingModal, setShowDetailsAndPricingModal] = useState(false);
+  const [showKioskModal, setShowKioskModal] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
   const [templateLanguageFilter, setTemplateLanguageFilter] = useState<string | null>(null);
@@ -6400,6 +6402,14 @@ const ContractPage: React.FC = () => {
       )}
 
       {/* Call Options Modal */}
+      {contract?.id ? (
+        <DisplayOnKioskModal
+          open={showKioskModal}
+          onClose={() => setShowKioskModal(false)}
+          resource={{ resourceType: 'digital_contract', resourceId: String(contract.id) }}
+          title="Display contract on kiosk"
+        />
+      ) : null}
       <CallOptionsModal
         isOpen={isCallModalOpen}
         onClose={() => setIsCallModalOpen(false)}
@@ -6760,6 +6770,16 @@ const ContractPage: React.FC = () => {
                       <ShareIcon className="w-6 h-6 text-black" />
                     </button>
 
+                    {contract?.id ? (
+                      <button
+                        className="btn btn-circle btn-ghost w-12 h-12"
+                        onClick={() => setShowKioskModal(true)}
+                        title="Display on lobby kiosk"
+                      >
+                        <ComputerDesktopIcon className="w-6 h-6 text-black" />
+                      </button>
+                    ) : null}
+
                     {!editing && status === 'draft' && (
                       <button
                         className="btn btn-circle btn-ghost w-12 h-12"
@@ -6869,6 +6889,16 @@ const ContractPage: React.FC = () => {
                       >
                         <ShareIcon className="w-5 h-5 text-black" />
                       </button>
+
+                      {contract?.id ? (
+                        <button
+                          className="btn btn-circle btn-ghost"
+                          onClick={() => setShowKioskModal(true)}
+                          title="Display on lobby kiosk"
+                        >
+                          <ComputerDesktopIcon className="w-5 h-5 text-black" />
+                        </button>
+                      ) : null}
 
                       {!editing && status === 'draft' && (
                         <button

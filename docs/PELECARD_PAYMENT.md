@@ -95,7 +95,7 @@ Steps (`pelecardPaymentController.js`):
 3. Call `pelecardService.createPaymentSession()`:
    - **`resolvePelecardChargeAmount`**: converts foreign currency to **ILS** using latest **Bank of Israel** rates in `boi_exchange_rates` (Pelecard always charges in ILS, `Currency: '1'`).
    - **`PaymentGW/init`** with terminal credentials, amount in **agorot** (`Total`), `ActionType: 'J4'`, `ShopNo: '001'`, `ParamX` = secure token.
-   - **E-commerce classification**: `J4` + CVV required + phone hidden; never `AuthNum` (telephone/MOTO). `CustomerIdField: must` is kept for Israeli issuers.
+   - **E-commerce classification**: `J4` + CVV required + phone hidden; never `AuthNum` (telephone/MOTO). `CustomerIdField` defaults to `hide` (no ID/passport in the iframe); override with `PELECARD_CUSTOMER_ID_FIELD` if needed.
    - **Return URLs** point to **`BACKEND_PUBLIC_URL`** (`/api/payments/pelecard/return/success|error|cancel`), not the React app directly.
    - **Display options**: `CssURL`, language, cardholder prefill, email field, iframe-safe flags (`FeedbackOnTop: 'False'`, `Target: '_self'`).
    - Sandbox: `QAResultStatus: '000'` when `PELECARD_SANDBOX=true`.

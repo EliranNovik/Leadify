@@ -288,12 +288,12 @@ function buildInstallmentOptions() {
 }
 
 function resolveCustomerIdField() {
-  // must = required in iframe (Israeli issuers often require TZ). Compatible with internet J4 when
-  // the terminal has vector 41 configured for CNP — not the same as telephone/MOTO.
-  const raw = (process.env.PELECARD_CUSTOMER_ID_FIELD || 'must').trim().toLowerCase();
+  // hide = omit ID/passport from hosted checkout (default).
+  // must/show/optional remain available via PELECARD_CUSTOMER_ID_FIELD if a terminal requires TZ.
+  const raw = (process.env.PELECARD_CUSTOMER_ID_FIELD || 'hide').trim().toLowerCase();
   if (raw === 'hide' || raw === 'must' || raw === 'show' || raw === 'optional') return raw;
-  console.warn(`[Pelecard] Invalid PELECARD_CUSTOMER_ID_FIELD="${raw}", using must`);
-  return 'must';
+  console.warn(`[Pelecard] Invalid PELECARD_CUSTOMER_ID_FIELD="${raw}", using hide`);
+  return 'hide';
 }
 
 /** Init fields that classify the session as internet iframe checkout (J4), not telephone/MOTO. */

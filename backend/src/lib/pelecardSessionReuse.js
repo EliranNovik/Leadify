@@ -48,6 +48,21 @@ function canReusePelecardSession(payment, profile, options = {}) {
   const raw = payment.pelecard_raw_response;
   if (raw && typeof raw === 'object' && raw.sessionExpired === true) return false;
 
+  // Do not reuse a hosted page built with a different CustomerIdField mode
+  // (e.g. old "must" sessions after switching to "hide").
+  const { getCustomerIdFieldMode } = require('../services/pelecardService');
+  const currentIdField = getCustomerIdFieldMode();
+  const storedIdField =
+    raw && typeof raw === 'object' && raw.customerIdField != null
+      ? String(raw.customerIdField).trim().toLowerCase()
+      : null;
+  if (storedIdField) {
+    if (storedIdField !== currentIdField) return false;
+  } else if (currentIdField !== 'must') {
+    // Legacy sessions (before we persisted customerIdField) assumed must.
+    return false;
+  }
+
   return true;
 }
 

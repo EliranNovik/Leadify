@@ -18,4 +18,7 @@ router.get('/recent-event', clockInKioskController.recentEvent);
 /** GET /api/clock-in-kiosk/display?locationId=1 — tablet widgets + settings bundle. */
 router.get('/display', clockInKioskController.display);
 
+/** GET /api/clock-in-kiosk/meetings-today?locationId=1 — full meetings list for kiosk detail screen. */
+router.get('/meetings-today', clockInKioskController.meetingsToday);
+
 module.exports = router;

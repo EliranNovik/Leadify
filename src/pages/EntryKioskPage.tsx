@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowLeftIcon,
   CakeIcon,
   CalendarDaysIcon,
   ClockIcon,
@@ -11,21 +12,54 @@ import {
   VideoCameraIcon,
 } from '@heroicons/react/24/outline';
 import MorphingQrCode from '../components/MorphingQrCode';
+import KioskDocumentShell from '../components/kiosk/KioskDocumentShell';
+import KioskPairingScreen from '../components/kiosk/KioskPairingScreen';
+import '../components/kiosk/kiosk-shell.css';
 import {
   ENTRY_KIOSK_DEFAULT_LOCATION_ID,
   fetchClockInKioskCurrent,
   fetchClockInKioskRecentEvent,
   fetchEntryKioskDisplay,
+  fetchEntryKioskMeetingsToday,
   toPublicClockInQrUrl,
   type ClockInKioskRecentEvent,
   type EntryKioskDisplayResponse,
+  type EntryKioskMeetingDetail,
 } from '../lib/clockInKioskApi';
+import {
+  fetchKioskState,
+  getStoredKioskDeviceToken,
+  kioskHeartbeat,
+  type KioskStateResponse,
+} from '../lib/kioskDeviceApi';
 
 const QR_RENDER_SIZE = 640;
 const EVENT_POLL_MS = 1_400;
 const DISPLAY_POLL_MS = 60_000;
+const KIOSK_STATE_POLL_MS = 2_000;
+const KIOSK_HEARTBEAT_MS = 30_000;
+const KIOSK_SUCCESS_MS = 5_000;
 const SUCCESS_FLASH_MS = 5_000;
 const SUCCESS_FLASH_SEC = 5;
+const MEETINGS_IDLE_MS = 15_000;
+
+type DeviceUiMode = 'checking' | 'unpaired' | 'attendance' | 'document' | 'success' | 'locked';
+
+const MEETING_TYPE_STYLES: Record<string, { bg: string; color: string; label: string }> = {
+  im: { bg: 'rgba(245, 158, 11, 0.18)', color: '#fbbf24', label: 'IM' },
+  active: { bg: 'rgba(34, 197, 94, 0.14)', color: '#4ade80', label: 'Active' },
+  potential: { bg: 'rgba(96, 165, 250, 0.14)', color: '#60a5fa', label: 'Potential' },
+  other: { bg: 'rgba(148, 163, 184, 0.14)', color: '#cbd5e1', label: 'Meeting' },
+};
+
+function participantInitials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('') || '•';
+}
 
 const MEETING_DOT_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fb923c'];
 
@@ -61,10 +95,159 @@ const EntryKioskPage: React.FC = () => {
   const [successFlash, setSuccessFlash] = useState<ClockInKioskRecentEvent | null>(null);
   const [welcomeSecondsLeft, setWelcomeSecondsLeft] = useState(SUCCESS_FLASH_SEC);
   const [display, setDisplay] = useState<EntryKioskDisplayResponse | null>(null);
+  const [meetingsScreenOpen, setMeetingsScreenOpen] = useState(false);
+  const [meetingsDetail, setMeetingsDetail] = useState<EntryKioskMeetingDetail[]>([]);
+  const [meetingsLoading, setMeetingsLoading] = useState(false);
+  const [meetingsError, setMeetingsError] = useState<string | null>(null);
+  const [deviceUiMode, setDeviceUiMode] = useState<DeviceUiMode>('checking');
+  const [documentSession, setDocumentSession] = useState<{
+    sessionId: string;
+    resourceType: 'digital_contract' | 'poa' | 'payment';
+  } | null>(null);
+  const [kioskSuccessMessage, setKioskSuccessMessage] = useState<string | null>(null);
 
   const lastEventIdRef = useRef<string | null>(null);
   const successTimerRef = useRef<number | null>(null);
   const welcomeTickRef = useRef<number | null>(null);
+  const meetingsIdleTimerRef = useRef<number | null>(null);
+  const kioskSuccessTimerRef = useRef<number | null>(null);
+  const deviceUiModeRef = useRef<DeviceUiMode>('checking');
+
+  useEffect(() => {
+    deviceUiModeRef.current = deviceUiMode;
+  }, [deviceUiMode]);
+
+  const applyKioskState = useCallback((state: KioskStateResponse) => {
+    if (!state.success) {
+      if (!getStoredKioskDeviceToken()) {
+        setDeviceUiMode('unpaired');
+        setDocumentSession(null);
+      }
+      return;
+    }
+    if (state.mode === 'locked') {
+      setDeviceUiMode('locked');
+      setDocumentSession(null);
+      return;
+    }
+    if (state.mode === 'document' && state.sessionId && state.resourceType) {
+      setDocumentSession({
+        sessionId: state.sessionId,
+        resourceType: state.resourceType,
+      });
+      setDeviceUiMode('document');
+      return;
+    }
+    setDocumentSession(null);
+    setDeviceUiMode((prev) => (prev === 'success' ? prev : 'attendance'));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      const token = getStoredKioskDeviceToken();
+      if (!token) {
+        if (!cancelled) setDeviceUiMode('unpaired');
+        return;
+      }
+      const state = await fetchKioskState();
+      if (!cancelled) applyKioskState(state);
+    };
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyKioskState]);
+
+  useEffect(() => {
+    if (deviceUiMode !== 'unpaired') return undefined;
+    const token = getStoredKioskDeviceToken();
+    if (!token) return undefined;
+
+    let cancelled = false;
+    void fetchKioskState().then((state) => {
+      if (!cancelled) applyKioskState(state);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceUiMode, applyKioskState]);
+
+  useEffect(() => {
+    if (deviceUiMode === 'unpaired' || deviceUiMode === 'checking' || deviceUiMode === 'document') {
+      return undefined;
+    }
+    if (!getStoredKioskDeviceToken()) return undefined;
+
+    let cancelled = false;
+    const poll = async () => {
+      const mode = deviceUiModeRef.current;
+      if (cancelled || mode === 'document' || mode === 'success') return;
+      const state = await fetchKioskState();
+      if (cancelled) return;
+      const currentMode = deviceUiModeRef.current;
+      if (currentMode === 'document' || currentMode === 'success') return;
+      applyKioskState(state);
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), KIOSK_STATE_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [applyKioskState, deviceUiMode]);
+
+  useEffect(() => {
+    if (!getStoredKioskDeviceToken()) return undefined;
+    const timer = window.setInterval(() => {
+      void kioskHeartbeat();
+    }, KIOSK_HEARTBEAT_MS);
+    return () => window.clearInterval(timer);
+  }, [deviceUiMode]);
+
+  const handleKioskDocumentDone = useCallback((message?: string) => {
+    setKioskSuccessMessage(message || 'Completed successfully');
+    setDeviceUiMode('success');
+    setDocumentSession(null);
+    if (kioskSuccessTimerRef.current) window.clearTimeout(kioskSuccessTimerRef.current);
+    kioskSuccessTimerRef.current = window.setTimeout(() => {
+      setKioskSuccessMessage(null);
+      setDeviceUiMode('attendance');
+    }, KIOSK_SUCCESS_MS);
+  }, []);
+
+  const handleKioskDocumentCancelled = useCallback(() => {
+    setDocumentSession(null);
+    setDeviceUiMode('attendance');
+  }, []);
+
+  useEffect(() => {
+    if (deviceUiMode !== 'document' || !documentSession) return undefined;
+
+    let cancelled = false;
+    const poll = async () => {
+      const state = await fetchKioskState();
+      if (cancelled) return;
+      if (
+        state.mode !== 'document' ||
+        !state.sessionId ||
+        state.sessionId !== documentSession.sessionId
+      ) {
+        setDocumentSession(null);
+        setDeviceUiMode('attendance');
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), KIOSK_STATE_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [deviceUiMode, documentSession]);
 
   const refreshToken = useCallback(async () => {
     try {
@@ -125,8 +308,53 @@ const EntryKioskPage: React.FC = () => {
       document.body.style.overflow = prevOverflow;
       if (successTimerRef.current) window.clearTimeout(successTimerRef.current);
       if (welcomeTickRef.current) window.clearInterval(welcomeTickRef.current);
+      if (meetingsIdleTimerRef.current) window.clearTimeout(meetingsIdleTimerRef.current);
     };
   }, []);
+
+  const closeMeetingsScreen = useCallback(() => {
+    setMeetingsScreenOpen(false);
+    if (meetingsIdleTimerRef.current) {
+      window.clearTimeout(meetingsIdleTimerRef.current);
+      meetingsIdleTimerRef.current = null;
+    }
+  }, []);
+
+  const resetMeetingsIdleTimer = useCallback(() => {
+    if (!meetingsScreenOpen) return;
+    if (meetingsIdleTimerRef.current) window.clearTimeout(meetingsIdleTimerRef.current);
+    meetingsIdleTimerRef.current = window.setTimeout(() => {
+      closeMeetingsScreen();
+    }, MEETINGS_IDLE_MS);
+  }, [closeMeetingsScreen, meetingsScreenOpen]);
+
+  const openMeetingsScreen = useCallback(async () => {
+    setMeetingsScreenOpen(true);
+    setMeetingsLoading(true);
+    setMeetingsError(null);
+    try {
+      const result = await fetchEntryKioskMeetingsToday(ENTRY_KIOSK_DEFAULT_LOCATION_ID);
+      if (result.success) {
+        setMeetingsDetail(result.meetings || []);
+      } else {
+        setMeetingsDetail([]);
+        setMeetingsError(result.error || 'Could not load meetings');
+      }
+    } catch {
+      setMeetingsDetail([]);
+      setMeetingsError('Could not load meetings');
+    } finally {
+      setMeetingsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!meetingsScreenOpen) return undefined;
+    resetMeetingsIdleTimer();
+    return () => {
+      if (meetingsIdleTimerRef.current) window.clearTimeout(meetingsIdleTimerRef.current);
+    };
+  }, [meetingsScreenOpen, resetMeetingsIdleTimer]);
 
   useEffect(() => {
     let cancelled = false;
@@ -232,6 +460,52 @@ const EntryKioskPage: React.FC = () => {
   const currentAnnouncement = display?.announcements?.[0] ?? null;
   const currentBirthday = display?.birthdays?.[0] ?? null;
 
+  if (deviceUiMode === 'checking') {
+    return (
+      <div className="entry-kiosk relative flex h-[100dvh] items-center justify-center bg-[#0a1628] text-white">
+        <span className="loading loading-spinner loading-lg text-slate-300" />
+      </div>
+    );
+  }
+
+  if (deviceUiMode === 'unpaired') {
+    return (
+      <div className="entry-kiosk relative flex h-[100dvh] flex-col overflow-hidden bg-[#0a1628] text-white">
+        <KioskPairingScreen
+          locationId={ENTRY_KIOSK_DEFAULT_LOCATION_ID}
+          onPaired={() => {
+            setDeviceUiMode('checking');
+            void fetchKioskState().then(applyKioskState);
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (deviceUiMode === 'locked') {
+    return (
+      <div className="entry-kiosk relative flex h-[100dvh] items-center justify-center bg-[#0a1628] px-6 text-center text-white">
+        <div>
+          <h1 className="text-2xl font-bold">Kiosk locked</h1>
+          <p className="mt-2 text-slate-300">This device was revoked. Contact your administrator.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (deviceUiMode === 'document' && documentSession) {
+    return (
+      <div className="entry-kiosk relative flex h-[100dvh] flex-col overflow-hidden bg-white">
+        <KioskDocumentShell
+          sessionId={documentSession.sessionId}
+          resourceType={documentSession.resourceType}
+          onDone={handleKioskDocumentDone}
+          onCancelled={handleKioskDocumentCancelled}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       className="entry-kiosk relative flex h-[100dvh] max-h-[100dvh] flex-col overflow-hidden text-[var(--kiosk-text)]"
@@ -277,6 +551,14 @@ const EntryKioskPage: React.FC = () => {
           />
         </svg>
       </div>
+      {deviceUiMode === 'success' && kioskSuccessMessage ? (
+        <div className="kiosk-success-overlay" role="status" aria-live="polite">
+          <div className="kiosk-success-card">
+            <h2>Done</h2>
+            <p>{kioskSuccessMessage}</p>
+          </div>
+        </div>
+      ) : null}
       <style>{`
         @keyframes kiosk-scan-orbit {
           0% { transform: rotate(0deg); }
@@ -703,16 +985,32 @@ const EntryKioskPage: React.FC = () => {
         }
         .kiosk-info-meeting-row {
           display: flex;
-          align-items: baseline;
+          align-items: center;
           gap: 0.4rem;
           min-width: 0;
           font-size: 0.82rem;
           line-height: 1.25;
           color: rgba(248, 250, 252, 0.92);
         }
+        .kiosk-info-meeting-type-badge {
+          flex-shrink: 0;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0.12rem 0.38rem;
+          border-radius: 9999px;
+          font-size: 0.58rem;
+          font-weight: 800;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          line-height: 1;
+        }
         .kiosk-info-meeting-row.is-current {
           color: #fff;
           font-weight: 700;
+        }
+        .kiosk-info-meeting-row.is-past {
+          opacity: 0.62;
         }
         .kiosk-info-meeting-time {
           flex-shrink: 0;
@@ -725,6 +1023,277 @@ const EntryKioskPage: React.FC = () => {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
+        }
+        .kiosk-info-col-clickable {
+          cursor: pointer;
+          border: none;
+          outline: none;
+          background: transparent;
+          border-radius: 12px;
+          transition: background 160ms ease, transform 120ms ease;
+        }
+        .kiosk-info-col-clickable:hover,
+        .kiosk-info-col-clickable:focus,
+        .kiosk-info-col-clickable:focus-visible {
+          background: rgba(255, 255, 255, 0.05);
+          outline: none;
+        }
+        .kiosk-info-col-clickable:active {
+          transform: scale(0.99);
+        }
+        .kiosk-info-tap-hint {
+          font-size: 0.68rem;
+          color: var(--kiosk-muted);
+          letter-spacing: 0.06em;
+        }
+
+        .kiosk-meetings-screen {
+          position: fixed;
+          inset: 0;
+          z-index: 90;
+          display: flex;
+          flex-direction: column;
+          padding: max(0.85rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+          background:
+            radial-gradient(ellipse 70% 45% at 50% 0%, rgba(74, 110, 190, 0.32), transparent 58%),
+            linear-gradient(180deg, #0a1630 0%, #050d1c 48%, #02060f 100%);
+          color: #f8fafc;
+          animation: kiosk-success-in 260ms ease-out;
+        }
+        .kiosk-meetings-header {
+          flex-shrink: 0;
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 1rem;
+          margin-bottom: 0.85rem;
+        }
+        .kiosk-meetings-title {
+          font-size: clamp(1.5rem, 3.2vw, 2.1rem);
+          font-weight: 800;
+          letter-spacing: -0.02em;
+          color: #fff;
+        }
+        .kiosk-meetings-subtitle {
+          margin-top: 0.2rem;
+          font-size: 0.95rem;
+          color: var(--kiosk-muted);
+        }
+        .kiosk-meetings-count {
+          flex-shrink: 0;
+          padding: 0.45rem 0.75rem;
+          border-radius: 9999px;
+          background: rgba(216, 177, 90, 0.14);
+          border: none;
+          color: var(--kiosk-gold);
+          font-size: 0.82rem;
+          font-weight: 700;
+        }
+        .kiosk-meetings-table-wrap {
+          flex: 1 1 auto;
+          min-height: 0;
+          overflow: auto;
+          border-radius: 16px;
+          border: none;
+          background: rgba(8, 16, 34, 0.78);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        .kiosk-meetings-table-wrap::-webkit-scrollbar {
+          display: none;
+        }
+        .kiosk-meetings-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.98rem;
+        }
+        .kiosk-meetings-table thead {
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          background: rgba(12, 22, 44, 0.98);
+        }
+        .kiosk-meetings-table th {
+          padding: 0.75rem 0.85rem;
+          text-align: left;
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--kiosk-gold);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+          white-space: nowrap;
+        }
+        .kiosk-meetings-table td {
+          padding: 0.72rem 0.85rem;
+          vertical-align: middle;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+          color: rgba(248, 250, 252, 0.94);
+          line-height: 1.4;
+        }
+        .kiosk-meetings-table tbody tr:last-child td {
+          border-bottom: none;
+        }
+        .kiosk-meetings-table tbody tr.is-current {
+          background: rgba(52, 211, 153, 0.1);
+        }
+        .kiosk-meetings-table tbody tr.is-current td:first-child {
+          box-shadow: inset 3px 0 0 #34d399;
+        }
+        .kiosk-meetings-table tbody tr.is-past {
+          opacity: 0.65;
+        }
+        .kiosk-meetings-table .col-time {
+          width: 5.25rem;
+        }
+        .kiosk-meetings-time-value {
+          display: block;
+          font-size: 1.08rem;
+          font-weight: 800;
+          color: var(--kiosk-gold);
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+          line-height: 1.15;
+        }
+        .kiosk-meetings-type-badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          margin-top: 0.32rem;
+          padding: 0.2rem 0.5rem;
+          border-radius: 9999px;
+          font-size: 0.68rem;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          line-height: 1.1;
+          white-space: nowrap;
+        }
+        .kiosk-meetings-table .col-lead {
+          min-width: 9rem;
+        }
+        .kiosk-meetings-lead {
+          display: flex;
+          flex-direction: column;
+          gap: 0.2rem;
+        }
+        .kiosk-meetings-table .col-lead-num {
+          display: block;
+          font-size: 0.84rem;
+          font-weight: 700;
+          letter-spacing: 0.04em;
+          color: var(--kiosk-gold);
+          line-height: 1.2;
+        }
+        .kiosk-meetings-table .col-lead-name {
+          font-size: 1rem;
+          font-weight: 700;
+          color: #fff;
+          line-height: 1.25;
+        }
+        .kiosk-meetings-table .col-participants {
+          min-width: 11rem;
+        }
+        .kiosk-meetings-participants-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.45rem;
+        }
+        .kiosk-meetings-participant {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          min-width: 0;
+        }
+        .kiosk-meetings-participant-photo,
+        .kiosk-meetings-participant-fallback {
+          width: 2.65rem;
+          height: 2.65rem;
+          border-radius: 9999px;
+          flex-shrink: 0;
+        }
+        .kiosk-meetings-participant-photo {
+          object-fit: cover;
+          background: #1e293b;
+        }
+        .kiosk-meetings-participant-fallback {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(145deg, #1e3a5f, #0f172a);
+          color: var(--kiosk-gold);
+          font-size: 0.78rem;
+          font-weight: 800;
+          letter-spacing: 0.03em;
+        }
+        .kiosk-meetings-participant-name {
+          font-size: 0.92rem;
+          font-weight: 600;
+          color: rgba(248, 250, 252, 0.94);
+          line-height: 1.25;
+        }
+        .kiosk-meetings-table .col-location {
+          min-width: 8rem;
+          font-size: 0.92rem;
+          color: rgba(248, 250, 252, 0.88);
+        }
+        .kiosk-meetings-empty {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          color: var(--kiosk-muted);
+          font-size: 1rem;
+          padding: 2rem 1rem;
+        }
+        .kiosk-meetings-back {
+          flex-shrink: 0;
+          margin-top: 0.85rem;
+          width: 100%;
+          min-height: 3.4rem;
+          border-radius: 18px;
+          border: none;
+          outline: none;
+          background: linear-gradient(180deg, rgba(216, 177, 90, 0.22), rgba(216, 177, 90, 0.1));
+          color: #fff;
+          font-size: 1.05rem;
+          font-weight: 700;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.55rem;
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+        }
+        .kiosk-meetings-back:focus,
+        .kiosk-meetings-back:focus-visible {
+          outline: none;
+        }
+        .kiosk-meetings-back:active {
+          transform: scale(0.99);
+        }
+        .kiosk-meetings-back-icon {
+          width: 1.35rem;
+          height: 1.35rem;
+        }
+        .kiosk-meetings-idle-hint {
+          margin-top: 0.45rem;
+          text-align: center;
+          font-size: 0.72rem;
+          color: var(--kiosk-muted);
+          letter-spacing: 0.04em;
+        }
+
+        @media (max-width: 820px) {
+          .kiosk-meetings-table .col-location {
+            display: none;
+          }
+          .kiosk-meetings-table th:nth-child(4),
+          .kiosk-meetings-table td:nth-child(4) {
+            display: none;
+          }
         }
 
         @media (max-width: 700px) {
@@ -1023,6 +1592,122 @@ const EntryKioskPage: React.FC = () => {
         </div>
       ) : null}
 
+      {meetingsScreenOpen ? (
+        <div
+          className="kiosk-meetings-screen"
+          role="dialog"
+          aria-label="All meetings today"
+          onTouchStart={resetMeetingsIdleTimer}
+          onPointerDown={resetMeetingsIdleTimer}
+        >
+          <div className="kiosk-meetings-header">
+            <div>
+              <h2 className="kiosk-meetings-title">Meetings Today</h2>
+              <p className="kiosk-meetings-subtitle">{formatDate(now)}</p>
+            </div>
+            <span className="kiosk-meetings-count">
+              {meetingsLoading ? '…' : `${meetingsDetail.length} total`}
+            </span>
+          </div>
+
+          {meetingsLoading ? (
+            <div className="kiosk-meetings-empty">
+              <span className="loading loading-spinner loading-lg text-slate-400" />
+            </div>
+          ) : meetingsDetail.length > 0 ? (
+            <div className="kiosk-meetings-table-wrap">
+              <table className="kiosk-meetings-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Time</th>
+                    <th scope="col">Lead</th>
+                    <th scope="col">Participants</th>
+                    <th scope="col">Location</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {meetingsDetail.map((m) => {
+                    const typeStyle = MEETING_TYPE_STYLES[m.typeCode] || MEETING_TYPE_STYLES.other;
+                    return (
+                      <tr
+                        key={m.id}
+                        className={[m.isCurrent ? 'is-current' : '', m.isPast ? 'is-past' : ''].join(' ')}
+                      >
+                        <td className="col-time">
+                          <span className="kiosk-meetings-time-value">{m.time || '—'}</span>
+                          <span
+                            className="kiosk-meetings-type-badge"
+                            style={{
+                              background: typeStyle.bg,
+                              color: typeStyle.color,
+                            }}
+                          >
+                            {typeStyle.label}
+                          </span>
+                        </td>
+                        <td className="col-lead">
+                          <div className="kiosk-meetings-lead">
+                            {m.leadNumber ? (
+                              <span className="col-lead-num">{m.leadNumber}</span>
+                            ) : null}
+                            <span className="col-lead-name">
+                              {m.clientName || m.title || 'Meeting'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="col-participants">
+                          {m.participants.length > 0 ? (
+                            <div className="kiosk-meetings-participants-list">
+                              {m.participants.map((participant) => (
+                                <div
+                                  key={`${m.id}-${participant.employeeId ?? participant.name}`}
+                                  className="kiosk-meetings-participant"
+                                >
+                                  {participant.photoUrl ? (
+                                    <img
+                                      src={participant.photoUrl}
+                                      alt=""
+                                      className="kiosk-meetings-participant-photo"
+                                    />
+                                  ) : (
+                                    <span className="kiosk-meetings-participant-fallback" aria-hidden>
+                                      {participantInitials(participant.name)}
+                                    </span>
+                                  )}
+                                  <span className="kiosk-meetings-participant-name">{participant.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="col-location">{m.location || '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="kiosk-meetings-empty">
+              {meetingsError || 'No meetings scheduled today'}
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="kiosk-meetings-back"
+            onClick={closeMeetingsScreen}
+            aria-label="Back to main screen"
+          >
+            <ArrowLeftIcon className="kiosk-meetings-back-icon" aria-hidden />
+            Back to main screen
+          </button>
+          <p className="kiosk-meetings-idle-hint">Returns automatically after 15 seconds of inactivity</p>
+        </div>
+      ) : null}
+
       <header className="kiosk-header relative z-10 flex shrink-0 justify-between gap-3 px-4 sm:px-8">
         <img
           src="/DPLOGO1.png"
@@ -1104,32 +1789,59 @@ const EntryKioskPage: React.FC = () => {
               style={{ ['--kiosk-info-cols' as string]: String(infoColCount) } as React.CSSProperties}
             >
               {showMeetings ? (
-                <div className="kiosk-info-col">
-                  <p className="kiosk-info-label">Meetings</p>
+                <button
+                  type="button"
+                  className="kiosk-info-col kiosk-info-col-clickable text-left"
+                  onClick={() => void openMeetingsScreen()}
+                  aria-label="View all meetings today"
+                >
+                  <p className="kiosk-info-label">Next meeting</p>
                   {(display?.meetings?.length ?? 0) > 0 ? (
                     <div className="kiosk-info-item">
                       <CalendarDaysIcon className="kiosk-info-icon" aria-hidden />
                       <div className="kiosk-info-meetings">
-                        {display?.meetings?.map((m) => (
-                          <div
-                            key={m.id}
-                            className={['kiosk-info-meeting-row', m.isCurrent ? 'is-current' : ''].join(' ')}
-                          >
-                            <span className="kiosk-info-meeting-time">{m.time || '—'}</span>
-                            <span className="kiosk-info-meeting-name">
-                              {[m.clientName || 'Client', m.leadNumber].filter(Boolean).join(' · ')}
-                            </span>
-                          </div>
-                        ))}
+                        {display?.meetings?.map((m) => {
+                          const typeStyle =
+                            MEETING_TYPE_STYLES[m.typeCode || 'other'] || MEETING_TYPE_STYLES.other;
+                          const leadLabel = m.clientName || m.title || 'Meeting';
+                          return (
+                            <div
+                              key={m.id}
+                              className={[
+                                'kiosk-info-meeting-row',
+                                m.isCurrent ? 'is-current' : '',
+                                m.isPast ? 'is-past' : '',
+                              ].join(' ')}
+                            >
+                              <span className="kiosk-info-meeting-time">{m.time || '—'}</span>
+                              <span
+                                className="kiosk-info-meeting-type-badge"
+                                style={{
+                                  background: typeStyle.bg,
+                                  color: typeStyle.color,
+                                }}
+                              >
+                                {typeStyle.label}
+                              </span>
+                              <span className="kiosk-info-meeting-name">
+                                {[leadLabel, m.leadNumber].filter(Boolean).join(' · ')}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        <span className="kiosk-info-tap-hint">Tap for full schedule →</span>
                       </div>
                     </div>
                   ) : (
                     <div className="kiosk-info-item">
                       <CalendarDaysIcon className="kiosk-info-icon" aria-hidden />
-                      <p className="kiosk-info-empty">No meetings at this time</p>
+                      <div className="kiosk-info-text">
+                        <p className="kiosk-info-empty">No meetings scheduled today</p>
+                        <span className="kiosk-info-tap-hint">Tap to view schedule →</span>
+                      </div>
                     </div>
                   )}
-                </div>
+                </button>
               ) : null}
 
               {showAnnouncements ? (

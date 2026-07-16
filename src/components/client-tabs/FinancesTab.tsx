@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
+import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
 import {
   fetchContactPaymentHistory,
@@ -140,6 +140,7 @@ import {
   sendProformaInvoiceBundle,
 } from '../../lib/proformaSendInvoice';
 import { useMailboxReconnect } from '../../contexts/MailboxReconnectContext';
+import DisplayOnKioskModal from '../kiosk/DisplayOnKioskModal';
 
 const FINANCES_TAB_CACHE_KEY_PREFIX = 'financesTab_cache_';
 
@@ -613,6 +614,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [taxReceiptByPlanId, setTaxReceiptByPlanId] = useState<Map<number, PaymentPlanTaxReceiptInfo>>(
     () => new Map(),
   );
+  const [kioskPaymentToken, setKioskPaymentToken] = useState<string | null>(null);
   const [retryingTaxReceiptPlanIds, setRetryingTaxReceiptPlanIds] = useState<Set<number>>(
     () => new Set(),
   );
@@ -906,20 +908,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [editPaymentIncludeVat, setEditPaymentIncludeVat] = useState<boolean>(true); // Track if VAT should be included for the payment being edited
 
   // Handler to generate and copy payment link
-  const handleGeneratePaymentLink = async (payment: PaymentPlan) => {
+  const createPaymentLinkToken = async (payment: PaymentPlan): Promise<string | null> => {
     try {
-      // Generate secure token
       const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-
-      // Set expiration date (30 days from now)
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 30);
 
-      // Create payment link in database
       const planRowId = Number(payment.id);
       if (!Number.isFinite(planRowId)) {
         toast.error('Invalid payment row id. Refresh and try again.');
-        return;
+        return null;
       }
 
       const { error } = await insertPaymentLinkRecord({
@@ -938,14 +936,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       });
 
       if (error) throw error;
-
-      // Generate the payment URL
-      const paymentUrl = `${window.location.origin}/payment/${secureToken}`;
-
-      // Copy to clipboard
-      await navigator.clipboard.writeText(paymentUrl);
-
-      toast.success('Payment link copied to clipboard!');
+      return secureToken;
     } catch (error: any) {
       console.error('Error generating payment link:', error);
       const code = error?.code || '';
@@ -966,7 +957,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } else {
         toast.error('Failed to generate payment link');
       }
+      return null;
     }
+  };
+
+  const handleGeneratePaymentLink = async (payment: PaymentPlan) => {
+    const secureToken = await createPaymentLinkToken(payment);
+    if (!secureToken) return;
+    const paymentUrl = `${window.location.origin}/payment/${secureToken}`;
+    await navigator.clipboard.writeText(paymentUrl);
+    toast.success('Payment link copied to clipboard!');
+  };
+
+  const handleDisplayPaymentOnKiosk = async (payment: PaymentPlan) => {
+    const existing = getTaxReceiptForPlan(payment);
+    let token = existing?.secure_token?.trim() || null;
+    if (!token) {
+      token = await createPaymentLinkToken(payment);
+    }
+    if (!token) return;
+    setKioskPaymentToken(token);
   };
 
   // Handler to mark a payment as ready to pay
@@ -6382,6 +6392,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             <LinkIcon className="h-5 w-5" />
           </button>
         )}
+        {paymentRowHasProforma(p) && !isPaid && (
+          <button
+            type="button"
+            className={`${paymentRowIconBtn} border-indigo-300 bg-indigo-100 text-indigo-700 hover:bg-indigo-200`}
+            title="Display payment on lobby kiosk"
+            onClick={() => void handleDisplayPaymentOnKiosk(p)}
+          >
+            <ComputerDesktopIcon className="h-5 w-5" />
+          </button>
+        )}
         {!isPaid && !p.ready_to_pay && (
           <button
             type="button"
@@ -8744,6 +8764,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         </div>,
         document.body,
       )}
+
+      <DisplayOnKioskModal
+        open={Boolean(kioskPaymentToken)}
+        onClose={() => setKioskPaymentToken(null)}
+        resource={{ resourceType: 'payment', resourceToken: kioskPaymentToken || '' }}
+        title="Display payment on kiosk"
+      />
 
       <ProformaSendLanguageModal
         open={sendInvoiceModalOpen}

@@ -80,10 +80,10 @@ async function loadEmployeeMeetingsToday(employeeId) {
     const { data: meetings, error: meetingsError } = await supabase
       .from('meetings')
       .select(
-        'id, meeting_time, meeting_location, meeting_manager, expert, helper, scheduler, lawyer, meeting_brief, client_id, status',
+        'id, meeting_time, meeting_location, meeting_manager, expert, helper, scheduler, meeting_brief, client_id, status, calendar_type',
       )
       .eq('meeting_date', today)
-      .eq('status', 'scheduled')
+      .or('status.is.null,status.neq.canceled,status.neq.cancelled')
       .order('meeting_time', { ascending: true });
 
     if (meetingsError) throw meetingsError;

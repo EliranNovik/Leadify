@@ -128,6 +128,7 @@ async function createPaymentSession(req, res) {
         pelecard_raw_response: {
           init: session.rawResponse,
           pelecardCharge: session.charge,
+          customerIdField: pelecardService.getCustomerIdFieldMode(),
           sessionCreatedAt: new Date().toISOString(),
         },
       })

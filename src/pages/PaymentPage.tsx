@@ -25,7 +25,6 @@ import toast from 'react-hot-toast';
 import {
   CheckCircleIcon,
   ExclamationCircleIcon,
-  InformationCircleIcon,
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 
@@ -259,30 +258,13 @@ function CheckoutSecuredStamp({ iconOnly = false }: { iconOnly?: boolean }) {
   );
 }
 
-function PaymentPassportIdNote({ className = '' }: { className?: string }) {
-  return (
-    <div
-      className={`mt-5 rounded-lg bg-white/10 px-3 py-2 ${className}`.trim()}
-      role="note"
-      aria-label="ID or passport payment tip"
-    >
-      <div className="flex items-center justify-center gap-2 text-center">
-        <InformationCircleIcon
-          className="h-4 w-4 shrink-0 text-white/85"
-          strokeWidth={1.75}
-          aria-hidden
-        />
-        <p className="text-xs text-white/90 leading-snug text-center">
-          Not Israeli? If payment fails, enter{' '}
-          <span className="font-semibold text-white">0</span> in the ID / Passport field.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-const PaymentPage: React.FC = () => {
-  const { token } = useParams<{ token: string }>();
+const PaymentPage: React.FC<{
+  kioskMode?: boolean;
+  tokenOverride?: string;
+  onKioskComplete?: () => void;
+}> = ({ kioskMode = false, tokenOverride, onKioskComplete }) => {
+  const { token: routeToken } = useParams<{ token: string }>();
+  const token = tokenOverride ?? routeToken;
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const walletDebug = searchParams.get('walletDebug') === '1';
@@ -291,7 +273,6 @@ const PaymentPage: React.FC = () => {
   const [paymentLink, setPaymentLink] = useState<PaymentLink | null>(null);
   const [loading, setLoading] = useState(true);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
-  const [customerIdField, setCustomerIdField] = useState<'hide' | 'optional' | 'show' | 'must'>('must');
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -561,6 +542,10 @@ const PaymentPage: React.FC = () => {
           forceNew: options?.forceNew ?? forceFreshSession,
         });
         if (result.alreadyPaid || result.status === 'paid') {
+          if (kioskMode) {
+            onKioskComplete?.();
+            return;
+          }
           navigate(`/payment/success?paymentId=${encodeURIComponent(token)}`);
           return;
         }
@@ -569,10 +554,6 @@ const PaymentPage: React.FC = () => {
         }
         await ensurePelecardClientSecureScript();
         setPaymentUrl(result.paymentUrl);
-        const mode = result.customerIdField;
-        setCustomerIdField(
-          mode === 'must' || mode === 'show' || mode === 'optional' ? mode : 'hide',
-        );
         await loadCheckoutExchange({ forceBoiRefresh: !result.reusedSession });
         if (forceFreshSession) {
           setSearchParams(
@@ -620,8 +601,13 @@ const PaymentPage: React.FC = () => {
       const data = await fetchPaymentStatus(token);
       if (cancelled || !data.success) return;
       if (data.status === 'paid') {
+        if (kioskMode) {
+          onKioskComplete?.();
+          return;
+        }
         navigate(`/payment/success?paymentId=${encodeURIComponent(token)}`);
       } else if (data.status === 'failed') {
+        if (kioskMode) return;
         const qs = new URLSearchParams({
           paymentId: token,
           ...(data.pelecard_status_code
@@ -633,6 +619,7 @@ const PaymentPage: React.FC = () => {
         });
         navigate(`/payment/failed?${qs.toString()}`);
       } else if (data.status === 'cancelled') {
+        if (kioskMode) return;
         navigate(`/payment/cancelled?paymentId=${encodeURIComponent(token)}`);
       }
     };
@@ -643,7 +630,7 @@ const PaymentPage: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [token, paymentUrl, sessionLoading, canPay, navigate]);
+  }, [token, paymentUrl, sessionLoading, canPay, navigate, kioskMode, onKioskComplete]);
 
   /** Mobile: start at summary; avoid restored scroll hiding it. */
   useEffect(() => {
@@ -675,7 +662,10 @@ const PaymentPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="h-screen flex flex-col overflow-hidden" style={PAGE_BG_STYLE}>
+      <div
+        className={`flex flex-col overflow-hidden ${kioskMode ? 'h-full min-h-full' : 'h-screen'}`}
+        style={PAGE_BG_STYLE}
+      >
         <div className="flex-1 flex items-center justify-center px-6">
           <div className="bg-white rounded-2xl shadow-lg border border-gray-200 px-8 py-10 text-center">
             <span className="loading loading-spinner loading-lg text-primary" />
@@ -719,18 +709,28 @@ const PaymentPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-[100dvh] flex flex-col bg-white">
-      <div className="flex flex-1 flex-col lg:flex-row overflow-x-hidden min-h-0">
-      <div className="hidden lg:flex lg:w-[40%] lg:shrink-0 lg:self-stretch lg:min-h-0">
+    <div className={`flex flex-col bg-white ${kioskMode ? 'kiosk-payment-root' : 'min-h-[100dvh]'}`}>
+      <div
+        className={`flex flex-col lg:flex-row overflow-x-hidden ${
+          kioskMode ? 'lg:items-start' : 'flex-1 min-h-0'
+        }`}
+      >
+      <div className={`hidden lg:flex lg:w-[40%] lg:shrink-0 ${kioskMode ? '' : 'lg:self-stretch lg:min-h-0'}`}>
         <aside
-          className="relative flex flex-1 flex-col w-full h-full min-h-full text-white overflow-hidden overflow-y-auto"
+          className={`relative flex flex-col w-full text-white overflow-hidden ${
+            kioskMode ? '' : 'flex-1 h-full min-h-full overflow-y-auto'
+          }`}
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
           <CheckoutSummaryLogo className="absolute top-4 left-6 xl:top-5 xl:left-8 z-10" />
-          <div className="relative flex flex-col flex-1 min-h-full items-center px-10 xl:px-12 py-10 xl:py-12 z-[1]">
-          <div className="flex w-full max-w-md flex-1 flex-col text-left pt-14 xl:pt-16">
-          <div className="flex flex-1 flex-col">
+          <div
+            className={`relative flex flex-col items-center px-10 xl:px-12 py-10 xl:py-12 z-[1] ${
+              kioskMode ? '' : 'flex-1 min-h-full'
+            }`}
+          >
+          <div className={`flex w-full max-w-md flex-col text-left pt-14 xl:pt-16 ${kioskMode ? '' : 'flex-1'}`}>
+          <div className={kioskMode ? 'flex flex-col' : 'flex flex-1 flex-col'}>
             <CheckoutSummaryHeading summary={summaryData} />
             {summaryData && (
               <PaymentSummaryCard
@@ -742,9 +742,6 @@ const PaymentPage: React.FC = () => {
             )}
             <CheckoutCardImage />
             {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
-            {canPay && (customerIdField === 'must' || customerIdField === 'show' || customerIdField === 'optional') && (
-              <PaymentPassportIdNote className="lg:mt-auto lg:pt-10 xl:pt-12" />
-            )}
           </div>
           <p className="w-full text-left text-[11px] text-white/50 leading-relaxed shrink-0 mt-6">
             Processed securely by Pelecard. Card details are not stored on our servers.
@@ -754,7 +751,11 @@ const PaymentPage: React.FC = () => {
         </aside>
       </div>
 
-      <main className="relative flex-1 flex flex-col w-full max-lg:overflow-visible lg:min-h-0 lg:overflow-hidden bg-white">
+      <main
+        className={`relative flex flex-col w-full bg-white ${
+          kioskMode ? 'flex-1' : 'flex-1 max-lg:overflow-visible lg:min-h-0 lg:overflow-hidden'
+        }`}
+      >
         <div className="pointer-events-none absolute top-8 right-12 xl:right-16 z-20 hidden lg:block">
           <CheckoutSecuredStamp />
         </div>
@@ -779,13 +780,16 @@ const PaymentPage: React.FC = () => {
               />
             )}
             <CheckoutCardImage />
-            {canPay && (customerIdField === 'must' || customerIdField === 'show' || customerIdField === 'optional') && <PaymentPassportIdNote />}
-            {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
+            {isAlreadyPaid ? <PaymentDoneStamp paidAt={paidAt} /> : null}
             </div>
           </div>
         </div>
 
-        <div className="checkout-payment relative max-lg:shrink-0 max-lg:flex-none flex flex-col w-full max-w-4xl mx-auto px-4 sm:px-6 lg:flex-1 lg:min-h-0 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-4 sm:py-6 lg:pt-6 lg:pb-0 max-lg:pb-8">
+        <div
+          className={`checkout-payment relative flex flex-col w-full max-w-4xl mx-auto px-4 sm:px-6 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-4 sm:py-6 lg:pt-6 max-lg:pb-8 ${
+            kioskMode ? 'max-lg:shrink-0 lg:pb-6' : 'max-lg:shrink-0 max-lg:flex-none lg:flex-1 lg:min-h-0 lg:pb-0'
+          }`}
+        >
           <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-4 tracking-tight shrink-0">
             Payment information
           </h2>
@@ -805,17 +809,21 @@ const PaymentPage: React.FC = () => {
               onRetry={() => loadPelecardSession({ forceNew: true })}
               onCheckoutNavigate={(path) => navigate(path)}
               title="Secure payment"
-              fillColumn
-              shellClassName="max-lg:h-auto max-lg:flex-none lg:flex-1 lg:min-h-0 lg:h-full"
+              fillColumn={!kioskMode}
+              shellClassName={
+                kioskMode
+                  ? 'h-auto max-lg:h-auto lg:h-auto lg:min-h-0'
+                  : 'max-lg:h-auto max-lg:flex-none lg:flex-1 lg:min-h-0 lg:h-full'
+              }
             />
           )}
         </div>
       </main>
       </div>
 
-      <PortalFooter className="!mt-0 shrink-0" />
+      <PortalFooter compact={kioskMode} className={kioskMode ? 'shrink-0' : '!mt-0 shrink-0'} />
 
-      <PublicPageContactButtons />
+      {!kioskMode ? <PublicPageContactButtons /> : null}
       {walletDebug && <PaymentWalletDebugPanel paymentUrl={paymentUrl} />}
     </div>
   );

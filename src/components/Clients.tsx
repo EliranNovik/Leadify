@@ -14080,7 +14080,7 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Centered oval glassy bar */}
           {showStickyHeader && (
             <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-3 transition-all duration-300 ease-in-out">
-              <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-xl border border-white/20 dark:border-gray-700/20 px-4 py-2 md:px-5 md:py-2.5 transition-all duration-300 ease-in-out">
+              <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-xl border border-white/20 dark:border-gray-700/20 px-4 py-2 md:px-5 md:py-2.5 overflow-visible transition-all duration-300 ease-in-out">
                 {/* Mobile View - Lead number, client name, stage badge, timeline, history, and duplicate button */}
                 <div className="md:hidden flex items-center justify-center gap-1.5">
                   <div className="flex items-center gap-1.5 min-w-0">
@@ -14116,11 +14116,11 @@ const Clients: React.FC<ClientsProps> = ({
                       {duplicateContacts.length === 1 ? (
                         <button
                           onClick={handleDuplicatesClick}
-                          className="btn btn-circle btn-warning btn-sm relative min-h-8 h-8 w-8"
+                          className="btn btn-circle btn-warning btn-sm relative min-h-8 h-8 w-8 overflow-visible"
                           title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
                         >
                           <DocumentDuplicateIcon className="w-4 h-4" />
-                          <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[1rem] h-4 flex items-center justify-center px-0.5">
+                          <span className="absolute -top-0.5 -right-0.5 z-10 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[1rem] h-4 flex items-center justify-center px-0.5">
                             1
                           </span>
                         </button>
@@ -14128,11 +14128,11 @@ const Clients: React.FC<ClientsProps> = ({
                         <div className="relative">
                           <button
                             onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
-                            className="btn btn-circle btn-warning btn-sm relative min-h-8 h-8 w-8"
+                            className="btn btn-circle btn-warning btn-sm relative min-h-8 h-8 w-8 overflow-visible"
                             title={`${duplicateContacts.length} Duplicate Contacts`}
                           >
                             <DocumentDuplicateIcon className="w-4 h-4" />
-                            <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[1rem] h-4 flex items-center justify-center px-0.5">
+                            <span className="absolute -top-0.5 -right-0.5 z-10 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[1rem] h-4 flex items-center justify-center px-0.5">
                               {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
                             </span>
                           </button>
@@ -14182,11 +14182,11 @@ const Clients: React.FC<ClientsProps> = ({
                           {duplicateContacts.length === 1 ? (
                             <button
                               onClick={handleDuplicatesClick}
-                              className="btn btn-circle btn-warning btn-sm relative"
+                              className="btn btn-circle btn-warning btn-sm relative overflow-visible"
                               title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
                             >
                               <DocumentDuplicateIcon className="w-5 h-5" />
-                              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                              <span className="absolute -top-1 -right-1 z-10 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
                                 1
                               </span>
                             </button>
@@ -14194,11 +14194,11 @@ const Clients: React.FC<ClientsProps> = ({
                             <div className="relative">
                               <button
                                 onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
-                                className="btn btn-circle btn-warning btn-sm relative"
+                                className="btn btn-circle btn-warning btn-sm relative overflow-visible"
                                 title={`${duplicateContacts.length} Duplicate Contacts`}
                               >
                                 <DocumentDuplicateIcon className="w-5 h-5" />
-                                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                <span className="absolute -top-1 -right-1 z-10 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
                                   {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
                                 </span>
                               </button>
@@ -14607,13 +14607,13 @@ const Clients: React.FC<ClientsProps> = ({
                 {isTabBarCollapsed ? (
                   // Collapsed state: Single circle with active tab icon
                   <button
-                    className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center transition-all duration-300 ease-in-out hover:scale-110"
+                    className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center overflow-visible transition-all duration-300 ease-in-out hover:scale-110"
                     title="Hover to expand"
                     style={{
                       animation: 'fadeInScale 0.3s ease-in-out'
                     }}
                   >
-                    <div className="relative inline-flex items-center justify-center">
+                    <div className="relative inline-flex items-center justify-center overflow-visible">
                       {(() => {
                         const activeTabData = tabs.find(tab => tab.id === activeTab);
                         const ActiveIcon = activeTabData?.icon || InformationCircleIcon;
@@ -14624,7 +14624,7 @@ const Clients: React.FC<ClientsProps> = ({
                         if (activeTabData?.id === 'interactions' && activeTabData?.badge) {
                           return (
                             <div
-                              className="absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap bg-white/20 text-white"
+                              className="absolute -top-1 -right-1 z-10 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap bg-white/20 text-white"
                               style={{ animation: 'fadeInScale 0.4s ease-in-out 0.2s both', minWidth: '1.25rem' }}
                             >
                               {activeTabData.badge}
@@ -14640,7 +14640,7 @@ const Clients: React.FC<ClientsProps> = ({
                   <div className="flex items-center gap-2 transition-all duration-300 ease-in-out">
                     <div
                       ref={desktopTabsRef}
-                      className="bg-white/90 dark:bg-gray-900/85 rounded-full shadow-2xl border-2 border-gray-200/80 dark:border-gray-800/80 px-3 py-2 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
+                      className="bg-white/90 dark:bg-gray-900/85 rounded-full shadow-2xl border-2 border-gray-200/80 dark:border-gray-800/80 px-3 pt-3 pb-2 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
                       style={{
                         borderRadius: '9999px',
                         maxWidth: '95vw',
@@ -14651,7 +14651,7 @@ const Clients: React.FC<ClientsProps> = ({
                         {tabs.map((tab, index) => (
                           <button
                             key={tab.id}
-                            className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                            className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 overflow-visible ${activeTab === tab.id
                               ? 'bg-transparent text-[#471CCA] font-bold'
                               : 'font-semibold text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700/50'
                               }`}
@@ -14663,10 +14663,10 @@ const Clients: React.FC<ClientsProps> = ({
                               setActiveTabWithUrl(tab.id);
                             }}
                           >
-                            <div className="relative inline-flex items-center justify-center">
+                            <div className="relative inline-flex items-center justify-center overflow-visible">
                               <tab.icon className={`w-7 h-7 flex-shrink-0 ${activeTab === tab.id ? 'text-[#471CCA]' : 'text-gray-500'}`} />
                               {tab.id === 'interactions' && tab.badge && (
-                                <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
+                                <div className={`absolute -top-1 -right-1 z-10 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
                                   ? 'bg-purple-200/90 text-[#471CCA] dark:bg-purple-900/50 dark:text-purple-200'
                                   : 'bg-primary/10 text-primary'
                                   }`} style={{ minWidth: '1.25rem' }}>

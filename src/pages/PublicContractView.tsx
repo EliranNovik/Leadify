@@ -10,10 +10,11 @@ import { Color } from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
-import { PrinterIcon, ArrowDownTrayIcon, ShareIcon, PhoneIcon, ArrowDownIcon, EnvelopeIcon, DevicePhoneMobileIcon, ArrowsRightLeftIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { PrinterIcon, ArrowDownTrayIcon, ShareIcon, PhoneIcon, ArrowDownIcon, EnvelopeIcon, DevicePhoneMobileIcon, ArrowsRightLeftIcon, XMarkIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import { FaLinkedin, FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 import PublicNeedAssistanceWidget from '../components/public/PublicNeedAssistanceWidget';
 import { OFFICE_EMAIL, OFFICE_PHONE_TEL, WHATSAPP_URL } from '../components/public/publicContactInfo';
+import toast from 'react-hot-toast';
 
 // Lazy load html2pdf only when needed (for PDF download)
 let html2pdf: any = null;
@@ -277,8 +278,15 @@ function getInputPlaceholder(fieldId: string, rtl: boolean, isApplicantField = f
   return 'Enter text';
 }
 
-const PublicContractView: React.FC = () => {
-  const { contractId, token } = useParams();
+const PublicContractView: React.FC<{
+  kioskMode?: boolean;
+  contractIdOverride?: string;
+  tokenOverride?: string;
+  onKioskComplete?: () => void;
+}> = ({ kioskMode = false, contractIdOverride, tokenOverride, onKioskComplete }) => {
+  const { contractId: routeContractId, token: routeToken } = useParams();
+  const contractId = contractIdOverride ?? routeContractId;
+  const token = tokenOverride ?? routeToken;
   const [contract, setContract] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [customPricing, setCustomPricing] = useState<any>(null);
@@ -286,6 +294,10 @@ const PublicContractView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
+  const [signatureModalId, setSignatureModalId] = useState<string | null>(null);
+  const modalSignaturePadRef = useRef<any>(null);
+  const modalPadWrapRef = useRef<HTMLDivElement | null>(null);
+  const [modalPadSize, setModalPadSize] = useState({ width: 720, height: 320 });
   // Add submit state and client field state
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [clientFields, setClientFields] = useState<{ [key: string]: string }>({});
@@ -402,6 +414,74 @@ const PublicContractView: React.FC = () => {
     // Also save to clientFields for database storage
     setClientFields(prev => ({ ...prev, signature: dataUrl }));
   };
+
+  const applySignatureFromModal = useCallback(() => {
+    if (!signatureModalId) return;
+    const pad = modalSignaturePadRef.current;
+    if (!pad || pad.isEmpty()) {
+      toast.error('Please draw your signature first');
+      return;
+    }
+
+    let dataUrl = '';
+    try {
+      dataUrl = pad.getTrimmedCanvas().toDataURL('image/png');
+    } catch {
+      dataUrl = pad.toDataURL('image/png');
+    }
+
+    setClientSignature(dataUrl);
+    setClientFields((prev) => ({ ...prev, [signatureModalId]: dataUrl }));
+
+    const inlinePad = signaturePads[signatureModalId];
+    if (inlinePad) {
+      try {
+        inlinePad.clear();
+        inlinePad.fromDataURL(dataUrl);
+      } catch {
+        /* ignore canvas sync errors */
+      }
+    }
+
+    setSignatureModalId(null);
+    toast.success('Signature applied');
+  }, [signatureModalId, signaturePads]);
+
+  useEffect(() => {
+    if (!signatureModalId) return;
+
+    const el = modalPadWrapRef.current;
+    const update = () => {
+      const wrap = modalPadWrapRef.current;
+      if (!wrap) return;
+      const width = Math.max(280, Math.floor(wrap.clientWidth));
+      const height = Math.min(420, Math.max(240, Math.round(width * 0.42)));
+      setModalPadSize({ width, height });
+    };
+
+    update();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+    if (el && ro) ro.observe(el);
+
+    const existing = clientFields[signatureModalId];
+    const timer = window.setTimeout(() => {
+      const pad = modalSignaturePadRef.current;
+      if (!pad) return;
+      pad.clear();
+      if (existing) {
+        try {
+          pad.fromDataURL(existing);
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 50);
+
+    return () => {
+      window.clearTimeout(timer);
+      ro?.disconnect();
+    };
+  }, [signatureModalId, clientFields]);
 
   // Update meta tags for link preview
   useEffect(() => {
@@ -531,7 +611,7 @@ const PublicContractView: React.FC = () => {
           // New lead - fetch from leads table
           clientDataPromise = supabase
             .from('leads')
-            .select('id, lead_number, name, email, phone, mobile')
+            .select('id, lead_number, name, email, phone, mobile, topic')
             .eq('id', contractData.client_id)
             .single();
         }
@@ -989,6 +1069,7 @@ const PublicContractView: React.FC = () => {
 
       setThankYou(true);
       setContract(updatedContract);
+      if (kioskMode) onKioskComplete?.();
     } catch (err) {
       console.error('Error submitting contract:', err);
       alert('Failed to submit contract. Please try again.');
@@ -1309,24 +1390,37 @@ const PublicContractView: React.FC = () => {
   };
 
   // Reuse the renderTiptapContent logic for client view
+  const contractTextInputClass =
+    'w-full max-w-md rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 shadow-sm ' +
+    'placeholder:text-slate-400 transition ' +
+    'hover:border-slate-300 focus:border-blue-950 focus:outline-none focus:ring-2 focus:ring-blue-950/15 ' +
+    'disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500';
+
+  const contractDateInputClass =
+    'w-full max-w-xs rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 shadow-sm transition ' +
+    'hover:border-slate-300 focus:border-blue-950 focus:outline-none focus:ring-2 focus:ring-blue-950/15 ' +
+    'disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500';
+
+  const contractSignaturePadClass =
+    'inline-flex w-full max-w-[240px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-sm ' +
+    'transition hover:border-slate-300';
+
   // Helper function to render a single applicant field (used for both template and dynamic fields)
   const renderApplicantField = useCallback((id: string, index: number, total: number) => {
     return (
-      <div key={id} className="mb-3 flex items-center gap-2" dir={contractIsRTL ? 'rtl' : 'ltr'}>
-        <span className="inline-flex items-center gap-2 flex-1">
-          <input
-            type="text"
-            className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
-            placeholder={getInputPlaceholder(id, contractIsRTL, true)}
-            value={clientFields[id] || ''}
-            onChange={e => handleClientFieldChange(id, e.target.value)}
-            disabled={contract?.status === 'signed'}
-            data-field-id={id}
-            data-is-applicant="true"
-            dir={contractIsRTL ? 'rtl' : 'ltr'}
-            style={{ minWidth: 200, textAlign: contractIsRTL ? 'right' : 'left' }}
-          />
-        </span>
+      <div key={id} className="mb-3 flex w-full max-w-md items-center gap-2" dir={contractIsRTL ? 'rtl' : 'ltr'}>
+        <input
+          type="text"
+          className={contractTextInputClass}
+          placeholder={getInputPlaceholder(id, contractIsRTL, true)}
+          value={clientFields[id] || ''}
+          onChange={e => handleClientFieldChange(id, e.target.value)}
+          disabled={contract?.status === 'signed'}
+          data-field-id={id}
+          data-is-applicant="true"
+          dir={contractIsRTL ? 'rtl' : 'ltr'}
+          style={{ textAlign: contractIsRTL ? 'right' : 'left' }}
+        />
       </div>
     );
   }, [clientFields, contract?.status, activeApplicantFields, applicantFieldIds, dynamicApplicantFieldCounter, contractIsRTL]);
@@ -1356,24 +1450,21 @@ const PublicContractView: React.FC = () => {
     return (
       <span
         key={id}
-        className="inline relative field-wrapper group align-middle"
+        className="inline-flex relative field-wrapper group align-middle items-center gap-2 my-1"
         dir={fieldIsRTL ? 'rtl' : 'ltr'}
-        style={{ verticalAlign: 'middle', display: 'inline', unicodeBidi: 'embed' }}
+        style={{ verticalAlign: 'middle', unicodeBidi: 'embed' }}
         data-field-id={id}
         data-is-applicant={isApplicantField ? 'true' : 'false'}
       >
         {labelText}
         <input
-          className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
+          className={`${contractTextInputClass} !w-auto min-w-[10rem] max-w-[18rem]`}
           placeholder={getInputPlaceholder(id, fieldIsRTL, isApplicantField)}
           value={clientFields[id] || ''}
           onChange={e => handleClientFieldChange(id, e.target.value)}
           disabled={contract?.status === 'signed'}
           dir={fieldIsRTL ? 'rtl' : 'ltr'}
           style={{
-            minWidth: 150,
-            maxWidth: 280,
-            width: 'auto',
             display: 'inline-block',
             verticalAlign: 'middle',
             textAlign: fieldIsRTL ? 'right' : 'left',
@@ -1570,61 +1661,61 @@ const PublicContractView: React.FC = () => {
                 </span>
               );
 
-              // Wrap with label text if both fields are present
-              if (hasBothFields) {
-                parts.push(
-                  <div key={`date-wrapper-${id}`} className="md:flex md:flex-col md:mr-8" style={{ display: 'block' }}>
-                    {textBeforePlaceholder}
-                    {dateField}
-                  </div>
-                );
-              } else {
-                parts.push(textBeforePlaceholder);
-                parts.push(dateField);
-              }
+              parts.push(
+                <div
+                  key={`date-wrapper-${id}`}
+                  className="contract-date-block my-3 flex w-full max-w-xl flex-col items-start gap-2"
+                >
+                  {textBeforePlaceholder.trim() ? (
+                    <span className="block font-medium text-gray-800">
+                      {textBeforePlaceholder.trim()}
+                    </span>
+                  ) : null}
+                  {dateField}
+                </div>
+              );
             } else {
               const dateField = (
                 <div
                   key={id}
-                  className="flex flex-col gap-2 sm:inline-flex sm:items-center sm:gap-2 relative flex-wrap"
+                  className="flex flex-col items-start gap-2 relative"
                   style={{ maxWidth: '100%' }}
                   data-field-id={id}
                   data-field-type="date"
                 >
                   <input
                     type="date"
-                    className="input input-bordered input-lg sm:mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg w-full sm:w-auto"
+                    className={contractDateInputClass}
                     value={formattedDate}
                     onChange={e => handleClientFieldChange(id, e.target.value)}
                     data-input-type="date"
                     style={{
                       minWidth: '180px',
-                      maxWidth: '100%',
                       color: '#111827',
                       cursor: 'text'
                     }}
                   />
-                  {contract?.status !== 'signed' && (
-                    <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
-                      <span className="hidden sm:inline">Please add date</span>
-                      <span className="sm:hidden">Please add date</span>
+                  {contract?.status !== 'signed' && !formattedDate ? (
+                    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
+                      Please add date
                     </span>
-                  )}
+                  ) : null}
                 </div>
               );
 
-              // Wrap with label text if both fields are present
-              if (hasBothFields) {
-                parts.push(
-                  <div key={`date-wrapper-${id}`} className="md:flex md:flex-col md:mr-8" style={{ display: 'block' }}>
-                    {textBeforePlaceholder}
-                    {dateField}
-                  </div>
-                );
-              } else {
-                parts.push(textBeforePlaceholder);
-                parts.push(dateField);
-              }
+              parts.push(
+                <div
+                  key={`date-wrapper-${id}`}
+                  className="contract-date-block my-3 flex w-full max-w-xl flex-col items-start gap-2"
+                >
+                  {textBeforePlaceholder.trim() ? (
+                    <span className="block font-medium text-gray-800">
+                      {textBeforePlaceholder.trim()}
+                    </span>
+                  ) : null}
+                  {dateField}
+                </div>
+              );
             }
           } else if (textMatch) {
             // Extract the base ID from the placeholder
@@ -1729,37 +1820,30 @@ const PublicContractView: React.FC = () => {
                   </span>
                 );
               } else {
-                // Check if this paragraph contains both date and signature for side-by-side layout
-                const textLower = text.toLowerCase();
-                const hasBothFields = textLower.includes('date:') && textLower.includes('signature:');
-
                 parts.push(
                   <div
                     key={id}
-                    className={`flex flex-col gap-2 ${hasBothFields ? 'md:flex-row md:items-center' : 'sm:inline-flex sm:items-center'} sm:gap-2 relative flex-wrap`}
-                    style={{ maxWidth: '100%', display: hasBothFields ? 'flex' : undefined }}
+                    className="flex flex-col items-start gap-2 relative max-w-full"
                     data-field-id={id}
                     data-field-type="date"
                   >
                     <input
                       type="date"
-                      className="input input-bordered input-lg sm:mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg w-full sm:w-auto"
+                      className={contractDateInputClass}
                       value={formattedDate}
                       onChange={e => handleClientFieldChange(id, e.target.value)}
                       data-input-type="date"
                       style={{
                         minWidth: '180px',
-                        maxWidth: '100%',
                         color: '#111827',
                         cursor: 'text'
                       }}
                     />
-                    {contract?.status !== 'signed' && (
-                      <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
-                        <span className="hidden sm:inline">Please add date</span>
-                        <span className="sm:hidden">Please add date</span>
+                    {contract?.status !== 'signed' && !formattedDate ? (
+                      <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
+                        Please add date
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 );
               }
@@ -1815,21 +1899,20 @@ const PublicContractView: React.FC = () => {
               parts.push(
                 <div
                   key={id}
-                  className="flex items-center gap-2 mb-2 relative field-wrapper group w-full"
+                  className="mb-3 flex w-full max-w-md items-center gap-2 relative field-wrapper group"
                   data-field-id={id}
                   data-is-applicant="true"
                   dir={contractIsRTL ? 'rtl' : 'ltr'}
-                  style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}
                 >
                   <input
                     type="text"
-                    className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
+                    className={contractTextInputClass}
                     placeholder={getInputPlaceholder(id, contractIsRTL, true)}
                     value={clientFields[id] || ''}
                     onChange={e => handleClientFieldChange(id, e.target.value)}
                     disabled={contract?.status === 'signed'}
                     dir={contractIsRTL ? 'rtl' : 'ltr'}
-                    style={{ minWidth: 200, textAlign: contractIsRTL ? 'right' : 'left' }}
+                    style={{ textAlign: contractIsRTL ? 'right' : 'left' }}
                   />
                 </div>
               );
@@ -1843,25 +1926,23 @@ const PublicContractView: React.FC = () => {
 
                 // Render dynamic fields inline right after this field
                 dynamicFieldsAfter.forEach((dynamicFieldId) => {
-                  const dynamicIndex = activeApplicantFields.indexOf(dynamicFieldId);
                   parts.push(
                     <div
                       key={dynamicFieldId}
-                      className="flex items-center gap-2 mb-2 relative field-wrapper group w-full"
+                      className="mb-3 flex w-full max-w-md items-center gap-2 relative field-wrapper group"
                       data-field-id={dynamicFieldId}
                       data-is-applicant="true"
                       dir={contractIsRTL ? 'rtl' : 'ltr'}
-                      style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}
                     >
                       <input
                         type="text"
-                        className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
+                        className={contractTextInputClass}
                         placeholder={getInputPlaceholder(dynamicFieldId, contractIsRTL, true)}
                         value={clientFields[dynamicFieldId] || ''}
                         onChange={e => handleClientFieldChange(dynamicFieldId, e.target.value)}
                         disabled={contract?.status === 'signed'}
                         dir={contractIsRTL ? 'rtl' : 'ltr'}
-                        style={{ minWidth: 200, textAlign: contractIsRTL ? 'right' : 'left' }}
+                        style={{ textAlign: contractIsRTL ? 'right' : 'left' }}
                       />
                     </div>
                   );
@@ -1880,89 +1961,91 @@ const PublicContractView: React.FC = () => {
             const id = sigMatch[1] ? sigMatch[1].substring(1) : `signature-${++placeholderIndex.signature}`;
 
             const signatureField = (
-              <span
+              <div
                 key={id}
-                className="inline-flex items-start gap-2 md:gap-4 relative field-wrapper flex-wrap"
-                style={{ display: 'inline-flex', minWidth: 220, minHeight: 100, verticalAlign: 'middle', maxWidth: '100%' }}
+                className="contract-signature-block my-3 flex w-full max-w-xl flex-col items-start gap-2"
                 data-field-id={id}
               >
-                <div className="flex flex-col items-start gap-2">
-                  <span
-                    className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300 flex-shrink-0"
-                    style={{ display: 'inline-block', maxWidth: '100%' }}
-                  >
-                    {contract?.status === 'signed' && (clientFields[id] || clientSignature) ? (
-                      <img
-                        src={clientFields[id] || clientSignature || ''}
-                        alt="Signature"
-                        style={{ width: '100%', maxWidth: 200, height: 80, display: 'block', borderRadius: 8, background: 'transparent' }}
-                      />
-                    ) : (
-                      <SignaturePad
-                        ref={(ref) => {
-                          if (ref && signaturePads) signaturePads[id] = ref;
-                        }}
-                        penColor="#4c6fff"
-                        backgroundColor="transparent"
-                        canvasProps={{
-                          width: 200,
-                          height: 80,
-                          style: {
-                            display: 'block',
-                            borderRadius: 8,
-                            background: 'transparent',
-                            maxWidth: '100%',
-                            width: '100%'
-                          }
-                        }}
-                        onEnd={() => {
-                          if (signaturePads && signaturePads[id]) {
-                            const dataUrl = signaturePads[id].toDataURL();
-                            setClientSignature(dataUrl);
-                            // Save to clientFields with the correct ID
-                            setClientFields(prev => ({ ...prev, [id]: dataUrl }));
-                          }
-                        }}
-                      />
-                    )}
-                    <div className="text-xs text-gray-500 text-center mt-2 font-medium">
-                      Sign here
-                    </div>
+                {textBeforePlaceholder.trim() ? (
+                  <span className="block font-medium text-gray-800">
+                    {textBeforePlaceholder.trim()}
                   </span>
-                  {contract?.status !== 'signed' && (
-                    <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
-                      <span className="hidden sm:inline">Please sign first</span>
-                      <span className="sm:hidden">Please sign first</span>
-                    </span>
-                  )}
+                ) : null}
+                <div className="inline-flex items-start gap-2 md:gap-4 relative field-wrapper flex-wrap max-w-full">
+                  <div className="flex flex-col items-start gap-2">
+                    <div className={contractSignaturePadClass}>
+                      {clientFields[id] || (contract?.status === 'signed' && clientSignature) ? (
+                        <img
+                          src={clientFields[id] || clientSignature || ''}
+                          alt="Signature"
+                          className="block h-20 w-full max-w-[200px] rounded-lg object-contain"
+                        />
+                      ) : (
+                        <SignaturePad
+                          ref={(ref) => {
+                            if (ref && signaturePads) signaturePads[id] = ref;
+                          }}
+                          penColor="#0f172a"
+                          backgroundColor="rgba(248,250,252,1)"
+                          canvasProps={{
+                            width: 200,
+                            height: 80,
+                            className: 'block w-full rounded-lg',
+                            style: {
+                              display: 'block',
+                              borderRadius: 8,
+                              background: 'rgb(248, 250, 252)',
+                              maxWidth: '100%',
+                              width: '100%'
+                            }
+                          }}
+                          onEnd={() => {
+                            if (signaturePads && signaturePads[id]) {
+                              const dataUrl = signaturePads[id].toDataURL();
+                              setClientSignature(dataUrl);
+                              setClientFields(prev => ({ ...prev, [id]: dataUrl }));
+                            }
+                          }}
+                        />
+                      )}
+                      <div className="mt-2 text-center text-xs font-medium text-slate-400">
+                        Sign here
+                      </div>
+                    </div>
+                    {contract?.status !== 'signed' && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn btn-sm gap-2 rounded-full border-0 bg-blue-950 px-5 text-white hover:bg-blue-900"
+                          onClick={() => setSignatureModalId(id)}
+                        >
+                          <PencilSquareIcon className="h-4 w-4" />
+                          {clientFields[id] ? 'Edit signature' : 'Open signature pad'}
+                        </button>
+                        {!clientFields[id] ? (
+                          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
+                            Please sign first
+                          </span>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                  <div className="flex-shrink-0 max-w-full flex items-center">
+                    <img
+                      src="/חתימה מסמכים (5).png"
+                      alt="Stamp"
+                      className="h-32 md:h-52 w-auto object-contain"
+                      style={{
+                        display: 'block',
+                        objectFit: 'contain'
+                      }}
+                    />
+                  </div>
                 </div>
-                {/* Stamp image - smaller on mobile, next to signature pad */}
-                <div className="flex-shrink-0 max-w-full flex items-center">
-                  <img
-                    src="/חתימה מסמכים (5).png"
-                    alt="Stamp"
-                    className="h-24 md:h-40 w-auto object-contain"
-                    style={{
-                      display: 'block',
-                      objectFit: 'contain'
-                    }}
-                  />
-                </div>
-              </span>
+              </div>
             );
 
-            // Wrap with label text if both fields are present
-            if (hasBothFields) {
-              parts.push(
-                <div key={`signature-wrapper-${id}`} className="md:flex md:flex-col" style={{ display: 'block' }}>
-                  {textBeforePlaceholder}
-                  {signatureField}
-                </div>
-              );
-            } else {
-              parts.push(textBeforePlaceholder);
-              parts.push(signatureField);
-            }
+            parts.push(signatureField);
           } else if (placeholder === '\n') {
             parts.push(<br key={keyPrefix + '-br-' + match.index} />);
             lastIndex = match.index + match[1].length;
@@ -1974,50 +2057,59 @@ const PublicContractView: React.FC = () => {
           parts.push(text.slice(lastIndex));
         }
 
-        // If both fields are present, reorganize parts into two flex items for side-by-side layout
+        // If both fields are present, stack date above signature and keep them left-aligned
         if (hasBothFields && parts.length > 0) {
           const dateWrapperIndex = parts.findIndex((part: any) =>
             React.isValidElement(part) && part.key && typeof part.key === 'string' && part.key.includes('date-wrapper')
           );
           const signatureWrapperIndex = parts.findIndex((part: any) =>
-            React.isValidElement(part) && part.key && typeof part.key === 'string' && part.key.includes('signature-wrapper')
+            React.isValidElement(part) &&
+            part.key &&
+            typeof part.key === 'string' &&
+            (String(part.key).includes('signature') ||
+              (part.props && String(part.props.className || '').includes('contract-signature-block')))
           );
 
           if (dateWrapperIndex !== -1 && signatureWrapperIndex !== -1) {
-            // Collect all content before date wrapper
             const beforeDate = parts.slice(0, dateWrapperIndex);
-            // Get date wrapper
             const dateWrapper = parts[dateWrapperIndex];
-            // Collect content between date and signature
             const betweenFields = parts.slice(dateWrapperIndex + 1, signatureWrapperIndex);
-            // Get signature wrapper
             const signatureWrapper = parts[signatureWrapperIndex];
-            // Collect content after signature
             const afterSignature = parts.slice(signatureWrapperIndex + 1);
 
-            // Combine text nodes and wrap everything properly
-            const dateSection = (
-              <div key="date-section" className="md:flex md:flex-col md:mr-8" style={{ display: 'block' }}>
-                {beforeDate.length > 0 ? beforeDate.map((part: any, idx: number) =>
-                  React.isValidElement(part) ? part : <React.Fragment key={`date-before-${idx}`}>{part}</React.Fragment>
-                ) : null}
+            return (
+              <div key={`${keyPrefix}-date-signature-stack`} className="flex w-full flex-col items-start gap-4">
+                {beforeDate.length > 0
+                  ? beforeDate.map((part: any, idx: number) =>
+                      React.isValidElement(part) ? (
+                        part
+                      ) : (
+                        <React.Fragment key={`date-before-${idx}`}>{part}</React.Fragment>
+                      ),
+                    )
+                  : null}
                 {dateWrapper}
-                {betweenFields.length > 0 ? betweenFields.map((part: any, idx: number) =>
-                  React.isValidElement(part) ? part : <React.Fragment key={`date-between-${idx}`}>{part}</React.Fragment>
-                ) : null}
-              </div>
-            );
-
-            const signatureSection = (
-              <div key="signature-section" className="md:flex md:flex-col" style={{ display: 'block' }}>
+                {betweenFields.length > 0
+                  ? betweenFields.map((part: any, idx: number) =>
+                      React.isValidElement(part) ? (
+                        part
+                      ) : (
+                        <React.Fragment key={`date-between-${idx}`}>{part}</React.Fragment>
+                      ),
+                    )
+                  : null}
                 {signatureWrapper}
-                {afterSignature.length > 0 ? afterSignature.map((part: any, idx: number) =>
-                  React.isValidElement(part) ? part : <React.Fragment key={`signature-after-${idx}`}>{part}</React.Fragment>
-                ) : null}
+                {afterSignature.length > 0
+                  ? afterSignature.map((part: any, idx: number) =>
+                      React.isValidElement(part) ? (
+                        part
+                      ) : (
+                        <React.Fragment key={`signature-after-${idx}`}>{part}</React.Fragment>
+                      ),
+                    )
+                  : null}
               </div>
             );
-
-            return [dateSection, signatureSection];
           }
         }
 
@@ -2149,7 +2241,7 @@ const PublicContractView: React.FC = () => {
           return (
             <div
               key={keyPrefix}
-              className={`contract-paragraph-with-fields mb-2 md:mb-3 text-sm md:text-base ${hasBothFields ? 'md:flex md:flex-row md:items-start md:gap-8' : ''}`}
+              className={`contract-paragraph-with-fields mb-2 md:mb-3 text-sm md:text-base ${hasBothFields ? 'flex flex-col items-start gap-4' : ''}`}
               dir={direction}
               style={{ textAlign }}
             >
@@ -2269,7 +2361,7 @@ const PublicContractView: React.FC = () => {
   }
 
   if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-white">
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
       <div className="text-center">
         <div className="flex flex-col items-center gap-6">
           <div className="bg-black p-0.5 md:p-1 rounded-lg shadow-2xl animate-sway">
@@ -2285,7 +2377,7 @@ const PublicContractView: React.FC = () => {
     </div>
   );
   if (error) return (
-    <div className="min-h-screen flex items-center justify-center bg-white">
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
       <div className="text-center">
         <p className="text-red-500 text-sm md:text-lg">{error}</p>
       </div>
@@ -2293,49 +2385,86 @@ const PublicContractView: React.FC = () => {
   );
   if (!contract || !template) return null;
 
+  const headerClientName =
+    (contract?.contact_name && contract.contact_name.trim() !== '')
+      ? contract.contact_name.trim()
+      : (client?.name && client.name.trim() !== '')
+        ? client.name.trim()
+        : 'Client';
+  const isSigned = contract.status === 'signed' || thankYou;
+
   return (
-    <div className="min-h-screen bg-white md:bg-gray-100">
-      {/* Header — scrolls on mobile, fixed floating pill on desktop */}
-      <header className="print-hide w-full bg-white md:fixed md:top-4 md:left-1/2 md:z-50 md:w-[80%] md:max-w-4xl md:-translate-x-1/2 md:border-0 md:bg-transparent">
-        <div className="md:bg-white/90 md:backdrop-blur-md md:rounded-full md:shadow-lg">
-          <div className="flex items-center justify-between px-4 py-3 md:px-8 md:py-3">
-            {/* Logo - Left */}
-            <div className="flex-shrink-0">
-              <img
-                src="/DPL-LOGO1.png"
-                alt="DPL Logo"
-                className="h-8 md:h-16 w-auto object-contain"
-              />
-            </div>
+    <div className="min-h-screen bg-gray-100">
+      {/* Premium client-first header */}
+      <header className="print-hide w-full border-b border-slate-200 bg-white shadow-sm">
+        <div
+          className="mx-auto grid w-full max-w-6xl items-center gap-4 px-4 py-5 md:gap-8 md:px-8 md:py-7"
+          style={{ gridTemplateColumns: 'auto minmax(0, 1fr) auto' }}
+        >
+          {/* Logo - Left (secondary) */}
+          <div className="flex shrink-0 items-center self-center">
+            <img
+              src="/DPL-LOGO1.png"
+              alt="DPL Logo"
+              className="h-10 w-auto object-contain md:h-14"
+            />
+          </div>
 
-            {/* Company Name and Contact Name - Center */}
-            <div className="flex-1 flex flex-col justify-center items-center min-w-0 px-2">
-              <p className="text-xs md:text-sm font-medium text-gray-600 text-center md:drop-shadow-sm">
-                Decker Pex Levi Law Offices
-              </p>
-              <h1 className="text-sm md:text-lg font-semibold text-gray-800 text-center md:drop-shadow-sm">
-                {(contract?.contact_name && contract.contact_name.trim() !== '') 
-                  ? contract.contact_name 
-                  : (client?.name && client.name.trim() !== '') 
-                    ? client.name 
-                    : 'Client'}
+          {/* Client - Center (hero) */}
+          <div className="min-w-0 text-center">
+            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2">
+              <h1 className="truncate text-2xl font-bold tracking-tight text-slate-900 md:text-3xl md:leading-tight">
+                {headerClientName}
               </h1>
-            </div>
-
-            {/* Case Number - Right */}
-            <div className="flex-shrink-0 flex items-center">
-              {leadNumber && (
-                <span className="text-xs md:text-sm font-mono font-semibold text-black md:drop-shadow-sm">
-                  #{leadNumber}
+              {isSigned ? (
+                <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3.5 py-1.5 text-xs font-semibold text-emerald-800 shadow-sm ring-1 ring-emerald-200">
+                  <span className="relative flex h-2 w-2" aria-hidden="true">
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  </span>
+                  Signed
+                </span>
+              ) : (
+                <span
+                  className="inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-semibold tracking-wide shadow-sm ring-1 ring-amber-200"
+                  style={{
+                    background: 'linear-gradient(90deg, #f7efd8 0%, #f3e4bc 50%, #efe0b0 100%)',
+                    color: '#7a5c16',
+                  }}
+                >
+                  <span className="relative flex h-2 w-2" aria-hidden="true">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-50" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                  </span>
+                  Ready to sign
                 </span>
               )}
             </div>
+            <p className="mt-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 md:text-xs md:tracking-[0.16em]">
+              Decker Pex &amp; Co. Law Office
+            </p>
+          </div>
+
+          {/* Matter ID - Right */}
+          <div className="flex min-w-[5.5rem] shrink-0 flex-col items-end justify-center self-center text-right md:min-w-[7rem]">
+            {leadNumber ? (
+              <>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 md:text-[11px]">
+                  Matter ID
+                </span>
+                <span className="mt-1 font-mono text-sm font-semibold text-slate-900 md:text-base">
+                  #{leadNumber}
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-slate-300">—</span>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <div className="bg-white px-4 py-4 md:pt-36 md:flex md:items-center md:justify-center md:py-8 pb-32 md:pb-8">
+      <div className="bg-gray-100 px-4 py-4 md:flex md:items-center md:justify-center md:py-8 pb-32 md:pb-8">
         <div className="w-full max-w-6xl bg-white md:rounded-lg md:shadow-lg md:border md:border-gray-200 p-0 md:p-8 relative">
           {/* Share button in top right corner - removed since we have it in floating buttons on desktop */}
 
@@ -2389,9 +2518,9 @@ const PublicContractView: React.FC = () => {
 
           {/* Submit Contract Button (only if not signed) */}
           {contract.status !== 'signed' && !thankYou && (
-            <div className="mt-8">
+            <div className="mt-8 flex justify-center print-hide">
               <button
-                className="btn btn-lg w-full print-hide bg-blue-950 text-white border-none hover:bg-blue-900"
+                className="btn btn-lg rounded-full border-none bg-blue-950 px-8 text-white hover:bg-blue-900 sm:px-10"
                 onClick={handleSubmitContract}
                 disabled={isSubmitting}
               >
@@ -2447,7 +2576,7 @@ const PublicContractView: React.FC = () => {
       />
 
       {/* Scroll to Date + Share — Desktop only (top right) */}
-      <div className="hidden md:flex fixed top-4 right-6 z-40 print-hide flex-col gap-4">
+      <div className="hidden md:flex fixed top-32 right-6 z-40 print-hide flex-col gap-4">
         <button
           onClick={scrollToDateField}
           className="btn btn-circle btn-lg bg-blue-950 text-white border-none hover:bg-blue-900 shadow-lg hover:scale-110 transition-transform"
@@ -2458,7 +2587,7 @@ const PublicContractView: React.FC = () => {
 
         <button
           onClick={handleShareContract}
-          className="btn btn-circle btn-lg bg-indigo-600 text-white border-none hover:bg-indigo-700 shadow-lg hover:scale-110 transition-transform"
+          className="btn btn-circle btn-lg bg-emerald-600 text-white border-none hover:bg-emerald-700 shadow-lg hover:scale-110 transition-transform"
           title="Share contract"
         >
           <ShareIcon className="w-8 h-8" />
@@ -2489,7 +2618,7 @@ const PublicContractView: React.FC = () => {
             <button
               type="button"
               onClick={handleShareContract}
-              className="btn btn-ghost btn-circle text-black hover:bg-white/20"
+              className="btn btn-circle border-none bg-emerald-600 text-white hover:bg-emerald-700"
               title="Share contract"
             >
               <ShareIcon className="w-6 h-6" />
@@ -2691,6 +2820,7 @@ const PublicContractView: React.FC = () => {
         input[type="date"] {
           position: relative;
           z-index: 10;
+          color-scheme: light;
         }
         
         input[type="date"]:not(:disabled) {
@@ -2699,7 +2829,14 @@ const PublicContractView: React.FC = () => {
         
         input[type="date"]::-webkit-calendar-picker-indicator {
           cursor: pointer;
+          opacity: 0.7;
+          padding: 4px;
+          border-radius: 6px;
+        }
+
+        input[type="date"]::-webkit-calendar-picker-indicator:hover {
           opacity: 1;
+          background: rgba(15, 23, 42, 0.06);
         }
         
         /* RTL support for Hebrew/Arabic text in contract content */
@@ -2810,6 +2947,91 @@ const PublicContractView: React.FC = () => {
           font-weight: 600;
         }
       `}</style>
+
+      {/* Large signature pad modal */}
+      {signatureModalId && contract?.status !== 'signed' && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/55 p-3 backdrop-blur-sm print-hide sm:p-6"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSignatureModalId(null);
+          }}
+        >
+          <div className="flex max-h-[95vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 sm:px-6">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900 sm:text-lg">Sign the contract</h3>
+                <p className="mt-0.5 text-xs text-slate-500 sm:text-sm">
+                  Draw your signature in the large pad below, then apply it.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200"
+                onClick={() => setSignatureModalId(null)}
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto px-4 py-4 sm:px-6 sm:py-5">
+              <div
+                ref={modalPadWrapRef}
+                className="relative w-full overflow-hidden rounded-2xl border-2 border-dashed border-indigo-200 bg-slate-50"
+                style={{ height: modalPadSize.height }}
+              >
+                <SignaturePad
+                  ref={(ref) => {
+                    modalSignaturePadRef.current = ref;
+                  }}
+                  penColor="#1e293b"
+                  backgroundColor="rgba(248,250,252,1)"
+                  canvasProps={{
+                    width: modalPadSize.width,
+                    height: modalPadSize.height,
+                    className: 'touch-none block w-full h-full',
+                    style: {
+                      width: '100%',
+                      height: '100%',
+                      display: 'block',
+                    },
+                  }}
+                />
+                <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 text-xs font-medium text-slate-400">
+                  Sign here
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 px-4 py-3 sm:px-6">
+              <button
+                type="button"
+                className="inline-flex h-11 items-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                onClick={() => modalSignaturePadRef.current?.clear()}
+              >
+                Clear
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="inline-flex h-11 items-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                  onClick={() => setSignatureModalId(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-11 items-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                  onClick={applySignatureFromModal}
+                >
+                  <PencilSquareIcon className="h-4 w-4" />
+                  Apply signature
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Business Card Modal */}
       {showCloserModal && closerEmployee && (
