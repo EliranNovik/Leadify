@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
+import { fetchContractTypeBySlug } from '../../lib/contractTypes';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { StarterKit } from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extension-placeholder';
@@ -3325,6 +3326,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       }
 
       // Create contract data with contact association
+      const clientContractType = await fetchContractTypeBySlug('client_contract').catch(() => null);
       const contractData: any = {
         // For legacy templates, template_id must be NULL since contracts.template_id is UUID type
         // Legacy template ID is stored in custom_pricing.legacy_template_id
@@ -3338,6 +3340,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         applicant_count: 1,
         client_country: null,
         custom_pricing: initialCustomPricing, // Save initial customPricing with legacy_template_id if needed
+        contract_type_id: clientContractType?.id ?? null,
       };
 
       // Set the appropriate ID field based on lead type

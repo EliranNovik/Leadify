@@ -9,7 +9,6 @@ import BadLeadsGoogleSheetExportReport from './BadLeadsGoogleSheetExportReport';
 import QLeadsGoogleSheetExportReport from './QLeadsGoogleSheetExportReport';
 import HQLeadsGoogleSheetExportReport from './HQLeadsGoogleSheetExportReport';
 import SalesLeadsGoogleSheetExportReport from './SalesLeadsGoogleSheetExportReport';
-import AllExpensesReport from '../components/reports/AllExpensesReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
@@ -8220,7 +8219,7 @@ const reports: ReportSection[] = [
       { label: 'Category & source', icon: AdjustmentsHorizontalIcon, component: CategorySourceReport },
       { label: 'Convertion', icon: FunnelIcon, component: ConvertionReport },
       { label: 'Convertion Steps', icon: FunnelIcon, component: ConvertionStepsReport },
-      { label: 'External firms', icon: BuildingOfficeIcon, route: '/reports/external-firms' },
+      { label: 'External firms', icon: BuildingOfficeIcon, route: '/reports/external-firms', superuserOnly: true },
     ],
   },
   {
@@ -8296,8 +8295,9 @@ const reports: ReportSection[] = [
     category: 'Finances',
     items: [
       // { label: 'Profitability', icon: CurrencyDollarIcon, component: ProfitabilityReport },
-      { label: 'Collection', icon: BanknotesIcon, route: '/reports/collection-finances' },
-      { label: 'Collection Due', icon: BanknotesIcon, route: '/reports/collection-due' },
+      { label: 'Finance Management', icon: CurrencyDollarIcon, route: '/reports/finance-management' },
+      { label: 'Collection', icon: BanknotesIcon, route: '/reports/finance-management?tab=collection' },
+      { label: 'Collection Due', icon: BanknotesIcon, route: '/reports/finance-management?tab=collection-due' },
     ],
   },
   {
@@ -8306,7 +8306,7 @@ const reports: ReportSection[] = [
       {
         label: 'All expenses',
         icon: ReceiptPercentIcon,
-        component: AllExpensesReport,
+        route: '/reports/finance-management?tab=expenses',
         superuserOnly: true,
       },
     ],
@@ -8323,6 +8323,7 @@ const reports: ReportSection[] = [
       { label: 'Edit Contracts', icon: DocumentTextIcon, route: '/reports/edit-contracts' },
       { label: 'Re-assign leads', icon: ArrowPathIcon, route: '/reports/reassign-leads' },
       { label: 'HR Management', icon: UsersIcon, route: '/reports/hr-management' },
+      { label: 'Finance Management', icon: CurrencyDollarIconOutline, route: '/reports/finance-management' },
       { label: 'Employee Unavailabilities', icon: CalendarIcon, route: '/reports/employee-unavailabilities' },
       { label: 'Employee Salaries', icon: CurrencyDollarIconOutline, route: '/reports/employee-salaries' },
       { label: 'Leads Report', icon: ClipboardDocumentListIcon, route: '/reports/leads-report' },
@@ -8573,7 +8574,7 @@ export default function ReportsPage() {
 
                     return (
                       <button
-                        onClick={() => navigate('/reports/collection-finances')}
+                        onClick={() => navigate('/reports/finance-management?tab=collection')}
                         className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
                       >
                         {/* Background Gradient */}
@@ -8603,7 +8604,7 @@ export default function ReportsPage() {
 
                     return (
                       <button
-                        onClick={() => navigate('/reports/collection-due')}
+                        onClick={() => navigate('/reports/finance-management?tab=collection-due')}
                         className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
                       >
                         {/* Background Gradient */}
@@ -8742,12 +8743,15 @@ export default function ReportsPage() {
                     'Experts Results': 'results-analysis-report',
 
                     // Finances
+                    'Finance Management': 'finance-money-dashboard',
                     'Collection': 'money-collection-payment',
                     'Collection Due': 'payment-due-invoice',
                     'Profitability': 'profitability-financial-growth',
+                    'All expenses': 'expenses-receipt-costs',
 
                     // Tools
                     'Edit Contracts': 'contract-document-edit',
+                    'HR Management': 'hr-team-management',
                     'Employee Unavailabilities': 'calendar-unavailable-time-off',
                     'Employee Salaries': 'salary-payment-money',
                     

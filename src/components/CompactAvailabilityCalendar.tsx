@@ -18,6 +18,7 @@ import HolidayEntryWarningModal from './profile/HolidayEntryWarningModal';
 import {
   unavailabilityTypeCompactLabelClass,
   unavailabilityTypeShortLabel,
+  approvalFieldsForUnavailabilityType,
   type UnavailabilityType,
 } from '../lib/employeeUnavailabilities';
 import {
@@ -868,8 +869,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         start_date: dateString,
         start_time: newUnavailableTime.startTime,
         end_time: newUnavailableTime.endTime,
-        approved: false,
-        declined: false,
+        ...approvalFieldsForUnavailabilityType(newUnavailableTime.unavailabilityType),
       };
 
       if (newUnavailableTime.unavailabilityType === 'sick_days') {
@@ -1090,8 +1090,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         unavailability_type: newUnavailableRange.unavailabilityType,
         start_date: newUnavailableRange.startDate,
         end_date: newUnavailableRange.endDate,
-        approved: false,
-        declined: false,
+        ...approvalFieldsForUnavailabilityType(newUnavailableRange.unavailabilityType),
       };
 
       if (newUnavailableRange.unavailabilityType === 'sick_days') {

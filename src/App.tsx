@@ -46,6 +46,7 @@ import {
   LazyContactBridgePage,
   LazyDuplicateContactsPage,
   LazyContractPage,
+  LazyHrEmployeeContractPage,
   LazyCreateNewLead,
   LazyCTIPopupPage,
   LazyDebugTestPage,
@@ -61,6 +62,7 @@ import {
   LazyEmployeeSalariesReport,
   LazyEmployeeUnavailabilitiesReport,
   LazyHrManagementPage,
+  LazyFinanceManagementPage,
   LazyEntryKioskPage,
   LazyExpertPage,
   LazyExternalFirmsReportPage,
@@ -103,6 +105,7 @@ import {
   LazyPublicProformaViewPage,
   LazyPublicBookingPage,
   LazyPublicContractView,
+  LazyPublicHrEmployeeContractView,
   LazyPublicLegacyContractView,
   LazyPublicProfilePage,
   LazyReassignLeadsPage,
@@ -142,7 +145,12 @@ const AppContentInner: React.FC = () => {
   const isReportsPage = useMemo(() => location.pathname.startsWith('/reports'), [location.pathname]);
   const isSignedSalesPage = useMemo(() => location.pathname === '/sales/signed', [location.pathname]);
   const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
-  const isContractPage = useMemo(() => location.pathname.includes('/contract') && !location.pathname.includes('/public-contract'), [location.pathname]);
+  const isContractPage = useMemo(() => {
+    const path = location.pathname;
+    if (path.includes('/public-contract') || path.includes('/public-hr-contract')) return false;
+    if (path.includes('/hr/employees/') && path.includes('/contract/')) return true;
+    return path.includes('/contract');
+  }, [location.pathname]);
   const isPoaEditPage = useMemo(() => location.pathname.startsWith('/poa/edit'), [location.pathname]);
   const isFullBleedEditorPage = isContractPage || isPoaEditPage;
   const isCalendarPage = useMemo(
@@ -664,6 +672,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-proforma/:id/:token" element={<RouteSuspense><LazyPublicProformaViewPage /></RouteSuspense>} />
       <Route path="/public-proforma-legacy/:id/:token" element={<RouteSuspense><LazyPublicProformaLegacyViewPage /></RouteSuspense>} />
       <Route path="/public-contract/:contractId/:token" element={<RouteSuspense><LazyPublicContractView /></RouteSuspense>} />
+      <Route path="/public-hr-contract/:contractId/:token" element={<RouteSuspense><LazyPublicHrEmployeeContractView /></RouteSuspense>} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
       <Route path="/payment/success" element={<RouteSuspense><LazyPaymentSuccessPage /></RouteSuspense>} />
       <Route path="/payment/failed" element={<RouteSuspense><LazyPaymentFailedPage /></RouteSuspense>} />
@@ -995,6 +1004,10 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
                     <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />
+                    <Route
+                      path="/hr/employees/:employeeId/contract/:contractId"
+                      element={<RouteSuspense><LazyHrEmployeeContractPage key="hr-employee-contract" /></RouteSuspense>}
+                    />
                     <Route path="/poa/edit/:token" element={<RouteSuspense><LazyPoaDocumentEditor /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/timeline" element={<RouteSuspense><LazyTimelinePage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/history" element={<RouteSuspense><LazyHistoryPage /></RouteSuspense>} />
@@ -1042,6 +1055,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/employee-unavailabilities" element={<RouteSuspense><LazyEmployeeUnavailabilitiesReport /></RouteSuspense>} />
                     <Route path="/reports/hr-management" element={<RouteSuspense><LazyHrManagementPage /></RouteSuspense>} />
                     <Route path="/reports/hr-management/employees/:employeeId" element={<RouteSuspense><LazyHrManagementPage /></RouteSuspense>} />
+                    <Route path="/reports/finance-management" element={<RouteSuspense><LazyFinanceManagementPage /></RouteSuspense>} />
                     <Route path="/reports/employee-salaries" element={<RouteSuspense><LazyEmployeeSalariesReport /></RouteSuspense>} />
                     <Route path="/reports/employee-info" element={<RouteSuspense><LazyEmployeeInfoReport /></RouteSuspense>} />
                     <Route path="/reports/employee-lead-allocations" element={<RouteSuspense><LazyEmployeeLeadAllocationsReportPage /></RouteSuspense>} />

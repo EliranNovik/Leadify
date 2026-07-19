@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon, DocumentTextIcon } from '@heroicons/react/24/solid';
@@ -18,9 +18,18 @@ import {
   loadBoiExchangeRatesForDate,
 } from '../lib/boiCurrencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
+import {
+  buildCollectionDueFiltersForFocus,
+  type FinanceCollectionFocusId,
+} from '../lib/financeCollectionFocus';
 
-const CollectionDueReport = () => {
+const CollectionDueReport = ({
+  focusPreset = null,
+}: {
+  focusPreset?: FinanceCollectionFocusId | null;
+} = {}) => {
   const navigate = useNavigate();
+  const [, setSearchParams] = useSearchParams();
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
 
@@ -35,6 +44,8 @@ const CollectionDueReport = () => {
   }, {
     storage: 'sessionStorage',
   });
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
   const [employeeData, setEmployeeData] = usePersistedFilters<any[]>('reports_collectionDue_employeeData', [], {
     storage: 'sessionStorage',
   });
@@ -742,7 +753,8 @@ const CollectionDueReport = () => {
     XLSX.writeFile(wb, `Collection_Due_By_Department_${dateStr}.xlsx`);
   };
 
-  const handleSearch = async () => {
+  const handleSearch = async (filterOverride?: Partial<typeof filters>) => {
+    const filters = { ...filtersRef.current, ...(filterOverride || {}) };
     setLoading(true);
     setSearchPerformed(true);
     try {
@@ -2703,6 +2715,30 @@ const CollectionDueReport = () => {
     }
   };
 
+  const focusHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusPreset) {
+      focusHandledRef.current = null;
+      return;
+    }
+    if (focusHandledRef.current === focusPreset) return;
+    const dueFilters = buildCollectionDueFiltersForFocus(focusPreset);
+    if (!dueFilters) return;
+    focusHandledRef.current = focusPreset;
+    setFilters((prev) => ({ ...prev, ...dueFilters }));
+    filtersRef.current = { ...filtersRef.current, ...dueFilters };
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('focus');
+        return next;
+      },
+      { replace: true },
+    );
+    void handleSearch(dueFilters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- apply once per focus preset
+  }, [focusPreset]);
+
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('he-IL', {
       style: 'currency',
@@ -3759,10 +3795,10 @@ const CollectionDueReport = () => {
       {searchPerformed && (
         <div>
           {/* Tables Container - Side by side on larger screens */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-16">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
             {/* By Employee Table */}
-            <div>
-              <div className="flex items-center justify-between mb-4">
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm md:p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
                 <h3 className="text-xl font-bold">By Employee</h3>
                 <button
                   onClick={exportEmployeeTable}
@@ -3824,8 +3860,8 @@ const CollectionDueReport = () => {
             </div>
 
             {/* By Department Table */}
-            <div>
-              <div className="flex items-center justify-between mb-4">
+            <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm md:p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
                 <h3 className="text-xl font-bold">By Department</h3>
                 <button
                   onClick={exportDepartmentTable}

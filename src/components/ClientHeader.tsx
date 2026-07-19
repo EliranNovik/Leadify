@@ -64,7 +64,7 @@ import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAnd
 import { useAuthContext } from '../contexts/AuthContext';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { SubEffortsLogModal } from './SubEffortsLogModal';
-import { SubEffortsLogSidebar } from './SubEffortsLogSidebar';
+// import { SubEffortsLogSidebar } from './SubEffortsLogSidebar';
 import {
     ensureLeadSubEffortRows,
     dedupeLeadSubEffortRows,
@@ -5614,13 +5614,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             )}
             {selectedClient && subEffortsStageFlags.fetchLeadSubEffortRows && (
                 <>
-                    <SubEffortsLogSidebar
-                        isLoading={isLoadingLeadSubEfforts}
-                        rows={leadSubEfforts}
-                        onRowClick={(id) => openSubEffortsModal(id)}
-                        onViewAll={() => openSubEffortsModal(null)}
-                        hideSideTab={isSubEffortsModalOpen}
-                    />
+                    {/* Floating side-tab scroll indicator removed — open sub efforts from header actions instead. */}
                     <SubEffortsLogModal
                         open={isSubEffortsModalOpen}
                         onClose={() => setIsSubEffortsModalOpen(false)}

@@ -16,6 +16,7 @@ import {
   LazyPublicProformaLegacyViewPage,
   LazyPublicProformaViewPage,
   LazyPublicContractView,
+  LazyPublicHrEmployeeContractView,
   LazyPublicLegacyContractView,
   LazyReportsPage,
   LazySignedSalesReportPage,
@@ -73,6 +74,7 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
       <Route path="/public-proforma/:id/:token" element={<RouteSuspense><LazyPublicProformaViewPage /></RouteSuspense>} />
       <Route path="/public-proforma-legacy/:id/:token" element={<RouteSuspense><LazyPublicProformaLegacyViewPage /></RouteSuspense>} />
       <Route path="/public-contract/:contractId/:token" element={<RouteSuspense><LazyPublicContractView /></RouteSuspense>} />
+      <Route path="/public-hr-contract/:contractId/:token" element={<RouteSuspense><LazyPublicHrEmployeeContractView /></RouteSuspense>} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
       <Route path="/test-meeting-summary" element={<RouteSuspense><LazyMeetingSummaryTestPage /></RouteSuspense>} />
       <Route path="/cti/pop" element={<RouteSuspense><LazyCTIPopupModal /></RouteSuspense>} />

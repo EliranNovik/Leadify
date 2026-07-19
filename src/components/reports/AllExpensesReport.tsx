@@ -42,6 +42,7 @@ import {
   marketingExpenseTotal,
 } from '../../lib/allExpensesReport';
 import { usePersistedFilters } from '../../hooks/usePersistedState';
+import { useAdminRole } from '../../hooks/useAdminRole';
 import AllExpensesTotalDetailModal from './expenses/AllExpensesTotalDetailModal';
 import EmployeeSalariesDetailModal from './expenses/EmployeeSalariesDetailModal';
 import MarketingExpensesDetailModal from './expenses/MarketingExpensesDetailModal';
@@ -280,6 +281,7 @@ const ExpenseSummaryBox: React.FC<{
 };
 
 const AllExpensesReport: React.FC = () => {
+  const { isSuperUser } = useAdminRole();
   const now = new Date();
   const defaultYear = String(now.getFullYear());
   const defaultMonth = String(now.getMonth() + 1).padStart(2, '0');
@@ -317,6 +319,7 @@ const AllExpensesReport: React.FC = () => {
   }, [filters.year, filters.month]);
 
   const load = useCallback(async () => {
+    if (!isSuperUser) return;
     if (!filters.year) return;
     setLoading(true);
     try {
@@ -340,7 +343,7 @@ const AllExpensesReport: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [filters.year, monthKeys]);
+  }, [filters.year, isSuperUser, monthKeys]);
 
   useEffect(() => {
     load();
@@ -465,6 +468,15 @@ const AllExpensesReport: React.FC = () => {
     }),
     [firmManagementYearChart],
   );
+
+  if (!isSuperUser) {
+    return (
+      <div className="rounded-2xl bg-white border border-gray-200 px-8 py-10 text-center shadow-sm">
+        <p className="font-semibold text-gray-800">Superuser access required</p>
+        <p className="mt-1 text-sm text-gray-500">All expenses is limited to superusers.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 pb-8">

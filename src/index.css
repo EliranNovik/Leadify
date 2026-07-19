@@ -2187,6 +2187,96 @@ html.dark.theme-dark2 .hover\:bg-base-200:hover {
   }
 }
 
+/* Finance Management — remap DaisyUI primary purple to blue */
+.finance-management-page-shell {
+  --finance-brand: 37 99 235; /* blue-600 */
+  --finance-brand-dark: 29 78 216; /* blue-700 */
+  --color-primary: rgb(37 99 235);
+  --color-primary-content: #ffffff;
+}
+
+.finance-management-page-shell .text-primary {
+  color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .bg-primary {
+  background-color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .border-primary {
+  border-color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .btn-primary {
+  --btn-color: rgb(var(--finance-brand));
+  --btn-fg: #ffffff;
+  --btn-bg: rgb(var(--finance-brand));
+  --btn-border: rgb(var(--finance-brand-dark));
+  --btn-shadow:
+    0 3px 2px -2px rgb(var(--finance-brand) / 0.35),
+    0 4px 3px -2px rgb(var(--finance-brand) / 0.28);
+  background-color: rgb(var(--finance-brand)) !important;
+  border-color: rgb(var(--finance-brand)) !important;
+  color: #fff !important;
+  box-shadow:
+    0 0.5px 0 0.5px rgb(255 255 255 / 0.12) inset,
+    var(--btn-shadow) !important;
+  outline-color: rgb(var(--finance-brand));
+}
+
+.finance-management-page-shell .btn-primary:hover {
+  --btn-bg: rgb(var(--finance-brand-dark));
+  background-color: rgb(var(--finance-brand-dark)) !important;
+  border-color: rgb(var(--finance-brand-dark)) !important;
+}
+
+.finance-management-page-shell .btn-primary:focus-visible {
+  outline-color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .btn-outline.btn-primary {
+  --btn-color: rgb(var(--finance-brand));
+  --btn-shadow: none;
+  color: rgb(var(--finance-brand)) !important;
+  border-color: rgb(var(--finance-brand)) !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.finance-management-page-shell .btn-outline.btn-primary:hover {
+  background-color: rgb(var(--finance-brand) / 0.08) !important;
+}
+
+.finance-management-page-shell .link-primary,
+.finance-management-page-shell a.link.link-primary {
+  color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .link-primary:hover,
+.finance-management-page-shell a.link.link-primary:hover {
+  color: rgb(var(--finance-brand-dark)) !important;
+}
+
+.finance-management-page-shell .bg-primary\/10 {
+  background-color: rgb(var(--finance-brand) / 0.1) !important;
+}
+
+.finance-management-page-shell .hover\:bg-primary:hover {
+  background-color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .hover\:text-primary:hover {
+  color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .focus\:ring-primary:focus {
+  --tw-ring-color: rgb(var(--finance-brand)) !important;
+}
+
+.finance-management-page-shell .focus\:border-primary:focus {
+  border-color: rgb(var(--finance-brand)) !important;
+}
+
 /* --- Print styles for ProformaViewPage --- */
 @media print {
   * {

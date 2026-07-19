@@ -87,7 +87,7 @@ import {
   ArrowRightIcon,
   ArchiveBoxIcon,
   LockClosedIcon,
-  DocumentIcon,
+  // DocumentIcon,
 } from '@heroicons/react/24/outline';
 const loadInfoTab = () => import('./client-tabs/InfoTab');
 const loadRolesTab = () => import('./client-tabs/RolesTab');
@@ -98,7 +98,7 @@ const loadMeetingTab = () => import('./client-tabs/MeetingTab');
 const loadPriceOfferTab = () => import('./client-tabs/PriceOfferTab');
 const loadInteractionsTab = () => import('./client-tabs/InteractionsTab');
 const loadFinancesTab = () => import('./client-tabs/FinancesTab');
-const loadDocumentsTab = () => import('./client-tabs/DocumentsTab');
+// const loadDocumentsTab = () => import('./client-tabs/DocumentsTab');
 
 // Keep the suspense boundary local to the tab body so Header/Sidebar never wait on tab chunks.
 const InfoTab = lazy(loadInfoTab);
@@ -110,7 +110,7 @@ const MeetingTab = lazy(loadMeetingTab);
 const PriceOfferTab = lazy(loadPriceOfferTab);
 const InteractionsTab = lazy(loadInteractionsTab);
 const FinancesTab = lazy(loadFinancesTab);
-const DocumentsTab = lazy(loadDocumentsTab);
+// const DocumentsTab = lazy(loadDocumentsTab);
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect } from '../lib/graph';
@@ -182,7 +182,7 @@ const TAB_LOADERS: Record<string, () => Promise<any>> = {
   price: loadPriceOfferTab,
   interactions: loadInteractionsTab,
   finances: loadFinancesTab,
-  documents: loadDocumentsTab,
+  // documents: loadDocumentsTab,
 };
 // Set window.__CLIENTS_DEBUG__ = true to show verbose console logs (handler options, sub-leads, etc.)
 const CLIENTS_DEBUG = typeof window !== 'undefined' && (window as any).__CLIENTS_DEBUG__ === true;
@@ -10344,7 +10344,7 @@ const Clients: React.FC<ClientsProps> = ({
       { id: 'price', label: 'Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
       { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: finalCount, component: InteractionsTab },
       { id: 'finances', label: 'Finances', icon: BanknotesIcon, component: FinancesTab },
-      { id: 'documents', label: 'Documents', icon: DocumentIcon, component: DocumentsTab },
+      // { id: 'documents', label: 'Documents', icon: DocumentIcon, component: DocumentsTab },
     ];
 
     // Filter out Meeting, Price Offer, and Finances tabs when stage is "Created"
@@ -10380,6 +10380,11 @@ const Clients: React.FC<ClientsProps> = ({
 
     const currentStageName = getStageName(selectedClient.stage);
     const isCreatedStage = areStagesEquivalent(currentStageName, 'Created');
+
+    if (activeTab === 'documents') {
+      setActiveTabWithUrl('info');
+      return;
+    }
 
     if (isCreatedStage && (activeTab === 'meeting' || activeTab === 'price' || activeTab === 'finances')) {
       setActiveTabWithUrl('info');

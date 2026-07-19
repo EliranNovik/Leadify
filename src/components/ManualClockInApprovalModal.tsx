@@ -44,15 +44,13 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
           <XMarkIcon className="w-5 h-5" />
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5">
-        <div className="max-w-5xl mx-auto">
-          <HrApprovalsPanel
-            embedded
-            onUpdated={() => {
-              onUpdated?.();
-            }}
-          />
-        </div>
+      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5 w-full">
+        <HrApprovalsPanel
+          embedded
+          onUpdated={() => {
+            onUpdated?.();
+          }}
+        />
       </div>
     </div>,
     document.body,

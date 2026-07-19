@@ -15,6 +15,25 @@ import { FaLinkedin, FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 import PublicNeedAssistanceWidget from '../components/public/PublicNeedAssistanceWidget';
 import { OFFICE_EMAIL, OFFICE_PHONE_TEL, WHATSAPP_URL } from '../components/public/publicContactInfo';
 import toast from 'react-hot-toast';
+import { fetchEmployeeProfileById } from '../lib/fetchEmployeeProfile';
+
+/** Draft HR employee contracts should always follow the live admin template. */
+function isDraftEmployeeContract(contract: any): boolean {
+  if (!contract?.employee_id) return false;
+  return String(contract.status || 'draft').toLowerCase() !== 'signed';
+}
+
+function unwrapTemplateRelation(raw: any): any | null {
+  if (!raw) return null;
+  return Array.isArray(raw) ? raw[0] || null : raw;
+}
+
+function resolveContractBodyContent(contract: any, template: any): any {
+  if (isDraftEmployeeContract(contract)) {
+    return template?.content || contract?.custom_content || null;
+  }
+  return contract?.custom_content || template?.content || null;
+}
 
 // Lazy load html2pdf only when needed (for PDF download)
 let html2pdf: any = null;
@@ -283,10 +302,14 @@ const PublicContractView: React.FC<{
   contractIdOverride?: string;
   tokenOverride?: string;
   onKioskComplete?: () => void;
-}> = ({ kioskMode = false, contractIdOverride, tokenOverride, onKioskComplete }) => {
+  employeeMode?: boolean;
+}> = ({ kioskMode = false, contractIdOverride, tokenOverride, onKioskComplete, employeeMode = false }) => {
   const { contractId: routeContractId, token: routeToken } = useParams();
   const contractId = contractIdOverride ?? routeContractId;
   const token = tokenOverride ?? routeToken;
+  const isEmployeeContractMode =
+    employeeMode ||
+    (typeof window !== 'undefined' && window.location.pathname.includes('/public-hr-contract/'));
   const [contract, setContract] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [customPricing, setCustomPricing] = useState<any>(null);
@@ -327,7 +350,7 @@ const PublicContractView: React.FC<{
   const contractContentRef = useRef<HTMLDivElement>(null);
 
   const contractIsRTL = useMemo(() => {
-    const content = contract?.custom_content || template?.content;
+    const content = resolveContractBodyContent(contract, template);
     return isRTL(extractTextContent(content));
   }, [contract?.custom_content, template?.content]);
 
@@ -561,8 +584,28 @@ const PublicContractView: React.FC<{
         }
 
         // STEP 2: Fetch template - handle both new templates (contract_templates) and legacy templates (misc_contracttemplate)
-        let templateData = contractData.contract_templates;
-        let templatePromise: Promise<any> | null = null;
+        let templateData = unwrapTemplateRelation(contractData.contract_templates);
+
+        // Draft employee contracts: always reload live template so Admin edits sync.
+        if (isDraftEmployeeContract(contractData) && contractData.template_id) {
+          const { data: freshTemplate } = await supabase
+            .from('contract_templates')
+            .select('*')
+            .eq('id', contractData.template_id)
+            .maybeSingle();
+          if (freshTemplate) templateData = freshTemplate;
+          if (contractData.custom_content) {
+            await supabase
+              .from('contracts')
+              .update({ custom_content: null })
+              .eq('id', contractData.id);
+            contractData.custom_content = null;
+            setContract({ ...contractData, custom_content: null });
+          }
+        }
+
+        // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
+        let templatePromise: any = null;
 
         // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
         if (!templateData) {
@@ -598,9 +641,15 @@ const PublicContractView: React.FC<{
           }
         }
 
-        // STEP 3: Start fetching client data in parallel (non-blocking)
-        let clientDataPromise: Promise<any> | null = null;
-        if (contractData.legacy_id) {
+        // STEP 3: Start fetching client/employee data in parallel (non-blocking)
+        let clientDataPromise: any = null;
+        let employeeDataPromise: Promise<any> | null = null;
+        if (contractData.employee_id || isEmployeeContractMode) {
+          const empId = Number(contractData.employee_id);
+          if (Number.isFinite(empId) && empId > 0) {
+            employeeDataPromise = fetchEmployeeProfileById(empId);
+          }
+        } else if (contractData.legacy_id) {
           // Legacy lead - fetch from leads_lead table
           clientDataPromise = supabase
             .from('leads_lead')
@@ -643,8 +692,34 @@ const PublicContractView: React.FC<{
           return;
         }
 
-        // STEP 5: Process client data (non-blocking - can happen after initial render)
-        if (clientDataPromise) {
+        // STEP 5: Process client/employee data (non-blocking - can happen after initial render)
+        if (employeeDataPromise) {
+          employeeDataPromise
+            .then((profile) => {
+              if (!profile) return;
+              const name = profile.official_name || profile.display_name || contractData.contact_name || 'Employee';
+              setClient({
+                id: `employee_${profile.id}`,
+                name,
+                email: profile.email || contractData.contact_email || '',
+                phone: profile.phone || profile.mobile || '',
+                mobile: profile.mobile || '',
+              });
+              if (!contractData.contact_name) {
+                setContract((prev: any) => (prev ? { ...prev, contact_name: name } : prev));
+              }
+            })
+            .catch((err) => {
+              console.error('Error fetching employee for public HR contract:', err);
+              setClient({
+                id: `employee_${contractData.employee_id}`,
+                name: contractData.contact_name || 'Employee',
+                email: contractData.contact_email || '',
+                phone: '',
+                mobile: '',
+              });
+            });
+        } else if (clientDataPromise) {
           clientDataPromise.then(async (clientResult) => {
             const { data: clientData } = clientResult;
 
@@ -668,24 +743,24 @@ const PublicContractView: React.FC<{
 
                   if (contactData?.name && contactData.name.trim() !== '') {
                     // Update contract with the fetched contact name
-                    setContract(prev => prev ? { ...prev, contact_name: contactData.name.trim() } : prev);
+                    setContract((prev: any) => prev ? { ...prev, contact_name: contactData.name.trim() } : prev);
                   } else {
                     // If contact not found, fall back to main contact (client name)
                     // This handles the case where contact_id doesn't match any contact
                     if (clientData.name && clientData.name.trim() !== '') {
-                      setContract(prev => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
+                      setContract((prev: any) => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
                     }
                   }
                 } catch (err) {
                   console.error('Error fetching contact name:', err);
                   // Fall back to client name if fetch fails
                   if (clientData.name && clientData.name.trim() !== '') {
-                    setContract(prev => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
+                    setContract((prev: any) => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
                   }
                 }
               } else if (isPlaceholder && clientData.name && clientData.name.trim() !== '') {
                 // If no contact_id but we have client name, use it as fallback
-                setContract(prev => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
+                setContract((prev: any) => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
               }
 
               if (contractData.legacy_id) {
@@ -916,7 +991,7 @@ const PublicContractView: React.FC<{
     try {
       // Validate required placeholders BEFORE signing the contract.
       // Otherwise we can end up with status='signed' while date/signature fields are empty.
-      const sourceContent = contract.custom_content || template?.content;
+      const sourceContent = resolveContractBodyContent(contract, template);
       // Normalize TipTap shape + placeholders so both `{{date}}` and `{{date:...}}` are treated consistently.
       // Use the same preprocessing approach as the main render path to avoid ID mismatches.
       const normalizedForValidation = sourceContent ? normalizeTiptapContent(sourceContent) : null;
@@ -946,7 +1021,7 @@ const PublicContractView: React.FC<{
       }
 
       // Fill in client fields in the contract content
-      const filledContent = fillClientFieldsInContent(contract.custom_content || template.content?.content);
+      const filledContent = fillClientFieldsInContent(resolveContractBodyContent(contract, template));
       await supabase.from('contracts').update({
         custom_content: filledContent,
         client_inputs: clientFields, // Save the actual client input values
@@ -961,7 +1036,10 @@ const PublicContractView: React.FC<{
         .single();
 
       // For new leads (has client_id), directly update stage in leads and leads_leadstage tables
-      if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
+      // Skip for HR employee digital contracts
+      if (updatedContract && updatedContract.employee_id) {
+        console.log('📝 Public HR contract signing: skipping lead stage update for employee contract');
+      } else if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
         console.log('📝 Public contract signing: Updating lead stage to "Client signed agreement" for new lead:', updatedContract.client_id);
 
         const timestamp = new Date().toISOString();
@@ -2502,7 +2580,7 @@ const PublicContractView: React.FC<{
 
           <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none overflow-x-hidden">
             {(() => {
-              const contentToRender = contract?.custom_content || template?.content;
+              const contentToRender = resolveContractBodyContent(contract, template);
               if (!contentToRender) return null;
 
               return thankYou ? (

@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { dateRangeToIsoBounds } from './employeeClockInFormat';
+import { dateRangeToIsoBounds, monthRange, toDateInputValue } from './employeeClockInFormat';
 import { resolveWorkplaceName } from './clockInLocations';
 
 export type ClockInApprovalStatus = 'approved' | 'pending' | 'declined';
@@ -129,6 +129,20 @@ export function countClockInApprovalBlockers(
     else if (status === 'declined') declinedCount += 1;
   }
   return { pendingCount, declinedCount };
+}
+
+/** Blockers for submitting one calendar month — only rows on local days in that month. */
+export function countClockInApprovalBlockersInMonth(
+  records: Array<ClockInApprovalFields & { clock_in_time: string }>,
+  year: number,
+  month1to12: number,
+): ClockInApprovalBlockers {
+  const { from, to } = monthRange(year, month1to12);
+  const inMonth = records.filter((record) => {
+    const dateKey = toDateInputValue(new Date(record.clock_in_time));
+    return dateKey >= from && dateKey <= to;
+  });
+  return countClockInApprovalBlockers(inMonth);
 }
 
 export function hasClockInApprovalBlockers(records: ClockInApprovalFields[]): boolean {

@@ -37,6 +37,46 @@ import CallOptionsModal from './CallOptionsModal';
 import DisplayOnKioskModal from './kiosk/DisplayOnKioskModal';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
+import { fetchEmployeeProfileById } from '../lib/fetchEmployeeProfile';
+import { buildEmployeeContractPublicUrl } from '../lib/employeeDigitalContracts';
+
+/** Draft HR employee contracts should always follow the live admin template. */
+function isDraftEmployeeContract(contract: any): boolean {
+  if (!contract?.employee_id) return false;
+  return String(contract.status || 'draft').toLowerCase() !== 'signed';
+}
+
+function unwrapTemplateRelation(raw: any): any | null {
+  if (!raw) return null;
+  return Array.isArray(raw) ? raw[0] || null : raw;
+}
+
+function resolveContractBodyContent(contract: any, template: any): any {
+  if (isDraftEmployeeContract(contract)) {
+    return template?.content || contract?.custom_content || null;
+  }
+  return contract?.custom_content || template?.content || null;
+}
+
+async function fetchFreshContractTemplate(templateId: string | number | null | undefined): Promise<any | null> {
+  if (templateId == null || templateId === '') return null;
+  const id = String(templateId);
+  const isLegacy = !Number.isNaN(Number(id)) && !id.includes('-');
+  if (isLegacy) {
+    const { data } = await supabase
+      .from('misc_contracttemplate')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    return data || null;
+  }
+  const { data } = await supabase
+    .from('contract_templates')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  return data || null;
+}
 
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
   if (!text) return text;
@@ -742,7 +782,23 @@ function contractToolbarFocus(editor: Editor) {
   setTimeout(() => editor.commands.focus(), 10);
 }
 
-function insertNextExtraTextField(editor: Editor) {
+/** Same tags as FIELD_TYPES in ContractPage — used by the rail “+” dropdown. */
+const CONTRACT_INPUT_FIELDS: Array<{ label: string; tag: string }> = [
+  { label: 'Text Field (Generic)', tag: '{{text}}' },
+  { label: 'Applicant Name', tag: '{{text:applicant}}' },
+  { label: 'Document Name', tag: '{{text:document}}' },
+  { label: 'Country', tag: '{{text:country}}' },
+  { label: 'Address', tag: '{{text:address}}' },
+  { label: 'City', tag: '{{text:city}}' },
+  { label: 'Postal Code', tag: '{{text:postal}}' },
+  { label: 'Notes', tag: '{{text:notes}}' },
+  { label: 'Reference Number', tag: '{{text:reference}}' },
+  { label: 'Other Text', tag: '{{text:other}}' },
+  { label: 'Signature Field', tag: '{{signature}}' },
+  { label: 'Date Field', tag: '{{date}}' },
+];
+
+function nextExtraTextFieldPlaceholder(editor: Editor): string {
   const content = editor.getJSON();
   let highestId = 0;
   const findHighestId = (node: any) => {
@@ -767,8 +823,21 @@ function insertNextExtraTextField(editor: Editor) {
     }
   };
   findHighestId(content);
-  const placeholder = `{{text:text-${highestId + 1}}}`;
-  editor.chain().focus().insertContent(placeholder).run();
+  return `{{text:text-${highestId + 1}}}`;
+}
+
+function insertNextExtraTextField(editor: Editor) {
+  editor.chain().focus().insertContent(nextExtraTextFieldPlaceholder(editor)).run();
+  contractToolbarFocus(editor);
+}
+
+function insertContractInputField(editor: Editor, tag: string) {
+  // Prefer unique IDs when adding a generic text field so multiple inserts stay distinct.
+  if (tag === '{{text}}') {
+    insertNextExtraTextField(editor);
+    return;
+  }
+  editor.chain().focus().insertContent(tag).run();
   contractToolbarFocus(editor);
 }
 
@@ -802,11 +871,16 @@ function ContractRailDropdown({
   label,
   trigger,
   panelClassName = 'w-44',
+  buttonClassName,
+  placement = 'right',
   children,
 }: {
   label: string;
   trigger: React.ReactNode;
   panelClassName?: string;
+  buttonClassName?: string;
+  /** right = beside trigger; bottom = below; up = above (for bottom-of-rail + button) */
+  placement?: 'right' | 'bottom' | 'up';
   children: (close: () => void) => React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -820,16 +894,46 @@ function ContractRailDropdown({
     const el = triggerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    setPos({ top: rect.top, left: rect.right + 8 });
-  }, []);
+    const panel = panelRef.current;
+    const panelH = panel?.offsetHeight ?? 280;
+    const panelW = panel?.offsetWidth ?? 224;
+    const gap = 8;
+
+    if (placement === 'bottom') {
+      setPos({
+        top: Math.min(rect.bottom + gap, window.innerHeight - panelH - gap),
+        left: Math.max(gap, Math.min(rect.left, window.innerWidth - panelW - gap)),
+      });
+      return;
+    }
+
+    if (placement === 'up') {
+      setPos({
+        top: Math.max(gap, rect.top - panelH - gap),
+        left: Math.max(gap, Math.min(rect.right + gap, window.innerWidth - panelW - gap)),
+      });
+      return;
+    }
+
+    // right — flip upward when near the bottom of the viewport
+    const topAligned = rect.top;
+    const wouldOverflow = topAligned + panelH > window.innerHeight - gap;
+    setPos({
+      top: wouldOverflow ? Math.max(gap, rect.bottom - panelH) : topAligned,
+      left: Math.max(gap, Math.min(rect.right + gap, window.innerWidth - panelW - gap)),
+    });
+  }, [placement]);
 
   useLayoutEffect(() => {
     if (!open) return;
     updatePos();
+    // Re-measure after paint so panel height is known (needed for upward placement)
+    const raf = requestAnimationFrame(() => updatePos());
     window.addEventListener('resize', updatePos);
     const scrollRoot = triggerRef.current?.closest('.app-main-scroll');
     scrollRoot?.addEventListener('scroll', updatePos, { passive: true });
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener('resize', updatePos);
       scrollRoot?.removeEventListener('scroll', updatePos);
     };
@@ -851,7 +955,7 @@ function ContractRailDropdown({
       <button
         ref={triggerRef}
         type="button"
-        className={contractRailBtnClass(false)}
+        className={buttonClassName || contractRailBtnClass(false)}
         title={label}
         aria-label={label}
         aria-expanded={open}
@@ -869,7 +973,7 @@ function ContractRailDropdown({
             />
             <div
               ref={panelRef}
-              className={`fixed z-[201] max-h-60 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1 shadow-2xl print-hide ${panelClassName}`}
+              className={`fixed z-[201] max-h-72 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1 shadow-2xl print-hide ${panelClassName}`}
               style={{ top: pos.top, left: pos.left }}
               role="menu"
             >
@@ -941,19 +1045,38 @@ function ContractEditorToolbar({
   );
 
   const addFieldButton = (
-    <button
-      type="button"
-      className={
+    <ContractRailDropdown
+      label="Add input field"
+      placement="bottom"
+      panelClassName="w-56"
+      buttonClassName={
         layout === 'desktop'
           ? 'btn btn-sm h-10 min-h-10 w-full gap-1.5 border-0 bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white shadow-md shadow-violet-500/20 hover:from-violet-700 hover:via-fuchsia-700 hover:to-indigo-700'
-          : 'btn btn-sm btn-primary'
+          : 'btn btn-sm btn-primary gap-1'
       }
-      onClick={() => insertNextExtraTextField(editor)}
-      title="Add extra field"
+      trigger={
+        <>
+          <PlusIcon className="h-4 w-4 shrink-0" />
+          <span className={layout === 'desktop' ? 'text-xs font-semibold' : 'ml-1'}>Add field</span>
+        </>
+      }
     >
-      <PlusIcon className="h-4 w-4 shrink-0" />
-      <span className={layout === 'desktop' ? 'text-xs font-semibold' : 'ml-1'}>Add extra field</span>
-    </button>
+      {(close) =>
+        CONTRACT_INPUT_FIELDS.map((field) => (
+          <button
+            key={field.tag}
+            type="button"
+            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-violet-50 hover:text-violet-800"
+            onClick={() => {
+              insertContractInputField(editor, field.tag);
+              close();
+            }}
+          >
+            {field.label}
+          </button>
+        ))
+      }
+    </ContractRailDropdown>
   );
 
   if (layout === 'desktop') {
@@ -1121,15 +1244,29 @@ function ContractEditorToolbar({
           </div>
 
           <div className="mt-2 flex w-full justify-center pb-1 pt-2">
-            <button
-              type="button"
-              className="btn btn-circle h-11 min-h-11 w-11 border border-gray-200 bg-gray-200 text-black shadow-sm hover:bg-gray-300"
-              onClick={() => insertNextExtraTextField(editor)}
-              title="Add extra field"
-              aria-label="Add extra field"
+            <ContractRailDropdown
+              label="Add input field"
+              placement="up"
+              panelClassName="w-56"
+              buttonClassName="btn btn-circle h-11 min-h-11 w-11 border border-gray-200 bg-gray-200 text-black shadow-sm hover:bg-gray-300"
+              trigger={<PlusIcon className="h-5 w-5 text-black" />}
             >
-              <PlusIcon className="h-5 w-5 text-black" />
-            </button>
+              {(close) =>
+                CONTRACT_INPUT_FIELDS.map((field) => (
+                  <button
+                    key={field.tag}
+                    type="button"
+                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-violet-50 hover:text-violet-800"
+                    onClick={() => {
+                      insertContractInputField(editor, field.tag);
+                      close();
+                    }}
+                  >
+                    {field.label}
+                  </button>
+                ))
+              }
+            </ContractRailDropdown>
           </div>
         </div>
       </aside>
@@ -1233,15 +1370,43 @@ function ContractEditorToolbar({
   );
 }
 
-const ContractPage: React.FC = () => {
-  const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber?: string; contractId?: string }>();
+const ContractPage: React.FC<{
+  mode?: 'client' | 'employee';
+  employeeIdOverride?: number;
+  contractIdOverride?: string;
+}> = ({ mode: modeProp, employeeIdOverride, contractIdOverride }) => {
+  const {
+    leadNumber: paramLeadNumber,
+    contractId: paramContractId,
+    employeeId: paramEmployeeId,
+  } = useParams<{ leadNumber?: string; contractId?: string; employeeId?: string }>();
   const location = useLocation();
   const navigate = useNavigate();
 
+  const isHrEmployeePath = location.pathname.includes('/hr/employees/') && location.pathname.includes('/contract/');
+  const isEmployeeMode = modeProp === 'employee' || isHrEmployeePath;
+
   // Extract leadNumber from URL path manually (may be undefined if using /contract/:contractId route)
-  const leadNumber = paramLeadNumber || (location.pathname.startsWith('/contract/') ? undefined : location.pathname.split('/')[2]);
+  const leadNumber = isEmployeeMode
+    ? undefined
+    : paramLeadNumber || (location.pathname.startsWith('/contract/') ? undefined : location.pathname.split('/')[2]);
   // Extract contractId from URL - can be from route param or query string
-  const contractId = paramContractId || new URLSearchParams(location.search).get('contractId') || (location.pathname.startsWith('/contract/') ? location.pathname.split('/')[2] : null);
+  const contractId =
+    contractIdOverride ||
+    paramContractId ||
+    new URLSearchParams(location.search).get('contractId') ||
+    (location.pathname.startsWith('/contract/')
+      ? location.pathname.split('/')[2]
+      : isHrEmployeePath
+        ? location.pathname.split('/')[5]
+        : null);
+  const employeeIdFromRoute = employeeIdOverride ?? (paramEmployeeId ? Number(paramEmployeeId) : NaN);
+  const employeeId =
+    Number.isFinite(employeeIdFromRoute) && employeeIdFromRoute > 0
+      ? employeeIdFromRoute
+      : isHrEmployeePath
+        ? Number(location.pathname.split('/')[3])
+        : null;
 
   const [contract, setContract] = useState<any>(null);
   const [template, setTemplate] = useState<any>(null);
@@ -1390,6 +1555,12 @@ const ContractPage: React.FC = () => {
 
   /** Returns the correct /clients/:identifier path for this contract's lead (for navigation). */
   const getLeadPagePath = (): string => {
+    if (isEmployeeMode || contract?.employee_id || employeeId) {
+      const empId = employeeId || contract?.employee_id;
+      return empId
+        ? `/reports/hr-management/employees/${empId}?fileTab=documents`
+        : '/reports/hr-management';
+    }
     if (leadNumber) {
       return `/clients/${encodeURIComponent(leadNumber)}`;
     }
@@ -2033,7 +2204,33 @@ const ContractPage: React.FC = () => {
 
         // If we don't have leadNumber but have a contract, fetch the client from the contract's client_id or legacy_id
         let clientLoaded = false;
-        if (!leadNumber && (contractData.client_id || contractData.legacy_id)) {
+        if (
+          !leadNumber &&
+          (contractData.employee_id || isEmployeeMode) &&
+          (contractData.employee_id || employeeId)
+        ) {
+          const empId = Number(contractData.employee_id || employeeId);
+          try {
+            const profile = await fetchEmployeeProfileById(empId);
+            if (profile) {
+              setClient({
+                id: `employee_${profile.id}`,
+                name: profile.official_name || profile.display_name,
+                email: profile.email || contractData.contact_email || '',
+                phone: profile.phone || profile.mobile || '',
+                mobile: profile.mobile || '',
+                lead_number: `EMP-${profile.id}`,
+                lead_type: 'employee',
+                department: profile.department_name,
+                photo_url: profile.photo_url || null,
+                employee_id: profile.id,
+              });
+              clientLoaded = true;
+            }
+          } catch (empErr) {
+            console.error('ContractPage: Error fetching employee for contract:', empErr);
+          }
+        } else if (!leadNumber && (contractData.client_id || contractData.legacy_id)) {
           try {
             let clientData = null;
             let clientError = null;
@@ -2134,7 +2331,20 @@ const ContractPage: React.FC = () => {
         }
 
         // Fetch template - check if it's a legacy template or new template
-        let templateData = contractData.contract_templates;
+        let templateData = unwrapTemplateRelation(contractData.contract_templates);
+
+        // Draft employee contracts: always reload the live template so Admin edits sync.
+        if (isDraftEmployeeContract(contractData) && contractData.template_id) {
+          const fresh = await fetchFreshContractTemplate(contractData.template_id);
+          if (fresh) templateData = fresh;
+          if (contractData.custom_content) {
+            await supabase
+              .from('contracts')
+              .update({ custom_content: null })
+              .eq('id', contractData.id);
+            contractData.custom_content = null;
+          }
+        }
 
         // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
         // This can happen if:
@@ -2657,8 +2867,8 @@ const ContractPage: React.FC = () => {
   useEffect(() => {
     if (contract && !leadNumber) {
       // For contractId-only routes, we need both contract and client before setting loading to false
-      if (client || !contract.client_id) {
-        // Client is loaded, or contract doesn't require a client
+      if (client || !contract.client_id || contract.employee_id || isEmployeeMode) {
+        // Client is loaded, or contract doesn't require a client / is employee contract
         if (loading) {
           console.log('ContractPage: Contract and client ready, setting loading to false');
           setLoading(false);
@@ -2671,7 +2881,7 @@ const ContractPage: React.FC = () => {
         setLoading(false);
       }
     }
-  }, [contract, client, leadNumber, loading]);
+  }, [contract, client, leadNumber, loading, isEmployeeMode]);
 
   // Auto-refresh signed contracts to ensure we have the latest filled-in content
   useEffect(() => {
@@ -2707,14 +2917,11 @@ const ContractPage: React.FC = () => {
       return;
     }
 
-    // Always prefer custom_content if it exists (preserves user edits in both edit and view mode)
-    // Otherwise use template.content to ensure we have placeholders to replace
-    // When pricing changes, we'll still update placeholders in the current content
-    // IMPORTANT: Preprocess custom_content to ensure all {{text}} and {{signature}} have IDs
-    let content = contract.custom_content || template.content;
+    // Draft employee contracts follow the live admin template; signed/client contracts keep custom_content.
+    let content = resolveContractBodyContent(contract, template);
 
     // If using custom_content, ensure it's preprocessed to add IDs to placeholders
-    if (contract.custom_content) {
+    if (content && contract.custom_content && !isDraftEmployeeContract(contract)) {
       // Check if content has generic placeholders without IDs
       const contentStr = JSON.stringify(content);
       const hasGenericText = /\{\{text\}\}/.test(contentStr);
@@ -2724,6 +2931,8 @@ const ContractPage: React.FC = () => {
         console.log('🔧 Custom content has generic placeholders, preprocessing...');
         content = preprocessTemplatePlaceholders(content);
       }
+    } else if (content && isDraftEmployeeContract(contract)) {
+      content = preprocessTemplatePlaceholders(content);
     }
 
     if (!content) return;
@@ -2731,7 +2940,7 @@ const ContractPage: React.FC = () => {
     // Create a hash of the content and dependencies to detect actual changes
     // Only include fields that affect the processed content
     const contentHash = JSON.stringify({
-      contentSource: contract.custom_content ? JSON.stringify(contract.custom_content) : JSON.stringify(template.content),
+      contentSource: JSON.stringify(content),
       customPricingHash: customPricing ? JSON.stringify({
         applicant_count: customPricing.applicant_count,
         total_amount: customPricing.total_amount,
@@ -2753,6 +2962,8 @@ const ContractPage: React.FC = () => {
         contact_email: contract.contact_email,
         contact_phone: contract.contact_phone,
         contact_mobile: contract.contact_mobile,
+        employee_id: contract.employee_id,
+        status: contract.status,
       }) : null,
       editing,
       renderKey,
@@ -2856,6 +3067,30 @@ const ContractPage: React.FC = () => {
     const paragraphCount = content?.content?.filter((node: any) => node.type === 'paragraph').length || 0;
     console.log(`📝 Paragraph count in saved content: ${paragraphCount}`);
 
+    // Draft employee contracts stay linked to the Admin template — persist body edits there
+    // so Documents / public pages stay in sync with template changes.
+    if (isDraftEmployeeContract(contract) && contract.template_id) {
+      const { error: templateError } = await supabase
+        .from('contract_templates')
+        .update({ content })
+        .eq('id', contract.template_id);
+      if (templateError) {
+        console.error('Error saving employee contract template:', templateError);
+        toast.error('Failed to save template changes');
+        return;
+      }
+      await supabase
+        .from('contracts')
+        .update({ custom_content: null })
+        .eq('id', contract.id);
+      setTemplate((prev: any) => (prev ? { ...prev, content } : prev));
+      setContract((prev: any) => (prev ? { ...prev, custom_content: null } : prev));
+      setEditing(false);
+      setRenderKey((prev) => prev + 1);
+      toast.success('Template updated — all draft employee contracts will use this content');
+      return;
+    }
+
     // Update contract in database
     const { error } = await supabase
       .from('contracts')
@@ -2877,8 +3112,8 @@ const ContractPage: React.FC = () => {
 
   const getCurrentContractSource = useCallback((): unknown => {
     if (editing && editor) return editor.getJSON();
-    return contract?.custom_content || template?.content;
-  }, [contract?.custom_content, template?.content, editing, editor]);
+    return resolveContractBodyContent(contract, template);
+  }, [contract, template, editing, editor]);
 
   const handleImproveContractWithAi = async () => {
     if (!editor || !client || !contract || improvingContract || aiChatLoading) return;
@@ -3474,7 +3709,7 @@ const ContractPage: React.FC = () => {
 
       // Fill TipTap JSON with clientInputs
       const filledContent = fillTiptapJsonWithInputs(
-        contract.custom_content || template.content?.content,
+        resolveContractBodyContent(contract, template),
         clientInputs,
         '',
         { text: 0, signature: 0 }
@@ -5052,7 +5287,10 @@ const ContractPage: React.FC = () => {
       setContract((prev: any) => ({ ...prev, public_token: publicToken }));
     }
     // Always use production domain for public contract links
-    const publicUrl = `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+    const publicUrl =
+      isEmployeeMode || contract.employee_id
+        ? buildEmployeeContractPublicUrl(contract.id, publicToken)
+        : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
     await navigator.clipboard.writeText(publicUrl);
     alert('Contract link copied to clipboard!');
   };
@@ -5068,7 +5306,10 @@ const ContractPage: React.FC = () => {
         await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
         setContract((prev: any) => ({ ...prev, public_token: publicToken }));
       }
-      const publicUrl = `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+      const publicUrl =
+        isEmployeeMode || contract.employee_id
+          ? buildEmployeeContractPublicUrl(contract.id, publicToken)
+          : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
 
       const clientName = contract?.contact_name || client?.name || 'Client';
       const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
@@ -5118,7 +5359,7 @@ const ContractPage: React.FC = () => {
 
       // Refresh editor content immediately (works for both edit and readonly modes)
       if (editor && template) {
-        const content = contract.custom_content || template.content;
+        const content = resolveContractBodyContent(contract, template);
         if (content) {
           try {
             let processedContent = normalizeTiptapContent(content);
@@ -5173,7 +5414,14 @@ const ContractPage: React.FC = () => {
       alert('Contract deleted successfully.');
 
       // Navigate back to client page (full page nav so contract view unmounts)
-      if (leadNumber) {
+      if (isEmployeeMode || contract.employee_id) {
+        const empId = employeeId || contract.employee_id;
+        window.location.assign(
+          empId
+            ? `/reports/hr-management/employees/${empId}?fileTab=documents`
+            : '/reports/hr-management',
+        );
+      } else if (leadNumber) {
         window.location.assign(`/clients/${leadNumber}`);
       } else if (client?.id) {
         const clientLeadNumber = client.lead_number || client.id.toString().replace('legacy_', '');
@@ -5691,7 +5939,30 @@ const ContractPage: React.FC = () => {
       if (error) throw error;
 
       setContract(refreshedContract);
-      setTemplate(refreshedContract.contract_templates);
+      const joinedTemplate = unwrapTemplateRelation(refreshedContract.contract_templates);
+      let templateData = joinedTemplate;
+      if (isDraftEmployeeContract(refreshedContract) && refreshedContract.template_id) {
+        const fresh = await fetchFreshContractTemplate(refreshedContract.template_id);
+        if (fresh) templateData = fresh;
+        if (refreshedContract.custom_content) {
+          await supabase
+            .from('contracts')
+            .update({ custom_content: null })
+            .eq('id', refreshedContract.id);
+          refreshedContract.custom_content = null;
+          setContract({ ...refreshedContract, custom_content: null });
+        }
+      }
+      if (templateData) {
+        setTemplate({
+          ...templateData,
+          content: templateData.content
+            ? preprocessTemplatePlaceholders(templateData.content)
+            : templateData.content,
+        });
+      } else {
+        setTemplate(joinedTemplate);
+      }
 
       // Load client inputs if available
       if (refreshedContract.client_inputs) {
@@ -5894,6 +6165,27 @@ const ContractPage: React.FC = () => {
   const barCategory = client ? getCategoryDisplayName(client.category_id, client.category) : '';
   const barTopic = client?.topic?.trim() || '';
 
+  // Employee contracts: show avatar, hide Lead meta (also if opened without mode prop but contract has employee_id)
+  const isEmployeeContractView =
+    isEmployeeMode ||
+    Boolean(employeeId) ||
+    Boolean(contract?.employee_id) ||
+    client?.lead_type === 'employee' ||
+    String(client?.id ?? '').startsWith('employee_');
+
+  const headerEmployeeId =
+    employeeId ||
+    (contract?.employee_id ? Number(contract.employee_id) : null) ||
+    (String(client?.id ?? '').startsWith('employee_')
+      ? Number(String(client.id).replace('employee_', ''))
+      : null);
+
+  const headerEmployeePhotoUrl =
+    (client as { photo_url?: string | null } | null)?.photo_url ||
+    getEmployeeById(headerEmployeeId)?.photo_url ||
+    getEmployeeById(headerEmployeeId)?.photo ||
+    null;
+
   const openCallContactPicker = async () => {
     if (!client) return;
     setShowCallContactModal(true);
@@ -5948,22 +6240,50 @@ const ContractPage: React.FC = () => {
             type="button"
             onClick={goToLeadPage}
             className="btn btn-sm h-9 min-h-9 gap-1.5 rounded-full border-0 bg-gray-900 px-3 text-sm font-medium text-white shadow-sm hover:bg-gray-800 print-hide sm:px-4"
-            title="Back to lead"
+            title={isEmployeeMode ? 'Back to documents' : 'Back to lead'}
           >
             <ArrowLeftIcon className="h-4 w-4 shrink-0 opacity-90" />
-            <span>Back to lead</span>
+            <span>{isEmployeeMode ? 'Back to documents' : 'Back to lead'}</span>
           </button>
           <span className="hidden h-7 w-px shrink-0 bg-gray-200 sm:block" aria-hidden />
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-x-4">
-            <div className="min-w-0 max-w-[min(100%,16rem)]">
-              <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Main contact</p>
-              <p className="truncate text-base font-semibold leading-snug text-gray-900">{mainContactDisplay}</p>
+            <div className="flex min-w-0 max-w-[min(100%,20rem)] items-center gap-2.5">
+              {isEmployeeContractView ? (
+                headerEmployeePhotoUrl ? (
+                  <img
+                    src={headerEmployeePhotoUrl}
+                    alt={mainContactDisplay}
+                    className="h-10 w-10 shrink-0 rounded-full object-cover ring-1 ring-gray-200"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.display = 'none';
+                      const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
+                      if (fallback) fallback.classList.remove('hidden');
+                    }}
+                  />
+                ) : null
+              ) : null}
+              {isEmployeeContractView ? (
+                <div
+                  className={`${headerEmployeePhotoUrl ? 'hidden' : ''} flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-semibold text-violet-700 ring-1 ring-violet-200`}
+                  title={mainContactDisplay}
+                >
+                  {getEmployeeInitials(mainContactDisplay) || '—'}
+                </div>
+              ) : null}
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">
+                  {isEmployeeContractView ? 'Employee' : 'Main contact'}
+                </p>
+                <p className="truncate text-base font-semibold leading-snug text-gray-900">{mainContactDisplay}</p>
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <div>
-                <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Lead</p>
-                <p className="font-mono text-base font-bold tabular-nums leading-snug text-gray-900">#{renderLeadNumber()}</p>
-              </div>
+              {!isEmployeeContractView ? (
+                <div>
+                  <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Lead</p>
+                  <p className="font-mono text-base font-bold tabular-nums leading-snug text-gray-900">#{renderLeadNumber()}</p>
+                </div>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void openCallContactPicker()}
@@ -6056,15 +6376,16 @@ const ContractPage: React.FC = () => {
                   key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}
                   style={{ minHeight: '100%' }}
                 >
-                  {contract.custom_content ? (
+                  {contract.status === 'signed' && contract.custom_content ? (
                     (() => {
                       console.log('🔍 Signed contract.custom_content:', contract.custom_content);
                       return renderSignedContractContent(contract.custom_content);
                     })()
                   ) : (
                     (() => {
-                      console.log('🎯 Rendering signed template.content:', template.content);
-                      return renderTiptapContent(template.content, '', false, undefined, undefined, undefined, true, { text: 0, signature: 0 });
+                      const body = resolveContractBodyContent(contract, template);
+                      console.log('🎯 Rendering contract body from template/custom:', body);
+                      return renderTiptapContent(body, '', false, undefined, undefined, undefined, true, { text: 0, signature: 0 });
                     })()
                   )}
                 </div>
@@ -6079,8 +6400,8 @@ const ContractPage: React.FC = () => {
                   style={{ minHeight: '100%' }}
                 >
                   {(() => {
-                    // Get content from contract.custom_content (saved content) or template content
-                    let contentToRender = contract?.custom_content || template?.content;
+                    // Draft employee contracts follow live template; others prefer saved custom_content
+                    let contentToRender = resolveContractBodyContent(contract, template);
 
                     // Process content to fill placeholders but keep {{text}}, {{date}}, and {{signature}}
                     if (contentToRender && customPricing && client) {

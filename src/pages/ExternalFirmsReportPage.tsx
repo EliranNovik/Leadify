@@ -1467,7 +1467,7 @@ type SettingsMenuItem = {
 
 export default function ExternalFirmsReportPage() {
   const navigate = useNavigate();
-  const { isAdmin, isLoading: isAdminLoading } = useAdminRole();
+  const { isAdmin, isSuperUser, isLoading: isAdminLoading } = useAdminRole();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [firms, setFirms] = useState<FirmRow[]>([]);
@@ -2985,6 +2985,32 @@ export default function ExternalFirmsReportPage() {
     'btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0';
   const sidebarRailBtnActive = `${sidebarRailBtn} bg-gray-300 text-gray-900 hover:bg-gray-400`;
   const sidebarRailBtnIdle = `${sidebarRailBtn} text-gray-600 hover:bg-gray-300/70`;
+
+  if (isAdminLoading) {
+    return (
+      <div className="min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-8 flex items-center justify-center">
+        <span className="loading loading-spinner loading-lg text-primary" />
+      </div>
+    );
+  }
+
+  if (!isSuperUser) {
+    return (
+      <div className="min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-8 flex items-center justify-center">
+        <div className="rounded-2xl bg-white px-8 py-10 text-center shadow-sm">
+          <p className="font-semibold text-gray-800">Superuser access required</p>
+          <p className="text-sm text-gray-500 mt-1">External Firms is limited to superusers.</p>
+          <button
+            type="button"
+            className="btn btn-sm mt-4 rounded-full"
+            onClick={() => navigate('/reports')}
+          >
+            Back to reports
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="external-firms-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-[4.5rem]">

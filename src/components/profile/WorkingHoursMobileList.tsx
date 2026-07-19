@@ -29,6 +29,7 @@ import { sumCountedClockDurationsMs } from '../../lib/workingHoursExport';
 import {
   documentNameFromUrl,
   getUnavailabilityApprovalStatus,
+  isGeneralUnavailability,
   unavailabilityApprovalWatermarkLabel,
   unavailabilityReasonText,
   unavailabilityTypeLabel,
@@ -52,6 +53,7 @@ function collectDayApprovalStatuses(params: {
     found.add(params.clockApprovalStatus);
   }
   for (const unavail of params.unavailabilities) {
+    if (isGeneralUnavailability(unavail)) continue;
     const leaveStatus = getUnavailabilityApprovalStatus(unavail);
     if (unavailabilityApprovalWatermarkLabel(leaveStatus)) found.add(leaveStatus);
   }
@@ -355,7 +357,7 @@ export default function WorkingHoursMobileList({
         const isWeekend = row.isWeekendPlaceholder === true;
         const isBulkSelectable =
           bulkSelectMode &&
-          (row.isMissingPlaceholder || row.isHolidayPlaceholder) &&
+          (row.isMissingPlaceholder || row.isHolidayPlaceholder || row.isWeekendPlaceholder) &&
           !isMonthSubmitted;
         const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
         const readOnly = isRowLocked(row.dateKey);
@@ -364,7 +366,7 @@ export default function WorkingHoursMobileList({
           const isHoliday = row.isHolidayPlaceholder;
           const holidayLabel = row.holidayNames?.[0];
           const hintText = isWeekend
-            ? 'Weekend'
+            ? 'Weekend — optional overtime'
             : isHoliday
               ? holidayLabel
                 ? `${holidayLabel} — no entry yet`
@@ -407,7 +409,7 @@ export default function WorkingHoursMobileList({
                 <p className={`text-base text-center ${isWeekend ? 'font-semibold text-slate-600' : 'italic text-gray-500'}`}>
                   {hintText}
                 </p>
-                {!isMonthSubmitted && !bulkSelectMode && !isWeekend && (
+                {!isMonthSubmitted && !bulkSelectMode && (
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"

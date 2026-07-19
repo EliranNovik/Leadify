@@ -597,7 +597,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             navigate(tab.path || '/');
           },
         });
-        if (tab.path === '/reports') {
+        if (tab.path === '/reports' && isSuperUser) {
           items.push({
             id: 'report_external_firms',
             label: 'External Firms',
@@ -627,6 +627,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       { label: 'Collection', path: '/collection' },
       { label: 'Calendar', path: '/calendar' },
       { label: 'Waiting for Price Offer', path: '/waiting-for-price-offer', keywords: ['price offer', 'waiting'] },
+      { label: 'Finance Pipeline', path: '/reports/finance-management', keywords: ['finance', 'collection', 'expenses'] },
+      { label: 'HR Management', path: '/reports/hr-management', keywords: ['hr', 'employees', 'human resources'] },
       { label: 'Hot Leads', path: '/scheduler-tool', keywords: ['hot', 'priority', 'scheduler'] },
       { label: 'Pipeline', path: '/pipeline' },
       { label: 'Expert', path: '/expert' },
@@ -667,7 +669,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     );
 
     sidebarSearchItems
-      .filter((entry) => isSuperUser || entry.path !== '/new-cases')
+      .filter((entry) => {
+        if (entry.path === '/new-cases' && !isSuperUser) return false;
+        if (entry.path === '/reports/hr-management' && !isSuperUser) return false;
+        if (entry.path === '/reports/external-firms' && !isSuperUser) return false;
+        return true;
+      })
       .forEach((entry) => {
         if (existingPaths.has(entry.path)) return;
         items.push({
@@ -812,7 +819,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
 
     const reportSearchItems = [
-      { label: 'External firms', category: 'Marketing', route: '/reports/external-firms' },
+      { label: 'External firms', category: 'Marketing', route: '/reports/external-firms', superuserOnly: true },
       { label: 'Sources pie', category: 'Marketing' },
       { label: 'Category & source', category: 'Marketing' },
       { label: 'Convertion', category: 'Marketing' },
@@ -835,7 +842,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       { label: 'Employee Info', category: 'Employees', route: '/reports/employee-info' },
     ];
 
-    reportSearchItems.forEach((report) => {
+    reportSearchItems
+      .filter((report) => isSuperUser || !(report as { superuserOnly?: boolean }).superuserOnly)
+      .forEach((report) => {
       const targetPath = report.route || `/reports?report=${encodeURIComponent(report.label)}`;
       items.push({
         id: `report_${report.label.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,

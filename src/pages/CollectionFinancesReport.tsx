@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline, ClockIcon as ClockIconOutline, PaperAirplaneIcon, ChevronUpIcon, ChevronDownIcon, ChevronUpDownIcon } from '@heroicons/react/24/outline';
@@ -55,6 +55,7 @@ import {
   loadPaymentPlanTaxReceipts,
   type PaymentPlanTaxReceiptInfo,
 } from '../lib/paymentLinkQueries';
+import type { CollectionFinancesRailBridge } from '../components/finance/collectionFinancesRailBridge';
 
 type MainCategory = {
   id: string;
@@ -1164,8 +1165,23 @@ const SidebarRailAction: React.FC<{
   );
 };
 
-const CollectionFinancesReport: React.FC = () => {
+import type { CollectionFinancesRailBridge } from '../components/finance/collectionFinancesRailBridge';
+import {
+  buildCollectionFiltersForFocus,
+  collectionDisplayFilterForFocus,
+  type FinanceCollectionFocusId,
+} from '../lib/financeCollectionFocus';
+
+const CollectionFinancesReport: React.FC<{
+  /** Hide the local action rail (used inside Finance Management). */
+  hideSideRail?: boolean;
+  /** Publish action buttons + settings to the Finance Management sidebar. */
+  onRailBridgeChange?: (bridge: CollectionFinancesRailBridge | null) => void;
+  /** When set (from Finance dashboard Attention cards), apply filters and load immediately. */
+  focusPreset?: FinanceCollectionFocusId | null;
+}> = ({ hideSideRail = false, onRailBridgeChange, focusPreset = null }) => {
   const navigate = useNavigate();
+  const [, setSearchParams] = useSearchParams();
   const { showReconnectModal } = useMailboxReconnect();
   const [filters, setFilters] = usePersistedFilters<Filters>('collectionFinancesReport_filters', DEFAULT_FILTERS, {
     storage: 'sessionStorage',
@@ -1587,7 +1603,14 @@ const CollectionFinancesReport: React.FC = () => {
     setFilters(prev => ({ ...prev, currencyId: [] }));
   };
 
-const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
+const loadPayments = async ({
+    silent = false,
+    filterOverride,
+  }: {
+    silent?: boolean;
+    filterOverride?: Filters;
+  } = {}) => {
+    const activeFilters = filterOverride ?? filters;
     // Silent reloads (live updates) keep the table mounted and only diff rows in,
     // so the page never visibly "refreshes" — React reconciles changed/added/removed rows by id.
     if (!silent) {
@@ -1595,8 +1618,11 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       setError(null);
     }
     try {
-      console.log(`🔍 [loadPayments] Starting with filters:`, filters);
-      const [modern, legacy] = await Promise.all([fetchModernPayments(filters), fetchLegacyPayments(filters)]);
+      console.log(`🔍 [loadPayments] Starting with filters:`, activeFilters);
+      const [modern, legacy] = await Promise.all([
+        fetchModernPayments(activeFilters),
+        fetchLegacyPayments(activeFilters),
+      ]);
       console.log(`✅ [loadPayments] Fetched ${modern.length} modern payments, ${legacy.length} legacy payments`);
       traceDanielGranotInRows('After fetch (modern)', modern);
       traceDanielGranotInRows('After fetch (legacy)', legacy);
@@ -1710,7 +1736,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
         const isDanielGranot = rowMatchesDebugContact(row);
         // Due date included: legacy = only if due_date is not null; new = only if ready_to_pay is true.
         // Ignore = no extra filter (show all rows).
-        if (filters.due === 'due_only') {
+        if (activeFilters.due === 'due_only') {
           if (row.leadType === 'legacy' && !row.dueDate) {
             if (isDanielGranot) logDanielGranotDebug('Client filter: due_only — legacy missing due_date', summarizeRowForDebug(row));
             return false;
@@ -1721,37 +1747,37 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
           }
         }
         // Category filter (multi-select)
-        if (Array.isArray(filters.categoryId) && filters.categoryId.length > 0) {
-          if (!row.mainCategoryId || !filters.categoryId.includes(row.mainCategoryId)) {
-            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by category: mainCategoryId=${row.mainCategoryId}, filter=${filters.categoryId}`);
-            if (isDanielGranot) logDanielGranotDebug('Client filter: category', { row: summarizeRowForDebug(row), filter: filters.categoryId });
+        if (Array.isArray(activeFilters.categoryId) && activeFilters.categoryId.length > 0) {
+          if (!row.mainCategoryId || !activeFilters.categoryId.includes(row.mainCategoryId)) {
+            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by category: mainCategoryId=${row.mainCategoryId}, filter=${activeFilters.categoryId}`);
+            if (isDanielGranot) logDanielGranotDebug('Client filter: category', { row: summarizeRowForDebug(row), filter: activeFilters.categoryId });
             return false;
           }
         }
         
         // Collected filter (multi-select)
-        if (Array.isArray(filters.collected) && filters.collected.length > 0) {
+        if (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) {
           let matchesFilter = false;
           
-          if (filters.collected.includes('yes_with_proforma')) {
+          if (activeFilters.collected.includes('yes_with_proforma')) {
             // Collected with proforma
             if (row.collected && row.hasProforma) {
               matchesFilter = true;
             }
           }
-          if (filters.collected.includes('yes_without_proforma')) {
+          if (activeFilters.collected.includes('yes_without_proforma')) {
             // Collected without proforma
             if (row.collected && !row.hasProforma) {
               matchesFilter = true;
             }
           }
-          if (filters.collected.includes('no_with_proforma')) {
+          if (activeFilters.collected.includes('no_with_proforma')) {
             // Uncollected with proforma
             if (!row.collected && row.hasProforma) {
               matchesFilter = true;
             }
           }
-          if (filters.collected.includes('no_without_proforma')) {
+          if (activeFilters.collected.includes('no_without_proforma')) {
             // Uncollected without proforma
             if (!row.collected && !row.hasProforma) {
               matchesFilter = true;
@@ -1759,73 +1785,73 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
           }
           
           if (!matchesFilter) {
-            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by collected: row.collected=${row.collected}, row.hasProforma=${row.hasProforma}, filter=${filters.collected?.join(',')}`);
-            if (isDanielGranot) logDanielGranotDebug('Client filter: collected', { row: summarizeRowForDebug(row), filter: filters.collected });
+            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by collected: row.collected=${row.collected}, row.hasProforma=${row.hasProforma}, filter=${activeFilters.collected?.join(',')}`);
+            if (isDanielGranot) logDanielGranotDebug('Client filter: collected', { row: summarizeRowForDebug(row), filter: activeFilters.collected });
             return false;
           }
         }
         
         // Order filter (multi-select)
-        if (Array.isArray(filters.order) && filters.order.length > 0) {
-          if (!row.orderCode || !filters.order.includes(row.orderCode)) {
-            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by order: orderCode=${row.orderCode}, filter=${filters.order?.join(',')}`);
-            if (isDanielGranot) logDanielGranotDebug('Client filter: order', { row: summarizeRowForDebug(row), filter: filters.order });
+        if (Array.isArray(activeFilters.order) && activeFilters.order.length > 0) {
+          if (!row.orderCode || !activeFilters.order.includes(row.orderCode)) {
+            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by order: orderCode=${row.orderCode}, filter=${activeFilters.order?.join(',')}`);
+            if (isDanielGranot) logDanielGranotDebug('Client filter: order', { row: summarizeRowForDebug(row), filter: activeFilters.order });
             return false;
           }
         }
 
         // Currency filter (multi-select, by payment row currency_id)
-        if (Array.isArray(filters.currencyId) && filters.currencyId.length > 0) {
+        if (Array.isArray(activeFilters.currencyId) && activeFilters.currencyId.length > 0) {
           const rowCurrencyId = row.currencyId != null ? String(row.currencyId) : null;
-          if (!rowCurrencyId || !filters.currencyId.includes(rowCurrencyId)) {
-            if (isDanielGranot) logDanielGranotDebug('Client filter: currency', { row: summarizeRowForDebug(row), filter: filters.currencyId });
+          if (!rowCurrencyId || !activeFilters.currencyId.includes(rowCurrencyId)) {
+            if (isDanielGranot) logDanielGranotDebug('Client filter: currency', { row: summarizeRowForDebug(row), filter: activeFilters.currencyId });
             return false;
           }
         }
 
         // Payment date filter takes precedence over due/plan date when set.
-        if (hasPaymentDateFilter(filters)) {
+        if (hasPaymentDateFilter(activeFilters)) {
           if (!row.collectedDate) {
             if (isDanielGranot) logDanielGranotDebug('Client filter: payment date — no collectedDate', summarizeRowForDebug(row));
             return false;
           }
           const paymentDateStr = paymentDateForFilter(row.collectedDate);
-          if (!paymentDateStr || !dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
+          if (!paymentDateStr || !dateInRange(paymentDateStr, activeFilters.paymentFromDate ?? '', activeFilters.paymentToDate ?? '')) {
             if (isDanielGranot) {
               logDanielGranotDebug('Client filter: payment date out of range', {
                 row: summarizeRowForDebug(row),
                 paymentDateStr,
-                filter: { from: filters.paymentFromDate, to: filters.paymentToDate },
+                filter: { from: activeFilters.paymentFromDate, to: activeFilters.paymentToDate },
               });
             }
             return false;
           }
-        } else if (filters.fromDate || filters.toDate) {
+        } else if (activeFilters.fromDate || activeFilters.toDate) {
           // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Use dateInRange so cross-year (e.g. Nov–Mar) is handled.
-          const dateToCheck = filters.due === 'ignore' && row.leadType === 'legacy' ? row.planDate : row.dueDate;
-          const dateColumnLabel = filters.due === 'ignore' && row.leadType === 'legacy' ? 'planDate (legacy date column)' : 'dueDate';
+          const dateToCheck = activeFilters.due === 'ignore' && row.leadType === 'legacy' ? row.planDate : row.dueDate;
+          const dateColumnLabel = activeFilters.due === 'ignore' && row.leadType === 'legacy' ? 'planDate (legacy date column)' : 'dueDate';
           if (!dateToCheck) {
             if (isDanielGranot) {
               logDanielGranotDebug('Client filter: missing date for range check', {
                 row: summarizeRowForDebug(row),
                 dateColumnLabel,
-                dueMode: filters.due,
+                dueMode: activeFilters.due,
                 note: 'Legacy + Due=Ignore uses plan date column, not due_date — if due is 28/05/2026 but plan date differs, row is excluded',
               });
             }
             return false;
           }
           const dateStr = dateToCheck.split('T')[0];
-          if (!dateInRange(dateStr, filters.fromDate, filters.toDate)) {
+          if (!dateInRange(dateStr, activeFilters.fromDate, activeFilters.toDate)) {
             if (isDanielGranot) {
               logDanielGranotDebug('Client filter: date out of range', {
                 row: summarizeRowForDebug(row),
                 dateColumnLabel,
                 dateStr,
-                filter: { from: filters.fromDate, to: filters.toDate },
+                filter: { from: activeFilters.fromDate, to: activeFilters.toDate },
                 expectedDue: DEBUG_CONTACT_EXPECTED_DUE,
-                dueDateMatchesFilter: row.dueDate ? dateInRange(row.dueDate.split('T')[0], filters.fromDate, filters.toDate) : false,
-                planDateMatchesFilter: row.planDate ? dateInRange(row.planDate.split('T')[0], filters.fromDate, filters.toDate) : false,
+                dueDateMatchesFilter: row.dueDate ? dateInRange(row.dueDate.split('T')[0], activeFilters.fromDate, activeFilters.toDate) : false,
+                planDateMatchesFilter: row.planDate ? dateInRange(row.planDate.split('T')[0], activeFilters.fromDate, activeFilters.toDate) : false,
               });
             }
             return false;
@@ -1842,7 +1868,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       // When "Due date included", show one row per contact: the one whose due_date is in range and has the highest order (Final > Intermediate > First).
       // This fixes legacy where both Intermediate (date in range) and Final (due_date in range) can match — we show the row that matches due_date, i.e. Final.
       let rowsToSet = filtered;
-      if (filters.due === 'due_only' && (filters.fromDate || filters.toDate) && !hasPaymentDateFilter(filters)) {
+      if (activeFilters.due === 'due_only' && (activeFilters.fromDate || activeFilters.toDate) && !hasPaymentDateFilter(activeFilters)) {
         const orderRank: Record<string, number> = { '9': 3, '5': 2, '1': 1, '90': 0, '99': 0 };
         const byContact = new Map<string, PaymentRow>();
         for (const row of filtered) {
@@ -1905,9 +1931,9 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       if (beforeFilter199849.length > 0 && plansFor199849AfterFilter.length === 0) {
         console.log(`❌ [loadPayments] 199849 was filtered out! Before filter:`, beforeFilter199849[0]);
         console.log(`🔍 [loadPayments] Filter reasons:`, {
-          categoryFilter: filters.categoryId ? `Category must be ${filters.categoryId}, got ${beforeFilter199849[0].mainCategoryId}` : 'No category filter',
-          collectedFilter: (Array.isArray(filters.collected) && filters.collected.length > 0) ? `Collected filter: ${filters.collected.join(',')}, row collected: ${beforeFilter199849[0].collected}, hasProforma: ${beforeFilter199849[0].hasProforma}` : 'No collected filter',
-          orderFilter: filters.order ? `Order must be ${filters.order}, got ${beforeFilter199849[0].orderCode}` : 'No order filter',
+          categoryFilter: activeFilters.categoryId ? `Category must be ${activeFilters.categoryId}, got ${beforeFilter199849[0].mainCategoryId}` : 'No category filter',
+          collectedFilter: (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) ? `Collected filter: ${activeFilters.collected.join(',')}, row collected: ${beforeFilter199849[0].collected}, hasProforma: ${beforeFilter199849[0].hasProforma}` : 'No collected filter',
+          orderFilter: activeFilters.order ? `Order must be ${activeFilters.order}, got ${beforeFilter199849[0].orderCode}` : 'No order filter',
         });
       }
       
@@ -1918,12 +1944,12 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       if (beforeFilter155026.length > 0 && plansFor155026AfterFilter.length === 0) {
         console.log(`❌ [loadPayments] 155026 was filtered out! Before filter:`, beforeFilter155026[0]);
         console.log(`🔍 [loadPayments] Filter reasons for 155026:`, {
-          categoryFilter: filters.categoryId ? `Category must be ${filters.categoryId}, got ${beforeFilter155026[0].mainCategoryId}` : 'No category filter',
-          collectedFilter: (Array.isArray(filters.collected) && filters.collected.length > 0) ? `Collected filter: ${filters.collected.join(',')}, row collected: ${beforeFilter155026[0].collected}, hasProforma: ${beforeFilter155026[0].hasProforma}` : 'No collected filter',
-          orderFilter: filters.order ? `Order must be ${filters.order}, got ${beforeFilter155026[0].orderCode}` : 'No order filter',
+          categoryFilter: activeFilters.categoryId ? `Category must be ${activeFilters.categoryId}, got ${beforeFilter155026[0].mainCategoryId}` : 'No category filter',
+          collectedFilter: (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) ? `Collected filter: ${activeFilters.collected.join(',')}, row collected: ${beforeFilter155026[0].collected}, hasProforma: ${beforeFilter155026[0].hasProforma}` : 'No collected filter',
+          orderFilter: activeFilters.order ? `Order must be ${activeFilters.order}, got ${beforeFilter155026[0].orderCode}` : 'No order filter',
           dueDate: beforeFilter155026[0].dueDate,
           collectedDate: beforeFilter155026[0].collectedDate,
-          dateRange: `fromDate: ${filters.fromDate}, toDate: ${filters.toDate}`,
+          dateRange: `fromDate: ${activeFilters.fromDate}, toDate: ${activeFilters.toDate}`,
         });
       } else if (beforeFilter155026.length === 0) {
         console.log(`❌ [loadPayments] 155026 was NOT found in combined payments before filtering!`);
@@ -1964,9 +1990,9 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
           inModernFetch: modern.filter(rowMatchesDebugContact).length,
           inLegacyFetch: legacy.filter(rowMatchesDebugContact).length,
           inCombinedBeforeFilter: withProforma.filter(rowMatchesDebugContact).length,
-          activeFilters: filters,
+          activeFilters: activeFilters,
         });
-        await debugDanielGranotDbLookup(filters);
+        await debugDanielGranotDbLookup(activeFilters);
       } else {
         logDanielGranotDebug('IN final results', finalDanielGranot.map(summarizeRowForDebug));
       }
@@ -1989,6 +2015,31 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
   // Keep a ref to the latest loadPayments so freshness listeners always use current filters
   const loadPaymentsRef = useRef(loadPayments);
   loadPaymentsRef.current = loadPayments;
+  const focusHandledRef = useRef<string | null>(null);
+
+  // Apply Finance dashboard Attention focus: set filters and load matching rows immediately.
+  useEffect(() => {
+    if (!focusPreset) {
+      focusHandledRef.current = null;
+      return;
+    }
+    if (focusHandledRef.current === focusPreset) return;
+    focusHandledRef.current = focusPreset;
+
+    const nextFilters = buildCollectionFiltersForFocus(focusPreset) as Filters;
+    const nextDisplay = collectionDisplayFilterForFocus(focusPreset);
+    setFilters(nextFilters);
+    setDisplayFilter(nextDisplay);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('focus');
+        return next;
+      },
+      { replace: true },
+    );
+    void loadPaymentsRef.current({ silent: false, filterOverride: nextFilters });
+  }, [focusPreset, setFilters, setDisplayFilter, setSearchParams]);
 
   // Freshness: initial load on mount + auto-refresh so users never see stale cached results.
   // The persisted (sessionStorage) rows render instantly, then we refetch in the background and
@@ -2003,9 +2054,10 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       }, 400);
     };
 
-    // Initial load: show the spinner only when there are no cached rows to display yet;
-    // otherwise refresh silently in the background so the cached table doesn't flash.
-    void loadPaymentsRef.current({ silent: rows.length > 0 });
+    // If a dashboard focus is pending, the focus effect owns the first load.
+    if (!focusPreset) {
+      void loadPaymentsRef.current({ silent: rows.length > 0 });
+    }
 
     const handleFocus = () => triggerReload();
     const handleVisibility = () => {
@@ -2796,6 +2848,86 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
   const sidebarRailBtnDisabled = `${sidebarRailBtn} text-gray-400 opacity-50 cursor-not-allowed`;
   const sidebarIconClass = 'h-6 w-6 text-gray-600';
 
+  useEffect(() => {
+    if (!onRailBridgeChange) return;
+    if (!hideSideRail) {
+      onRailBridgeChange(null);
+      return;
+    }
+    onRailBridgeChange({
+      actions: [
+        {
+          id: 'view-invoice',
+          label: 'View invoice',
+          title: 'View invoice',
+          icon: <DocumentTextIcon className="h-6 w-6 shrink-0" />,
+          onClick: () => void handleViewInvoice(),
+          disabled: actionBusy || viewInvoiceLoading,
+        },
+        {
+          id: 'send-invoice',
+          label: 'Send invoice',
+          title: 'Send invoice by email and WhatsApp',
+          icon: <PaperAirplaneIcon className="h-6 w-6 shrink-0" />,
+          onClick: () => void handleSendInvoice(),
+          disabled: actionBusy || sendingInvoice,
+        },
+        {
+          id: 'view-payments',
+          label: 'View payments',
+          title: 'View payments',
+          icon: <CurrencyDollarIcon className="h-6 w-6 shrink-0" />,
+          onClick: handleViewPayments,
+        },
+        {
+          id: 'email',
+          label: 'Email client',
+          title: 'Email client',
+          icon: <FaEnvelope className="h-6 w-6 shrink-0" />,
+          onClick: () => void handleEmailClient(),
+          disabled: actionBusy,
+        },
+        {
+          id: 'whatsapp',
+          label: 'WhatsApp',
+          title: 'WhatsApp client',
+          icon: <FaWhatsapp className="h-6 w-6 shrink-0" />,
+          onClick: () => void handleWhatsAppClient(),
+          disabled: actionBusy,
+        },
+        {
+          id: 'call',
+          label: 'Call client',
+          title: 'Call client',
+          icon: <PhoneIconSolid className="h-6 w-6 shrink-0" />,
+          onClick: handleCallClient,
+          disabled: actionBusy,
+        },
+      ],
+      selectedLeadCount,
+      settingsSections,
+    });
+  }, [
+    actionBusy,
+    handleCallClient,
+    handleEmailClient,
+    handleSendInvoice,
+    handleViewInvoice,
+    handleViewPayments,
+    handleWhatsAppClient,
+    hideSideRail,
+    onRailBridgeChange,
+    selectedLeadCount,
+    sendingInvoice,
+    settingsSections,
+    viewInvoiceLoading,
+  ]);
+
+  useEffect(() => {
+    if (!onRailBridgeChange) return undefined;
+    return () => onRailBridgeChange(null);
+  }, [onRailBridgeChange]);
+
   const handleSaveHandler = async (rowId: string) => {
     if (!handlerEdit || handlerEdit.rowId !== rowId) {
       return;
@@ -2869,16 +3001,25 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
         ),
       );
       setNotesEdit(null);
+      toast.success('Notes saved');
     } catch (err) {
       console.error('Failed to update notes', err);
       setError(err instanceof Error ? err.message : 'Failed to update notes.');
+      toast.error(err instanceof Error ? err.message : 'Failed to update notes.');
     } finally {
       setSavingNotes(false);
     }
   };
 
+  const notesEditRow = notesEdit ? rows.find((r) => r.id === notesEdit.rowId) : null;
+
   return (
-    <div className="collection-finances-shell flex min-h-full bg-gray-100">
+    <div
+      className={`collection-finances-shell flex min-h-full ${
+        hideSideRail ? 'bg-transparent' : 'bg-gray-100'
+      }`}
+    >
+      {!hideSideRail ? (
       <aside
         className="hidden lg:flex lg:w-[4.75rem] lg:shrink-0 lg:flex-col lg:items-center lg:border-r lg:border-base-200 lg:bg-white dark:lg:border-base-300 dark:lg:bg-base-100 sticky top-0 self-start min-h-[calc(100dvh-3.5rem)]"
         aria-label="Collection finances shortcuts"
@@ -2980,8 +3121,10 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
           </button>
         </div>
       </aside>
+      ) : null}
 
       {settingsMenuOpen &&
+        !hideSideRail &&
         settingsMenuAnchor &&
         createPortal(
           <div
@@ -3026,7 +3169,13 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
           document.body,
         )}
 
-      <div className="flex-1 min-w-0 px-4 md:px-6 lg:px-8 py-4 md:py-6 lg:py-8 space-y-6">
+      <div
+        className={
+          hideSideRail
+            ? 'flex-1 min-w-0 space-y-4 px-0 py-0'
+            : 'flex-1 min-w-0 space-y-6 px-4 py-4 md:px-6 md:py-6 lg:px-8 lg:py-8'
+        }
+      >
       <MultiLeadContactSelectorModal
         isOpen={contactPickerOpen}
         onClose={() => setContactPickerOpen(false)}
@@ -3065,6 +3214,53 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
         confirmLabel="Send invoice"
         contactLabel={sendInvoiceContactLabel}
       />
+      {notesEdit ? (
+        <div className="modal modal-open z-[110]">
+          <div className="modal-box max-w-lg">
+            <h3 className="text-lg font-bold">Notes</h3>
+            <p className="mt-1 text-sm text-gray-500">
+              {notesEditRow?.leadName || 'Payment'}
+              {notesEditRow?.clientName ? ` · ${notesEditRow.clientName}` : ''}
+            </p>
+            <textarea
+              className="textarea textarea-bordered mt-4 h-40 w-full text-right"
+              dir="rtl"
+              lang="he"
+              value={notesEdit.value}
+              onChange={(e) => setNotesEdit({ ...notesEdit, value: e.target.value })}
+              disabled={savingNotes}
+              placeholder="הוסף הערות…"
+              autoFocus
+            />
+            <div className="modal-action">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => !savingNotes && setNotesEdit(null)}
+                disabled={savingNotes}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void handleSaveNotes(notesEdit.rowId)}
+                disabled={savingNotes}
+              >
+                {savingNotes ? <ArrowPathIcon className="h-5 w-5 animate-spin" /> : 'Save'}
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="modal-backdrop"
+            aria-label="Close notes"
+            onClick={() => !savingNotes && setNotesEdit(null)}
+          />
+        </div>
+      ) : null}
+      {!hideSideRail ? (
+      <>
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold flex items-center gap-3">
@@ -3141,8 +3337,16 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
           </div>
         </div>
       )}
+      </>
+      ) : null}
 
-      <div className="card bg-base-100 shadow-lg p-6 relative">
+      <div
+        className={
+          hideSideRail
+            ? 'relative rounded-2xl border border-gray-200/80 bg-white/90 p-4 md:p-5'
+            : 'card bg-base-100 shadow-lg p-6 relative'
+        }
+      >
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Due from date:</span></label>
@@ -3496,11 +3700,13 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
             <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
             <button
               type="button"
-              className="btn btn-outline h-12 min-h-12 max-h-12 w-full md:w-auto"
+              className="btn btn-ghost btn-circle h-12 min-h-12 w-12 border border-gray-300 text-gray-600 hover:border-gray-400 hover:bg-gray-100 disabled:opacity-40"
               onClick={handleClearPaymentDates}
               disabled={!hasPaymentDateFilter(filters)}
+              title="Clear payment dates"
+              aria-label="Clear payment dates"
             >
-              Clear payment dates
+              <XMarkIcon className="h-6 w-6" />
             </button>
           </div>
           <div className="form-control md:col-span-2">
@@ -3553,10 +3759,15 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="relative bg-white p-5 rounded-[18px]">
-          <ChartBarIcon className="absolute right-4 top-4 h-10 w-10 text-blue-200" aria-hidden />
-          <p className="text-sm text-primary font-medium pr-12">Total Estimated</p>
+          <ChartBarIcon
+            className="absolute right-4 top-4 h-10 w-10 text-blue-200"
+            aria-hidden
+          />
+          <p className={`text-sm font-medium pr-12 ${hideSideRail ? 'text-blue-600' : 'text-primary'}`}>
+            Total Estimated
+          </p>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mt-1">
-            <p className="text-3xl font-bold text-blue-800 tabular-nums">
+            <p className="text-3xl font-bold tabular-nums text-blue-800">
               {nisReady ? formatCurrency(totals.estimatedWithVat, '₪') : 'Calculating…'}
             </p>
             {nisReady ? (
@@ -3632,7 +3843,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                 {showHandlerColumn ? <th>Handler</th> : null}
                 <th>Case</th>
                 <th>Category</th>
-                {showNotesColumn ? <th>Notes</th> : null}
+                {showNotesColumn ? <th className="w-20 max-w-[5.5rem]">Notes</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -3711,7 +3922,10 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                     />
                   </td>
                   <td>
-                    <Link to={buildLeadLink(row)} className="link link-primary">
+                    <Link
+                      to={buildLeadLink(row)}
+                      className={hideSideRail ? 'link text-blue-600 hover:text-blue-700' : 'link link-primary'}
+                    >
                       {row.leadName}
                     </Link>
                   </td>
@@ -3820,36 +4034,17 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                   <td>{row.caseNumber || '—'}</td>
                   <td>{row.categoryName || '—'}</td>
                   {showNotesColumn ? (
-                  <td className="max-w-xs" title={row.notes || ''}>
-                    {notesEdit?.rowId === row.id ? (
-                      <div className="flex flex-col gap-2">
-                        <textarea
-                          className="textarea textarea-bordered textarea-sm"
-                          value={notesEdit?.value ?? ''}
-                          onChange={(e) => setNotesEdit({ rowId: row.id, value: e.target.value })}
-                          disabled={savingNotes}
-                        />
-                        <div className="flex gap-2">
-                          <button className="btn btn-xs btn-primary" onClick={() => handleSaveNotes(row.id)} disabled={savingNotes}>
-                            {savingNotes ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : 'Save'}
-                          </button>
-                          <button className="btn btn-xs" onClick={() => setNotesEdit(null)} disabled={savingNotes}>
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-start gap-2">
-                        <span className="flex-1 truncate">{row.notes || '—'}</span>
-                        <button
-                          className="btn btn-ghost btn-xs"
-                          onClick={() => setNotesEdit({ rowId: row.id, value: row.notes || '' })}
-                          aria-label="Edit notes"
-                        >
-                          <PencilSquareIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                    )}
+                  <td className="w-20 max-w-[5.5rem] p-1">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs h-auto min-h-0 w-full max-w-[5.5rem] justify-start px-1 py-1 font-normal normal-case"
+                      title={row.notes?.trim() ? row.notes : 'Add notes'}
+                      onClick={() => setNotesEdit({ rowId: row.id, value: row.notes || '' })}
+                    >
+                      <span className={`block w-full truncate text-left text-xs ${row.notes?.trim() ? 'text-gray-700' : 'text-gray-400'}`}>
+                        {row.notes?.trim() || '—'}
+                      </span>
+                    </button>
                   </td>
                   ) : null}
                 </tr>

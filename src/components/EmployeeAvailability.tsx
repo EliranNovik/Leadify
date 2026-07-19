@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { approvalFieldsForUnavailabilityType } from '../lib/employeeUnavailabilities';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
 import { 
@@ -386,8 +387,7 @@ const EmployeeAvailability: React.FC = () => {
         start_date: dateString,
         start_time: newUnavailableTime.startTime,
         end_time: newUnavailableTime.endTime,
-        approved: false,
-        declined: false,
+        ...approvalFieldsForUnavailabilityType(newUnavailableTime.unavailabilityType),
       };
 
       if (newUnavailableTime.unavailabilityType === 'sick_days') {
@@ -664,8 +664,7 @@ const EmployeeAvailability: React.FC = () => {
         unavailability_type: newUnavailableRange.unavailabilityType,
         start_date: newUnavailableRange.startDate,
         end_date: newUnavailableRange.endDate,
-        approved: false,
-        declined: false,
+        ...approvalFieldsForUnavailabilityType(newUnavailableRange.unavailabilityType),
       };
 
       if (newUnavailableRange.unavailabilityType === 'sick_days') {

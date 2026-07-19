@@ -58,6 +58,8 @@ const desktopSidebarItems: SidebarItem[] = [
   // { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
   { icon: ReceiptRefundIcon, label: 'Waiting for Price Offer', path: '/waiting-for-price-offer' },
+  { icon: BanknotesIcon, label: 'Finance Pipeline', path: '/reports/finance-management' },
+  { icon: UserGroupIcon, label: 'HR Management', path: '/reports/hr-management' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
   { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
   { icon: UserIcon, label: 'Expert', path: '/expert' },
@@ -98,6 +100,8 @@ const mobileSidebarItems: SidebarItem[] = [
   // { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
   { icon: ReceiptRefundIcon, label: 'Waiting for Price Offer', path: '/waiting-for-price-offer' },
+  { icon: BanknotesIcon, label: 'Finance Pipeline', path: '/reports/finance-management' },
+  { icon: UserGroupIcon, label: 'HR Management', path: '/reports/hr-management' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
   { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
   { icon: UserIcon, label: 'Expert', path: '/expert' },
@@ -578,7 +582,8 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
       .filter(item =>
         item.label !== 'WhatsApp Leads' &&
         item.label !== 'Email Leads' &&
-        item.label !== 'Calls Ledger'
+        item.label !== 'Calls Ledger' &&
+        item.label !== 'HR Management'
       )
       .map(item => {
         // Filter subItems to remove "Assign Leads" for non-superusers
@@ -600,7 +605,8 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
       .filter(item =>
         item.label !== 'WhatsApp Leads' &&
         item.label !== 'Email Leads' &&
-        item.label !== 'Calls Ledger'
+        item.label !== 'Calls Ledger' &&
+        item.label !== 'HR Management'
       )
       .map(item => {
         // Filter subItems to remove "Assign Leads" for non-superusers

@@ -111,7 +111,8 @@ export async function fetchPendingUnavailabilityCount(): Promise<number> {
     .from('employee_unavailability_reasons')
     .select('id', { count: 'exact', head: true })
     .eq('approved', false)
-    .eq('declined', false);
+    .eq('declined', false)
+    .neq('unavailability_type', 'general');
 
   if (error) throw error;
   return count ?? 0;
@@ -123,6 +124,7 @@ export async function fetchPendingUnavailabilitiesForApproval(): Promise<Unavail
     .select(PENDING_WITH_EMPLOYEE_SELECT)
     .eq('approved', false)
     .eq('declined', false)
+    .neq('unavailability_type', 'general')
     .order('start_date', { ascending: true });
 
   if (error) throw error;

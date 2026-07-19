@@ -150,6 +150,19 @@ export function dateRangeToIsoBounds(from: string, to: string): { start: string;
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
+/** Keep only clock-in rows whose local calendar day falls in the given month. */
+export function filterClockInRecordsToLocalMonth<T extends { clock_in_time: string }>(
+  records: T[],
+  year: number,
+  month1to12: number,
+): T[] {
+  const { from, to } = monthRange(year, month1to12);
+  return records.filter((record) => {
+    const dateKey = toDateInputValue(new Date(record.clock_in_time));
+    return dateKey >= from && dateKey <= to;
+  });
+}
+
 /** Daily total vs employee min_hours: under (red) + 3 green overshoot stages. */
 export type DurationVsMinHoursTone = 'under' | 'met' | 'over' | 'far_over';
 

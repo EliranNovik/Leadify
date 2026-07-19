@@ -25,6 +25,7 @@ import {
   TableCellsIcon,
   XMarkIcon
 } from '@heroicons/react/24/outline';
+import { fetchContractTypes, type ContractType } from '../../lib/contractTypes';
 
 const DYNAMIC_FIELDS = [
   { label: 'Client Name', tag: '{{client_name}}' },
@@ -227,6 +228,7 @@ interface Template {
   default_currency?: string;
   default_country?: string;
   category_id?: string | number | null;
+  contract_type_id?: number | null;
 }
 
 const getTitleSizeClass = (name: string | undefined) => {
@@ -243,6 +245,8 @@ const ContractTemplatesManager: React.FC = () => {
   const [name, setName] = useState('');
   const [languageId, setLanguageId] = useState<string | number | null>(null);
   const [categoryId, setCategoryId] = useState<string | number | null>(null);
+  const [contractTypeId, setContractTypeId] = useState<number | null>(null);
+  const [contractTypes, setContractTypes] = useState<ContractType[]>([]);
   const [active, setActive] = useState<boolean>(true);
   const [languages, setLanguages] = useState<any[]>([]);
   const [categories, setCategories] = useState<{ id: string | number; name: string; mainName?: string; label: string }[]>([]);
@@ -253,6 +257,7 @@ const ContractTemplatesManager: React.FC = () => {
   const [filterLanguage, setFilterLanguage] = useState<string | null>(null);
   const [filterActive, setFilterActive] = useState<'all' | 'active' | 'inactive'>('all');
   const [filterCategory, setFilterCategory] = useState<string | null>(null);
+  const [filterContractType, setFilterContractType] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'box' | 'list'>('box');
@@ -299,6 +304,7 @@ const ContractTemplatesManager: React.FC = () => {
     languageId: '',
     categoryId: '',
     categoryInput: '',
+    contractTypeId: '',
     active: true
   });
   const [isQuickSaving, setIsQuickSaving] = useState(false);
@@ -349,7 +355,7 @@ const ContractTemplatesManager: React.FC = () => {
       // Note: misc_contracttemplate does NOT have default_pricing_tiers column, only default_pricing_tiers_usd and default_pricing_tiers_nis
       const { data: miscTemplatesData, error: miscTemplatesError } = await supabase
         .from('misc_contracttemplate')
-        .select('id, name, content, active, firm_id, language_id, category_id, default_pricing_tiers_usd, default_pricing_tiers_nis')
+        .select('id, name, content, active, firm_id, language_id, category_id, contract_type_id, default_pricing_tiers_usd, default_pricing_tiers_nis')
         .order('name', { ascending: true })
         .limit(10000); // High limit to fetch all templates
       
@@ -377,6 +383,7 @@ const ContractTemplatesManager: React.FC = () => {
             default_currency: template.default_currency,
             default_country: template.default_country,
             category_id: template.category_id,
+            contract_type_id: template.contract_type_id ?? null,
           });
         });
       }
@@ -572,6 +579,7 @@ const ContractTemplatesManager: React.FC = () => {
             active: template.active !== undefined ? template.active : true, // Default to true if not set
             firm_id: template.firm_id,
             category_id: template.category_id,
+            contract_type_id: template.contract_type_id ?? null,
             // misc_contracttemplate does NOT have default_pricing_tiers column, only _usd and _nis
             default_pricing_tiers: null, // Not available for legacy templates
             default_pricing_tiers_usd: template.default_pricing_tiers_usd,
@@ -623,6 +631,34 @@ const ContractTemplatesManager: React.FC = () => {
     };
     
     fetchLanguages();
+  }, []);
+
+  useEffect(() => {
+    const loadContractTypes = async () => {
+      try {
+        const types = await fetchContractTypes({ activeOnly: true });
+        if (!types.length) {
+          // Retry without active filter in case rows were seeded inactive / filter mismatch
+          const allTypes = await fetchContractTypes({ activeOnly: false });
+          setContractTypes(allTypes);
+          if (!allTypes.length) {
+            console.error('contract_types returned empty — run sql/2026-07-19_contract_types_rls_fix.sql');
+          }
+          const client = allTypes.find((t) => t.slug === 'client_contract');
+          setContractTypeId((prev) => prev ?? client?.id ?? allTypes[0]?.id ?? null);
+          return;
+        }
+        setContractTypes(types);
+        setContractTypeId((prev) => {
+          if (prev != null) return prev;
+          const client = types.find((t) => t.slug === 'client_contract');
+          return client?.id ?? types[0]?.id ?? null;
+        });
+      } catch (error) {
+        console.error('Error fetching contract types:', error);
+      }
+    };
+    void loadContractTypes();
   }, []);
 
   // Fetch categories (for backward compatibility - keeping for existing templates)
@@ -690,6 +726,19 @@ const ContractTemplatesManager: React.FC = () => {
     return category?.label || category?.name || 'Not set';
   };
 
+  const getContractTypeLabel = (typeId: number | null | undefined): string => {
+    if (!typeId) return 'Not set';
+    return contractTypes.find((t) => t.id === typeId)?.name || 'Not set';
+  };
+
+  const defaultContractTypeId = useMemo(() => {
+    return (
+      contractTypes.find((t) => t.slug === 'client_contract')?.id ??
+      contractTypes[0]?.id ??
+      null
+    );
+  }, [contractTypes]);
+
   useEffect(() => {
     if (!quickEditTemplate) return;
     const categoryLabel = quickEditTemplate.category_id ? getCategoryLabel(quickEditTemplate.category_id) : '';
@@ -698,9 +747,14 @@ const ContractTemplatesManager: React.FC = () => {
       languageId: quickEditTemplate.language_id ? String(quickEditTemplate.language_id) : '',
       categoryId: quickEditTemplate.category_id ? String(quickEditTemplate.category_id) : '',
       categoryInput: categoryLabel !== 'Not set' ? categoryLabel : '',
+      contractTypeId: quickEditTemplate.contract_type_id
+        ? String(quickEditTemplate.contract_type_id)
+        : defaultContractTypeId
+          ? String(defaultContractTypeId)
+          : '',
       active: quickEditTemplate.active !== undefined ? quickEditTemplate.active : true,
     });
-  }, [quickEditTemplate, categories, mainCategories]);
+  }, [quickEditTemplate, categories, mainCategories, contractTypes, defaultContractTypeId]);
 
   const filteredQuickCategories = useMemo(() => {
     const term = (quickEditValues.categoryInput || '').trim().toLowerCase();
@@ -745,9 +799,15 @@ const ContractTemplatesManager: React.FC = () => {
         template.category_id ? String(template.category_id) === filterCategory : false
       );
     }
+
+    if (filterContractType) {
+      filtered = filtered.filter((template) =>
+        template.contract_type_id ? String(template.contract_type_id) === filterContractType : false,
+      );
+    }
     
     return filtered;
-  }, [templates, searchTerm, filterLanguage, filterActive, filterCategory]);
+  }, [templates, searchTerm, filterLanguage, filterActive, filterCategory, filterContractType]);
 
   const selectedTemplate = useMemo(() => {
     if (!selectedId || !selectedSourceTable) return null;
@@ -903,6 +963,7 @@ const ContractTemplatesManager: React.FC = () => {
     setName(selectedTemplate.name);
     setLanguageId(selectedTemplate.language_id || null);
     setCategoryId(selectedTemplate.category_id || null);
+    setContractTypeId(selectedTemplate.contract_type_id ?? defaultContractTypeId);
     setActive(selectedTemplate.active !== undefined ? selectedTemplate.active : true);
     
     // Load default pricing tiers if they exist (for both contract_templates and misc_contracttemplate)
@@ -964,7 +1025,8 @@ const ContractTemplatesManager: React.FC = () => {
             default_country: previewData.client_country,
             language_id: languageId || null,
             active: active,
-            category_id: categoryId || null
+            category_id: categoryId || null,
+            contract_type_id: contractTypeId || defaultContractTypeId || null,
           };
           const { error } = await supabase
             .from('contract_templates')
@@ -982,6 +1044,7 @@ const ContractTemplatesManager: React.FC = () => {
             content: content, // Save as JSON object directly (JSONB column)
             language_id: languageId || null,
             category_id: categoryId || null,
+            contract_type_id: contractTypeId || defaultContractTypeId || null,
             active: active,
             default_pricing_tiers_usd: usdPricingTiers,
             default_pricing_tiers_nis: nisPricingTiers,
@@ -1016,6 +1079,7 @@ const ContractTemplatesManager: React.FC = () => {
           default_country: previewData.client_country,
           language_id: languageId || null,
           category_id: categoryId || null,
+          contract_type_id: contractTypeId || defaultContractTypeId || null,
           active: active
         };
         const { error } = await supabase
@@ -1044,6 +1108,7 @@ const ContractTemplatesManager: React.FC = () => {
       content: { type: 'doc', content: [] },
       language_id: null,
       category_id: null,
+      contract_type_id: defaultContractTypeId,
       sourceTable: 'contract_templates',
       active: true
     };
@@ -1080,6 +1145,9 @@ const ContractTemplatesManager: React.FC = () => {
           default_country: previewData.client_country,
           language_id: quickEditValues.languageId || null,
           category_id: quickEditValues.categoryId || null,
+          contract_type_id: quickEditValues.contractTypeId
+            ? Number(quickEditValues.contractTypeId)
+            : defaultContractTypeId,
           active: quickEditValues.active
         };
 
@@ -1095,6 +1163,11 @@ const ContractTemplatesManager: React.FC = () => {
         setName(trimmedName);
         setLanguageId(quickEditValues.languageId || null);
         setCategoryId(quickEditValues.categoryId || null);
+        setContractTypeId(
+          quickEditValues.contractTypeId
+            ? Number(quickEditValues.contractTypeId)
+            : defaultContractTypeId,
+        );
         setActive(quickEditValues.active);
         setShowEditor(true);
         setIsPreview(false);
@@ -1106,6 +1179,9 @@ const ContractTemplatesManager: React.FC = () => {
           name: trimmedName,
           language_id: quickEditValues.languageId || null,
           category_id: quickEditValues.categoryId || null,
+          contract_type_id: quickEditValues.contractTypeId
+            ? Number(quickEditValues.contractTypeId)
+            : defaultContractTypeId,
           active: quickEditValues.active,
         };
 
@@ -1142,6 +1218,7 @@ const ContractTemplatesManager: React.FC = () => {
       setName(template.name);
        setLanguageId(template.language_id || null);
        setCategoryId(template.category_id || null);
+       setContractTypeId(template.contract_type_id ?? defaultContractTypeId);
        setActive(template.active !== undefined ? template.active : true);
       setShowEditor(true);
       setIsPreview(false);
@@ -1156,6 +1233,7 @@ const ContractTemplatesManager: React.FC = () => {
     setIsPreview(false);
     setLanguageId(null);
     setCategoryId(null);
+    setContractTypeId(defaultContractTypeId);
     setActive(true);
   };
 
@@ -1586,6 +1664,22 @@ const ContractTemplatesManager: React.FC = () => {
               </select>
             </div>
 
+            {/* Contract type filter */}
+            <div className="form-control w-full sm:w-auto sm:min-w-[220px]">
+              <select
+                className="select select-bordered w-full"
+                value={filterContractType || ''}
+                onChange={(e) => setFilterContractType(e.target.value || null)}
+              >
+                <option value="">All contract types</option>
+                {contractTypes.map((type) => (
+                  <option key={type.id} value={String(type.id)}>
+                    {type.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Active/Inactive Filter */}
             <div className="form-control w-full sm:w-auto sm:min-w-[180px]">
               <select
@@ -1695,6 +1789,11 @@ const ContractTemplatesManager: React.FC = () => {
                             {template.active ? 'Active' : 'Inactive'}
                           </span>
                         )}
+                        {template.contract_type_id && (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                            {getContractTypeLabel(template.contract_type_id)}
+                          </span>
+                        )}
                         {template.category_id && (
                           <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 border border-blue-200">
                             {getCategoryLabel(template.category_id)}
@@ -1719,6 +1818,7 @@ const ContractTemplatesManager: React.FC = () => {
                         <th className="font-semibold text-gray-700">Template Name</th>
                         <th className="font-semibold text-gray-700">Created</th>
                         <th className="font-semibold text-gray-700">Status</th>
+                        <th className="font-semibold text-gray-700">Type</th>
                         <th className="font-semibold text-gray-700">Language</th>
                         <th className="font-semibold text-gray-700">Category</th>
                         <th className="font-semibold text-gray-700 text-right">Actions</th>
@@ -1755,6 +1855,9 @@ const ContractTemplatesManager: React.FC = () => {
                           </td>
                           <td className="text-sm text-gray-700">
                             {template.active !== undefined ? (template.active ? 'Active' : 'Inactive') : '-'}
+                          </td>
+                          <td className="text-sm text-gray-700">
+                            {template.contract_type_id ? getContractTypeLabel(template.contract_type_id) : '-'}
                           </td>
                           <td className="text-sm text-gray-700">
                             {template.language_id ? getLanguageName(template.language_id) : '-'}
@@ -1826,6 +1929,30 @@ const ContractTemplatesManager: React.FC = () => {
                     value={quickEditValues.name}
                     onChange={(e) => setQuickEditValues((prev) => ({ ...prev, name: e.target.value }))}
                   />
+                </div>
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text font-medium">Contract type</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={quickEditValues.contractTypeId}
+                    onChange={(e) =>
+                      setQuickEditValues((prev) => ({ ...prev, contractTypeId: e.target.value }))
+                    }
+                    disabled={contractTypes.length === 0}
+                  >
+                    <option value="">
+                      {contractTypes.length === 0
+                        ? 'No contract types loaded — run contract_types SQL'
+                        : 'Select type...'}
+                    </option>
+                    {contractTypes.map((type) => (
+                      <option key={type.id} value={String(type.id)}>
+                        {type.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="form-control">
                   <label className="label">
@@ -1992,6 +2119,25 @@ const ContractTemplatesManager: React.FC = () => {
               {languages.map(lang => (
                 <option key={lang.id} value={lang.id}>
                   {lang.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="select select-bordered w-52"
+              value={contractTypeId || ''}
+              onChange={(e) =>
+                setContractTypeId(e.target.value ? Number(e.target.value) : null)
+              }
+              disabled={contractTypes.length === 0}
+            >
+              <option value="">
+                {contractTypes.length === 0
+                  ? 'No contract types loaded'
+                  : 'Select contract type...'}
+              </option>
+              {contractTypes.map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.name}
                 </option>
               ))}
             </select>

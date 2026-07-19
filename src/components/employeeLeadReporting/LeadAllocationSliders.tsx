@@ -221,8 +221,7 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-white px-5 py-3.5 shadow-sm">
         <p className="text-sm text-gray-600">
-          Allocate your day across other work and leads. Lead allocations cannot exceed the employee
-          cost budget (14% of 87% of lead value).
+          Allocate your day across other work and leads.
           {dayWorkedMs > 0 ? (
             <span className="ml-1 text-gray-400">
               · Clocked {formatAllocationWorkedDuration(dayWorkedMs)} today

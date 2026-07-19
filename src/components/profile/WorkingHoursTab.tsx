@@ -45,6 +45,7 @@ import {
   monthRange,
   sumClockDurations,
   toDateInputValue,
+  filterClockInRecordsToLocalMonth,
 } from '../../lib/employeeClockInFormat';
 import { normalizeEmployeeMinHours } from '../../lib/employeeLeadReporting';
 import {
@@ -60,8 +61,9 @@ import {
   unavailabilityReasonText,
   unavailabilityTypeLabel,
   filterCountedUnavailability,
-  countUnavailabilityApprovalBlockers,
+  countUnavailabilityApprovalBlockersInMonth,
   getUnavailabilityApprovalStatus,
+  isGeneralUnavailability,
   unavailabilityApprovalWatermarkLabel,
   type EmployeeUnavailabilityEntry,
   type EmployeeUnavailabilityDayRow,
@@ -86,7 +88,7 @@ import {
 } from '../../lib/employeeWorkingHoursSubmissions';
 import {
   clockInApprovalRowClass,
-  countClockInApprovalBlockers,
+  countClockInApprovalBlockersInMonth,
   clockInApprovalSubmitBlockMessage,
   filterCountedClockInRecords,
   getClockInApprovalStatus,
@@ -316,6 +318,7 @@ function collectDayApprovalStatuses(params: {
   }
 
   for (const unavail of params.unavailabilities) {
+    if (isGeneralUnavailability(unavail)) continue;
     const leaveStatus = getUnavailabilityApprovalStatus(unavail);
     if (unavailabilityApprovalWatermarkLabel(leaveStatus)) {
       found.add(leaveStatus);
@@ -428,14 +431,18 @@ function rowMatchesWorkingHoursFilters(
         (record) => isManualClockInRecord(record) && getClockInApprovalStatus(record) === 'approved',
       ) ||
       row.unavailabilities.some(
-        (u) => getUnavailabilityApprovalStatus(u) === 'approved',
+        (u) => !isGeneralUnavailability(u) && getUnavailabilityApprovalStatus(u) === 'approved',
       ),
     declined:
       (hasClock && approvalStatus === 'declined') ||
-      row.unavailabilities.some((u) => getUnavailabilityApprovalStatus(u) === 'declined'),
+      row.unavailabilities.some(
+        (u) => !isGeneralUnavailability(u) && getUnavailabilityApprovalStatus(u) === 'declined',
+      ),
     pending:
       (hasClock && approvalStatus === 'pending') ||
-      row.unavailabilities.some((u) => getUnavailabilityApprovalStatus(u) === 'pending'),
+      row.unavailabilities.some(
+        (u) => !isGeneralUnavailability(u) && getUnavailabilityApprovalStatus(u) === 'pending',
+      ),
     unavailability: hasUnavail,
     clock: hasClock,
   };
@@ -973,8 +980,12 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       ]);
 
       if (resolvedClockResult.error) throw resolvedClockResult.error;
-      const normalizedRows = ((resolvedClockResult.data as ClockInRow[]) || []).map((row) =>
-        normalizeClockInApprovalFields(row),
+      const normalizedRows = filterClockInRecordsToLocalMonth(
+        ((resolvedClockResult.data as ClockInRow[]) || []).map((row) =>
+          normalizeClockInApprovalFields(row),
+        ),
+        year,
+        month,
       );
       setRecords(normalizedRows);
       setUnavailabilities(unavailRows);
@@ -1024,13 +1035,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const periodTotal = sumClockDurations(filterCountedClockInRecords(records));
 
   const monthSubmitApprovalBlockers = useMemo(() => {
-    const range = monthRange(year, month);
-    const monthRecords = records.filter((record) => {
-      const dateKey = toDateInputValue(new Date(record.clock_in_time));
-      return dateKey >= range.from && dateKey <= range.to;
-    });
-    const clockBlockers = countClockInApprovalBlockers(monthRecords);
-    const leaveBlockers = countUnavailabilityApprovalBlockers(unavailabilities);
+    const clockBlockers = countClockInApprovalBlockersInMonth(records, year, month);
+    const leaveBlockers = countUnavailabilityApprovalBlockersInMonth(unavailabilities, year, month);
     return {
       pendingCount: clockBlockers.pendingCount + leaveBlockers.pendingCount,
       declinedCount: clockBlockers.declinedCount + leaveBlockers.declinedCount,
@@ -1100,6 +1106,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       if (status === 'pending') pendingApprovalDates.add(dateKey);
     }
     for (const row of unavailabilityDayRows) {
+      if (isGeneralUnavailability(row)) continue;
       if (getUnavailabilityApprovalStatus(row) === 'pending') {
         pendingApprovalDates.add(row.date);
       }
@@ -1897,7 +1904,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                     row.isWeekendPlaceholder;
                   const isBulkSelectable =
                     bulkSelectMode &&
-                    (row.isMissingPlaceholder || row.isHolidayPlaceholder) &&
+                    (row.isMissingPlaceholder ||
+                      row.isHolidayPlaceholder ||
+                      row.isWeekendPlaceholder) &&
                     !isMonthSubmitted;
                   const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
                   const weekMeta = weekRowMeta.get(row.dateKey);
@@ -1912,7 +1921,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
                   if (isPlaceholder) {
                     const isWeekend = row.isWeekendPlaceholder === true;
-                    const placeholderInteractive = !isMonthSubmitted && !isWeekend;
+                    const placeholderInteractive = !isMonthSubmitted;
                     const isHoliday = row.isHolidayPlaceholder;
                     const holidayLabel = row.holidayNames?.[0];
                     const rowClass = isWeekend
@@ -1921,7 +1930,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                         ? 'wh-holiday-placeholder'
                         : 'wh-missing-placeholder';
                     const hintText = isWeekend
-                      ? 'Weekend'
+                      ? 'Weekend — optional overtime'
                       : isHoliday
                         ? holidayLabel
                           ? `${holidayLabel} — no entry yet`
@@ -1965,49 +1974,38 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                             <WorkingHoursDateLabel dateKey={row.dateKey} muted />
                           </div>
                         </td>
-                        {isWeekend ? (
-                          <td
-                            colSpan={WH_PLACEHOLDER_HINT_COL_SPAN + 1}
-                            className={`${WH_DATA_CELL} wh-placeholder-hint text-center`}
-                          >
-                            Weekend
-                          </td>
-                        ) : (
-                          <>
-                            <td
-                              colSpan={WH_PLACEHOLDER_HINT_COL_SPAN}
-                              className={`${WH_DATA_CELL} wh-placeholder-hint italic`}
-                            >
-                              {hintText}
-                            </td>
-                            <td className="relative px-2 py-3 whitespace-nowrap align-middle min-w-[10.5rem] lg:min-w-[6rem]">
-                              {placeholderInteractive && !bulkSelectMode ? (
-                                <div className="wh-placeholder-row-actions flex flex-row flex-nowrap items-center justify-end gap-1.5 lg:absolute lg:right-2 lg:top-1/2 lg:z-10 lg:-translate-y-1/2">
-                                  <button
-                                    type="button"
-                                    className="btn btn-xs btn-outline btn-primary gap-1 shrink-0 whitespace-nowrap"
-                                    onClick={() => handlePlaceholderAddUnavailability(row.dateKey)}
-                                    title="Add unavailability"
-                                  >
-                                    <CalendarDaysIcon className="w-3.5 h-3.5 shrink-0" />
-                                    <span className="hidden lg:inline">Add unavailability</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn btn-xs btn-outline btn-primary gap-1 shrink-0 whitespace-nowrap"
-                                    onClick={() => handlePlaceholderAddClockIn(row.dateKey)}
-                                    title="Add manual clock-in and clock-out"
-                                  >
-                                    <PlusIcon className="w-3.5 h-3.5 shrink-0" />
-                                    <span className="hidden lg:inline">Add clock-in</span>
-                                  </button>
-                                </div>
-                              ) : (
-                                <span className="text-gray-400 text-xs">—</span>
-                              )}
-                            </td>
-                          </>
-                        )}
+                        <td
+                          colSpan={WH_PLACEHOLDER_HINT_COL_SPAN}
+                          className={`${WH_DATA_CELL} wh-placeholder-hint ${isWeekend ? '' : 'italic'}`}
+                        >
+                          {hintText}
+                        </td>
+                        <td className="relative px-2 py-3 whitespace-nowrap align-middle min-w-[10.5rem] lg:min-w-[6rem]">
+                          {placeholderInteractive && !bulkSelectMode ? (
+                            <div className="wh-placeholder-row-actions flex flex-row flex-nowrap items-center justify-end gap-1.5 lg:absolute lg:right-2 lg:top-1/2 lg:z-10 lg:-translate-y-1/2">
+                              <button
+                                type="button"
+                                className="btn btn-xs btn-outline btn-primary gap-1 shrink-0 whitespace-nowrap"
+                                onClick={() => handlePlaceholderAddUnavailability(row.dateKey)}
+                                title="Add unavailability"
+                              >
+                                <CalendarDaysIcon className="w-3.5 h-3.5 shrink-0" />
+                                <span className="hidden lg:inline">Add unavailability</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-xs btn-outline btn-primary gap-1 shrink-0 whitespace-nowrap"
+                                onClick={() => handlePlaceholderAddClockIn(row.dateKey)}
+                                title="Add manual clock-in and clock-out"
+                              >
+                                <PlusIcon className="w-3.5 h-3.5 shrink-0" />
+                                <span className="hidden lg:inline">Add clock-in</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-gray-400 text-xs">—</span>
+                          )}
+                        </td>
                       </tr>,
                     ];
                   }
@@ -2273,7 +2271,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder td,
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder:hover td {
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder:hover td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder.wh-placeholder-interactive:hover td {
           background: #f1f5f9 !important;
           box-shadow: none !important;
         }
@@ -2282,12 +2281,16 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           color: #64748b !important;
           font-style: normal !important;
           font-weight: 600 !important;
-          text-align: center !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder.wh-placeholder-interactive {
+          cursor: pointer;
         }
 
         @media (min-width: 1024px) {
           .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive .wh-placeholder-row-actions,
-          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive .wh-placeholder-row-actions {
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive .wh-placeholder-row-actions,
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder.wh-placeholder-interactive .wh-placeholder-row-actions {
             opacity: 0;
             visibility: hidden;
             pointer-events: none;
@@ -2297,7 +2300,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive:hover .wh-placeholder-row-actions,
           .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive:focus-within .wh-placeholder-row-actions,
           .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive:hover .wh-placeholder-row-actions,
-          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive:focus-within .wh-placeholder-row-actions {
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive:focus-within .wh-placeholder-row-actions,
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder.wh-placeholder-interactive:hover .wh-placeholder-row-actions,
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder.wh-placeholder-interactive:focus-within .wh-placeholder-row-actions {
             opacity: 1;
             visibility: visible;
             pointer-events: auto;

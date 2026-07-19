@@ -98,7 +98,7 @@ interface HrApprovalsPanelProps {
   embedded?: boolean;
 }
 
-const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated, embedded }) => {
+const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
   const { user } = useAuthContext();
   const [loading, setLoading] = useState(true);
   const [clockRecords, setClockRecords] = useState<ManualClockInApprovalRecord[]>([]);
@@ -304,6 +304,28 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated, embedded
     });
   };
 
+  const visibleKeys = useMemo(
+    () => groups.flatMap((group) => group.items.map((item) => itemKey(item))),
+    [groups],
+  );
+  const allVisibleSelected =
+    visibleKeys.length > 0 && visibleKeys.every((key) => selected.has(key));
+  const someVisibleSelected =
+    visibleKeys.some((key) => selected.has(key)) && !allVisibleSelected;
+
+  const toggleSelectAllVisible = () => {
+    setSelected((prev) => {
+      if (allVisibleSelected) {
+        const next = new Set(prev);
+        for (const key of visibleKeys) next.delete(key);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const key of visibleKeys) next.add(key);
+      return next;
+    });
+  };
+
   const filterPills: Array<{ id: HrApprovalKindFilter; label: string; count: number }> = [
     { id: 'all', label: 'All', count: totals.all },
     { id: 'clock', label: 'Clock-in', count: totals.clock },
@@ -312,7 +334,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated, embedded
   ];
 
   return (
-    <div className={embedded ? '' : 'space-y-4'}>
+    <div className="space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="relative flex-1 max-w-md">
           <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -383,11 +405,24 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated, embedded
           No pending requests
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto rounded-2xl bg-white">
           <table className="table w-full text-base">
             <thead>
               <tr className="text-sm uppercase tracking-wider text-gray-500">
-                <th className="bg-transparent font-semibold w-10"> </th>
+                <th className="bg-transparent font-semibold w-10">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-sm"
+                    checked={allVisibleSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someVisibleSelected;
+                    }}
+                    onChange={toggleSelectAllVisible}
+                    disabled={visibleKeys.length === 0}
+                    aria-label="Select all rows"
+                    title="Select all rows"
+                  />
+                </th>
                 <th className="bg-transparent font-semibold">Employee</th>
                 <th className="bg-transparent font-semibold">Type</th>
                 <th className="bg-transparent font-semibold">Date</th>
@@ -523,7 +558,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated, embedded
                                 previous={fieldChanges.workplaceIn?.previous}
                               />
                             </td>
-                            <td className="text-sm max-w-[140px]">
+                            <td className="text-sm max-w-[10rem] sm:max-w-[16rem] lg:max-w-[28rem] xl:max-w-[36rem]">
                               <ApprovalNotesButton notes={r.notes} />
                             </td>
                           </>
@@ -608,8 +643,11 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated, embedded
                         —
                       </td>
                       <td className="text-base text-gray-400">—</td>
-                      <td className="text-sm text-gray-500 max-w-xs">
-                        <div className="line-clamp-2">{unavailabilityApprovalSummary(r)}</div>
+                      <td className="text-sm max-w-[10rem] sm:max-w-[16rem] lg:max-w-[28rem] xl:max-w-[36rem]">
+                        <ApprovalNotesButton
+                          notes={unavailabilityApprovalSummary(r)}
+                          title="Leave notes"
+                        />
                         {missingDoc && (
                           <div className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-amber-700">
                             <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" />

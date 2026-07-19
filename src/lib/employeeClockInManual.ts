@@ -22,6 +22,31 @@ function combineDateAndTime(date: string, time: string): Date {
   return new Date(`${date}T${time}`);
 }
 
+/**
+ * Clock-in rows must use the *employee's* auth uid so My Profile stays in sync with HR.
+ * When HR adds a manual entry, payload.userId is often the HR user's auth id.
+ */
+export async function resolveEmployeeAuthUserId(
+  employeeId: number,
+  fallbackUserId: string,
+): Promise<string> {
+  const { data, error } = await supabase
+    .from('users')
+    .select('auth_id')
+    .eq('employee_id', employeeId)
+    .not('auth_id', 'is', null)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.warn('resolveEmployeeAuthUserId:', error.message);
+    return fallbackUserId;
+  }
+
+  const authId = typeof data?.auth_id === 'string' ? data.auth_id.trim() : '';
+  return authId || fallbackUserId;
+}
+
 export async function insertManualClockInRecord(
   payload: ManualClockInPayload,
 ): Promise<void> {
@@ -34,9 +59,14 @@ export async function insertManualClockInRecord(
 
   await assertDateEditableForEmployee(payload.employeeId, payload.date);
 
+  const employeeUserId = await resolveEmployeeAuthUserId(
+    payload.employeeId,
+    payload.userId,
+  );
+
   const row: Record<string, unknown> = {
     employee_id: payload.employeeId,
-    user_id: payload.userId,
+    user_id: employeeUserId,
     clock_in_time: clockIn.toISOString(),
     clock_out_time: clockOut.toISOString(),
     manually: true,

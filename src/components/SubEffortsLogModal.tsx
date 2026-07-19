@@ -1,8 +1,10 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownTrayIcon,
   ArrowPathIcon,
   ArrowUpTrayIcon,
+  ClockIcon,
+  PlayIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -18,7 +20,6 @@ import {
   TrashIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
-import { CheckCircleIcon as CheckCircleSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
 import MobileBottomSheet from './MobileBottomSheet';
 import { supabase } from '../lib/supabase';
@@ -244,7 +245,17 @@ function containsHebrew(text: string): boolean {
 
 function getEmployeePhoto(employee?: any): string | null {
   if (!employee) return null;
-  return (employee.photo_url as string | null | undefined) ?? (employee.photo as string | null | undefined) ?? null;
+  const emp = Array.isArray(employee) ? employee[0] : employee;
+  if (!emp) return null;
+  const url =
+    (emp.photo_url as string | null | undefined) ?? (emp.photo as string | null | undefined) ?? null;
+  return typeof url === 'string' && url.trim() ? url.trim() : null;
+}
+
+function resolveEmployeeJoin(row: any): any | null {
+  const emp = row?.tenants_employee;
+  if (!emp) return null;
+  return Array.isArray(emp) ? emp[0] ?? null : emp;
 }
 
 function readSubEffortJoin(row: any): {
@@ -318,16 +329,56 @@ function workflowUpdatedAt(row: any): string {
   return formatDateTime(at);
 }
 
-function resolveUpdaterPhoto(row: any): string | null {
+function normalizePersonName(name: unknown): string {
+  return String(name ?? '').trim().toLowerCase();
+}
+
+function resolveUpdaterPhoto(row: any, photoByUpdaterName?: Map<string, string>): string | null {
   if (!hasLeadSubEffortSavedUpdate(row)) return null;
-  const updater = String(row?.updated_by ?? '').trim().toLowerCase();
-  if (!updater) return null;
-  const emp = row?.tenants_employee;
-  const displayName = String(emp?.display_name ?? '').trim().toLowerCase();
-  if (displayName && displayName === updater) {
+
+  const updater = normalizePersonName(row?.updated_by);
+  if (updater && photoByUpdaterName?.has(updater)) {
+    return photoByUpdaterName.get(updater) ?? null;
+  }
+
+  // Only trust the joined employee photo when it is the same person as updated_by.
+  const emp = resolveEmployeeJoin(row);
+  const joinName = normalizePersonName(emp?.display_name);
+  if (updater && joinName && updater === joinName) {
     return getEmployeePhoto(emp);
   }
+
   return null;
+}
+
+function buildUpdaterPhotoByName(rows: any[], employees: any[] = []): Map<string, string> {
+  const map = new Map<string, string>();
+
+  const addEmployee = (emp: any) => {
+    const photo = getEmployeePhoto(emp);
+    if (!photo) return;
+    const displayName = normalizePersonName(emp?.display_name);
+    if (displayName) map.set(displayName, photo);
+  };
+
+  for (const emp of employees ?? []) addEmployee(emp);
+  for (const row of rows ?? []) {
+    const emp = resolveEmployeeJoin(row);
+    if (!emp) continue;
+    // Index join photos by employee display name only — never by row.updated_by,
+    // which can differ when employee_id is stale after a later edit.
+    addEmployee(emp);
+  }
+  return map;
+}
+
+function leadSubEffortActorFields(actor: { fullName: string; employeeId: number | null }) {
+  return {
+    updated_by: actor.fullName,
+    ...(actor.employeeId != null && Number.isFinite(actor.employeeId)
+      ? { employee_id: actor.employeeId }
+      : {}),
+  };
 }
 
 function EmployeeAvatar({
@@ -339,6 +390,7 @@ function EmployeeAvatar({
   photoUrl?: string | null;
   size?: 'xs' | 'sm' | 'md';
 }) {
+  const [imgFailed, setImgFailed] = useState(false);
   const initials = name
     .split(' ')
     .filter(Boolean)
@@ -347,12 +399,22 @@ function EmployeeAvatar({
     .join('');
   const dim = size === 'xs' ? 'h-7 w-7' : size === 'sm' ? 'h-9 w-9' : 'h-10 w-10';
   const text = size === 'xs' ? 'text-[10px]' : size === 'sm' ? 'text-[11px]' : 'text-xs';
+  const showPhoto = !!photoUrl && !imgFailed;
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [photoUrl]);
 
   return (
     <div className="avatar shrink-0">
       <div className={`${dim} flex items-center justify-center overflow-hidden rounded-full bg-gray-200`}>
-        {photoUrl ? (
-          <img src={photoUrl} alt={name} className="h-full w-full object-cover" />
+        {showPhoto ? (
+          <img
+            src={photoUrl}
+            alt={name}
+            className="h-full w-full object-cover"
+            onError={() => setImgFailed(true)}
+          />
         ) : (
           <span className={`${text} font-semibold text-gray-600`}>{initials || '—'}</span>
         )}
@@ -406,45 +468,31 @@ function getSubEffortProgress(row: any, currentRowId: string | null): SubEffortP
   return 'pending';
 }
 
-function TimelineStepNumber({ step, progress }: { step: number; progress: SubEffortProgress }) {
-  const badgeClass =
-    progress === 'completed'
-      ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/80'
-      : progress === 'in_progress'
-        ? 'bg-blue-600 text-white shadow-[0_0_0_3px_rgba(37,99,235,0.12)]'
-        : 'bg-slate-100 text-slate-500 ring-1 ring-slate-200';
-
-  return (
-    <span
-      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold tabular-nums ${badgeClass}`}
-      aria-hidden
-    >
-      {step}
-    </span>
-  );
-}
-
 function ProgressBadge({ progress, compact = false }: { progress: SubEffortProgress; compact?: boolean }) {
-  const base = compact
-    ? 'inline-flex w-fit shrink-0 items-center rounded-md px-2.5 py-1 text-xs font-medium leading-tight'
-    : 'inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset';
+  const iconClass = compact ? 'h-4 w-4 shrink-0' : 'h-3.5 w-3.5 shrink-0';
+  const iconOnly = compact
+    ? 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md'
+    : 'inline-flex h-6 w-6 items-center justify-center rounded-full';
+
   if (progress === 'completed') {
-    return (
-      <span className={`${base} bg-emerald-50 text-emerald-700${compact ? '' : ' ring-emerald-200/70'}`}>
-        {compact ? 'Done' : 'Complete'}
-      </span>
-    );
+    return null;
   }
+
   if (progress === 'in_progress') {
     return (
-      <span className={`${base} bg-blue-50 text-blue-700${compact ? '' : ' ring-blue-200/70'}`}>
-        {compact ? 'Active' : 'In progress'}
+      <span
+        className={`${iconOnly} border border-sky-200/80 bg-gradient-to-b from-sky-50 to-sky-100/90 text-sky-800 shadow-sm shadow-sky-900/5`}
+        title={compact ? 'Active' : 'In progress'}
+        aria-label={compact ? 'Active' : 'In progress'}
+      >
+        <PlayIcon className={iconClass} aria-hidden />
       </span>
     );
   }
+
   return (
-    <span className={`${base} bg-slate-100 text-slate-500${compact ? '' : ' ring-slate-200/80'}`}>
-      Pending
+    <span className={`${iconOnly} bg-gray-700 text-white`} title="Pending" aria-label="Pending">
+      <ClockIcon className={iconClass} aria-hidden />
     </span>
   );
 }
@@ -462,9 +510,11 @@ function TimelineStepButton({
   progress,
   isSelected,
   isLast,
+  connectsDoneToDone,
   isDragOver,
   isDragging,
   isHolding,
+  photoByUpdaterName,
   onSelect,
   onPointerDown,
   onPointerUp,
@@ -477,9 +527,11 @@ function TimelineStepButton({
   progress: SubEffortProgress;
   isSelected: boolean;
   isLast: boolean;
+  connectsDoneToDone?: boolean;
   isDragOver?: boolean;
   isDragging?: boolean;
   isHolding?: boolean;
+  photoByUpdaterName?: Map<string, string>;
   onSelect: () => void;
   onPointerDown: (e: React.PointerEvent) => void;
   onPointerUp: (e: React.PointerEvent) => void;
@@ -501,129 +553,121 @@ function TimelineStepButton({
         isDragOver ? 'rounded-2xl ring-2 ring-primary/30' : '',
       ].join(' ')}
     >
-      <div className="relative flex items-start gap-2.5">
-        <div className="mt-0.5 shrink-0">
-          <TimelineStepNumber step={stepNumber} progress={progress} />
-        </div>
-        <div className="flex flex-col items-center pt-1">
-          <ProgressIcon progress={progress} />
+      <div className="relative flex items-stretch gap-3">
+        <div className="relative flex w-8 shrink-0 flex-col items-center">
+          <span
+            className={[
+              'relative z-[1] flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold tabular-nums text-white',
+              progress === 'in_progress'
+                ? 'bg-sky-600 shadow-sm shadow-sky-900/20'
+                : progress === 'completed'
+                  ? 'bg-emerald-600 shadow-sm shadow-emerald-900/20'
+                  : 'bg-gray-700',
+            ].join(' ')}
+            aria-hidden
+          >
+            {stepNumber}
+          </span>
           {!isLast ? (
-            <div
+            <span
               className={[
-                'mt-2 min-h-[20px] w-px flex-1',
-                progress === 'completed'
-                  ? 'bg-gradient-to-b from-emerald-300 to-slate-200'
-                  : 'bg-gradient-to-b from-slate-200 to-transparent',
+                'absolute top-8 bottom-[-4px] left-1/2 w-0.5 -translate-x-1/2 rounded-full',
+                connectsDoneToDone
+                  ? 'bg-gradient-to-b from-emerald-500/85 via-emerald-400/75 to-emerald-300/65'
+                  : 'bg-gradient-to-b from-gray-400/80 via-gray-300/75 to-gray-200/65',
               ].join(' ')}
               aria-hidden
             />
           ) : null}
         </div>
+
         <div className="group mb-1 flex min-w-0 flex-1 items-start gap-1">
-        <div
-          role="button"
-          tabIndex={0}
-          onPointerDown={onPointerDown}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerCancel}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onSelect();
-            }
-          }}
-          className={[
-            'min-w-0 flex-1 rounded-2xl text-left transition-all duration-200 select-none touch-none',
-            isDragging ? 'cursor-grabbing scale-[0.98] shadow-md' : 'cursor-pointer',
-            isHolding ? 'ring-2 ring-primary/25' : '',
-            isSelected
-              ? "relative border border-blue-100 bg-blue-50/70 px-3 py-2.5 shadow-sm before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-1 before:rounded-full before:bg-blue-600"
-              : isPending
-                ? 'px-3 py-2.5 opacity-80 hover:bg-gray-50/80'
-                : 'px-3 py-2.5 hover:bg-gray-50/80',
-          ].join(' ')}
-        >
-          <div className="min-w-0">
-            <div className="flex items-start justify-between gap-2">
-              <div
-                className={[
-                  'min-w-0 flex-1 font-semibold leading-snug text-gray-900 line-clamp-2 break-words [overflow-wrap:anywhere]',
-                  isSelected ? 'text-[15px]' : isPending ? 'text-[14px] text-gray-600' : 'text-[15px]',
-                ].join(' ')}
-                title={name}
-              >
-                {name}
+          <div
+            role="button"
+            tabIndex={0}
+            onPointerDown={onPointerDown}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerCancel}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelect();
+              }
+            }}
+            className={[
+              'min-w-0 flex-1 rounded-2xl text-left transition-all duration-200 select-none touch-none',
+              isDragging ? 'cursor-grabbing scale-[0.98] shadow-md' : 'cursor-pointer',
+              isHolding ? 'ring-2 ring-primary/25' : '',
+              isSelected
+                ? "relative border border-blue-100 bg-blue-50/70 px-3 py-2.5 shadow-sm before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-1 before:rounded-full before:bg-blue-600"
+                : isPending
+                  ? 'px-3 py-2.5 opacity-80 hover:bg-gray-50/80'
+                  : 'px-3 py-2.5 hover:bg-gray-50/80',
+            ].join(' ')}
+          >
+            <div className="min-w-0">
+              <div className="flex items-start justify-between gap-2">
+                <div
+                  className={[
+                    'min-w-0 flex-1 font-semibold leading-snug text-gray-900 line-clamp-2 break-words [overflow-wrap:anywhere]',
+                    isSelected ? 'text-[15px]' : isPending ? 'text-[14px] text-gray-600' : 'text-[15px]',
+                  ].join(' ')}
+                  title={name}
+                >
+                  {name}
+                </div>
+                <ChevronRightIcon
+                  className="h-4 w-4 shrink-0 text-gray-300 transition group-hover:text-gray-400 md:hidden"
+                  aria-hidden
+                />
               </div>
-              <ChevronRightIcon
-                className="h-4 w-4 shrink-0 text-gray-300 transition group-hover:text-gray-400 md:hidden"
-                aria-hidden
-              />
-            </div>
-            <div className="mt-1.5 flex items-center gap-1.5 text-[12px] text-gray-500 truncate">
-              {who !== '—' || when !== '—' ? (
-                <>
-                  {!isSelected && who !== '—' ? (
-                    <EmployeeAvatar
-                      name={who}
-                      photoUrl={resolveUpdaterPhoto(row)}
-                      size="sm"
-                    />
-                  ) : null}
-                  <span className="truncate">
-                    {who !== '—' ? (
-                      <>
-                        <span className="font-medium text-gray-600">{who}</span>
-                        <span className="mx-1 text-gray-300">·</span>
-                      </>
+              <div className="mt-1.5 flex items-center gap-1.5 text-[12px] text-gray-500 truncate">
+                {who !== '—' || when !== '—' ? (
+                  <>
+                    {!isSelected && who !== '—' ? (
+                      <EmployeeAvatar
+                        name={who}
+                        photoUrl={resolveUpdaterPhoto(row, photoByUpdaterName)}
+                        size="sm"
+                      />
                     ) : null}
-                    {when !== '—' ? <span className="tabular-nums">{when}</span> : null}
-                  </span>
-                </>
-              ) : null}
-            </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              <ProgressBadge progress={progress} compact />
-              <VisibilityPill internal={row?.internal === true} size="compact" />
+                    <span className="truncate">
+                      {who !== '—' ? (
+                        <>
+                          <span className="font-medium text-gray-600">{who}</span>
+                          <span className="mx-1 text-gray-300">·</span>
+                        </>
+                      ) : null}
+                      {when !== '—' ? <span className="tabular-nums">{when}</span> : null}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <ProgressBadge progress={progress} compact />
+                <VisibilityPill internal={row?.internal === true} size="compact" />
+              </div>
             </div>
           </div>
-        </div>
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenDescription();
-          }}
-          className={`btn btn-ghost btn-xs btn-square mt-2 h-8 w-8 shrink-0 rounded-full ${
-            hasDescription ? 'text-primary hover:bg-blue-50' : 'text-gray-300'
-          }`}
-          title={hasDescription ? 'What is this sub effort?' : 'No description available'}
-          aria-label={hasDescription ? `About ${name}` : `No description for ${name}`}
-        >
-          <QuestionMarkCircleIcon className="h-5 w-5" />
-        </button>
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDescription();
+            }}
+            className={`btn btn-ghost btn-xs btn-square mt-2 h-8 w-8 shrink-0 rounded-full ${
+              hasDescription ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-700' : 'text-gray-300'
+            }`}
+            title={hasDescription ? 'What is this sub effort?' : 'No description available'}
+            aria-label={hasDescription ? `About ${name}` : `No description for ${name}`}
+          >
+            <QuestionMarkCircleIcon className="h-5 w-5" />
+          </button>
         </div>
       </div>
     </div>
-  );
-}
-
-function ProgressIcon({ progress }: { progress: SubEffortProgress }) {
-  if (progress === 'completed') {
-    return <CheckCircleSolidIcon className="h-[22px] w-[22px] shrink-0 text-emerald-500" aria-hidden />;
-  }
-  if (progress === 'in_progress') {
-    return (
-      <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center" aria-hidden>
-        <span className="h-3.5 w-3.5 rounded-full bg-blue-600 shadow-[0_0_0_5px_rgba(37,99,235,0.15)]" />
-      </span>
-    );
-  }
-  return (
-    <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center" aria-hidden>
-      <span className="h-3.5 w-3.5 rounded-full border-2 border-slate-300 bg-white" />
-    </span>
   );
 }
 
@@ -748,6 +792,7 @@ export function SubEffortsLogModal({
   const [dragOverRowId, setDragOverRowId] = useState<string | null>(null);
   const [holdingRowId, setHoldingRowId] = useState<string | null>(null);
   const [isSavingTimelineOrder, setIsSavingTimelineOrder] = useState(false);
+  const [employeePhotoDirectory, setEmployeePhotoDirectory] = useState<any[]>([]);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRowIdRef = useRef<string | null>(null);
   const didHoldDragRef = useRef(false);
@@ -825,6 +870,26 @@ export function SubEffortsLogModal({
 
   const timelineRows = orderedTimelineRows;
   const currentSubEffortRowId = useMemo(() => findCurrentSubEffortRowId(timelineRows), [timelineRows]);
+  const photoByUpdaterName = useMemo(
+    () => buildUpdaterPhotoByName(timelineRows, employeePhotoDirectory),
+    [timelineRows, employeePhotoDirectory],
+  );
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, photo_url, photo')
+        .order('display_name', { ascending: true });
+      if (cancelled || error) return;
+      setEmployeePhotoDirectory((data as any[]) ?? []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const emptySubEffortsMessage = useMemo(() => {
     if (hasLeadCaseType === false) {
@@ -897,7 +962,7 @@ export function SubEffortsLogModal({
           ordered.map((row, index) =>
             supabase
               .from('lead_sub_efforts')
-              .update({ sort_order: index, updated_by: actor.fullName })
+              .update({ sort_order: index, ...leadSubEffortActorFields(actor) })
               .eq('id', row.id),
           ),
         );
@@ -1169,7 +1234,7 @@ export function SubEffortsLogModal({
       const actor = await fetchStageActorInfo();
       const { error } = await supabase
         .from('lead_sub_efforts')
-        .update({ document_url: next, updated_by: actor.fullName })
+        .update({ document_url: next, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (error) throw error;
 
@@ -1203,7 +1268,7 @@ export function SubEffortsLogModal({
         const actor = await fetchStageActorInfo();
         const { error } = await supabase
           .from('lead_sub_efforts')
-          .update({ document_url: next, updated_by: actor.fullName })
+          .update({ document_url: next, ...leadSubEffortActorFields(actor) })
           .eq('id', selectedRow.id);
         if (error) throw error;
         toast.success(targetFolderId ? 'Moved to folder' : 'Moved to Unfiled');
@@ -1289,7 +1354,7 @@ export function SubEffortsLogModal({
       const actor = await fetchStageActorInfo();
       const { error: docsError } = await supabase
         .from('lead_sub_efforts')
-        .update({ document_url: next, updated_by: actor.fullName })
+        .update({ document_url: next, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (docsError) throw docsError;
 
@@ -1420,7 +1485,7 @@ export function SubEffortsLogModal({
       const nextVal = !(selectedRow?.internal === true);
       const { error } = await supabase
         .from('lead_sub_efforts')
-        .update({ internal: nextVal, updated_by: actor.fullName })
+        .update({ internal: nextVal, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (error) throw error;
       toast.success(nextVal ? 'Marked as internal' : 'Marked as visible to client');
@@ -1444,7 +1509,7 @@ export function SubEffortsLogModal({
       const actor = await fetchStageActorInfo();
       const { error } = await supabase
         .from('lead_sub_efforts')
-        .update({ internal: templateInternal, updated_by: actor.fullName })
+        .update({ internal: templateInternal, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (error) throw error;
       toast.success('Visibility reset to template default');
@@ -1472,8 +1537,8 @@ export function SubEffortsLogModal({
     try {
       const actor = await fetchStageActorInfo();
       const patch: any = notesKind === 'internal'
-        ? { internal_notes: notesDraft, updated_by: actor.fullName }
-        : { client_notes: notesDraft, updated_by: actor.fullName };
+        ? { internal_notes: notesDraft, ...leadSubEffortActorFields(actor) }
+        : { client_notes: notesDraft, ...leadSubEffortActorFields(actor) };
       const { error } = await supabase
         .from('lead_sub_efforts')
         .update(patch)
@@ -1540,7 +1605,7 @@ export function SubEffortsLogModal({
       const actor = await fetchStageActorInfo();
       const { error: updateError } = await supabase
         .from('lead_sub_efforts')
-        .update({ document_url: nextDocumentUrl, updated_by: actor.fullName })
+        .update({ document_url: nextDocumentUrl, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (updateError) throw updateError;
 
@@ -1644,7 +1709,7 @@ export function SubEffortsLogModal({
       const actor = await fetchStageActorInfo();
       const { error } = await supabase
         .from('lead_sub_efforts')
-        .update({ document_url: merged, updated_by: actor.fullName })
+        .update({ document_url: merged, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (error) throw error;
 
@@ -1668,7 +1733,7 @@ export function SubEffortsLogModal({
       const actor = await fetchStageActorInfo();
       const { error } = await supabase
         .from('lead_sub_efforts')
-        .update({ active: nextActive, updated_by: actor.fullName })
+        .update({ active: nextActive, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (error) throw error;
       toast.success(nextActive ? 'Sub effort reopened' : 'Marked as complete');
@@ -1745,7 +1810,7 @@ export function SubEffortsLogModal({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 md:overflow-hidden md:px-6 md:pb-6">
+        <div className="min-h-0 flex-1 overflow-auto scrollbar-hide px-4 pb-4 md:overflow-hidden md:px-6 md:pb-6">
           <div className="grid grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(280px,340px)_1fr] lg:grid-cols-[minmax(300px,360px)_1fr]">
             {/* Workflow — independent scroll on desktop */}
             <div
@@ -1765,11 +1830,17 @@ export function SubEffortsLogModal({
                   ) : null}
                 </div>
                 {timelineRows.length ? (
-                  <div className="min-h-0 md:flex-1 md:overflow-y-auto md:overscroll-y-contain">
+                  <div className="min-h-0 scrollbar-hide md:flex-1 md:overflow-y-auto md:overscroll-y-contain">
                     {timelineRows.map((r: any, index: number) => {
                       const rowId = String(r?.id);
                       const isSelected = selectedRow?.id != null && String(selectedRow.id) === rowId;
                       const progress = getSubEffortProgress(r, currentSubEffortRowId);
+                      const nextProgress =
+                        index < timelineRows.length - 1
+                          ? getSubEffortProgress(timelineRows[index + 1], currentSubEffortRowId)
+                          : null;
+                      const connectsDoneToDone =
+                        progress === 'completed' && nextProgress === 'completed';
                       return (
                         <TimelineStepButton
                           key={r?.id ?? index}
@@ -1779,6 +1850,8 @@ export function SubEffortsLogModal({
                           progress={progress}
                           isSelected={isSelected}
                           isLast={index === timelineRows.length - 1}
+                          connectsDoneToDone={connectsDoneToDone}
+                          photoByUpdaterName={photoByUpdaterName}
                           isDragging={draggingRowId === rowId}
                           isHolding={holdingRowId === rowId && draggingRowId !== rowId}
                           isDragOver={dragOverRowId === rowId && draggingRowId !== rowId}
@@ -1858,8 +1931,8 @@ export function SubEffortsLogModal({
             <div
               className={
                 mobileStep === 'details'
-                  ? 'block md:h-full md:min-h-0 md:overflow-y-auto md:overscroll-y-contain'
-                  : 'hidden md:block md:h-full md:min-h-0 md:overflow-y-auto md:overscroll-y-contain'
+                  ? 'block scrollbar-hide md:h-full md:min-h-0 md:overflow-y-auto md:overscroll-y-contain'
+                  : 'hidden scrollbar-hide md:block md:h-full md:min-h-0 md:overflow-y-auto md:overscroll-y-contain'
               }
             >
               <div className="flex min-h-full flex-col space-y-4">                {selectedRow ? (
@@ -1877,7 +1950,7 @@ export function SubEffortsLogModal({
                             <button
                               type="button"
                               onClick={() => setDescriptionRow(selectedRow)}
-                              className="btn btn-ghost btn-xs btn-square h-9 w-9 shrink-0 rounded-full text-primary hover:bg-blue-50"
+                              className="btn btn-ghost btn-xs btn-square h-9 w-9 shrink-0 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                               title="What is this sub effort?"
                               aria-label={`About ${readSubEffortName(selectedRow)}`}
                             >
@@ -1888,22 +1961,6 @@ export function SubEffortsLogModal({
                             <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
                               {selectedSubCategoryEfforts.map((item) => item.name).join(' · ')}
                             </p>
-                          ) : null}
-                          {hasLeadSubEffortSavedUpdate(selectedRow) ? (
-                            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-sm text-base-content/55">
-                              <EmployeeAvatar
-                                name={updaterDisplayName(selectedRow)}
-                                photoUrl={resolveUpdaterPhoto(selectedRow)}
-                                size="md"
-                              />
-                              <span className="font-medium text-base-content/75">
-                                {updaterDisplayName(selectedRow)}
-                              </span>
-                              <span className="text-base-content/25">·</span>
-                              <span className="tabular-nums">
-                                {formatDateTime(leadSubEffortSavedUpdatedAt(selectedRow))}
-                              </span>
-                            </div>
                           ) : null}
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-2">
@@ -1994,7 +2051,7 @@ export function SubEffortsLogModal({
                         <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
                           <div className="flex items-center gap-2">
                             <LockClosedIcon className="h-5 w-5 text-base-content/40" />
-                            <span className="text-base font-semibold text-base-content/80">Internal notes</span>
+                            <span className="text-base font-semibold text-gray-500">Internal notes</span>
                           </div>
                           <button
                             type="button"
@@ -2028,7 +2085,7 @@ export function SubEffortsLogModal({
                         <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
                           <div className="flex items-center gap-2">
                             <EyeIcon className="h-5 w-5 text-base-content/40" />
-                            <span className="text-base font-semibold text-base-content/80">Client notes</span>
+                            <span className="text-base font-semibold text-gray-500">Client notes</span>
                           </div>
                           <button
                             type="button"
@@ -2098,7 +2155,7 @@ export function SubEffortsLogModal({
                           ) : (
                             <>
                               <DocumentIcon className="h-5 w-5 text-base-content/40" />
-                              <span className="text-base font-semibold text-base-content/75">Documents</span>
+                              <span className="text-base font-semibold text-gray-500">Documents</span>
                             </>
                           )}
                         </div>
@@ -2605,16 +2662,16 @@ export function SubEffortsLogModal({
 
                     {hasLeadSubEffortSavedUpdate(selectedRow) ? (
                       <div className="flex justify-end pt-1">
-                        <div className="inline-flex max-w-full flex-wrap items-center justify-end gap-2 text-xs text-base-content/45">
+                        <div className="inline-flex max-w-full flex-wrap items-center justify-end gap-2 text-xs text-gray-500">
                           <span>Last updated by</span>
                           <EmployeeAvatar
                             name={updaterDisplayName(selectedRow)}
-                            photoUrl={resolveUpdaterPhoto(selectedRow)}
+                            photoUrl={resolveUpdaterPhoto(selectedRow, photoByUpdaterName)}
                             size="md"
                           />
-                          <span className="font-medium text-base-content/70">{updaterDisplayName(selectedRow)}</span>
-                          <span className="text-base-content/25">·</span>
-                          <span className="tabular-nums">
+                          <span className="font-medium text-gray-500">{updaterDisplayName(selectedRow)}</span>
+                          <span className="text-gray-400">·</span>
+                          <span className="tabular-nums text-gray-500">
                             {formatDateTime(leadSubEffortSavedUpdatedAt(selectedRow))}
                           </span>
                         </div>

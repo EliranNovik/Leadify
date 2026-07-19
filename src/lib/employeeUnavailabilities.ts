@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { assertDateEditableForEmployee } from './employeeWorkingHoursSubmissions';
+import { monthRange } from './employeeClockInFormat';
 
 export type UnavailabilityType = 'sick_days' | 'vacation' | 'general';
 
@@ -11,7 +12,123 @@ export type UnavailabilityApprovalFields = {
   approved_by?: string | null;
   approved_at?: string | null;
   decline_note?: string | null;
+  unavailability_type?: UnavailabilityType | string | null;
 };
+
+/**
+ * "General" is a soft calendar note only: it can coexist with clock-ins on the same day,
+ * never needs HR approval, and must not block working-hours submission or cover missing days.
+ */
+export function isGeneralUnavailability(
+  entry: { unavailability_type?: string | null } | null | undefined,
+): boolean {
+  return entry?.unavailability_type === 'general';
+}
+
+export function unavailabilityRequiresApproval(
+  entry: { unavailability_type?: string | null } | null | undefined,
+): boolean {
+  return Boolean(entry) && !isGeneralUnavailability(entry);
+}
+
+/** Pending leave insert defaults (employee self-service). */
+export function pendingUnavailabilityApprovalFields(): {
+  approved: false;
+  declined: false;
+  approved_by: null;
+  approved_at: null;
+  decline_note: null;
+} {
+  return {
+    approved: false,
+    declined: false,
+    approved_by: null,
+    approved_at: null,
+    decline_note: null,
+  };
+}
+
+/** Manager/HR creates leave already approved — also used for general notes. */
+export function approvedUnavailabilityApprovalFields(approverAuthUserId?: string | null): {
+  approved: true;
+  declined: false;
+  approved_by: string | null;
+  approved_at: string;
+  decline_note: null;
+} {
+  return {
+    approved: true,
+    declined: false,
+    approved_by: approverAuthUserId ?? null,
+    approved_at: new Date().toISOString(),
+    decline_note: null,
+  };
+}
+
+/** Approval columns to write on insert/update based on leave type. */
+export function approvalFieldsForUnavailabilityType(
+  type: UnavailabilityType | string,
+  approverAuthUserId?: string | null,
+):
+  | ReturnType<typeof pendingUnavailabilityApprovalFields>
+  | ReturnType<typeof approvedUnavailabilityApprovalFields> {
+  if (type === 'general') {
+    return approvedUnavailabilityApprovalFields(approverAuthUserId);
+  }
+  return pendingUnavailabilityApprovalFields();
+}
+
+export function normalizeUnavailabilityApprovalFields<T extends UnavailabilityApprovalFields>(
+  entry: T,
+): T & { approved: boolean; declined: boolean } {
+  if (isGeneralUnavailability(entry)) {
+    return {
+      ...entry,
+      approved: true,
+      declined: false,
+    };
+  }
+  return {
+    ...entry,
+    approved: entry.approved === true,
+    declined: entry.declined === true,
+  };
+}
+
+export function getUnavailabilityApprovalStatus(
+  entry: UnavailabilityApprovalFields,
+): UnavailabilityApprovalStatus {
+  if (isGeneralUnavailability(entry)) return 'approved';
+  if (entry.declined === true) return 'declined';
+  if (entry.approved === true) return 'approved';
+  return 'pending';
+}
+
+/** Sick/vacation that are approved cover a workday; general never does (clock-ins still expected). */
+export function isUnavailabilityCounted(entry: UnavailabilityApprovalFields): boolean {
+  if (isGeneralUnavailability(entry)) return false;
+  return getUnavailabilityApprovalStatus(entry) === 'approved';
+}
+
+export function filterCountedUnavailability<T extends UnavailabilityApprovalFields>(
+  entries: T[],
+): T[] {
+  return entries.filter(isUnavailabilityCounted);
+}
+
+export function countUnavailabilityApprovalBlockers(
+  entries: UnavailabilityApprovalFields[],
+): { pendingCount: number; declinedCount: number } {
+  let pendingCount = 0;
+  let declinedCount = 0;
+  for (const entry of entries) {
+    if (!unavailabilityRequiresApproval(entry)) continue;
+    const status = getUnavailabilityApprovalStatus(entry);
+    if (status === 'pending') pendingCount += 1;
+    else if (status === 'declined') declinedCount += 1;
+  }
+  return { pendingCount, declinedCount };
+}
 
 export type EmployeeUnavailabilityEntry = {
   id: number;
@@ -39,79 +156,19 @@ export const UNAVAILABILITY_SELECT = `
   approved, declined, approved_by, approved_at, decline_note
 `;
 
-/** Pending leave insert defaults (employee self-service). */
-export function pendingUnavailabilityApprovalFields(): {
-  approved: false;
-  declined: false;
-  approved_by: null;
-  approved_at: null;
-  decline_note: null;
-} {
-  return {
-    approved: false,
-    declined: false,
-    approved_by: null,
-    approved_at: null,
-    decline_note: null,
-  };
-}
-
-/** Manager/HR creates leave already approved. */
-export function approvedUnavailabilityApprovalFields(approverAuthUserId?: string | null): {
-  approved: true;
-  declined: false;
-  approved_by: string | null;
-  approved_at: string;
-  decline_note: null;
-} {
-  return {
-    approved: true,
-    declined: false,
-    approved_by: approverAuthUserId ?? null,
-    approved_at: new Date().toISOString(),
-    decline_note: null,
-  };
-}
-
-export function normalizeUnavailabilityApprovalFields<T extends UnavailabilityApprovalFields>(
-  entry: T,
-): T & { approved: boolean; declined: boolean } {
-  return {
-    ...entry,
-    approved: entry.approved === true,
-    declined: entry.declined === true,
-  };
-}
-
-export function getUnavailabilityApprovalStatus(
-  entry: UnavailabilityApprovalFields,
-): UnavailabilityApprovalStatus {
-  if (entry.declined === true) return 'declined';
-  if (entry.approved === true) return 'approved';
-  return 'pending';
-}
-
-export function isUnavailabilityCounted(entry: UnavailabilityApprovalFields): boolean {
-  return getUnavailabilityApprovalStatus(entry) === 'approved';
-}
-
-export function filterCountedUnavailability<T extends UnavailabilityApprovalFields>(
-  entries: T[],
-): T[] {
-  return entries.filter(isUnavailabilityCounted);
-}
-
-export function countUnavailabilityApprovalBlockers(
-  entries: UnavailabilityApprovalFields[],
+/** Only count leave that overlaps the given calendar month (months stay independent). */
+export function countUnavailabilityApprovalBlockersInMonth(
+  entries: Array<UnavailabilityApprovalFields & { start_date: string; end_date: string | null }>,
+  year: number,
+  month1to12: number,
 ): { pendingCount: number; declinedCount: number } {
-  let pendingCount = 0;
-  let declinedCount = 0;
-  for (const entry of entries) {
-    const status = getUnavailabilityApprovalStatus(entry);
-    if (status === 'pending') pendingCount += 1;
-    else if (status === 'declined') declinedCount += 1;
-  }
-  return { pendingCount, declinedCount };
+  const { from, to } = monthRange(year, month1to12);
+  const inMonth = entries.filter((entry) => {
+    const startKey = String(entry.start_date).slice(0, 10);
+    const endKey = entry.end_date ? String(entry.end_date).slice(0, 10) : startKey;
+    return startKey <= to && endKey >= from;
+  });
+  return countUnavailabilityApprovalBlockers(inMonth);
 }
 
 export function hasUnavailabilityApprovalBlockers(
@@ -300,7 +357,7 @@ function buildReasonUpdateFields(
     vacation_reason: type === 'vacation' ? reason : null,
     general_reason: type === 'general' ? reason : null,
     document_url: documentUrl,
-    ...pendingUnavailabilityApprovalFields(),
+    ...approvalFieldsForUnavailabilityType(type),
   };
 }
 
@@ -309,6 +366,7 @@ function cloneEntryFieldsForInsert(
   startDate: string,
   endDate: string,
 ) {
+  const approval = approvalFieldsForUnavailabilityType(entry.unavailability_type);
   return {
     employee_id: entry.employee_id,
     unavailability_type: entry.unavailability_type,
@@ -320,11 +378,7 @@ function cloneEntryFieldsForInsert(
     end_date: endDate,
     start_time: entry.start_time,
     end_time: entry.end_time,
-    approved: entry.approved === true,
-    declined: entry.declined === true,
-    approved_by: entry.approved_by ?? null,
-    approved_at: entry.approved_at ?? null,
-    decline_note: entry.decline_note ?? null,
+    ...approval,
   };
 }
 
@@ -489,11 +543,10 @@ function rangesOverlap(
   filterFrom: string,
   filterTo: string,
 ): boolean {
-  const startDate = new Date(start);
-  const endDate = end ? new Date(end) : startDate;
-  const filterFromDate = new Date(filterFrom);
-  const filterToDate = new Date(filterTo);
-  return startDate <= filterToDate && endDate >= filterFromDate;
+  // Compare YYYY-MM-DD as strings to avoid timezone shifts from Date parsing.
+  const startKey = String(start).slice(0, 10);
+  const endKey = end ? String(end).slice(0, 10) : startKey;
+  return startKey <= filterTo && endKey >= filterFrom;
 }
 
 function mapUnavailabilityRows(data: unknown): EmployeeUnavailabilityEntry[] {
@@ -509,6 +562,8 @@ export async function fetchEmployeeUnavailabilitiesInRange(
     .from('employee_unavailability_reasons')
     .select(UNAVAILABILITY_SELECT)
     .eq('employee_id', employeeId)
+    .lte('start_date', dateTo)
+    .or(`end_date.gte.${dateFrom},end_date.is.null`)
     .order('start_date', { ascending: false });
 
   if (error) throw error;

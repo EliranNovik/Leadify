@@ -30,20 +30,18 @@ export function ApprovalNotesButton({
     return <span className="text-base-content/40">—</span>;
   }
 
-  const preview = trimmed.length > 28 ? `${trimmed.slice(0, 28)}…` : trimmed;
-
   return (
     <>
       <button
         type="button"
-        className="max-w-[120px] truncate text-left text-sm text-primary/90 hover:text-primary"
+        className="block max-w-[10rem] truncate text-left text-sm text-primary/90 hover:text-primary sm:max-w-[16rem] lg:max-w-[28rem] xl:max-w-[36rem]"
         title="View notes"
         onClick={(e) => {
           e.stopPropagation();
           setOpen(true);
         }}
       >
-        {preview}
+        {trimmed}
       </button>
       {open && typeof document !== 'undefined'
         ? createPortal(
