@@ -28,9 +28,15 @@ export const EMAIL_TEMPLATE_PARAM_CODES: EmailTemplateParamCode[] = [
       'Resolved place for the meeting: physical address from tenants_meetinglocation (address_en for English templates when set, else address), custom_address, or location name (same as WhatsApp “Meeting Location (resolved)”)',
   },
   { code: '{{link}}', label: 'Meeting link', description: 'Teams / Zoom / catalog default link' },
+  { code: '{{address}}', label: 'Manual address', description: 'Free-text meetings.manual_address on the meeting row' },
   {
-    code: '{{address}}',
-    label: 'Manual address',
-    description: 'Free-text meetings.manual_address on the meeting row',
+    code: '{{portal_link}}',
+    label: 'Client portal link',
+    description: 'Public client portal URL for the lead (/portal/{lead_number})',
+  },
+  {
+    code: '{{access_code}}',
+    label: 'Portal access code',
+    description: 'Client portal password / access code saved for the lead',
   },
 ];

@@ -34,6 +34,10 @@ export interface EmailTemplateContext {
   meetingId?: number | string | null;
   /** When English (en), use tenants_meetinglocation.address_en for {{meeting_location}} when set */
   templateLanguage?: string | null;
+  /** Client portal URL → {{portal_link}} */
+  portalLink?: string | null;
+  /** Portal password / access code → {{access_code}} */
+  accessCode?: string | null;
 }
 
 /**
@@ -265,6 +269,8 @@ export async function replaceEmailTemplateParams(
   result = applyTemplateParam(result, 'client_name', name);
   result = applyTemplateParam(result, 'lead_number', context.leadNumber || '');
   result = applyTemplateParam(result, 'lead_type', context.leadType || '');
+  result = applyTemplateParam(result, 'portal_link', context.portalLink || '');
+  result = applyTemplateParam(result, 'access_code', context.accessCode || '');
   
   // Check if any meeting parameters need to be replaced
   const hasDate = templateHasParam(result, 'date');
@@ -369,6 +375,8 @@ export function replaceEmailTemplateParamsSync(
   result = applyTemplateParam(result, 'client_name', name);
   result = applyTemplateParam(result, 'lead_number', context.leadNumber || '');
   result = applyTemplateParam(result, 'lead_type', context.leadType || '');
+  result = applyTemplateParam(result, 'portal_link', context.portalLink || '');
+  result = applyTemplateParam(result, 'access_code', context.accessCode || '');
   result = applyMeetingDateReplacements(result, context.meetingDate || '');
   result = applyMeetingTimeReplacements(result, context.meetingTime || '');
   result = applyLocationReplacements(

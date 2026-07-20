@@ -31,9 +31,11 @@ export interface TemplateParamDefinition {
     | 'manual_address'
     | 'meeting_link'
     | 'invoice_link'
-    | 'payment_link'
-    | 'lead_number'
-    | 'custom';
+  | 'payment_link'
+  | 'lead_number'
+  | 'portal_link'
+  | 'access_code'
+  | 'custom';
   value?: string; // For custom params, specify the value
   // Note: 'contact_name' and 'client_name' are deprecated but supported for backward compatibility.
   // They both resolve to the same 'name' behavior - the frontend automatically determines which to use.
@@ -107,10 +109,16 @@ export async function getTemplateParamDefinitions(
 /**
  * Generate parameters based on template definitions
  */
-/** Optional proforma invoice context (Send on view proforma). */
+/** Optional proforma invoice / portal context for WhatsApp param generation. */
 export type ProformaWhatsAppParamContext = {
   invoiceLink?: string;
+  paymentLink?: string;
   leadNumber?: string;
+  paymentPlanId?: string | number | null;
+  /** Client portal URL (`/portal/{lead_ref}`). */
+  portalLink?: string;
+  /** Client portal password / access code (plain text for staff send). */
+  accessCode?: string;
 };
 
 const isStaffMeetingClient = (client: any): boolean =>
@@ -152,6 +160,8 @@ export async function generateParamsFromDefinitions(
       '',
     paymentPlanId:
       proformaContext?.paymentPlanId ?? client?.paymentPlanId ?? null,
+    portalLink: proformaContext?.portalLink ?? client?.portalLink ?? '',
+    accessCode: proformaContext?.accessCode ?? client?.accessCode ?? '',
   };
   
   const parameters: Array<{ type: string; text: string }> = [];
@@ -299,6 +309,12 @@ export async function generateParamsFromDefinitions(
         break;
       case 'lead_number':
         value = sanitizeWhatsAppTemplateVariableText(ctx.leadNumber || '');
+        break;
+      case 'portal_link':
+        value = sanitizeWhatsAppTemplateVariableText(ctx.portalLink || '');
+        break;
+      case 'access_code':
+        value = sanitizeWhatsAppTemplateVariableText(ctx.accessCode || '');
         break;
       case 'custom':
         value = def.value || '';

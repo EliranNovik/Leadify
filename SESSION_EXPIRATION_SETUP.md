@@ -2,108 +2,77 @@
 
 ## Overview
 
-The application has been configured to use OAuth 2.0 refresh tokens with automatic token refresh for better security and user experience.
+The application uses OAuth 2.0 refresh tokens with automatic token refresh for security and a smooth UX.
 
-**Session Configuration:**
+**Recommended session configuration (Supabase Auth):**
 
-- **Access Token**: 1 hour (3600 seconds)
-- **Refresh Token**: 24 hours (86400 seconds)
-- **Auto-refresh**: Enabled
+- **Access Token (JWT Expiry)**: 1 hour (`3600` seconds) — short-lived; refreshed automatically
+- **Refresh Token Expiry**: **7 days** (`604800` seconds) recommended for desktop + mobile continuity  
+  (legacy docs used 24 hours; raise this in the dashboard if users are logged out overnight/weekend)
+- **Auto-refresh**: Enabled in the app (`autoRefreshToken: true`)
 - **Token Rotation**: Enabled
 
-## Changes Made
+## App keep-alive (continuous use)
 
-### 1. Supabase Client Configuration (`src/lib/supabase.ts`)
+While a user keeps using the CRM (clicks, typing, scrolling, returning to the tab):
 
-- **Enabled auto-refresh**: `autoRefreshToken: true`
-- **Enhanced session manager**: The `getSession()` function now attempts refresh when sessions expire
-- **Added refresh token utilities**: New functions to check refresh token availability and expiry times
-- **Updated session monitoring**: Checks for expiration and attempts refresh automatically
+1. Activity is tracked (`src/lib/authSessionKeepAlive.ts`)
+2. Access tokens refresh earlier (≈3 minutes before expiry when active)
+3. At most about every **25 minutes** of active use, the session is refreshed so refresh-token **rotation** renews the long-lived session
+4. Forced logout still requires **confirmed** refresh failure (not a single flaky network blip); active users get a slightly higher failure threshold
 
-### 2. App.tsx
+This does **not** remove auth expiry. It only keeps the session healthy while someone is actually using the product.
 
-- **Enabled automatic session refresh**: The periodic check now attempts refresh when sessions expire
-- **Enhanced session monitoring**: Logs successful refreshes and monitors token expiry times
-- **Better debugging**: Shows when sessions are refreshed successfully
+Idle / closed tabs still expire when the Supabase **refresh token** lifetime ends.
 
-### 3. useAuth Hook (`src/hooks/useAuth.ts`)
+## Changes in code
 
-- **Enabled refresh token monitoring**: Periodically checks session status with refresh capability
-- **Enhanced session monitoring**: Logs refresh token availability and access token expiry times
-- **Improved error handling**: Better handling of refresh failures
+### Supabase client (`src/lib/supabase.ts`)
 
-### 4. SessionDebug Component
+- `autoRefreshToken: true`, `persistSession: true`, `localStorage`
+- Global fetch retries once on 401 after a coalesced refresh
+- `tryRefreshThenExpire` / `handleSessionExpiration` for unrecoverable cases
 
-- **Enhanced debugging**: Shows refresh token availability and status
-- **Better testing tools**: Tests refresh token behavior and monitoring
-- **Clear indicators**: Shows when auto-refresh is enabled and refresh tokens are available
+### Auth context (`src/contexts/AuthContext.tsx`)
 
-## How It Works
+- Visibility / resume refresh
+- 2-minute session watchdog
+- Activity tracking + keep-alive refresh (desktop and mobile)
 
-1. **Session Creation**: When users log in, they get an access token (1 hour) and refresh token (24 hours)
-2. **Automatic Refresh**: The application automatically refreshes access tokens before they expire
-3. **Expiration Detection**: The system periodically checks if access tokens are expired
-4. **Refresh Attempt**: When access tokens expire, the system attempts to refresh using the refresh token
-5. **Fallback Logout**: Only if refresh fails, users are logged out and redirected to login
-6. **Token Rotation**: Refresh tokens are rotated for security
+### Keep-alive helper (`src/lib/authSessionKeepAlive.ts`)
 
-## Session Duration Configuration
+- Marks activity from pointer / keyboard / touch / scroll
+- Refreshes near access-token expiry or periodically while recently active
 
-The session duration is configured in your Supabase project settings:
+## How it works
 
-### **Supabase Dashboard Configuration:**
+1. Login issues an access token (~1h) and a refresh token (dashboard TTL)
+2. Supabase + app watchdog refresh the access token before it expires
+3. Continuous use periodically rotates the refresh token (extends the “stay signed in” window)
+4. Only a failed refresh with no recoverable session sends the user to `/login`
 
-1. Go to **Settings** → **API** in your Supabase dashboard
-2. In the **JWT Settings** section:
-   - **JWT Expiry**: `3600` seconds (1 hour)
-   - **Refresh Token Reuse Interval**: `10` seconds
-   - **Refresh Token Rotation**: Enabled
-   - **Refresh Token Expiry**: `86400` seconds (24 hours)
+## Supabase Dashboard configuration
 
-### **Environment Variables (Alternative):**
+1. Open **Authentication** → **Providers** / **Settings** (or **Project Settings** → **Auth**)
+2. JWT / refresh settings:
+   - **JWT expiry**: `3600`
+   - **Refresh token reuse interval**: `10` (seconds)
+   - **Refresh token rotation**: Enabled
+   - **Refresh token expiry**: `604800` (7 days) — or `1209600` (14 days) if you need longer weekends away
 
-```bash
-JWT_EXPIRY=3600
-REFRESH_TOKEN_REUSE_INTERVAL=10
-REFRESH_TOKEN_ROTATION_ENABLED=true
-```
+> Exact labels vary by Supabase UI version; look for JWT expiry and refresh token lifetime.
 
-## Testing
+## Security notes
 
-In development mode, you can use the SessionDebug component to:
+- Keep access tokens short (1 hour)
+- Prefer refresh-token rotation
+- Do not store CRM auth in `sessionStorage` (breaks mobile resume)
+- Clock-out / clock-in gate does **not** clear the CRM session
+- MSAL (Microsoft Graph) is separate from CRM login; Graph re-auth must not force CRM logout
 
-- Monitor session status and refresh token availability
-- Test expiration behavior and refresh attempts
-- Manually refresh sessions
-- Force logout
-- Test session monitoring with refresh tokens
+## Troubleshooting unexpected logouts
 
-### **Testing Refresh Token Behavior:**
-
-1. **Using the SessionDebug component** to monitor session status
-2. **Testing refresh attempts** when access tokens expire
-3. **Verifying token rotation** and security
-4. **Using the test script** to verify configuration
-
-## Benefits
-
-1. **Security**: Short-lived access tokens (1 hour) with secure refresh mechanism
-2. **User Experience**: Users stay logged in for 24 hours without interruption
-3. **Industry Standard**: Follows OAuth 2.0 best practices
-4. **Token Rotation**: Enhanced security with refresh token rotation
-5. **Transparency**: Clear indication of session status and refresh token availability
-
-## Configuration
-
-To modify session duration, configure the JWT settings in your Supabase project dashboard under **Settings** → **API** → **JWT Settings**.
-
-## Troubleshooting
-
-If users are being logged out unexpectedly:
-
-1. Check the SessionDebug component for session status and refresh token availability
-2. Verify the session expiration times (access token: 1 hour, refresh token: 24 hours)
-3. Ensure refresh tokens are being generated and stored properly
-4. Check browser console for any auth-related errors
-5. Verify JWT settings in Supabase dashboard
-6. Check if refresh token rotation is working correctly
+1. Confirm refresh token expiry in the Supabase dashboard (raise above 24h if needed)
+2. Check that `localStorage` is available (private mode / IT policies)
+3. Look for repeated `refreshSession` failures in the console (`VITE_DEBUG_AUTH=true` helps)
+4. Verify rotation + reuse interval are not fighting multi-tab refresh

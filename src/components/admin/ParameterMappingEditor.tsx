@@ -16,6 +16,8 @@ export type ParamType =
   | 'invoice_link'
   | 'payment_link'
   | 'lead_number'
+  | 'portal_link'
+  | 'access_code'
   | 'custom';
 
 export interface ParameterDefinition {
@@ -71,6 +73,16 @@ const PARAM_TYPE_OPTIONS: Array<{ value: ParamType; label: string; description: 
     label: 'Lead / Case Number',
     description: 'Formatted lead or case number for the proforma',
   },
+  {
+    value: 'portal_link',
+    label: 'Client Portal Link',
+    description: 'Public client portal URL for this lead (/portal/{lead_number})',
+  },
+  {
+    value: 'access_code',
+    label: 'Portal Access Code',
+    description: 'Client portal password / access code saved for this lead',
+  },
   { value: 'custom', label: 'Custom Text', description: 'Enter a custom static value' },
 ];
 
@@ -113,7 +125,7 @@ const ParameterMappingEditor: React.FC<ParameterMappingEditorProps> = ({
   };
 
   const handleAddParam = () => {
-    const updated = [...mappings, { type: 'name' }];
+    const updated: ParameterDefinition[] = [...mappings, { type: 'name' }];
     setMappings(updated);
     onChange(updated);
   };

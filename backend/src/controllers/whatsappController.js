@@ -1806,9 +1806,21 @@ const sendMessage = async (req, res) => {
       templateName: req.body.templateName,
       templateId: req.body.templateId,
       templateIdType: typeof req.body.templateId,
-      templateParameters: req.body.templateParameters
+      templateParameters: req.body.templateParameters,
+      templateButtonParameters: req.body.templateButtonParameters,
     });
-    const { leadId, message, phoneNumber, isTemplate, templateName, templateLanguage, templateParameters, templateId, contactId } = req.body;
+    const {
+      leadId,
+      message,
+      phoneNumber,
+      isTemplate,
+      templateName,
+      templateLanguage,
+      templateParameters,
+      templateButtonParameters,
+      templateId,
+      contactId,
+    } = req.body;
     
     // Log immediately after destructuring
     console.log('🔍 After destructuring - templateId:', templateId, '(type:', typeof templateId, ')');
@@ -2006,6 +2018,48 @@ const sendMessage = async (req, res) => {
           ];
         }
 
+        // Dynamic URL / copy-code buttons need separate components (not counted in body params).
+        if (Array.isArray(templateButtonParameters) && templateButtonParameters.length > 0) {
+          if (!messagePayload.template.components) {
+            messagePayload.template.components = [];
+          }
+          templateButtonParameters.forEach((btnParam, i) => {
+            const text =
+              btnParam && btnParam.text != null
+                ? String(btnParam.text).trim()
+                : typeof btnParam === 'string'
+                  ? btnParam.trim()
+                  : '';
+            if (!text) {
+              console.warn(`⚠️ Skipping empty template button parameter at index ${i}`);
+              return;
+            }
+            const index =
+              btnParam && btnParam.index != null && String(btnParam.index).trim() !== ''
+                ? String(btnParam.index)
+                : String(i);
+            const subType =
+              (btnParam && btnParam.sub_type) ||
+              (btnParam && btnParam.subType) ||
+              'url';
+            messagePayload.template.components.push({
+              type: 'button',
+              sub_type: subType,
+              index,
+              parameters: [
+                {
+                  type: 'text',
+                  text,
+                },
+              ],
+            });
+          });
+          console.log(
+            '📱 Template button parameters:',
+            messagePayload.template.components.filter((c) => c.type === 'button'),
+          );
+        }
+
         console.log('📱 Template payload:', JSON.stringify(messagePayload, null, 2));
       } else {
         // Send regular text message
@@ -2113,20 +2167,29 @@ const sendMessage = async (req, res) => {
     // Check if it's a WhatsApp API error
     if (error.response && error.response.data && error.response.data.error) {
       const whatsappError = error.response.data.error;
+      const details =
+        (whatsappError.error_data &&
+          (whatsappError.error_data.details || whatsappError.error_data)) ||
+        whatsappError.error_user_msg ||
+        null;
+      console.error('WhatsApp API error details:', JSON.stringify(whatsappError, null, 2));
       if (whatsappError.code === 131047) {
         res.status(400).json({ 
           error: 'Message failed: More than 24 hours have passed since the customer last replied. You can only send template messages after 24 hours.',
-          code: 'RE_ENGAGEMENT_REQUIRED'
+          code: 'RE_ENGAGEMENT_REQUIRED',
+          details,
         });
       } else if (whatsappError.code === 132001) {
         res.status(400).json({
           error: `WhatsApp API Error: ${whatsappError.message}. The template name/language in the database may not match Meta. Sync templates in Admin → WhatsApp Templates, and deactivate duplicate rows (e.g. referral_poland vs refferal_poland).`,
           code: whatsappError.code,
+          details,
         });
       } else {
         res.status(400).json({
           error: `WhatsApp API Error: ${whatsappError.message}`,
           code: whatsappError.code,
+          details,
         });
       }
     } else {

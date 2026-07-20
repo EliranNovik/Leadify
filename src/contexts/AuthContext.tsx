@@ -1,5 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, sessionManager, isAuthError, isExpectedNoSessionError, handleSessionExpiration } from '../lib/supabase';
+import {
+  startAuthActivityTracking,
+  stopAuthActivityTracking,
+  markAuthActivity,
+  wasRecentlyActive,
+  refreshSessionIfNeeded,
+  getAccessRefreshBufferSec,
+} from '../lib/authSessionKeepAlive';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 import {
   readCachedSupabaseSessionFromStorage,
@@ -498,7 +506,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const runRefresh = async () => {
       if (document.visibilityState !== 'visible' || visibilityRefreshInFlight.current) return;
       visibilityRefreshInFlight.current = true;
+      markAuthActivity();
       try {
+        const result = await refreshSessionIfNeeded({ forceIfNearExpiry: true });
+        if (result === 'refreshed') {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            updateAuthState(session, true);
+            await fetchUserDetails(session.user).catch(() => {});
+            setAuthState((prev) => ({
+              ...prev,
+              sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+            }));
+          }
+          return;
+        }
+
+        // Keep prior recovery path when keep-alive skipped/failed with no usable session.
         const { data: { session: current } } = await supabase.auth.getSession();
         if (!current?.user) {
           const { data: { session }, error } = await supabase.auth.refreshSession();
@@ -510,24 +534,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               sessionRefreshNonce: prev.sessionRefreshNonce + 1,
             }));
           }
-          return;
-        }
-
-        const expiresAtSec = typeof current.expires_at === 'number' ? current.expires_at : null;
-        const nowSec = Math.floor(Date.now() / 1000);
-        // Skip network refresh when token is still valid — avoids slow mobile resume.
-        if (expiresAtSec && expiresAtSec - nowSec > 120) {
-          return;
-        }
-
-        const { data: { session }, error } = await supabase.auth.refreshSession();
-        if (!error && session?.user) {
-          updateAuthState(session, true);
-          await fetchUserDetails(session.user).catch(() => {});
-          setAuthState((prev) => ({
-            ...prev,
-            sessionRefreshNonce: prev.sessionRefreshNonce + 1,
-          }));
         }
       } catch {
         /* non-fatal */
@@ -552,9 +558,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [authState.user, updateAuthState, fetchUserDetails]);
 
+  // Track interaction so continuous use keeps the session fresh (desktop + mobile).
+  useEffect(() => {
+    if (!authState.user) {
+      stopAuthActivityTracking();
+      return;
+    }
+    startAuthActivityTracking();
+    return () => {
+      stopAuthActivityTracking();
+    };
+  }, [authState.user]);
+
   // Proactive session watchdog:
   // - checks session periodically (no user action needed)
-  // - refreshes shortly before expiry
+  // - refreshes shortly before expiry (wider buffer while recently active)
+  // - while user is actively using the app, periodically rotates refresh token
   // - signs out only on confirmed unrecoverable auth state (not transient tab resume)
   useEffect(() => {
     if (!authState.user) return;
@@ -563,20 +582,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let checkInFlight = false;
     let consecutiveAuthFailures = 0;
     const MAX_CONSECUTIVE_AUTH_FAILURES = 4;
+    const MAX_CONSECUTIVE_AUTH_FAILURES_ACTIVE = 6;
     const CHECK_INTERVAL_MS = 120000; // 2 minutes
-    const REFRESH_BUFFER_SEC = 90; // refresh when <90s to expiry
     const VISIBILITY_DEBOUNCE_MS = 800;
     let visibilityDebounce: ReturnType<typeof setTimeout> | null = null;
+
+    const failureLimit = () =>
+      wasRecentlyActive() ? MAX_CONSECUTIVE_AUTH_FAILURES_ACTIVE : MAX_CONSECUTIVE_AUTH_FAILURES;
 
     const maybeExpireSession = async () => {
       if (!isMounted) return;
       consecutiveAuthFailures += 1;
-      if (consecutiveAuthFailures < MAX_CONSECUTIVE_AUTH_FAILURES) return;
+      if (consecutiveAuthFailures < failureLimit()) return;
       if (hasAnySupabaseAuthKey()) {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
           consecutiveAuthFailures = 0;
           return;
+        }
+        if (wasRecentlyActive()) {
+          const recovered = await refreshSessionIfNeeded({ forceIfNearExpiry: true });
+          if (recovered === 'refreshed') {
+            consecutiveAuthFailures = 0;
+            const { data: { session: refreshed } } = await supabase.auth.getSession();
+            if (refreshed?.user) {
+              updateAuthState(refreshed, true);
+              setAuthState((prev) => ({
+                ...prev,
+                sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+              }));
+              return;
+            }
+          }
         }
       }
       await handleSessionExpiration();
@@ -628,21 +665,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           const expiresAtSec = typeof session.expires_at === 'number' ? session.expires_at : null;
           const nowSec = Math.floor(Date.now() / 1000);
-          const shouldRefreshSoon = !!expiresAtSec && expiresAtSec - nowSec <= REFRESH_BUFFER_SEC;
+          const refreshBufferSec = getAccessRefreshBufferSec();
+          const shouldRefreshSoon = !!expiresAtSec && expiresAtSec - nowSec <= refreshBufferSec;
 
-          if (shouldRefreshSoon) {
-            const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
-            if (!refreshError && refreshed?.user) {
-              updateAuthState(refreshed, true);
-              setAuthState((prev) => ({
-                ...prev,
-                sessionRefreshNonce: prev.sessionRefreshNonce + 1,
-              }));
+          if (shouldRefreshSoon || wasRecentlyActive()) {
+            const result = await refreshSessionIfNeeded();
+            if (result === 'refreshed') {
+              const { data: { session: refreshed } } = await supabase.auth.getSession();
+              if (refreshed?.user) {
+                updateAuthState(refreshed, true);
+                setAuthState((prev) => ({
+                  ...prev,
+                  sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+                }));
+              }
               consecutiveAuthFailures = 0;
               return;
             }
-            if (refreshError && !isNetworkError(refreshError) && isExpectedNoSessionError(refreshError)) {
-              await maybeExpireSession();
+            if (result === 'failed' && shouldRefreshSoon) {
+              const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
+              if (!refreshError && refreshed?.user) {
+                updateAuthState(refreshed, true);
+                setAuthState((prev) => ({
+                  ...prev,
+                  sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+                }));
+                consecutiveAuthFailures = 0;
+                return;
+              }
+              if (refreshError && !isNetworkError(refreshError) && isExpectedNoSessionError(refreshError)) {
+                await maybeExpireSession();
+              }
             }
           }
           return;
