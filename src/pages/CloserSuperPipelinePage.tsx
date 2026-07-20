@@ -4,11 +4,93 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, XMarkIcon, PencilIcon, MagnifyingGlassIcon, ChartBarIcon } from '@heroicons/react/24/outline';
+import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, XMarkIcon, PencilIcon, MagnifyingGlassIcon, ChartBarIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import * as Slider from '@radix-ui/react-slider';
 import LeadInteractionsModal from '../components/LeadInteractionsModal';
 import ExpertOpinionModal from '../components/ExpertOpinionModal';
+import {
+  fetchFlagTypes,
+  fetchFlaggedLeadIdsForUser,
+  filterLeadsByUserContentFlags,
+  flagTypeBadgeClass,
+  flagTypeLabel,
+  type FlagTypeRow,
+} from '../lib/userContentFlags';
+
+const RESCHEDULED_STAGE_ID = '21';
+
+type MeetingRoleIds = {
+  meeting_manager?: string | number | null;
+  helper?: string | number | null;
+  extern1?: string | number | null;
+  extern2?: string | number | null;
+};
+
+type MeetingRolesDisplay = {
+  meeting_manager: string;
+  scheduler: string;
+  closer: string;
+  helper: string;
+  guest_1: string;
+  guest_2: string;
+};
+
+const MEETING_ROLE_TOOLTIP_ROWS: Array<{ key: keyof MeetingRolesDisplay; label: string }> = [
+  { key: 'meeting_manager', label: 'Meeting manager' },
+  { key: 'scheduler', label: 'Scheduler' },
+  { key: 'closer', label: 'Closer' },
+  { key: 'helper', label: 'Helper' },
+  { key: 'guest_1', label: 'Guest 1' },
+  { key: 'guest_2', label: 'Guest 2' },
+];
+
+type EmployeeOption = { id: number; name: string; photoUrl: string | null };
+
+function initialsFromName(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] || ''}${parts[parts.length - 1][0] || ''}`.toUpperCase();
+}
+
+const EmployeeNameWithPhoto: React.FC<{
+  name: string;
+  photoUrl?: string | null;
+  size?: 'sm' | 'xs';
+  className?: string;
+}> = ({ name, photoUrl, size = 'sm', className = '' }) => {
+  const [imgErr, setImgErr] = useState(false);
+  const display = (name || '').trim();
+  if (!display || display === '---') {
+    return <span className={className}>---</span>;
+  }
+
+  const dim = size === 'xs' ? 'h-10 w-10 text-xs' : 'h-12 w-12 text-sm';
+  const url = (photoUrl || '').trim();
+  const showPhoto = url.length > 0 && !imgErr;
+
+  return (
+    <span className={`inline-flex flex-col items-center gap-0.5 min-w-0 ${className}`}>
+      {showPhoto ? (
+        <img
+          src={url}
+          alt=""
+          className={`${dim} rounded-full object-cover shrink-0`}
+          onError={() => setImgErr(true)}
+        />
+      ) : (
+        <span
+          className={`${dim} rounded-full shrink-0 flex items-center justify-center font-semibold bg-gray-200 text-gray-700`}
+          aria-hidden
+        >
+          {initialsFromName(display)}
+        </span>
+      )}
+      <span className="truncate max-w-[6.5rem] text-center leading-tight text-gray-500">{display}</span>
+    </span>
+  );
+};
 
 const CloserSuperPipelinePage = () => {
   const navigate = useNavigate();
@@ -23,6 +105,7 @@ const CloserSuperPipelinePage = () => {
     stages: string[];
     tags: string[];
     countries: string[];
+    flagTypes: string[];
     minProbability: number;
     maxProbability: number;
     eligibilityDeterminedOnly: boolean;
@@ -37,6 +120,7 @@ const CloserSuperPipelinePage = () => {
     stages: ['40', '50'], // Default stages: 40 and 50
     tags: [], // Changed to array for multi-select
     countries: [],
+    flagTypes: [],
     minProbability: 80,
     maxProbability: 100,
     eligibilityDeterminedOnly: false,
@@ -57,10 +141,11 @@ const CloserSuperPipelinePage = () => {
     storage: 'sessionStorage',
   });
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
-  const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
   const [countries, setCountries] = useState<{ id: string; name: string }[]>([]);
   const [stages, setStages] = useState<{ id: string; name: string }[]>([]);
+  const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
   const [editingManagerNotes, setEditingManagerNotes] = useState<{ leadId: string; lead: any } | null>(null);
   const [managerNotesValue, setManagerNotesValue] = useState<string>('');
   const [savingManagerNotes, setSavingManagerNotes] = useState(false);
@@ -70,18 +155,42 @@ const CloserSuperPipelinePage = () => {
   const [stageSearch, setStageSearch] = useState<string>('');
   const [tagsSearch, setTagsSearch] = useState<string>('');
   const [countrySearch, setCountrySearch] = useState<string>('');
+  const [flagTypeSearch, setFlagTypeSearch] = useState<string>('');
   const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
   const [showEmployeeDropdown, setShowEmployeeDropdown] = useState<boolean>(false);
   const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
   const [showStageDropdown, setShowStageDropdown] = useState<boolean>(false);
   const [showTagsDropdown, setShowTagsDropdown] = useState<boolean>(false);
   const [showCountryDropdown, setShowCountryDropdown] = useState<boolean>(false);
+  const [showFlagTypeDropdown, setShowFlagTypeDropdown] = useState<boolean>(false);
   const [probabilityExpanded, setProbabilityExpanded] = useState<boolean>(false);
+  const [meetingRolesTooltip, setMeetingRolesTooltip] = useState<{
+    top: number;
+    left: number;
+    roles: MeetingRolesDisplay;
+  } | null>(null);
 
   const employeeNameById = useMemo(() => {
     const map = new Map<string, string>();
     employees.forEach((emp) => {
       map.set(String(emp.id), emp.name);
+    });
+    return map;
+  }, [employees]);
+
+  const employeePhotoById = useMemo(() => {
+    const map = new Map<string, string>();
+    employees.forEach((emp) => {
+      if (emp.photoUrl) map.set(String(emp.id), emp.photoUrl);
+    });
+    return map;
+  }, [employees]);
+
+  const employeePhotoByName = useMemo(() => {
+    const map = new Map<string, string>();
+    employees.forEach((emp) => {
+      const key = emp.name.trim().toLowerCase();
+      if (key && emp.photoUrl) map.set(key, emp.photoUrl);
     });
     return map;
   }, [employees]);
@@ -99,6 +208,19 @@ const CloserSuperPipelinePage = () => {
     // Some records can contain extra spaces around names.
     return raw;
   }, [employeeNameById]);
+
+  const resolveEmployeePhoto = useCallback(
+    (displayName: string | null | undefined): string | null => {
+      if (!displayName || displayName === '---') return null;
+      const raw = displayName.trim();
+      if (!raw) return null;
+      if (/^\d+$/.test(raw)) {
+        return employeePhotoById.get(raw) || null;
+      }
+      return employeePhotoByName.get(raw.toLowerCase()) || null;
+    },
+    [employeePhotoById, employeePhotoByName],
+  );
 
   // Helper function to toggle stage selection
   const toggleStageSelection = (stageId: string) => {
@@ -181,6 +303,21 @@ const CloserSuperPipelinePage = () => {
       }));
     }
   };
+
+  const toggleFlagTypeSelection = (flagTypeId: string) => {
+    const current = filters.flagTypes || [];
+    if (current.includes(flagTypeId)) {
+      setFilters((prev) => ({
+        ...prev,
+        flagTypes: current.filter((id) => id !== flagTypeId),
+      }));
+    } else {
+      setFilters((prev) => ({
+        ...prev,
+        flagTypes: [...current, flagTypeId],
+      }));
+    }
+  };
   const [currentUserId, setCurrentUserId] = useState<string | number | null>(null);
   const [interactionsCache, setInteractionsCache] = useState<Map<string, any[]>>(new Map());
   const [loadingInteractions, setLoadingInteractions] = useState<Set<string>>(new Set());
@@ -191,6 +328,10 @@ const CloserSuperPipelinePage = () => {
   const [followUpDate, setFollowUpDate] = useState<string>('');
   const [followUpNotes, setFollowUpNotes] = useState<string>('');
   const [savingFollowUp, setSavingFollowUp] = useState(false);
+  const [showRescheduledModal, setShowRescheduledModal] = useState(false);
+  const [rescheduledStageFromDate, setRescheduledStageFromDate] = useState('');
+  const [rescheduledStageToDate, setRescheduledStageToDate] = useState('');
+  const [rescheduledSearchActive, setRescheduledSearchActive] = useState(false);
 
   const resolveCurrentUserId = async (): Promise<string | number | null> => {
     if (currentUserId) return currentUserId;
@@ -243,13 +384,22 @@ const CloserSuperPipelinePage = () => {
 
       // No need to fetch all categories - we only use main categories
 
-      // Fetch employees
+      // Fetch employees (include photo for closer/scheduler + meeting-role tooltips)
       const { data: empData } = await supabase
         .from('tenants_employee')
-        .select('id, display_name')
+        .select('id, display_name, photo_url, photo')
         .order('display_name');
       if (empData) {
-        setEmployees(empData.map(emp => ({ id: emp.id, name: emp.display_name || `Employee #${emp.id}` })));
+        setEmployees(
+          empData.map((emp) => ({
+            id: emp.id,
+            name: emp.display_name || `Employee #${emp.id}`,
+            photoUrl:
+              (typeof emp.photo_url === 'string' && emp.photo_url.trim()) ||
+              (typeof emp.photo === 'string' && emp.photo.trim()) ||
+              null,
+          })),
+        );
       }
 
       // Fetch languages
@@ -278,6 +428,9 @@ const CloserSuperPipelinePage = () => {
       if (stagesData) {
         setStages(stagesData.map(stage => ({ id: stage.id.toString(), name: stage.name })));
       }
+
+      const types = await fetchFlagTypes(supabase);
+      setFlagTypes(types);
     };
     fetchOptions();
   }, []);
@@ -828,6 +981,7 @@ const CloserSuperPipelinePage = () => {
       stages: [], // Reset to empty array (no default stages)
       tags: [], // Reset to empty array
       countries: [],
+      flagTypes: [],
       minProbability: 80,
       maxProbability: 100,
       eligibilityDeterminedOnly: false,
@@ -839,7 +993,257 @@ const CloserSuperPipelinePage = () => {
     setStageSearch('');
     setTagsSearch('');
     setCountrySearch('');
+    setFlagTypeSearch('');
+    setRescheduledStageFromDate('');
+    setRescheduledStageToDate('');
+    setRescheduledSearchActive(false);
+    setShowRescheduledModal(false);
     // Keep results, totals, and table visibility - don't clear them
+  };
+
+  const openRescheduledMeetingsModal = () => {
+    setFilters((prev) => ({
+      ...prev,
+      stages: [RESCHEDULED_STAGE_ID],
+      minProbability: 0,
+      maxProbability: 100,
+    }));
+    setShowRescheduledModal(true);
+  };
+
+  const closeRescheduledMeetingsModal = () => {
+    setShowRescheduledModal(false);
+  };
+
+  /**
+   * Employee filter lead IDs:
+   * - closer / scheduler → leads + leads_lead (not on meetings)
+   * - meeting manager / helper / guest 1 / guest 2 → meetings table
+   * When from/to dates are set, meeting-role matches use that range; closer/scheduler
+   * leads are kept only if they also have a meeting in that range.
+   */
+  const fetchLeadIdsForEmployeeFilter = async (params: {
+    employeeId: string;
+    employeeName: string;
+    fromDate?: string;
+    toDate?: string;
+  }): Promise<{ newLeadIds: Set<string>; legacyIds: Set<number> }> => {
+    const newLeadIds = new Set<string>();
+    const legacyIds = new Set<number>();
+    const employeeId = String(params.employeeId).trim();
+    const employeeName = params.employeeName.trim();
+    const employeeIdNum = Number(employeeId);
+    const PAGE_SIZE = 1000;
+
+    const addMeetingLeadIds = (rows: any[]) => {
+      rows.forEach((meeting: any) => {
+        const status = String(meeting.status || '').toLowerCase();
+        if (status === 'canceled' || status === 'cancelled') return;
+        if (meeting.client_id) newLeadIds.add(String(meeting.client_id));
+        if (meeting.legacy_lead_id != null) {
+          const legacyId = Number(meeting.legacy_lead_id);
+          if (Number.isFinite(legacyId)) legacyIds.add(legacyId);
+        }
+      });
+    };
+
+    // 1) Meetings roles only: manager, helper, guest 1, guest 2
+    {
+      const roleFields = ['meeting_manager', 'helper', 'extern1', 'extern2'] as const;
+      const orParts: string[] = [];
+      roleFields.forEach((field) => {
+        orParts.push(`${field}.eq.${employeeId}`);
+        if (employeeName && !/[.,()]/.test(employeeName)) {
+          orParts.push(`${field}.eq.${employeeName}`);
+        }
+      });
+      const roleOrFilter = orParts.join(',');
+      let from = 0;
+      while (true) {
+        let meetingsQuery = supabase
+          .from('meetings')
+          .select('client_id, legacy_lead_id, meeting_date, status')
+          .or(roleOrFilter)
+          .order('meeting_date', { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+
+        if (params.fromDate) {
+          meetingsQuery = meetingsQuery.gte('meeting_date', params.fromDate);
+        }
+        if (params.toDate) {
+          meetingsQuery = meetingsQuery.lte('meeting_date', params.toDate);
+        }
+
+        const { data, error } = await meetingsQuery;
+        if (error) throw error;
+        const rows = data || [];
+        addMeetingLeadIds(rows);
+        if (rows.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+        if (from >= 20000) break;
+      }
+    }
+
+    // 2) Closer / scheduler from leads (new)
+    {
+      const closerSchedulerNewIds = new Set<string>();
+      const orParts = [
+        `closer.eq.${employeeId}`,
+        `scheduler.eq.${employeeId}`,
+      ];
+      if (employeeName && !/[.,()]/.test(employeeName)) {
+        orParts.push(`closer.eq.${employeeName}`, `scheduler.eq.${employeeName}`);
+      }
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('leads')
+          .select('id')
+          .or(orParts.join(','))
+          .is('unactivated_at', null)
+          .range(from, from + PAGE_SIZE - 1);
+        if (error) throw error;
+        const rows = data || [];
+        rows.forEach((row: any) => {
+          if (row.id) closerSchedulerNewIds.add(String(row.id));
+        });
+        if (rows.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+        if (from >= 20000) break;
+      }
+
+      if (params.fromDate || params.toDate) {
+        // Keep closer/scheduler leads only if they have a meeting in the date range.
+        const idList = Array.from(closerSchedulerNewIds);
+        for (let i = 0; i < idList.length; i += 500) {
+          const chunk = idList.slice(i, i + 500);
+          let mq = supabase
+            .from('meetings')
+            .select('client_id, status, meeting_date')
+            .in('client_id', chunk);
+          if (params.fromDate) mq = mq.gte('meeting_date', params.fromDate);
+          if (params.toDate) mq = mq.lte('meeting_date', params.toDate);
+          const { data, error } = await mq;
+          if (error) throw error;
+          (data || []).forEach((m: any) => {
+            const status = String(m.status || '').toLowerCase();
+            if (status === 'canceled' || status === 'cancelled') return;
+            if (m.client_id) newLeadIds.add(String(m.client_id));
+          });
+        }
+      } else {
+        closerSchedulerNewIds.forEach((id) => newLeadIds.add(id));
+      }
+    }
+
+    // 3) Closer / scheduler from leads_lead (legacy)
+    {
+      const closerSchedulerLegacyIds = new Set<number>();
+      if (Number.isFinite(employeeIdNum)) {
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select('id')
+            .or(`closer_id.eq.${employeeIdNum},meeting_scheduler_id.eq.${employeeIdNum}`)
+            .eq('status', 0)
+            .range(from, from + PAGE_SIZE - 1);
+          if (error) throw error;
+          const rows = data || [];
+          rows.forEach((row: any) => {
+            const id = Number(row.id);
+            if (Number.isFinite(id)) closerSchedulerLegacyIds.add(id);
+          });
+          if (rows.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+          if (from >= 20000) break;
+        }
+      }
+
+      if (params.fromDate || params.toDate) {
+        const idList = Array.from(closerSchedulerLegacyIds);
+        for (let i = 0; i < idList.length; i += 500) {
+          const chunk = idList.slice(i, i + 500);
+          let mq = supabase
+            .from('meetings')
+            .select('legacy_lead_id, status, meeting_date')
+            .in('legacy_lead_id', chunk);
+          if (params.fromDate) mq = mq.gte('meeting_date', params.fromDate);
+          if (params.toDate) mq = mq.lte('meeting_date', params.toDate);
+          const { data, error } = await mq;
+          if (error) throw error;
+          (data || []).forEach((m: any) => {
+            const status = String(m.status || '').toLowerCase();
+            if (status === 'canceled' || status === 'cancelled') return;
+            const legacyId = Number(m.legacy_lead_id);
+            if (Number.isFinite(legacyId)) legacyIds.add(legacyId);
+          });
+        }
+      } else {
+        closerSchedulerLegacyIds.forEach((id) => legacyIds.add(id));
+      }
+    }
+
+    return { newLeadIds, legacyIds };
+  };
+
+  const fetchRescheduledLeadIdSets = async (
+    fromDate: string,
+    toDate: string,
+  ): Promise<{ legacyIds: Set<number>; newLeadIds: Set<string> }> => {
+    const legacyIds = new Set<number>();
+    const newLeadIds = new Set<string>();
+    const PAGE_SIZE = 1000;
+    let from = 0;
+
+    // Paginate — default PostgREST limit can drop legacy rows on large date ranges.
+    while (true) {
+      let stageQuery = supabase
+        .from('leads_leadstage')
+        .select('lead_id, newlead_id, cdate')
+        .eq('stage', Number(RESCHEDULED_STAGE_ID))
+        .order('cdate', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (fromDate) {
+        stageQuery = stageQuery.gte('cdate', fromDate);
+      }
+      if (toDate) {
+        stageQuery = stageQuery.lte('cdate', `${toDate}T23:59:59`);
+      }
+
+      const { data, error } = await stageQuery;
+      if (error) throw error;
+
+      const rows = data || [];
+      rows.forEach((row: { lead_id?: number | null; newlead_id?: string | null }) => {
+        if (row.lead_id != null) {
+          const legacyId = Number(row.lead_id);
+          if (Number.isFinite(legacyId)) legacyIds.add(legacyId);
+        }
+        if (row.newlead_id != null && String(row.newlead_id).trim()) {
+          newLeadIds.add(String(row.newlead_id));
+        }
+      });
+
+      if (rows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+
+    return { legacyIds, newLeadIds };
+  };
+
+  const handleRescheduledMeetingsSearch = async () => {
+    if (!rescheduledStageFromDate && !rescheduledStageToDate) {
+      toast.error('Select at least one rescheduled stage date');
+      return;
+    }
+    setRescheduledSearchActive(true);
+    setShowRescheduledModal(false);
+    await handleSearch(true, {
+      rescheduledStageFromDate,
+      rescheduledStageToDate,
+    });
   };
 
   // Format stage name from joined lead_stages (same pattern as CalendarPage / SchedulerToolPage)
@@ -1289,14 +1693,119 @@ const CloserSuperPipelinePage = () => {
     setManagerNotesValue('');
   };
 
-  const handleSearch = async (applyDateFilters: boolean = true) => {
+  const handleSearch = async (
+    applyDateFilters: boolean = true,
+    options?: {
+      rescheduledStageFromDate?: string;
+      rescheduledStageToDate?: string;
+    },
+  ) => {
     setIsSearching(true);
     if (applyDateFilters) {
       setSearchPerformed(true);
     }
+    const rescheduledFrom = options?.rescheduledStageFromDate ?? (rescheduledSearchActive ? rescheduledStageFromDate : '');
+    const rescheduledTo = options?.rescheduledStageToDate ?? (rescheduledSearchActive ? rescheduledStageToDate : '');
+    const applyRescheduledStageDateFilter =
+      Boolean(rescheduledFrom || rescheduledTo) &&
+      (rescheduledSearchActive || Boolean(options?.rescheduledStageFromDate || options?.rescheduledStageToDate));
     try {
       const allLeads: any[] = [];
       const effectiveCurrentUserId = currentUserId ?? await resolveCurrentUserId();
+
+      // Resolve stage-21 history IDs up front so both new + legacy leads are included.
+      let rescheduledLegacyIds = new Set<number>();
+      let rescheduledNewLeadIds = new Set<string>();
+      if (applyRescheduledStageDateFilter) {
+        const idSets = await fetchRescheduledLeadIdSets(rescheduledFrom, rescheduledTo);
+        rescheduledLegacyIds = idSets.legacyIds;
+        rescheduledNewLeadIds = idSets.newLeadIds;
+        console.log('🔍 DEBUG: Rescheduled stage 21 history IDs', {
+          rescheduledFrom,
+          rescheduledTo,
+          legacyIds: rescheduledLegacyIds.size,
+          newLeadIds: rescheduledNewLeadIds.size,
+        });
+      }
+
+      // Employee filter:
+      // - closer / scheduler → leads + leads_lead
+      // - meeting manager / helper / guest 1 / guest 2 → meetings
+      let meetingRoleNewLeadIds: Set<string> | null = null;
+      let meetingRoleLegacyIds: Set<number> | null = null;
+      const employeeFilterActive =
+        Boolean(filters.employee) && filters.employee !== '--';
+      if (employeeFilterActive) {
+        const employee = employees.find((emp) => emp.id.toString() === filters.employee);
+        if (employee) {
+          const meetingDateFrom =
+            applyDateFilters && filters.fromDate ? filters.fromDate : undefined;
+          const meetingDateTo =
+            applyDateFilters && filters.toDate ? filters.toDate : undefined;
+          const roleIds = await fetchLeadIdsForEmployeeFilter({
+            employeeId: filters.employee,
+            employeeName: employee.name,
+            fromDate: meetingDateFrom,
+            toDate: meetingDateTo,
+          });
+          meetingRoleNewLeadIds = roleIds.newLeadIds;
+          meetingRoleLegacyIds = roleIds.legacyIds;
+          console.log('🔍 DEBUG: Employee filter lead IDs', {
+            employeeId: filters.employee,
+            employeeName: employee.name,
+            meetingDateFrom,
+            meetingDateTo,
+            newLeadIds: meetingRoleNewLeadIds.size,
+            legacyIds: meetingRoleLegacyIds.size,
+          });
+        } else {
+          meetingRoleNewLeadIds = new Set();
+          meetingRoleLegacyIds = new Set();
+        }
+      }
+
+      // Flagged leads: Clients-style post-filter (lead → interactions → flags).
+      // Optional seed IDs from reverse resolve only when there are no stages/employee
+      // (keeps the candidate query bounded).
+      let flaggedNewLeadIds: Set<string> | null = null;
+      let flaggedLegacyLeadIds: Set<number> | null = null;
+      const flagFilterActive = Boolean(filters.flagTypes && filters.flagTypes.length > 0);
+      const selectedFlagTypeIds = flagFilterActive
+        ? (filters.flagTypes || []).map((id) => Number(id)).filter((id) => Number.isFinite(id))
+        : [];
+      const stagesSelectedForFlags = Boolean(filters.stages && filters.stages.length > 0);
+      if (
+        flagFilterActive &&
+        selectedFlagTypeIds.length > 0 &&
+        !stagesSelectedForFlags &&
+        !employeeFilterActive &&
+        effectiveCurrentUserId
+      ) {
+        const seeds = await fetchFlaggedLeadIdsForUser(
+          supabase,
+          String(effectiveCurrentUserId),
+          selectedFlagTypeIds,
+          { allUsers: true }
+        );
+        if (seeds.newLeadIds.size + seeds.legacyLeadIds.size > 0) {
+          flaggedNewLeadIds = seeds.newLeadIds;
+          flaggedLegacyLeadIds = seeds.legacyLeadIds;
+        }
+        console.log('🔍 DEBUG: Flag seed IDs (no stage/employee narrowing)', {
+          selectedFlagTypes: filters.flagTypes,
+          newLeadIds: flaggedNewLeadIds?.size ?? 0,
+          legacyIds: flaggedLegacyLeadIds?.size ?? 0,
+        });
+      }
+
+      // Relax closer/probability/status/meeting gates when flag-filtering with a
+      // bounded candidate set (stages, employee, or reverse seeds).
+      const relaxGatesForFlags =
+        flagFilterActive &&
+        (stagesSelectedForFlags ||
+          employeeFilterActive ||
+          Boolean(flaggedNewLeadIds && flaggedNewLeadIds.size + (flaggedLegacyLeadIds?.size || 0) > 0));
+
       const normalizeDateOnly = (value: any): string | null => {
         if (!value) return null;
         if (typeof value === 'string') return value.split('T')[0];
@@ -1402,11 +1911,20 @@ const CloserSuperPipelinePage = () => {
           eligibility_status_timestamp,
           eligibility_status_last_edited_at
         `)
-        .gte('probability', Number(filters.minProbability)) // Probability >= minProbability (ensure it's a number)
-        .lte('probability', Number(filters.maxProbability)) // Probability <= maxProbability (ensure it's a number)
-        .not('probability', 'is', null) // Exclude null probabilities
-        .not('closer', 'is', null) // Only leads with closer assigned
         .is('unactivated_at', null); // Only active leads (closer pipeline doesn't check eligible)
+
+      // Probability range — skip when flag-filter has a bounded candidate set.
+      if (!relaxGatesForFlags) {
+        newLeadsQuery = newLeadsQuery
+          .gte('probability', Number(filters.minProbability))
+          .lte('probability', Number(filters.maxProbability))
+          .not('probability', 'is', null);
+      }
+
+      // Require a closer only when not filtering by meeting roles or relaxed flag gates.
+      if (!employeeFilterActive && !relaxGatesForFlags) {
+        newLeadsQuery = newLeadsQuery.not('closer', 'is', null);
+      }
 
       // Apply stage filter - use selected stages from filters (convert to numbers for database query)
       // Only apply filter if stages are selected (no hardcoded default)
@@ -1467,35 +1985,42 @@ const CloserSuperPipelinePage = () => {
         newLeadsQuery = newLeadsQuery.eq('eligible', true);
       }
 
-      // Apply employee filter (closer)
-      // Note: The closer field can contain either employee ID (as string) OR employee name
-      // Since PostgREST's or() might not work well with other filters, we'll fetch leads
-      // matching other criteria and filter by employee client-side
+      // Apply employee filter (closer/scheduler on lead + meeting manager/helper/guests).
+      // Also apply flagged-leads ID restriction (intersect when both are active).
       let needsClientSideEmployeeFilter = false;
       let employeeFilterId: string | null = null;
       let employeeFilterName: string | null = null;
-      
-      if (filters.employee) {
-        if (filters.employee === '--') {
-          // Show NULL closer or NULL scheduler entries
-          newLeadsQuery = newLeadsQuery.or('closer.is.null,scheduler.is.null');
+      let restrictedNewLeadIds: Set<string> | null = null;
+      if (employeeFilterActive && meetingRoleNewLeadIds) {
+        restrictedNewLeadIds = new Set(meetingRoleNewLeadIds);
+      }
+      if (flagFilterActive && flaggedNewLeadIds) {
+        if (restrictedNewLeadIds) {
+          restrictedNewLeadIds = new Set(
+            [...restrictedNewLeadIds].filter((id) => flaggedNewLeadIds!.has(id))
+          );
         } else {
-          const employee = employees.find(emp => emp.id.toString() === filters.employee);
-          if (employee) {
-            console.log('🔍 DEBUG: Will filter by employee client-side', {
-              employeeId: filters.employee,
-              employeeName: employee.name,
-              reason: 'PostgREST or() may not work correctly with other filters'
-            });
-            // Store filter criteria for client-side filtering
+          restrictedNewLeadIds = new Set(flaggedNewLeadIds);
+        }
+      }
+
+      if (filters.employee === '--') {
+        // Show NULL closer or NULL scheduler entries
+        newLeadsQuery = newLeadsQuery.or('closer.is.null,scheduler.is.null');
+      }
+
+      if (restrictedNewLeadIds) {
+        const newIds = Array.from(restrictedNewLeadIds);
+        if (newIds.length === 0) {
+          newLeadsQuery = newLeadsQuery.eq('id', '00000000-0000-0000-0000-000000000000');
+        } else {
+          // Prefer DB filter; remaining IDs are gap-filled / client-filtered below if needed.
+          newLeadsQuery = newLeadsQuery.in('id', newIds.slice(0, 500));
+          if (employeeFilterActive) {
             needsClientSideEmployeeFilter = true;
             employeeFilterId = filters.employee;
-            employeeFilterName = employee.name.trim();
-          } else {
-            console.warn('🔍 DEBUG: Employee filter set but employee not found', {
-              employeeId: filters.employee,
-              availableEmployees: employees.map(e => ({ id: e.id, name: e.name }))
-            });
+            employeeFilterName =
+              employees.find((emp) => emp.id.toString() === filters.employee)?.name.trim() || null;
           }
         }
       }
@@ -1566,7 +2091,8 @@ const CloserSuperPipelinePage = () => {
         }
       }
       
-      const { data: newLeads, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
+      const { data: newLeadsRaw, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
+      let newLeads = newLeadsRaw || [];
 
       console.log('🔍 DEBUG: New leads query result', {
         newLeadsCount: newLeads?.length || 0,
@@ -1580,9 +2106,100 @@ const CloserSuperPipelinePage = () => {
         // Continue with empty array - will still try to fetch legacy leads
       }
 
-      // Fetch meeting dates for new leads from meetings table
+      // Rescheduled: gap-fill any new leads present in stage history but missing from the stage query.
+      if (applyRescheduledStageDateFilter && rescheduledNewLeadIds.size > 0) {
+        const foundNewIds = new Set(newLeads.map((l: any) => String(l.id)));
+        const missingNewIds = Array.from(rescheduledNewLeadIds).filter((id) => !foundNewIds.has(id));
+        if (missingNewIds.length > 0) {
+          const CHUNK_SIZE = 200;
+          for (let i = 0; i < missingNewIds.length; i += CHUNK_SIZE) {
+            const chunk = missingNewIds.slice(i, i + CHUNK_SIZE);
+            const { data: extraNew, error: extraNewErr } = await supabase
+              .from('leads')
+              .select(`
+                id,
+                lead_number,
+                manual_id,
+                name,
+                created_at,
+                latest_interaction,
+                meeting_date,
+                closer,
+                scheduler,
+                expert,
+                manager,
+                category,
+                category_id,
+                stage,
+                eligible,
+                probability,
+                language,
+                country_id,
+                number_of_applicants_meeting,
+                potential_applicants_meeting,
+                balance,
+                balance_currency,
+                currency_id,
+                proposal_total,
+                master_id,
+                accounting_currencies!leads_currency_id_fkey (
+                  id,
+                  name,
+                  iso_code
+                ),
+                misc_country!country_id (
+                  id,
+                  name
+                ),
+                lead_stages!fk_leads_stage (
+                  id,
+                  name,
+                  colour
+                ),
+                misc_category!fk_leads_category_id (
+                  id,
+                  name,
+                  parent_id,
+                  misc_maincategory!parent_id (
+                    id,
+                    name
+                  )
+                ),
+                leads_lead_tags (
+                  misc_leadtag (
+                    name
+                  )
+                ),
+                expert_notes,
+                management_notes,
+                followup_log,
+                unactivated_at,
+                eligibility_status,
+                eligibility_status_timestamp,
+                eligibility_status_last_edited_at
+              `)
+              .in('id', chunk)
+              .in('stage', [Number(RESCHEDULED_STAGE_ID)])
+              .is('unactivated_at', null);
+            if (extraNewErr) {
+              console.error('❌ ERROR: Rescheduled new-lead gap-fill failed', extraNewErr);
+              break;
+            }
+            if (extraNew?.length) {
+              newLeads = [...newLeads, ...extraNew];
+            }
+          }
+          console.log('🔍 DEBUG: Rescheduled new-lead gap-fill', {
+            missingRequested: missingNewIds.length,
+            totalAfter: newLeads.length,
+          });
+        }
+      }
+
+      // Fetch meeting dates + roles for new leads from meetings table
       const newLeadIds = (newLeads || []).map((l: any) => l.id).filter(Boolean);
       const meetingDatesMap: Record<string, string> = {};
+      const meetingRolesMap: Record<string, MeetingRoleIds> = {};
 
       if (newLeadIds.length > 0) {
         // Query in chunks to avoid oversized IN() lists that can drop matches.
@@ -1591,7 +2208,7 @@ const CloserSuperPipelinePage = () => {
           const chunk = newLeadIds.slice(i, i + CHUNK_SIZE);
           const { data: meetingsData, error: meetingsError } = await supabase
             .from('meetings')
-            .select('client_id, meeting_date')
+            .select('client_id, meeting_date, meeting_manager, helper, extern1, extern2')
             .in('client_id', chunk)
             .or('status.is.null,status.neq.canceled')
             .order('meeting_date', { ascending: false });
@@ -1612,9 +2229,15 @@ const CloserSuperPipelinePage = () => {
                   ? meeting.meeting_date.split('T')[0]
                   : new Date(meeting.meeting_date).toISOString().split('T')[0];
                 const key = String(meeting.client_id);
-                // Keep the most recent meeting date for each lead
+                // Keep the most recent meeting date + roles for each lead
                 if (!meetingDatesMap[key] || dateStr > meetingDatesMap[key]) {
                   meetingDatesMap[key] = dateStr;
+                  meetingRolesMap[key] = {
+                    meeting_manager: meeting.meeting_manager,
+                    helper: meeting.helper,
+                    extern1: meeting.extern1,
+                    extern2: meeting.extern2,
+                  };
                 }
               }
             });
@@ -1677,9 +2300,16 @@ const CloserSuperPipelinePage = () => {
         }
       }
 
-      // Filter new leads by meeting date if date filters are applied
+      // Filter new leads by meeting date if date filters are applied.
+      // When an employee or flag filter is active, skip the "latest meeting only" date gate
+      // so matches aren't dropped for lacking a meeting in range.
       let filteredNewLeads = newLeads || [];
-      if (applyDateFilters && (filters.fromDate || filters.toDate)) {
+      if (
+        applyDateFilters &&
+        (filters.fromDate || filters.toDate) &&
+        !employeeFilterActive &&
+        !relaxGatesForFlags
+      ) {
         filteredNewLeads = filteredNewLeads.filter((lead: any) => {
           const meetingDate = getLatestDate(meetingDatesMap[String(lead.id)], lead.meeting_date);
           if (!meetingDate) return false; // Exclude leads without meeting dates when filtering
@@ -1690,86 +2320,91 @@ const CloserSuperPipelinePage = () => {
       }
 
 
-      // Apply employee filter client-side (closer field can contain either ID or name)
-      // Use the same logic as SalesContributionPage.tsx: check type first, then match accordingly
-      if (needsClientSideEmployeeFilter && employeeFilterId && employeeFilterName) {
-        const beforeEmployeeFilter = filteredNewLeads.length;
-        const employeeFilterIdNum = Number(employeeFilterId);
-        const employeeFilterNameLower = employeeFilterName.toLowerCase().trim();
-        
-        // Sample a few leads to debug what closer values we're seeing
-        const sampleLeads = filteredNewLeads.slice(0, 10).map((lead: any) => ({
-          lead_number: lead.lead_number,
-          closer: lead.closer,
-          closerType: typeof lead.closer,
-          closerString: String(lead.closer || '').trim(),
-          closerAsNumber: Number(lead.closer),
-          matchesById: Number(lead.closer) === employeeFilterIdNum,
-          matchesByName: typeof lead.closer === 'string' && lead.closer.trim().toLowerCase() === employeeFilterNameLower
-        }));
-        console.log('🔍 DEBUG: Sample closer values before filtering', {
-          employeeFilterId: employeeFilterId,
-          employeeFilterIdNum,
-          employeeFilterName: employeeFilterName,
-          employeeFilterNameLower,
-          sampleLeads
-        });
-        
-        // Helper function to check if a value matches the employee (by ID or name)
-        const matchesEmployee = (value: any): boolean => {
-          if (!value) return false;
-          
-          // Try to match by ID first (works for both string "84" and number 84)
-          const valueAsNumber = Number(value);
-          if (!isNaN(valueAsNumber) && isFinite(valueAsNumber)) {
-            if (valueAsNumber === employeeFilterIdNum) {
-              return true;
+      // Keep only leads in the restricted ID set (employee roles and/or flagged seeds),
+      // and gap-fill IDs beyond the first 500 used in the DB `.in()` filter.
+      if (restrictedNewLeadIds && (needsClientSideEmployeeFilter || Boolean(flaggedNewLeadIds))) {
+        const beforeRestrictedFilter = filteredNewLeads.length;
+        filteredNewLeads = filteredNewLeads.filter((lead: any) =>
+          restrictedNewLeadIds!.has(String(lead.id)),
+        );
+
+        const foundIds = new Set(filteredNewLeads.map((l: any) => String(l.id)));
+        const missingIds = Array.from(restrictedNewLeadIds).filter((id) => !foundIds.has(id));
+        if (missingIds.length > 0) {
+          const CHUNK_SIZE = 200;
+          const gapFillSelect = `
+                id,
+                lead_number,
+                manual_id,
+                name,
+                created_at,
+                latest_interaction,
+                meeting_date,
+                closer,
+                scheduler,
+                expert,
+                manager,
+                category,
+                category_id,
+                stage,
+                eligible,
+                probability,
+                language,
+                country_id,
+                number_of_applicants_meeting,
+                potential_applicants_meeting,
+                balance,
+                balance_currency,
+                currency_id,
+                proposal_total,
+                master_id,
+                accounting_currencies!leads_currency_id_fkey ( id, name, iso_code ),
+                misc_country!country_id ( id, name ),
+                lead_stages!fk_leads_stage ( id, name, colour ),
+                misc_category!fk_leads_category_id (
+                  id, name, parent_id,
+                  misc_maincategory!parent_id ( id, name )
+                ),
+                leads_lead_tags ( misc_leadtag ( name ) ),
+                expert_notes,
+                management_notes,
+                followup_log,
+                unactivated_at,
+                eligibility_status,
+                eligibility_status_timestamp,
+                eligibility_status_last_edited_at
+              `;
+          for (let i = 0; i < missingIds.length; i += CHUNK_SIZE) {
+            const chunk = missingIds.slice(i, i + CHUNK_SIZE);
+            let gapQ = supabase
+              .from('leads')
+              .select(gapFillSelect)
+              .in('id', chunk)
+              .is('unactivated_at', null);
+            if (!relaxGatesForFlags) {
+              gapQ = gapQ
+                .gte('probability', Number(filters.minProbability))
+                .lte('probability', Number(filters.maxProbability))
+                .not('probability', 'is', null);
+            }
+            const { data: extraNew, error: extraNewErr } = await gapQ;
+            if (extraNewErr) {
+              console.error('❌ ERROR: Restricted new-lead gap-fill failed', extraNewErr);
+              break;
+            }
+            if (extraNew?.length) {
+              filteredNewLeads = [...filteredNewLeads, ...extraNew];
             }
           }
-          
-          // Also try to match by name (works for string "Einat")
-          if (typeof value === 'string') {
-            const trimmed = value.trim().toLowerCase();
-            if (trimmed === employeeFilterNameLower) {
-              return true;
-            }
-          }
-          
-          return false;
-        };
-        
-        // Count matches for debugging
-        let matchedByCloser = 0;
-        let matchedByScheduler = 0;
-        let noRoles = 0;
-        
-        filteredNewLeads = filteredNewLeads.filter((lead: any) => {
-          // Check both closer and scheduler fields (employee can be in either role)
-          const matchesCloser = matchesEmployee(lead.closer);
-          const matchesScheduler = matchesEmployee(lead.scheduler);
-          
-          if (matchesCloser) matchedByCloser++;
-          if (matchesScheduler) matchedByScheduler++;
-          if (!lead.closer && !lead.scheduler) noRoles++;
-          
-          return matchesCloser || matchesScheduler;
-        });
-        
-        console.log('🔍 DEBUG: Employee filter match breakdown', {
-          matchedByCloser,
-          matchedByScheduler,
-          noRoles,
-          totalFiltered: filteredNewLeads.length
-        });
-        
-        console.log('🔍 DEBUG: Applied client-side employee filter', {
+        }
+
+        console.log('🔍 DEBUG: Applied restricted ID filter (new leads)', {
           employeeId: employeeFilterId,
-          employeeIdNum: employeeFilterIdNum,
           employeeName: employeeFilterName,
-          employeeNameLower: employeeFilterNameLower,
-          beforeFilter: beforeEmployeeFilter,
+          flagTypes: filters.flagTypes,
+          beforeFilter: beforeRestrictedFilter,
           afterFilter: filteredNewLeads.length,
-          sampleLeads
+          restrictedIds: restrictedNewLeadIds.size,
         });
       }
 
@@ -1854,6 +2489,17 @@ const CloserSuperPipelinePage = () => {
             .map((t: any) => (t.misc_leadtag?.name ?? (Array.isArray(t.misc_leadtag) ? t.misc_leadtag[0]?.name : null)))
             .filter(Boolean)
             .join(', ');
+          const closerDisplay = resolveEmployeeDisplay(lead.closer);
+          const schedulerDisplay = resolveEmployeeDisplay(lead.scheduler);
+          const meetingRoles = meetingRolesMap[String(lead.id)];
+          const meetingRolesDisplay: MeetingRolesDisplay = {
+            meeting_manager: resolveEmployeeDisplay(meetingRoles?.meeting_manager),
+            scheduler: schedulerDisplay,
+            closer: closerDisplay,
+            helper: resolveEmployeeDisplay(meetingRoles?.helper),
+            guest_1: resolveEmployeeDisplay(meetingRoles?.extern1),
+            guest_2: resolveEmployeeDisplay(meetingRoles?.extern2),
+          };
           allLeads.push({
             ...lead,
             lead_type: 'new',
@@ -1865,10 +2511,11 @@ const CloserSuperPipelinePage = () => {
             category: getCategoryDisplayFromJoin(lead) || '---',
             expert_opinion: expertOpinionText,
             manager_notes: managerNotesText,
-            closer: resolveEmployeeDisplay(lead.closer),
-            scheduler: resolveEmployeeDisplay(lead.scheduler),
+            closer: closerDisplay,
+            scheduler: schedulerDisplay,
             country: (lead as any).misc_country?.name || '---',
             meeting_date: getLatestDate(meetingDatesMap[String(lead.id)], lead.meeting_date),
+            meeting_roles: meetingRolesDisplay,
             follow_up_date: followUpDatesMap[String(lead.id)] || null,
             follow_up_notes: lead.followup_log || followUpNotesMap[String(lead.id)] || null,
             latest_interaction: lead.latest_interaction || null,
@@ -1974,10 +2621,15 @@ const CloserSuperPipelinePage = () => {
           eligibility_status,
           eligibility_status_timestamp,
           eligibility_status_last_edited_at
-        `)
-        .not('probability', 'is', null) // Exclude null probabilities
-        .neq('probability', '') // Exclude empty strings
-        .eq('status', 0); // Only active leads
+        `);
+
+      // Active-only + require probability unless flag gates are relaxed.
+      if (!relaxGatesForFlags) {
+        legacyLeadsQuery = legacyLeadsQuery
+          .not('probability', 'is', null)
+          .neq('probability', '')
+          .eq('status', 0);
+      }
 
       // Apply stage filter for legacy leads - use selected stages
       // Only apply filter if stages are selected (no hardcoded default)
@@ -1992,8 +2644,8 @@ const CloserSuperPipelinePage = () => {
         console.log('🔍 DEBUG: No stage filter applied to legacy leads - showing all stages (user has not selected any stages)');
       }
 
-      // Apply closer_id filter (only if not filtering for NULL)
-      if (filters.employee !== '--') {
+      // Apply closer_id presence only when not filtering by meeting roles or relaxed flag gates
+      if (filters.employee !== '--' && !employeeFilterActive && !relaxGatesForFlags) {
         legacyLeadsQuery = legacyLeadsQuery.not('closer_id', 'is', null); // Only leads with closer assigned
       }
 
@@ -2041,14 +2693,31 @@ const CloserSuperPipelinePage = () => {
         legacyLeadsQuery = legacyLeadsQuery.eq('eligibile', 'true');
       }
 
-      // Apply employee filter (closer)
-      if (filters.employee) {
-        if (filters.employee === '--') {
-          // Show NULL closer_id or NULL meeting_scheduler_id entries
-          legacyLeadsQuery = legacyLeadsQuery.or('closer_id.is.null,meeting_scheduler_id.is.null');
+      // Apply employee / flagged-leads ID restriction (intersect when both are active).
+      let restrictedLegacyLeadIds: Set<number> | null = null;
+      if (employeeFilterActive && meetingRoleLegacyIds) {
+        restrictedLegacyLeadIds = new Set(meetingRoleLegacyIds);
+      }
+      if (flagFilterActive && flaggedLegacyLeadIds) {
+        if (restrictedLegacyLeadIds) {
+          restrictedLegacyLeadIds = new Set(
+            [...restrictedLegacyLeadIds].filter((id) => flaggedLegacyLeadIds!.has(id))
+          );
         } else {
-          console.log('🔍 DEBUG: Applying employee filter to legacy leads', { employee: filters.employee });
-          legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', Number(filters.employee));
+          restrictedLegacyLeadIds = new Set(flaggedLegacyLeadIds);
+        }
+      }
+
+      if (filters.employee === '--') {
+        legacyLeadsQuery = legacyLeadsQuery.or('closer_id.is.null,meeting_scheduler_id.is.null');
+      }
+
+      if (restrictedLegacyLeadIds) {
+        const legacyIds = Array.from(restrictedLegacyLeadIds);
+        if (legacyIds.length === 0) {
+          legacyLeadsQuery = legacyLeadsQuery.eq('id', -1);
+        } else {
+          legacyLeadsQuery = legacyLeadsQuery.in('id', legacyIds.slice(0, 500));
         }
       }
 
@@ -2100,6 +2769,109 @@ const CloserSuperPipelinePage = () => {
       const legacyLeads = allLegacyLeads;
       const legacyLeadsError = null;
 
+      // Rescheduled: gap-fill legacy leads from leads_leadstage.lead_id that the main query missed
+      // (e.g. missing closer_id, pagination edge cases). Still requires current stage 21 + active.
+      if (applyRescheduledStageDateFilter && rescheduledLegacyIds.size > 0) {
+        const foundLegacyIds = new Set(legacyLeads.map((l: any) => Number(l.id)));
+        const missingLegacyIds = Array.from(rescheduledLegacyIds).filter(
+          (id) => Number.isFinite(id) && !foundLegacyIds.has(id),
+        );
+        if (missingLegacyIds.length > 0) {
+          const CHUNK_SIZE = 200;
+          for (let i = 0; i < missingLegacyIds.length; i += CHUNK_SIZE) {
+            const chunk = missingLegacyIds.slice(i, i + CHUNK_SIZE);
+            const { data: extraLegacy, error: extraLegacyErr } = await supabase
+              .from('leads_lead')
+              .select(`
+                id,
+                name,
+                cdate,
+                latest_interaction,
+                closer_id,
+                meeting_scheduler_id,
+                expert_id,
+                meeting_manager_id,
+                category_id,
+                stage,
+                eligibile,
+                probability,
+                language_id,
+                no_of_applicants,
+                potential_applicants,
+                total,
+                total_base,
+                currency_id,
+                master_id,
+                accounting_currencies!leads_lead_currency_id_fkey (
+                  id,
+                  name,
+                  iso_code
+                ),
+                lead_stages!fk_leads_lead_stage (
+                  id,
+                  name,
+                  colour
+                ),
+                misc_category!leads_lead_category_id_fkey (
+                  id,
+                  name,
+                  parent_id,
+                  misc_maincategory!parent_id (
+                    id,
+                    name
+                  )
+                ),
+                misc_language!leads_lead_language_id_fkey (
+                  id,
+                  name
+                ),
+                closer_emp:tenants_employee!fk_leads_lead_closer_id (
+                  id,
+                  display_name
+                ),
+                scheduler_emp:tenants_employee!fk_leads_lead_meeting_scheduler_id (
+                  id,
+                  display_name
+                ),
+                expert_emp:tenants_employee!fk_leads_lead_expert_id (
+                  id,
+                  display_name
+                ),
+                manager_emp:tenants_employee!fk_leads_lead_meeting_manager_id (
+                  id,
+                  display_name
+                ),
+                leads_lead_tags (
+                  misc_leadtag (
+                    name
+                  )
+                ),
+                expert_notes,
+                management_notes,
+                meeting_date,
+                followup_log,
+                eligibility_status,
+                eligibility_status_timestamp,
+                eligibility_status_last_edited_at
+              `)
+              .in('id', chunk)
+              .in('stage', [Number(RESCHEDULED_STAGE_ID)])
+              .eq('status', 0);
+            if (extraLegacyErr) {
+              console.error('❌ ERROR: Rescheduled legacy gap-fill failed', extraLegacyErr);
+              break;
+            }
+            if (extraLegacy?.length) {
+              allLegacyLeads.push(...extraLegacy);
+            }
+          }
+          console.log('🔍 DEBUG: Rescheduled legacy gap-fill', {
+            missingRequested: missingLegacyIds.length,
+            totalAfter: allLegacyLeads.length,
+          });
+        }
+      }
+
       console.log('🔍 DEBUG: Paginated query complete', {
         totalLeadsFetched: legacyLeads.length,
         pagesFetched: page
@@ -2113,9 +2885,10 @@ const CloserSuperPipelinePage = () => {
         sampleProbabilities: legacyLeads?.slice(0, 5).map((l: any) => ({ id: l.id, probability: l.probability, probabilityType: typeof l.probability, probabilityNumber: Number(l.probability) })) || []
       });
 
-      // Filter by probability client-side since probability is stored as text in leads_lead
+      // Filter by probability client-side since probability is stored as text in leads_lead.
+      // Skip when flag gates are relaxed so flagged leads outside the slider still appear.
       let filteredLegacyLeads = legacyLeads || [];
-      if (legacyLeads && legacyLeads.length > 0) {
+      if (!relaxGatesForFlags && legacyLeads && legacyLeads.length > 0) {
         filteredLegacyLeads = legacyLeads.filter((lead: any) => {
           const probValue = Number(lead.probability);
           const isValidNumber = !isNaN(probValue) && lead.probability !== null && lead.probability !== '';
@@ -2145,15 +2918,16 @@ const CloserSuperPipelinePage = () => {
         // return;
       }
 
-      // For legacy leads, also check meetings table for meeting dates (in case meeting_date in leads_lead is null)
+      // For legacy leads, also check meetings table for meeting dates + roles
       const legacyLeadIds = (legacyLeadsToProcess || []).map((l: any) => l.id).filter(Boolean);
       console.log('🔍 DEBUG: Legacy lead IDs extracted', { legacyLeadIdsCount: legacyLeadIds.length, legacyLeadIds: legacyLeadIds.slice(0, 5) });
       const legacyMeetingDatesMap: Record<number, string> = {};
+      const legacyMeetingRolesMap: Record<number, MeetingRoleIds> = {};
 
       if (legacyLeadIds.length > 0) {
         const { data: legacyMeetingsData } = await supabase
           .from('meetings')
-          .select('legacy_lead_id, meeting_date')
+          .select('legacy_lead_id, meeting_date, meeting_manager, helper, extern1, extern2')
           .in('legacy_lead_id', legacyLeadIds)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_date', { ascending: false });
@@ -2164,9 +2938,15 @@ const CloserSuperPipelinePage = () => {
               const dateStr = typeof meeting.meeting_date === 'string'
                 ? meeting.meeting_date.split('T')[0]
                 : new Date(meeting.meeting_date).toISOString().split('T')[0];
-              // Keep the most recent meeting date for each lead
+              // Keep the most recent meeting date + roles for each lead
               if (!legacyMeetingDatesMap[meeting.legacy_lead_id] || dateStr > legacyMeetingDatesMap[meeting.legacy_lead_id]) {
                 legacyMeetingDatesMap[meeting.legacy_lead_id] = dateStr;
+                legacyMeetingRolesMap[meeting.legacy_lead_id] = {
+                  meeting_manager: meeting.meeting_manager,
+                  helper: meeting.helper,
+                  extern1: meeting.extern1,
+                  extern2: meeting.extern2,
+                };
               }
             }
           });
@@ -2174,13 +2954,90 @@ const CloserSuperPipelinePage = () => {
       }
 
       // Filter legacy leads by date using latest meeting date from `meetings` table.
-      if (applyDateFilters && (filters.fromDate || filters.toDate)) {
+      // When an employee or flag filter is active, skip the "latest meeting only" date gate.
+      if (
+        applyDateFilters &&
+        (filters.fromDate || filters.toDate) &&
+        !employeeFilterActive &&
+        !relaxGatesForFlags
+      ) {
         legacyLeadsToProcess = legacyLeadsToProcess.filter((lead: any) => {
           const meetingDate = getLatestDate(legacyMeetingDatesMap[lead.id], lead.meeting_date);
           if (!meetingDate) return false;
           if (filters.fromDate && meetingDate < filters.fromDate) return false;
           if (filters.toDate && meetingDate > filters.toDate) return false;
           return true;
+        });
+      }
+
+      // Keep only legacy leads in the restricted ID set (employee and/or flagged seeds),
+      // and gap-fill IDs beyond the first 500 used in the DB `.in()` filter.
+      if (restrictedLegacyLeadIds && (employeeFilterActive || Boolean(flaggedLegacyLeadIds))) {
+        const beforeLegacyRestrictedFilter = legacyLeadsToProcess.length;
+        legacyLeadsToProcess = legacyLeadsToProcess.filter((lead: any) =>
+          restrictedLegacyLeadIds!.has(Number(lead.id)),
+        );
+        const foundLegacy = new Set(legacyLeadsToProcess.map((l: any) => Number(l.id)));
+        const missingLegacy = Array.from(restrictedLegacyLeadIds).filter(
+          (id) => !foundLegacy.has(id),
+        );
+        if (missingLegacy.length > 0) {
+          const CHUNK_SIZE = 200;
+          const legacyGapSelect = `
+                id, name, cdate, latest_interaction, closer_id, meeting_scheduler_id,
+                expert_id, meeting_manager_id, category_id, stage, eligibile, probability,
+                language_id, no_of_applicants, potential_applicants, total, total_base,
+                currency_id, master_id,
+                accounting_currencies!leads_lead_currency_id_fkey ( id, name, iso_code ),
+                lead_stages!fk_leads_lead_stage ( id, name, colour ),
+                misc_category!leads_lead_category_id_fkey (
+                  id, name, parent_id,
+                  misc_maincategory!parent_id ( id, name )
+                ),
+                misc_language!leads_lead_language_id_fkey ( id, name ),
+                closer_emp:tenants_employee!fk_leads_lead_closer_id ( id, display_name ),
+                scheduler_emp:tenants_employee!fk_leads_lead_meeting_scheduler_id ( id, display_name ),
+                expert_emp:tenants_employee!fk_leads_lead_expert_id ( id, display_name ),
+                manager_emp:tenants_employee!fk_leads_lead_meeting_manager_id ( id, display_name ),
+                leads_lead_tags ( misc_leadtag ( name ) ),
+                expert_notes, management_notes, meeting_date, followup_log,
+                eligibility_status, eligibility_status_timestamp, eligibility_status_last_edited_at
+              `;
+          for (let i = 0; i < missingLegacy.length; i += CHUNK_SIZE) {
+            const chunk = missingLegacy.slice(i, i + CHUNK_SIZE);
+            let gapQ = supabase
+              .from('leads_lead')
+              .select(legacyGapSelect)
+              .in('id', chunk);
+            if (!relaxGatesForFlags) {
+              gapQ = gapQ.eq('status', 0);
+            }
+            const { data: extraLegacy, error: extraLegacyErr } = await gapQ;
+            if (extraLegacyErr) {
+              console.error('❌ ERROR: Restricted legacy gap-fill failed', extraLegacyErr);
+              break;
+            }
+            if (extraLegacy?.length) {
+              const withProb = relaxGatesForFlags
+                ? extraLegacy
+                : extraLegacy.filter((lead: any) => {
+                    const minP = Number(filters.minProbability);
+                    const maxP = Number(filters.maxProbability);
+                    const probValue = Number(lead.probability);
+                    if (isNaN(probValue) || lead.probability === null || lead.probability === '') {
+                      return false;
+                    }
+                    return probValue >= minP && probValue <= maxP;
+                  });
+              legacyLeadsToProcess = [...legacyLeadsToProcess, ...withProb];
+            }
+          }
+        }
+        console.log('🔍 DEBUG: Applied restricted ID filter (legacy leads)', {
+          flagTypes: filters.flagTypes,
+          beforeFilter: beforeLegacyRestrictedFilter,
+          afterFilter: legacyLeadsToProcess.length,
+          restrictedIds: restrictedLegacyLeadIds.size,
         });
       }
 
@@ -2345,6 +3202,15 @@ const CloserSuperPipelinePage = () => {
             .map((t: any) => (t.misc_leadtag?.name ?? (Array.isArray(t.misc_leadtag) ? t.misc_leadtag[0]?.name : null)))
             .filter(Boolean)
             .join(', ');
+          const legacyMeetingRoles = legacyMeetingRolesMap[lead.id];
+          const meetingRolesDisplay: MeetingRolesDisplay = {
+            meeting_manager: resolveEmployeeDisplay(legacyMeetingRoles?.meeting_manager),
+            scheduler: schedulerDisplay || resolveEmployeeDisplay(lead.meeting_scheduler_id) || '---',
+            closer: closerDisplay || resolveEmployeeDisplay(lead.closer_id) || '---',
+            helper: resolveEmployeeDisplay(legacyMeetingRoles?.helper),
+            guest_1: resolveEmployeeDisplay(legacyMeetingRoles?.extern1),
+            guest_2: resolveEmployeeDisplay(legacyMeetingRoles?.extern2),
+          };
 
           allLeads.push({
             id: `legacy_${lead.id}`,
@@ -2377,6 +3243,7 @@ const CloserSuperPipelinePage = () => {
             eligibility_status_timestamp: lead.eligibility_status_timestamp ?? null,
             eligibility_status_last_edited_at: lead.eligibility_status_last_edited_at ?? null,
             meeting_date: meetingDate,
+            meeting_roles: meetingRolesDisplay,
             country: legacyCountryMap.get(lead.id) || '---',
             follow_up_date: legacyFollowUpDatesMap[lead.id] || null,
             follow_up_notes: legacyFollowUpNotesMap[lead.id] || lead.followup_log || null,
@@ -2417,6 +3284,50 @@ const CloserSuperPipelinePage = () => {
         filteredAllLeads = filteredAllLeads.filter((lead: any) => {
           const country = (lead.country || '').toString().toLowerCase().trim();
           return country && selectedCountryNames.has(country);
+        });
+      }
+
+      // Rescheduled meetings: keep leads that entered stage 21 in the selected cdate range
+      // (covers both newlead_id and legacy lead_id from leads_leadstage).
+      if (applyRescheduledStageDateFilter) {
+        const beforeRescheduledFilter = filteredAllLeads.length;
+        filteredAllLeads = filteredAllLeads.filter((lead: any) => {
+          if (lead.lead_type === 'legacy' || String(lead.id).startsWith('legacy_')) {
+            const legacyId = Number(String(lead.id).replace(/^legacy_/, ''));
+            return Number.isFinite(legacyId) && rescheduledLegacyIds.has(legacyId);
+          }
+          return rescheduledNewLeadIds.has(String(lead.id));
+        });
+        console.log('🔍 DEBUG: Rescheduled stage 21 filter', {
+          rescheduledFrom,
+          rescheduledTo,
+          legacyStageRows: rescheduledLegacyIds.size,
+          newStageRows: rescheduledNewLeadIds.size,
+          beforeFilter: beforeRescheduledFilter,
+          afterFilter: filteredAllLeads.length,
+          legacyKept: filteredAllLeads.filter((l: any) => l.lead_type === 'legacy').length,
+          newKept: filteredAllLeads.filter((l: any) => l.lead_type === 'new').length,
+        });
+        if (filteredAllLeads.length === 0) {
+          toast('No rescheduled meetings found for the selected stage dates.', { icon: 'ℹ️' });
+        }
+      }
+
+      // Flagged leads — same direction as Clients/InteractionsTab:
+      // lead → timeline interaction ids → user_content_flags match.
+      if (flagFilterActive && effectiveCurrentUserId && selectedFlagTypeIds.length > 0) {
+        const beforeFlagFilter = filteredAllLeads.length;
+        filteredAllLeads = await filterLeadsByUserContentFlags(
+          supabase,
+          String(effectiveCurrentUserId),
+          filteredAllLeads,
+          selectedFlagTypeIds,
+          { allUsers: true }
+        );
+        console.log('🔍 DEBUG: Clients-style flagged leads filter', {
+          selectedFlagTypes: filters.flagTypes,
+          beforeFilter: beforeFlagFilter,
+          afterFilter: filteredAllLeads.length,
         });
       }
 
@@ -2528,6 +3439,11 @@ const CloserSuperPipelinePage = () => {
   const uniqueTags = getUniqueTags();
   const filteredTags = uniqueTags.filter((tag: string) =>
     tag.toLowerCase().includes(tagsSearch.toLowerCase())
+  );
+
+  const filteredFlagTypes = flagTypes.filter((ft) =>
+    ft.label.toLowerCase().includes(flagTypeSearch.toLowerCase()) ||
+    ft.code.toLowerCase().includes(flagTypeSearch.toLowerCase())
   );
 
   // Helper function to format lead number display (same logic as Clients.tsx)
@@ -2688,11 +3604,28 @@ const CloserSuperPipelinePage = () => {
   // Tags now handled by chips display - search input is only for filtering dropdown options
 
   return (
-    <div className="px-2 py-6">
-      <h2 className="text-2xl font-bold mb-6 px-4">Sales Pipeline</h2>
+    <div className="min-h-[calc(100dvh-3.5rem)] bg-gray-100">
+      <div className="px-4 py-6">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-2xl font-bold text-gray-900">Sales Pipeline</h2>
+        <button
+          type="button"
+          onClick={openRescheduledMeetingsModal}
+          className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+            rescheduledSearchActive
+              ? 'text-white ring-2 ring-[#411CCF]/30'
+              : 'bg-white text-gray-700 border border-gray-200 hover:border-[#411CCF]/40 hover:text-[#411CCF]'
+          }`}
+          style={rescheduledSearchActive ? { backgroundColor: '#411CCF' } : undefined}
+          title="Find leads in Meeting rescheduling (stage 21) by stage change date"
+        >
+          <ArrowPathIcon className="h-4 w-4" />
+          Rescheduled meetings
+        </button>
+      </div>
 
-      {/* Filters */}
-      <div className="mb-6 px-4">
+      {/* Filters — white card separated from results */}
+      <div className="mb-6 rounded-2xl border border-gray-200/80 bg-white p-5 shadow-sm">
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-10 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">From Date (Meeting Date)</label>
@@ -3226,6 +4159,97 @@ const CloserSuperPipelinePage = () => {
               </>
             )}
           </div>
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Flagged (Multi-select)</label>
+            <input
+              type="text"
+              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search flag types..."
+              value={flagTypeSearch}
+              onChange={(e) => {
+                setFlagTypeSearch(e.target.value);
+                if (!showFlagTypeDropdown) {
+                  setShowFlagTypeDropdown(true);
+                }
+              }}
+              onFocus={() => setShowFlagTypeDropdown(true)}
+            />
+            <div
+              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+              onClick={() => setShowFlagTypeDropdown(true)}
+            >
+              {filters.flagTypes && filters.flagTypes.length > 0 ? (
+                filters.flagTypes.map((flagTypeId) => {
+                  const ft = flagTypes.find((t) => String(t.id) === String(flagTypeId));
+                  if (!ft) return null;
+                  return (
+                    <div
+                      key={flagTypeId}
+                      className="badge badge-primary badge-sm flex items-center gap-1"
+                    >
+                      <span>{ft.label}</span>
+                      <button
+                        type="button"
+                        className="ml-1 hover:text-red-200"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleFlagTypeSelection(String(flagTypeId));
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <span className="text-gray-400 text-sm">Click to select flag types...</span>
+              )}
+            </div>
+            {showFlagTypeDropdown && (
+              <>
+                <div
+                  className="fixed inset-0 z-[5]"
+                  onClick={() => setShowFlagTypeDropdown(false)}
+                />
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters((prev) => ({ ...prev, flagTypes: [] }));
+                      setFlagTypeSearch('');
+                    }}
+                  >
+                    Clear All
+                  </div>
+                  <div className="border-t border-gray-200 my-1"></div>
+                  {filteredFlagTypes.map((ft) => {
+                    const idStr = String(ft.id);
+                    const isSelected = filters.flagTypes?.includes(idStr) || false;
+                    return (
+                      <div
+                        key={ft.id}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleFlagTypeSelection(idStr);
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleFlagTypeSelection(idStr)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <span className={isSelected ? 'font-semibold' : ''}>{ft.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Eligibility</label>
             <div className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md flex items-center gap-3">
@@ -3346,7 +4370,10 @@ const CloserSuperPipelinePage = () => {
               ×
             </button>
             <button
-              onClick={() => handleSearch(true)}
+              onClick={() => {
+                setRescheduledSearchActive(false);
+                void handleSearch(true);
+              }}
               disabled={isSearching}
               className="flex items-center justify-center w-11 h-11 rounded-lg text-white hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:opacity-100 active:bg-[#411CCF]"
               style={{ backgroundColor: '#411CCF' }}
@@ -3382,11 +4409,20 @@ const CloserSuperPipelinePage = () => {
         </div>
       </div>
 
-      {/* Results Summary - Always show when search is performed */}
+      {/* Results */}
       {searchPerformed && (
-        <div className="border-t border-gray-200 pt-6 -mx-2">
-          <div className="mb-4 px-4 flex items-center gap-4 flex-wrap">
-            <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-gray-200/80 bg-white px-5 py-4 shadow-sm">
+            <h3 className="text-lg font-semibold text-gray-900">Total leads: {results.length}</h3>
+            {rescheduledSearchActive && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-800">
+                <ArrowPathIcon className="h-3.5 w-3.5" />
+                Rescheduled
+                {rescheduledStageFromDate || rescheduledStageToDate
+                  ? ` · ${rescheduledStageFromDate || '…'} → ${rescheduledStageToDate || '…'}`
+                  : ''}
+              </span>
+            )}
             {(() => {
               // Calculate total using convertToNIS to convert all currencies to NIS
               const totalAmount = results.reduce((sum, lead) => {
@@ -3425,20 +4461,22 @@ const CloserSuperPipelinePage = () => {
             })()}
           </div>
           {results.length === 0 ? (
-            <div className="p-6 text-center text-gray-500">No leads found</div>
+            <div className="rounded-2xl border border-gray-200/80 bg-white p-10 text-center text-gray-500 shadow-sm">
+              No leads found
+            </div>
           ) : (
-            <div className="overflow-x-auto px-4">
-              <table className="min-w-full divide-y divide-gray-200">
+            <div className="overflow-x-auto pb-2">
+              <table className="min-w-full border-separate border-spacing-y-2">
                 <thead>
                   <tr>
-                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Lead</div>
                     </th>
-                    <th className="px-1 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                       <div className="line-clamp-2 break-words">Stage</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('probability')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3448,7 +4486,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('closer')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3458,7 +4496,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('scheduler')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3468,7 +4506,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('meeting_date')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3477,14 +4515,17 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                      <div className="line-clamp-2 break-words">Flag<br />Type</div>
+                    </th>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                       <div className="line-clamp-2 break-words">Country</div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Tags</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('follow_up_date')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3494,7 +4535,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('latest_interaction')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3503,14 +4544,14 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Follow Up Notes</div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Expert Opinion</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('total_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3520,7 +4561,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('potential_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3529,11 +4570,11 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Manager Notes</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('total')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3544,19 +4585,20 @@ const CloserSuperPipelinePage = () => {
                     </th>
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
+                <tbody>
                   {results.map((lead, index) => {
                     const leadKey = lead.id?.toString() || lead.lead_number || '';
                     const interactions = interactionsCache.get(leadKey) || [];
                     const isLoading = loadingInteractions.has(leadKey);
                     const isExpanded = false;
+                    const rowCellClass = 'px-3 py-3 text-sm text-gray-900 bg-white border-y border-gray-200/80 shadow-sm first:border-l first:rounded-l-xl last:border-r last:rounded-r-xl';
                     return (
                       <React.Fragment key={lead.id || index}>
                         <tr
-                          className="hover:bg-gray-50 cursor-pointer"
+                          className="group cursor-pointer transition-shadow hover:shadow-md"
                           onClick={() => handleOpenInteractions(lead)}
                         >
-                          <td className="px-2 py-2" style={{ maxWidth: '200px' }}>
+                          <td className={`${rowCellClass}`} style={{ maxWidth: '200px' }}>
                             <div className="flex items-center gap-2">
                               <div
                                 className="text-sm font-medium cursor-pointer hover:underline break-words"
@@ -3576,7 +4618,7 @@ const CloserSuperPipelinePage = () => {
                                 #{getDisplayLeadNumber(lead)}
                               </div>
                             </div>
-                            <div className="text-sm text-gray-900 break-words" style={{
+                            <div className="text-sm text-gray-500 break-words" style={{
                               display: '-webkit-box',
                               WebkitLineClamp: 3,
                               WebkitBoxOrient: 'vertical',
@@ -3584,32 +4626,99 @@ const CloserSuperPipelinePage = () => {
                               wordBreak: 'break-word'
                             }}>{lead.name || '---'}</div>
                           </td>
-                          <td className="px-1 py-2 text-sm text-gray-900">
+                          <td className={rowCellClass}>
                             <div className="break-words whitespace-normal line-clamp-2" style={{ maxWidth: '150px' }}>
                               {lead.stage || '---'}
                             </div>
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
-                            {lead.probability ? `${lead.probability}%` : '---'}
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
+                            {lead.probability != null && lead.probability !== '' ? (
+                              <span
+                                className={`font-semibold ${
+                                  Number(lead.probability) >= 80
+                                    ? 'text-green-600'
+                                    : Number(lead.probability) >= 60
+                                      ? 'text-yellow-600'
+                                      : Number(lead.probability) >= 40
+                                        ? 'text-orange-600'
+                                        : 'text-red-600'
+                                }`}
+                              >
+                                {`${lead.probability}%`}
+                              </span>
+                            ) : (
+                              '---'
+                            )}
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
-                            {lead.closer || '---'}
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
+                            <EmployeeNameWithPhoto
+                              name={lead.closer || '---'}
+                              photoUrl={resolveEmployeePhoto(lead.closer)}
+                            />
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
-                            {lead.scheduler || '---'}
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
+                            <EmployeeNameWithPhoto
+                              name={lead.scheduler || '---'}
+                              photoUrl={resolveEmployeePhoto(lead.scheduler)}
+                            />
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
-                            {lead.meeting_date ? new Date(lead.meeting_date).toLocaleDateString() : '---'}
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
+                            {lead.meeting_date ? (
+                              <span
+                                className="cursor-help border-b border-dotted border-gray-400"
+                                onMouseEnter={(e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  const estimatedHeight = 380;
+                                  const spaceBelow = window.innerHeight - rect.bottom;
+                                  setMeetingRolesTooltip({
+                                    top: spaceBelow < estimatedHeight
+                                      ? Math.max(8, rect.top - estimatedHeight)
+                                      : rect.bottom + 6,
+                                    left: rect.left,
+                                    roles: lead.meeting_roles || {
+                                      meeting_manager: '---',
+                                      scheduler: lead.scheduler || '---',
+                                      closer: lead.closer || '---',
+                                      helper: '---',
+                                      guest_1: '---',
+                                      guest_2: '---',
+                                    },
+                                  });
+                                }}
+                                onMouseLeave={() => setMeetingRolesTooltip(null)}
+                              >
+                                {new Date(lead.meeting_date).toLocaleDateString()}
+                              </span>
+                            ) : (
+                              '---'
+                            )}
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
+                          <td className={`${rowCellClass}`}>
+                            {Array.isArray(lead.content_flag_type_ids) && lead.content_flag_type_ids.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {lead.content_flag_type_ids.map((typeId: number) => (
+                                  <span
+                                    key={typeId}
+                                    className={flagTypeBadgeClass(typeId, flagTypes)}
+                                    title={flagTypeLabel(typeId, flagTypes)}
+                                  >
+                                    {flagTypeLabel(typeId, flagTypes)}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              '---'
+                            )}
+                          </td>
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
                             {lead.country || '---'}
                           </td>
-                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
+                          <td className={`${rowCellClass} max-w-[200px]`}>
                             <div className="line-clamp-2 break-words" title={lead.tags || undefined}>
                               {lead.tags || '---'}
                             </div>
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
                             <div className="flex items-center gap-2 group">
                               <span>{lead.follow_up_date ? new Date(lead.follow_up_date).toLocaleDateString() : '---'}</span>
                               <button
@@ -3624,10 +4733,10 @@ const CloserSuperPipelinePage = () => {
                               </button>
                             </div>
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
                             {lead.latest_interaction ? new Date(lead.latest_interaction).toLocaleDateString() : '---'}
                           </td>
-                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
+                          <td className={`${rowCellClass} max-w-[200px]`}>
                             <div className="flex items-start gap-2 group">
                               <div
                                 className="line-clamp-3 break-words flex-1 cursor-help"
@@ -3647,7 +4756,7 @@ const CloserSuperPipelinePage = () => {
                               </button>
                             </div>
                           </td>
-                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
+                          <td className={`${rowCellClass} max-w-[200px]`}>
                             <div
                               className="line-clamp-3 break-words cursor-pointer hover:underline"
                               title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
@@ -3662,13 +4771,13 @@ const CloserSuperPipelinePage = () => {
                               {lead.expert_opinion || '---'}
                             </div>
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
                             {lead.number_of_applicants_meeting ?? '---'}
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
                             {lead.potential_applicants_meeting ?? '---'}
                           </td>
-                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
+                          <td className={`${rowCellClass} max-w-[200px]`}>
                             <div className="flex items-start gap-2 group">
                               <div
                                 className="line-clamp-3 break-words flex-1 cursor-help"
@@ -3690,13 +4799,13 @@ const CloserSuperPipelinePage = () => {
                               </button>
                             </div>
                           </td>
-                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
+                          <td className={`${rowCellClass} whitespace-nowrap`}>
                             {formatCurrency(lead.total || '', lead.balance_currency || '', lead)}
                           </td>
                         </tr>
                         {isExpanded && (
                           <tr>
-                            <td colSpan={14} className="px-2 py-2 bg-gray-50 border-t border-gray-200">
+                            <td colSpan={14} className="rounded-xl border border-gray-200/80 bg-white px-4 py-3 shadow-sm">
                               <div className="space-y-3">
                                 <div className="text-sm font-semibold text-gray-700 mb-2">Latest Interactions</div>
                                 {isLoading ? (
@@ -3924,6 +5033,87 @@ const CloserSuperPipelinePage = () => {
         </div>
       )}
 
+      {/* Rescheduled meetings search modal */}
+      {showRescheduledModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[1px]"
+          onClick={closeRescheduledMeetingsModal}
+        >
+          <div
+            className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
+              <div>
+                <div className="flex items-center gap-2 text-[#411CCF]">
+                  <ArrowPathIcon className="h-5 w-5" />
+                  <h3 className="text-lg font-semibold text-gray-900">Rescheduled meetings</h3>
+                </div>
+                <p className="mt-1 text-sm text-gray-500">
+                  Stage filter set to <span className="font-medium text-gray-700">Meeting rescheduling (21)</span>.
+                  Filter by when the lead entered that stage (<code className="text-xs">leads_leadstage.cdate</code>).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeRescheduledMeetingsModal}
+                className="btn btn-ghost btn-sm btn-circle shrink-0"
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-5">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium text-gray-700">Stage from</span>
+                  <input
+                    type="date"
+                    value={rescheduledStageFromDate}
+                    onChange={(e) => setRescheduledStageFromDate(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#411CCF] focus:outline-none focus:ring-2 focus:ring-[#411CCF]/20"
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium text-gray-700">Stage to</span>
+                  <input
+                    type="date"
+                    value={rescheduledStageToDate}
+                    onChange={(e) => setRescheduledStageToDate(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#411CCF] focus:outline-none focus:ring-2 focus:ring-[#411CCF]/20"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-gray-100 bg-gray-50/80 px-5 py-4">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={closeRescheduledMeetingsModal}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm gap-2 border-0 text-white hover:opacity-90"
+                style={{ backgroundColor: '#411CCF' }}
+                disabled={isSearching}
+                onClick={() => void handleRescheduledMeetingsSearch()}
+              >
+                {isSearching ? (
+                  <span className="loading loading-spinner loading-xs" />
+                ) : (
+                  <MagnifyingGlassIcon className="h-4 w-4" />
+                )}
+                Search
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Manager Notes Edit Modal */}
       {editingManagerNotes && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={handleCancelManagerNotes}>
@@ -3978,6 +5168,35 @@ const CloserSuperPipelinePage = () => {
           </div>
         </div>
       )}
+
+      {meetingRolesTooltip && (
+        <div
+          className="pointer-events-none fixed z-[100] w-64 rounded-lg border border-gray-200 bg-white p-2.5 text-left shadow-lg"
+          style={{
+            top: meetingRolesTooltip.top,
+            left: Math.min(meetingRolesTooltip.left, window.innerWidth - 272),
+          }}
+        >
+          <div className="mb-1.5 text-xs font-semibold text-gray-900">Meeting roles</div>
+          <div className="space-y-1.5">
+            {MEETING_ROLE_TOOLTIP_ROWS.map(({ key, label }) => {
+              const roleName = meetingRolesTooltip.roles[key] || '---';
+              return (
+                <div key={key} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="shrink-0 text-gray-500">{label}</span>
+                  <EmployeeNameWithPhoto
+                    name={roleName}
+                    photoUrl={resolveEmployeePhoto(roleName)}
+                    size="xs"
+                    className="text-xs"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      </div>
     </div>
   );
 };

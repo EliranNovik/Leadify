@@ -148,6 +148,33 @@ function buildPhoneOr(digits: string, rawQuery?: string): string {
 }
 
 /**
+ * Pure digit lead searches (no L/C, no sub-lead) of 7+ digits should also query phones,
+ * so users can find numbers without typing the 052 / +972 prefix.
+ */
+function shouldAlsoSearchPhoneForLeadQuery(
+  intent: Extract<SearchIntent, { kind: "lead" }>,
+): boolean {
+  if (intent.hasPrefix) return false;
+  if (intent.raw.includes("/")) return false;
+  const d = digitsOnly(intent.digits);
+  if (!/^\d+$/.test(d)) return false;
+  return d.length >= 7;
+}
+
+function mergeRowsById<T extends { id?: string | number | null }>(primary: T[], extra: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const row of [...primary, ...extra]) {
+    if (row?.id == null) continue;
+    const key = String(row.id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+/**
  * Decide intent with stable rules and minimal ambiguity.
  */
 function detectIntent(query: string): SearchIntent | null {
@@ -167,16 +194,24 @@ function detectIntent(query: string): SearchIntent | null {
   // Lead intent triggers:
   // - explicit prefix L/C
   // - contains "/" (sub-lead)
-  // - pure 3–10 digit numbers (always treat as lead — do NOT divert to phone because
-  //   digits start with 5; that blocked 4-digit legacy lead_number search without L)
+  // - short pure digit numbers (3–6) — prefer lead_number over phone so 4-digit
+  //   legacy ids and numbers starting with 5 are not diverted to phone search
+  // Longer pure digits (7+) without a leading 0 may still be lead numbers, but we
+  // also run phone search (see shouldAlsoSearchPhoneForLeadQuery) so users can find
+  // numbers without typing 052 / +972.
   const isPureNumeric = rawNoPrefix.length > 0 && /^\d+$/.test(rawNoPrefix) && rawNoPrefix === d;
   const startsWithZero = d.startsWith("0") && d.length >= 3;
   const isInternationalPhone =
     d.startsWith("972") || d.startsWith("00972");
-  // Pure digit lead numbers are preferred over phone for 3–10 digits (including those
-  // starting with 5). Phone wins only for 0… locals, intl prefixes, or very long numbers.
+  // Prefer phone for local mobiles typed without the leading 0 (52xxxxxxx).
+  const isLocalMobileWithoutZero = d.startsWith("5") && d.length >= 8 && d.length <= 10;
   const isLikelyLeadNumber =
-    isPureNumeric && d.length >= 3 && d.length <= 10 && !startsWithZero && !isInternationalPhone;
+    isPureNumeric &&
+    d.length >= 3 &&
+    d.length <= 10 &&
+    !startsWithZero &&
+    !isInternationalPhone &&
+    !isLocalMobileWithoutZero;
 
   const leadLike = hasPrefix || raw.includes("/") || isLikelyLeadNumber;
 
@@ -898,6 +933,23 @@ function scoreResult(intent: SearchIntent, r: CombinedLead): number {
     if (leadNum === q || leadNum === qNoPrefix || leadNumNoPrefix === qNoPrefix) s += 100;
     else if (leadNum.startsWith(q) || leadNum.startsWith(qNoPrefix) || leadNumNoPrefix.startsWith(qNoPrefix)) s += 70;
     else if (leadNum.includes(qNoPrefix) || leadNumNoPrefix.includes(qNoPrefix)) s += 40;
+
+    // Digit queries without L/C may be phones typed without 052 / +972 — boost phone hits.
+    if (
+      !intent.hasPrefix &&
+      !intent.raw.includes("/") &&
+      qDigits.length >= 7 &&
+      (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits))
+    ) {
+      const pd = digitsOnly(r.phone || "");
+      const md = digitsOnly(r.mobile || "");
+      if (pd === qDigits || md === qDigits) s = Math.max(s, 100);
+      else if (pd.endsWith(qDigits) || md.endsWith(qDigits) || qDigits.endsWith(pd) || qDigits.endsWith(md)) {
+        s = Math.max(s, 70);
+      } else {
+        s = Math.max(s, 55);
+      }
+    }
   } else if (intent.kind === "phone") {
     if (qDigits && (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits))) {
       const pd = digitsOnly(r.phone || "");
@@ -936,7 +988,18 @@ function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
   if (intent.kind === "lead") {
     const qNo = lower(stripLeadPrefix(intent.raw));
     const ldNo = lower(stripLeadPrefix(String(r.lead_number || "")));
-    return !(ld === q || ld === qNo || ld.startsWith(qNo) || ldNo === qNo || ldNo.startsWith(qNo));
+    const leadExact =
+      ld === q || ld === qNo || ld.startsWith(qNo) || ldNo === qNo || ldNo.startsWith(qNo);
+    if (leadExact) return false;
+    if (
+      !intent.hasPrefix &&
+      !intent.raw.includes("/") &&
+      qDigits.length >= 7 &&
+      (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits))
+    ) {
+      return false;
+    }
+    return true;
   }
   if (intent.kind === "phone") {
     return !(qDigits && (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits)));
@@ -971,6 +1034,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
     let contactRows: any[] = [];
     let rels: any[] = [];
     let legacyDirectRows: any[] = [];
+    let alsoPhoneSearch = false;
 
     if (intent.kind === "lead") {
       // For lead search: search new leads first, then get contacts via junction
@@ -989,6 +1053,61 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       contactRows = leadFlow.contacts;
       rels = leadFlow.rels;
       legacyDirectRows = leadFlow.legacyLeads;
+
+      // Also search phones when the digit query may be a number without 052 / +972.
+      alsoPhoneSearch = shouldAlsoSearchPhoneForLeadQuery(intent);
+      if (alsoPhoneSearch) {
+        const phoneIntent: SearchIntent = {
+          kind: "phone",
+          digits: digitsOnly(intent.digits),
+          raw: intent.raw,
+        };
+        try {
+          const phoneResults = await Promise.allSettled([
+            searchNewLeads(phoneIntent, opts),
+            searchContacts(phoneIntent, opts),
+            searchLegacyLeads(phoneIntent, opts),
+          ]);
+          const phoneNew =
+            phoneResults[0].status === "fulfilled" ? phoneResults[0].value : [];
+          const phoneContacts =
+            phoneResults[1].status === "fulfilled" ? phoneResults[1].value : [];
+          const phoneLegacy =
+            phoneResults[2].status === "fulfilled" ? phoneResults[2].value : [];
+
+          newRows = mergeRowsById(newRows, phoneNew);
+          contactRows = mergeRowsById(contactRows, phoneContacts);
+          legacyDirectRows = mergeRowsById(legacyDirectRows, phoneLegacy);
+
+          const phoneContactIds = phoneContacts.map((c) => c.id).filter(Boolean);
+          if (phoneContactIds.length) {
+            const { data } = await withTimeout(
+              supabase
+                .from("lead_leadcontact")
+                .select("contact_id, newlead_id, lead_id, main")
+                .in("contact_id", phoneContactIds)
+                .limit(150),
+              opts.timeoutMs,
+              "phone junction search timeout",
+            ).catch(() => ({ data: [] as any[] }));
+            const phoneRels = data || [];
+            const seenRel = new Set(
+              rels.map(
+                (r: any) =>
+                  `${r.contact_id}:${r.newlead_id ?? ""}:${r.lead_id ?? ""}:${r.main ?? ""}`,
+              ),
+            );
+            for (const rel of phoneRels) {
+              const key = `${rel.contact_id}:${rel.newlead_id ?? ""}:${rel.lead_id ?? ""}:${rel.main ?? ""}`;
+              if (seenRel.has(key)) continue;
+              seenRel.add(key);
+              rels.push(rel);
+            }
+          }
+        } catch {
+          // Keep lead-only results if phone dual-search fails
+        }
+      }
     } else {
       // For non-lead searches: parallelize new leads and contacts search
       let newRowsResult: any[] = [];
@@ -1208,11 +1327,24 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       }
     });
 
-    // For lead number searches, skip contact entries - we only want the lead itself
-    // Contact entries are useful for name/phone searches, but redundant for lead number searches
-    if (intent.kind !== "lead") {
+    // For lead number searches, skip contact entries - we only want the lead itself.
+    // When we also searched phones (suffix without 052), keep contact matches.
+    if (intent.kind !== "lead" || alsoPhoneSearch) {
+      // Prefer phone-matching contacts when dual-searching so we don't flood with every
+      // contact linked to a lead-number hit.
+      const contactsForEntries =
+        intent.kind === "lead" && alsoPhoneSearch
+          ? contactRows.filter((c: any) => {
+              const qDigits = digitsOnly(intent.digits);
+              return (
+                phoneDigitsMatch(c.phone || "", qDigits) ||
+                phoneDigitsMatch(c.mobile || "", qDigits)
+              );
+            })
+          : contactRows;
+
       // Add results from contacts and junction (only for non-lead searches)
-      contactRows.forEach((c: any) => {
+      contactsForEntries.forEach((c: any) => {
         const contactId = String(c.id);
         const relList = relByContact.get(contactId) || [];
 

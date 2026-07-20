@@ -320,6 +320,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
     void fetchLeadFieldFlagsForLead(supabase, publicUserId, {
       newLeadId: newUuid || undefined,
       legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+      allUsers: true,
     }).then((map) => {
       if (!cancelled) setLeadFieldFlagMeta(map);
     });

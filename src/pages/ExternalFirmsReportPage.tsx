@@ -45,7 +45,7 @@ import {
   Squares2X2Icon,
   TagIcon,
 } from '@heroicons/react/24/outline';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -89,6 +89,7 @@ import {
 import { ChannelLabel } from '../components/ChannelLabel';
 import FirmsManager from '../components/admin/FirmsManager';
 import FirmContactsManager from '../components/admin/FirmContactsManager';
+import FirmDigitalContractsSection from '../components/firms/FirmDigitalContractsSection';
 import FirmTypesManager from '../components/admin/FirmTypesManager';
 import { setAdminPendingNav } from '../lib/adminPendingNav';
 import {
@@ -1467,6 +1468,7 @@ type SettingsMenuItem = {
 
 export default function ExternalFirmsReportPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { isAdmin, isSuperUser, isLoading: isAdminLoading } = useAdminRole();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1818,6 +1820,15 @@ export default function ExternalFirmsReportPage() {
     fetchSavedViews();
     void fetchFirmTypeOptions();
   }, []);
+
+  useEffect(() => {
+    const firmIdFromUrl = searchParams.get('firmId');
+    if (!firmIdFromUrl || loading) return;
+    if (firms.some((f) => f.id === firmIdFromUrl)) {
+      setSelectedFirmId(firmIdFromUrl);
+      setSelectedContactId(null);
+    }
+  }, [searchParams, firms, loading]);
 
   useEffect(() => {
     if (selectedFirmId) {
@@ -3717,6 +3728,13 @@ export default function ExternalFirmsReportPage() {
                     </div>
                   )}
                 </div>
+
+                <FirmDigitalContractsSection
+                  firmId={selectedFirm.id}
+                  firmName={selectedFirm.legal_name || selectedFirm.name}
+                  contacts={selectedFirm.firm_contacts}
+                  isSuperUser={isSuperUser}
+                />
 
                 {/* Management costs (amount + invoice + payment / tax docs per month) */}
                 {(() => {

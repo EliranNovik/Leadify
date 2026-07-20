@@ -1,5 +1,9 @@
 import { supabase } from './supabase';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
+import {
+  SCOREBOARD_OTHER_DEPARTMENT_IDS,
+  SCOREBOARD_OTHER_MAIN_CATEGORY_IDS,
+} from './resolveCategoryDepartment';
 
 export type ScoreboardDepartmentRef = {
   id: number;
@@ -294,6 +298,110 @@ export function applyDashboardCostTargetsToDepartments<
     ...dept,
     cost_target: costByDept.get(dept.id) ?? 0,
   }));
+}
+
+/**
+ * Cost base for the scoreboard "Other" column: 6-month avg gross salary of employees
+ * whose home department rolls into Other (General + departments linked from Other-bucket
+ * main categories), excluding departments already counted in dedicated scoreboard columns.
+ */
+export async function fetchDashboardOtherColumnCostTarget(
+  scoreboardDepartments: ScoreboardDepartmentRef[],
+  options?: {
+    salesDeptIdsToExclude?: number[];
+    ref?: Date;
+  },
+): Promise<number> {
+  const ref = options?.ref ?? new Date();
+  const salesDeptIdsToExclude = options?.salesDeptIdsToExclude ?? [12, 14, 15];
+  const scoreboardIdSet = new Set(scoreboardDepartments.map((d) => d.id));
+
+  const [{ data: allDepts, error: deptsError }, { data: otherMainCats, error: mainError }] =
+    await Promise.all([
+      supabase.from('tenant_departement').select('id, name'),
+      supabase
+        .from('misc_maincategory')
+        .select('id, department_id')
+        .in('id', Array.from(SCOREBOARD_OTHER_MAIN_CATEGORY_IDS)),
+    ]);
+
+  if (deptsError) {
+    console.error('[dashboardDepartmentCostTargets] Other depts fetch failed:', deptsError);
+  }
+  if (mainError) {
+    console.error('[dashboardDepartmentCostTargets] Other main categories fetch failed:', mainError);
+  }
+
+  const allDepartments: ScoreboardDepartmentRef[] = (allDepts || [])
+    .map((dept) => ({ id: Number(dept.id), name: String(dept.name || '') }))
+    .filter((dept) => Number.isFinite(dept.id));
+
+  const canonicalByDeptId = buildScoreboardDepartmentCanonicalMap({
+    scoreboardDepartments,
+    allDepartments,
+  });
+
+  const otherDeptIds = new Set<number>();
+  for (const id of SCOREBOARD_OTHER_DEPARTMENT_IDS) {
+    otherDeptIds.add(id);
+  }
+  for (const row of otherMainCats || []) {
+    const deptId = row.department_id != null ? Number(row.department_id) : NaN;
+    if (Number.isFinite(deptId)) otherDeptIds.add(deptId);
+  }
+
+  // Drop departments already attributed to a dedicated scoreboard column (incl. sales sisters).
+  for (const deptId of Array.from(otherDeptIds)) {
+    if (scoreboardIdSet.has(deptId)) {
+      otherDeptIds.delete(deptId);
+      continue;
+    }
+    const canonical = canonicalByDeptId.get(deptId);
+    if (canonical != null && scoreboardIdSet.has(canonical)) {
+      otherDeptIds.delete(deptId);
+      continue;
+    }
+    if (salesDeptIdsToExclude.includes(deptId)) {
+      // Sales sisters only belong in Other if they do not map onto a scoreboard column.
+      const salesCanonical = canonicalByDeptId.get(deptId);
+      if (salesCanonical != null && scoreboardIdSet.has(salesCanonical)) {
+        otherDeptIds.delete(deptId);
+      }
+    }
+  }
+
+  if (otherDeptIds.size === 0) return 0;
+
+  const { data: homeEmployees, error: homeError } = await supabase
+    .from('tenants_employee')
+    .select('id, department_id')
+    .in('department_id', Array.from(otherDeptIds));
+
+  if (homeError) {
+    console.error('[dashboardDepartmentCostTargets] Other employees fetch failed:', homeError);
+    return 0;
+  }
+
+  const employeeIds = Array.from(
+    new Set(
+      (homeEmployees || [])
+        .map((emp) => Number(emp.id))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  );
+  if (employeeIds.length === 0) return 0;
+
+  const salaryMap = await fetchAverageGrossSalaryLastMonths(employeeIds, 6, ref);
+  let total = 0;
+  for (const empId of employeeIds) {
+    total += salaryMap.get(empId) ?? 0;
+  }
+  return Math.round(total * 100) / 100;
+}
+
+/** Revenue target for Other column from its cost base (same ratio as department columns). */
+export function otherScoreboardExpected(costTarget: number): number {
+  return departmentScoreboardExpected({ cost_target: costTarget });
 }
 
 /**

@@ -29,6 +29,14 @@ const ALLOWED_REST_PREFIXES = [
   '/rest/v1/outlook_teams_meetings',
   '/rest/v1/tenants_meetinglocation',
   '/rest/v1/misc_category',
+  '/rest/v1/misc_maincategory',
+  '/rest/v1/misc_languages',
+  '/rest/v1/misc_language',
+  '/rest/v1/contract_templates',
+  '/rest/v1/contract_types',
+  '/rest/v1/misc_contracttemplate',
+  '/rest/v1/contracts',
+  '/rest/v1/firms',
   '/rest/v1/firm_contacts',
   '/rest/v1/emails',
   '/rest/v1/leads_leadstage',
@@ -56,7 +64,12 @@ export function buildClockInGateBlockedResponse(): Response {
     }),
     {
       status: 403,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // Without CORS headers browsers report this as a generic network/CORS failure.
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-api-version, accept-profile, content-profile, prefer',
+      },
     },
   );
 }

@@ -1260,6 +1260,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     void fetchLeadFieldFlagsForLead(supabase, publicUserId, {
       newLeadId: newUuid || undefined,
       legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+      allUsers: true,
     }).then((map) => {
       if (!cancelled) setLeadFieldFlagMeta(map);
     });
@@ -2323,7 +2324,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       .filter((t): t is ConversationFlagTarget => t != null);
     const externalIds = targets.map((t) => t.external_id);
     let cancelled = false;
-    void fetchConversationFlagsForUser(supabase, publicUserId, externalIds).then((map) => {
+    void fetchConversationFlagsForUser(supabase, publicUserId, externalIds, { allUsers: true }).then((map) => {
       if (!cancelled) setConversationFlagMeta(map);
     });
     return () => {
@@ -2374,7 +2375,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         return;
       }
       const key = conversationFlagKey(target);
-      const { error } = await setConversationFlagged(supabase, publicUserId, target, true, flagTypeId);
+      let leadRef: { newLeadId?: string | null; legacyLeadId?: number | null } | undefined;
+      if (isLegacyLead) {
+        const legacyId = Number(String(client?.id ?? '').replace(/^legacy_/, ''));
+        if (Number.isFinite(legacyId)) {
+          leadRef = { legacyLeadId: legacyId, newLeadId: null };
+        }
+      } else if (client?.id) {
+        leadRef = { newLeadId: String(client.id), legacyLeadId: null };
+      }
+      const { error } = await setConversationFlagged(
+        supabase,
+        publicUserId,
+        target,
+        true,
+        flagTypeId,
+        leadRef
+      );
       if (error) {
         toast.error(error.message);
         return;
@@ -2385,7 +2402,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         return next;
       });
     },
-    [publicUserId]
+    [publicUserId, isLegacyLead, client?.id]
   );
 
   const removeConversationFlag = useCallback(
@@ -7238,7 +7255,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   className="btn btn-outline gap-2 border-amber-200 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:border-amber-700 dark:hover:bg-amber-900/30 relative"
                   onClick={() => setFlaggedItemsModalOpen(true)}
                   disabled={!publicUserId || interactionsLoading}
-                  title={publicUserId ? 'View items you flagged on this lead' : 'Sign in to use flags'}
+                  title={publicUserId ? 'View flagged items on this lead (all users)' : 'Sign in to use flags'}
                 >
                   <FlagIcon className="w-5 h-5" />
                   <span className="hidden sm:inline">Flagged</span>

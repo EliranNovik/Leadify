@@ -8486,8 +8486,8 @@ export default function ReportsPage() {
             return {
               ...section,
               items: itemsWithoutSuperuserReports.filter(item => {
-                // Re-assign leads requires collection access
-                if (item.label === 'Re-assign leads') {
+                // Re-assign leads + Finance Management: collection managers or superusers
+                if (item.label === 'Re-assign leads' || item.label === 'Finance Management') {
                   return hasCollectionAccess || isSuperUser;
                 }
                 // Other tools require superuser access

@@ -49,3 +49,9 @@ export function isEmployeeContractType(
 ): boolean {
   return type?.slug === 'employee_contract';
 }
+
+export function isFirmContractType(
+  type: { slug?: string | null } | null | undefined,
+): boolean {
+  return type?.slug === 'firm_contract';
+}

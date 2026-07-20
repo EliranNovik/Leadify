@@ -44,8 +44,10 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
 }) => {
   const navigate = useNavigate();
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const nativeSelectRef = useRef<HTMLSelectElement>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)');
@@ -56,11 +58,42 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
   }, []);
 
   useEffect(() => {
+    if (!isOpen || isMobile) {
+      setMenuPos(null);
+      return;
+    }
+
+    const updatePos = () => {
+      const el = triggerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const menuWidth = 192; // w-48
+      const left = Math.min(
+        Math.max(8, rect.right - menuWidth),
+        window.innerWidth - menuWidth - 8,
+      );
+      setMenuPos({
+        top: rect.bottom + 4,
+        left,
+      });
+    };
+
+    updatePos();
+    window.addEventListener('scroll', updatePos, true);
+    window.addEventListener('resize', updatePos);
+    return () => {
+      window.removeEventListener('scroll', updatePos, true);
+      window.removeEventListener('resize', updatePos);
+    };
+  }, [isOpen, isMobile]);
+
+  useEffect(() => {
     if (!isOpen || isMobile) return;
     const onDocClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onOpenChange(false);
-      }
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target)) return;
+      if (triggerRef.current?.contains(target)) return;
+      onOpenChange(false);
     };
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
@@ -206,7 +239,7 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
   );
 
   return (
-    <div ref={menuRef} className="relative z-20 shrink-0">
+    <div className="relative shrink-0">
       {isMobile ? (
         <>
           <label className="sr-only" htmlFor={`lead-card-actions-${lead.id}`}>
@@ -237,6 +270,7 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
         </>
       ) : (
         <button
+          ref={triggerRef}
           type="button"
           className="inline-flex h-10 w-10 items-center justify-center text-gray-500 transition-colors hover:text-gray-800"
           aria-label={`Actions for ${lead.name}`}
@@ -251,16 +285,19 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
         </button>
       )}
 
-      {isOpen && !isMobile && (
-        <div
-          className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-gray-200 bg-white py-1 shadow-lg"
-          role="menu"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {menuSections}
-        </div>
-      )}
-
+      {isOpen && !isMobile && menuPos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="fixed z-[200] w-48 rounded-xl border border-gray-200 bg-white py-1 shadow-lg"
+            style={{ top: menuPos.top, left: menuPos.left }}
+            role="menu"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {menuSections}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };

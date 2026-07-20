@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
+import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon, ArrowLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { getCurrencySymbol } from '../lib/currencyConversion';
@@ -367,7 +367,12 @@ const reports: ReportSection[] = [
   },
 ];
 
-const SignedSalesReportPage: React.FC = () => {
+type SignedSalesReportPageProps = {
+  /** Hide Reports quick-switch chrome when rendered inside Finance Management. */
+  embedded?: boolean;
+};
+
+const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({ embedded = false }) => {
   const navigate = useNavigate();
   const todayIso = useMemo(() => new Date().toISOString().split('T')[0], []);
   const [filters, setFilters] = usePersistedFilters<FiltersState>('signedSalesReport_filters', {
@@ -1591,79 +1596,82 @@ const resolveLegacyLanguage = (lead: any) => {
   }, [searchQuery]);
 
   return (
-    <div className="space-y-8 px-5 md:px-1">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <h1 className="text-4xl font-bold">Signed Agreements Overview</h1>
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Search Bar */}
-          <div className="relative max-w-xs">
-            <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search other reports..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-              >
-                <XMarkIcon className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-          {/* Back to Reports Button */}
-          <Link
-            to="/reports"
-            className="btn btn-outline btn-primary flex items-center gap-2"
-          >
-            <ArrowLeftIcon className="w-5 h-5" />
-            Back to Reports
-          </Link>
-        </div>
-      </div>
-
-      {/* Search Results Dropdown */}
-      {searchQuery && (
-        <div className="border border-gray-200 rounded-lg bg-white shadow-lg max-h-96 overflow-y-auto">
-          <div className="p-4">
-            <p className="text-sm font-semibold text-gray-700 mb-3">Quick Switch to:</p>
-            <div className="space-y-2">
-              {filteredReports.map((section) =>
-                section.items.map((item) => (
+    <div className={`space-y-8 ${embedded ? '' : 'px-5 md:px-1'}`}>
+      {!embedded ? (
+        <>
+          <div className="flex items-center justify-end flex-wrap gap-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Search Bar */}
+              <div className="relative max-w-xs">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search other reports..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
+                />
+                {searchQuery && (
                   <button
-                    key={item.label}
-                    onClick={() => {
-                      if (item.route) {
-                        navigate(item.route);
-                        setSearchQuery('');
-                      }
-                    }}
-                    className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${
-                      item.route === '/sales/signed' ? 'bg-primary text-white' : 'bg-gray-50'
-                    }`}
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
                   >
-                    <item.icon className="w-5 h-5" />
-                    <div className="flex-1">
-                      <div className="font-medium">{item.label}</div>
-                      <div className="text-xs opacity-75">{section.category}</div>
-                    </div>
+                    <XMarkIcon className="w-4 h-4" />
                   </button>
-                ))
-              )}
-            </div>
-            {filteredReports.length === 0 && (
-              <div className="text-center py-4 text-gray-500 text-sm">
-                No reports found matching "{searchQuery}"
+                )}
               </div>
-            )}
+              {/* Back to Reports Button */}
+              <Link
+                to="/reports"
+                className="btn btn-outline btn-primary flex items-center gap-2"
+              >
+                <ArrowLeftIcon className="w-5 h-5" />
+                Back to Reports
+              </Link>
+            </div>
           </div>
-        </div>
-      )}
 
-      <div className="card bg-base-100 shadow-lg border border-base-200">
+          {/* Search Results Dropdown */}
+          {searchQuery && (
+            <div className="border border-gray-200 rounded-lg bg-white shadow-lg max-h-96 overflow-y-auto">
+              <div className="p-4">
+                <p className="text-sm font-semibold text-gray-700 mb-3">Quick Switch to:</p>
+                <div className="space-y-2">
+                  {filteredReports.map((section) =>
+                    section.items.map((item) => (
+                      <button
+                        key={item.label}
+                        onClick={() => {
+                          if (item.route) {
+                            navigate(item.route);
+                            setSearchQuery('');
+                          }
+                        }}
+                        className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${
+                          item.route === '/sales/signed' ? 'bg-primary text-white' : 'bg-gray-50'
+                        }`}
+                      >
+                        <item.icon className="w-5 h-5" />
+                        <div className="flex-1">
+                          <div className="font-medium">{item.label}</div>
+                          <div className="text-xs opacity-75">{section.category}</div>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+                {filteredReports.length === 0 && (
+                  <div className="text-center py-4 text-gray-500 text-sm">
+                    No reports found matching "{searchQuery}"
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      ) : null}
+
+      <div className="card bg-base-100 shadow-none border border-base-200">
         <div className="card-body space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div className="form-control">
@@ -1856,27 +1864,21 @@ const resolveLegacyLanguage = (lead: any) => {
             </div>
           </div>
 
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="flex-1">
-              <div className="flex flex-col md:flex-row md:items-center md:gap-4">
-                <div className="bg-white border border-base-200 shadow-lg rounded-2xl px-6 py-4 flex items-center gap-5 w-full md:max-w-[280px]">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs uppercase tracking-wider text-gray-500">Total Signed (After Fee)</span>
-                    <span className="text-3xl font-extrabold text-gray-900">{`₪ ${Math.round(totalInNISWithFeeDeducted).toLocaleString('en-US')}`}</span>
-                  </div>
-                  <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-blue-500 flex items-center justify-center text-white text-xl font-bold shadow-lg">
-                    {sortedRows.length}
-                  </div>
-                </div>
-                <div className="bg-white border border-base-200 shadow-lg rounded-2xl px-6 py-4 flex items-center gap-5 w-full md:max-w-[280px]">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs uppercase tracking-wider text-gray-500">Total Signed (Before Fee)</span>
-                    <span className="text-3xl font-extrabold text-gray-900">{`₪ ${Math.round(totalInNIS).toLocaleString('en-US')}`}</span>
-                  </div>
-                </div>
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div className="flex flex-wrap items-end gap-8 md:gap-10">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs uppercase tracking-wider text-gray-500">Total Signed (After Fee)</span>
+                <span className="text-3xl font-extrabold text-gray-900 tabular-nums">{`₪ ${Math.round(totalInNISWithFeeDeducted).toLocaleString('en-US')}`}</span>
               </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs uppercase tracking-wider text-gray-500">Total Signed (Before Fee)</span>
+                <span className="text-3xl font-extrabold text-gray-900 tabular-nums">{`₪ ${Math.round(totalInNIS).toLocaleString('en-US')}`}</span>
+              </div>
+              <span className="inline-flex h-11 w-fit min-w-[2.75rem] items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-blue-500 px-4 text-base font-bold text-white self-end">
+                {sortedRows.length}
+              </span>
             </div>
-            <div className="flex justify-end md:w-auto">
+            <div className="flex justify-end md:w-auto shrink-0">
               <button
                 className="btn btn-primary px-10"
                 onClick={handleSearch}
@@ -1896,90 +1898,173 @@ const resolveLegacyLanguage = (lead: any) => {
       )}
 
       {searchPerformed && (
-        <div className="card bg-base-100 shadow-xl border border-base-200">
-          <div className="card-body">
-            {isLoading ? (
-              <div className="py-12 flex justify-center">
-                <span className="loading loading-spinner loading-lg text-primary" />
-              </div>
-            ) : sortedRows.length === 0 ? (
-              <div className="py-12 text-center text-gray-500">
-                No signed agreements found for the selected filters.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="table text-xs md:text-sm">
-                  <thead>
-                    <tr>
-                      <th className="text-xs md:text-sm">Lead</th>
-                      <th className="text-xs md:text-sm">C. Date</th>
-                      <th className="text-xs md:text-sm">Category</th>
-                      <th className="text-xs md:text-sm">Stage</th>
-                      <th className="text-xs md:text-sm">Sign Date</th>
-                      <th className="text-xs md:text-sm">Scheduler</th>
-                      <th className="text-xs md:text-sm">Manager</th>
-                      <th className="text-xs md:text-sm">Closer</th>
-                      <th className="text-xs md:text-sm">Expert</th>
-                      <th 
-                        className="text-xs md:text-sm cursor-pointer hover:bg-gray-100 select-none"
-                        onClick={() => setSortByHandler(!sortByHandler)}
-                        title="Click to sort by handler (no handler on top)"
-                      >
-                        Handler {sortByHandler && '↑'}
-                      </th>
-                      <th className="text-xs md:text-sm">Total</th>
-                      <th className="text-xs md:text-sm">Total (₪)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedRows.map(row => (
-                      <tr key={`${row.leadType}-${row.id}`}>
-                        <td>
-                          <div className="flex flex-col">
-                            <Link
-                              to={`/clients/${encodeURIComponent(row.leadIdentifier)}`}
-                              className="text-xs md:text-sm font-semibold text-primary hover:underline"
+        <div
+          className={`collection-finances-shell w-full ${
+            embedded ? '' : 'rounded-2xl bg-gray-100 p-4 md:p-5'
+          }`}
+        >
+          {isLoading ? (
+            <div className="py-12 flex justify-center">
+              <span className="loading loading-spinner loading-lg text-primary" />
+            </div>
+          ) : sortedRows.length === 0 ? (
+            <div className="py-12 text-center text-gray-500">
+              No signed agreements found for the selected filters.
+            </div>
+          ) : (
+            <div className="w-full overflow-x-auto">
+              <table className="table w-full text-sm">
+                <thead>
+                  <tr className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    <th>Lead</th>
+                    <th>C. Date</th>
+                    <th>Category</th>
+                    <th>Stage</th>
+                    <th>Sign Date</th>
+                    <th>Scheduler</th>
+                    <th>Manager</th>
+                    <th>Closer</th>
+                    <th>Expert</th>
+                    <th
+                      className="cursor-pointer select-none hover:text-gray-800"
+                      onClick={() => setSortByHandler(!sortByHandler)}
+                      title="Click to sort by handler (no handler on top)"
+                    >
+                      Handler {sortByHandler && '↑'}
+                    </th>
+                    <th>Total</th>
+                    <th>Total (₪)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedRows.map(row => (
+                    <tr key={`${row.leadType}-${row.id}`}>
+                      <td>
+                        <div className="flex flex-col">
+                          <Link
+                            to={`/clients/${encodeURIComponent(row.leadIdentifier)}`}
+                            className="text-xs md:text-sm font-semibold text-primary hover:underline"
+                          >
+                            {row.leadNumber}
+                          </Link>
+                          <span className="text-[10px] md:text-xs text-gray-500">{row.leadName}</span>
+                        </div>
+                      </td>
+                      <td className="text-xs md:text-sm">{formatDate(row.createdDate)}</td>
+                      <td className="max-w-[220px] text-xs md:text-sm">
+                        <span className="block line-clamp-2 break-words">{row.category}</span>
+                      </td>
+                      <td className="text-xs md:text-sm font-semibold text-black">{row.stage}</td>
+                      <td className="text-xs md:text-sm">
+                        <div className="flex items-center gap-1.5">
+                          <span>{formatDate(row.signDate)}</span>
+                          {!row.hasPaymentPlan && (
+                            <span
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white"
+                              title="No payment plan"
                             >
-                              {row.leadNumber}
-                            </Link>
-                            <span className="text-[10px] md:text-xs text-gray-500">{row.leadName}</span>
-                          </div>
-                        </td>
-                        <td className="text-xs md:text-sm">{formatDate(row.createdDate)}</td>
-                        <td className="max-w-[220px] text-xs md:text-sm">
-                          <span className="block line-clamp-2 break-words">{row.category}</span>
-                        </td>
-                        <td className="text-xs md:text-sm font-semibold text-black">{row.stage}</td>
-                        <td className="text-xs md:text-sm">
-                          <div className="flex flex-col gap-1">
-                            <span>{formatDate(row.signDate)}</span>
-                            {!row.hasPaymentPlan && (
-                              <span className="badge badge-sm text-[10px] px-2 py-0.5 bg-red-500 text-white">No Payment Plan!</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'scheduler')}</td>
-                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'manager')}</td>
-                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'closer')}</td>
-                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'expert')}</td>
-                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'handler')}</td>
-                        <td className="text-xs md:text-sm">{row.totalOriginalDisplay}</td>
-                        <td className="text-xs md:text-sm">
-                          {(() => {
-                            const totalAfterFee = (row.totalNIS || 0) - (row.subcontractorFeeNIS || 0);
-                            const feeDisplay = row.subcontractorFeeNIS && row.subcontractorFeeNIS > 0 
-                              ? ` (fee: ₪ ${Math.round(row.subcontractorFeeNIS).toLocaleString('en-US')})`
-                              : '';
-                            return `${formatCurrencyDisplay(totalAfterFee, '₪')}${feeDisplay}`;
-                          })()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                              <ExclamationTriangleIcon className="h-3 w-3 shrink-0" aria-hidden />
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'scheduler')}</td>
+                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'manager')}</td>
+                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'closer')}</td>
+                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'expert')}</td>
+                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'handler')}</td>
+                      <td className="text-xs md:text-sm">{row.totalOriginalDisplay}</td>
+                      <td className="text-xs md:text-sm">
+                        {(() => {
+                          const totalAfterFee = (row.totalNIS || 0) - (row.subcontractorFeeNIS || 0);
+                          const feeDisplay = row.subcontractorFeeNIS && row.subcontractorFeeNIS > 0 
+                            ? ` (fee: ₪ ${Math.round(row.subcontractorFeeNIS).toLocaleString('en-US')})`
+                            : '';
+                          return `${formatCurrencyDisplay(totalAfterFee, '₪')}${feeDisplay}`;
+                        })()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <style>{`
+            .collection-finances-shell table {
+              background: transparent !important;
+              border: none !important;
+              box-shadow: none !important;
+              border-collapse: separate !important;
+              border-spacing: 0 10px !important;
+            }
+
+            .collection-finances-shell .table tbody tr:hover {
+              background-color: transparent !important;
+            }
+            html.dark .collection-finances-shell .table tbody tr:hover {
+              background-color: transparent !important;
+            }
+
+            .collection-finances-shell table tbody tr {
+              background: transparent !important;
+              border-radius: 18px !important;
+              overflow: hidden !important;
+              box-shadow: none !important;
+            }
+
+            .collection-finances-shell table tbody tr:hover {
+              box-shadow: none !important;
+            }
+
+            .collection-finances-shell table tbody td {
+              border: none !important;
+              border-bottom: none !important;
+              background: #ffffff !important;
+              box-shadow: none !important;
+              vertical-align: middle;
+            }
+
+            .collection-finances-shell table tbody td:first-child {
+              border-top-left-radius: 18px !important;
+              border-bottom-left-radius: 18px !important;
+              padding-left: 1.1rem !important;
+            }
+
+            .collection-finances-shell table tbody td:last-child {
+              border-top-right-radius: 18px !important;
+              border-bottom-right-radius: 18px !important;
+              padding-right: 1.1rem !important;
+            }
+
+            .collection-finances-shell table tbody tr:hover td {
+              background: #f1f5f9 !important;
+            }
+
+            html.dark .collection-finances-shell table tbody tr {
+              box-shadow: none !important;
+            }
+
+            html.dark .collection-finances-shell table tbody tr:hover {
+              box-shadow: none !important;
+            }
+
+            html.dark .collection-finances-shell table tbody td {
+              background: rgba(255, 255, 255, 0.06) !important;
+            }
+
+            html.dark .collection-finances-shell table tbody tr:hover td {
+              background: rgba(255, 255, 255, 0.10) !important;
+            }
+
+            .collection-finances-shell table thead,
+            .collection-finances-shell table thead tr,
+            .collection-finances-shell table thead th {
+              background-color: transparent !important;
+              background-image: none !important;
+              border-bottom: none !important;
+            }
+          `}</style>
         </div>
       )}
     </div>

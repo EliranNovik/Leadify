@@ -1602,6 +1602,7 @@ ${combinedText}`;
       newLeadId: newLeadUuidForFlags || undefined,
       legacyLeadId:
         legacyLeadNumericId != null && !Number.isNaN(legacyLeadNumericId) ? legacyLeadNumericId : undefined,
+      allUsers: true,
     }).then((map) => {
       if (!cancelled) setLeadFieldFlagMeta(map);
     });

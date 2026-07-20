@@ -27,6 +27,69 @@ import {
 } from '@heroicons/react/24/outline';
 import { fetchContractTypes, type ContractType } from '../../lib/contractTypes';
 
+function resolveContractTypeIdForSave(
+  selectedTypeId: string,
+  fallbackTypeId: number | null,
+): number | null {
+  if (selectedTypeId) {
+    const parsed = Number(selectedTypeId);
+    return Number.isFinite(parsed) ? parsed : fallbackTypeId;
+  }
+  return fallbackTypeId;
+}
+
+function formatTemplateSaveError(error: unknown): string {
+  const err = error as { code?: string; message?: string; details?: string; hint?: string };
+  if (err?.code === 'CLOCK_IN_REQUIRED') {
+    return 'You must clock in before saving contract templates.';
+  }
+  if (err?.code === 'PGRST204' || err?.message?.includes('contract_type_id')) {
+    return 'Database is missing contract_type_id on contract_templates. Run sql/2026-07-19_contract_types.sql in Supabase, then reload the API schema.';
+  }
+  if (err?.message?.includes('NetworkError') || err?.message?.includes('Failed to fetch')) {
+    return 'Network error while saving. Check your connection, clock-in status, and that sql/2026-07-19_contract_types.sql has been applied.';
+  }
+  return err?.message || err?.details || 'Failed to save template changes.';
+}
+
+function buildQuickSaveTemplatePayload(params: {
+  trimmedName: string;
+  quickEditValues: {
+    languageId: string;
+    categoryId: string;
+    contractTypeId: string;
+    active: boolean;
+  };
+  defaultContractTypeId: number | null;
+  previewData: {
+    pricing_tiers: Record<string, unknown>;
+    currency: string;
+    client_country: string;
+  };
+  usdPricingTiers: Record<string, unknown>;
+  nisPricingTiers: Record<string, unknown>;
+  templateId?: string;
+}) {
+  const contractTypeId = resolveContractTypeIdForSave(
+    params.quickEditValues.contractTypeId,
+    params.defaultContractTypeId,
+  );
+  const base = {
+    name: params.trimmedName,
+    content: { type: 'doc', content: [] },
+    default_pricing_tiers_usd: params.usdPricingTiers,
+    default_pricing_tiers_nis: params.nisPricingTiers,
+    default_pricing_tiers: params.usdPricingTiers,
+    default_currency: params.previewData.currency,
+    default_country: params.previewData.client_country,
+    language_id: params.quickEditValues.languageId || null,
+    category_id: params.quickEditValues.categoryId || null,
+    contract_type_id: contractTypeId,
+    active: params.quickEditValues.active,
+  };
+  return params.templateId ? { id: params.templateId, ...base } : base;
+}
+
 const DYNAMIC_FIELDS = [
   { label: 'Client Name', tag: '{{client_name}}' },
   { label: 'Client Phone', tag: '{{client_phone}}' },
@@ -1093,7 +1156,7 @@ const ContractTemplatesManager: React.FC = () => {
       alert('Template saved successfully!');
     } catch (error: any) {
       console.error('Error saving template:', error);
-      alert('Error saving template: ' + (error.message || 'Unknown error'));
+      alert('Error saving template: ' + formatTemplateSaveError(error));
     } finally {
       setIsSaving(false);
     }
@@ -1136,20 +1199,15 @@ const ContractTemplatesManager: React.FC = () => {
     setIsQuickSaving(true);
     try {
       if (isQuickCreating) {
-        const newTemplateData: any = {
-          id: quickEditTemplate.id,
-          name: trimmedName,
-          content: { type: 'doc', content: [] },
-          default_pricing_tiers: previewData.pricing_tiers,
-          default_currency: previewData.currency,
-          default_country: previewData.client_country,
-          language_id: quickEditValues.languageId || null,
-          category_id: quickEditValues.categoryId || null,
-          contract_type_id: quickEditValues.contractTypeId
-            ? Number(quickEditValues.contractTypeId)
-            : defaultContractTypeId,
-          active: quickEditValues.active
-        };
+        const newTemplateData = buildQuickSaveTemplatePayload({
+          trimmedName,
+          quickEditValues,
+          defaultContractTypeId,
+          previewData,
+          usdPricingTiers,
+          nisPricingTiers,
+          templateId: String(quickEditTemplate.id),
+        });
 
         const { error } = await supabase
           .from('contract_templates')
@@ -1164,9 +1222,7 @@ const ContractTemplatesManager: React.FC = () => {
         setLanguageId(quickEditValues.languageId || null);
         setCategoryId(quickEditValues.categoryId || null);
         setContractTypeId(
-          quickEditValues.contractTypeId
-            ? Number(quickEditValues.contractTypeId)
-            : defaultContractTypeId,
+          resolveContractTypeIdForSave(quickEditValues.contractTypeId, defaultContractTypeId),
         );
         setActive(quickEditValues.active);
         setShowEditor(true);
@@ -1179,9 +1235,10 @@ const ContractTemplatesManager: React.FC = () => {
           name: trimmedName,
           language_id: quickEditValues.languageId || null,
           category_id: quickEditValues.categoryId || null,
-          contract_type_id: quickEditValues.contractTypeId
-            ? Number(quickEditValues.contractTypeId)
-            : defaultContractTypeId,
+          contract_type_id: resolveContractTypeIdForSave(
+            quickEditValues.contractTypeId,
+            defaultContractTypeId,
+          ),
           active: quickEditValues.active,
         };
 
@@ -1196,7 +1253,7 @@ const ContractTemplatesManager: React.FC = () => {
       }
     } catch (error: any) {
       console.error('Error saving template metadata:', error);
-      alert(error.message || 'Failed to save template changes.');
+      alert(formatTemplateSaveError(error));
     } finally {
       setIsQuickSaving(false);
     }

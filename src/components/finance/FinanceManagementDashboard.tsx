@@ -31,7 +31,7 @@ import {
   type FinanceCollectionFocusId,
 } from '../../lib/financeCollectionFocus';
 
-export type FinanceHubTabId = 'dashboard' | 'collection' | 'collection-due' | 'expenses';
+export type FinanceHubTabId = 'dashboard' | 'collection' | 'collection-due' | 'signed' | 'expenses';
 
 type FinanceManagementDashboardProps = {
   onOpenTab: (tab: FinanceHubTabId, focus?: FinanceCollectionFocusId) => void;

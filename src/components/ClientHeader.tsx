@@ -865,6 +865,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         void fetchLeadFieldFlagsForLead(supabase, publicUserId, {
             newLeadId: newUuid || undefined,
             legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+            allUsers: true,
         }).then((map) => {
             leadFieldFlagMetaCache.set(cacheKey, map);
             if (!cancelled) setLeadFieldFlagMeta(map);

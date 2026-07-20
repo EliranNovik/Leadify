@@ -1583,13 +1583,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       return;
     }
 
+    const participantUserId = currentUser.id != null ? String(currentUser.id).trim() : '';
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        participantUserId
+      );
+    if (!isUuid) {
+      // currentUser may be hydrated before public.users.id is available (avoids uuid "undefined")
+      return;
+    }
 
     try {
       // Get conversations where the current user participates
       const { data: userConversations, error: convError } = await supabase
         .from('conversation_participants')
         .select('conversation_id')
-        .eq('user_id', currentUser.id)
+        .eq('user_id', participantUserId)
         .eq('is_active', true);
 
       if (convError) {
@@ -1614,7 +1623,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         const { data, error: participantsError } = await supabase
           .from('conversation_participants')
           .select('conversation_id, last_read_at')
-          .eq('user_id', currentUser.id)
+          .eq('user_id', participantUserId)
           .in('conversation_id', conversationIds);
 
         if (participantsError) {
@@ -1657,7 +1666,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           `)
           .eq('conversation_id', convId)
           .eq('is_deleted', false)
-          .neq('sender_id', currentUser.id); // Exclude user's own messages
+          .neq('sender_id', participantUserId); // Exclude user's own messages
 
         // Only get messages sent after the user's last read timestamp
         if (lastReadAt) {

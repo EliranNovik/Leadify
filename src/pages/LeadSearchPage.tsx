@@ -13,6 +13,7 @@ import {
   LanguageIcon,
   FunnelIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   XMarkIcon,
   AdjustmentsHorizontalIcon,
 } from '@heroicons/react/24/outline';
@@ -32,6 +33,12 @@ import { useTheme } from '../hooks/useTheme';
 import LeadSearchCardActions from '../components/LeadSearchCardActions';
 import LeadSearchRolesModal from '../components/LeadSearchRolesModal';
 import { buildLeadClientPath } from '../lib/leadClientRoute';
+import {
+  fetchFlagTypes,
+  fetchFlaggedLeadIdsForUser,
+  filterLeadsByUserContentFlags,
+  type FlagTypeRow,
+} from '../lib/userContentFlags';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -64,6 +71,7 @@ const MOBILE_FILTER_CHIPS = [
   { key: 'closer', label: 'Closer' },
   { key: 'case_handler', label: 'Case Handler' },
   { key: 'country', label: 'Country' },
+  { key: 'flagTypes', label: 'Flagged' },
   { key: 'content', label: 'Content' },
 ] as const;
 
@@ -317,6 +325,7 @@ const MultiSelectInput = ({
   showDropdown,
   onSelect,
   onRemove,
+  onClearAll,
   onFilterChange,
   onShowDropdown,
   onHideDropdown,
@@ -331,6 +340,7 @@ const MultiSelectInput = ({
   showDropdown: boolean;
   onSelect: (field: string, value: string) => void;
   onRemove: (field: string, value: string) => void;
+  onClearAll?: (field: string) => void;
   onFilterChange: (field: string, value: string) => void;
   onShowDropdown: (field: string) => void;
   onHideDropdown: (field: string) => void;
@@ -427,11 +437,38 @@ const MultiSelectInput = ({
         <label className="label mb-2">
           <span className="label-text">{label}</span>
           {safeValues.length > 0 && (
-            <span className="label-text-alt text-purple-600 font-medium">
-              {safeValues.length} selected
+            <span className="label-text-alt flex items-center gap-2">
+              <span className="text-purple-600 font-medium">
+                {safeValues.length} selected
+              </span>
+              {onClearAll && (
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-base-content/55 hover:text-error underline-offset-2 hover:underline"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onClearAll(field);
+                  }}
+                >
+                  Unselect all
+                </button>
+              )}
             </span>
           )}
         </label>
+      )}
+
+      {hideLabel && safeValues.length > 0 && onClearAll && (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-purple-600">{safeValues.length} selected</span>
+          <button
+            type="button"
+            className="text-xs font-semibold text-base-content/55 hover:text-error underline-offset-2 hover:underline"
+            onClick={() => onClearAll(field)}
+          >
+            Unselect all
+          </button>
+        </div>
       )}
 
       {/* Selected items */}
@@ -522,26 +559,65 @@ const ColumnSelector = ({
   onHideDropdown: () => void;
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = React.useState<React.CSSProperties>({});
+
+  const updateMenuPosition = React.useCallback(() => {
+    const btn = buttonRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const width = Math.max(rect.width, 280);
+    const left = Math.min(rect.left, window.innerWidth - width - 8);
+    setMenuStyle({
+      position: 'fixed',
+      top: rect.bottom + 4,
+      left: Math.max(8, left),
+      width,
+      zIndex: 200,
+    });
+  }, []);
 
   // Handle clicks outside the component to close dropdown
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        onHideDropdown();
+      const target = event.target as Node;
+      if (
+        containerRef.current?.contains(target) ||
+        menuRef.current?.contains(target)
+      ) {
+        return;
       }
+      onHideDropdown();
     };
 
     if (showDropdown) {
       // Add event listener with a small delay to avoid immediate closing
-      setTimeout(() => {
+      const timer = window.setTimeout(() => {
         document.addEventListener('mousedown', handleClickOutside);
       }, 100);
+      return () => {
+        window.clearTimeout(timer);
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [showDropdown, onHideDropdown]);
+
+  React.useEffect(() => {
+    if (!showDropdown) return;
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    // Capture scrolls from the layout main pane and nested scrollers
+    document.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      document.removeEventListener('scroll', updateMenuPosition, true);
+    };
+  }, [showDropdown, updateMenuPosition, selectedColumns.length]);
 
   const groupedColumns = AVAILABLE_COLUMNS.reduce((acc, column) => {
     if (!acc[column.category]) {
@@ -562,7 +638,7 @@ const ColumnSelector = ({
   };
 
   return (
-    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
+    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative z-[40]">
       <label className="label mb-2">
         <span className="label-text">Table Columns</span>
         <span className="label-text-alt text-purple-600 font-medium">
@@ -572,9 +648,12 @@ const ColumnSelector = ({
 
       <div className="relative">
         <button
+          ref={buttonRef}
           type="button"
           className="input w-full text-left flex items-center justify-between"
           onClick={onShowDropdown}
+          aria-expanded={showDropdown}
+          aria-haspopup="listbox"
         >
           <span>Select columns for table view...</span>
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -582,32 +661,43 @@ const ColumnSelector = ({
           </svg>
         </button>
 
-        {showDropdown && (
-          <div className="absolute z-20 w-full mt-1 bg-white rounded-md shadow-lg max-h-96 overflow-y-auto">
-            <div className="p-2">
-              {Object.entries(groupedColumns).map(([category, columns]) => (
-                <div key={category} className="mb-4">
-                  <h4 className="font-semibold text-sm text-gray-700 mb-2 border-b pb-1">
-                    {category}
-                  </h4>
-                  <div className="space-y-1">
-                    {columns.map((column) => (
-                      <label key={column.key} className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-1 rounded">
-                        <input
-                          type="checkbox"
-                          checked={selectedColumns.includes(column.key)}
-                          onChange={() => handleColumnToggle(column.key)}
-                          className="checkbox checkbox-sm"
-                        />
-                        <span className="text-sm">{column.label}</span>
-                      </label>
-                    ))}
+        {showDropdown &&
+          createPortal(
+            <div
+              ref={menuRef}
+              style={menuStyle}
+              className="rounded-md border border-gray-200 bg-white shadow-xl max-h-96 overflow-y-auto"
+              role="listbox"
+              aria-label="Table columns"
+            >
+              <div className="p-2">
+                {Object.entries(groupedColumns).map(([category, columns]) => (
+                  <div key={category} className="mb-4 last:mb-0">
+                    <h4 className="font-semibold text-sm text-gray-700 mb-2 border-b pb-1">
+                      {category}
+                    </h4>
+                    <div className="space-y-1">
+                      {columns.map((column) => (
+                        <label
+                          key={column.key}
+                          className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-1 rounded"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedColumns.includes(column.key)}
+                            onChange={() => handleColumnToggle(column.key)}
+                            className="checkbox checkbox-sm"
+                          />
+                          <span className="text-sm">{column.label}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+                ))}
+              </div>
+            </div>,
+            document.body,
+          )}
       </div>
     </div>
   );
@@ -993,6 +1083,70 @@ function getLeadColumnValueForExport(lead: Lead, columnKey: string): string {
 
 // Table View Component
 const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (lead: Lead | string, event?: React.MouseEvent) => void }) => {
+  const tableScrollRef = React.useRef<HTMLDivElement>(null);
+  const mirrorScrollRef = React.useRef<HTMLDivElement>(null);
+  const syncingScrollRef = React.useRef(false);
+  const [tableScrollWidth, setTableScrollWidth] = React.useState(0);
+  const [needsHorizontalScroll, setNeedsHorizontalScroll] = React.useState(false);
+  const [showBottomScrollbar, setShowBottomScrollbar] = React.useState(false);
+
+  const measureTableOverflow = React.useCallback(() => {
+    const el = tableScrollRef.current;
+    if (!el) return;
+    setTableScrollWidth(el.scrollWidth);
+    setNeedsHorizontalScroll(el.scrollWidth > el.clientWidth + 1);
+  }, []);
+
+  React.useEffect(() => {
+    measureTableOverflow();
+    const el = tableScrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => measureTableOverflow());
+    ro.observe(el);
+    const table = el.querySelector('table');
+    if (table) ro.observe(table);
+    window.addEventListener('resize', measureTableOverflow);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measureTableOverflow);
+    };
+  }, [leads, selectedColumns, measureTableOverflow]);
+
+  React.useEffect(() => {
+    if (!needsHorizontalScroll) {
+      setShowBottomScrollbar(false);
+      return;
+    }
+    const el = tableScrollRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      ([entry]) => setShowBottomScrollbar(entry.isIntersecting && entry.intersectionRatio > 0),
+      { root: null, threshold: [0, 0.01] },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [needsHorizontalScroll, leads.length]);
+
+  const handleTableScroll = () => {
+    if (syncingScrollRef.current) return;
+    const tableEl = tableScrollRef.current;
+    const mirrorEl = mirrorScrollRef.current;
+    if (!tableEl || !mirrorEl) return;
+    syncingScrollRef.current = true;
+    mirrorEl.scrollLeft = tableEl.scrollLeft;
+    syncingScrollRef.current = false;
+  };
+
+  const handleMirrorScroll = () => {
+    if (syncingScrollRef.current) return;
+    const tableEl = tableScrollRef.current;
+    const mirrorEl = mirrorScrollRef.current;
+    if (!tableEl || !mirrorEl) return;
+    syncingScrollRef.current = true;
+    tableEl.scrollLeft = mirrorEl.scrollLeft;
+    syncingScrollRef.current = false;
+  };
+
   const getColumnValue = (lead: Lead, columnKey: string): string | React.ReactElement => {
     const leadWithData = lead as any;
 
@@ -1039,59 +1193,75 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
   }
 
   return (
-    <div className="lead-search-table-shell -mx-4 overflow-x-auto md:mx-0 py-2 pb-8">
-      <table className="table lead-search-results-table w-full min-w-[36rem] text-base">
-        <thead>
-          <tr className="md:sticky md:top-0 z-20">
-            {selectedColumns.map((columnKey) => {
-              const column = AVAILABLE_COLUMNS.find(col => col.key === columnKey);
+    <>
+      <div
+        ref={tableScrollRef}
+        onScroll={handleTableScroll}
+        className="lead-search-table-shell -mx-4 overflow-x-auto md:mx-0 py-2 pb-8"
+      >
+        <table className="table lead-search-results-table w-full min-w-[36rem] text-base">
+          <thead>
+            <tr className="md:sticky md:top-0 z-20">
+              {selectedColumns.map((columnKey) => {
+                const column = AVAILABLE_COLUMNS.find(col => col.key === columnKey);
+                return (
+                  <th
+                    key={columnKey}
+                    className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40"
+                  >
+                    {column?.label || columnKey}
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {leads.map((lead, index) => {
+              const anyLead = lead as any;
+              const isLegacyInactive = anyLead.lead_type === 'legacy' && anyLead.status != null && (Number(anyLead.status) === 10 || anyLead.status === '10');
+              const isNewInactive = anyLead.lead_type === 'new' && anyLead.unactivated_at != null;
+              const isInactive = isLegacyInactive || isNewInactive;
               return (
-                <th
-                  key={columnKey}
-                  className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40"
+                <tr
+                  key={lead.id || index}
+                  className={`group cursor-pointer${
+                    isInactive
+                      ? ' lead-search-row-inactive [&_.badge]:!border-0 [&_.badge]:!bg-gray-200 [&_.badge]:![color:black]'
+                      : ''
+                  }`}
+                  onClick={(e) => {
+                    onLeadClick(lead, e);
+                  }}
+                  title={`Click to view lead ${anyLead.display_lead_number || anyLead.lead_number || lead.id}`}
                 >
-                  {column?.label || columnKey}
-                </th>
+                  {selectedColumns.map((columnKey) => {
+                    const columnValue = getColumnValue(lead, columnKey);
+                    const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
+                    return (
+                      <td key={columnKey} className="max-w-xs px-5 py-4">
+                        <div className="truncate" title={titleText}>
+                          {columnValue}
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
               );
             })}
-          </tr>
-        </thead>
-        <tbody>
-          {leads.map((lead, index) => {
-            const anyLead = lead as any;
-            const isLegacyInactive = anyLead.lead_type === 'legacy' && anyLead.status != null && (Number(anyLead.status) === 10 || anyLead.status === '10');
-            const isNewInactive = anyLead.lead_type === 'new' && anyLead.unactivated_at != null;
-            const isInactive = isLegacyInactive || isNewInactive;
-            return (
-              <tr
-                key={lead.id || index}
-                className={`group cursor-pointer${
-                  isInactive
-                    ? ' lead-search-row-inactive [&_.badge]:!border-0 [&_.badge]:!bg-gray-200 [&_.badge]:![color:black]'
-                    : ''
-                }`}
-                onClick={(e) => {
-                  onLeadClick(lead, e);
-                }}
-                title={`Click to view lead ${anyLead.display_lead_number || anyLead.lead_number || lead.id}`}
-              >
-                {selectedColumns.map((columnKey) => {
-                  const columnValue = getColumnValue(lead, columnKey);
-                  const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
-                  return (
-                    <td key={columnKey} className="max-w-xs px-5 py-4">
-                      <div className="truncate" title={titleText}>
-                        {columnValue}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <style>{`
+          </tbody>
+        </table>
+        <style>{`
+        /* Hide native scrollbar at end of table; use fixed screen-edge bar instead */
+        .lead-search-table-shell {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        .lead-search-table-shell::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
+
         .lead-search-table-shell table {
           background: transparent !important;
           border: none !important;
@@ -1172,7 +1342,27 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
           background-color: #ececec !important;
         }
       `}</style>
-    </div>
+      </div>
+
+      {needsHorizontalScroll &&
+        showBottomScrollbar &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed inset-x-0 bottom-0 z-[34] md:left-32"
+            style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+          >
+            <div
+              ref={mirrorScrollRef}
+              onScroll={handleMirrorScroll}
+              className="pointer-events-auto h-3.5 overflow-x-auto border-t border-base-300/70 bg-base-200/90 backdrop-blur-[1px] dark:bg-base-300/90"
+              aria-label="Scroll table horizontally"
+            >
+              <div style={{ width: tableScrollWidth, height: 1 }} aria-hidden />
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 };
 
@@ -1183,6 +1373,7 @@ const LeadSearchPage: React.FC = () => {
   // Ref for results section to scroll to after search
   const resultsRef = useRef<HTMLDivElement>(null);
   const cardsGridRef = useRef<HTMLDivElement>(null);
+  const pageTopRef = useRef<HTMLDivElement>(null);
   const tableResultsRef = useRef<HTMLDivElement>(null);
   const scrollToResultsAfterSearchRef = useRef(false);
 
@@ -1211,6 +1402,7 @@ const LeadSearchPage: React.FC = () => {
     case_handler: [] as string[],
     expert_examination: [] as string[],
     country: [] as string[],
+    flagTypes: [] as string[],
   }, {
     storage: 'sessionStorage',
   });
@@ -1249,6 +1441,8 @@ const LeadSearchPage: React.FC = () => {
   const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [roleOptions, setRoleOptions] = useState<string[]>([]);
   const [countryOptions, setCountryOptions] = useState<string[]>([]);
+  const [flagTypeRows, setFlagTypeRows] = useState<FlagTypeRow[]>([]);
+  const [flagTypeSearch, setFlagTypeSearch] = useState('');
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
   const [filteredTopicOptions, setFilteredTopicOptions] = useState<string[]>([]);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
@@ -1276,6 +1470,7 @@ const LeadSearchPage: React.FC = () => {
   const [showCloserDropdown, setShowCloserDropdown] = useState(false);
   const [showCaseHandlerDropdown, setShowCaseHandlerDropdown] = useState(false);
   const [showCountryDropdown, setShowCountryDropdown] = useState(false);
+  const [showFlagTypesDropdown, setShowFlagTypesDropdown] = useState(false);
   const [filteredRoleOptions, setFilteredRoleOptions] = useState<string[]>([]);
   const [filteredCountryOptions, setFilteredCountryOptions] = useState<string[]>([]);
   const [viewMode, setViewMode] = usePersistedState<'cards' | 'table'>('leadSearchPage_viewMode', 'cards', {
@@ -1286,7 +1481,7 @@ const LeadSearchPage: React.FC = () => {
   });
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const [showFiltersPanel, setShowFiltersPanel] = useState(true);
-  const [mobileQuickBarOpen, setMobileQuickBarOpen] = useState(false);
+  const [quickBarOpen, setQuickBarOpen] = useState(true);
   const [activeMobileFilter, setActiveMobileFilter] = useState<MobileFilterKey | null>(null);
   const navigate = useNavigate();
 
@@ -1299,6 +1494,7 @@ const LeadSearchPage: React.FC = () => {
     const arrayFields = [
       'category', 'language', 'reason', 'tags', 'status', 'source', 'stage', 'topic',
       'scheduler', 'manager', 'lawyer', 'expert', 'closer', 'case_handler', 'expert_examination', 'country',
+      'flagTypes',
     ] as const;
     for (const field of arrayFields) {
       count += filters[field].length;
@@ -1310,6 +1506,34 @@ const LeadSearchPage: React.FC = () => {
   }, [filters]);
 
   const filtersPanelHidden = searchPerformed && !showFiltersPanel;
+
+  const toggleFiltersPanel = useCallback(() => {
+    setShowFiltersPanel((prev) => {
+      const next = !prev;
+      if (next) {
+        // Scroll the layout main pane fully to top so "Leads Search" title + filters are visible.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const start = pageTopRef.current;
+            let node: HTMLElement | null = start;
+            while (node) {
+              const { overflowY } = window.getComputedStyle(node);
+              const scrollable =
+                (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') &&
+                node.scrollHeight > node.clientHeight + 1;
+              if (scrollable) {
+                node.scrollTo({ top: 0, behavior: 'smooth' });
+                return;
+              }
+              node = node.parentElement;
+            }
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          });
+        });
+      }
+      return next;
+    });
+  }, []);
 
   // After search finishes and DOM updates, scroll to cards grid or table (premium UX)
   useEffect(() => {
@@ -1429,6 +1653,60 @@ const LeadSearchPage: React.FC = () => {
       console.error('Error initializing stage names:', error);
     });
   }, []);
+
+  // Fetch flag types for Flagged filter (store ids in filters.flagTypes, like Closer Super Pipeline)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const rows = await fetchFlagTypes(supabase);
+      if (cancelled) return;
+      setFlagTypeRows(rows);
+      // Migrate any persisted label/code values → string ids
+      setFilters((prev) => {
+        const current = prev.flagTypes || [];
+        if (current.length === 0 || rows.length === 0) return prev;
+        const next = current.map((v) => {
+          if (/^\d+$/.test(String(v).trim())) return String(v).trim();
+          const byLabel = rows.find((r) => r.label === v);
+          if (byLabel) return String(byLabel.id);
+          const byCode = rows.find((r) => r.code === v);
+          if (byCode) return String(byCode.id);
+          return v;
+        });
+        if (next.every((v, i) => v === current[i])) return prev;
+        return { ...prev, flagTypes: next };
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [setFilters]);
+
+  const filteredFlagTypes = useMemo(() => {
+    const q = flagTypeSearch.trim().toLowerCase();
+    if (!q) return flagTypeRows;
+    return flagTypeRows.filter(
+      (ft) =>
+        ft.label.toLowerCase().includes(q) ||
+        ft.code.toLowerCase().includes(q) ||
+        String(ft.id).includes(q),
+    );
+  }, [flagTypeRows, flagTypeSearch]);
+
+  const toggleFlagTypeSelection = (flagTypeId: string) => {
+    const current = filters.flagTypes || [];
+    if (current.includes(flagTypeId)) {
+      setFilters((prev) => ({
+        ...prev,
+        flagTypes: current.filter((id) => id !== flagTypeId),
+      }));
+    } else {
+      setFilters((prev) => ({
+        ...prev,
+        flagTypes: [...current, flagTypeId],
+      }));
+    }
+  };
 
   // Fetch stage options from lead_stages table, ordered by ID (lowest to highest)
   useEffect(() => {
@@ -1859,6 +2137,13 @@ const LeadSearchPage: React.FC = () => {
     }));
   };
 
+  const handleMultiClearAll = (field: string) => {
+    setFilters((prev) => ({
+      ...prev,
+      [field]: [],
+    }));
+  };
+
   // Handle main category selection and automatically select all subcategories
   const handleMainCategorySelect = async (mainCategoryName: string) => {
     console.log('🔍 [Main Category] Starting main category selection:', mainCategoryName);
@@ -1953,6 +2238,7 @@ const LeadSearchPage: React.FC = () => {
       case 'closer': setShowCloserDropdown(true); break;
       case 'case_handler': setShowCaseHandlerDropdown(true); break;
       case 'country': setShowCountryDropdown(true); break;
+      case 'flagTypes': setShowFlagTypesDropdown(true); break;
       case 'columns': setShowColumnSelector(true); break;
     }
   };
@@ -1976,6 +2262,7 @@ const LeadSearchPage: React.FC = () => {
       case 'closer': setShowCloserDropdown(false); break;
       case 'case_handler': setShowCaseHandlerDropdown(false); break;
       case 'country': setShowCountryDropdown(false); break;
+      case 'flagTypes': setShowFlagTypesDropdown(false); break;
       case 'columns': setShowColumnSelector(false); break;
     }
   };
@@ -2030,6 +2317,145 @@ const LeadSearchPage: React.FC = () => {
     };
   }, [activeMobileFilter]);
 
+  const renderFlagTypesFilterControl = (sheetMode = false) => (
+    <div className={`relative ${sheetMode ? '' : 'form-control flex flex-col'}`}>
+      {!sheetMode && (
+        <label className="label mb-2">
+          <span className="label-text">Flagged</span>
+          {filters.flagTypes && filters.flagTypes.length > 0 && (
+            <span className="label-text-alt flex items-center gap-2">
+              <span className="text-purple-600 font-medium">
+                {filters.flagTypes.length} selected
+              </span>
+              <button
+                type="button"
+                className="text-xs font-semibold text-base-content/55 hover:text-error underline-offset-2 hover:underline"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setFilters((prev) => ({ ...prev, flagTypes: [] }));
+                  setFlagTypeSearch('');
+                }}
+              >
+                Unselect all
+              </button>
+            </span>
+          )}
+        </label>
+      )}
+      {sheetMode && filters.flagTypes && filters.flagTypes.length > 0 && (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-purple-600">{filters.flagTypes.length} selected</span>
+          <button
+            type="button"
+            className="text-xs font-semibold text-base-content/55 hover:text-error underline-offset-2 hover:underline"
+            onClick={() => {
+              setFilters((prev) => ({ ...prev, flagTypes: [] }));
+              setFlagTypeSearch('');
+            }}
+          >
+            Unselect all
+          </button>
+        </div>
+      )}
+      <input
+        type="text"
+        className="input input-bordered w-full mb-2"
+        placeholder="Search flag types..."
+        value={flagTypeSearch}
+        onChange={(e) => {
+          setFlagTypeSearch(e.target.value);
+          if (!showFlagTypesDropdown) setShowFlagTypesDropdown(true);
+        }}
+        onFocus={() => setShowFlagTypesDropdown(true)}
+      />
+      <div
+        className="w-full min-h-[42px] px-3 py-2 border border-base-300 rounded-md cursor-text flex flex-wrap gap-2 items-center bg-base-100"
+        onClick={() => setShowFlagTypesDropdown(true)}
+      >
+        {filters.flagTypes && filters.flagTypes.length > 0 ? (
+          filters.flagTypes.map((flagTypeId) => {
+            const ft = flagTypeRows.find((t) => String(t.id) === String(flagTypeId));
+            if (!ft) {
+              return (
+                <div key={flagTypeId} className="badge badge-primary badge-sm flex items-center gap-1">
+                  <span>{flagTypeId}</span>
+                  <button
+                    type="button"
+                    className="ml-1 hover:text-red-200"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFlagTypeSelection(String(flagTypeId));
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <div key={flagTypeId} className="badge badge-primary badge-sm flex items-center gap-1">
+                <span>{ft.label}</span>
+                <button
+                  type="button"
+                  className="ml-1 hover:text-red-200"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFlagTypeSelection(String(flagTypeId));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })
+        ) : (
+          <span className="text-gray-400 text-sm">Click to select flag types...</span>
+        )}
+      </div>
+      {showFlagTypesDropdown && (
+        <>
+          {!sheetMode && (
+            <div className="fixed inset-0 z-[5]" onClick={() => setShowFlagTypesDropdown(false)} />
+          )}
+          <div
+            className={`${
+              sheetMode
+                ? 'mt-2 max-h-56 overflow-y-auto rounded-xl border border-base-200 bg-base-100'
+                : 'absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto'
+            }`}
+          >
+            {filteredFlagTypes.map((ft) => {
+              const idStr = String(ft.id);
+              const isSelected = filters.flagTypes?.includes(idStr) || false;
+              return (
+                <div
+                  key={ft.id}
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFlagTypeSelection(idStr);
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleFlagTypeSelection(idStr)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="checkbox checkbox-sm checkbox-primary"
+                  />
+                  <span className={isSelected ? 'font-semibold' : ''}>{ft.label}</span>
+                </div>
+              );
+            })}
+            {filteredFlagTypes.length === 0 && (
+              <div className="px-4 py-2 text-sm text-gray-500">No flag types found</div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   const mobileSheetProps = { hideLabel: true, sheetMode: true } as const;
 
   const renderMobileFilterControl = (key: MobileFilterKey) => {
@@ -2063,6 +2489,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showCategoryDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2080,6 +2507,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showReasonDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2108,6 +2536,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showLanguageDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2125,6 +2554,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showTagDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2142,6 +2572,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showStatusDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2159,6 +2590,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showExpertExaminationDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2176,6 +2608,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showSourceDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2208,6 +2641,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showStageDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2225,6 +2659,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showTopicDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2242,6 +2677,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showSchedulerDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2259,6 +2695,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showManagerDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2276,6 +2713,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showLawyerDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2293,6 +2731,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showExpertDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2310,6 +2749,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showCloserDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2327,6 +2767,7 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showCaseHandlerDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
@@ -2344,12 +2785,15 @@ const LeadSearchPage: React.FC = () => {
             showDropdown={showCountryDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
+            onClearAll={handleMultiClearAll}
             onFilterChange={handleFilterChange}
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
             {...mobileSheetProps}
           />
         );
+      case 'flagTypes':
+        return renderFlagTypesFilterControl(true);
       case 'content':
         return (
           <input
@@ -2379,6 +2823,7 @@ const LeadSearchPage: React.FC = () => {
     setIsSearching(true);
     setSearchPerformed(true);
     setShowFiltersPanel(false);
+    setQuickBarOpen(false);
     closeMobileFilter();
 
     console.log('🔍 Starting lead search with filters:', filters);
@@ -2390,6 +2835,78 @@ const LeadSearchPage: React.FC = () => {
       fromDateMatch: filters.fromDate === new Date().toISOString().split('T')[0],
       toDateMatch: filters.toDate === new Date().toISOString().split('T')[0]
     });
+
+    // Flag types — same as Closer Super Pipeline: store/resolve numeric ids, seed lead ids, post-filter.
+    const flagFilterActive = Boolean(filters.flagTypes && filters.flagTypes.length > 0);
+    let selectedFlagTypeIds: number[] = [];
+    let flaggedNewLeadIds: Set<string> | null = null;
+    let flaggedLegacyLeadIds: Set<number> | null = null;
+    let flagFilterUserId: string | null = null;
+
+    if (flagFilterActive) {
+      const rows =
+        flagTypeRows.length > 0 ? flagTypeRows : await fetchFlagTypes(supabase);
+      selectedFlagTypeIds = (filters.flagTypes || [])
+        .map((labelOrId) => {
+          const raw = String(labelOrId).trim();
+          if (/^\d+$/.test(raw)) return Number(raw);
+          const byLabel = rows.find((ft) => ft.label === raw);
+          if (byLabel) return byLabel.id;
+          const byCode = rows.find((ft) => ft.code === raw);
+          if (byCode) return byCode.id;
+          return NaN;
+        })
+        .filter((id) => Number.isFinite(id));
+
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const byAuth = await supabase
+            .from('users')
+            .select('id')
+            .eq('auth_id', user.id)
+            .maybeSingle();
+          if (byAuth.data?.id != null) {
+            flagFilterUserId = String(byAuth.data.id);
+          } else if (user.email) {
+            const byEmail = await supabase
+              .from('users')
+              .select('id')
+              .eq('email', user.email)
+              .maybeSingle();
+            if (byEmail.data?.id != null) flagFilterUserId = String(byEmail.data.id);
+          }
+          if (!flagFilterUserId) flagFilterUserId = user.id;
+        }
+      } catch (err) {
+        console.warn('LeadSearch: could not resolve user for flag filter', err);
+      }
+
+      if (selectedFlagTypeIds.length > 0 && flagFilterUserId) {
+        const seeds = await fetchFlaggedLeadIdsForUser(
+          supabase,
+          flagFilterUserId,
+          selectedFlagTypeIds,
+          { allUsers: true },
+        );
+        if (seeds.newLeadIds.size + seeds.legacyLeadIds.size > 0) {
+          flaggedNewLeadIds = seeds.newLeadIds;
+          flaggedLegacyLeadIds = seeds.legacyLeadIds;
+        }
+        console.log('🔍 DEBUG: LeadSearch flag seed IDs', {
+          selectedFlagTypes: filters.flagTypes,
+          selectedFlagTypeIds,
+          newLeadIds: flaggedNewLeadIds?.size ?? 0,
+          legacyIds: flaggedLegacyLeadIds?.size ?? 0,
+        });
+      } else {
+        console.warn('🔍 DEBUG: LeadSearch flag filter could not resolve type ids or user', {
+          filtersFlagTypes: filters.flagTypes,
+          selectedFlagTypeIds,
+          flagFilterUserId,
+        });
+      }
+    }
 
     // Create employee mappings for role filters
     const nameToIdMapping = new Map<string, number>();
@@ -2522,6 +3039,11 @@ const LeadSearchPage: React.FC = () => {
             ? `${category.name} (${mainCategory})`
             : category.name;
           categoryNameToIdMapping.set(formattedName, category.id);
+          // Also index bare subcategory name (last-write-wins if duplicate names across mains).
+          // Used only as fallback when formatted lookup misses.
+          if (category.name && !categoryNameToIdMapping.has(category.name)) {
+            categoryNameToIdMapping.set(category.name, category.id);
+          }
 
           // Debug log for first few categories
           if (categoryNameToIdMapping.size <= 5) {
@@ -2682,128 +3204,132 @@ const LeadSearchPage: React.FC = () => {
           misc_language!fk_leads_language_id(id, name)
         `);
 
-      console.log('📋 New leads query base:', newLeadsQuery);
+      console.log('📋 New leads query base ready');
 
-      // Test filters one by one to identify the problem
-      console.log('🧪 Testing filters individually...');
+      // Resolve selected category labels → misc_category ids.
+      // Also expand any "(Main Category)" labels to ALL children of that main category,
+      // so Main Category USA picks never miss a USA subcategory due to label mismatch.
+      const resolveSelectedCategoryIds = async (
+        selected: string[]
+      ): Promise<{ categoryIds: number[]; unresolvedLabels: string[]; mainCategoriesExpanded: string[] }> => {
+        const idSet = new Set<number>();
+        const unresolvedLabels: string[] = [];
+        const mainNames = new Set<string>();
 
-      // Test 1: No filters at all
-      try {
-        const noFiltersTest = await newLeadsQuery.limit(5);
-        console.log('✅ New leads with no filters:', {
-          count: noFiltersTest.data?.length || 0,
-          data: noFiltersTest.data,
-          sampleCreatedAt: noFiltersTest.data?.map(lead => ({
-            id: lead.id,
-            name: lead.name,
-            created_at: lead.created_at,
-            created_at_date: new Date(lead.created_at).toISOString().split('T')[0]
-          }))
+        for (const formattedCategoryName of selected) {
+          const raw = formattedCategoryName.trim();
+          if (!raw) continue;
+          const stripped = raw.split(' (')[0].trim();
+          const parenMatch = raw.match(/\(([^)]+)\)\s*$/);
+          if (parenMatch?.[1]) mainNames.add(parenMatch[1].trim());
+
+          const mapped =
+            categoryNameToIdMapping.get(raw) ??
+            (stripped ? categoryNameToIdMapping.get(stripped) : undefined);
+          if (mapped !== undefined) {
+            idSet.add(mapped);
+          } else {
+            unresolvedLabels.push(raw);
+          }
+        }
+
+        const mainCategoriesExpanded: string[] = [];
+        const expandedMainNames = new Set<string>();
+        for (const mainName of mainNames) {
+          try {
+            const { data: mainRow, error: mainErr } = await supabase
+              .from('misc_maincategory')
+              .select('id, name')
+              .eq('name', mainName)
+              .maybeSingle();
+            if (mainErr || !mainRow?.id) {
+              console.warn('⚠️ [Category Resolve] Main category not found for expand:', mainName, mainErr);
+              continue;
+            }
+            const { data: kids, error: kidsErr } = await supabase
+              .from('misc_category')
+              .select('id, name')
+              .eq('parent_id', mainRow.id);
+            if (kidsErr) {
+              console.warn('⚠️ [Category Resolve] Failed loading children for', mainName, kidsErr);
+              continue;
+            }
+            (kids || []).forEach((k: { id: number }) => idSet.add(k.id));
+            expandedMainNames.add(mainName);
+            mainCategoriesExpanded.push(`${mainName} → ${(kids || []).length} children`);
+          } catch (err) {
+            console.warn('⚠️ [Category Resolve] Expand failed for', mainName, err);
+          }
+        }
+
+        // Labels under an expanded main are covered by child ids — don't text-fallback them.
+        const stillUnresolved = unresolvedLabels.filter((label) => {
+          const parenMatch = label.match(/\(([^)]+)\)\s*$/);
+          const main = parenMatch?.[1]?.trim();
+          return !(main && expandedMainNames.has(main));
         });
-      } catch (testError) {
-        console.error('❌ New leads no filters test failed:', testError);
-      }
 
-      // Test 2: Only date filters
-      if (filters.fromDate || filters.toDate) {
-        try {
-          let dateOnlyQuery = newLeadsQuery;
-          if (filters.fromDate) {
-            console.log('📅 Testing fromDate filter only (UTC range):', filters.fromDate);
-            dateOnlyQuery = dateOnlyQuery.gte('created_at', buildJerusalemStartOfDayIso(filters.fromDate));
-          }
-          if (filters.toDate) {
-            console.log('📅 Testing toDate filter only (UTC range):', filters.toDate);
-            const endOfDay = buildJerusalemEndOfDayIso(filters.toDate);
-            console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
-            dateOnlyQuery = dateOnlyQuery.lte('created_at', endOfDay);
-          }
-          const dateOnlyTest = await dateOnlyQuery.limit(5);
-          console.log('✅ New leads with date filters only:', {
-            count: dateOnlyTest.data?.length || 0,
-            data: dateOnlyTest.data,
-            sampleCreatedAt: dateOnlyTest.data?.map(lead => ({
-              id: lead.id,
-              name: lead.name,
-              created_at: lead.created_at,
-              created_at_date: new Date(lead.created_at).toISOString().split('T')[0]
-            }))
-          });
-        } catch (testError) {
-          console.error('❌ New leads date filters test failed:', testError);
-        }
-      }
+        return {
+          categoryIds: Array.from(idSet),
+          unresolvedLabels: stillUnresolved,
+          mainCategoriesExpanded,
+        };
+      };
 
-      // Test 3: Only category filter
-      if (filters.category && filters.category.length > 0) {
-        try {
-          console.log('🏷️ Testing category filter only:', filters.category);
+      const resolvedCategories =
+        filters.category && filters.category.length > 0
+          ? await resolveSelectedCategoryIds(filters.category)
+          : null;
 
-          const categoryNames = filters.category.map(cat => cat.split(' (')[0].trim());
-          const categoryOnlyTest = await newLeadsQuery
-            .in('category', categoryNames)
-            .limit(5);
-          console.log('✅ New leads with category filter:', {
-            count: categoryOnlyTest.data?.length || 0,
-            data: categoryOnlyTest.data
-          });
-        } catch (testError) {
-          console.error('❌ New leads category filter test failed:', testError);
-        }
-      }
+      // When Flagged filter has seed lead ids, skip created_at date bounds (Closer style).
+      // Without seeds, keep dates so the candidate query stays bounded.
+      const skipDatesForFlags =
+        flagFilterActive &&
+        Boolean(
+          (flaggedNewLeadIds && flaggedNewLeadIds.size > 0) ||
+            (flaggedLegacyLeadIds && flaggedLegacyLeadIds.size > 0),
+        );
 
       // Apply filters for new leads
-      if (filters.fromDate) {
+      if (!skipDatesForFlags && filters.fromDate) {
         console.log('📅 Adding fromDate filter for new leads (UTC range):', filters.fromDate);
         newLeadsQuery = newLeadsQuery.gte('created_at', buildJerusalemStartOfDayIso(filters.fromDate));
       }
-      if (filters.toDate) {
+      if (!skipDatesForFlags && filters.toDate) {
         console.log('📅 Adding toDate filter for new leads (UTC range):', filters.toDate);
         const endOfDay = buildJerusalemEndOfDayIso(filters.toDate);
         console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
         newLeadsQuery = newLeadsQuery.lte('created_at', endOfDay);
       }
-      if (filters.category && filters.category.length > 0) {
+      if (filters.category && filters.category.length > 0 && resolvedCategories) {
         console.log('🏷️ [New Leads Category Filter] Starting category filter application:', {
           selectedCategories: filters.category,
           categoryCount: filters.category.length,
           mappingSize: categoryNameToIdMapping.size
         });
 
-        // Try using category_id first (more reliable), fallback to category text field
-        const categoryIds: number[] = [];
-        const categoryNames: string[] = [];
+        const { categoryIds, unresolvedLabels, mainCategoriesExpanded } = resolvedCategories;
 
-        for (const formattedCategoryName of filters.category) {
-          // Try to get category_id from mapping
-          const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
-          if (categoryId !== undefined) {
-            categoryIds.push(categoryId);
-            console.log('🔍 [New Leads Category Filter] Found category_id:', categoryId, 'for category:', formattedCategoryName);
-          } else {
-            // Fallback: extract category name (remove main category in parentheses)
-            const raw = formattedCategoryName.trim();
-            const stripped = raw.split(' (')[0].trim();
-            // Some leads store category as plain text ("Poland"), others may store the formatted label ("Poland (Main)").
-            // Include both to avoid missing text-only leads.
-            if (stripped) categoryNames.push(stripped);
-            if (raw) categoryNames.push(raw);
-            console.log('⚠️ [New Leads Category Filter] No category_id found, will use category text fallback for:', formattedCategoryName);
-          }
+        // Text fallback only for labels that never resolved to an id
+        const categoryNames: string[] = [];
+        for (const formattedCategoryName of unresolvedLabels) {
+          const raw = formattedCategoryName.trim();
+          const stripped = raw.split(' (')[0].trim();
+          if (stripped) categoryNames.push(stripped);
+          if (raw) categoryNames.push(raw);
         }
 
         console.log('🏷️ [New Leads Category Filter] Category filter summary:', {
           totalSelected: filters.category.length,
           categoryIdsFound: categoryIds,
           categoryIdsCount: categoryIds.length,
+          mainCategoriesExpanded,
+          unresolvedLabels,
           categoryNamesFallback: categoryNames,
           categoryNamesCount: categoryNames.length
         });
 
-        // Prefer category_id filter if we have IDs, otherwise use category text field
-        // If we have both IDs and names, use OR to include both
         if (categoryIds.length > 0 && categoryNames.length > 0) {
-          // Mixed: some categories have IDs, some don't - use OR condition
           console.log('🏷️ [New Leads Category Filter] Applying mixed filter (OR): category_id IN', categoryIds, 'OR category IN', categoryNames);
           const encCategoryNames = categoryNames.map((n) => encodeURIComponent(n));
           const orConditions = [
@@ -2816,7 +3342,6 @@ const LeadSearchPage: React.FC = () => {
           ];
           newLeadsQuery = newLeadsQuery.or(orConditions.join(','));
         } else if (categoryIds.length > 0) {
-          // All categories have IDs - use category_id filter
           if (categoryIds.length === 1) {
             console.log('🏷️ [New Leads Category Filter] Applying single category_id filter:', categoryIds[0]);
             newLeadsQuery = newLeadsQuery.eq('category_id', categoryIds[0]);
@@ -2825,13 +3350,12 @@ const LeadSearchPage: React.FC = () => {
             newLeadsQuery = newLeadsQuery.in('category_id', categoryIds);
           }
         } else if (categoryNames.length > 0) {
-          // Only category names available, use text field
           const uniqNames = Array.from(new Set(categoryNames.map((n) => n.trim()).filter(Boolean)));
           if (uniqNames.length === 1) {
-            console.log('🏷️ [New Leads Category Filter] Applying single category name filter (fallback):', categoryNames[0]);
+            console.log('🏷️ [New Leads Category Filter] Applying single category name filter (fallback):', uniqNames[0]);
             newLeadsQuery = newLeadsQuery.eq('category', uniqNames[0]);
           } else {
-            console.log('🏷️ [New Leads Category Filter] Applying multiple category name filter (IN, fallback):', categoryNames);
+            console.log('🏷️ [New Leads Category Filter] Applying multiple category name filter (IN, fallback):', uniqNames);
             newLeadsQuery = newLeadsQuery.in('category', uniqNames);
           }
         } else {
@@ -3184,64 +3708,34 @@ const LeadSearchPage: React.FC = () => {
 
       // Apply filters for legacy leads (mapping fields)
       // Use date strings directly - cdate column handles date comparisons correctly
-      if (filters.fromDate) {
+      if (!skipDatesForFlags && filters.fromDate) {
         console.log('📅 Adding fromDate filter for legacy leads:', filters.fromDate);
         legacyLeadsQuery = legacyLeadsQuery.gte('cdate', filters.fromDate);
       }
-      if (filters.toDate) {
+      if (!skipDatesForFlags && filters.toDate) {
         console.log('📅 Adding toDate filter for legacy leads:', filters.toDate);
         // Append time to include the entire day
         const endOfDay = `${filters.toDate}T23:59:59`;
         legacyLeadsQuery = legacyLeadsQuery.lte('cdate', endOfDay);
       }
-      if (filters.category && filters.category.length > 0) {
+      if (filters.category && filters.category.length > 0 && resolvedCategories) {
         console.log('🏷️ [Legacy Leads Category Filter] Starting category filter application:', {
           selectedCategories: filters.category,
           categoryCount: filters.category.length,
           mappingSize: categoryNameToIdMapping.size
         });
 
-        // Use the category name to ID mapping we created earlier (no database queries needed)
-        const categoryIds: number[] = [];
-        const lookupResults: Array<{ formattedName: string; categoryId: number | undefined; found: boolean }> = [];
-
-        for (const formattedCategoryName of filters.category) {
-          const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
-          const found = categoryId !== undefined;
-
-          lookupResults.push({
-            formattedName: formattedCategoryName,
-            categoryId,
-            found
-          });
-
-          if (categoryId !== undefined) {
-            categoryIds.push(categoryId);
-            console.log('🔍 [Legacy Leads Category Filter] Found category_id:', categoryId, 'for category:', formattedCategoryName);
-          } else {
-            console.log('⚠️ [Legacy Leads Category Filter] No category ID found for:', formattedCategoryName);
-            // Debug: Check if the mapping contains similar entries
-            const similarEntries = Array.from(categoryNameToIdMapping.keys()).filter(key =>
-              key.toLowerCase().includes(formattedCategoryName.toLowerCase().split(' (')[0]) ||
-              formattedCategoryName.toLowerCase().includes(key.toLowerCase().split(' (')[0])
-            );
-            if (similarEntries.length > 0) {
-              console.log('🔍 [Legacy Leads Category Filter] Similar entries in mapping:', similarEntries);
-            }
-          }
-        }
+        const { categoryIds, unresolvedLabels, mainCategoriesExpanded } = resolvedCategories;
 
         console.log('🏷️ [Legacy Leads Category Filter] Category ID lookup summary:', {
           totalSelected: filters.category.length,
-          lookupResults,
           categoryIdsFound: categoryIds,
-          categoryIdsCount: categoryIds.length
+          categoryIdsCount: categoryIds.length,
+          mainCategoriesExpanded,
+          unresolvedLabels,
         });
 
-        console.log(`🔍 [Legacy Leads Category Filter] DEBUG Lead 174503: Category filter - categoryIds found:`, categoryIds, 'Lead has category_id: 122, included:', categoryIds.includes(122));
-
         if (categoryIds.length > 0) {
-          // Use IN operator for multiple category_ids
           console.log('🏷️ [Legacy Leads Category Filter] Applying category_id filter (IN):', categoryIds);
           legacyLeadsQuery = legacyLeadsQuery.in('category_id', categoryIds);
           console.log('🏷️ [Legacy Leads Category Filter] Category filter applied to query');
@@ -3598,12 +4092,33 @@ const LeadSearchPage: React.FC = () => {
         }
       }
 
+      // Flagged leads ID restriction (Closer Super Pipeline pattern)
+      if (flagFilterActive && flaggedNewLeadIds) {
+        const newIds = Array.from(flaggedNewLeadIds);
+        if (newIds.length === 0) {
+          newLeadsQuery = newLeadsQuery.eq('id', '00000000-0000-0000-0000-000000000000');
+        } else {
+          newLeadsQuery = newLeadsQuery.in('id', newIds.slice(0, 500));
+        }
+      }
+
       // Execute both queries with explicit limit to ensure we get all results
       // Supabase default limit is 1000, but we'll set it explicitly to be safe
       console.log('🚀 [Query Execution] Executing queries with limits...');
       const [newLeadsResult, legacyLeadsResult] = await Promise.all([
         newLeadsQuery.order('created_at', { ascending: false }).limit(10000),
-        legacyLeadsQuery.order('cdate', { ascending: false }).limit(10000)
+        (() => {
+          let q = legacyLeadsQuery;
+          if (flagFilterActive && flaggedLegacyLeadIds) {
+            const legacyIds = Array.from(flaggedLegacyLeadIds);
+            if (legacyIds.length === 0) {
+              q = q.eq('id', -1);
+            } else {
+              q = q.in('id', legacyIds.slice(0, 500));
+            }
+          }
+          return q.order('cdate', { ascending: false }).limit(10000);
+        })(),
       ]);
 
       console.log('📊 [Query Results] New leads result:', {
@@ -3776,74 +4291,6 @@ const LeadSearchPage: React.FC = () => {
         });
       }
 
-      // DEBUG: Check if lead 174503 is in the query results
-      const debugLeadId = 174503;
-      const debugLeadInResults = legacyLeadsResult.data?.find((lead: any) => lead.id === debugLeadId);
-      if (debugLeadInResults) {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: Found in query results:`, {
-          id: debugLeadInResults.id,
-          name: debugLeadInResults.name,
-          cdate: debugLeadInResults.cdate,
-          status: debugLeadInResults.status,
-          stage: debugLeadInResults.stage,
-          category_id: debugLeadInResults.category_id,
-          source_id: debugLeadInResults.source_id,
-          language_id: debugLeadInResults.language_id,
-          topic: debugLeadInResults.topic,
-        });
-      } else {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: NOT found in query results - checking if it exists in database...`);
-        // Check if the lead exists at all
-        const { data: debugLeadCheck, error: debugCheckError } = await supabase
-          .from('leads_lead')
-          .select('id, name, cdate, status, stage, category_id, source_id, language_id, topic, unactivated_at')
-          .eq('id', debugLeadId)
-          .maybeSingle();
-        if (!debugCheckError && debugLeadCheck) {
-          console.log(`🔍 DEBUG Lead ${debugLeadId}: Exists in database:`, debugLeadCheck);
-
-          // Check what category name corresponds to category_id 122
-          let categoryNameFor122 = null;
-          try {
-            const { data: catData } = await supabase
-              .from('misc_category')
-              .select('id, name, parent_id, misc_maincategory!parent_id(name)')
-              .eq('id', debugLeadCheck.category_id)
-              .single();
-            if (catData) {
-              const mainCat = Array.isArray(catData.misc_maincategory) ? catData.misc_maincategory[0] : catData.misc_maincategory;
-              categoryNameFor122 = mainCat?.name ? `${catData.name} (${mainCat.name})` : catData.name;
-              console.log(`🔍 DEBUG Lead ${debugLeadId}: Category name for category_id ${debugLeadCheck.category_id}:`, categoryNameFor122);
-            }
-          } catch (e) {
-            console.log(`🔍 DEBUG Lead ${debugLeadId}: Error fetching category name for ID ${debugLeadCheck.category_id}:`, e);
-          }
-
-          // Check why it was filtered out
-          console.log(`🔍 DEBUG Lead ${debugLeadId}: Filter analysis:`, {
-            fromDate: filters.fromDate,
-            toDate: filters.toDate,
-            cdate: debugLeadCheck.cdate,
-            cdateMatchesFromDate: filters.fromDate ? (debugLeadCheck.cdate >= filters.fromDate) : 'N/A',
-            cdateMatchesToDate: filters.toDate ? (debugLeadCheck.cdate <= `${filters.toDate}T23:59:59`) : 'N/A',
-            status: debugLeadCheck.status,
-            statusFilter: filters.status,
-            stage: debugLeadCheck.stage,
-            stageFilter: filters.stage,
-            category_id: debugLeadCheck.category_id,
-            categoryNameFor122: categoryNameFor122,
-            categoryFilter: filters.category,
-            categoryMatches: categoryNameFor122 ? filters.category.includes(categoryNameFor122) : 'Unknown - check category IDs',
-            source_id: debugLeadCheck.source_id,
-            sourceFilter: filters.source,
-            language_id: debugLeadCheck.language_id,
-            languageFilter: filters.language,
-          });
-        } else {
-          console.log(`🔍 DEBUG Lead ${debugLeadId}: Does not exist in database or error:`, debugCheckError);
-        }
-      }
-
       if (newLeadsResult.error) {
         console.error('❌ New leads query error:', newLeadsResult.error);
         throw newLeadsResult.error;
@@ -3851,6 +4298,132 @@ const LeadSearchPage: React.FC = () => {
       if (legacyLeadsResult.error) {
         console.error('❌ Legacy leads query error:', legacyLeadsResult.error);
         throw legacyLeadsResult.error;
+      }
+
+      // DEBUG: L224599 — why Main Category USA may miss this lead
+      try {
+        const DEBUG_LEAD_NUMBER = 'L224599';
+        const resolvedIds = resolvedCategories?.categoryIds || [];
+        const inNewResults = (newLeadsResult.data || []).some(
+          (l: any) => String(l.lead_number || '') === DEBUG_LEAD_NUMBER || String(l.manual_id || '') === DEBUG_LEAD_NUMBER
+        );
+        const inLegacyResults = (legacyLeadsResult.data || []).some(
+          (l: any) => String(l.id) === '224599' || String(l.manual_id || '') === DEBUG_LEAD_NUMBER
+        );
+
+        const { data: debugNewLead } = await supabase
+          .from('leads')
+          .select(`
+            id, lead_number, manual_id, name, created_at, category, category_id,
+            misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
+          `)
+          .or(`lead_number.eq.${DEBUG_LEAD_NUMBER},manual_id.eq.${DEBUG_LEAD_NUMBER}`)
+          .maybeSingle();
+
+        const { data: debugLegacyLead } = await supabase
+          .from('leads_lead')
+          .select(`
+            id, name, cdate, category, category_id,
+            misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))
+          `)
+          .or(`id.eq.224599,manual_id.eq.${DEBUG_LEAD_NUMBER}`)
+          .maybeSingle();
+
+        const describeCategory = (lead: any) => {
+          if (!lead) return null;
+          const cat = lead.misc_category;
+          const mainRel = cat?.misc_maincategory;
+          const main = Array.isArray(mainRel) ? mainRel[0] : mainRel;
+          return {
+            category_id: lead.category_id ?? null,
+            category_text: lead.category ?? null,
+            subcategory: cat?.name ?? null,
+            main_category: main?.name ?? null,
+            parent_id: cat?.parent_id ?? null,
+            formatted: cat?.name
+              ? (main?.name ? `${cat.name} (${main.name})` : cat.name)
+              : lead.category ?? null,
+            categoryIdInResolvedFilter:
+              lead.category_id != null ? resolvedIds.includes(Number(lead.category_id)) : false,
+          };
+        };
+
+        const createdAt = debugNewLead?.created_at ? String(debugNewLead.created_at) : null;
+        const createdDay = createdAt ? createdAt.split('T')[0] : null;
+        const legacyDay = debugLegacyLead?.cdate
+          ? String(debugLegacyLead.cdate).split('T')[0]
+          : null;
+        const datePassNew =
+          !createdDay ||
+          ((!filters.fromDate || createdDay >= filters.fromDate) &&
+            (!filters.toDate || createdDay <= filters.toDate));
+        const datePassLegacy =
+          !legacyDay ||
+          ((!filters.fromDate || legacyDay >= filters.fromDate) &&
+            (!filters.toDate || legacyDay <= filters.toDate));
+
+        console.log(`🔍 DEBUG ${DEBUG_LEAD_NUMBER}: Main Category / USA miss analysis`, {
+          filters: {
+            fromDate: filters.fromDate,
+            toDate: filters.toDate,
+            categorySelectedCount: filters.category?.length || 0,
+            categorySelectedSample: (filters.category || []).slice(0, 8),
+            resolvedCategoryIdsCount: resolvedIds.length,
+            mainCategoriesExpanded: resolvedCategories?.mainCategoriesExpanded || [],
+            unresolvedLabels: resolvedCategories?.unresolvedLabels || [],
+          },
+          inQueryResults: { new: inNewResults, legacy: inLegacyResults },
+          newLead: debugNewLead
+            ? {
+                id: debugNewLead.id,
+                lead_number: debugNewLead.lead_number,
+                created_at: debugNewLead.created_at,
+                createdDay,
+                dateFilterPass: datePassNew,
+                category: describeCategory(debugNewLead),
+              }
+            : null,
+          legacyLead: debugLegacyLead
+            ? {
+                id: debugLegacyLead.id,
+                cdate: debugLegacyLead.cdate,
+                legacyDay,
+                dateFilterPass: datePassLegacy,
+                category: describeCategory(debugLegacyLead),
+              }
+            : null,
+          likelyReasons: [
+            !debugNewLead && !debugLegacyLead
+              ? 'Lead not found in leads or leads_lead by L224599 / id 224599'
+              : null,
+            debugNewLead && !datePassNew
+              ? `NEW lead created_at day ${createdDay} outside date range ${filters.fromDate}..${filters.toDate}`
+              : null,
+            debugLegacyLead && !datePassLegacy
+              ? `LEGACY lead cdate day ${legacyDay} outside date range ${filters.fromDate}..${filters.toDate}`
+              : null,
+            debugNewLead &&
+            filters.category?.length > 0 &&
+            debugNewLead.category_id != null &&
+            !resolvedIds.includes(Number(debugNewLead.category_id))
+              ? `NEW lead category_id ${debugNewLead.category_id} NOT in resolved USA/main child ids (${resolvedIds.length} ids)`
+              : null,
+            debugLegacyLead &&
+            filters.category?.length > 0 &&
+            debugLegacyLead.category_id != null &&
+            !resolvedIds.includes(Number(debugLegacyLead.category_id))
+              ? `LEGACY lead category_id ${debugLegacyLead.category_id} NOT in resolved USA/main child ids (${resolvedIds.length} ids)`
+              : null,
+            debugNewLead && filters.category?.length > 0 && debugNewLead.category_id == null
+              ? 'NEW lead has null category_id (ID filter cannot match; needs text category fallback)'
+              : null,
+            debugLegacyLead && filters.category?.length > 0 && debugLegacyLead.category_id == null
+              ? 'LEGACY lead has null category_id (legacy filter is category_id-only)'
+              : null,
+          ].filter(Boolean),
+        });
+      } catch (debugErr) {
+        console.warn('🔍 DEBUG L224599: analysis failed', debugErr);
       }
 
       // Format category display to show main and sub category together
@@ -4697,35 +5270,12 @@ const LeadSearchPage: React.FC = () => {
 
         if (taggedLegacyLeadIds.size > 0) {
           const beforeTagFilter = mappedLegacyLeads.length;
-          const debugLeadBeforeTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
           mappedLegacyLeads = mappedLegacyLeads.filter(lead => taggedLegacyLeadIds.has(String(lead.id)));
-          const debugLeadAfterTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
           console.log(`🏷️ Tag filter for legacy leads: ${beforeTagFilter} → ${mappedLegacyLeads.length}`);
-          if (debugLeadBeforeTags && !debugLeadAfterTags) {
-            console.log(`🔍 DEBUG Lead ${debugLeadId}: Filtered out by tag filter. Tagged legacy lead IDs include 174503:`, taggedLegacyLeadIds.has(String(debugLeadId)));
-          }
         } else {
           console.log('🏷️ No tagged legacy leads found, filtering out all legacy leads for tag filter.');
-          const debugLeadBeforeTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
-          if (debugLeadBeforeTags) {
-            console.log(`🔍 DEBUG Lead ${debugLeadId}: Filtered out because no tagged leads found (tag filter active but lead not tagged)`);
-          }
           mappedLegacyLeads = [];
         }
-      }
-
-      // DEBUG: Check if lead 174503 is still in mapped legacy leads after all processing
-      const debugLeadFinal = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
-      if (debugLeadFinal) {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: Still present in final mapped legacy leads:`, {
-          id: debugLeadFinal.id,
-          name: debugLeadFinal.name,
-          status: debugLeadFinal.status,
-          stage: debugLeadFinal.stage,
-          category: debugLeadFinal.category,
-        });
-      } else if (debugLeadInResults) {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: Was in query results but filtered out during mapping/processing`);
       }
 
       // Debug: Check what the mapped data looks like
@@ -4796,17 +5346,61 @@ const LeadSearchPage: React.FC = () => {
       });
 
       // Combine results and sort by creation date
-      const allResults = [
+      let allResults = [
         ...mappedNewLeads,
         ...mappedLegacyLeads,
       ]
-        .filter((lead) => timestampInCalendarRange(lead.created_at, filters.fromDate, filters.toDate))
+        .filter((lead) =>
+          skipDatesForFlags
+            ? true
+            : timestampInCalendarRange(lead.created_at, filters.fromDate, filters.toDate),
+        )
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+      // Flagged leads — Clients-style post-filter (same as Closer Super Pipeline)
+      if (flagFilterActive && flagFilterUserId && selectedFlagTypeIds.length > 0) {
+        const beforeFlagFilter = allResults.length;
+        allResults = await filterLeadsByUserContentFlags(
+          supabase,
+          flagFilterUserId,
+          allResults,
+          selectedFlagTypeIds,
+          { allUsers: true },
+        );
+        console.log('🔍 DEBUG: LeadSearch flagged leads filter', {
+          selectedFlagTypes: filters.flagTypes,
+          selectedFlagTypeIds,
+          beforeFilter: beforeFlagFilter,
+          afterFilter: allResults.length,
+          seededNew: flaggedNewLeadIds?.size ?? 0,
+          seededLegacy: flaggedLegacyLeadIds?.size ?? 0,
+        });
+      } else if (flagFilterActive && selectedFlagTypeIds.length === 0) {
+        console.warn('LeadSearch: flag filter selected but no type ids resolved', filters.flagTypes);
+        toast.error('Could not resolve selected flag types');
+      }
 
       console.log('🎯 Final combined results:', {
         totalCount: allResults.length,
         results: allResults
       });
+
+      const debugL224599Final = allResults.find(
+        (l: any) =>
+          String(l.lead_number || '') === 'L224599' ||
+          String(l.display_lead_number || '') === 'L224599' ||
+          String(l.manual_id || '') === 'L224599' ||
+          String(l.id || '') === '224599' ||
+          String(l.id || '') === 'legacy_224599'
+      );
+      console.log('🔍 DEBUG L224599: present in final results?', Boolean(debugL224599Final), debugL224599Final
+        ? {
+            id: (debugL224599Final as any).id,
+            lead_type: (debugL224599Final as any).lead_type,
+            category: (debugL224599Final as any).category,
+            created_at: (debugL224599Final as any).created_at,
+          }
+        : null);
 
       scrollToResultsAfterSearchRef.current = true;
       setResults(allResults);
@@ -4865,6 +5459,7 @@ const LeadSearchPage: React.FC = () => {
 
     const isInactive = isLegacyInactive || isNewInactive;
 
+    const isMenuOpen = openCardMenuLeadId === String(lead.id);
     const cardClasses = [
       'w-full',
       'max-w-full',
@@ -4877,6 +5472,7 @@ const LeadSearchPage: React.FC = () => {
       'ease-out',
       'cursor-pointer',
       'group',
+      isMenuOpen ? 'relative z-30' : 'relative z-0',
       isInactive ? 'bg-gray-100 border-0' : 'bg-white border border-gray-100',
     ].join(' ');
 
@@ -4977,19 +5573,30 @@ const LeadSearchPage: React.FC = () => {
   };
 
   return (
-    <div className="w-full max-w-full pt-4 pb-6 px-1.5 sm:px-4 md:px-8 md:py-8 min-w-0 bg-gray-100 dark:bg-base-300 min-h-full">
+    <div ref={pageTopRef} className="w-full max-w-full pt-4 pb-6 px-1.5 sm:px-4 md:px-8 md:py-8 min-w-0 bg-gray-100 dark:bg-base-300 min-h-full">
       {/* Quick search + view toolbar — bottom-right */}
       <div
-        className="fixed right-3 md:right-8 z-[35] bottom-[max(4.5rem,calc(3.75rem+env(safe-area-inset-bottom,0px)+0.5rem))] md:bottom-8"
+        className="fixed right-1.5 md:right-3 z-[35] bottom-[max(4.5rem,calc(3.75rem+env(safe-area-inset-bottom,0px)+0.5rem))] md:bottom-8"
         role="toolbar"
         aria-label="Lead search quick filters"
       >
-        {/* Mobile: collapsed FAB by default; panel expands above it */}
+        {/* Mobile */}
         <div className="md:hidden flex flex-col items-end gap-2 pointer-events-auto">
-          {mobileQuickBarOpen && (
+          {quickBarOpen && (
             <div className="flex w-[min(calc(100vw-1.5rem),17.5rem)] flex-col items-stretch gap-2">
-              <div className="rounded-2xl border border-base-200/80 bg-base-100/95 px-3.5 py-3 shadow-lg backdrop-blur-md dark:border-base-content/12 dark:bg-base-300/90">
-                <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-base-content/55">Date range</p>
+              <div className="rounded-2xl border border-base-200/20 bg-base-100/15 px-3.5 py-3 shadow-md backdrop-blur-[2px] dark:border-base-content/5 dark:bg-base-300/15">
+                <div className="mb-2.5 flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-base-content/55">Date range</p>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-circle btn-sm h-8 w-8 min-h-0"
+                    onClick={() => setQuickBarOpen(false)}
+                    title="Close"
+                    aria-label="Close quick actions"
+                  >
+                    <ChevronRightIcon className="h-5 w-5" aria-hidden />
+                  </button>
+                </div>
                 <div className="flex flex-col gap-3">
                   <label className="flex flex-col gap-1">
                     <span className="text-sm font-medium text-base-content/70">From</span>
@@ -5013,7 +5620,7 @@ const LeadSearchPage: React.FC = () => {
                   </label>
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-2 rounded-2xl border border-base-200/80 bg-base-100/95 px-3 py-2.5 shadow-lg backdrop-blur-md dark:border-base-content/12 dark:bg-base-300/90">
+              <div className="flex items-center justify-end gap-2 rounded-2xl border border-base-200/20 bg-base-100/15 px-3 py-2.5 shadow-md backdrop-blur-[2px] dark:border-base-content/5 dark:bg-base-300/15">
                 {searchPerformed && (
                   <button
                     type="button"
@@ -5022,7 +5629,7 @@ const LeadSearchPage: React.FC = () => {
                         ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
                         : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
                     }`}
-                    onClick={() => setShowFiltersPanel(v => !v)}
+                    onClick={toggleFiltersPanel}
                     title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
                     aria-pressed={showFiltersPanel}
                     aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
@@ -5087,121 +5694,151 @@ const LeadSearchPage: React.FC = () => {
               </div>
             </div>
           )}
-          <button
-            type="button"
-            className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-white/30 shadow-xl transition-colors ${
-              mobileQuickBarOpen
-                ? 'bg-base-100 text-base-content ring-2 ring-base-300/80'
-                : isAltTheme
-                  ? 'bg-[#505d57] text-white hover:bg-[#3d4743]'
-                  : 'bg-primary text-primary-content hover:brightness-110'
-            }`}
-            onClick={() => setMobileQuickBarOpen(open => !open)}
-            title={mobileQuickBarOpen ? 'Close quick actions' : 'Quick actions'}
-            aria-expanded={mobileQuickBarOpen}
-            aria-label={mobileQuickBarOpen ? 'Close quick actions' : 'Open quick actions'}
-          >
-            {mobileQuickBarOpen ? (
-              <XMarkIcon className="h-6 w-6" aria-hidden />
-            ) : (
-              <AdjustmentsHorizontalIcon className="h-6 w-6" aria-hidden />
-            )}
-            {!mobileQuickBarOpen && appliedAdvancedFilterCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
-                {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
-              </span>
-            )}
-          </button>
-        </div>
-
-        {/* Desktop: always-visible toolbar */}
-        <div className="hidden md:flex items-center gap-3 rounded-3xl border border-base-200/80 dark:border-base-content/12 bg-base-100/95 dark:bg-base-300/90 backdrop-blur-md shadow-xl px-4 py-3 pointer-events-auto">
-          <input
-            type="date"
-            className="input input-md input-bordered w-36 h-11 min-h-[44px] text-sm shrink-0"
-            value={filters.fromDate}
-            onChange={e => handleFilterChange('fromDate', e.target.value)}
-            title="From date"
-          />
-          <input
-            type="date"
-            className="input input-md input-bordered w-36 h-11 min-h-[44px] text-sm shrink-0"
-            value={filters.toDate}
-            onChange={e => handleFilterChange('toDate', e.target.value)}
-            title="To date"
-          />
-          {searchPerformed && (
+          {!quickBarOpen && (
             <button
               type="button"
-              className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
-                showFiltersPanel
-                  ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
-                  : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
+              className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-white/30 shadow-xl transition-colors ${
+                isAltTheme
+                  ? 'bg-[#505d57] text-white hover:bg-[#3d4743]'
+                  : 'bg-primary text-primary-content hover:brightness-110'
               }`}
-              onClick={() => setShowFiltersPanel(v => !v)}
-              title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
-              aria-pressed={showFiltersPanel}
-              aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
+              onClick={() => setQuickBarOpen(true)}
+              title="Quick actions"
+              aria-expanded={false}
+              aria-label="Open quick actions"
             >
-              <FunnelIcon className="h-5 w-5" aria-hidden />
+              <AdjustmentsHorizontalIcon className="h-6 w-6" aria-hidden />
               {appliedAdvancedFilterCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                <span className="absolute -top-0.5 -right-0.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
                   {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
                 </span>
               )}
             </button>
           )}
-          <button
-            type="button"
-            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
-              isAltTheme ? 'text-white hover:bg-[#505d57]/95' : 'text-primary hover:bg-base-200/80'
-            } ${isSearching ? 'cursor-wait opacity-95' : ''} disabled:opacity-70`}
-            style={
-              isAltTheme
-                ? { background: isSearching ? 'rgba(80, 93, 87, 0.85)' : 'rgba(80, 93, 87, 0.92)' }
-                : undefined
-            }
-            onClick={handleSearch}
-            disabled={isSearching}
-            title="Search"
-            aria-busy={isSearching}
-            aria-label={isSearching ? 'Searching…' : 'Search'}
-          >
-            {isSearching ? (
-              <Loader2 className={`h-5 w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
-            ) : (
-              <Search className={`h-5 w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
-            )}
-          </button>
-          <div className="w-px h-10 bg-base-300/60 shrink-0" aria-hidden />
-          <div className="flex items-center gap-1.5 shrink-0">
+        </div>
+
+        {/* Desktop */}
+        <div className="hidden md:flex flex-col items-end gap-2 pointer-events-auto">
+          {quickBarOpen ? (
+            <div className="flex items-center gap-3 rounded-3xl border border-base-200/20 dark:border-base-content/5 bg-base-100/15 dark:bg-base-300/15 backdrop-blur-[2px] shadow-md px-4 py-3">
+              <input
+                type="date"
+                className="input input-md input-bordered w-36 h-11 min-h-[44px] text-sm shrink-0"
+                value={filters.fromDate}
+                onChange={e => handleFilterChange('fromDate', e.target.value)}
+                title="From date"
+              />
+              <input
+                type="date"
+                className="input input-md input-bordered w-36 h-11 min-h-[44px] text-sm shrink-0"
+                value={filters.toDate}
+                onChange={e => handleFilterChange('toDate', e.target.value)}
+                title="To date"
+              />
+              {searchPerformed && (
+                <button
+                  type="button"
+                  className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                    showFiltersPanel
+                      ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
+                      : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
+                  }`}
+                  onClick={toggleFiltersPanel}
+                  title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
+                  aria-pressed={showFiltersPanel}
+                  aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
+                >
+                  <FunnelIcon className="h-5 w-5" aria-hidden />
+                  {appliedAdvancedFilterCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                      {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
+                    </span>
+                  )}
+                </button>
+              )}
+              <button
+                type="button"
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
+                  isAltTheme ? 'text-white hover:bg-[#505d57]/95' : 'text-primary hover:bg-base-200/80'
+                } ${isSearching ? 'cursor-wait opacity-95' : ''} disabled:opacity-70`}
+                style={
+                  isAltTheme
+                    ? { background: isSearching ? 'rgba(80, 93, 87, 0.85)' : 'rgba(80, 93, 87, 0.92)' }
+                    : undefined
+                }
+                onClick={handleSearch}
+                disabled={isSearching}
+                title="Search"
+                aria-busy={isSearching}
+                aria-label={isSearching ? 'Searching…' : 'Search'}
+              >
+                {isSearching ? (
+                  <Loader2 className={`h-5 w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
+                ) : (
+                  <Search className={`h-5 w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
+                )}
+              </button>
+              <div className="w-px h-10 bg-base-300/60 shrink-0" aria-hidden />
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  className={`btn btn-circle btn-md min-w-[44px] min-h-[44px] w-11 h-11 border-0 transition-all duration-300 ${
+                    viewMode === 'cards'
+                      ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+                      : 'btn-ghost'
+                  }`}
+                  onClick={() => setViewMode('cards')}
+                  title="Cards view"
+                  aria-pressed={viewMode === 'cards'}
+                >
+                  <Squares2X2Icon className="w-5 h-5" />
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-circle btn-md min-w-[44px] min-h-[44px] w-11 h-11 border-0 transition-all duration-300 ${
+                    viewMode === 'table'
+                      ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+                      : 'btn-ghost'
+                  }`}
+                  onClick={() => setViewMode('table')}
+                  title="Table view"
+                  aria-pressed={viewMode === 'table'}
+                >
+                  <TableCellsIcon className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="w-px h-10 bg-base-300/60 shrink-0" aria-hidden />
+              <button
+                type="button"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 text-base-content/70 transition-colors hover:bg-base-200/80"
+                onClick={() => setQuickBarOpen(false)}
+                title="Close"
+                aria-label="Close quick actions"
+              >
+                <ChevronRightIcon className="h-5 w-5" aria-hidden />
+              </button>
+            </div>
+          ) : (
             <button
               type="button"
-              className={`btn btn-circle btn-md min-w-[44px] min-h-[44px] w-11 h-11 border-0 transition-all duration-300 ${
-                viewMode === 'cards'
-                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
-                  : 'btn-ghost'
+              className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-white/30 shadow-xl transition-colors ${
+                isAltTheme
+                  ? 'bg-[#505d57] text-white hover:bg-[#3d4743]'
+                  : 'bg-primary text-primary-content hover:brightness-110'
               }`}
-              onClick={() => setViewMode('cards')}
-              title="Cards view"
-              aria-pressed={viewMode === 'cards'}
+              onClick={() => setQuickBarOpen(true)}
+              title="Quick actions"
+              aria-expanded={false}
+              aria-label="Open quick actions"
             >
-              <Squares2X2Icon className="w-5 h-5" />
+              <AdjustmentsHorizontalIcon className="h-6 w-6" aria-hidden />
+              {appliedAdvancedFilterCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                  {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
+                </span>
+              )}
             </button>
-            <button
-              type="button"
-              className={`btn btn-circle btn-md min-w-[44px] min-h-[44px] w-11 h-11 border-0 transition-all duration-300 ${
-                viewMode === 'table'
-                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
-                  : 'btn-ghost'
-              }`}
-              onClick={() => setViewMode('table')}
-              title="Table view"
-              aria-pressed={viewMode === 'table'}
-            >
-              <TableCellsIcon className="w-5 h-5" />
-            </button>
-          </div>
+          )}
         </div>
       </div>
 
@@ -5212,7 +5849,10 @@ const LeadSearchPage: React.FC = () => {
       </h1>
 
       {/* Search Form */}
-      <div className={`mb-8 md:px-0 ${filtersPanelHidden ? 'hidden' : ''} ${isSearching ? 'max-md:hidden' : ''}`}>
+      <div
+        className={`mb-8 md:px-0 ${filtersPanelHidden ? 'hidden' : ''} ${isSearching ? 'max-md:hidden' : ''}`}
+      >
+        <div className="rounded-2xl border border-gray-200/80 bg-white p-4 sm:p-5 shadow-sm dark:border-base-content/10 dark:bg-base-100">
         {/* Mobile: horizontal filter chips */}
         <div className="md:hidden mb-4 -mx-1">
           <div
@@ -5232,7 +5872,7 @@ const LeadSearchPage: React.FC = () => {
                   className={`shrink-0 snap-start inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors active:scale-[0.98] ${
                     isOpen || active
                       ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-gray-200 bg-white text-gray-700'
+                      : 'border-gray-200 bg-gray-50 text-gray-700'
                   }`}
                   aria-expanded={isOpen}
                 >
@@ -5277,6 +5917,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showCategoryDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5293,6 +5934,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showReasonDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5315,6 +5957,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showLanguageDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5330,6 +5973,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showTagDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5346,6 +5990,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showStatusDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5361,6 +6006,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showExpertExaminationDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5376,6 +6022,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showSourceDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5410,6 +6057,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showStageDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5425,6 +6073,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showTopicDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5440,6 +6089,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showSchedulerDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5455,6 +6105,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showManagerDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5470,6 +6121,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showLawyerDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5485,6 +6137,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showExpertDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5500,6 +6153,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showCloserDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5515,6 +6169,7 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showCaseHandlerDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
@@ -5530,10 +6185,14 @@ const LeadSearchPage: React.FC = () => {
               showDropdown={showCountryDropdown}
               onSelect={handleMultiSelect}
               onRemove={handleMultiRemove}
+              onClearAll={handleMultiClearAll}
               onFilterChange={handleFilterChange}
               onShowDropdown={handleShowDropdown}
               onHideDropdown={handleHideDropdown}
             />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            {renderFlagTypesFilterControl(false)}
           </div>
           <div className="col-span-1">
             <div className="form-control flex flex-col">
@@ -5567,6 +6226,7 @@ const LeadSearchPage: React.FC = () => {
           )}
 
           {/* Search Buttons: Removed (now in fixed bar) */}
+        </div>
         </div>
       </div>
 

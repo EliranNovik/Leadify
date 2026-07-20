@@ -23,13 +23,23 @@ function isDraftEmployeeContract(contract: any): boolean {
   return String(contract.status || 'draft').toLowerCase() !== 'signed';
 }
 
+/** Draft external firm contracts should always follow the live admin template. */
+function isDraftFirmContract(contract: any): boolean {
+  if (!contract?.external_firm_id) return false;
+  return String(contract.status || 'draft').toLowerCase() !== 'signed';
+}
+
+function isDraftTemplateLinkedContract(contract: any): boolean {
+  return isDraftEmployeeContract(contract) || isDraftFirmContract(contract);
+}
+
 function unwrapTemplateRelation(raw: any): any | null {
   if (!raw) return null;
   return Array.isArray(raw) ? raw[0] || null : raw;
 }
 
 function resolveContractBodyContent(contract: any, template: any): any {
-  if (isDraftEmployeeContract(contract)) {
+  if (isDraftTemplateLinkedContract(contract)) {
     return template?.content || contract?.custom_content || null;
   }
   return contract?.custom_content || template?.content || null;
@@ -303,13 +313,17 @@ const PublicContractView: React.FC<{
   tokenOverride?: string;
   onKioskComplete?: () => void;
   employeeMode?: boolean;
-}> = ({ kioskMode = false, contractIdOverride, tokenOverride, onKioskComplete, employeeMode = false }) => {
+  firmMode?: boolean;
+}> = ({ kioskMode = false, contractIdOverride, tokenOverride, onKioskComplete, employeeMode = false, firmMode = false }) => {
   const { contractId: routeContractId, token: routeToken } = useParams();
   const contractId = contractIdOverride ?? routeContractId;
   const token = tokenOverride ?? routeToken;
   const isEmployeeContractMode =
     employeeMode ||
     (typeof window !== 'undefined' && window.location.pathname.includes('/public-hr-contract/'));
+  const isFirmContractMode =
+    firmMode ||
+    (typeof window !== 'undefined' && window.location.pathname.includes('/public-firm-contract/'));
   const [contract, setContract] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [customPricing, setCustomPricing] = useState<any>(null);
@@ -587,7 +601,7 @@ const PublicContractView: React.FC<{
         let templateData = unwrapTemplateRelation(contractData.contract_templates);
 
         // Draft employee contracts: always reload live template so Admin edits sync.
-        if (isDraftEmployeeContract(contractData) && contractData.template_id) {
+        if (isDraftTemplateLinkedContract(contractData) && contractData.template_id) {
           const { data: freshTemplate } = await supabase
             .from('contract_templates')
             .select('*')
@@ -641,13 +655,23 @@ const PublicContractView: React.FC<{
           }
         }
 
-        // STEP 3: Start fetching client/employee data in parallel (non-blocking)
+        // STEP 3: Start fetching client/employee/firm data in parallel (non-blocking)
         let clientDataPromise: any = null;
         let employeeDataPromise: Promise<any> | null = null;
+        let firmDataPromise: any = null;
         if (contractData.employee_id || isEmployeeContractMode) {
           const empId = Number(contractData.employee_id);
           if (Number.isFinite(empId) && empId > 0) {
             employeeDataPromise = fetchEmployeeProfileById(empId);
+          }
+        } else if (contractData.external_firm_id || isFirmContractMode) {
+          const firmId = String(contractData.external_firm_id || '');
+          if (firmId) {
+            firmDataPromise = supabase
+              .from('firms')
+              .select('id, name, legal_name, profile_image_url')
+              .eq('id', firmId)
+              .maybeSingle();
           }
         } else if (contractData.legacy_id) {
           // Legacy lead - fetch from leads_lead table
@@ -692,7 +716,7 @@ const PublicContractView: React.FC<{
           return;
         }
 
-        // STEP 5: Process client/employee data (non-blocking - can happen after initial render)
+        // STEP 5: Process client/employee/firm data (non-blocking - can happen after initial render)
         if (employeeDataPromise) {
           employeeDataPromise
             .then((profile) => {
@@ -714,6 +738,38 @@ const PublicContractView: React.FC<{
               setClient({
                 id: `employee_${contractData.employee_id}`,
                 name: contractData.contact_name || 'Employee',
+                email: contractData.contact_email || '',
+                phone: '',
+                mobile: '',
+              });
+            });
+        } else if (firmDataPromise) {
+          firmDataPromise
+            .then(({ data: firmData, error: firmErr }) => {
+              if (firmErr) {
+                console.error('Error fetching firm for public firm contract:', firmErr);
+              }
+              const name =
+                firmData?.legal_name ||
+                firmData?.name ||
+                contractData.contact_name ||
+                'External firm';
+              setClient({
+                id: firmData?.id ? `firm_${firmData.id}` : 'firm_unknown',
+                name,
+                email: contractData.contact_email || '',
+                phone: '',
+                mobile: '',
+              });
+              if (!contractData.contact_name) {
+                setContract((prev: any) => (prev ? { ...prev, contact_name: name } : prev));
+              }
+            })
+            .catch((err) => {
+              console.error('Error fetching firm for public firm contract:', err);
+              setClient({
+                id: `firm_${contractData.external_firm_id}`,
+                name: contractData.contact_name || 'External firm',
                 email: contractData.contact_email || '',
                 phone: '',
                 mobile: '',
@@ -1036,9 +1092,9 @@ const PublicContractView: React.FC<{
         .single();
 
       // For new leads (has client_id), directly update stage in leads and leads_leadstage tables
-      // Skip for HR employee digital contracts
-      if (updatedContract && updatedContract.employee_id) {
-        console.log('📝 Public HR contract signing: skipping lead stage update for employee contract');
+      // Skip for HR employee / external firm digital contracts
+      if (updatedContract && (updatedContract.employee_id || updatedContract.external_firm_id)) {
+        console.log('📝 Public non-client contract signing: skipping lead stage update');
       } else if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
         console.log('📝 Public contract signing: Updating lead stage to "Client signed agreement" for new lead:', updatedContract.client_id);
 
