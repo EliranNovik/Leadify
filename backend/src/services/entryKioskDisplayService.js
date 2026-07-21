@@ -137,6 +137,26 @@ function nowMinutesJerusalem() {
   return hour * 60 + minute;
 }
 
+const CURRENT_MEETING_WINDOW_MINUTES = 30;
+
+function isMeetingCurrentByStart(startMinutes, nowMinutes) {
+  return (
+    startMinutes <= nowMinutes &&
+    startMinutes >= nowMinutes - CURRENT_MEETING_WINDOW_MINUTES
+  );
+}
+
+function isMeetingUpcomingByStart(startMinutes, nowMinutes) {
+  return (
+    startMinutes > nowMinutes &&
+    startMinutes <= nowMinutes + CURRENT_MEETING_WINDOW_MINUTES
+  );
+}
+
+function isMeetingPastByStart(startMinutes, nowMinutes) {
+  return startMinutes < nowMinutes - CURRENT_MEETING_WINDOW_MINUTES;
+}
+
 /**
  * Up to 5 meetings around now: 2 before, current (if any), 2 after.
  * Includes recently ended meetings; if the day is over, shows the last few of the day.
@@ -159,9 +179,10 @@ function selectMeetingsWindow(rows, maxCount = 5) {
 
   if (meetings.length === 0) return [];
 
-  let anchorIndex = meetings.findIndex(
-    (m) => nowMinutes >= m.startMinutes && nowMinutes < m.endMinutes,
-  );
+  let anchorIndex = meetings.findIndex((m) => isMeetingCurrentByStart(m.startMinutes, nowMinutes));
+  if (anchorIndex < 0) {
+    anchorIndex = meetings.findIndex((m) => isMeetingUpcomingByStart(m.startMinutes, nowMinutes));
+  }
   if (anchorIndex < 0) {
     anchorIndex = meetings.findIndex((m) => m.startMinutes > nowMinutes);
   }
@@ -190,12 +211,12 @@ function selectMeetingsWindow(rows, maxCount = 5) {
 
   return meetings.slice(start, end).map((m) => ({
     row: m.row,
-    isCurrent: nowMinutes >= m.startMinutes && nowMinutes < m.endMinutes,
-    isPast: m.endMinutes <= nowMinutes,
+    isCurrent: isMeetingCurrentByStart(m.startMinutes, nowMinutes),
+    isPast: isMeetingPastByStart(m.startMinutes, nowMinutes),
   }));
 }
 
-/** Single meeting for kiosk main screen: in progress now, else next upcoming today. */
+/** Single meeting for kiosk main screen: in ±30 min window now, else next upcoming today. */
 function selectNextMeeting(rows) {
   const nowMinutes = nowMinutesJerusalem();
   const meetings = (rows || [])
@@ -214,11 +235,14 @@ function selectNextMeeting(rows) {
 
   if (meetings.length === 0) return [];
 
-  const current = meetings.find(
-    (m) => nowMinutes >= m.startMinutes && nowMinutes < m.endMinutes,
-  );
+  const current = meetings.find((m) => isMeetingCurrentByStart(m.startMinutes, nowMinutes));
   if (current) {
     return [{ row: current.row, isCurrent: true, isPast: false }];
+  }
+
+  const soon = meetings.find((m) => isMeetingUpcomingByStart(m.startMinutes, nowMinutes));
+  if (soon) {
+    return [{ row: soon.row, isCurrent: false, isPast: false }];
   }
 
   const upcoming = meetings.find((m) => m.startMinutes > nowMinutes);
@@ -226,7 +250,8 @@ function selectNextMeeting(rows) {
     return [{ row: upcoming.row, isCurrent: false, isPast: false }];
   }
 
-  return [];
+  const last = meetings[meetings.length - 1];
+  return [{ row: last.row, isCurrent: false, isPast: true }];
 }
 
 function meetingTypeLabel(calendarType, internalTypeLabel) {
@@ -825,16 +850,14 @@ async function enrichMeetingsToday(rows, { maxCount, preview } = {}) {
     : activeRows
         .map((row) => {
           const startMinutes = parseMeetingTimeMinutes(row.meeting_time);
-          const durationMinutes = meetingDurationMinutes(row);
           const nowMinutes = nowMinutesJerusalem();
           if (startMinutes == null) {
             return { row, isCurrent: false, isPast: false, missingTime: true };
           }
-          const endMinutes = startMinutes + durationMinutes;
           return {
             row,
-            isCurrent: nowMinutes >= startMinutes && nowMinutes < endMinutes,
-            isPast: endMinutes <= nowMinutes,
+            isCurrent: isMeetingCurrentByStart(startMinutes, nowMinutes),
+            isPast: isMeetingPastByStart(startMinutes, nowMinutes),
             missingTime: false,
           };
         });

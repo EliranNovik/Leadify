@@ -507,11 +507,11 @@ const ContactPoaSection: React.FC<Props> = ({
                       <>
                         <button
                           type="button"
-                          className="fixed inset-0 z-10 cursor-default"
+                          className="fixed inset-0 z-40 cursor-default"
                           aria-label="Close menu"
                           onClick={() => setOpenMenuId(null)}
                         />
-                        <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                        <div className="absolute right-0 top-full mt-1 z-50 min-w-[180px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                           <button
                             type="button"
                             className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-40"

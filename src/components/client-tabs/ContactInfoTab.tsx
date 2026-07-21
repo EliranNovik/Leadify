@@ -3758,10 +3758,18 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 }
               };
 
+              const cardMenuOpen =
+                openContactMenuId === contact.id ||
+                openDocsAddMenuId === contact.id ||
+                (cardContract != null && openContractMenuId === cardContract.id);
+
               return (
                 <div
                   key={contact.id}
-                  className="h-full bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-hidden flex flex-col"
+                  className={[
+                    'h-full bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-visible flex flex-col',
+                    cardMenuOpen ? 'relative z-40' : 'relative z-0',
+                  ].join(' ')}
                 >
                   {/* Compact contact header */}
                   <div className="px-5 pt-[18px] pb-4 shrink-0">
@@ -3835,11 +3843,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               <>
                                 <button
                                   type="button"
-                                  className="fixed inset-0 z-10 cursor-default"
+                                  className="fixed inset-0 z-40 cursor-default"
                                   aria-label="Close menu"
                                   onClick={() => setOpenContactMenuId(null)}
                                 />
-                                <div className="absolute right-0 top-full mt-1 z-20 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                                <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                                   <button
                                     type="button"
                                     className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
@@ -4517,11 +4525,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             <>
                               <button
                                 type="button"
-                                className="fixed inset-0 z-10 cursor-default"
+                                className="fixed inset-0 z-40 cursor-default"
                                 aria-label="Close menu"
                                 onClick={() => setOpenDocsAddMenuId(null)}
                               />
-                              <div className="absolute right-0 top-full mt-1 z-20 min-w-[170px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                              <div className="absolute right-0 top-full mt-1 z-50 min-w-[170px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                                 {canCreateContract && (
                                   <button
                                     type="button"
@@ -4604,11 +4612,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 <>
                                   <button
                                     type="button"
-                                    className="fixed inset-0 z-10 cursor-default"
+                                    className="fixed inset-0 z-40 cursor-default"
                                     aria-label="Close menu"
                                     onClick={() => setOpenContractMenuId(null)}
                                   />
-                                  <div className="absolute right-0 top-full mt-1 z-20 min-w-[190px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                                  <div className="absolute right-0 top-full mt-1 z-50 min-w-[190px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                                     <button
                                       type="button"
                                       className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-40"

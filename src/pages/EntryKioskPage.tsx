@@ -5,6 +5,7 @@ import {
   CalendarDaysIcon,
   CloudIcon,
   EnvelopeIcon,
+  MapPinIcon,
   MegaphoneIcon,
   PhoneIcon,
   SparklesIcon,
@@ -52,7 +53,7 @@ const MEETINGS_IDLE_SEC = Math.round(MEETINGS_IDLE_MS / 1000);
 const UPDATES_CAROUSEL_MS = 10_000;
 const KIOSK_PROMO_SRC = '/kiosk-promo-overlay.png';
 const KIOSK_PROMO_INTERVAL_MS = 2 * 60 * 1000;
-const KIOSK_PROMO_VISIBLE_MS = 15_000;
+const KIOSK_PROMO_VISIBLE_MS = 20_000;
 
 type UpdatesCarouselSlide =
   | {
@@ -172,13 +173,16 @@ function participantAvatarColor(seed: string) {
 }
 
 function parseMeetingTimeMinutes(time: string | null | undefined): number | null {
-  const match = String(time || '')
-    .trim()
-    .match(/^(\d{1,2}):(\d{2})/);
+  const raw = String(time || '').trim();
+  if (!raw) return null;
+  // Prefer HH:MM at the start; also accept values like "17:45:00".
+  const match = raw.match(/(?:^|T|\s)(\d{1,2}):(\d{2})(?::\d{2})?/);
   if (!match) return null;
-  const hour = Number(match[1]);
+  let hour = Number(match[1]);
   const minute = Number(match[2]);
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  if (hour === 24) hour = 0;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
   return hour * 60 + minute;
 }
 
@@ -187,36 +191,42 @@ function nowMinutesJerusalem(date: Date): number {
     timeZone: 'Asia/Jerusalem',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
   }).formatToParts(date);
-  const hour = Number(parts.find((p) => p.type === 'hour')?.value);
+  let hour = Number(parts.find((p) => p.type === 'hour')?.value);
   const minute = Number(parts.find((p) => p.type === 'minute')?.value);
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
+  if (hour === 24) hour = 0;
   return hour * 60 + minute;
 }
 
-const DEFAULT_MEETING_DURATION_MINUTES = 60;
+const CURRENT_MEETING_WINDOW_MINUTES = 30;
 
-function withLiveMeetingStatus(
-  meetings: EntryKioskMeetingDetail[],
-  now: Date,
-): EntryKioskMeetingDetail[] {
+type MeetingCardStatus = EntryKioskMeetingDetail & {
+  isUpcoming?: boolean;
+};
+
+function withLiveMeetingStatus(meetings: EntryKioskMeetingDetail[], now: Date): MeetingCardStatus[] {
   const nowMinutes = nowMinutesJerusalem(now);
   return meetings
     .map((meeting) => {
       const startMinutes = parseMeetingTimeMinutes(meeting.time);
       if (startMinutes == null) {
-        return { ...meeting, isCurrent: false, isPast: false };
+        return { ...meeting, isCurrent: false, isPast: false, isUpcoming: false };
       }
-      const duration =
-        Number.isFinite(meeting.durationMinutes) && (meeting.durationMinutes as number) > 0
-          ? (meeting.durationMinutes as number)
-          : DEFAULT_MEETING_DURATION_MINUTES;
-      const endMinutes = startMinutes + duration;
+      const isCurrent =
+        startMinutes <= nowMinutes &&
+        startMinutes >= nowMinutes - CURRENT_MEETING_WINDOW_MINUTES;
+      const isUpcoming =
+        !isCurrent &&
+        startMinutes > nowMinutes &&
+        startMinutes <= nowMinutes + CURRENT_MEETING_WINDOW_MINUTES;
+      const isPast = startMinutes < nowMinutes - CURRENT_MEETING_WINDOW_MINUTES;
       return {
         ...meeting,
-        isCurrent: nowMinutes >= startMinutes && nowMinutes < endMinutes,
-        isPast: endMinutes <= nowMinutes,
+        isCurrent,
+        isPast,
+        isUpcoming,
       };
     })
     .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
@@ -747,6 +757,8 @@ const EntryKioskPage: React.FC = () => {
   const meetingsScrollAnchorId = useMemo(() => {
     const current = sortedMeetingsDetail.find((m) => m.isCurrent);
     if (current) return current.id;
+    const soon = sortedMeetingsDetail.find((m) => m.isUpcoming);
+    if (soon) return soon.id;
     const upcoming = sortedMeetingsDetail.find((m) => !m.isPast);
     return upcoming?.id ?? null;
   }, [sortedMeetingsDetail]);
@@ -756,25 +768,31 @@ const EntryKioskPage: React.FC = () => {
       meetingsScrollDoneRef.current = false;
       return;
     }
-    if (meetingsLoading || meetingsScrollDoneRef.current || meetingsScrollAnchorId == null) return;
+    if (meetingsLoading || meetingsScrollDoneRef.current || meetingsScrollAnchorId == null) {
+      return;
+    }
 
-    const frame = window.requestAnimationFrame(() => {
+    const scrollToAnchor = () => {
       const wrap = meetingsTableWrapRef.current;
       const row = wrap?.querySelector(
         `[data-meeting-id="${meetingsScrollAnchorId}"]`,
       ) as HTMLElement | null;
-      if (!row || !wrap) return;
-      // Keep chronological order; scroll so "now" sits under the sticky header.
-      // Past meetings remain above and are reachable by scrolling up.
-      const headerH = wrap.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+      if (!row || !wrap) return false;
       const delta =
         row.getBoundingClientRect().top -
         wrap.getBoundingClientRect().top +
         wrap.scrollTop -
-        headerH -
-        8;
+        16;
       wrap.scrollTo({ top: Math.max(0, delta), behavior: 'smooth' });
       meetingsScrollDoneRef.current = true;
+      return true;
+    };
+
+    const frame = window.requestAnimationFrame(() => {
+      if (scrollToAnchor()) return;
+      window.setTimeout(() => {
+        scrollToAnchor();
+      }, 120);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [meetingsScreenOpen, meetingsLoading, meetingsScrollAnchorId, sortedMeetingsDetail.length]);
@@ -1408,11 +1426,12 @@ const EntryKioskPage: React.FC = () => {
           font-variant-numeric: tabular-nums;
         }
         .kiosk-carousel-contacts {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 0.85rem 1rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.55rem;
           width: 100%;
-          align-items: center;
+          align-items: stretch;
+          justify-content: flex-start;
         }
         .kiosk-carousel-contact {
           display: flex;
@@ -1474,6 +1493,8 @@ const EntryKioskPage: React.FC = () => {
           align-items: center;
           justify-content: center;
           animation: kiosk-promo-in 280ms ease-out;
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
         }
         .kiosk-promo-image {
           width: 100%;
@@ -1535,81 +1556,102 @@ const EntryKioskPage: React.FC = () => {
           font-size: 0.82rem;
           font-weight: 700;
         }
-        .kiosk-meetings-table-wrap {
+        .kiosk-meetings-list-wrap {
           flex: 1 1 auto;
           min-height: 0;
           overflow: auto;
-          border-radius: 16px;
-          border: none;
-          background: rgba(8, 16, 34, 0.78);
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
           scrollbar-width: none;
           -ms-overflow-style: none;
+          padding: 0.25rem 0 0.5rem;
         }
-        .kiosk-meetings-table-wrap::-webkit-scrollbar {
+        .kiosk-meetings-list-wrap::-webkit-scrollbar {
           display: none;
         }
-        .kiosk-meetings-table {
+        .kiosk-meetings-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.9rem;
           width: 100%;
-          table-layout: fixed;
-          border-collapse: collapse;
-          font-size: 0.98rem;
+          margin: 0 auto;
         }
-        .kiosk-meetings-table thead {
-          position: sticky;
-          top: 0;
-          z-index: 2;
-          background: rgba(12, 22, 44, 0.98);
+        .kiosk-meeting-card {
+          position: relative;
+          display: flex;
+          flex-direction: row;
+          align-items: stretch;
+          gap: 1rem;
+          padding: 1.1rem 1.15rem 1.15rem;
+          border-radius: 20px;
+          border: 1.5px solid rgba(216, 177, 90, 0.28);
+          background: #121c32;
+          box-shadow:
+            0 12px 28px rgba(0, 0, 0, 0.35),
+            inset 0 1px 0 rgba(255, 255, 255, 0.06);
         }
-        .kiosk-meetings-table th {
-          padding: 0.75rem 0.85rem;
-          text-align: left;
-          font-size: 0.72rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: var(--kiosk-gold);
-          border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-          white-space: nowrap;
+        .kiosk-meeting-card.is-current {
+          border-color: rgba(52, 211, 153, 0.65);
+          background: #10261f;
+          box-shadow:
+            0 0 0 1px rgba(52, 211, 153, 0.25),
+            0 14px 32px rgba(0, 0, 0, 0.4);
         }
-        .kiosk-meetings-table td {
-          padding: 0.72rem 0.85rem;
-          vertical-align: middle;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-          color: rgba(248, 250, 252, 0.94);
-          line-height: 1.4;
+        .kiosk-meeting-card.is-upcoming {
+          border-color: rgba(96, 165, 250, 0.55);
+          background: #101c32;
+          box-shadow:
+            0 0 0 1px rgba(96, 165, 250, 0.2),
+            0 12px 28px rgba(0, 0, 0, 0.35);
         }
-        .kiosk-meetings-table tbody tr:last-child td {
-          border-bottom: none;
+        .kiosk-meeting-card.is-past {
+          opacity: 0.7;
+          border-color: rgba(255, 255, 255, 0.12);
+          background: #0e1628;
         }
-        .kiosk-meetings-table tbody tr.is-current {
-          background: rgba(52, 211, 153, 0.1);
+        .kiosk-meeting-card-main {
+          flex: 1 1 auto;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 0.65rem;
+          justify-content: center;
         }
-        .kiosk-meetings-table tbody tr.is-current td:first-child {
-          box-shadow: inset 3px 0 0 #34d399;
+        .kiosk-meeting-card-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.75rem;
         }
-        .kiosk-meetings-table tbody tr.is-past {
-          opacity: 0.65;
+        .kiosk-meeting-card-time-block {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 0.5rem 0.55rem;
+          min-width: 0;
         }
-        .kiosk-meetings-table .col-time {
-          width: 5.25rem;
+        .kiosk-meeting-card-status-row {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 0.45rem;
+          margin-top: 0.15rem;
         }
         .kiosk-meetings-time-value {
-          display: block;
-          font-size: 1.08rem;
+          font-size: 1.35rem;
           font-weight: 800;
           color: var(--kiosk-gold);
           font-variant-numeric: tabular-nums;
           white-space: nowrap;
-          line-height: 1.15;
+          line-height: 1;
+          letter-spacing: -0.02em;
         }
         .kiosk-meetings-type-badge {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          margin-top: 0.32rem;
-          padding: 0.2rem 0.5rem;
+          padding: 0.28rem 0.55rem;
+          border: none;
+          outline: none;
+          box-shadow: none;
           border-radius: 9999px;
           font-size: 0.68rem;
           font-weight: 800;
@@ -1618,85 +1660,135 @@ const EntryKioskPage: React.FC = () => {
           line-height: 1.1;
           white-space: nowrap;
         }
-        .kiosk-meetings-table .col-lead {
-          width: 22%;
-          max-width: 9.5rem;
-          min-width: 0;
+        .kiosk-meeting-card-live {
+          flex-shrink: 0;
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          padding: 0.38rem 0.8rem;
+          border: none;
+          outline: none;
+          box-shadow: none;
+          border-radius: 9999px;
+          background: #34d399;
+          color: #052e1c;
+          font-size: 0.82rem;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
         }
-        .kiosk-meetings-lead {
-          display: flex;
-          flex-direction: column;
-          gap: 0.15rem;
-          min-width: 0;
+        .kiosk-meeting-card-live-dot {
+          width: 0.45rem;
+          height: 0.45rem;
+          border-radius: 9999px;
+          background: #052e1c;
         }
-        .kiosk-meetings-table .col-lead-num {
-          display: block;
-          font-size: 0.84rem;
-          font-weight: 700;
-          letter-spacing: 0.04em;
-          color: var(--kiosk-gold);
-          line-height: 1.2;
+        .kiosk-meeting-card-soon {
+          flex-shrink: 0;
+          display: inline-flex;
+          align-items: center;
+          padding: 0.38rem 0.8rem;
+          border: none;
+          outline: none;
+          box-shadow: none;
+          border-radius: 9999px;
+          background: #60a5fa;
+          color: #0b1f3a;
+          font-size: 0.82rem;
+          font-weight: 800;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
         }
-        .kiosk-meetings-table .col-lead-name {
-          font-size: 1rem;
-          font-weight: 700;
+        .kiosk-meeting-card-title {
+          margin: 0;
+          font-size: 1.22rem;
+          font-weight: 800;
           color: #fff;
           line-height: 1.25;
+          letter-spacing: -0.01em;
           display: -webkit-box;
           -webkit-box-orient: vertical;
           -webkit-line-clamp: 2;
           overflow: hidden;
           word-break: break-word;
-          overflow-wrap: anywhere;
-          white-space: normal;
         }
-        .kiosk-meetings-table .col-participants {
-          width: 34%;
+        .kiosk-meeting-card-meta {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 0.45rem 0.75rem;
+          font-size: 0.88rem;
+          color: rgba(226, 232, 240, 0.78);
+        }
+        .kiosk-meeting-card-lead-num {
+          font-weight: 700;
+          letter-spacing: 0.04em;
+          color: var(--kiosk-gold);
+        }
+        .kiosk-meeting-card-location {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
           min-width: 0;
-          padding-left: 0.45rem;
+        }
+        .kiosk-meeting-card-location-icon {
+          width: 1rem;
+          height: 1rem;
+          flex-shrink: 0;
+          opacity: 0.85;
         }
         .kiosk-meetings-participants-list {
+          flex: 0 0 auto;
           display: flex;
           flex-direction: column;
-          gap: 0.45rem;
+          align-items: flex-start;
+          justify-content: center;
+          gap: 0.55rem;
+          max-width: 44%;
+          min-width: 10rem;
+          padding-left: 0.95rem;
+          border-left: 1px solid rgba(255, 255, 255, 0.1);
         }
         .kiosk-meetings-participant {
           display: flex;
           align-items: center;
-          gap: 0.5rem;
+          gap: 0.55rem;
           min-width: 0;
+          max-width: 100%;
+          padding: 0;
+          border: none;
+          outline: none;
+          box-shadow: none;
+          background: transparent;
+          border-radius: 0;
         }
         .kiosk-meetings-participant-photo,
         .kiosk-meetings-participant-fallback {
-          width: 2.65rem;
-          height: 2.65rem;
+          width: 2.55rem;
+          height: 2.55rem;
           border-radius: 9999px;
-          flex-shrink: 0;
-        }
-        .kiosk-meetings-participant-photo {
           object-fit: cover;
-          background: #1e293b;
+          flex-shrink: 0;
         }
         .kiosk-meetings-participant-fallback {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          font-size: 0.82rem;
+          font-size: 0.85rem;
           font-weight: 800;
           letter-spacing: 0.02em;
           text-transform: uppercase;
-          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+          box-shadow: none;
+          border: none;
         }
         .kiosk-meetings-participant-name {
-          font-size: 0.92rem;
-          font-weight: 600;
-          color: rgba(248, 250, 252, 0.94);
-          line-height: 1.25;
-        }
-        .kiosk-meetings-table .col-location {
-          min-width: 8rem;
-          font-size: 0.92rem;
-          color: rgba(248, 250, 252, 0.88);
+          font-size: 1.05rem;
+          font-weight: 700;
+          color: rgba(248, 250, 252, 0.96);
+          line-height: 1.2;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .kiosk-meetings-empty {
           flex: 1;
@@ -1756,13 +1848,9 @@ const EntryKioskPage: React.FC = () => {
           line-height: 1;
         }
 
-        @media (max-width: 820px) {
-          .kiosk-meetings-table .col-location {
-            display: none;
-          }
-          .kiosk-meetings-table th:nth-child(4),
-          .kiosk-meetings-table td:nth-child(4) {
-            display: none;
+        @media (min-width: 900px) and (orientation: landscape) {
+          .kiosk-meetings-list {
+            width: min(100%, 36rem);
           }
         }
 
@@ -1959,74 +2047,101 @@ const EntryKioskPage: React.FC = () => {
               <span className="loading loading-spinner loading-lg text-slate-400" />
             </div>
           ) : sortedMeetingsDetail.length > 0 ? (
-            <div className="kiosk-meetings-table-wrap" ref={meetingsTableWrapRef}>
-              <table className="kiosk-meetings-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Time</th>
-                    <th scope="col">Lead</th>
-                    <th scope="col">Participants</th>
-                    <th scope="col">Location</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedMeetingsDetail.map((m) => {
-                    const typeStyle = MEETING_TYPE_STYLES[m.typeCode] || MEETING_TYPE_STYLES.other;
-                    return (
-                      <tr
-                        key={m.id}
-                        data-meeting-id={m.id}
-                        className={[m.isCurrent ? 'is-current' : '', m.isPast ? 'is-past' : ''].join(' ')}
-                      >
-                        <td className="col-time">
-                          <span className="kiosk-meetings-time-value">{m.time || '—'}</span>
-                          <span
-                            className="kiosk-meetings-type-badge"
-                            style={{
-                              background: typeStyle.bg,
-                              color: typeStyle.color,
-                            }}
-                          >
-                            {typeStyle.label}
-                          </span>
-                        </td>
-                        <td className="col-lead">
-                          <div className="kiosk-meetings-lead">
-                            {m.leadNumber ? (
-                              <span className="col-lead-num">{m.leadNumber}</span>
-                            ) : null}
-                            <span className="col-lead-name">
-                              {m.clientName || m.title || 'Meeting'}
+            <div className="kiosk-meetings-list-wrap" ref={meetingsTableWrapRef}>
+              <div className="kiosk-meetings-list">
+                {sortedMeetingsDetail.map((m) => {
+                  const typeStyle = MEETING_TYPE_STYLES[m.typeCode] || MEETING_TYPE_STYLES.other;
+                  const title = m.clientName || m.title || 'Meeting';
+                  return (
+                    <article
+                      key={m.id}
+                      data-meeting-id={m.id}
+                      className={[
+                        'kiosk-meeting-card',
+                        m.isCurrent ? 'is-current' : '',
+                        m.isUpcoming ? 'is-upcoming' : '',
+                        m.isPast ? 'is-past' : '',
+                      ].join(' ')}
+                    >
+                      <div className="kiosk-meeting-card-main">
+                        <div className="kiosk-meeting-card-top">
+                          <div className="kiosk-meeting-card-time-block">
+                            <span className="kiosk-meetings-time-value">{m.time || '—'}</span>
+                            <span
+                              className="kiosk-meetings-type-badge"
+                              style={{
+                                background: typeStyle.bg,
+                                color: typeStyle.color,
+                              }}
+                            >
+                              {typeStyle.label}
                             </span>
                           </div>
-                        </td>
-                        <td className="col-participants">
-                          {m.participants.length > 0 ? (
-                            <div className="kiosk-meetings-participants-list">
-                              {m.participants.map((participant) => (
-                                <div
-                                  key={`${m.id}-${participant.employeeId ?? participant.name}`}
-                                  className="kiosk-meetings-participant"
-                                >
-                                  <MeetingParticipantAvatar
-                                    name={participant.name}
-                                    photoUrl={participant.photoUrl}
-                                    employeeId={participant.employeeId}
+                        </div>
+                        {(m.isCurrent || m.isUpcoming) && (
+                          <div className="kiosk-meeting-card-status-row">
+                            {m.isCurrent ? (
+                              <span className="kiosk-meeting-card-live">
+                                <span className="kiosk-meeting-card-live-dot" aria-hidden />
+                                Now
+                              </span>
+                            ) : null}
+                            {m.isUpcoming ? (
+                              <span className="kiosk-meeting-card-soon">Coming up</span>
+                            ) : null}
+                          </div>
+                        )}
+
+                        <h3 className="kiosk-meeting-card-title">{title}</h3>
+
+                        {(m.leadNumber || m.location) && (
+                          <div className="kiosk-meeting-card-meta">
+                            {m.leadNumber ? (
+                              <span className="kiosk-meeting-card-lead-num">{m.leadNumber}</span>
+                            ) : null}
+                            {m.location ? (
+                              <span className="kiosk-meeting-card-location">
+                                {m.isVirtual ? (
+                                  <VideoCameraIcon
+                                    className="kiosk-meeting-card-location-icon"
+                                    aria-hidden
                                   />
-                                  <span className="kiosk-meetings-participant-name">{participant.name}</span>
-                                </div>
-                              ))}
+                                ) : (
+                                  <MapPinIcon
+                                    className="kiosk-meeting-card-location-icon"
+                                    aria-hidden
+                                  />
+                                )}
+                                <span className="truncate">{m.location}</span>
+                              </span>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+
+                      {m.participants.length > 0 ? (
+                        <div className="kiosk-meetings-participants-list">
+                          {m.participants.map((participant) => (
+                            <div
+                              key={`${m.id}-${participant.employeeId ?? participant.name}`}
+                              className="kiosk-meetings-participant"
+                            >
+                              <MeetingParticipantAvatar
+                                name={participant.name}
+                                photoUrl={participant.photoUrl}
+                                employeeId={participant.employeeId}
+                              />
+                              <span className="kiosk-meetings-participant-name">
+                                {participant.name}
+                              </span>
                             </div>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                        <td className="col-location">{m.location || '—'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          ))}
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
             </div>
           ) : (
             <div className="kiosk-meetings-empty">
@@ -2414,7 +2529,10 @@ const EntryKioskPage: React.FC = () => {
         <button
           type="button"
           className="kiosk-promo-overlay"
-          onClick={dismissPromo}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            dismissPromo();
+          }}
           aria-label="Dismiss featured image"
         >
           <img

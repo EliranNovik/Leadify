@@ -2528,9 +2528,9 @@ const PublicContractView: React.FC<{
   const isSigned = contract.status === 'signed' || thankYou;
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div className="min-h-screen bg-white md:bg-gray-100">
       {/* Premium client-first header */}
-      <header className="print-hide w-full border-b border-slate-200 bg-white shadow-sm">
+      <header className="print-hide w-full bg-white shadow-sm">
         <div
           className="mx-auto grid w-full max-w-6xl items-center gap-4 px-4 py-5 md:gap-8 md:px-8 md:py-7"
           style={{ gridTemplateColumns: 'auto minmax(0, 1fr) auto' }}
@@ -2597,9 +2597,9 @@ const PublicContractView: React.FC<{
         </div>
       </header>
 
-      {/* Main Content */}
-      <div className="bg-gray-100 px-4 py-4 md:flex md:items-center md:justify-center md:py-8 pb-32 md:pb-8">
-        <div className="w-full max-w-6xl bg-white md:rounded-lg md:shadow-lg md:border md:border-gray-200 p-0 md:p-8 relative">
+      {/* Main Content — full-bleed white on phone/tablet; grey framed card on desktop */}
+      <div className="bg-white px-0 py-3 md:bg-gray-100 md:flex md:items-center md:justify-center md:px-8 md:py-8 pb-32 md:pb-8">
+        <div className="w-full max-w-6xl bg-white relative px-3.5 py-4 sm:px-5 sm:py-5 md:rounded-lg md:shadow-lg md:border md:border-gray-200 md:p-8">
           {/* Share button in top right corner - removed since we have it in floating buttons on desktop */}
 
           {/* Show signed message at the top if contract is signed */}
