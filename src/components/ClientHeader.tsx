@@ -69,6 +69,9 @@ import {
     ensureLeadSubEffortRows,
     dedupeLeadSubEffortRows,
     fetchSubEffortsForMiscCategory,
+    fetchActiveSubEffortTemplates,
+    addLeadSubEffortRow,
+    removeLeadSubEffortRow,
     leadSubEffortIdentity,
     resolveLeadMiscCategoryId,
 } from '../lib/leadSubEfforts';
@@ -469,6 +472,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isLoadingLeadSubEfforts, setIsLoadingLeadSubEfforts] = useState(false);
     const [isSubEffortsModalOpen, setIsSubEffortsModalOpen] = useState(false);
     const [subEffortsModalRowId, setSubEffortsModalRowId] = useState<string | number | null>(null);
+    const [subEffortAddOptions, setSubEffortAddOptions] = useState<
+        Array<{ id: number; name: string; sort_order: number; default_client_visible: boolean }>
+    >([]);
+    const [isLoadingSubEffortAddOptions, setIsLoadingSubEffortAddOptions] = useState(false);
+    const [isAddingLeadSubEffort, setIsAddingLeadSubEffort] = useState(false);
+    const [isRemovingLeadSubEffort, setIsRemovingLeadSubEffort] = useState(false);
     const subEffortsProvisionKeyRef = useRef<string | null>(null);
     const subEffortsFetchInFlightRef = useRef(false);
     const [editLeadDrawerOpen, setEditLeadDrawerOpen] = useState(false);
@@ -1075,7 +1084,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         subEffortsFetchInFlightRef.current = true;
         setIsLoadingLeadSubEfforts(true);
         try {
-            const selectQuery = `
+            const selectBase = `
                     id,
                     legacy_lead_id,
                     new_lead_id,
@@ -1105,21 +1114,29 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     ),
                     tenants_employee ( id, display_name, photo_url, photo )
                 `;
+            const selectWithManual = selectBase.replace(
+                'sub_effort_id,',
+                'sub_effort_id,\n                    manually_added,',
+            );
 
-            let q = supabase
-                .from('lead_sub_efforts')
-                .select(selectQuery)
-                .order('sort_order', { ascending: true })
-                .order('created_at', { ascending: true })
-                .limit(500);
+            const buildQuery = (selectQuery: string) => {
+                let q = supabase
+                    .from('lead_sub_efforts')
+                    .select(selectQuery)
+                    .order('sort_order', { ascending: true })
+                    .order('created_at', { ascending: true })
+                    .limit(500);
+                if (legacyId) q = q.eq('legacy_lead_id', legacyId);
+                else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+                return q;
+            };
 
-            if (legacyId) {
-                q = q.eq('legacy_lead_id', legacyId);
-            } else if (newLeadId) {
-                q = q.eq('new_lead_id', newLeadId);
+            let q = buildQuery(selectWithManual);
+            let { data, error } = await q;
+            if (error && /manually_added/i.test(String(error.message ?? ''))) {
+                q = buildQuery(selectBase);
+                ({ data, error } = await q);
             }
-
-            const { data, error } = await q;
             if (error) throw error;
             let rows = (data as any[]) ?? [];
 
@@ -1143,11 +1160,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 }
             }
 
+            // Category defaults for display; keep manually added extras only.
             if (catalog.length > 0) {
                 const allowedIds = new Set(catalog.map((item) => item.id));
                 rows = rows.filter((row) => {
                     const id = Number((row as any)?.sub_effort_id ?? (row as any)?.sub_efforts?.id);
-                    return Number.isFinite(id) && allowedIds.has(id);
+                    if (!Number.isFinite(id) || id <= 0) return false;
+                    if (allowedIds.has(id)) return true;
+                    return Boolean((row as any)?.manually_added);
                 });
             }
 
@@ -1176,6 +1196,95 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setSubEffortsModalRowId(rowId ?? null);
         setIsSubEffortsModalOpen(true);
     }, []);
+
+    useEffect(() => {
+        if (!isSubEffortsModalOpen) return;
+        let cancelled = false;
+        setIsLoadingSubEffortAddOptions(true);
+        void (async () => {
+            try {
+                const opts = await fetchActiveSubEffortTemplates(supabase);
+                if (!cancelled) setSubEffortAddOptions(opts);
+            } catch (e) {
+                console.error('Failed to load sub effort templates:', e);
+                if (!cancelled) setSubEffortAddOptions([]);
+            } finally {
+                if (!cancelled) setIsLoadingSubEffortAddOptions(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [isSubEffortsModalOpen]);
+
+    const handleAddLeadSubEffort = useCallback(
+        async (opt: { id: number; name: string }) => {
+            if (!selectedClient?.id) return null;
+            const identity = leadSubEffortIdentity(selectedClient);
+            const legacyLeadId = identity.legacyId;
+            const newLeadId = identity.newLeadId;
+            if (!legacyLeadId && !newLeadId) {
+                toast.error('Cannot add sub effort: lead identity missing');
+                return null;
+            }
+            setIsAddingLeadSubEffort(true);
+            try {
+                const actor = await fetchStageActorInfo();
+                const template = subEffortAddOptions.find((o) => o.id === opt.id);
+                const newId = await addLeadSubEffortRow(supabase, {
+                    subEffortId: opt.id,
+                    legacyLeadId,
+                    newLeadId,
+                    defaultClientVisible: template?.default_client_visible,
+                    actor,
+                });
+                await fetchLeadSubEfforts();
+                if (newId == null) {
+                    toast.error('Sub effort already on this lead');
+                    return null;
+                }
+                toast.success(`Added “${opt.name}”`);
+                return newId;
+            } catch (e) {
+                console.error(e);
+                toast.error(e instanceof Error ? e.message : 'Failed to add sub effort');
+                return null;
+            } finally {
+                setIsAddingLeadSubEffort(false);
+            }
+        },
+        [selectedClient, subEffortAddOptions, fetchLeadSubEfforts],
+    );
+
+    const handleRemoveLeadSubEffort = useCallback(
+        async (rowId: string | number) => {
+            const row = leadSubEfforts.find((r) => String(r?.id) === String(rowId));
+            const name =
+                String(row?.sub_efforts?.name ?? row?.name ?? '').trim() || 'this sub effort';
+            if (
+                !window.confirm(
+                    `Remove “${name}” from this lead’s workflow? This does not delete the template.`,
+                )
+            ) {
+                return;
+            }
+            setIsRemovingLeadSubEffort(true);
+            try {
+                await removeLeadSubEffortRow(supabase, rowId);
+                if (String(subEffortsModalRowId) === String(rowId)) {
+                    setSubEffortsModalRowId(null);
+                }
+                await fetchLeadSubEfforts();
+                toast.success('Sub effort removed');
+            } catch (e) {
+                console.error(e);
+                toast.error(e instanceof Error ? e.message : 'Failed to remove sub effort');
+            } finally {
+                setIsRemovingLeadSubEffort(false);
+            }
+        },
+        [leadSubEfforts, subEffortsModalRowId, fetchLeadSubEfforts],
+    );
 
     useEffect(() => {
         window.dispatchEvent(
@@ -5626,6 +5735,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         onRefresh={() => void fetchLeadSubEfforts()}
                         categoryLinkedCount={subEfforts.length}
                         hasLeadCaseType={leadMiscCategoryId != null}
+                        subEffortOptions={subEffortAddOptions.map((o) => ({ id: o.id, name: o.name }))}
+                        isLoadingSubEffortOptions={isLoadingSubEffortAddOptions}
+                        isAddingSubEffort={isAddingLeadSubEffort}
+                        onAddSubEffort={handleAddLeadSubEffort}
+                        isRemovingSubEffort={isRemovingLeadSubEffort}
+                        onRemoveSubEffort={handleRemoveLeadSubEffort}
                     />
                 </>
             )}

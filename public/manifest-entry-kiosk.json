@@ -1,0 +1,28 @@
+{
+  "name": "RMQ Entry Kiosk",
+  "short_name": "Entry Kiosk",
+  "description": "Office entry tablet kiosk for RMQ 2.0",
+  "start_url": "/entry-kiosk",
+  "scope": "/",
+  "id": "/entry-kiosk",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "background_color": "#0a1628",
+  "theme_color": "#0a1628",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/RMQ_LOGO.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/RMQ_LOGO.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "productivity"]
+}

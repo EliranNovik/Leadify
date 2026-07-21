@@ -406,9 +406,10 @@ export function otherScoreboardExpected(costTarget: number): number {
 
 /**
  * Employee cost → month Target row (Agreement signed / Invoiced).
- * Cost should be at most 40% of revenue, so target = cost / 0.40.
+ * Salary/cost should be 35% of the month revenue target → target = cost / 0.35.
+ * (Previously 40% → cost / 0.40.)
  */
-export const SCOREBOARD_COST_TO_REVENUE_RATIO = 0.4;
+export const SCOREBOARD_COST_TO_REVENUE_RATIO = 0.35;
 
 export function departmentScoreboardExpected(dept: {
   cost_target?: number | null;

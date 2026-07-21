@@ -122,6 +122,41 @@ export async function attachStoragePathsToSubEffort(params: {
   return { addedCount: addedItems.length };
 }
 
+export async function removeStoragePathsFromSubEffort(params: {
+  targetSubEffortId: string | number;
+  targetDocumentUrl?: unknown;
+  paths: string[];
+}): Promise<{ removedCount: number }> {
+  const pathSet = new Set(params.paths.map((p) => normalizeStorageKey(p)).filter(Boolean));
+  if (pathSet.size === 0) return { removedCount: 0 };
+
+  const { data: row, error: fetchError } = await supabase
+    .from('lead_sub_efforts')
+    .select('document_url')
+    .eq('id', params.targetSubEffortId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+
+  const existingItems = normalizeSubEffortDocItems(
+    (row as { document_url?: unknown } | null)?.document_url ?? params.targetDocumentUrl,
+  );
+  const next = existingItems.filter((d) => {
+    const key = normalizeStorageKey(d.path);
+    return !(key && pathSet.has(key));
+  });
+  const removedCount = existingItems.length - next.length;
+  if (removedCount === 0) return { removedCount: 0 };
+
+  const actor = await fetchStageActorInfo();
+  const { error } = await supabase
+    .from('lead_sub_efforts')
+    .update({ document_url: next, updated_by: actor.fullName })
+    .eq('id', params.targetSubEffortId);
+  if (error) throw error;
+
+  return { removedCount };
+}
+
 export type SubEffortAttachOption = {
   id: string;
   name: string;

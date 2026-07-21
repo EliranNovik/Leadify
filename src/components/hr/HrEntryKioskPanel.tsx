@@ -211,6 +211,8 @@ export default function HrEntryKioskPanel() {
           <p className="mt-1 text-sm text-gray-500">
             Configure the office tablet display at{' '}
             <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">/entry-kiosk</code>.
+            On the tablet, open that URL in Chrome → Install app / Add to Home screen, then
+            always launch from the home-screen icon (not a browser tab) so Chrome bars stay hidden.
           </p>
         </div>
         <a

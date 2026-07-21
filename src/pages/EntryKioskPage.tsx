@@ -4,7 +4,10 @@ import {
   CakeIcon,
   CalendarDaysIcon,
   CloudIcon,
+  EnvelopeIcon,
   MegaphoneIcon,
+  PhoneIcon,
+  SparklesIcon,
   UserGroupIcon,
   UsersIcon,
   VideoCameraIcon,
@@ -34,6 +37,7 @@ import {
   kioskHeartbeat,
   type KioskStateResponse,
 } from '../lib/kioskDeviceApi';
+import { useKioskImmersiveMode } from '../hooks/useKioskImmersiveMode';
 
 const QR_RENDER_SIZE = 640;
 const EVENT_POLL_MS = 1_400;
@@ -44,8 +48,83 @@ const KIOSK_SUCCESS_MS = KIOSK_WELCOME_DURATION_MS;
 const KIOSK_SUCCESS_SEC = KIOSK_WELCOME_DURATION_SEC;
 const DOCUMENT_DONE_MS = 5_000;
 const MEETINGS_IDLE_MS = 15_000;
+const MEETINGS_IDLE_SEC = Math.round(MEETINGS_IDLE_MS / 1000);
+const UPDATES_CAROUSEL_MS = 10_000;
+const KIOSK_PROMO_SRC = '/kiosk-promo-overlay.png';
+const KIOSK_PROMO_INTERVAL_MS = 2 * 60 * 1000;
+const KIOSK_PROMO_VISIBLE_MS = 15_000;
+
+type UpdatesCarouselSlide =
+  | {
+      id: string;
+      kind: 'staff';
+      label: string;
+      inOffice: number;
+      unavailable: number;
+    }
+  | {
+      id: string;
+      kind: 'meetingsByDept';
+      label: string;
+      rows: Array<{ department: string; count: number }>;
+    }
+  | {
+      id: string;
+      kind: 'holidays';
+      label: string;
+      names: string[];
+    }
+  | {
+      id: string;
+      kind: 'birthdays';
+      label: string;
+      names: string[];
+    }
+  | {
+      id: string;
+      kind: 'announcement';
+      label: string;
+      title: string;
+      body: string;
+    }
+  | {
+      id: string;
+      kind: 'contacts';
+      label: string;
+      contacts: Array<{
+        id: number;
+        name: string;
+        photoUrl: string | null;
+        phone: string | null;
+        email: string | null;
+      }>;
+    };
 
 type DeviceUiMode = 'checking' | 'unpaired' | 'attendance' | 'document' | 'success' | 'locked';
+
+const KioskFullscreenGate: React.FC<{
+  visible: boolean;
+  onEnter: () => void;
+}> = ({ visible, onEnter }) => {
+  if (!visible) return null;
+  return (
+    <button
+      type="button"
+      className="fixed inset-0 z-[99999] flex flex-col items-center justify-center gap-4 bg-[#0a1628]/95 px-8 text-center text-white"
+      onClick={onEnter}
+    >
+      <span className="text-2xl font-semibold tracking-tight">Tap to enter fullscreen</span>
+      <span className="max-w-md text-sm text-slate-300 leading-relaxed">
+        For a true kiosk without browser bars, install this page as an app from Chrome
+        (Install app / Add to Home screen), then open it from the home-screen icon — not from a
+        Chrome tab.
+      </span>
+      <span className="mt-2 rounded-full border border-white/25 px-5 py-2.5 text-sm font-medium text-white/90">
+        Enter fullscreen
+      </span>
+    </button>
+  );
+};
 
 const MEETING_TYPE_STYLES: Record<string, { bg: string; color: string; label: string }> = {
   im: { bg: 'rgba(245, 158, 11, 0.18)', color: '#fbbf24', label: 'IM' },
@@ -55,12 +134,132 @@ const MEETING_TYPE_STYLES: Record<string, { bg: string; color: string; label: st
 };
 
 function participantInitials(name: string) {
-  return name
+  const parts = String(name || '')
+    .trim()
     .split(/\s+/)
-    .filter(Boolean)
+    .filter(Boolean);
+  if (parts.length === 0) return '?';
+  const letters = parts
     .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
-    .join('') || '•';
+    .map((part) => {
+      const ch = [...part].find((c) => /[\p{L}\p{N}]/u.test(c));
+      return ch ? ch.toUpperCase() : '';
+    })
+    .filter(Boolean);
+  return letters.join('') || '?';
+}
+
+const PARTICIPANT_AVATAR_COLORS = [
+  { bg: '#2563eb', fg: '#eff6ff' }, // blue
+  { bg: '#7c3aed', fg: '#f5f3ff' }, // violet
+  { bg: '#db2777', fg: '#fdf2f8' }, // pink
+  { bg: '#059669', fg: '#ecfdf5' }, // emerald
+  { bg: '#d97706', fg: '#fffbeb' }, // amber
+  { bg: '#0891b2', fg: '#ecfeff' }, // cyan
+  { bg: '#dc2626', fg: '#fef2f2' }, // red
+  { bg: '#4f46e5', fg: '#eef2ff' }, // indigo
+  { bg: '#ca8a04', fg: '#fefce8' }, // yellow
+  { bg: '#0d9488', fg: '#f0fdfa' }, // teal
+];
+
+function participantAvatarColor(seed: string) {
+  const text = String(seed || '');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return PARTICIPANT_AVATAR_COLORS[hash % PARTICIPANT_AVATAR_COLORS.length];
+}
+
+function parseMeetingTimeMinutes(time: string | null | undefined): number | null {
+  const match = String(time || '')
+    .trim()
+    .match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return hour * 60 + minute;
+}
+
+function nowMinutesJerusalem(date: Date): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value);
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
+  return hour * 60 + minute;
+}
+
+const DEFAULT_MEETING_DURATION_MINUTES = 60;
+
+function withLiveMeetingStatus(
+  meetings: EntryKioskMeetingDetail[],
+  now: Date,
+): EntryKioskMeetingDetail[] {
+  const nowMinutes = nowMinutesJerusalem(now);
+  return meetings
+    .map((meeting) => {
+      const startMinutes = parseMeetingTimeMinutes(meeting.time);
+      if (startMinutes == null) {
+        return { ...meeting, isCurrent: false, isPast: false };
+      }
+      const duration =
+        Number.isFinite(meeting.durationMinutes) && (meeting.durationMinutes as number) > 0
+          ? (meeting.durationMinutes as number)
+          : DEFAULT_MEETING_DURATION_MINUTES;
+      const endMinutes = startMinutes + duration;
+      return {
+        ...meeting,
+        isCurrent: nowMinutes >= startMinutes && nowMinutes < endMinutes,
+        isPast: endMinutes <= nowMinutes,
+      };
+    })
+    .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+}
+
+function MeetingParticipantAvatar({
+  name,
+  photoUrl,
+  employeeId,
+}: {
+  name: string;
+  photoUrl?: string | null;
+  employeeId?: number | null;
+}) {
+  const trimmedPhoto = String(photoUrl || '').trim();
+  const [imageFailed, setImageFailed] = useState(!trimmedPhoto);
+  const initials = participantInitials(name);
+  const color = participantAvatarColor(`${employeeId ?? ''}:${name}`);
+
+  useEffect(() => {
+    setImageFailed(!trimmedPhoto);
+  }, [trimmedPhoto]);
+
+  if (!imageFailed && trimmedPhoto) {
+    return (
+      <img
+        src={trimmedPhoto}
+        alt=""
+        className="kiosk-meetings-participant-photo"
+        onError={() => setImageFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <span
+      className="kiosk-meetings-participant-fallback"
+      aria-hidden
+      style={{ background: color.bg, color: color.fg }}
+    >
+      {initials}
+    </span>
+  );
 }
 
 function formatClock(now: Date) {
@@ -84,6 +283,7 @@ function formatDate(now: Date) {
  * Optimized for ~10" tablet kiosks (landscape first); QR stays dominant.
  */
 const EntryKioskPage: React.FC = () => {
+  const { needsTapToFullscreen, enterFullscreen } = useKioskImmersiveMode();
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rotateInMs, setRotateInMs] = useState(15_000);
@@ -95,27 +295,108 @@ const EntryKioskPage: React.FC = () => {
   const [successFlash, setSuccessFlash] = useState<ClockInKioskRecentEvent | null>(null);
   const [welcomeSecondsLeft, setWelcomeSecondsLeft] = useState(KIOSK_SUCCESS_SEC);
   const [display, setDisplay] = useState<EntryKioskDisplayResponse | null>(null);
+  const [updatesCarouselIndex, setUpdatesCarouselIndex] = useState(0);
   const [meetingsScreenOpen, setMeetingsScreenOpen] = useState(false);
   const [meetingsDetail, setMeetingsDetail] = useState<EntryKioskMeetingDetail[]>([]);
   const [meetingsLoading, setMeetingsLoading] = useState(false);
   const [meetingsError, setMeetingsError] = useState<string | null>(null);
+  const [meetingsIdleSecondsLeft, setMeetingsIdleSecondsLeft] = useState(MEETINGS_IDLE_SEC);
   const [deviceUiMode, setDeviceUiMode] = useState<DeviceUiMode>('checking');
   const [documentSession, setDocumentSession] = useState<{
     sessionId: string;
     resourceType: 'digital_contract' | 'poa' | 'payment';
   } | null>(null);
   const [kioskSuccessMessage, setKioskSuccessMessage] = useState<string | null>(null);
+  const [promoVisible, setPromoVisible] = useState(false);
 
   const lastEventIdRef = useRef<string | null>(null);
   const successTimerRef = useRef<number | null>(null);
   const welcomeTickRef = useRef<number | null>(null);
   const meetingsIdleTimerRef = useRef<number | null>(null);
+  const meetingsIdleTickRef = useRef<number | null>(null);
   const kioskSuccessTimerRef = useRef<number | null>(null);
+  const promoNextShowAtRef = useRef<number | null>(null);
+  const promoHideAtRef = useRef<number | null>(null);
   const deviceUiModeRef = useRef<DeviceUiMode>('checking');
+  const meetingsScreenOpenRef = useRef(false);
+  const successFlashActiveRef = useRef(false);
+  const meetingsTableWrapRef = useRef<HTMLDivElement | null>(null);
+  const meetingsScrollDoneRef = useRef(false);
 
   useEffect(() => {
     deviceUiModeRef.current = deviceUiMode;
   }, [deviceUiMode]);
+
+  useEffect(() => {
+    meetingsScreenOpenRef.current = meetingsScreenOpen;
+  }, [meetingsScreenOpen]);
+
+  useEffect(() => {
+    successFlashActiveRef.current = Boolean(successFlash) || deviceUiMode === 'success';
+  }, [successFlash, deviceUiMode]);
+
+  const isPromoIdleScreen =
+    deviceUiMode === 'attendance' &&
+    !meetingsScreenOpen &&
+    !successFlash;
+
+  const canShowPromoNow = useCallback(() => {
+    return (
+      deviceUiModeRef.current === 'attendance' &&
+      !meetingsScreenOpenRef.current &&
+      !successFlashActiveRef.current
+    );
+  }, []);
+
+  const dismissPromo = useCallback(() => {
+    setPromoVisible(false);
+    promoHideAtRef.current = null;
+    promoNextShowAtRef.current = Date.now() + KIOSK_PROMO_INTERVAL_MS;
+  }, []);
+
+  useEffect(() => {
+    if (!isPromoIdleScreen) {
+      setPromoVisible(false);
+      promoHideAtRef.current = null;
+      return;
+    }
+
+    if (promoNextShowAtRef.current == null) {
+      promoNextShowAtRef.current = Date.now() + KIOSK_PROMO_INTERVAL_MS;
+    }
+
+    const tick = () => {
+      const now = Date.now();
+      if (!canShowPromoNow()) {
+        if (promoHideAtRef.current != null) {
+          setPromoVisible(false);
+          promoHideAtRef.current = null;
+          promoNextShowAtRef.current = now + KIOSK_PROMO_INTERVAL_MS;
+        }
+        return;
+      }
+
+      if (promoHideAtRef.current != null) {
+        if (now >= promoHideAtRef.current) {
+          setPromoVisible(false);
+          promoHideAtRef.current = null;
+          promoNextShowAtRef.current = now + KIOSK_PROMO_INTERVAL_MS;
+        }
+        return;
+      }
+
+      const nextShowAt = promoNextShowAtRef.current ?? now + KIOSK_PROMO_INTERVAL_MS;
+      if (now >= nextShowAt) {
+        setPromoVisible(true);
+        promoHideAtRef.current = now + KIOSK_PROMO_VISIBLE_MS;
+        promoNextShowAtRef.current = null;
+      }
+    };
+
+    tick();
+    const timer = window.setInterval(tick, 500);
+    return () => window.clearInterval(timer);
+  }, [isPromoIdleScreen, canShowPromoNow]);
 
   const applyKioskState = useCallback((state: KioskStateResponse) => {
     if (!state.success) {
@@ -304,16 +585,11 @@ const EntryKioskPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const html = document.documentElement;
-    const prevOverflow = document.body.style.overflow;
-    html.classList.add('entry-kiosk-active');
-    document.body.style.overflow = 'hidden';
     return () => {
-      html.classList.remove('entry-kiosk-active');
-      document.body.style.overflow = prevOverflow;
       if (successTimerRef.current) window.clearTimeout(successTimerRef.current);
       if (welcomeTickRef.current) window.clearInterval(welcomeTickRef.current);
       if (meetingsIdleTimerRef.current) window.clearTimeout(meetingsIdleTimerRef.current);
+      if (meetingsIdleTickRef.current) window.clearInterval(meetingsIdleTickRef.current);
     };
   }, []);
 
@@ -323,11 +599,21 @@ const EntryKioskPage: React.FC = () => {
       window.clearTimeout(meetingsIdleTimerRef.current);
       meetingsIdleTimerRef.current = null;
     }
+    if (meetingsIdleTickRef.current) {
+      window.clearInterval(meetingsIdleTickRef.current);
+      meetingsIdleTickRef.current = null;
+    }
+    setMeetingsIdleSecondsLeft(MEETINGS_IDLE_SEC);
   }, []);
 
   const resetMeetingsIdleTimer = useCallback(() => {
     if (!meetingsScreenOpen) return;
     if (meetingsIdleTimerRef.current) window.clearTimeout(meetingsIdleTimerRef.current);
+    if (meetingsIdleTickRef.current) window.clearInterval(meetingsIdleTickRef.current);
+    setMeetingsIdleSecondsLeft(MEETINGS_IDLE_SEC);
+    meetingsIdleTickRef.current = window.setInterval(() => {
+      setMeetingsIdleSecondsLeft((prev) => Math.max(0, prev - 1));
+    }, 1000);
     meetingsIdleTimerRef.current = window.setTimeout(() => {
       closeMeetingsScreen();
     }, MEETINGS_IDLE_MS);
@@ -335,6 +621,7 @@ const EntryKioskPage: React.FC = () => {
 
   const openMeetingsScreen = useCallback(async () => {
     setMeetingsScreenOpen(true);
+    setMeetingsIdleSecondsLeft(MEETINGS_IDLE_SEC);
     setMeetingsLoading(true);
     setMeetingsError(null);
     try {
@@ -358,6 +645,7 @@ const EntryKioskPage: React.FC = () => {
     resetMeetingsIdleTimer();
     return () => {
       if (meetingsIdleTimerRef.current) window.clearTimeout(meetingsIdleTimerRef.current);
+      if (meetingsIdleTickRef.current) window.clearInterval(meetingsIdleTickRef.current);
     };
   }, [meetingsScreenOpen, resetMeetingsIdleTimer]);
 
@@ -448,6 +736,56 @@ const EntryKioskPage: React.FC = () => {
     return Math.min(1, Math.max(0, secondsLeft / totalSec));
   }, [secondsLeft, totalRotateMs]);
 
+  const sortedMeetingsDetail = useMemo(
+    () => withLiveMeetingStatus(meetingsDetail, now),
+    [meetingsDetail, now],
+  );
+  const currentMeetingsCount = useMemo(
+    () => sortedMeetingsDetail.filter((m) => m.isCurrent).length,
+    [sortedMeetingsDetail],
+  );
+  const meetingsScrollAnchorId = useMemo(() => {
+    const current = sortedMeetingsDetail.find((m) => m.isCurrent);
+    if (current) return current.id;
+    const upcoming = sortedMeetingsDetail.find((m) => !m.isPast);
+    return upcoming?.id ?? null;
+  }, [sortedMeetingsDetail]);
+
+  useEffect(() => {
+    if (!meetingsScreenOpen) {
+      meetingsScrollDoneRef.current = false;
+      return;
+    }
+    if (meetingsLoading || meetingsScrollDoneRef.current || meetingsScrollAnchorId == null) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      const wrap = meetingsTableWrapRef.current;
+      const row = wrap?.querySelector(
+        `[data-meeting-id="${meetingsScrollAnchorId}"]`,
+      ) as HTMLElement | null;
+      if (!row || !wrap) return;
+      // Keep chronological order; scroll so "now" sits under the sticky header.
+      // Past meetings remain above and are reachable by scrolling up.
+      const headerH = wrap.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+      const delta =
+        row.getBoundingClientRect().top -
+        wrap.getBoundingClientRect().top +
+        wrap.scrollTop -
+        headerH -
+        8;
+      wrap.scrollTo({ top: Math.max(0, delta), behavior: 'smooth' });
+      meetingsScrollDoneRef.current = true;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [meetingsScreenOpen, meetingsLoading, meetingsScrollAnchorId, sortedMeetingsDetail.length]);
+
+  const meetingsIdleProgress = useMemo(() => {
+    return Math.min(1, Math.max(0, meetingsIdleSecondsLeft / MEETINGS_IDLE_SEC));
+  }, [meetingsIdleSecondsLeft]);
+  const meetingsIdleRingR = 18;
+  const meetingsIdleRingC = 2 * Math.PI * meetingsIdleRingR;
+  const meetingsIdleRingOffset = meetingsIdleRingC * (1 - meetingsIdleProgress);
+
   const ringR = 50;
   const ringC = 2 * Math.PI * ringR;
   const ringOffset = ringC * (1 - progress);
@@ -457,17 +795,132 @@ const EntryKioskPage: React.FC = () => {
   const showWeather = Boolean(kioskSettings?.showWeather);
   const showMeetings = Boolean(kioskSettings?.showMeetingsToday);
   const showAnnouncements = Boolean(kioskSettings?.showAnnouncements);
-  const showBirthdaysColumn =
-    Boolean(kioskSettings?.showBirthdays) && (display?.birthdays?.length ?? 0) > 0;
-  const infoColCount =
-    (showMeetings ? 1 : 0) + (showAnnouncements ? 1 : 0) + (showBirthdaysColumn ? 1 : 0);
+  const showBirthdays = Boolean(kioskSettings?.showBirthdays);
+  const showUpdatesCarousel = showAnnouncements || showBirthdays;
+  const infoColCount = (showMeetings ? 1 : 0) + (showUpdatesCarousel ? 1 : 0);
   const hasInfoStrip = infoColCount > 0;
-  const currentAnnouncement = display?.announcements?.[0] ?? null;
-  const currentBirthday = display?.birthdays?.[0] ?? null;
+
+  const updatesCarouselSlides = useMemo((): UpdatesCarouselSlide[] => {
+    if (!showUpdatesCarousel) return [];
+    const slides: UpdatesCarouselSlide[] = [];
+
+    if (showAnnouncements) {
+      const announcements = display?.announcements || [];
+      if (announcements.length > 0) {
+        announcements.forEach((ann, index) => {
+          const title = String(ann.title || '').trim();
+          const body = String(ann.body || '').trim();
+          slides.push({
+            id: `announcement-${ann.id ?? index}`,
+            kind: 'announcement',
+            label: 'Announcements',
+            title: title || body || 'Announcement',
+            body: title ? body : '',
+          });
+        });
+      } else {
+        slides.push({
+          id: 'announcement-empty',
+          kind: 'announcement',
+          label: 'Announcements',
+          title: 'No active announcements',
+          body: '',
+        });
+      }
+    }
+
+    slides.push({
+      id: 'staff',
+      kind: 'staff',
+      label: 'Clocked in',
+      inOffice: Number(display?.inOfficeCount) || 0,
+      unavailable: Number(display?.unavailableCount) || 0,
+    });
+
+    const byDept = display?.meetingsByDepartment || [];
+    if (byDept.length > 0) {
+      slides.push({
+        id: 'meetings-by-dept',
+        kind: 'meetingsByDept',
+        label: 'Meetings today',
+        rows: byDept.slice(0, 5),
+      });
+    }
+
+    const holidayNames = (display?.holidays || [])
+      .map((h) => String(h.name || '').trim())
+      .filter(Boolean);
+    if (holidayNames.length > 0) {
+      slides.push({
+        id: 'holidays',
+        kind: 'holidays',
+        label: 'Holidays',
+        names: holidayNames,
+      });
+    }
+
+    if (showBirthdays) {
+      const birthdayNames = (display?.birthdays || [])
+        .map((b) => String(b.name || '').trim())
+        .filter(Boolean);
+      if (birthdayNames.length > 0) {
+        slides.push({
+          id: 'birthdays',
+          kind: 'birthdays',
+          label: 'Birthdays',
+          names: birthdayNames,
+        });
+      }
+    }
+
+    const helpContacts = (display?.helpContacts || [])
+      .map((c) => ({
+        id: Number(c.id),
+        name: String(c.name || '').trim() || `Employee #${c.id}`,
+        photoUrl: c.photoUrl || null,
+        phone: c.phone || null,
+        email: c.email || null,
+      }))
+      .filter((c) => Number.isFinite(c.id) && c.id > 0);
+    if (helpContacts.length > 0) {
+      slides.push({
+        id: 'contacts',
+        kind: 'contacts',
+        label: 'Contact',
+        contacts: helpContacts,
+      });
+    }
+
+    return slides;
+  }, [display, showAnnouncements, showBirthdays, showUpdatesCarousel]);
+
+  useEffect(() => {
+    setUpdatesCarouselIndex((prev) =>
+      updatesCarouselSlides.length === 0 ? 0 : prev % updatesCarouselSlides.length,
+    );
+  }, [updatesCarouselSlides.length]);
+
+  useEffect(() => {
+    if (updatesCarouselSlides.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setUpdatesCarouselIndex((prev) => (prev + 1) % updatesCarouselSlides.length);
+    }, UPDATES_CAROUSEL_MS);
+    return () => window.clearInterval(timer);
+  }, [updatesCarouselSlides.length]);
+
+  const safeUpdatesCarouselIndex =
+    updatesCarouselSlides.length === 0
+      ? 0
+      : Math.min(updatesCarouselIndex, updatesCarouselSlides.length - 1);
+  const currentUpdatesSlide = updatesCarouselSlides[safeUpdatesCarouselIndex] ?? null;
 
   if (deviceUiMode === 'checking') {
     return (
       <div className="entry-kiosk relative flex h-[100dvh] items-center justify-center bg-[#0a1628] text-white">
+        <KioskFullscreenGate
+          visible={needsTapToFullscreen}
+          onEnter={() => void enterFullscreen()}
+        />
         <span className="loading loading-spinner loading-lg text-slate-300" />
       </div>
     );
@@ -476,6 +929,10 @@ const EntryKioskPage: React.FC = () => {
   if (deviceUiMode === 'unpaired') {
     return (
       <div className="entry-kiosk relative flex h-[100dvh] flex-col overflow-hidden bg-[#0a1628] text-white">
+        <KioskFullscreenGate
+          visible={needsTapToFullscreen}
+          onEnter={() => void enterFullscreen()}
+        />
         <KioskPairingScreen
           locationId={ENTRY_KIOSK_DEFAULT_LOCATION_ID}
           onPaired={handleKioskPaired}
@@ -487,6 +944,10 @@ const EntryKioskPage: React.FC = () => {
   if (deviceUiMode === 'locked') {
     return (
       <div className="entry-kiosk relative flex h-[100dvh] items-center justify-center bg-[#0a1628] px-6 text-center text-white">
+        <KioskFullscreenGate
+          visible={needsTapToFullscreen}
+          onEnter={() => void enterFullscreen()}
+        />
         <div>
           <h1 className="text-2xl font-bold">Kiosk locked</h1>
           <p className="mt-2 text-slate-300">This device was revoked. Contact your administrator.</p>
@@ -498,6 +959,10 @@ const EntryKioskPage: React.FC = () => {
   if (deviceUiMode === 'document' && documentSession) {
     return (
       <div className="entry-kiosk relative flex h-[100dvh] flex-col overflow-hidden bg-white">
+        <KioskFullscreenGate
+          visible={needsTapToFullscreen}
+          onEnter={() => void enterFullscreen()}
+        />
         <KioskDocumentShell
           sessionId={documentSession.sessionId}
           resourceType={documentSession.resourceType}
@@ -521,6 +986,10 @@ const EntryKioskPage: React.FC = () => {
         } as React.CSSProperties
       }
     >
+      <KioskFullscreenGate
+        visible={needsTapToFullscreen}
+        onEnter={() => void enterFullscreen()}
+      />
       <div className="kiosk-waves" aria-hidden>
         <svg
           className="kiosk-wave kiosk-wave-1"
@@ -686,32 +1155,39 @@ const EntryKioskPage: React.FC = () => {
           background: rgba(8, 16, 34, 0.82);
           backdrop-filter: blur(12px);
           -webkit-backdrop-filter: blur(12px);
-          padding: 1.45rem 1.35rem;
-          min-height: 7.25rem;
+          padding: 1.35rem 1.35rem 1.25rem;
+          min-height: 11.5rem;
+          height: 11.5rem;
           display: grid;
           grid-template-columns: repeat(var(--kiosk-info-cols, 3), minmax(0, 1fr));
           gap: 0;
           flex: 0 0 auto;
           position: relative;
           z-index: 5;
+          overflow: hidden;
+          align-items: stretch;
         }
         .kiosk-info-col {
           min-width: 0;
-          padding: 0.35rem 1.1rem;
+          min-height: 0;
+          padding: 0.15rem 1.1rem;
           display: flex;
           flex-direction: column;
-          justify-content: center;
-          gap: 0.65rem;
+          justify-content: flex-start;
+          align-items: stretch;
+          gap: 0.7rem;
         }
         .kiosk-info-col + .kiosk-info-col {
           border-left: 1px solid rgba(255, 255, 255, 0.12);
         }
         .kiosk-info-label-row {
           display: flex;
-          align-items: baseline;
+          align-items: center;
           justify-content: space-between;
           gap: 0.65rem;
           min-width: 0;
+          height: 1.35rem;
+          flex-shrink: 0;
         }
         .kiosk-info-label {
           font-size: 0.95rem;
@@ -845,6 +1321,177 @@ const EntryKioskPage: React.FC = () => {
           overflow: hidden;
           text-overflow: ellipsis;
         }
+        .kiosk-updates-carousel {
+          gap: 0.7rem;
+          min-width: 0;
+        }
+        .kiosk-carousel-viewport {
+          position: relative;
+          height: 7.75rem;
+          min-height: 7.75rem;
+          max-height: 7.75rem;
+          overflow: hidden;
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+        .kiosk-carousel-slide > .kiosk-info-item,
+        .kiosk-carousel-slide > .kiosk-carousel-contacts {
+          width: 100%;
+        }
+        .kiosk-carousel-slide {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: flex-start;
+          opacity: 0;
+          transform: translateY(0.55rem);
+          pointer-events: none;
+          transition:
+            opacity 0.45s ease,
+            transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .kiosk-carousel-slide.is-active {
+          opacity: 1;
+          transform: translateY(0);
+          pointer-events: auto;
+          z-index: 1;
+        }
+        .kiosk-carousel-dots {
+          display: flex;
+          align-items: center;
+          gap: 0.35rem;
+          flex-shrink: 0;
+        }
+        .kiosk-carousel-dot {
+          width: 0.4rem;
+          height: 0.4rem;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.28);
+          transition: background 0.25s ease, transform 0.25s ease;
+        }
+        .kiosk-carousel-dot.is-active {
+          background: var(--kiosk-gold);
+          transform: scale(1.15);
+        }
+        .kiosk-carousel-wrap {
+          white-space: normal !important;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
+        .kiosk-carousel-dept-list {
+          width: 100%;
+          gap: 0.2rem;
+        }
+        .kiosk-carousel-dept-row {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 0.75rem;
+          min-width: 0;
+          font-size: 1.02rem;
+          line-height: 1.3;
+          color: #fff;
+        }
+        .kiosk-carousel-dept-name {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-weight: 600;
+        }
+        .kiosk-carousel-dept-count {
+          flex-shrink: 0;
+          font-weight: 700;
+          color: var(--kiosk-gold);
+          font-variant-numeric: tabular-nums;
+        }
+        .kiosk-carousel-contacts {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0.85rem 1rem;
+          width: 100%;
+          align-items: center;
+        }
+        .kiosk-carousel-contact {
+          display: flex;
+          align-items: center;
+          gap: 0.7rem;
+          min-width: 0;
+        }
+        .kiosk-carousel-contact .kiosk-meetings-participant-photo,
+        .kiosk-carousel-contact .kiosk-meetings-participant-fallback {
+          width: 2.6rem;
+          height: 2.6rem;
+          flex-shrink: 0;
+          font-size: 0.78rem;
+        }
+        .kiosk-carousel-contact-text {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 0.12rem;
+        }
+        .kiosk-carousel-contact-name {
+          font-size: 1.02rem;
+          font-weight: 700;
+          color: #fff;
+          line-height: 1.25;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .kiosk-carousel-contact-line {
+          display: flex;
+          align-items: center;
+          gap: 0.35rem;
+          min-width: 0;
+          font-size: 0.88rem;
+          line-height: 1.25;
+          color: var(--kiosk-gold);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .kiosk-carousel-contact-icon {
+          width: 0.95rem;
+          height: 0.95rem;
+          flex-shrink: 0;
+          opacity: 0.9;
+        }
+
+        .kiosk-promo-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 200;
+          margin: 0;
+          padding: 0;
+          border: none;
+          background: #02060f;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          animation: kiosk-promo-in 280ms ease-out;
+        }
+        .kiosk-promo-image {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+          object-position: center;
+          pointer-events: none;
+          user-select: none;
+          -webkit-user-drag: none;
+        }
+        @keyframes kiosk-promo-in {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
 
         .kiosk-meetings-screen {
           position: fixed;
@@ -905,6 +1552,7 @@ const EntryKioskPage: React.FC = () => {
         }
         .kiosk-meetings-table {
           width: 100%;
+          table-layout: fixed;
           border-collapse: collapse;
           font-size: 0.98rem;
         }
@@ -971,12 +1619,15 @@ const EntryKioskPage: React.FC = () => {
           white-space: nowrap;
         }
         .kiosk-meetings-table .col-lead {
-          min-width: 9rem;
+          width: 22%;
+          max-width: 9.5rem;
+          min-width: 0;
         }
         .kiosk-meetings-lead {
           display: flex;
           flex-direction: column;
-          gap: 0.2rem;
+          gap: 0.15rem;
+          min-width: 0;
         }
         .kiosk-meetings-table .col-lead-num {
           display: block;
@@ -991,9 +1642,18 @@ const EntryKioskPage: React.FC = () => {
           font-weight: 700;
           color: #fff;
           line-height: 1.25;
+          display: -webkit-box;
+          -webkit-box-orient: vertical;
+          -webkit-line-clamp: 2;
+          overflow: hidden;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+          white-space: normal;
         }
         .kiosk-meetings-table .col-participants {
-          min-width: 11rem;
+          width: 34%;
+          min-width: 0;
+          padding-left: 0.45rem;
         }
         .kiosk-meetings-participants-list {
           display: flex;
@@ -1021,11 +1681,11 @@ const EntryKioskPage: React.FC = () => {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          background: linear-gradient(145deg, #1e3a5f, #0f172a);
-          color: var(--kiosk-gold);
-          font-size: 0.78rem;
+          font-size: 0.82rem;
           font-weight: 800;
-          letter-spacing: 0.03em;
+          letter-spacing: 0.02em;
+          text-transform: uppercase;
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
         }
         .kiosk-meetings-participant-name {
           font-size: 0.92rem;
@@ -1077,12 +1737,23 @@ const EntryKioskPage: React.FC = () => {
           width: 1.35rem;
           height: 1.35rem;
         }
-        .kiosk-meetings-idle-hint {
-          margin-top: 0.45rem;
-          text-align: center;
-          font-size: 0.72rem;
-          color: var(--kiosk-muted);
-          letter-spacing: 0.04em;
+        .kiosk-meetings-idle-badge {
+          margin-top: 0.65rem;
+          align-self: center;
+          position: relative;
+          width: 2.75rem;
+          height: 2.75rem;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .kiosk-meetings-idle-badge-value {
+          font-size: 0.95rem;
+          font-weight: 800;
+          color: #fff;
+          font-variant-numeric: tabular-nums;
+          line-height: 1;
         }
 
         @media (max-width: 820px) {
@@ -1101,6 +1772,7 @@ const EntryKioskPage: React.FC = () => {
             gap: 0.75rem;
             padding: 1rem;
             min-height: 0;
+            height: auto;
           }
           .kiosk-info-col + .kiosk-info-col {
             border-left: none;
@@ -1274,7 +1946,11 @@ const EntryKioskPage: React.FC = () => {
               <p className="kiosk-meetings-subtitle">{formatDate(now)}</p>
             </div>
             <span className="kiosk-meetings-count">
-              {meetingsLoading ? '…' : `${meetingsDetail.length} total`}
+              {meetingsLoading
+                ? '…'
+                : currentMeetingsCount > 0
+                  ? `${currentMeetingsCount} now · ${sortedMeetingsDetail.length} total`
+                  : `${sortedMeetingsDetail.length} total`}
             </span>
           </div>
 
@@ -1282,8 +1958,8 @@ const EntryKioskPage: React.FC = () => {
             <div className="kiosk-meetings-empty">
               <span className="loading loading-spinner loading-lg text-slate-400" />
             </div>
-          ) : meetingsDetail.length > 0 ? (
-            <div className="kiosk-meetings-table-wrap">
+          ) : sortedMeetingsDetail.length > 0 ? (
+            <div className="kiosk-meetings-table-wrap" ref={meetingsTableWrapRef}>
               <table className="kiosk-meetings-table">
                 <thead>
                   <tr>
@@ -1294,11 +1970,12 @@ const EntryKioskPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {meetingsDetail.map((m) => {
+                  {sortedMeetingsDetail.map((m) => {
                     const typeStyle = MEETING_TYPE_STYLES[m.typeCode] || MEETING_TYPE_STYLES.other;
                     return (
                       <tr
                         key={m.id}
+                        data-meeting-id={m.id}
                         className={[m.isCurrent ? 'is-current' : '', m.isPast ? 'is-past' : ''].join(' ')}
                       >
                         <td className="col-time">
@@ -1331,17 +2008,11 @@ const EntryKioskPage: React.FC = () => {
                                   key={`${m.id}-${participant.employeeId ?? participant.name}`}
                                   className="kiosk-meetings-participant"
                                 >
-                                  {participant.photoUrl ? (
-                                    <img
-                                      src={participant.photoUrl}
-                                      alt=""
-                                      className="kiosk-meetings-participant-photo"
-                                    />
-                                  ) : (
-                                    <span className="kiosk-meetings-participant-fallback" aria-hidden>
-                                      {participantInitials(participant.name)}
-                                    </span>
-                                  )}
+                                  <MeetingParticipantAvatar
+                                    name={participant.name}
+                                    photoUrl={participant.photoUrl}
+                                    employeeId={participant.employeeId}
+                                  />
                                   <span className="kiosk-meetings-participant-name">{participant.name}</span>
                                 </div>
                               ))}
@@ -1372,7 +2043,34 @@ const EntryKioskPage: React.FC = () => {
             <ArrowLeftIcon className="kiosk-meetings-back-icon" aria-hidden />
             Back to main screen
           </button>
-          <p className="kiosk-meetings-idle-hint">Returns automatically after 15 seconds of inactivity</p>
+          <div
+            className="kiosk-meetings-idle-badge"
+            role="timer"
+            aria-label={`${meetingsIdleSecondsLeft} seconds until return to main screen`}
+          >
+            <svg className="absolute inset-0 -rotate-90" viewBox="0 0 44 44" aria-hidden>
+              <circle
+                cx="22"
+                cy="22"
+                r={meetingsIdleRingR}
+                fill="none"
+                stroke="rgba(255,255,255,0.12)"
+                strokeWidth="3"
+              />
+              <circle
+                cx="22"
+                cy="22"
+                r={meetingsIdleRingR}
+                fill="none"
+                stroke="var(--kiosk-gold)"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeDasharray={meetingsIdleRingC}
+                strokeDashoffset={meetingsIdleRingOffset}
+              />
+            </svg>
+            <span className="kiosk-meetings-idle-badge-value">{meetingsIdleSecondsLeft}</span>
+          </div>
         </div>
       ) : null}
 
@@ -1457,12 +2155,11 @@ const EntryKioskPage: React.FC = () => {
                   aria-label="View all meetings today"
                 >
                   <div className="kiosk-info-label-row">
-                    <p className="kiosk-info-label">Next meeting</p>
-                    <span className="kiosk-info-tap-hint">
-                      {(display?.meetings?.length ?? 0) > 0
-                        ? 'Tap for full schedule →'
-                        : 'Tap to view schedule →'}
-                    </span>
+                    <p className="kiosk-info-label">
+                      {(display?.meetings || []).some((m) => m.isCurrent)
+                        ? 'Happening now'
+                        : 'Next meeting'}
+                    </p>
                   </div>
                   {(display?.meetings?.length ?? 0) > 0 ? (
                     <div className="kiosk-info-item">
@@ -1512,45 +2209,150 @@ const EntryKioskPage: React.FC = () => {
                 </button>
               ) : null}
 
-              {showAnnouncements ? (
-                <div className="kiosk-info-col">
-                  <p className="kiosk-info-label">Announcements</p>
-                  {currentAnnouncement ? (
-                    <div className="kiosk-info-item">
-                      <MegaphoneIcon className="kiosk-info-icon" aria-hidden />
-                      <div className="kiosk-info-text">
-                        <p className="kiosk-info-primary">
-                          {currentAnnouncement.title?.trim() || currentAnnouncement.body}
-                        </p>
-                        {currentAnnouncement.title?.trim() ? (
-                          <p className="kiosk-info-secondary">{currentAnnouncement.body}</p>
-                        ) : null}
+              {showUpdatesCarousel && updatesCarouselSlides.length > 0 ? (
+                <div className="kiosk-info-col kiosk-updates-carousel" aria-live="polite">
+                  <div className="kiosk-info-label-row">
+                    <p className="kiosk-info-label">
+                      {currentUpdatesSlide?.label || 'Updates'}
+                    </p>
+                    {updatesCarouselSlides.length > 1 ? (
+                      <div className="kiosk-carousel-dots" aria-hidden>
+                        {updatesCarouselSlides.map((slide, index) => (
+                          <span
+                            key={slide.id}
+                            className={[
+                              'kiosk-carousel-dot',
+                              index === safeUpdatesCarouselIndex ? 'is-active' : '',
+                            ].join(' ')}
+                          />
+                        ))}
                       </div>
-                    </div>
-                  ) : (
-                    <div className="kiosk-info-item">
-                      <MegaphoneIcon className="kiosk-info-icon" aria-hidden />
-                      <p className="kiosk-info-empty">No active announcements</p>
-                    </div>
-                  )}
-                </div>
-              ) : null}
+                    ) : null}
+                  </div>
+                  <div className="kiosk-carousel-viewport">
+                    {updatesCarouselSlides.map((slide, index) => {
+                      const isActive = index === safeUpdatesCarouselIndex;
+                      return (
+                        <div
+                          key={slide.id}
+                          className={[
+                            'kiosk-carousel-slide',
+                            isActive ? 'is-active' : '',
+                          ].join(' ')}
+                          aria-hidden={!isActive}
+                        >
+                          {slide.kind === 'staff' ? (
+                            <div className="kiosk-info-item">
+                              <UsersIcon className="kiosk-info-icon" aria-hidden />
+                              <div className="kiosk-info-text kiosk-carousel-stats">
+                                <p className="kiosk-info-primary">
+                                  {slide.inOffice}{' '}
+                                  {slide.inOffice === 1
+                                    ? 'employee clocked in'
+                                    : 'employees clocked in'}
+                                </p>
+                                <p className="kiosk-info-secondary">
+                                  {slide.unavailable} unavailable
+                                </p>
+                              </div>
+                            </div>
+                          ) : null}
 
-              {showBirthdaysColumn && currentBirthday ? (
-                <div className="kiosk-info-col">
-                  <p className="kiosk-info-label">Birthdays</p>
-                  <div className="kiosk-info-item">
-                    <CakeIcon className="kiosk-info-icon" aria-hidden />
-                    <div className="kiosk-info-text">
-                      <p className="kiosk-info-primary">Happy Birthday</p>
-                      <p className="kiosk-info-secondary">
-                        {currentBirthday.name}
-                        {(display?.birthdays?.length ?? 0) > 1
-                          ? ` +${(display?.birthdays?.length ?? 1) - 1}`
-                          : ''}
-                        !
-                      </p>
-                    </div>
+                          {slide.kind === 'meetingsByDept' ? (
+                            <div className="kiosk-info-item">
+                              <UserGroupIcon className="kiosk-info-icon" aria-hidden />
+                              <div className="kiosk-info-text kiosk-carousel-dept-list">
+                                {slide.rows.map((row) => (
+                                  <p key={row.department} className="kiosk-carousel-dept-row">
+                                    <span className="kiosk-carousel-dept-name">
+                                      {row.department}
+                                    </span>
+                                    <span className="kiosk-carousel-dept-count">{row.count}</span>
+                                  </p>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {slide.kind === 'holidays' ? (
+                            <div className="kiosk-info-item">
+                              <SparklesIcon className="kiosk-info-icon" aria-hidden />
+                              <div className="kiosk-info-text">
+                                <p className="kiosk-info-primary kiosk-carousel-wrap">
+                                  {slide.names.join(' · ')}
+                                </p>
+                                <p className="kiosk-info-secondary">Today</p>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {slide.kind === 'birthdays' ? (
+                            <div className="kiosk-info-item">
+                              <CakeIcon className="kiosk-info-icon" aria-hidden />
+                              <div className="kiosk-info-text">
+                                <p className="kiosk-info-primary">Happy Birthday</p>
+                                <p className="kiosk-info-secondary kiosk-carousel-wrap">
+                                  {slide.names.join(', ')}!
+                                </p>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {slide.kind === 'announcement' ? (
+                            <div className="kiosk-info-item">
+                              <MegaphoneIcon className="kiosk-info-icon" aria-hidden />
+                              <div className="kiosk-info-text">
+                                <p
+                                  className={[
+                                    'kiosk-info-primary',
+                                    'kiosk-carousel-wrap',
+                                    slide.id === 'announcement-empty' ? 'kiosk-info-empty' : '',
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' ')}
+                                >
+                                  {slide.title}
+                                </p>
+                                {slide.body ? (
+                                  <p className="kiosk-info-secondary kiosk-carousel-wrap">
+                                    {slide.body}
+                                  </p>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {slide.kind === 'contacts' ? (
+                            <div className="kiosk-carousel-contacts">
+                              {slide.contacts.map((contact) => (
+                                <div key={contact.id} className="kiosk-carousel-contact">
+                                  <MeetingParticipantAvatar
+                                    name={contact.name}
+                                    photoUrl={contact.photoUrl}
+                                    employeeId={contact.id}
+                                  />
+                                  <div className="kiosk-carousel-contact-text">
+                                    <p className="kiosk-carousel-contact-name">{contact.name}</p>
+                                    {contact.phone ? (
+                                      <p className="kiosk-carousel-contact-line">
+                                        <PhoneIcon className="kiosk-carousel-contact-icon" aria-hidden />
+                                        {contact.phone}
+                                      </p>
+                                    ) : null}
+                                    {contact.email ? (
+                                      <p className="kiosk-carousel-contact-line">
+                                        <EnvelopeIcon className="kiosk-carousel-contact-icon" aria-hidden />
+                                        {contact.email}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}
@@ -1603,10 +2405,26 @@ const EntryKioskPage: React.FC = () => {
       <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex max-w-[70vw] items-center gap-3 sm:bottom-5 sm:left-8">
         <UsersIcon className="h-7 w-7 shrink-0 text-[var(--kiosk-gold)] sm:h-8 sm:w-8" aria-hidden />
         <p className="text-lg font-semibold text-white/90 sm:text-xl">
-          {display?.inOfficeCount ?? 0}{' '}
-          {(display?.inOfficeCount ?? 0) === 1 ? 'employee' : 'employees'} in office
+          {display?.localInOfficeCount ?? 0}{' '}
+          {(display?.localInOfficeCount ?? 0) === 1 ? 'employee' : 'employees'} in office
         </p>
       </div>
+
+      {promoVisible && isPromoIdleScreen ? (
+        <button
+          type="button"
+          className="kiosk-promo-overlay"
+          onClick={dismissPromo}
+          aria-label="Dismiss featured image"
+        >
+          <img
+            src={KIOSK_PROMO_SRC}
+            alt=""
+            className="kiosk-promo-image"
+            draggable={false}
+          />
+        </button>
+      ) : null}
     </div>
   );
 };

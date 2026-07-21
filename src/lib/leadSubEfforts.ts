@@ -319,7 +319,84 @@ export async function fetchExistingLeadSubEffortTemplateIds(
   );
 }
 
-/** Create missing lead_sub_efforts rows for every template linked to the lead case type. */
+async function fetchExcludedLeadSubEffortTemplateIds(
+  supabase: SupabaseClient,
+  params: { legacyLeadId: number | null; newLeadId: string | null },
+): Promise<Set<number>> {
+  const { legacyLeadId, newLeadId } = params;
+  if (!legacyLeadId && !newLeadId) return new Set();
+
+  let q = supabase.from('lead_sub_effort_exclusions').select('sub_effort_id');
+  if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+  else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+
+  const { data, error } = await q;
+  // Table may not exist yet before migration — treat as no exclusions.
+  if (error) {
+    if (error.code === '42P01' || /lead_sub_effort_exclusions/i.test(error.message ?? '')) {
+      return new Set();
+    }
+    throw error;
+  }
+
+  return new Set(
+    (data ?? [])
+      .map((row) => Number((row as { sub_effort_id?: unknown }).sub_effort_id))
+      .filter((n) => Number.isFinite(n) && n > 0),
+  );
+}
+
+async function recordLeadSubEffortExclusion(
+  supabase: SupabaseClient,
+  params: {
+    subEffortId: number;
+    legacyLeadId: number | null;
+    newLeadId: string | null;
+  },
+): Promise<void> {
+  const { subEffortId, legacyLeadId, newLeadId } = params;
+  if (!Number.isFinite(subEffortId) || subEffortId <= 0) return;
+  if (!legacyLeadId && !newLeadId) return;
+
+  const payload: Record<string, unknown> = { sub_effort_id: subEffortId };
+  if (legacyLeadId) payload.legacy_lead_id = legacyLeadId;
+  if (newLeadId) payload.new_lead_id = newLeadId;
+
+  const { error } = await supabase.from('lead_sub_effort_exclusions').insert(payload);
+  if (error) {
+    if (error.code === '42P01' || /lead_sub_effort_exclusions/i.test(error.message ?? '')) return;
+    if (error.code === '23505') return;
+    throw error;
+  }
+}
+
+async function clearLeadSubEffortExclusion(
+  supabase: SupabaseClient,
+  params: {
+    subEffortId: number;
+    legacyLeadId: number | null;
+    newLeadId: string | null;
+  },
+): Promise<void> {
+  const { subEffortId, legacyLeadId, newLeadId } = params;
+  if (!Number.isFinite(subEffortId) || subEffortId <= 0) return;
+  if (!legacyLeadId && !newLeadId) return;
+
+  let q = supabase.from('lead_sub_effort_exclusions').delete().eq('sub_effort_id', subEffortId);
+  if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+  else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+
+  const { error } = await q;
+  if (error) {
+    if (error.code === '42P01' || /lead_sub_effort_exclusions/i.test(error.message ?? '')) return;
+    throw error;
+  }
+}
+
+/** Create missing lead_sub_efforts rows for every template linked to the lead case type.
+ * Category catalog remains the default. Intentionally removed templates (exclusions) are skipped;
+ * manually added rows live only in lead_sub_efforts and are left alone.
+ */
 export async function ensureLeadSubEffortRows(
   supabase: SupabaseClient,
   params: {
@@ -336,8 +413,14 @@ export async function ensureLeadSubEffortRows(
   const catalogById = new Map<number, LeadSubEffortCatalogItem>();
   for (const item of catalog) catalogById.set(item.id, item);
 
-  const existingIds = await fetchExistingLeadSubEffortTemplateIds(supabase, { legacyLeadId, newLeadId });
-  const missing = [...catalogById.values()].filter((item) => !existingIds.has(item.id));
+  const [existingIds, excludedIds] = await Promise.all([
+    fetchExistingLeadSubEffortTemplateIds(supabase, { legacyLeadId, newLeadId }),
+    fetchExcludedLeadSubEffortTemplateIds(supabase, { legacyLeadId, newLeadId }),
+  ]);
+
+  const missing = [...catalogById.values()].filter(
+    (item) => !existingIds.has(item.id) && !excludedIds.has(item.id),
+  );
   if (!missing.length) return false;
 
   const payloads = missing.map((item) => {
@@ -360,4 +443,138 @@ export async function ensureLeadSubEffortRows(
     throw error;
   }
   return true;
+}
+
+/** Active sub-effort templates for the Add dropdown (all catalogs, not only case-type linked). */
+export async function fetchActiveSubEffortTemplates(
+  supabase: SupabaseClient,
+): Promise<Array<{ id: number; name: string; sort_order: number; default_client_visible: boolean }>> {
+  const { data, error } = await supabase
+    .from('sub_efforts')
+    .select('id, name, sort_order, active, default_client_visible')
+    .eq('active', true)
+    .order('sort_order', { ascending: true })
+    .order('id', { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? [])
+    .map((row) => {
+      const id = Number((row as { id?: unknown }).id);
+      if (!Number.isFinite(id) || id <= 0) return null;
+      return {
+        id,
+        name: String((row as { name?: unknown }).name ?? '').trim() || `Sub effort #${id}`,
+        sort_order: Number((row as { sort_order?: unknown }).sort_order) || 0,
+        default_client_visible: defaultClientVisibleFromTemplate(
+          (row as { default_client_visible?: boolean | null }).default_client_visible,
+        ),
+      };
+    })
+    .filter(Boolean) as Array<{
+    id: number;
+    name: string;
+    sort_order: number;
+    default_client_visible: boolean;
+  }>;
+}
+
+export async function addLeadSubEffortRow(
+  supabase: SupabaseClient,
+  params: {
+    subEffortId: number;
+    legacyLeadId: number | null;
+    newLeadId: string | null;
+    sortOrder?: number;
+    defaultClientVisible?: boolean | null;
+    actor: { employeeId?: number | null; fullName?: string | null };
+  },
+): Promise<number | null> {
+  const { subEffortId, legacyLeadId, newLeadId, actor } = params;
+  if (!Number.isFinite(subEffortId) || subEffortId <= 0) return null;
+  if (!legacyLeadId && !newLeadId) return null;
+
+  const existingIds = await fetchExistingLeadSubEffortTemplateIds(supabase, { legacyLeadId, newLeadId });
+  if (existingIds.has(subEffortId)) return null;
+
+  // Re-adding clears a prior removal so category ensure won't keep skipping it.
+  await clearLeadSubEffortExclusion(supabase, { subEffortId, legacyLeadId, newLeadId });
+
+  let sortOrder = params.sortOrder;
+  if (sortOrder == null || !Number.isFinite(sortOrder)) {
+    let q = supabase.from('lead_sub_efforts').select('sort_order');
+    if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+    else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+    const { data: sortRows } = await q;
+    const maxSort = (sortRows ?? []).reduce((max, row) => {
+      const n = Number((row as { sort_order?: unknown }).sort_order);
+      return Number.isFinite(n) ? Math.max(max, n) : max;
+    }, 0);
+    sortOrder = maxSort + 10;
+  }
+
+  const payload: Record<string, unknown> = {
+    sub_effort_id: subEffortId,
+    sort_order: sortOrder,
+    employee_id: actor.employeeId ?? null,
+    created_by: actor.fullName ?? null,
+    internal: leadSubEffortInternalFromTemplate(params.defaultClientVisible),
+    active: true,
+    manually_added: true,
+  };
+  if (legacyLeadId) payload.legacy_lead_id = legacyLeadId;
+  if (newLeadId) payload.new_lead_id = newLeadId;
+
+  const { data, error } = await supabase.from('lead_sub_efforts').insert(payload).select('id').single();
+  if (error) {
+    if (error.code === '23505') return null;
+    // Column may not exist until migration — retry without the flag.
+    if (/manually_added/i.test(String(error.message ?? ''))) {
+      delete payload.manually_added;
+      const retry = await supabase.from('lead_sub_efforts').insert(payload).select('id').single();
+      if (retry.error) {
+        if (retry.error.code === '23505') return null;
+        throw retry.error;
+      }
+      const retryId = Number((retry.data as { id?: unknown } | null)?.id);
+      return Number.isFinite(retryId) ? retryId : null;
+    }
+    throw error;
+  }
+  const id = Number((data as { id?: unknown } | null)?.id);
+  return Number.isFinite(id) ? id : null;
+}
+
+export async function removeLeadSubEffortRow(
+  supabase: SupabaseClient,
+  leadSubEffortId: string | number,
+): Promise<void> {
+  const id = Number(leadSubEffortId);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error('Invalid sub effort row');
+  }
+
+  const { data: row, error: fetchError } = await supabase
+    .from('lead_sub_efforts')
+    .select('id, sub_effort_id, legacy_lead_id, new_lead_id')
+    .eq('id', id)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+  if (!row) throw new Error('Sub effort row not found');
+
+  const subEffortId = Number((row as { sub_effort_id?: unknown }).sub_effort_id);
+  const legacyRaw = Number((row as { legacy_lead_id?: unknown }).legacy_lead_id);
+  const newRaw = (row as { new_lead_id?: unknown }).new_lead_id;
+  const legacyLeadId = Number.isFinite(legacyRaw) && legacyRaw > 0 ? legacyRaw : null;
+  const newLeadId = typeof newRaw === 'string' && newRaw.trim() ? newRaw.trim() : null;
+
+  // Persist removal so category defaults are not re-inserted on next ensure.
+  await recordLeadSubEffortExclusion(supabase, {
+    subEffortId,
+    legacyLeadId,
+    newLeadId,
+  });
+
+  const { error } = await supabase.from('lead_sub_efforts').delete().eq('id', id);
+  if (error) throw error;
 }

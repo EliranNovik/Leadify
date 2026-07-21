@@ -7131,14 +7131,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         icon={CalendarIcon}
         title="Meeting Management"
         subtitle="Schedule and track client meetings"
+        actions={
+          <LeadBookingSettingsPanel
+            leadId={String(client?.id ?? '')}
+            leadType={client?.lead_type}
+          />
+        }
       />
 
       <PortalMeetingRequestsPanel
-        leadId={String(client?.id ?? '')}
-        leadType={client?.lead_type}
-      />
-
-      <LeadBookingSettingsPanel
         leadId={String(client?.id ?? '')}
         leadType={client?.lead_type}
       />

@@ -16,11 +16,14 @@ import {
 type Props = {
   leadId: string;
   leadType?: 'new' | 'legacy' | string;
+  /** Extra classes for the outer wrapper (e.g. when placed inline next to a title). */
+  className?: string;
 };
 
 const LeadBookingSettingsPanel: React.FC<Props> = ({
   leadId,
   leadType = 'new',
+  className = '',
 }) => {
   const normalizedType = leadType === 'legacy' || String(leadId).startsWith('legacy_') ? 'legacy' : 'new';
   const normalizedLeadId = String(leadId).replace(/^legacy_/, '');
@@ -127,13 +130,15 @@ const LeadBookingSettingsPanel: React.FC<Props> = ({
 
   if (loading) {
     return (
-      <div className="mb-8 h-12 w-72 max-w-full animate-pulse rounded-xl border border-slate-200/80 bg-slate-50" />
+      <div
+        className={`h-12 w-72 max-w-full animate-pulse rounded-xl border border-slate-200/80 bg-slate-50 ${className}`.trim()}
+      />
     );
   }
 
   if (!expanded) {
     return (
-      <div className="mb-8 w-fit max-w-lg">
+      <div className={`w-fit max-w-lg ${className}`.trim()}>
         <button
           type="button"
           onClick={() => setExpanded(true)}
@@ -158,7 +163,9 @@ const LeadBookingSettingsPanel: React.FC<Props> = ({
   }
 
   return (
-    <div className="mb-8 w-fit max-w-lg overflow-hidden rounded-xl border border-slate-200/90 bg-white shadow-sm">
+    <div
+      className={`w-fit max-w-lg overflow-hidden rounded-xl border border-slate-200/90 bg-white shadow-sm ${className}`.trim()}
+    >
       <button
         type="button"
         onClick={() => setExpanded(false)}

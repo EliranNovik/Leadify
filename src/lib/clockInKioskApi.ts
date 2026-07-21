@@ -248,6 +248,7 @@ export type EntryKioskDisplayMeeting = {
   leadNumber: string | null;
   title?: string;
   typeCode?: 'im' | 'active' | 'potential' | 'other';
+  durationMinutes?: number;
   isCurrent?: boolean;
   isPast?: boolean;
 };
@@ -283,6 +284,24 @@ export type EntryKioskDisplayWeather = {
   fetchedAt: string;
 };
 
+export type EntryKioskDisplayHoliday = {
+  id: string;
+  name: string;
+};
+
+export type EntryKioskMeetingsByDepartment = {
+  department: string;
+  count: number;
+};
+
+export type EntryKioskHelpContact = {
+  id: number;
+  name: string;
+  photoUrl: string | null;
+  phone: string | null;
+  email: string | null;
+};
+
 export type EntryKioskDisplayResponse = {
   success: boolean;
   locationId?: number;
@@ -291,8 +310,13 @@ export type EntryKioskDisplayResponse = {
   gadgets?: EntryKioskDisplayGadget[];
   birthdays?: EntryKioskDisplayBirthday[];
   meetings?: EntryKioskDisplayMeeting[];
+  holidays?: EntryKioskDisplayHoliday[];
+  meetingsByDepartment?: EntryKioskMeetingsByDepartment[];
+  helpContacts?: EntryKioskHelpContact[];
   weather?: EntryKioskDisplayWeather | null;
   inOfficeCount?: number;
+  localInOfficeCount?: number;
+  unavailableCount?: number;
   error?: string;
 };
 

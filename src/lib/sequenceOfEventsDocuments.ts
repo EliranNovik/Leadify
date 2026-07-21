@@ -30,6 +30,8 @@ export type CaseCategoryDocument = {
   uploadedByName: string | null;
   /** True when uploaded via client portal (contact name), not staff. */
   isClientPortalUpload: boolean;
+  /** Document type the client selected when uploading via portal. */
+  documentTypeName: string | null;
 };
 
 /** @deprecated Prefer CaseCategoryDocument */
@@ -72,6 +74,7 @@ type CaseDocRow = {
   mime_type: string | null;
   uploaded_by: string | null;
   contact_id: number | null;
+  document_type_id: string | null;
   created_at: string;
   onedrive_subfolder: string | null;
   classification_id: string | null;
@@ -149,7 +152,7 @@ async function fetchCaseCategoryRows(leadNumber: string, classificationIds: stri
   const { data: rows, error } = await supabase
     .from('lead_case_documents')
     .select(
-      'id, storage_path, file_name, mime_type, uploaded_by, contact_id, created_at, onedrive_subfolder, classification_id',
+      'id, storage_path, file_name, mime_type, uploaded_by, contact_id, document_type_id, created_at, onedrive_subfolder, classification_id',
     )
     .eq('lead_number', leadNumber)
     .in('classification_id', classificationIds)
@@ -158,7 +161,9 @@ async function fetchCaseCategoryRows(leadNumber: string, classificationIds: stri
 
   if (error) throw error;
 
-  return ((rows ?? []) as CaseDocRow[]).filter((r) => !isInternalFolder(r.onedrive_subfolder));
+  return ((rows ?? []) as CaseDocRow[]).filter(
+    (r) => !isInternalFolder(r.onedrive_subfolder) && r.contact_id == null,
+  );
 }
 
 async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryDocument[]> {
@@ -181,6 +186,25 @@ async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryD
     }
   }
 
+  const documentTypeIds = [
+    ...new Set(
+      list
+        .map((r) => (typeof r.document_type_id === 'string' ? r.document_type_id.trim() : ''))
+        .filter(Boolean),
+    ),
+  ];
+  const documentTypeNameById = new Map<string, string>();
+  if (documentTypeIds.length > 0) {
+    const { data: types } = await supabase
+      .from('lead_case_document_types')
+      .select('id, name')
+      .in('id', documentTypeIds);
+    for (const t of (types ?? []) as { id: string; name: string | null }[]) {
+      const n = t.name?.trim();
+      if (n) documentTypeNameById.set(String(t.id), n);
+    }
+  }
+
   const uploaderKeys = [...new Set(list.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
   const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
 
@@ -197,6 +221,8 @@ async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryD
       const staffMatched = Boolean(resolved?.matched);
       const isClientPortalUpload = Boolean(fromContact) || Boolean(rawUploader && !staffMatched);
       const uploadedByName = fromContact || resolved?.name || rawUploader || null;
+      const typeId = typeof r.document_type_id === 'string' ? r.document_type_id.trim() : '';
+      const documentTypeName = typeId ? documentTypeNameById.get(typeId) ?? null : null;
 
       return {
         id: r.id,
@@ -207,6 +233,7 @@ async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryD
         storagePath: r.storage_path,
         uploadedByName,
         isClientPortalUpload,
+        documentTypeName,
       };
     }),
   );
@@ -388,10 +415,46 @@ export async function fetchCaseCategoryDocuments(
       storagePath: p || null,
       uploadedByName: it.uploadedByName,
       isClientPortalUpload: false,
+      documentTypeName: null,
     });
   }
 
   return [...caseDocs, ...subEffortDocs].sort(
+    (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
+  );
+}
+
+async function fetchClientPortalCaseRows(leadNumber: string): Promise<CaseDocRow[]> {
+  const { data: rows, error } = await supabase
+    .from('lead_case_documents')
+    .select(
+      'id, storage_path, file_name, mime_type, uploaded_by, contact_id, document_type_id, created_at, onedrive_subfolder, classification_id',
+    )
+    .eq('lead_number', leadNumber)
+    .not('contact_id', 'is', null)
+    .not('storage_path', 'is', null)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+
+  return ((rows ?? []) as CaseDocRow[]).filter((r) => !isInternalFolder(r.onedrive_subfolder));
+}
+
+export async function fetchClientPortalUploadCount(leadNumber: string): Promise<number> {
+  const lead = leadNumber.trim();
+  if (!lead) return 0;
+  const rows = await fetchClientPortalCaseRows(lead);
+  return rows.length;
+}
+
+export async function fetchClientPortalUploadDocuments(
+  leadNumber: string,
+): Promise<CaseCategoryDocument[]> {
+  const lead = leadNumber.trim();
+  if (!lead) return [];
+  const rows = await fetchClientPortalCaseRows(lead);
+  const docs = await mapCaseRowsToDocuments(rows);
+  return docs.sort(
     (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
   );
 }

@@ -2,7 +2,7 @@ import React, { useState, useEffect, Fragment, useMemo, useRef, startTransition 
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { ClientTabProps } from '../../types/client';
-import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon, ClipboardDocumentIcon } from '@heroicons/react/24/outline';
+import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon, ClipboardDocumentIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
@@ -511,6 +511,35 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   }, [client.lead_number, client]);
 
   const [physicalContractDocsModalOpen, setPhysicalContractDocsModalOpen] = useState(false);
+  const [openContactMenuId, setOpenContactMenuId] = useState<string | number | null>(null);
+  const [openContractMenuId, setOpenContractMenuId] = useState<string | null>(null);
+  const [openDocsAddMenuId, setOpenDocsAddMenuId] = useState<string | number | null>(null);
+  const poaOpenCreateByContactRef = useRef<Record<number, (() => void) | undefined>>({});
+
+  const documentStatusBadgeClass = (status: string) => {
+    const s = (status || '').toLowerCase();
+    const palette: Record<string, string> = {
+      draft: 'bg-amber-50 text-amber-700',
+      signed: 'bg-violet-50 text-violet-700',
+      pending: 'bg-sky-50 text-sky-700',
+      sent: 'bg-sky-50 text-sky-700',
+      viewed: 'bg-amber-50 text-amber-700',
+      cancelled: 'bg-rose-50 text-rose-600',
+      expired: 'bg-gray-100 text-gray-500',
+    };
+    return `inline-flex items-center h-6 px-2.5 rounded-full text-xs font-semibold capitalize ${
+      palette[s] || 'bg-gray-100 text-gray-600'
+    }`;
+  };
+
+  const displayContactValue = (value?: string | null) => {
+    const v = (value || '').trim();
+    if (!v || v === '---') return '-';
+    return v;
+  };
+
+  const isContactEditing = (contact: ContactEntry) =>
+    (contact.isMain && isEditingMainContact) || !!contact.isEditing;
 
   /** Lead identifiers used when creating a POA (new lead UUID vs legacy numeric id). */
   const poaLeadIds = useMemo(() => {
@@ -919,6 +948,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         <ClipboardDocumentIcon className="h-4 w-4" />
       </button>
     );
+  };
+
+  const openContactPhone = (phone: string, contactName: string) => {
+    const normalizedPhone = phone.replace(/[\s\-\(\)]/g, '');
+    const isSupportedCountry =
+      normalizedPhone.startsWith('+1') ||
+      (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) ||
+      normalizedPhone.startsWith('+61') ||
+      (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) ||
+      normalizedPhone.startsWith('+44') ||
+      (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) ||
+      normalizedPhone.startsWith('+27') ||
+      (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10);
+    if (isSupportedCountry) {
+      setCallPhoneNumber(phone);
+      setCallContactName(contactName || '');
+      setIsCallModalOpen(true);
+    } else {
+      window.open(`tel:${phone}`, '_self');
+    }
+  };
+
+  const hasContactValue = (value?: string | null) => {
+    const v = (value || '').trim();
+    return !!v && v !== '---';
   };
 
   // Stable main contact ID: same sort as display (main first, then by id) so contract placement never flickers
@@ -3650,17 +3704,69 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             subtitle="Manage client contacts and contracts"
           />
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 w-full pb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-5 w-full pb-6 items-stretch">
             {contacts.map((contact, index) => {
+              const editing = isContactEditing(contact);
+              const cardContract =
+                contact.id === mainContactId ? contractForMainCard : contactContracts[contact.id];
+              const canCreateContract = (() => {
+                if (contact.id !== mainContactId || cardContract) return false;
+                let stage = currentStage;
+                if (stage === null || stage === undefined) {
+                  if (client?.stage !== null && client?.stage !== undefined) {
+                    const parsed =
+                      typeof client.stage === 'number'
+                        ? client.stage
+                        : parseInt(String(client.stage), 10);
+                    if (!isNaN(parsed) && isFinite(parsed)) stage = parsed;
+                  }
+                }
+                return (stage !== null && stage !== undefined ? stage : 0) >= 40;
+              })();
+
+              const startEdit = async () => {
+                setOpenContactMenuId(null);
+                if (contact.isMain) {
+                  const editedData = {
+                    name: contact.name && contact.name !== '---' ? contact.name : '',
+                    mobile: contact.mobile && contact.mobile !== '---' ? contact.mobile : '',
+                    phone: contact.phone && contact.phone !== '---' ? contact.phone : '',
+                    email: contact.email && contact.email !== '---' ? contact.email : '',
+                    id_passport:
+                      contact.id_passport && contact.id_passport !== '---'
+                        ? contact.id_passport
+                        : '',
+                    country_id: contact.country_id || null,
+                  };
+                  setEditedMainContact(editedData);
+                  setIsEditingMainContact(true);
+                  const countryName = contact.country_id
+                    ? countries.find((c) => c.id === contact.country_id)?.name || ''
+                    : '';
+                  setMainContactCountrySearchTerm(countryName);
+                } else {
+                  setContacts(
+                    contacts.map((c) => (c.id === contact.id ? { ...c, isEditing: true } : c)),
+                  );
+                  const countryName = contact.country_id
+                    ? countries.find((c) => c.id === contact.country_id)?.name || ''
+                    : '';
+                  setContactCountrySearchTerms({
+                    ...contactCountrySearchTerms,
+                    [contact.id]: countryName,
+                  });
+                }
+              };
+
               return (
                 <div
                   key={contact.id}
-                  className="bg-white rounded-lg overflow-visible"
+                  className="h-full bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-hidden flex flex-col"
                 >
-                  {/* Header - clean white, data-first */}
-                  <div className="px-4 py-3 border-b border-gray-100">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-start gap-3 flex-1 min-w-0">
+                  {/* Compact contact header */}
+                  <div className="px-5 pt-[18px] pb-4 shrink-0">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
                         <ContactProfileAvatar
                           name={contact.name}
                           imageUrl={
@@ -3668,134 +3774,129 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               ? contactProfileImageUrls[contact.portal_profile_image_path]
                               : undefined
                           }
-                          className="h-14 w-14 text-base"
+                          className="h-12 w-12 text-sm shrink-0"
                         />
-                        <div className="flex flex-col gap-1.5 min-w-0">
-                          <h4 className="text-base font-semibold text-gray-900 break-words line-clamp-2">
-                            {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
-                          </h4>
-                          {contact.isMain && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary whitespace-nowrap self-start">
-                              Main
-                            </span>
-                          )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-lg font-semibold text-gray-900 truncate">
+                              {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
+                            </h4>
+                            {contact.isMain && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-primary/10 text-primary whitespace-nowrap">
+                                Main contact
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          {/* View contract - green if signed, outline if draft */}
-                          {(() => {
-                            const contractForThisCard = contact.id === mainContactId ? contractForMainCard : contactContracts[contact.id];
-                            if (!contractForThisCard) return null;
-                            const isSigned = contractForThisCard.status === 'signed';
-                            return (
-                              <button
-                                type="button"
-                                className={`btn btn-circle min-w-10 min-h-10 w-10 h-10 ${isSigned ? 'btn-success' : 'btn-ghost btn-outline'}`}
-                                onClick={() => handleViewContract(contractForThisCard.id)}
-                                title={`View contract (${contractForThisCard.status})`}
-                              >
-                                <DocumentTextIcon className="w-5 h-5" />
-                              </button>
-                            );
-                          })()}
-                          {/* Edit and Delete buttons - icon only */}
-                          {((contact.isMain && !isEditingMainContact) || (!contact.isMain && !contact.isEditing)) && (
-                            <>
-                              <button
-                                className="btn btn-ghost btn-circle min-w-10 min-h-10 w-10 h-10 text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-                                onClick={async () => {
-                                  if (contact.isMain) {
-                                    console.log('🔍 Edit button clicked - current contact data:', contact);
-                                    const editedData = {
-                                      name: (contact.name && contact.name !== '---') ? contact.name : '',
-                                      mobile: (contact.mobile && contact.mobile !== '---') ? contact.mobile : '',
-                                      phone: (contact.phone && contact.phone !== '---') ? contact.phone : '',
-                                      email: (contact.email && contact.email !== '---') ? contact.email : '',
-                                      id_passport: (contact.id_passport && contact.id_passport !== '---') ? contact.id_passport : '',
-                                      country_id: contact.country_id || null
-                                    };
-                                    setEditedMainContact(editedData);
-                                    setIsEditingMainContact(true);
-                                    // Sync country search term
-                                    const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
-                                    setMainContactCountrySearchTerm(countryName);
-                                  } else {
-                                    setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: true } : c));
-                                    // Sync country search term for this contact
-                                    const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
-                                    setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contact.id]: countryName });
-                                  }
-                                }}
-                                title="Edit contact"
-                              >
-                                <PencilSquareIcon className="w-5 h-5" />
-                              </button>
-                              {!contact.isMain && (
-                                <button
-                                  className="btn btn-ghost btn-circle min-w-10 min-h-10 w-10 h-10 text-gray-500 hover:text-red-600 hover:bg-red-50"
-                                  onClick={() => {
-                                    if (window.confirm('Are you sure you want to delete this contact?')) {
-                                      handleDeleteContact(contact.id);
-                                    }
-                                  }}
-                                  title="Delete contact"
-                                >
-                                  <TrashIcon className="w-5 h-5" />
-                                </button>
-                              )}
-                            </>
-                          )}
-                          {/* Save and Cancel buttons in edit mode - icon only */}
-                          {((contact.isMain && isEditingMainContact) || contact.isEditing) && (
-                            <>
-                              <button
-                                className="btn btn-ghost btn-sm btn-circle text-green-600 hover:bg-green-50"
-                                onClick={async () => {
-                                  if (contact.isMain) {
-                                    await handleSaveMainContact();
-                                  } else {
-                                    await handleSaveContact(contact.id, contact);
-                                  }
-                                }}
-                                title="Save changes"
-                              >
-                                <CheckIcon className="w-5 h-5" />
-                              </button>
-                              <button
-                                className="btn btn-ghost btn-circle min-w-10 min-h-10 w-10 h-10 text-gray-500 hover:bg-gray-100"
-                                onClick={() => contact.isMain ? handleCancelMainContact() : handleCancelContact(contact)}
-                                title="Cancel editing"
-                              >
-                                <XMarkIcon className="w-5 h-5" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      {/* Second row: Set as Main button (only for non-main contacts) */}
-                      {!contact.isMain && (
-                        <div className="flex items-center">
-                          <button
-                            className="btn btn-xs btn-ghost text-gray-600 hover:bg-gray-100 whitespace-nowrap"
-                            onClick={() => {
-                              if (window.confirm('Set this contact as the main contact?')) {
-                                handleSetMainContact(contact.id);
-                              }
-                            }}
-                            title="Set as main contact"
-                          >
-                            Set as Main
-                          </button>
-                        </div>
-                      )}
-                  </div>
 
-                  {/* Content */}
-                  <div className="p-6">
-                    <div className="space-y-0">
+                      <div className="flex items-center gap-1 shrink-0">
+                        {editing ? (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm btn-circle text-green-600 hover:bg-green-50"
+                              onClick={async () => {
+                                if (contact.isMain) await handleSaveMainContact();
+                                else await handleSaveContact(contact.id, contact);
+                              }}
+                              title="Save changes"
+                            >
+                              <CheckIcon className="w-5 h-5" />
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                              onClick={() =>
+                                contact.isMain
+                                  ? handleCancelMainContact()
+                                  : handleCancelContact(contact)
+                              }
+                              title="Cancel editing"
+                            >
+                              <XMarkIcon className="w-5 h-5" />
+                            </button>
+                          </>
+                        ) : (
+                          <div className="relative">
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-circle min-h-10 min-w-10 h-10 w-10 text-gray-500 hover:bg-gray-100"
+                              aria-label="Contact actions"
+                              onClick={() =>
+                                setOpenContactMenuId((id) =>
+                                  id === contact.id ? null : contact.id,
+                                )
+                              }
+                            >
+                              <EllipsisHorizontalIcon className="w-7 h-7 stroke-[2]" />
+                            </button>
+                            {openContactMenuId === contact.id && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="fixed inset-0 z-10 cursor-default"
+                                  aria-label="Close menu"
+                                  onClick={() => setOpenContactMenuId(null)}
+                                />
+                                <div className="absolute right-0 top-full mt-1 z-20 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                                  <button
+                                    type="button"
+                                    className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                                    onClick={() => void startEdit()}
+                                  >
+                                    Edit
+                                  </button>
+                                  {!contact.isMain && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                                        onClick={() => {
+                                          setOpenContactMenuId(null);
+                                          if (
+                                            window.confirm(
+                                              'Set this contact as the main contact?',
+                                            )
+                                          ) {
+                                            handleSetMainContact(contact.id);
+                                          }
+                                        }}
+                                      >
+                                        Set as main
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="w-full px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+                                        onClick={() => {
+                                          setOpenContactMenuId(null);
+                                          if (
+                                            window.confirm(
+                                              'Are you sure you want to delete this contact?',
+                                            )
+                                          ) {
+                                            handleDeleteContact(contact.id);
+                                          }
+                                        }}
+                                      >
+                                        Delete
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* View / edit details */}
+                    {editing ? (
+                      <div className="mt-4 space-y-0">
                       {/* Name */}
-                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Name</label>
+                      <div className="flex items-start justify-between gap-3 py-2.5">
+                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Name</label>
                         <div className="flex-1 ml-4">
                           {contact.isMain && isEditingMainContact ? (
                             <input
@@ -3820,8 +3921,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Mobile */}
-                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Mobile</label>
+                      <div className="flex items-start justify-between gap-3 py-2.5">
+                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Mobile</label>
                         <div className="flex-1 ml-4 flex justify-end">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="flex gap-2">
@@ -3990,8 +4091,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Phone */}
-                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Phone</label>
+                      <div className="flex items-start justify-between gap-3 py-2.5">
+                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Phone</label>
                         <div className="flex-1 ml-4 flex justify-end">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="flex gap-2">
@@ -4160,8 +4261,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Email */}
-                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Email</label>
+                      <div className="flex items-start justify-between gap-3 py-2.5">
+                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Email</label>
                         <div className="flex-1 ml-4">
                           {contact.isMain && isEditingMainContact ? (
                             <input
@@ -4195,8 +4296,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* ID / Passport */}
-                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">ID / Passport</label>
+                      <div className="flex items-start justify-between gap-3 py-2.5">
+                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">ID / Passport</label>
                         <div className="flex-1 ml-4">
                           {contact.isMain && isEditingMainContact ? (
                             <input
@@ -4223,8 +4324,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Country */}
-                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Country</label>
+                      <div className="flex items-start justify-between gap-3 py-2.5">
+                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Country</label>
                         <div className="flex-1 ml-4">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="relative" ref={mainContactCountryInputRef}>
@@ -4316,155 +4417,288 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           )}
                         </div>
                       </div>
+                      </div>
+                    ) : (
+                      <div className="mt-4 grid grid-cols-[1fr_auto_1fr] gap-x-4">
+                        <div className="min-w-0 space-y-3">
+                          <div className="min-w-0">
+                            <div className="text-sm text-gray-400 mb-0.5">Mobile</div>
+                            <div className="flex items-center gap-0.5 min-w-0">
+                              {hasContactValue(contact.mobile) ? (
+                                <button
+                                  type="button"
+                                  className="text-base text-gray-800 font-medium truncate hover:text-primary text-left"
+                                  onClick={() => openContactPhone(contact.mobile, contact.name || '')}
+                                >
+                                  {displayContactValue(contact.mobile)}
+                                </button>
+                              ) : (
+                                <span className="text-base text-gray-800 font-medium">-</span>
+                              )}
+                              {renderContactCopyButton(contact.mobile, 'Mobile')}
+                            </div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm text-gray-400 mb-0.5">Email</div>
+                            <div className="flex items-center gap-0.5 min-w-0">
+                              {hasContactValue(contact.email) ? (
+                                <a
+                                  href={`mailto:${contact.email}`}
+                                  className="text-base text-gray-800 font-medium truncate hover:text-primary"
+                                >
+                                  {displayContactValue(contact.email)}
+                                </a>
+                              ) : (
+                                <span className="text-base text-gray-800 font-medium">-</span>
+                              )}
+                              {renderContactCopyButton(contact.email, 'Email')}
+                            </div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm text-gray-400 mb-0.5">Country</div>
+                            <div className="text-base text-gray-800 font-medium truncate">
+                              {contact.country_id
+                                ? countries.find((c) => c.id === contact.country_id)?.name || '-'
+                                : '-'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="w-px bg-[#e8eaf0] self-stretch" aria-hidden />
+                        <div className="min-w-0 space-y-3">
+                          <div className="min-w-0">
+                            <div className="text-sm text-gray-400 mb-0.5">Phone</div>
+                            <div className="flex items-center gap-0.5 min-w-0">
+                              {hasContactValue(contact.phone) ? (
+                                <button
+                                  type="button"
+                                  className="text-base text-gray-800 font-medium truncate hover:text-primary text-left"
+                                  onClick={() => openContactPhone(contact.phone, contact.name || '')}
+                                >
+                                  {displayContactValue(contact.phone)}
+                                </button>
+                              ) : (
+                                <span className="text-base text-gray-800 font-medium">-</span>
+                              )}
+                              {renderContactCopyButton(contact.phone, 'Phone')}
+                            </div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm text-gray-400 mb-0.5">Passport</div>
+                            <div className="text-base text-gray-800 font-medium truncate">
+                              {displayContactValue(contact.id_passport)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
-                      {/* Contract - Only show for main contact; use contractForMainCard so contract always appears in main card */}
-                      {contact.id === mainContactId && (
-                        <div className="flex items-center justify-between py-3">
-                          <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Contract</label>
-                          <div className="flex-1 ml-4">
-                            {contractForMainCard ? (
-                              <div className="flex flex-col gap-2 items-end">
-                                <div className="flex items-center justify-end gap-2">
-                                  <span className="text-sm font-medium text-gray-700">
-                                    {contractForMainCard.name}
-                                  </span>
-                                  <span className={`badge badge-sm ${contractForMainCard.status === 'signed' ? 'bg-purple-600 text-white border-none' : 'badge-warning'
-                                    }`}>
-                                    {contractForMainCard.status}
-                                  </span>
-                                </div>
-                                <div className="flex flex-wrap gap-2 justify-end">
-                                  <button
-                                    className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
-                                    onClick={() => handleViewContract(contractForMainCard.id)}
-                                  >
-                                    <DocumentTextIcon className="w-4 h-4" />
-                                    View Contract
-                                  </button>
+                  {/* Documents */}
+                  {!editing ? (
+                    <div className="px-5 pt-4 pb-5 bg-[#fafbfc] border-t border-[#eef0f4] flex-1 flex flex-col">
+                      <div className="flex items-center justify-between mb-3">
+                        <h5 className="text-[11px] font-semibold tracking-wider text-gray-500 uppercase">
+                          Documents
+                        </h5>
+                        <div className="relative">
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs h-7 min-h-7 gap-1 text-gray-600 hover:bg-white"
+                            onClick={() =>
+                              setOpenDocsAddMenuId((id) =>
+                                id === contact.id ? null : contact.id,
+                              )
+                            }
+                          >
+                            <PlusIcon className="h-3.5 w-3.5" />
+                            Add
+                          </button>
+                          {openDocsAddMenuId === contact.id && (
+                            <>
+                              <button
+                                type="button"
+                                className="fixed inset-0 z-10 cursor-default"
+                                aria-label="Close menu"
+                                onClick={() => setOpenDocsAddMenuId(null)}
+                              />
+                              <div className="absolute right-0 top-full mt-1 z-20 min-w-[170px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                                {canCreateContract && (
                                   <button
                                     type="button"
-                                    className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
-                                    onClick={openPhysicalContractDocs}
-                                    disabled={!docsLeadNumber}
-                                    title="Opens case documents filtered to Contract (physical / scanned uploads)"
-                                  >
-                                    <FolderOpenIcon className="w-4 h-4" />
-                                    View physical contract
-                                  </button>
-                                  {contractForMainCard.status === 'draft' && (
-                                    <button
-                                      className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
-                                      onClick={() => {
-                                        if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
-                                          handleDeleteContract(contractForMainCard.id);
-                                        }
-                                      }}
-                                    >
-                                      <TrashIcon className="w-4 h-4" />
-                                      Delete Contract
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            ) : (
-                              (() => {
-                                // Check if stage is >= 40 (Waiting for mtng sum and on)
-                                // Use currentStage state which is fetched from DB for legacy leads
-                                // Fallback to client.stage if currentStage is null
-                                let stage = currentStage;
-
-                                // If currentStage is null, try to parse client.stage as fallback
-                                if (stage === null || stage === undefined) {
-                                  if (client?.stage !== null && client?.stage !== undefined) {
-                                    const stageValue = client.stage;
-                                    const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
-                                    if (!isNaN(parsed) && isFinite(parsed)) {
-                                      stage = parsed;
-                                      console.log('🔍 Using client.stage as fallback:', stage);
-                                    }
-                                  }
-                                }
-
-                                // Default to 0 if still null/undefined
-                                const finalStage = stage !== null && stage !== undefined ? stage : 0;
-                                const canCreateContract = finalStage >= 40;
-
-                                console.log('🔍 Contract button check:', {
-                                  currentStage,
-                                  clientStage: client?.stage,
-                                  finalStage,
-                                  canCreateContract,
-                                  clientId: client.id,
-                                  leadType: client?.lead_type,
-                                  isLegacyLead: client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_')
-                                });
-
-                                if (!canCreateContract) {
-                                  return (
-                                    <div className="text-xs text-gray-500 text-right">
-                                      Unavailable
-                                    </div>
-                                  );
-                                }
-
-                                return (
-                                  <button
-                                    className="btn btn-outline btn-primary btn-sm justify-start"
+                                    className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
                                     onClick={() => {
-                                      setContractForm(prev => ({ ...prev, contactId: contact.id }));
+                                      setOpenDocsAddMenuId(null);
+                                      setContractForm((prev) => ({
+                                        ...prev,
+                                        contactId: contact.id,
+                                      }));
                                       setShowContractCreation(true);
                                     }}
                                   >
-                                    <PlusIcon className="w-4 h-4" />
-                                    Create Contract
+                                    Create contract
                                   </button>
-                                );
-                              })()
-                            )}
+                                )}
+                                {typeof contact.id === 'number' && (
+                                  <button
+                                    type="button"
+                                    className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                                    onClick={() => {
+                                      setOpenDocsAddMenuId(null);
+                                      poaOpenCreateByContactRef.current[contact.id]?.();
+                                    }}
+                                  >
+                                    Add POA
+                                  </button>
+                                )}
+                                {!canCreateContract && typeof contact.id !== 'number' && (
+                                  <div className="px-3 py-2 text-sm text-gray-400">
+                                    No options available
+                                  </div>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {contact.id === mainContactId && cardContract && (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          className="grid grid-cols-[40px_minmax(0,1fr)_auto] gap-3 items-center p-3 bg-white rounded-[10px] cursor-pointer hover:bg-gray-50/80 transition-colors"
+                          onClick={() => handleViewContract(cardContract.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleViewContract(cardContract.id);
+                            }
+                          }}
+                        >
+                          <div className="h-10 w-10 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
+                            <DocumentTextIcon className="h-5 w-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-gray-900 truncate">
+                              {cardContract.name || 'Contract'}
+                            </div>
+                            <div className="mt-0.5 text-sm text-gray-500">Contract</div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={documentStatusBadgeClass(cardContract.status)}>
+                              {cardContract.status}
+                            </span>
+                            <div className="relative" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs btn-square h-9 w-9 min-h-9 text-gray-500"
+                                aria-label="Contract actions"
+                                onClick={() =>
+                                  setOpenContractMenuId((id) =>
+                                    id === cardContract.id ? null : cardContract.id,
+                                  )
+                                }
+                              >
+                                <EllipsisHorizontalIcon className="h-5 w-5" />
+                              </button>
+                              {openContractMenuId === cardContract.id && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="fixed inset-0 z-10 cursor-default"
+                                    aria-label="Close menu"
+                                    onClick={() => setOpenContractMenuId(null)}
+                                  />
+                                  <div className="absolute right-0 top-full mt-1 z-20 min-w-[190px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                                    <button
+                                      type="button"
+                                      className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                                      disabled={!docsLeadNumber}
+                                      onClick={() => {
+                                        setOpenContractMenuId(null);
+                                        openPhysicalContractDocs();
+                                      }}
+                                    >
+                                      View physical contract
+                                    </button>
+                                    {cardContract.status === 'draft' && (
+                                      <button
+                                        type="button"
+                                        className="w-full px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+                                        onClick={() => {
+                                          setOpenContractMenuId(null);
+                                          if (
+                                            window.confirm(
+                                              'Are you sure you want to delete this contract? This action cannot be undone.',
+                                            )
+                                          ) {
+                                            handleDeleteContract(cardContract.id);
+                                          }
+                                        }}
+                                      >
+                                        Delete
+                                      </button>
+                                    )}
+                                  </div>
+                                </>
+                              )}
+                            </div>
                           </div>
                         </div>
                       )}
 
-                      {/* Power of Attorney — available for every contact, multiple per contact */}
-                      {!contact.isEditing && typeof contact.id === 'number' && (
-                        <ContactPoaSection
-                          contactId={contact.id}
-                          contact={{
-                            name: contact.name,
-                            email: contact.email,
-                            phone: contact.phone,
-                            mobile: contact.mobile,
-                            id_passport: contact.id_passport,
-                          }}
-                          newLeadId={poaLeadIds.newLeadId}
-                          legacyLeadId={poaLeadIds.legacyLeadId}
-                        />
+                      {typeof contact.id === 'number' && (
+                        <div className={cardContract && contact.id === mainContactId ? 'mt-2' : ''}>
+                          <ContactPoaSection
+                            contactId={contact.id}
+                            contact={{
+                              name: contact.name,
+                              email: contact.email,
+                              phone: contact.phone,
+                              mobile: contact.mobile,
+                              id_passport: contact.id_passport,
+                            }}
+                            newLeadId={poaLeadIds.newLeadId}
+                            legacyLeadId={poaLeadIds.legacyLeadId}
+                            variant="compact"
+                            hideAddButton
+                            onRegisterActions={(actions) => {
+                              if (actions) {
+                                poaOpenCreateByContactRef.current[contact.id] = actions.openCreate;
+                              } else {
+                                delete poaOpenCreateByContactRef.current[contact.id];
+                              }
+                            }}
+                          />
+                        </div>
                       )}
+
+                      {!(cardContract && contact.id === mainContactId) &&
+                        typeof contact.id !== 'number' && (
+                          <p className="text-xs text-gray-400 py-1">No documents yet</p>
+                        )}
                     </div>
-                  </div>
+                  ) : (
+                    <div className="flex-1 bg-[#fafbfc] border-t border-[#eef0f4]" aria-hidden />
+                  )}
                 </div>
               );
             })}
 
-            {/* Add New Contact Card */}
-            <div className="bg-white rounded-lg overflow-hidden">
-              <div className="p-6">
-                <div className="flex flex-col items-center justify-center py-8">
-                  {/* Removed plus icon and circle */}
-                  <h3 className="text-lg font-semibold text-gray-900 mb-2">Add New Contact</h3>
-                  <p className="text-sm text-gray-500 text-center mb-4">
-                    Create additional contacts for this client
-                  </p>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-outline"
-                    onClick={handleCreateNewContact}
-                  >
-                    <PlusIcon className="w-4 h-4 mr-2" />
-                    Add Contact
-                  </button>
-                </div>
-              </div>
+            {/* Add Contact — same height as contact cards */}
+            <div className="h-full min-h-0 self-stretch">
+              <button
+                type="button"
+                onClick={handleCreateNewContact}
+                className="h-full w-full rounded-2xl border border-dashed border-[#d5d9e2] bg-white/60 hover:bg-white hover:border-primary/40 transition-colors flex flex-col items-center justify-center gap-2 px-6 py-8 text-center"
+              >
+                <span className="flex h-14 w-14 items-center justify-center rounded-full bg-gray-50 text-gray-500">
+                  <PlusIcon className="h-8 w-8" />
+                </span>
+                <span className="text-lg font-semibold text-gray-800">Add another contact</span>
+                <span className="text-sm text-gray-500 max-w-[240px]">
+                  Create a secondary contact for this client
+                </span>
+              </button>
             </div>
           </div>
         </div>

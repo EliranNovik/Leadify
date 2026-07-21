@@ -867,7 +867,8 @@ async function enrichMeetingsToday(rows, { maxCount, preview } = {}) {
     loadInternalMeetingTypesMap(),
   ]);
 
-  return statusEntries.map(({ row, isCurrent, isPast }) => {
+  return statusEntries
+    .map(({ row, isCurrent, isPast }) => {
     const clientInfo = clientInfoById.get(String(row.client_id)) || {};
     const legacyInfo = legacyLeadInfoById.get(String(row.legacy_lead_id)) || {};
     const leadInfo =
@@ -889,6 +890,7 @@ async function enrichMeetingsToday(rows, { maxCount, preview } = {}) {
       clientName ||
       row.meeting_brief ||
       'Meeting';
+    const durationMinutes = meetingDurationMinutes(row);
 
     return {
       id: row.id,
@@ -900,13 +902,15 @@ async function enrichMeetingsToday(rows, { maxCount, preview } = {}) {
       title,
       participants,
       location,
+      durationMinutes,
       isCurrent,
       isPast,
       isVirtual: /teams|zoom|video|online|virtual|phone|call|google meet|meet\b/i.test(
         String(location || ''),
       ),
     };
-  });
+  })
+    .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
 }
 
 async function loadMeetingsToday(today) {
@@ -962,7 +966,23 @@ async function fetchWeather(city) {
   }
 }
 
-async function loadInOfficeCount(locationId = DEFAULT_LOCATION_ID) {
+async function loadInOfficeCount() {
+  const { data, error } = await supabase
+    .from('employee_clock_in')
+    .select('employee_id')
+    .eq('is_active', true);
+
+  if (error) throw error;
+
+  const ids = new Set(
+    (data || [])
+      .map((row) => Number(row.employee_id))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  );
+  return ids.size;
+}
+
+async function loadInOfficeCountAtLocation(locationId = DEFAULT_LOCATION_ID) {
   const { data, error } = await supabase
     .from('employee_clock_in')
     .select('employee_id')
@@ -977,6 +997,204 @@ async function loadInOfficeCount(locationId = DEFAULT_LOCATION_ID) {
       .filter((id) => Number.isFinite(id) && id > 0),
   );
   return ids.size;
+}
+
+/** Keep in sync with src/lib/clockInHelpContacts.ts */
+const HELP_CONTACT_EMPLOYEE_IDS = [1, 3];
+const HELP_CONTACT_PHONE_OVERRIDES = {
+  3: '0547652074',
+};
+
+function resolveHelpContactPhone(emp) {
+  const override = HELP_CONTACT_PHONE_OVERRIDES[emp.id];
+  if (override) return override;
+  const mobile = String(emp.mobile || '').trim();
+  const phone = String(emp.phone || '').trim();
+  return mobile || phone || null;
+}
+
+async function loadHelpContacts() {
+  const { data: employees, error: empError } = await supabase
+    .from('tenants_employee')
+    .select('id, display_name, photo_url, photo, mobile, phone')
+    .in('id', HELP_CONTACT_EMPLOYEE_IDS);
+  if (empError) throw empError;
+
+  const { data: users, error: userError } = await supabase
+    .from('users')
+    .select('employee_id, email')
+    .in('employee_id', HELP_CONTACT_EMPLOYEE_IDS);
+  if (userError) throw userError;
+
+  const emailByEmployee = new Map();
+  for (const row of users || []) {
+    if (row.employee_id != null && row.email) {
+      emailByEmployee.set(Number(row.employee_id), String(row.email).trim());
+    }
+  }
+
+  return HELP_CONTACT_EMPLOYEE_IDS.map((id) => {
+    const emp = (employees || []).find((e) => Number(e.id) === id);
+    const displayName = String(emp?.display_name || '').trim() || `Employee #${id}`;
+    const phone = resolveHelpContactPhone({
+      id,
+      mobile: emp?.mobile ?? null,
+      phone: emp?.phone ?? null,
+    });
+    return {
+      id,
+      name: displayName,
+      photoUrl: String(emp?.photo_url || emp?.photo || '').trim() || null,
+      phone,
+      email: emailByEmployee.get(id) || null,
+    };
+  });
+}
+
+function unavailabilityOverlapsDay(startDate, endDate, today) {
+  const start = String(startDate || '').slice(0, 10);
+  const end = String(endDate || start || '').slice(0, 10);
+  if (!start) return false;
+  if (start > today) return false;
+  if (end && end < today) return false;
+  return true;
+}
+
+async function loadUnavailableEmployeeCount(today) {
+  const { data, error } = await supabase
+    .from('employee_unavailability_reasons')
+    .select('employee_id, start_date, end_date, approved, declined')
+    .lte('start_date', today);
+
+  if (error) throw error;
+
+  const ids = new Set();
+  for (const row of data || []) {
+    if (row.declined === true) continue;
+    if (row.approved !== true) continue;
+    if (!unavailabilityOverlapsDay(row.start_date, row.end_date, today)) continue;
+    const id = Number(row.employee_id);
+    if (Number.isFinite(id) && id > 0) ids.add(id);
+  }
+  return ids.size;
+}
+
+async function loadHolidaysToday(today) {
+  const names = [];
+  const seen = new Set();
+
+  const pushName = (raw) => {
+    const name = String(raw || '').trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from('holidays')
+      .select('id, name, date, is_active')
+      .eq('date', today)
+      .eq('is_active', true);
+    if (error) throw error;
+    for (const row of data || []) pushName(row.name);
+  } catch (err) {
+    console.warn('entryKioskDisplayService holidays table failed:', err?.message || err);
+  }
+
+  try {
+    const year = Number(String(today).slice(0, 4));
+    if (Number.isFinite(year) && year > 2000) {
+      const url = new URL('https://www.hebcal.com/hebcal/');
+      url.searchParams.set('v', '1');
+      url.searchParams.set('cfg', 'json');
+      url.searchParams.set('year', String(year));
+      url.searchParams.set('i', 'on');
+      url.searchParams.set('maj', 'on');
+      url.searchParams.set('min', 'on');
+      url.searchParams.set('mod', 'on');
+      url.searchParams.set('nx', 'on');
+      url.searchParams.set('mf', 'on');
+      url.searchParams.set('ss', 'on');
+      const res = await fetch(url.toString());
+      if (res.ok) {
+        const json = await res.json();
+        const relevant = new Set(['holiday', 'yomtov', 'fast', 'roshchodesh', 'modern']);
+        for (const item of json?.items || []) {
+          const iso = String(item?.date || '').slice(0, 10);
+          if (iso !== today) continue;
+          const category = String(item?.category || '').toLowerCase();
+          if (!relevant.has(category)) continue;
+          const title = String(item?.title || '').trim();
+          const lower = title.toLowerCase();
+          if (!title || lower.includes('parashat') || lower.includes('candle')) continue;
+          pushName(title);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('entryKioskDisplayService hebcal holidays failed:', err?.message || err);
+  }
+
+  return names.map((name, index) => ({ id: `holiday-${index}-${name}`, name }));
+}
+
+function parseEmployeeIdFromRole(raw) {
+  if (isEmptyRoleValue(raw)) return null;
+  const text = String(raw).trim();
+  const asNum = Number(text);
+  if (Number.isFinite(asNum) && asNum > 0) return Math.trunc(asNum);
+  return null;
+}
+
+async function loadMeetingsCountByDepartment(today) {
+  const rows = await loadMeetingsTodayRows(today);
+  if (!rows.length) return [];
+
+  const managerIds = [];
+  for (const row of rows) {
+    const id =
+      parseEmployeeIdFromRole(row.meeting_manager) ||
+      parseEmployeeIdFromRole(row.expert) ||
+      parseEmployeeIdFromRole(row.helper);
+    if (id) managerIds.push(id);
+  }
+  const uniqueManagerIds = [...new Set(managerIds)];
+  const deptByEmployeeId = new Map();
+
+  if (uniqueManagerIds.length > 0) {
+    const { data, error } = await supabase
+      .from('tenants_employee')
+      .select('id, department_id, tenant_departement!department_id(id, name)')
+      .in('id', uniqueManagerIds);
+    if (error) {
+      console.warn('entryKioskDisplayService department lookup failed:', error.message);
+    } else {
+      for (const emp of data || []) {
+        const dept = Array.isArray(emp.tenant_departement)
+          ? emp.tenant_departement[0]
+          : emp.tenant_departement;
+        const name = String(dept?.name || '').trim() || 'Unassigned';
+        deptByEmployeeId.set(Number(emp.id), name);
+      }
+    }
+  }
+
+  const counts = new Map();
+  for (const row of rows) {
+    const managerId =
+      parseEmployeeIdFromRole(row.meeting_manager) ||
+      parseEmployeeIdFromRole(row.expert) ||
+      parseEmployeeIdFromRole(row.helper);
+    const deptName = (managerId && deptByEmployeeId.get(managerId)) || 'Unassigned';
+    counts.set(deptName, (counts.get(deptName) || 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .map(([department, count]) => ({ department, count }))
+    .sort((a, b) => b.count - a.count || a.department.localeCompare(b.department));
 }
 
 function weatherCodeLabel(code) {
@@ -1017,7 +1235,19 @@ async function getDisplayBundle(locationIdInput = DEFAULT_LOCATION_ID) {
   const today = todayIsoLocal();
   const settings = await loadSettings(locationId);
 
-  const [announcements, gadgets, birthdays, meetings, weather, inOfficeCount] = await Promise.all([
+  const [
+    announcements,
+    gadgets,
+    birthdays,
+    meetings,
+    weather,
+    inOfficeCount,
+    localInOfficeCount,
+    unavailableCount,
+    holidays,
+    meetingsByDepartment,
+    helpContacts,
+  ] = await Promise.all([
     settings.show_announcements
       ? safeLoad('announcements', () => loadAnnouncements(locationId, today), [])
       : Promise.resolve([]),
@@ -1033,7 +1263,12 @@ async function getDisplayBundle(locationIdInput = DEFAULT_LOCATION_ID) {
     settings.show_weather
       ? safeLoad('weather', () => fetchWeather(settings.weather_city), null)
       : Promise.resolve(null),
-    safeLoad('inOfficeCount', () => loadInOfficeCount(locationId), 0),
+    safeLoad('inOfficeCount', () => loadInOfficeCount(), 0),
+    safeLoad('localInOfficeCount', () => loadInOfficeCountAtLocation(locationId), 0),
+    safeLoad('unavailableCount', () => loadUnavailableEmployeeCount(today), 0),
+    safeLoad('holidays', () => loadHolidaysToday(today), []),
+    safeLoad('meetingsByDepartment', () => loadMeetingsCountByDepartment(today), []),
+    safeLoad('helpContacts', () => loadHelpContacts(), []),
   ]);
 
   return {
@@ -1052,7 +1287,12 @@ async function getDisplayBundle(locationIdInput = DEFAULT_LOCATION_ID) {
     gadgets,
     birthdays,
     meetings,
+    holidays,
+    meetingsByDepartment,
+    helpContacts,
     inOfficeCount: Number(inOfficeCount) || 0,
+    localInOfficeCount: Number(localInOfficeCount) || 0,
+    unavailableCount: Number(unavailableCount) || 0,
     weather: weather
       ? {
           ...weather,

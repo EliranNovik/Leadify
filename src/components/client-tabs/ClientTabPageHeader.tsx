@@ -15,6 +15,8 @@ type ClientTabPageHeaderProps = {
   title: string;
   subtitle?: string;
   titleExtra?: React.ReactNode;
+  /** Right-aligned content (e.g. actions / panels). */
+  actions?: React.ReactNode;
   className?: string;
 };
 
@@ -23,20 +25,24 @@ export function ClientTabPageHeader({
   title,
   subtitle,
   titleExtra,
+  actions,
   className = 'mb-8',
 }: ClientTabPageHeaderProps) {
   return (
-    <div className={`flex items-center gap-3 ${className}`}>
-      <div className={CLIENT_TAB_PAGE_HEADER_ICON_BOX}>
-        <Icon className={CLIENT_TAB_PAGE_HEADER_ICON} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className={CLIENT_TAB_PAGE_HEADER_TITLE}>{title}</h2>
-          {titleExtra}
+    <div className={`flex flex-wrap items-start justify-between gap-3 ${className}`}>
+      <div className="flex min-w-0 items-center gap-3">
+        <div className={CLIENT_TAB_PAGE_HEADER_ICON_BOX}>
+          <Icon className={CLIENT_TAB_PAGE_HEADER_ICON} />
         </div>
-        {subtitle ? <p className={CLIENT_TAB_PAGE_HEADER_SUBTITLE}>{subtitle}</p> : null}
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className={CLIENT_TAB_PAGE_HEADER_TITLE}>{title}</h2>
+            {titleExtra}
+          </div>
+          {subtitle ? <p className={CLIENT_TAB_PAGE_HEADER_SUBTITLE}>{subtitle}</p> : null}
+        </div>
       </div>
+      {actions ? <div className="ml-auto shrink-0">{actions}</div> : null}
     </div>
   );
 }

@@ -2299,3 +2299,22 @@ html.dark.theme-dark2 .hover\:bg-base-200:hover {
     background-color: #3b28c7 !important;
   }
 }
+
+/* --- Entry kiosk immersive tablet mode --- */
+html.entry-kiosk-active,
+html.entry-kiosk-active body,
+html.entry-kiosk-active #root {
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+  background: #0a1628;
+  /* Reduce pull-to-refresh / bounce that reveals browser chrome */
+  touch-action: manipulation;
+}
+
+html.entry-kiosk-active body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+}

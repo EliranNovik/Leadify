@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDownIcon,
-  DocumentIcon,
   ExclamationTriangleIcon,
   PaperClipIcon,
   TrashIcon,
@@ -12,10 +11,8 @@ import MobileBottomSheet from './MobileBottomSheet';
 import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerModal';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import {
-  CASE_DOCUMENT_CATEGORY_META,
-  fetchCaseCategoryDocuments,
+  fetchClientPortalUploadDocuments,
   type CaseCategoryDocument,
-  type CaseDocumentCategoryKey,
 } from '../lib/sequenceOfEventsDocuments';
 import {
   attachStoragePathsToSubEffort,
@@ -62,34 +59,23 @@ function documentTypeBadgeClass(name: string): string {
   return DOCUMENT_TYPE_BADGE_COLORS[hash % DOCUMENT_TYPE_BADGE_COLORS.length];
 }
 
-export function SequenceOfEventsDocumentsModal({
+export function ClientUploadsDocumentsModal({
   open,
   onClose,
   leadNumber,
-  clientId = null,
   subEffortRows = [],
   targetSubEffortId = null,
   activeFolderId = null,
   onAttached,
-  category = 'sequence_of_events',
-  title,
 }: {
   open: boolean;
   onClose: () => void;
   leadNumber?: string | null;
-  clientId?: string | null;
   subEffortRows?: Array<{ id?: unknown; document_url?: unknown; sub_efforts?: unknown }> | null;
-  /** Currently selected workflow sub effort — used for “Attached” highlight only. */
   targetSubEffortId?: string | number | null;
   activeFolderId?: string | null;
   onAttached?: () => void;
-  category?: CaseDocumentCategoryKey;
-  title?: string;
 }) {
-  const meta = CASE_DOCUMENT_CATEGORY_META[category] ?? CASE_DOCUMENT_CATEGORY_META.sequence_of_events;
-  const modalTitle = title?.trim() || meta.title;
-  const emptyLabel = meta.emptyLabel;
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<CaseCategoryDocument[]>([]);
@@ -191,7 +177,7 @@ export function SequenceOfEventsDocumentsModal({
     setError(null);
     void (async () => {
       try {
-        const list = await fetchCaseCategoryDocuments(category, lead, clientId);
+        const list = await fetchClientPortalUploadDocuments(lead);
         if (!cancelled) setDocs(list);
       } catch (e: unknown) {
         if (!cancelled) {
@@ -206,7 +192,7 @@ export function SequenceOfEventsDocumentsModal({
     return () => {
       cancelled = true;
     };
-  }, [open, leadNumber, clientId, category]);
+  }, [open, leadNumber]);
 
   useEffect(() => {
     if (!attachMenuOpen && !removeMenuOpen) return;
@@ -282,15 +268,17 @@ export function SequenceOfEventsDocumentsModal({
     setSelectedIds(new Set(attachableDocs.map((d) => d.id)));
   };
 
-  const markPendingAttached = (paths: string[], targetId: string, targetName: string) => {
+  const markPendingAttached = (paths: string[], subEffortId: string, subEffortName: string) => {
     setPendingAttachments((prev) => {
       const next = new Map(prev);
-      for (const raw of paths) {
-        const path = normalizeStorageKey(raw);
-        if (!path) continue;
-        const list = [...(next.get(path) ?? [])];
-        if (!list.some((x) => x.id === targetId)) list.push({ id: targetId, name: targetName });
-        next.set(path, list);
+      for (const path of paths) {
+        const key = normalizeStorageKey(path);
+        if (!key) continue;
+        const list = [...(next.get(key) ?? [])];
+        if (!list.some((x) => x.id === subEffortId)) {
+          list.push({ id: subEffortId, name: subEffortName });
+        }
+        next.set(key, list);
       }
       return next;
     });
@@ -321,14 +309,12 @@ export function SequenceOfEventsDocumentsModal({
     });
   };
 
-  const attachSelectedTo = async (option: SubEffortAttachOption) => {
-    if (isAttaching || isRemoving) return;
+  const attachToSubEffort = async (option: SubEffortAttachOption) => {
     const picked = selectedDocs.filter((d) => d.storagePath?.trim());
-    if (picked.length === 0) {
+    if (!picked.length) {
       toast.error('Select at least one file to attach.');
       return;
     }
-
     setAttachMenuOpen(false);
     setRemoveMenuOpen(false);
     setIsAttaching(true);
@@ -357,7 +343,7 @@ export function SequenceOfEventsDocumentsModal({
       setSelectedIds(new Set());
       onAttached?.();
     } catch (e: unknown) {
-      console.error('attachSequenceOfEventsDocs:', e);
+      console.error('attachClientUploadDocs:', e);
       toast.error(e instanceof Error ? e.message : 'Failed to attach');
     } finally {
       setIsAttaching(false);
@@ -365,7 +351,6 @@ export function SequenceOfEventsDocumentsModal({
   };
 
   const removeFromSubEffort = async (ref: SubEffortAttachmentRef) => {
-    if (isAttaching || isRemoving) return;
     const option = attachOptions.find((o) => o.id === ref.id);
     if (!option) {
       toast.error('Sub effort not found.');
@@ -403,7 +388,7 @@ export function SequenceOfEventsDocumentsModal({
       setSelectedIds(new Set());
       onAttached?.();
     } catch (e: unknown) {
-      console.error('removeSequenceOfEventsDocs:', e);
+      console.error('removeClientUploadDocs:', e);
       toast.error(e instanceof Error ? e.message : 'Failed to remove');
     } finally {
       setIsRemoving(false);
@@ -428,15 +413,13 @@ export function SequenceOfEventsDocumentsModal({
         <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#f5f5f5]">
           <div className="flex shrink-0 items-start justify-between gap-3 px-4 py-3 md:px-6 md:py-4">
             <div className="min-w-0">
-              <div className="text-xl font-bold tracking-tight text-base-content/95">
-                {modalTitle}
-              </div>
+              <div className="text-xl font-bold tracking-tight text-base-content/95">Client uploads</div>
               <div className="text-xs text-base-content/50">
                 {loading
                   ? 'Loading…'
                   : docs.length
-                    ? `${docs.length} document${docs.length === 1 ? '' : 's'}`
-                    : 'No documents yet'}
+                    ? `${docs.length} document${docs.length === 1 ? '' : 's'} from the client portal`
+                    : 'No client portal uploads yet'}
                 <span className="ml-1">· Select files to attach or remove from a sub effort</span>
               </div>
             </div>
@@ -470,11 +453,6 @@ export function SequenceOfEventsDocumentsModal({
                       disabled={busy || selectedIds.size === 0}
                       aria-expanded={attachMenuOpen}
                       aria-haspopup="menu"
-                      title={
-                        selectedIds.size === 0
-                          ? 'Select documents to attach'
-                          : 'Choose a sub effort to attach to'
-                      }
                     >
                       {isAttaching ? (
                         <span className="loading loading-spinner loading-xs" />
@@ -499,12 +477,12 @@ export function SequenceOfEventsDocumentsModal({
                             role="menuitem"
                             className={`flex w-full items-center px-3 py-2.5 text-left text-sm hover:bg-base-200/70 ${
                               String(opt.id) === String(targetSubEffortId ?? '')
-                                ? 'font-semibold text-primary'
+                                ? 'bg-primary/5 font-semibold text-primary'
                                 : 'text-base-content'
                             }`}
-                            onClick={() => void attachSelectedTo(opt)}
+                            onClick={() => void attachToSubEffort(opt)}
                           >
-                            <span className="min-w-0 truncate">{opt.name}</span>
+                            {opt.name}
                           </button>
                         ))}
                       </div>
@@ -554,7 +532,7 @@ export function SequenceOfEventsDocumentsModal({
                             className="flex w-full items-center px-3 py-2.5 text-left text-sm text-red-700 hover:bg-red-50"
                             onClick={() => void removeFromSubEffort(opt)}
                           >
-                            <span className="min-w-0 truncate">{opt.name}</span>
+                            {opt.name}
                           </button>
                         ))}
                       </div>
@@ -568,147 +546,153 @@ export function SequenceOfEventsDocumentsModal({
                 onClick={onClose}
                 aria-label="Close"
               >
-                <XMarkIcon className="h-5 w-5" />
+                <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto px-4 pb-6 md:px-6">
-            <div className="mx-auto w-full max-w-4xl">
-              {loading ? (
-                <div className="flex items-center justify-center py-16">
-                  <span className="loading loading-spinner loading-lg" />
-                  <span className="ml-3 text-base-content/70">Loading documents…</span>
-                </div>
-              ) : error ? (
-                <div className="flex items-center justify-center gap-2 py-16 text-error">
-                  <ExclamationTriangleIcon className="h-6 w-6 shrink-0" />
-                  <span>{error}</span>
-                </div>
-              ) : docs.length === 0 ? (
-                <div className="py-16 text-center text-base-content/70">
-                  <DocumentIcon className="mx-auto mb-4 h-16 w-16 opacity-50" />
-                  <p>{emptyLabel}</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {docs.map((doc, index) => {
-                    const canAttachDoc = Boolean(doc.storagePath?.trim());
-                    const checked = selectedIds.has(doc.id);
-                    const pathKey = normalizeStorageKey(doc.storagePath);
-                    const attachedTo = pathKey ? attachmentsByPath.get(pathKey) ?? [] : [];
-                    const attachedToCurrent =
-                      targetSubEffortId != null &&
-                      attachedTo.some((a) => String(a.id) === String(targetSubEffortId));
-                    return (
-                      <div
-                        key={doc.id}
-                        className={`flex w-full min-w-0 items-center gap-2 rounded-[14px] border bg-white px-3 py-3 shadow-[0_4px_16px_rgba(15,23,42,0.04)] transition-colors sm:gap-3 sm:px-4 sm:py-4 ${
-                          checked
-                            ? 'border-primary bg-primary/[0.03]'
-                            : attachedTo.length
-                              ? 'border-emerald-200/90 bg-emerald-50/40'
-                              : 'border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <label
-                          className={`flex shrink-0 items-center justify-center ${
-                            canAttachDoc ? 'cursor-pointer' : 'cursor-not-allowed opacity-40'
-                          }`}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <input
-                            type="checkbox"
-                            className="checkbox checkbox-sm"
-                            checked={checked}
-                            disabled={!canAttachDoc}
-                            onChange={() => {
-                              if (canAttachDoc) toggleSelected(doc.id);
-                            }}
-                            aria-label={`Select ${doc.name}`}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 sm:gap-4"
-                          onClick={() => setViewerIndex(index)}
-                          aria-label={`Open ${doc.name}`}
-                        >
-                          <span className="shrink-0">
-                            <DocumentFileGlyph fileType={doc.fileType} fileName={doc.name} />
-                          </span>
-                          <div className="min-w-0 flex-1 overflow-hidden">
-                            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                              <p className="min-w-0 break-words text-base font-semibold leading-snug text-base-content [overflow-wrap:anywhere]">
-                                {doc.name}
-                              </p>
-                              {attachedToCurrent ? (
-                                <span className="inline-flex shrink-0 items-center rounded-md bg-emerald-600/10 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-800">
-                                  Attached
-                                </span>
-                              ) : null}
-                              {attachedTo.map((a) => (
-                                <span
-                                  key={a.id}
-                                  className={`inline-flex max-w-[12rem] items-center truncate rounded-md px-2 py-0.5 text-[11px] font-medium ${
-                                    String(a.id) === String(targetSubEffortId ?? '')
-                                      ? 'bg-emerald-600 text-white'
-                                      : 'bg-emerald-100 text-emerald-900'
-                                  }`}
-                                  title={`Attached to ${a.name}`}
+            {loading ? (
+              <div className="flex items-center justify-center py-16">
+                <span className="loading loading-spinner loading-md text-base-content/40" />
+              </div>
+            ) : error ? (
+              <div className="mx-auto mt-8 flex max-w-lg items-start gap-3 rounded-xl border border-error/20 bg-error/5 px-4 py-3 text-sm text-error">
+                <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            ) : docs.length === 0 ? (
+              <div className="mx-auto mt-16 max-w-md rounded-2xl border border-dashed border-gray-200 bg-white/70 px-6 py-10 text-center">
+                <p className="text-sm font-medium text-base-content/70">No client portal uploads</p>
+                <p className="mt-1 text-xs text-base-content/45">
+                  Documents uploaded by contacts via the client portal will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="min-w-0 overflow-x-auto">
+                <div className="min-w-[860px]">
+                  <table className="mb-2 w-full table-fixed border-collapse">
+                    <colgroup>
+                      <col className="w-12" />
+                      <col />
+                      <col />
+                      <col />
+                      <col />
+                      <col className="w-36" />
+                    </colgroup>
+                    <thead>
+                      <tr className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                          <span className="sr-only">Select</span>
+                        </th>
+                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                          Contact name
+                        </th>
+                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                          Document type
+                        </th>
+                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                          Document name
+                        </th>
+                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                          Attached to
+                        </th>
+                        <th className="bg-transparent px-3 py-2 text-center font-semibold whitespace-nowrap">
+                          Uploaded at
+                        </th>
+                      </tr>
+                    </thead>
+                  </table>
+                  <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-[0_4px_16px_rgba(15,23,42,0.04)]">
+                    <table className="w-full table-fixed border-collapse">
+                      <colgroup>
+                        <col className="w-12" />
+                        <col />
+                        <col />
+                        <col />
+                        <col />
+                        <col className="w-36" />
+                      </colgroup>
+                      <tbody>
+                        {docs.map((doc, index) => {
+                          const pathKey = normalizeStorageKey(doc.storagePath);
+                          const attachedTo = pathKey ? attachmentsByPath.get(pathKey) ?? [] : [];
+                          const canAttachDoc = Boolean(doc.storagePath?.trim());
+                          const checked = selectedIds.has(doc.id);
+                          return (
+                            <tr
+                              key={doc.id}
+                              className={`border-b border-gray-100 last:border-0 ${
+                                checked ? 'bg-primary/[0.03]' : ''
+                              } ${index % 2 === 1 ? 'bg-gray-50/60' : 'bg-white'}`}
+                            >
+                              <td className="px-3 py-3 text-center align-middle">
+                                <input
+                                  type="checkbox"
+                                  className="checkbox checkbox-sm"
+                                  checked={checked}
+                                  disabled={!canAttachDoc}
+                                  onChange={() => {
+                                    if (canAttachDoc) toggleSelected(doc.id);
+                                  }}
+                                  aria-label={`Select ${doc.name}`}
+                                />
+                              </td>
+                              <td className="px-3 py-3 text-center align-middle text-sm font-medium text-gray-800">
+                                {doc.uploadedByName || '—'}
+                              </td>
+                              <td className="px-3 py-3 text-center align-middle">
+                                {doc.documentTypeName ? (
+                                  <span
+                                    className={`inline-flex max-w-[14rem] items-center truncate rounded-md px-2 py-0.5 text-sm font-semibold ${documentTypeBadgeClass(doc.documentTypeName)}`}
+                                    title={doc.documentTypeName}
+                                  >
+                                    {doc.documentTypeName}
+                                  </span>
+                                ) : (
+                                  <span className="text-sm text-gray-400">—</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-3 text-center align-middle">
+                                <button
+                                  type="button"
+                                  className="inline-flex max-w-full items-center justify-center gap-2 hover:opacity-80"
+                                  onClick={() => setViewerIndex(index)}
                                 >
-                                  {a.name}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500">
-                              <span className="shrink-0 tabular-nums">
+                                  <DocumentFileGlyph
+                                    fileType={doc.fileType}
+                                    fileName={doc.name}
+                                    className="h-5 w-5 shrink-0"
+                                  />
+                                  <span className="min-w-0 truncate text-sm font-semibold text-base-content">
+                                    {doc.name}
+                                  </span>
+                                </button>
+                              </td>
+                              <td className="px-3 py-3 text-center align-middle">
+                                {attachedTo.length > 0 ? (
+                                  <span
+                                    className="text-sm text-gray-700"
+                                    title={attachedTo.map((a) => a.name).join(', ')}
+                                  >
+                                    {attachedTo.map((a) => a.name).join(', ')}
+                                  </span>
+                                ) : (
+                                  <span className="text-sm text-gray-400">—</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-3 text-center align-middle whitespace-nowrap text-sm tabular-nums text-gray-500">
                                 {formatDocDate(doc.lastModified)}
-                              </span>
-                              {doc.uploadedByName ? (
-                                <>
-                                  <span className="text-gray-400" aria-hidden>
-                                    ·
-                                  </span>
-                                  <span className="min-w-0 truncate">
-                                    {doc.isClientPortalUpload ? (
-                                      <>
-                                        Uploaded by{' '}
-                                        <span className="font-semibold text-gray-500">
-                                          {doc.uploadedByName}
-                                        </span>
-                                        {doc.documentTypeName ? (
-                                          <span
-                                            className={`ml-1.5 inline-flex max-w-[14rem] items-center truncate rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${documentTypeBadgeClass(doc.documentTypeName)}`}
-                                            title={doc.documentTypeName}
-                                          >
-                                            {doc.documentTypeName}
-                                          </span>
-                                        ) : null}
-                                        <span className="ml-1.5 inline-flex items-center rounded-md bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500">
-                                          Client portal
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        by{' '}
-                                        <span className="font-semibold text-gray-500">
-                                          {doc.uploadedByName}
-                                        </span>
-                                      </>
-                                    )}
-                                  </span>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        </button>
-                      </div>
-                    );
-                  })}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </MobileBottomSheet>
@@ -730,4 +714,4 @@ export function SequenceOfEventsDocumentsModal({
   );
 }
 
-export default SequenceOfEventsDocumentsModal;
+export default ClientUploadsDocumentsModal;

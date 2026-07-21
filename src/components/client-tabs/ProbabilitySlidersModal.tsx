@@ -130,12 +130,36 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-5 py-4">
           <p className="text-sm text-base-content/70">
-            Move each field independently. <strong>Case probability</strong> combines all three: 
+            Slide <strong>Case probability</strong> to move all three fields together, or adjust each field on its own.
           </p>
 
-          <div className="rounded-xl bg-base-200/60 px-4 py-3 flex items-center justify-between">
-            <span className="text-sm font-semibold text-base-content">Case probability</span>
-            <span className="text-2xl font-bold tabular-nums text-primary">{probability}%</span>
+          <div className="rounded-xl bg-base-200/60 px-4 py-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="prob-total" className="text-sm font-semibold text-base-content">
+                Case probability
+              </label>
+              <span className="text-2xl font-bold tabular-nums text-primary">{probability}%</span>
+            </div>
+            <input
+              id="prob-total"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={probability}
+              disabled={readOnly || saving}
+              onChange={(e) => {
+                const next = splitProbabilityEvenly(Number(e.target.value));
+                setLegal(next.legal);
+                setSeriousness(next.seriousness);
+                setFinancial(next.financial);
+              }}
+              className="range range-sm w-full accent-black [--range-shdw:#000000]"
+              style={{ accentColor: '#000000' }}
+            />
+            <p className="text-xs text-base-content/55">
+              Moving this sets Legal, Seriousness, and Financial ability evenly to match the total.
+            </p>
           </div>
 
           <div className="divider my-1 text-xs">Field levels</div>
@@ -176,6 +200,7 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
                 max={100}
                 step={1}
                 value={row.value}
+                disabled={readOnly || saving}
                 onChange={(e) => row.onChange(clampProbabilityPart(Number(e.target.value)))}
                 className="range range-sm range-primary w-full"
               />

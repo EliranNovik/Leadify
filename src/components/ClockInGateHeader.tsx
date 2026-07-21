@@ -16,22 +16,15 @@ import {
   salaryAvatarGradientStyle,
 } from '../lib/employeeSalaries';
 import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
+import {
+  CLOCK_IN_HELP_CONTACT_EMPLOYEE_IDS,
+  buildHelpContactWhatsAppUrl,
+  resolveHelpContactMobile,
+  resolveHelpContactPhone,
+  type ClockInHelpContact,
+} from '../lib/clockInHelpContacts';
 
-const CONTACT_EMPLOYEE_IDS = [1, 3] as const;
-
-const CONTACT_PHONE_OVERRIDES: Record<number, string> = {
-  3: '0547652074',
-};
-
-type EmployeeContact = {
-  id: number;
-  display_name: string;
-  photo_url: string | null;
-  photo: string | null;
-  mobile: string | null;
-  phone: string | null;
-  email: string | null;
-};
+type EmployeeContact = ClockInHelpContact;
 
 type CurrentEmployeeProfile = {
   id: number;
@@ -43,26 +36,6 @@ type CurrentEmployeeProfile = {
 function resolvePhotoUrl(emp: { photo_url?: string | null; photo?: string | null }): string {
   const url = (emp.photo_url?.trim() || emp.photo?.trim() || '');
   return url;
-}
-
-function resolvePhone(emp: EmployeeContact): string | null {
-  const override = CONTACT_PHONE_OVERRIDES[emp.id];
-  if (override) return override;
-  const mobile = emp.mobile?.trim();
-  const phone = emp.phone?.trim();
-  return mobile || phone || null;
-}
-
-function resolveMobile(emp: EmployeeContact): string | null {
-  const override = CONTACT_PHONE_OVERRIDES[emp.id];
-  if (override) return override;
-  const mobile = emp.mobile?.trim();
-  return mobile || null;
-}
-
-function buildWhatsAppUrl(mobile: string): string {
-  const digits = mobile.replace(/\D/g, '');
-  return digits ? `https://wa.me/${digits}` : '';
 }
 
 const EmployeeCircle: React.FC<{
@@ -139,12 +112,12 @@ const ClockInGateHeader: React.FC<ClockInGateHeaderProps> = ({
       const { data: employees } = await supabase
         .from('tenants_employee')
         .select('id, display_name, photo_url, photo, mobile, phone')
-        .in('id', [...CONTACT_EMPLOYEE_IDS]);
+        .in('id', [...CLOCK_IN_HELP_CONTACT_EMPLOYEE_IDS]);
 
       const { data: users } = await supabase
         .from('users')
         .select('employee_id, email')
-        .in('employee_id', [...CONTACT_EMPLOYEE_IDS]);
+        .in('employee_id', [...CLOCK_IN_HELP_CONTACT_EMPLOYEE_IDS]);
 
       const emailByEmployee = new Map<number, string>();
       (users || []).forEach((row) => {
@@ -153,7 +126,7 @@ const ClockInGateHeader: React.FC<ClockInGateHeaderProps> = ({
         }
       });
 
-      const ordered = CONTACT_EMPLOYEE_IDS.map((id) => {
+      const ordered = CLOCK_IN_HELP_CONTACT_EMPLOYEE_IDS.map((id) => {
         const emp = (employees || []).find((e) => Number(e.id) === id);
         if (!emp) {
           return {
@@ -343,9 +316,9 @@ const ClockInGateHeader: React.FC<ClockInGateHeaderProps> = ({
                 </div>
                 <div className="py-2">
                   {contacts.map((contact) => {
-                    const phone = resolvePhone(contact);
-                    const mobile = resolveMobile(contact);
-                    const whatsAppUrl = mobile ? buildWhatsAppUrl(mobile) : '';
+                    const phone = resolveHelpContactPhone(contact);
+                    const mobile = resolveHelpContactMobile(contact);
+                    const whatsAppUrl = mobile ? buildHelpContactWhatsAppUrl(mobile) : '';
                     return (
                       <div key={contact.id} className="px-3 py-2.5">
                         <div className="flex items-center gap-3 mb-2">

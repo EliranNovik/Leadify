@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownTrayIcon,
-  ArrowPathIcon,
   ArrowUpTrayIcon,
   ClockIcon,
   PlayIcon,
@@ -29,9 +28,11 @@ import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { compareSubEffortDisplayOrder, dedupeLeadSubEffortRows, defaultClientVisibleFromTemplate, hasLeadSubEffortSavedUpdate, leadSubEffortInternalFromTemplate, leadSubEffortSavedUpdatedAt, leadSubEffortSavedUpdatedBy } from '../lib/leadSubEfforts';
 import { DocumentPreviewModal, type DocumentPreviewItem } from './DocumentModal';
 import { SequenceOfEventsDocumentsModal } from './SequenceOfEventsDocumentsModal';
+import { ClientUploadsDocumentsModal } from './ClientUploadsDocumentsModal';
 import {
   CASE_DOCUMENT_CATEGORY_META,
   fetchCaseCategoryDocumentCount,
+  fetchClientPortalUploadCount,
   type CaseDocumentCategoryKey,
 } from '../lib/sequenceOfEventsDocuments';
 
@@ -481,7 +482,7 @@ function ProgressBadge({ progress, compact = false }: { progress: SubEffortProgr
   if (progress === 'in_progress') {
     return (
       <span
-        className={`${iconOnly} border border-sky-200/80 bg-gradient-to-b from-sky-50 to-sky-100/90 text-sky-800 shadow-sm shadow-sky-900/5`}
+        className={`${iconOnly} border border-sky-100 bg-sky-50 text-sky-600`}
         title={compact ? 'Active' : 'In progress'}
         aria-label={compact ? 'Active' : 'In progress'}
       >
@@ -491,7 +492,11 @@ function ProgressBadge({ progress, compact = false }: { progress: SubEffortProgr
   }
 
   return (
-    <span className={`${iconOnly} bg-gray-700 text-white`} title="Pending" aria-label="Pending">
+    <span
+      className={`${iconOnly} border border-gray-100 bg-gray-50 text-gray-400`}
+      title="Pending"
+      aria-label="Pending"
+    >
       <ClockIcon className={iconClass} aria-hidden />
     </span>
   );
@@ -557,12 +562,12 @@ function TimelineStepButton({
         <div className="relative flex w-8 shrink-0 flex-col items-center">
           <span
             className={[
-              'relative z-[1] flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold tabular-nums text-white',
+              'relative z-[1] flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold tabular-nums',
               progress === 'in_progress'
-                ? 'bg-sky-600 shadow-sm shadow-sky-900/20'
+                ? 'bg-sky-100 text-sky-700'
                 : progress === 'completed'
-                  ? 'bg-emerald-600 shadow-sm shadow-emerald-900/20'
-                  : 'bg-gray-700',
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-gray-100 text-gray-500',
             ].join(' ')}
             aria-hidden
           >
@@ -573,8 +578,8 @@ function TimelineStepButton({
               className={[
                 'absolute top-8 bottom-[-4px] left-1/2 w-0.5 -translate-x-1/2 rounded-full',
                 connectsDoneToDone
-                  ? 'bg-gradient-to-b from-emerald-500/85 via-emerald-400/75 to-emerald-300/65'
-                  : 'bg-gradient-to-b from-gray-400/80 via-gray-300/75 to-gray-200/65',
+                  ? 'bg-gradient-to-b from-emerald-200 via-emerald-100 to-emerald-50'
+                  : 'bg-gradient-to-b from-gray-200 via-gray-100 to-gray-50',
               ].join(' ')}
               aria-hidden
             />
@@ -726,6 +731,8 @@ export function SubEffortsLogModal({
   isLoadingSubEffortOptions = false,
   isAddingSubEffort = false,
   onAddSubEffort,
+  isRemovingSubEffort = false,
+  onRemoveSubEffort,
   categoryLinkedCount,
   hasLeadCaseType,
 }: {
@@ -742,6 +749,8 @@ export function SubEffortsLogModal({
   isLoadingSubEffortOptions?: boolean;
   isAddingSubEffort?: boolean;
   onAddSubEffort?: (opt: { id: number; name: string }) => Promise<string | number | null | void>;
+  isRemovingSubEffort?: boolean;
+  onRemoveSubEffort?: (rowId: string | number) => Promise<void>;
   /** Templates linked to the lead case type (auto-provisioned). */
   categoryLinkedCount?: number;
   hasLeadCaseType?: boolean;
@@ -785,7 +794,9 @@ export function SubEffortsLogModal({
   const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
   const [descriptionRow, setDescriptionRow] = useState<any | null>(null);
   const [categoryModalOpen, setCategoryModalOpen] = useState<CaseDocumentCategoryKey | null>(null);
+  const [clientUploadsOpen, setClientUploadsOpen] = useState(false);
   const [categoryCounts, setCategoryCounts] = useState(emptyCategoryCounts);
+  const [clientUploadsCount, setClientUploadsCount] = useState(0);
   const [categoryCountsLoading, setCategoryCountsLoading] = useState(false);
   const [orderedTimelineRows, setOrderedTimelineRows] = useState<LeadSubEffortRow[]>([]);
   const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
@@ -840,25 +851,33 @@ export function SubEffortsLogModal({
     const lead = leadNumber?.trim();
     if (!lead) {
       setCategoryCounts(emptyCategoryCounts());
+      setClientUploadsCount(0);
       return;
     }
     let cancelled = false;
     setCategoryCountsLoading(true);
     void (async () => {
       try {
-        const entries = await Promise.all(
-          SUB_EFFORT_DOC_CATEGORIES.map(async (key) => {
-            const count = await fetchCaseCategoryDocumentCount(key, lead, clientId);
-            return [key, count] as const;
-          }),
-        );
+        const [entries, portalCount] = await Promise.all([
+          Promise.all(
+            SUB_EFFORT_DOC_CATEGORIES.map(async (key) => {
+              const count = await fetchCaseCategoryDocumentCount(key, lead, clientId);
+              return [key, count] as const;
+            }),
+          ),
+          fetchClientPortalUploadCount(lead),
+        ]);
         if (!cancelled) {
           const next = emptyCategoryCounts();
           for (const [key, count] of entries) next[key] = count;
           setCategoryCounts(next);
+          setClientUploadsCount(portalCount);
         }
       } catch {
-        if (!cancelled) setCategoryCounts(emptyCategoryCounts());
+        if (!cancelled) {
+          setCategoryCounts(emptyCategoryCounts());
+          setClientUploadsCount(0);
+        }
       } finally {
         if (!cancelled) setCategoryCountsLoading(false);
       }
@@ -866,7 +885,7 @@ export function SubEffortsLogModal({
     return () => {
       cancelled = true;
     };
-  }, [open, leadNumber, clientId, categoryModalOpen]);
+  }, [open, leadNumber, clientId, categoryModalOpen, clientUploadsOpen]);
 
   const timelineRows = orderedTimelineRows;
   const currentSubEffortRowId = useMemo(() => findCurrentSubEffortRowId(timelineRows), [timelineRows]);
@@ -903,9 +922,8 @@ export function SubEffortsLogModal({
 
   const availableSubEffortOptions = useMemo(() => {
     if (!onAddSubEffort) return [];
-    const usedActive = new Set(
+    const usedIds = new Set(
       (rows ?? [])
-        .filter((r: any) => r?.active !== false)
         .map((r: any) => Number(r?.sub_effort_id ?? r?.sub_efforts?.id))
         .filter((n: number) => Number.isFinite(n)),
     );
@@ -916,7 +934,7 @@ export function SubEffortsLogModal({
             { id: 1, name: 'Aplication submitted' },
             { id: 2, name: 'Communication with client' },
           ];
-    return catalog.filter((opt) => !usedActive.has(Number(opt.id)));
+    return catalog.filter((opt) => !usedIds.has(Number(opt.id)));
   }, [onAddSubEffort, rows, subEffortOptions]);
 
   const handleAddSubEffort = useCallback(
@@ -1410,6 +1428,8 @@ export function SubEffortsLogModal({
   React.useEffect(() => {
     if (!open) {
       wasOpenRef.current = false;
+      setClientUploadsOpen(false);
+      setCategoryModalOpen(null);
       return;
     }
 
@@ -1794,6 +1814,18 @@ export function SubEffortsLogModal({
                     </button>
                   );
                 })}
+                <button
+                  type="button"
+                  onClick={() => setClientUploadsOpen(true)}
+                  disabled={!leadNumber?.trim()}
+                  className="inline-flex h-auto min-h-0 shrink-0 touch-manipulation select-none items-center gap-2 whitespace-nowrap rounded-lg border-0 bg-gray-700 px-3 py-2 text-sm font-bold text-white shadow-none transition-colors hover:bg-gray-800 disabled:opacity-50"
+                  title="Client portal uploads"
+                >
+                  <span className="max-w-[10rem] truncate sm:max-w-[14rem]">Client uploads</span>
+                  <span className="ml-0 inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-gray-700">
+                    {categoryCountsLoading ? '…' : clientUploadsCount}
+                  </span>
+                </button>
               </div>
               <div className="text-xs text-base-content/50 truncate">
                 {rows?.length ? `${rows.length} step${rows.length === 1 ? '' : 's'} in this case` : 'No steps yet'}
@@ -1820,7 +1852,7 @@ export function SubEffortsLogModal({
                   : 'block md:flex md:h-full md:min-h-0 md:flex-col'
               }
             >
-              <div className="flex flex-col overflow-visible rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:h-full md:min-h-0 md:overflow-hidden md:p-5">
+              <div className="flex flex-col overflow-visible rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:h-full md:min-h-0 md:p-5">
                 <div className="mb-3 flex shrink-0 items-center justify-between gap-2 px-0.5">
                   <div>
                     <span className="text-base font-semibold text-base-content/80 md:text-lg">Workflow</span>
@@ -1876,52 +1908,70 @@ export function SubEffortsLogModal({
                   </div>
                 )}
 
-                {onAddSubEffort ? (
-                  <div className="mt-4 shrink-0 border-t border-gray-200/80 pt-4">
-                    <div className="dropdown dropdown-top dropdown-end w-full">
+                {onAddSubEffort || onRemoveSubEffort ? (
+                  <div className="relative z-20 mt-4 flex shrink-0 flex-row items-stretch gap-2 overflow-visible border-t border-gray-200/80 pt-4">
+                    {onAddSubEffort ? (
+                      <div className="dropdown dropdown-top min-w-0 flex-1">
+                        <button
+                          type="button"
+                          tabIndex={0}
+                          disabled={isLoadingSubEffortOptions || isAddingSubEffort || isRemovingSubEffort}
+                          className="btn btn-sm h-10 w-full justify-between rounded-xl border border-gray-200 bg-white px-3 font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            {isAddingSubEffort ? (
+                              <span className="loading loading-spinner loading-xs" />
+                            ) : (
+                              <PlusIcon className="h-4 w-4 shrink-0" />
+                            )}
+                            <span className="truncate">Add</span>
+                          </span>
+                          <ChevronDownIcon className="h-4 w-4 shrink-0 text-gray-400" />
+                        </button>
+                        <ul
+                          tabIndex={0}
+                          className="dropdown-content menu z-[80] mb-2 flex max-h-64 w-[min(22rem,calc(100vw-2rem))] min-w-[15rem] flex-col flex-nowrap overflow-y-auto overscroll-y-contain rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
+                        >
+                          {isLoadingSubEffortOptions ? (
+                            <li>
+                              <span className="px-3 py-2 text-sm text-gray-500">Loading options…</span>
+                            </li>
+                          ) : availableSubEffortOptions.length === 0 ? (
+                            <li>
+                              <span className="px-3 py-2 text-sm text-gray-500">No more sub efforts</span>
+                            </li>
+                          ) : (
+                            availableSubEffortOptions.map((opt) => (
+                              <li key={opt.id} className="w-full">
+                                <button
+                                  type="button"
+                                  className="flex w-full items-start gap-2 rounded-lg text-left text-sm whitespace-normal break-words"
+                                  onClick={() => void handleAddSubEffort(opt)}
+                                >
+                                  <PlusIcon className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
+                                  <span className="min-w-0 flex-1">{opt.name}</span>
+                                </button>
+                              </li>
+                            ))
+                          )}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {onRemoveSubEffort && selectedRow?.id != null ? (
                       <button
                         type="button"
-                        tabIndex={0}
-                        disabled={isLoadingSubEffortOptions || isAddingSubEffort}
-                        className="btn btn-sm h-10 w-full justify-between rounded-xl border border-gray-200 bg-white px-3 font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+                        className="btn btn-sm h-10 min-w-0 flex-1 gap-2 rounded-xl border border-red-200 bg-white font-medium text-red-600 shadow-sm hover:bg-red-50"
+                        disabled={isRemovingSubEffort || isAddingSubEffort}
+                        onClick={() => void onRemoveSubEffort(selectedRow.id)}
                       >
-                        <span className="flex min-w-0 items-center gap-2">
-                          {isAddingSubEffort ? (
-                            <span className="loading loading-spinner loading-xs" />
-                          ) : (
-                            <PlusIcon className="h-4 w-4 shrink-0" />
-                          )}
-                          <span className="truncate">Add sub effort</span>
-                        </span>
-                        <ChevronDownIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                      </button>
-                      <ul
-                        tabIndex={0}
-                        className="dropdown-content menu z-[70] mb-2 flex max-h-56 w-72 min-w-[18rem] flex-col flex-nowrap overflow-x-hidden overflow-y-auto overscroll-y-contain rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
-                      >
-                        {isLoadingSubEffortOptions ? (
-                          <li>
-                            <span className="px-3 py-2 text-sm text-gray-500">Loading options…</span>
-                          </li>
-                        ) : availableSubEffortOptions.length === 0 ? (
-                          <li>
-                            <span className="px-3 py-2 text-sm text-gray-500">No more sub efforts</span>
-                          </li>
+                        {isRemovingSubEffort ? (
+                          <span className="loading loading-spinner loading-xs" />
                         ) : (
-                          availableSubEffortOptions.map((opt) => (
-                            <li key={opt.id}>
-                              <button
-                                type="button"
-                                className="rounded-lg text-left text-sm whitespace-normal"
-                                onClick={() => void handleAddSubEffort(opt)}
-                              >
-                                {opt.name}
-                              </button>
-                            </li>
-                          ))
+                          <TrashIcon className="h-4 w-4 shrink-0" />
                         )}
-                      </ul>
-                    </div>
+                        <span className="truncate">Remove</span>
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -1965,7 +2015,6 @@ export function SubEffortsLogModal({
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-2">
                           <div className="flex flex-wrap items-center justify-end gap-2">
-                            <VisibilityPill internal={selectedRow?.internal === true} size="lg" />
                             <button
                               type="button"
                               className="btn btn-ghost btn-sm btn-square h-9 w-9 rounded-full bg-gray-50"
@@ -1980,21 +2029,7 @@ export function SubEffortsLogModal({
                                 <EyeIcon className="w-4 h-4" />
                               )}
                             </button>
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm btn-square h-9 w-9 rounded-full bg-gray-50"
-                              onClick={() => onRefresh?.()}
-                              title="Refresh"
-                              aria-label="Refresh"
-                            >
-                              <ArrowPathIcon className="w-4 h-4" />
-                            </button>
                           </div>
-                          <p className="max-w-[220px] text-right text-xs leading-relaxed text-gray-500">
-                            Template default:{' '}
-                            {readDefaultClientVisible(selectedRow) ? 'Visible to client' : 'Internal only'}
-                            {isLeadVisibilityOverridden(selectedRow) ? ' · Custom for this lead' : ''}
-                          </p>
                           {isLeadVisibilityOverridden(selectedRow) ? (
                             <button
                               type="button"
@@ -2046,71 +2081,69 @@ export function SubEffortsLogModal({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-4">
                       <div>
-                        <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
-                          <div className="flex items-center gap-2">
-                            <LockClosedIcon className="h-5 w-5 text-base-content/40" />
-                            <span className="text-base font-semibold text-gray-500">Internal notes</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm btn-square h-9 w-9 shrink-0"
-                            onClick={() => openNotesEditor('internal')}
-                            aria-label="Edit internal notes"
-                          >
-                            <PencilSquareIcon className="h-5 w-5" />
-                          </button>
+                        <div className="mb-2 px-0.5">
+                          <span className="text-base font-semibold text-gray-500">Internal notes</span>
                         </div>
                         <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
-                          <div>
-                            {selectedRow?.internal_notes ? (
-                              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-base-content/80">
-                                {selectedRow.internal_notes}
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                className="w-full rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-3 text-left text-sm text-base-content/40 transition hover:border-gray-300 hover:bg-gray-50"
-                                onClick={() => openNotesEditor('internal')}
-                              >
-                                No internal notes yet. Add one…
-                              </button>
-                            )}
+                          <div className="flex items-start gap-3">
+                            <div className="min-w-0 flex-1">
+                              {selectedRow?.internal_notes ? (
+                                <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-base-content/80">
+                                  {selectedRow.internal_notes}
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="w-full rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-3 text-left text-sm text-base-content/40 transition hover:border-gray-300 hover:bg-gray-50"
+                                  onClick={() => openNotesEditor('internal')}
+                                >
+                                  No internal notes yet. Add one…
+                                </button>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm btn-square h-9 w-9 shrink-0"
+                              onClick={() => openNotesEditor('internal')}
+                              aria-label="Edit internal notes"
+                            >
+                              <PencilSquareIcon className="h-5 w-5" />
+                            </button>
                           </div>
                         </div>
                       </div>
 
                       <div>
-                        <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
-                          <div className="flex items-center gap-2">
-                            <EyeIcon className="h-5 w-5 text-base-content/40" />
-                            <span className="text-base font-semibold text-gray-500">Client notes</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm btn-square h-9 w-9 shrink-0"
-                            onClick={() => openNotesEditor('client')}
-                            aria-label="Edit client notes"
-                          >
-                            <PencilSquareIcon className="h-5 w-5" />
-                          </button>
+                        <div className="mb-2 px-0.5">
+                          <span className="text-base font-semibold text-gray-500">Client notes</span>
                         </div>
                         <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
-                          <div>
-                            {selectedRow?.client_notes ? (
-                              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-base-content/80">
-                                {selectedRow.client_notes}
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                className="w-full rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-3 text-left text-sm text-base-content/40 transition hover:border-gray-300 hover:bg-gray-50"
-                                onClick={() => openNotesEditor('client')}
-                              >
-                                No client notes yet. Add one…
-                              </button>
-                            )}
+                          <div className="flex items-start gap-3">
+                            <div className="min-w-0 flex-1">
+                              {selectedRow?.client_notes ? (
+                                <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-base-content/80">
+                                  {selectedRow.client_notes}
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="w-full rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-3 text-left text-sm text-base-content/40 transition hover:border-gray-300 hover:bg-gray-50"
+                                  onClick={() => openNotesEditor('client')}
+                                >
+                                  No client notes yet. Add one…
+                                </button>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm btn-square h-9 w-9 shrink-0"
+                              onClick={() => openNotesEditor('client')}
+                              aria-label="Edit client notes"
+                            >
+                              <PencilSquareIcon className="h-5 w-5" />
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -2153,10 +2186,7 @@ export function SubEffortsLogModal({
                               </button>
                             </>
                           ) : (
-                            <>
-                              <DocumentIcon className="h-5 w-5 text-base-content/40" />
-                              <span className="text-base font-semibold text-gray-500">Documents</span>
-                            </>
+                            <span className="text-base font-semibold text-gray-500">Documents</span>
                           )}
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
@@ -2641,7 +2671,7 @@ export function SubEffortsLogModal({
                               if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
                             }}
                           >
-                            <span className="text-xs font-medium text-base-content/45">
+                            <span className="text-sm font-medium text-gray-500">
                               {activeFolder
                                 ? `Drop files into “${activeFolder.title}” or click to upload`
                                 : 'Drop more files here or click to upload'}
@@ -3046,6 +3076,16 @@ export function SubEffortsLogModal({
           title={CASE_DOCUMENT_CATEGORY_META[key].title}
         />
       ))}
+
+      <ClientUploadsDocumentsModal
+        open={clientUploadsOpen}
+        onClose={() => setClientUploadsOpen(false)}
+        leadNumber={leadNumber}
+        subEffortRows={timelineRows}
+        targetSubEffortId={selectedRow?.id ?? null}
+        activeFolderId={activeFolderId}
+        onAttached={() => onRefresh?.()}
+      />
     </>
   );
 }

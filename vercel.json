@@ -41,6 +41,15 @@
       ]
     },
     {
+      "source": "/manifest-entry-kiosk.json",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
       "source": "/(.*)",
       "headers": [
         {

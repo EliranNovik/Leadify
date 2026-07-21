@@ -35,6 +35,12 @@
       "headers": {
         "Cache-Control": "no-cache"
       }
+    },
+    {
+      "route": "/manifest-entry-kiosk.json",
+      "headers": {
+        "Cache-Control": "no-cache"
+      }
     }
   ]
 }

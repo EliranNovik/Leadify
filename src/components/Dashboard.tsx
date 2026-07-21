@@ -5248,7 +5248,7 @@ const Dashboard: React.FC = () => {
   const loadScoreboardData = useCallback(
     async (opts?: { background?: boolean }) => {
       const periodKey = `${selectedYear}-${selectedMonth}`;
-      const cacheKey = `dashboard-scoreboard:v18:${periodKey}`;
+      const cacheKey = `dashboard-scoreboard:v21:${periodKey}`;
       const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
 
       // Deal lists are not cached; mark not-ready until fresh fetch fills them (incl. period changes).
