@@ -107,7 +107,7 @@ function buildClockInMsByEmployeeDate(
 async function fetchNewLeadPaymentPlanBaseTotal(leadId: string): Promise<number | null> {
   const { data, error } = await supabase
     .from('payment_plans')
-    .select('value, payment_order, order')
+    .select('value, payment_order')
     .eq('lead_id', leadId)
     .is('cancel_date', null);
   if (error) {
@@ -119,8 +119,8 @@ async function fetchNewLeadPaymentPlanBaseTotal(leadId: string): Promise<number 
 
   let baseTotal = 0;
   let hasPlan = false;
-  for (const row of rows as Array<{ value?: unknown; payment_order?: unknown; order?: unknown }>) {
-    const order = row.payment_order ?? row.order;
+  for (const row of rows as Array<{ value?: unknown; payment_order?: unknown }>) {
+    const order = row.payment_order;
     if (isExpenseNoVatPayment(order)) continue;
     hasPlan = true;
     const base = Number(row.value ?? 0);
@@ -132,7 +132,7 @@ async function fetchNewLeadPaymentPlanBaseTotal(leadId: string): Promise<number 
 async function fetchLegacyLeadPaymentPlanBaseTotal(legacyId: number): Promise<number | null> {
   const { data, error } = await supabase
     .from('finances_paymentplanrow')
-    .select('value, payment_order, order')
+    .select('value, order')
     .eq('lead_id', legacyId)
     .is('cancel_date', null);
   if (error) {
@@ -144,8 +144,8 @@ async function fetchLegacyLeadPaymentPlanBaseTotal(legacyId: number): Promise<nu
 
   let baseTotal = 0;
   let hasPlan = false;
-  for (const row of rows as Array<{ value?: unknown; payment_order?: unknown; order?: unknown }>) {
-    const order = row.payment_order ?? row.order;
+  for (const row of rows as Array<{ value?: unknown; order?: unknown }>) {
+    const order = row.order;
     if (isExpenseNoVatPayment(order)) continue;
     hasPlan = true;
     const base = Number(row.value ?? 0);

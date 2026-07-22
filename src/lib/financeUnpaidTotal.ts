@@ -300,7 +300,6 @@ export async function fetchUnpaidTotalsBatchByLeadKey(
           date,
           due_date,
           currency_id,
-          payment_order,
           order,
           accounting_currencies!finances_paymentplanrow_currency_id_fkey (
             id,
@@ -329,7 +328,7 @@ export async function fetchUnpaidTotalsBatchByLeadKey(
   if (uniqNew.length > 0) {
     const { data, error } = await supabase
       .from('payment_plans')
-      .select('lead_id, value, value_vat, paid, currency, cancel_date, payment_order, order')
+      .select('lead_id, value, value_vat, paid, currency, cancel_date, payment_order')
       .in('lead_id', uniqNew)
       .is('cancel_date', null);
 

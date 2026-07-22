@@ -176,8 +176,20 @@ export function isMeetingBookedViaClientPortal(meeting: {
 } | null | undefined): boolean {
   if (!meeting) return false;
   if (meeting.booked_via_client_link === true) return true;
-  if ((meeting.scheduler || '').trim() === CLIENT_PORTAL_BOOKING_SCHEDULER) return true;
-  return Boolean((meeting.client_booking_timezone || '').trim());
+  const scheduler =
+    typeof meeting.scheduler === 'string'
+      ? meeting.scheduler.trim()
+      : meeting.scheduler == null
+        ? ''
+        : String(meeting.scheduler).trim();
+  if (scheduler === CLIENT_PORTAL_BOOKING_SCHEDULER) return true;
+  const timezone =
+    typeof meeting.client_booking_timezone === 'string'
+      ? meeting.client_booking_timezone.trim()
+      : meeting.client_booking_timezone == null
+        ? ''
+        : String(meeting.client_booking_timezone).trim();
+  return Boolean(timezone);
 }
 
 export async function fetchPublicBookingMeetings(token: string): Promise<PublicBookingMeeting[]> {

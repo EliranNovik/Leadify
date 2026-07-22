@@ -9979,7 +9979,7 @@ const Clients: React.FC<ClientsProps> = ({
         console.log('[paymentPlanTotal][legacy] fetching rows', { legacyId, leadCurrencyId, clientId });
         const { data, error } = await supabase
           .from('finances_paymentplanrow')
-          .select('value, vat_value, currency_id, payment_order, order')
+          .select('value, vat_value, currency_id, order')
           .eq('lead_id', legacyId)
           .is('cancel_date', null);
         if (error) throw error;
@@ -10000,7 +10000,7 @@ const Clients: React.FC<ClientsProps> = ({
         let grossNis = 0;
         const currencyIdsSeen = new Set<number>();
         for (const r of rows as any[]) {
-          const order = r?.payment_order ?? r?.order;
+          const order = r?.order;
           const base = Number(r?.value ?? 0);
           const vat = Number(r?.vat_value ?? 0);
           const rowBase = Number.isFinite(base) ? base : 0;
@@ -10025,7 +10025,7 @@ const Clients: React.FC<ClientsProps> = ({
           grossNis += convertToNIS(rowGross, rowCurrencyId);
         }
 
-        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.payment_order ?? r?.order));
+        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.order));
         const planCurrencyId =
           hasPlan && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : leadCurrencyId;
         const baseTotal = baseByCurrencyId.get(leadCurrencyId) ?? Array.from(baseByCurrencyId.values()).reduce((a, b) => a + b, 0);
@@ -10057,33 +10057,33 @@ const Clients: React.FC<ClientsProps> = ({
       } else {
         const { data, error } = await supabase
           .from('payment_plans')
-          .select('value, value_vat, currency, payment_order, order')
+          .select('value, value_vat, currency, payment_order')
           .eq('lead_id', clientId)
           .is('cancel_date', null);
         if (error) throw error;
         const rows = data || [];
         const baseTotal = rows.reduce((sum, r: any) => {
-          if (isExpenseNoVatPayment(r?.payment_order ?? r?.order)) return sum;
+          if (isExpenseNoVatPayment(r?.payment_order)) return sum;
           const base = Number(r?.value ?? 0);
           return sum + (Number.isFinite(base) ? base : 0);
         }, 0);
         const vatTotal = rows.reduce((sum, r: any) => {
-          if (isExpenseNoVatPayment(r?.payment_order ?? r?.order)) return sum;
+          if (isExpenseNoVatPayment(r?.payment_order)) return sum;
           const vat = Number(r?.value_vat ?? 0);
           return sum + (Number.isFinite(vat) ? vat : 0);
         }, 0);
         const expenseTotal = rows.reduce((sum, r: any) => {
-          if (!isExpenseNoVatPayment(r?.payment_order ?? r?.order)) return sum;
+          if (!isExpenseNoVatPayment(r?.payment_order)) return sum;
           const base = Number(r?.value ?? 0);
           const vat = Number(r?.value_vat ?? 0);
           const gross = (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
           return sum + gross;
         }, 0);
         const grossTotal = baseTotal + vatTotal;
-        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.payment_order ?? r?.order));
+        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.payment_order));
         const currencyIdsSeen = new Set<number>();
         for (const r of rows as any[]) {
-          if (isExpenseNoVatPayment(r?.payment_order ?? r?.order)) continue;
+          if (isExpenseNoVatPayment(r?.payment_order)) continue;
           const c = (r?.currency ?? '').toString().trim();
           let id = 1;
           switch (c) {

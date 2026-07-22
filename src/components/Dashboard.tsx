@@ -1898,13 +1898,15 @@ const Dashboard: React.FC = () => {
         const allMeetingsDataForProcessing = error ? directLegacyMeetings : [...(meetings || []), ...directLegacyMeetings];
 
         if (!error || directLegacyMeetings.length > 0) {
-          // Fetch employee names for ID mapping
-          const employeeIds = new Set<string>();
+          // Fetch employee names for ID mapping (numeric ids only — role fields often store names)
+          const employeeIds = new Set<number>();
           allMeetingsDataForProcessing.forEach((meeting: any) => {
             const addValidId = (id: any) => {
-              if (id && id !== '---' && id !== '' && id !== null && id !== undefined) {
-                employeeIds.add(id.toString());
-              }
+              if (id == null || id === '---' || id === '' || id === 'Not assigned') return;
+              const s = String(id).trim();
+              if (!/^\d+$/.test(s)) return;
+              const n = Number(s);
+              if (Number.isFinite(n) && n > 0) employeeIds.add(n);
             };
 
             addValidId(meeting.legacy_lead?.expert_id);

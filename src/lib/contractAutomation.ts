@@ -82,12 +82,23 @@ export async function getContractDetails(contractId: string) {
 
 /**
  * Get all contracts for a client
- * @param clientId - Client ID (UUID string)
+ * @param clientId - New-lead UUID, or legacy id (`legacy_123` / `123`)
  * @returns Array of contracts
  */
 export async function getClientContracts(clientId: string) {
   try {
-    const { data, error } = await supabase
+    const raw = String(clientId || '').trim();
+    if (!raw) return [];
+
+    const isLegacy =
+      raw.startsWith('legacy_') || (/^\d+$/.test(raw) && !raw.includes('-'));
+    const legacyId = raw.startsWith('legacy_')
+      ? parseInt(raw.replace(/^legacy_/, ''), 10)
+      : /^\d+$/.test(raw)
+        ? parseInt(raw, 10)
+        : NaN;
+
+    let query = supabase
       .from('contracts')
       .select(`
         *,
@@ -96,11 +107,17 @@ export async function getClientContracts(clientId: string) {
           name
         )
       `)
-      .eq('client_id', clientId)
       .order('created_at', { ascending: false });
-    
+
+    if (isLegacy && Number.isFinite(legacyId) && legacyId > 0) {
+      query = query.eq('legacy_id', legacyId);
+    } else {
+      query = query.eq('client_id', raw);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
-    
+
     return data;
   } catch (error) {
     console.error('Error fetching client contracts:', error);
