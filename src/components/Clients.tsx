@@ -135,6 +135,15 @@ import { getVatRateForLegacyLead } from '../lib/financeUnpaidTotal';
 import LeadSummaryDrawer from './LeadSummaryDrawer';
 import { generateProformaName } from '../lib/proforma';
 import WheelTimePicker from './WheelTimePicker';
+import MeetingDurationField, {
+  DEFAULT_MEETING_DURATION_MINUTES,
+  normalizeMeetingDurationMinutes,
+} from './meeting/MeetingDurationField';
+import {
+  getRescheduleMeetingPath,
+  getScheduleMeetingPath,
+  isMobileMeetingScheduleUi,
+} from '../lib/meetingScheduleNavigation';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
@@ -1243,6 +1252,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [meetingFormData, setMeetingFormData] = useState({
     date: '',
     time: '09:00',
+    duration: DEFAULT_MEETING_DURATION_MINUTES,
     location: '',
     manager: '',
     helper: '',
@@ -1783,6 +1793,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [rescheduleFormData, setRescheduleFormData] = useState<any>({
     date: getTomorrowDate(), // Default to tomorrow so button is enabled
     time: '09:00',
+    duration: DEFAULT_MEETING_DURATION_MINUTES,
     location: 'Teams',
     calendar: 'current',
     manager: '',
@@ -4739,7 +4750,11 @@ const Clients: React.FC<ClientsProps> = ({
     if (!selectedClient) return;
 
     if (newStage === 'Schedule Meeting') {
-      setShowScheduleMeetingPanel(true);
+      if (isMobileMeetingScheduleUi()) {
+        setShowScheduleMeetingPanel(true);
+      } else {
+        navigate(getScheduleMeetingPath(selectedClient.lead_number || selectedClient.id));
+      }
       setSelectedStage(null); // Close the dropdown immediately
       (document.activeElement as HTMLElement)?.blur();
     } else if (newStage === 'Unactivate/Spam') {
@@ -5416,6 +5431,7 @@ const Clients: React.FC<ClientsProps> = ({
     setMeetingFormData({
       date: '',
       time: '09:00',
+      duration: DEFAULT_MEETING_DURATION_MINUTES,
       location: '',
       manager: '',
       helper: '',
@@ -5444,6 +5460,7 @@ const Clients: React.FC<ClientsProps> = ({
     setRescheduleFormData({
       date: getTomorrowDate(),
       time: '09:00',
+      duration: DEFAULT_MEETING_DURATION_MINUTES,
       location: 'Teams',
       calendar: 'current',
       manager: '',
@@ -5852,7 +5869,8 @@ const Clients: React.FC<ClientsProps> = ({
         const [year, month, day] = meetingFormData.date.split('-').map(Number);
         const [hours, minutes] = meetingFormData.time.split(':').map(Number);
         const start = new Date(year, month - 1, day, hours, minutes);
-        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+        const meetingDurationMinutes = normalizeMeetingDurationMinutes(meetingFormData.duration);
+        const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
 
         // Test calendar access first (skip for legacy leads with potential_client calendar type)
         const isLegacyLeadForCalendar = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
@@ -6094,11 +6112,14 @@ const Clients: React.FC<ClientsProps> = ({
         mainMeetingTime = now.toTimeString().split(' ')[0].slice(0, 5); // HH:MM
       }
 
+      const meetingDurationMinutes = normalizeMeetingDurationMinutes(meetingFormData.duration);
+
       const meetingData = {
         client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
         legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads
         meeting_date: mainMeetingDate,
         meeting_time: mainMeetingTime,
+        duration: meetingDurationMinutes,
         meeting_location: meetingFormData.location,
         meeting_manager: meetingFormData.manager || '',
         meeting_currency: resolvedMeetingCurrency,
@@ -6475,6 +6496,7 @@ const Clients: React.FC<ClientsProps> = ({
               legacy_lead_id: null,
               meeting_date: meetingFormData.date,
               meeting_time: meetingFormData.time,
+              duration: meetingDurationMinutes,
               meeting_location: meetingFormData.location,
               meeting_manager: meetingFormData.manager || '',
               meeting_currency: resolvedMeetingCurrency,
@@ -6539,6 +6561,7 @@ const Clients: React.FC<ClientsProps> = ({
           client_id: insertedData[0].client_id,
           date: insertedData[0].meeting_date,
           time: insertedData[0].meeting_time,
+          duration: insertedData[0].duration ?? meetingDurationMinutes,
           location: insertedData[0].meeting_location,
           manager: insertedData[0].meeting_manager,
           currency: insertedData[0].meeting_currency,
@@ -6805,8 +6828,11 @@ const Clients: React.FC<ClientsProps> = ({
             const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
 
             // Prepare date/time for calendar
+            const inviteDurationMinutes = normalizeMeetingDurationMinutes(
+              (newMeeting as { duration?: number }).duration ?? meetingFormData.duration,
+            );
             const startDateTime = new Date(`${newMeeting.date}T${formattedTime}:00`);
-            const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
+            const endDateTime = new Date(startDateTime.getTime() + inviteDurationMinutes * 60000);
 
             if (useOutlookCalendarInvite) {
               // For Microsoft email clients: Use Microsoft Graph API to create calendar event
@@ -6841,7 +6867,7 @@ const Clients: React.FC<ClientsProps> = ({
                   subject: calendarSubject,
                   date: newMeeting.date,
                   time: formattedTime,
-                  durationMinutes: 60,
+                  durationMinutes: inviteDurationMinutes,
                   location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
                   description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
                   organizerEmail: account.username || 'noreply@lawoffice.org.il',
@@ -6949,6 +6975,7 @@ const Clients: React.FC<ClientsProps> = ({
       setMeetingFormData({
         date: '',
         time: '09:00',
+        duration: DEFAULT_MEETING_DURATION_MINUTES,
         location: '',
         manager: '',
         helper: '',
@@ -8333,7 +8360,7 @@ const Clients: React.FC<ClientsProps> = ({
       setShowRescheduleDrawer(false);
       setNotifyClientOnReschedule(false); // Reset to default
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
+      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', duration: DEFAULT_MEETING_DURATION_MINUTES, location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -8640,7 +8667,8 @@ const Clients: React.FC<ClientsProps> = ({
             const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
             const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
             const start = new Date(year, month - 1, day, hours, minutes);
-            const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+            const meetingDurationMinutes = normalizeMeetingDurationMinutes(rescheduleFormData.duration);
+            const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
 
             const categoryName = selectedClient.category || 'No Category';
             const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
@@ -8701,6 +8729,7 @@ const Clients: React.FC<ClientsProps> = ({
         legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads (must be numeric)
         meeting_date: rescheduleFormData.date,
         meeting_time: rescheduleFormData.time,
+        duration: normalizeMeetingDurationMinutes(rescheduleFormData.duration),
         meeting_location: rescheduleFormData.location,
         meeting_manager: rescheduleFormData.manager || '',
         meeting_currency: rescheduleFormData.currency || '₪',
@@ -9039,7 +9068,9 @@ const Clients: React.FC<ClientsProps> = ({
         const [yearVal, monthVal, dayVal] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
         const startDateTime = new Date(yearVal, monthVal - 1, dayVal, hours, minutes);
-        const endDateTime = new Date(startDateTime.getTime() + 30 * 60000); // 30 min meeting
+        const endDateTime = new Date(
+          startDateTime.getTime() + normalizeMeetingDurationMinutes(rescheduleFormData.duration) * 60000,
+        );
 
         // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
         const isMicrosoftEmail = (email: string): boolean => {
@@ -9565,7 +9596,7 @@ const Clients: React.FC<ClientsProps> = ({
       setShowRescheduleDrawer(false);
       setNotifyClientOnReschedule(false); // Reset to default
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
+      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', duration: DEFAULT_MEETING_DURATION_MINUTES, location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -11608,10 +11639,14 @@ const Clients: React.FC<ClientsProps> = ({
         setScheduleStageTarget('meeting_scheduled');
       }
 
-      setShowScheduleMeetingPanel(true);
+      if (isMobileMeetingScheduleUi()) {
+        setShowScheduleMeetingPanel(true);
+      } else {
+        navigate(getScheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+      }
       (document.activeElement as HTMLElement | null)?.blur();
     },
-    [selectedClient?.stage]
+    [navigate, selectedClient?.id, selectedClient?.lead_number, selectedClient?.stage]
   );
 
   // Move ALL hooks before early returns to ensure hooks are always called in the same order
@@ -12101,7 +12136,14 @@ const Clients: React.FC<ClientsProps> = ({
         {areStagesEquivalent(currentStageName, 'another_meeting') ? (
           <>
             <li>
-              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowRescheduleDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => {
+                if (isMobileMeetingScheduleUi()) {
+                  setShowRescheduleDrawer(true);
+                } else {
+                  navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+                }
+                (document.activeElement as HTMLElement)?.blur();
+              }}>
                 <ArrowPathIcon className="w-5 h-5 text-black" />
                 Meeting ReScheduling
               </a>
@@ -12128,7 +12170,14 @@ const Clients: React.FC<ClientsProps> = ({
                 </li>
               )}
             <li>
-              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowRescheduleDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => {
+                if (isMobileMeetingScheduleUi()) {
+                  setShowRescheduleDrawer(true);
+                } else {
+                  navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+                }
+                (document.activeElement as HTMLElement)?.blur();
+              }}>
                 <ArrowPathIcon className="w-5 h-5 text-black" />
                 Meeting ReScheduling
               </a>
@@ -14407,17 +14456,31 @@ const Clients: React.FC<ClientsProps> = ({
             openSendOfferModal={openSendOfferModal}
             handleOpenSignedDrawer={handleOpenSignedDrawer}
             handleOpenDeclinedDrawer={handleOpenDeclinedDrawer}
-            setShowRescheduleDrawer={setShowRescheduleDrawer}
+            setShowRescheduleDrawer={(show) => {
+              if (show && !isMobileMeetingScheduleUi()) {
+                navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+                return;
+              }
+              setShowRescheduleDrawer(show);
+            }}
             scheduleMenuLabel={scheduleMenuLabel}
             onMeetingScheduleClick={() => {
-              markPendingMeetingScheduleDrawer();
-              setActiveTabWithUrl('meeting');
-              window.dispatchEvent(new CustomEvent('meeting-tab:open-schedule-drawer'));
+              if (isMobileMeetingScheduleUi()) {
+                markPendingMeetingScheduleDrawer();
+                setActiveTabWithUrl('meeting');
+                window.dispatchEvent(new CustomEvent('meeting-tab:open-schedule-drawer'));
+              } else {
+                navigate(getScheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+              }
             }}
             onMeetingRescheduleClick={() => {
-              markPendingMeetingRescheduleDrawer();
-              setActiveTabWithUrl('meeting');
-              window.dispatchEvent(new CustomEvent('meeting-tab:open-reschedule-drawer'));
+              if (isMobileMeetingScheduleUi()) {
+                markPendingMeetingRescheduleDrawer();
+                setActiveTabWithUrl('meeting');
+                window.dispatchEvent(new CustomEvent('meeting-tab:open-reschedule-drawer'));
+              } else {
+                navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+              }
             }}
             hasScheduledMeetings={hasScheduledMeetings}
             isStageNumeric={isStageNumeric}
@@ -14962,6 +15025,7 @@ const Clients: React.FC<ClientsProps> = ({
             open={showScheduleMeetingPanel}
             onClose={closeSchedulePanel}
             title="Schedule Meeting"
+            mobileOnly
             footer={(
               <MeetingFormDrawerFooter>
                 <MeetingFormDrawerActionButton
@@ -15085,13 +15149,10 @@ const Clients: React.FC<ClientsProps> = ({
                       />
                     </div>
 
-                    {/* Time */}
-                    <WheelTimePicker
-                      value={meetingFormData.time}
-                      onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
-                      label="Time"
-                      minHour={8}
-                      maxHour={23}
+                    <MeetingDurationField
+                      value={meetingFormData.duration}
+                      onChange={(duration) => setMeetingFormData((prev) => ({ ...prev, duration }))}
+                      startTime={meetingFormData.time}
                       disabled={!meetingFormData.date}
                     />
 
@@ -15345,7 +15406,7 @@ const Clients: React.FC<ClientsProps> = ({
                       </select>
                     </div>
 
-                    {/* Meeting Car Number */}
+                    {/* Meeting Car Number — hidden from schedule UI
                     <div>
                       <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
                       <input
@@ -15356,6 +15417,21 @@ const Clients: React.FC<ClientsProps> = ({
                         onChange={(e) => setMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
                         placeholder="Enter car number..."
                       />
+                    </div>
+                    */}
+
+                    {/* Time — always last, centered */}
+                    <div className="flex justify-center">
+                      <div className="w-full max-w-sm">
+                        <WheelTimePicker
+                          value={meetingFormData.time}
+                          onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
+                          label="Time"
+                          minHour={8}
+                          maxHour={23}
+                          disabled={!meetingFormData.date}
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -16731,6 +16807,7 @@ const Clients: React.FC<ClientsProps> = ({
             open={showRescheduleDrawer}
             onClose={closeReschedulePanel}
             title="Reschedule Meeting"
+            mobileOnly
             footer={(
               <MeetingFormDrawerFooter>
                 <MeetingFormDrawerActionButton
@@ -16824,6 +16901,7 @@ const Clients: React.FC<ClientsProps> = ({
                                 setRescheduleFormData({
                                   date: selectedMeeting.meeting_date || getTomorrowDate(),
                                   time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
+                                  duration: normalizeMeetingDurationMinutes(selectedMeeting.duration),
                                   location: selectedMeeting.meeting_location || 'Teams',
                                   calendar: selectedMeeting.calendar_type === 'active_client' ? 'active_client' : 'current',
                                   manager: selectedMeeting.meeting_manager || '',
@@ -16964,13 +17042,12 @@ const Clients: React.FC<ClientsProps> = ({
                           />
                         </div>
 
-                        {/* Time */}
-                        <WheelTimePicker
-                          value={rescheduleFormData.time}
-                          onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
-                          label="New Time"
-                          minHour={8}
-                          maxHour={23}
+                        <MeetingDurationField
+                          value={rescheduleFormData.duration ?? DEFAULT_MEETING_DURATION_MINUTES}
+                          onChange={(duration) =>
+                            setRescheduleFormData((prev: any) => ({ ...prev, duration }))
+                          }
+                          startTime={rescheduleFormData.time}
                           disabled={!rescheduleFormData.date}
                         />
 
@@ -17042,7 +17119,7 @@ const Clients: React.FC<ClientsProps> = ({
                           </select>
                         </div>
 
-                        {/* Meeting Car Number */}
+                        {/* Meeting Car Number — hidden from reschedule UI
                         <div>
                           <label className="block font-semibold mb-1">Meeting Car Number</label>
                           <input
@@ -17052,6 +17129,21 @@ const Clients: React.FC<ClientsProps> = ({
                             onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
                             placeholder="Enter car number..."
                           />
+                        </div>
+                        */}
+
+                        {/* Time — always last, centered */}
+                        <div className="flex justify-center col-span-full">
+                          <div className="w-full max-w-sm">
+                            <WheelTimePicker
+                              value={rescheduleFormData.time}
+                              onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
+                              label="New Time"
+                              minHour={8}
+                              maxHour={23}
+                              disabled={!rescheduleFormData.date}
+                            />
+                          </div>
                         </div>
                       </>
                     )}

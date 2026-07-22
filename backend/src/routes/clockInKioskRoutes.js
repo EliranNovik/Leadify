@@ -21,4 +21,7 @@ router.get('/display', clockInKioskController.display);
 /** GET /api/clock-in-kiosk/meetings-today?locationId=1 — full meetings list for kiosk detail screen. */
 router.get('/meetings-today', clockInKioskController.meetingsToday);
 
+/** POST /api/clock-in-kiosk/meeting-clock-adjustment — meeting-aware clock in/out times + remark. */
+router.post('/meeting-clock-adjustment', clockInKioskController.meetingClockAdjustment);
+
 module.exports = router;

@@ -84,4 +84,12 @@ export interface ClientTabProps {
   flaggedConversationCount?: number;
   /** After 90%+ gate → conversation path: parent stores pending values, switches tab, header shows reminder */
   onProbabilityConversationPending?: (values: ProbabilitySlidersValues) => void;
+  /**
+   * MeetingTab only: render schedule or reschedule form as a dedicated page body
+   * (`/clients/:lead_number/schedule-meeting` or `/reschedule-meeting`).
+   */
+  variant?: 'tab' | 'schedule-page' | 'reschedule-page';
+  /** MeetingTab schedule-page / reschedule-page: called after success or back. */
+  onScheduleComplete?: () => void;
+  onRescheduleComplete?: () => void;
 }

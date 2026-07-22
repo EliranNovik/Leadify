@@ -57,6 +57,8 @@ export const LazyMasterLeadPage = lazy(() => import('../components/MasterLeadPag
 export const LazySettingsPage = lazy(() => import('../pages/SettingsPage'));
 export const LazyTimelinePage = lazy(() => import('../components/TimelinePage'));
 export const LazyHistoryPage = lazy(() => import('../components/HistoryPage'));
+export const LazyScheduleMeetingPage = lazy(() => import('../pages/ScheduleMeetingPage'));
+export const LazyRescheduleMeetingPage = lazy(() => import('../pages/RescheduleMeetingPage'));
 export const LazyContractPage = lazy(() => import('../components/ContractPage'));
 export const LazyHrEmployeeContractPage = lazy(() => import('../pages/HrEmployeeContractPage'));
 export const LazyExternalFirmContractPage = lazy(() => import('../pages/ExternalFirmContractPage'));

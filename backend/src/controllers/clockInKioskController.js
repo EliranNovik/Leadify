@@ -1,6 +1,7 @@
 const clockInKioskTokenService = require('../services/clockInKioskTokenService');
 const clockInKioskEvents = require('../services/clockInKioskEvents');
 const entryKioskDisplayService = require('../services/entryKioskDisplayService');
+const kioskMeetingClockService = require('../services/kioskMeetingClockService');
 
 /** Simple in-memory rate limit for validate / announce (per IP). */
 const validateHits = new Map();
@@ -102,13 +103,16 @@ async function announce(req, res) {
       });
     }
 
-    const { locationId, employeeName, photoUrl, employeeId, action } = req.body || {};
+    const { locationId, employeeName, photoUrl, employeeId, action, remark, adjustedAt } =
+      req.body || {};
     const event = await clockInKioskEvents.announce({
       locationId,
       employeeName,
       photoUrl,
       employeeId,
       action,
+      remark,
+      adjustedAt,
     });
     res.json({ success: true, event });
   } catch (error) {
@@ -166,6 +170,60 @@ async function meetingsToday(req, res) {
   }
 }
 
+const adjustmentHits = new Map();
+const ADJUSTMENT_WINDOW_MS = 60_000;
+const ADJUSTMENT_MAX_HITS = 40;
+
+function pruneAdjustmentHits(now) {
+  for (const [key, bucket] of adjustmentHits) {
+    if (now - bucket.windowStart > ADJUSTMENT_WINDOW_MS) {
+      adjustmentHits.delete(key);
+    }
+  }
+}
+
+function allowAdjustment(ip) {
+  const now = Date.now();
+  pruneAdjustmentHits(now);
+  const key = ip || 'unknown';
+  const bucket = adjustmentHits.get(key);
+  if (!bucket || now - bucket.windowStart > ADJUSTMENT_WINDOW_MS) {
+    adjustmentHits.set(key, { windowStart: now, count: 1 });
+    return true;
+  }
+  bucket.count += 1;
+  return bucket.count <= ADJUSTMENT_MAX_HITS;
+}
+
+async function meetingClockAdjustment(req, res) {
+  try {
+    const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
+    if (!allowAdjustment(String(ip))) {
+      return res.status(429).json({
+        success: false,
+        adjusted: false,
+        error: 'Too many adjustment requests — try again shortly',
+      });
+    }
+
+    const { employeeId, action, sessionClockInAt } = req.body || {};
+    const result = await kioskMeetingClockService.resolveMeetingClockAdjustment({
+      employeeId,
+      action,
+      sessionClockInAt: sessionClockInAt || null,
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('POST /api/clock-in-kiosk/meeting-clock-adjustment failed:', error);
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      success: false,
+      adjusted: false,
+      error: error.message || 'Failed to resolve meeting clock adjustment',
+    });
+  }
+}
+
 module.exports = {
   getCurrent,
   validate,
@@ -173,4 +231,5 @@ module.exports = {
   recentEvent,
   display,
   meetingsToday,
+  meetingClockAdjustment,
 };

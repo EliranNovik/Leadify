@@ -764,6 +764,8 @@ export interface Meeting {
   created_at: string;
   meeting_date: string;
   meeting_time: string;
+  /** Meeting length in minutes (end = start + duration). */
+  duration?: number | null;
   meeting_manager: string;
   meeting_location: string;
   meeting_brief: string;

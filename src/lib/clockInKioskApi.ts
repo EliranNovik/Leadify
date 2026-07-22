@@ -59,6 +59,8 @@ export type ClockInKioskRecentEvent = {
   employeeId?: number | null;
   action?: ClockInKioskFlashAction;
   meetings?: ClockInKioskWelcomeMeeting[];
+  remark?: string | null;
+  adjustedAt?: string | null;
   at: string;
 };
 
@@ -113,6 +115,7 @@ export async function announceClockInKioskSuccess(
   photoUrl?: string | null,
   employeeId?: number | null,
   action: ClockInKioskFlashAction = 'in',
+  options?: { remark?: string | null; adjustedAt?: string | null },
 ): Promise<{ success: boolean; error?: string }> {
   const payload = JSON.stringify({
     locationId,
@@ -120,6 +123,8 @@ export async function announceClockInKioskSuccess(
     photoUrl: photoUrl || null,
     employeeId: employeeId ?? null,
     action,
+    remark: options?.remark || null,
+    adjustedAt: options?.adjustedAt || null,
   });
   const urls = [buildApiUrl('/api/clock-in-kiosk/announce')];
 
@@ -156,6 +161,60 @@ export async function announceClockInKioskSuccess(
     return { success: false, error: lastError || 'Announce failed' };
   }
   return { success: true };
+}
+
+export type MeetingClockAdjustmentResponse = {
+  success: boolean;
+  adjusted?: boolean;
+  adjustedAt?: string;
+  remark?: string;
+  meeting?: {
+    id: number;
+    calendarType?: string | null;
+    location?: string | null;
+    clientName?: string | null;
+    startMinutes?: number;
+    durationMinutes?: number;
+    time?: string | null;
+  };
+  error?: string;
+};
+
+export async function fetchMeetingClockAdjustment(
+  employeeId: number,
+  action: ClockInKioskFlashAction,
+  sessionClockInAt?: string | null,
+): Promise<MeetingClockAdjustmentResponse> {
+  const url = buildApiUrl('/api/clock-in-kiosk/meeting-clock-adjustment');
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        employeeId,
+        action,
+        sessionClockInAt: sessionClockInAt || null,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as MeetingClockAdjustmentResponse;
+    if (!res.ok) {
+      return {
+        success: false,
+        adjusted: false,
+        error: body.error || `Meeting adjustment failed (${res.status})`,
+      };
+    }
+    return body;
+  } catch (err) {
+    return {
+      success: false,
+      adjusted: false,
+      error: err instanceof Error ? err.message : 'Meeting adjustment failed',
+    };
+  }
 }
 
 export async function fetchClockInKioskRecentEvent(

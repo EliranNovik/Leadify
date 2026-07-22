@@ -8,9 +8,18 @@ export type MeetingFormDrawerSheetProps = {
   footer: React.ReactNode;
   children: React.ReactNode;
   zIndex?: number;
+  /**
+   * When true, only render the native bottom sheet on mobile viewports.
+   * Desktop callers should navigate to a dedicated page instead.
+   */
+  mobileOnly?: boolean;
+  /**
+   * Desktop/page mode: render form inline (no drawer chrome). Used by ScheduleMeetingPage.
+   */
+  inlinePage?: boolean;
 };
 
-/** Schedule / reschedule meeting: bottom sheet on mobile, right drawer on desktop. */
+/** Schedule / reschedule meeting: bottom sheet on mobile; optional inline page on desktop. */
 export default function MeetingFormDrawerSheet({
   open,
   onClose,
@@ -18,7 +27,26 @@ export default function MeetingFormDrawerSheet({
   footer,
   children,
   zIndex = 320,
+  mobileOnly = false,
+  inlinePage = false,
 }: MeetingFormDrawerSheetProps) {
+  const isMobile =
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
+
+  if (inlinePage) {
+    if (!open) return null;
+    return (
+      <div className="flex flex-col gap-5">
+        <div className="px-0 py-0">{children}</div>
+        {footer ? <div className="px-0 py-0">{footer}</div> : null}
+      </div>
+    );
+  }
+
+  if (mobileOnly && !isMobile) {
+    return null;
+  }
+
   return (
     <MobileBottomSheet
       open={open}
@@ -36,9 +64,17 @@ export default function MeetingFormDrawerSheet({
   );
 }
 
-export function MeetingFormDrawerFooter({ children }: { children: React.ReactNode }) {
+export function MeetingFormDrawerFooter({
+  children,
+  className = '',
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="flex gap-3 p-4 max-md:flex-col-reverse md:justify-end md:px-6">
+    <div
+      className={`flex gap-3 p-4 max-md:flex-col-reverse md:justify-end md:px-6 ${className}`.trim()}
+    >
       {children}
     </div>
   );

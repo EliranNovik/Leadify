@@ -74,6 +74,8 @@ import {
   LazyHandlerManagementPage,
   LazyInternalMeetingDocumentsPage,
   LazyHistoryPage,
+  LazyScheduleMeetingPage,
+  LazyRescheduleMeetingPage,
   LazyHowItWorksPage,
   LazyLeadSearchPage,
   LazyLeadsReportPage,
@@ -218,7 +220,7 @@ const AppContentInner: React.FC = () => {
     // Client subpages (timeline / history / duplicates / …) render their own layout and need
     // normal main padding so content isn't hidden under the fixed app Header.
     if (
-      /^\/clients\/[^/]+\/(duplicates|timeline|history|master|contract)(\/|$)/.test(
+      /^\/clients\/[^/]+\/(duplicates|timeline|history|master|contract|schedule-meeting|reschedule-meeting)(\/|$)/.test(
         location.pathname,
       )
     ) {
@@ -1019,6 +1021,8 @@ const AppContentInner: React.FC = () => {
                     <Route path="/poa/edit/:token" element={<RouteSuspense><LazyPoaDocumentEditor /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/timeline" element={<RouteSuspense><LazyTimelinePage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/history" element={<RouteSuspense><LazyHistoryPage /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/schedule-meeting" element={<RouteSuspense><LazyScheduleMeetingPage /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/reschedule-meeting" element={<RouteSuspense><LazyRescheduleMeetingPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/duplicates" element={<RouteSuspense><LazyDuplicateContactsPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />

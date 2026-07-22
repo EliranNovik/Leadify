@@ -2078,8 +2078,11 @@ const EntryKioskPage: React.FC = () => {
           action={successFlash.action === 'out' ? 'out' : 'in'}
           employeeName={successFlash.employeeName || 'Employee'}
           photoUrl={successFlash.photoUrl}
-          clockedAt={successFlash.at || new Date().toISOString()}
+          clockedAt={
+            successFlash.adjustedAt || successFlash.at || new Date().toISOString()
+          }
           meetings={successFlash.meetings}
+          remark={successFlash.remark}
           secondsLeft={welcomeSecondsLeft}
           totalSeconds={KIOSK_SUCCESS_SEC}
           now={now}

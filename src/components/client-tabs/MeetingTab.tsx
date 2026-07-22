@@ -16,19 +16,30 @@ import {
   preferEnglishMeetingTemplateLanguage,
   shouldIncludeMeetingJoinLink,
 } from '../../lib/meetingLocationUtils';
+import {
+  getRescheduleMeetingPath,
+  getScheduleMeetingPath,
+  isMobileMeetingScheduleUi,
+} from '../../lib/meetingScheduleNavigation';
+import { useNavigate } from 'react-router-dom';
 import { isMeetingBookedViaClientPortal } from '../../lib/clientBookingApi';
 import ClientPortalBookingBadge from '../client-booking/ClientPortalBookingBadge';
 import {
   CalendarIcon,
+  CalendarDaysIcon,
   PencilSquareIcon,
   CheckIcon,
   XMarkIcon,
   ClockIcon,
   UserIcon,
+  UserGroupIcon,
   VideoCameraIcon,
   MapPinIcon,
   EnvelopeIcon,
   LinkIcon,
+  SignalIcon,
+  TagIcon,
+  BuildingOffice2Icon,
   ClockIcon as ClockSolidIcon,
   UserCircleIcon,
   ChevronDownIcon,
@@ -71,6 +82,10 @@ import {
   selectReminderWhatsAppTemplate,
 } from '../../lib/meetingWhatsAppNotify';
 import WheelTimePicker from '../WheelTimePicker';
+import MeetingDurationField, {
+  DEFAULT_MEETING_DURATION_MINUTES,
+  normalizeMeetingDurationMinutes,
+} from '../meeting/MeetingDurationField';
 import MeetingFormDrawerSheet, {
   MeetingFormDrawerActionButton,
   MeetingFormDrawerFooter,
@@ -113,11 +128,34 @@ const currencyOptions = [
   { value: 'EUR', symbol: '€' }
 ];
 
+type MeetingFormFieldIcon = React.ComponentType<React.SVGProps<SVGSVGElement>>;
+
+function MeetingFormFieldLabel({
+  icon: Icon,
+  children,
+  className = 'mb-1 flex items-center gap-2 font-semibold',
+  htmlFor,
+}: {
+  icon: MeetingFormFieldIcon;
+  children: React.ReactNode;
+  className?: string;
+  htmlFor?: string;
+}) {
+  return (
+    <label htmlFor={htmlFor} className={className}>
+      <Icon className="h-5 w-5 shrink-0 opacity-60" aria-hidden />
+      <span>{children}</span>
+    </label>
+  );
+}
+
 interface Meeting {
   id: number;
   client_id: string;
   date: string;
   time: string;
+  /** Meeting length in minutes. */
+  duration?: number | null;
   location: string;
   manager: string;
   currency: string;
@@ -420,8 +458,18 @@ function OutlookIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
-const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+const MeetingTab: React.FC<ClientTabProps> = ({
+  client,
+  onClientUpdate,
+  variant = 'tab',
+  onScheduleComplete,
+  onRescheduleComplete,
+}) => {
   const { instance } = useMsal();
+  const navigate = useNavigate();
+  const isSchedulePage = variant === 'schedule-page';
+  const isReschedulePage = variant === 'reschedule-page';
+  const isActionPage = isSchedulePage || isReschedulePage;
 
   // Holds the latest silent meetings reload so the realtime subscription can call it regardless of
   // where fetchMeetings is declared below.
@@ -464,6 +512,32 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
   const [showScheduleDrawer, setShowScheduleDrawer] = useState(false);
+
+  const openScheduleMeetingUi = useCallback(() => {
+    clearPendingMeetingScheduleDrawer();
+    if (isSchedulePage || isMobileMeetingScheduleUi()) {
+      setShowScheduleDrawer(true);
+      return;
+    }
+    navigate(getScheduleMeetingPath(client?.lead_number || client?.id));
+  }, [client?.id, client?.lead_number, isSchedulePage, navigate]);
+
+  useEffect(() => {
+    if (isSchedulePage) setShowScheduleDrawer(true);
+  }, [isSchedulePage]);
+
+  const openRescheduleMeetingUi = useCallback(() => {
+    clearPendingMeetingRescheduleDrawer();
+    if (isReschedulePage || isMobileMeetingScheduleUi()) {
+      setShowRescheduleDrawer(true);
+      return;
+    }
+    navigate(getRescheduleMeetingPath(client?.lead_number || client?.id));
+  }, [client?.id, client?.lead_number, isReschedulePage, navigate]);
+
+  useEffect(() => {
+    if (isReschedulePage) setShowRescheduleDrawer(true);
+  }, [isReschedulePage]);
   const [sendingEmailMeetingId, setSendingEmailMeetingId] = useState<number | null>(null);
   const [editingBriefId, setEditingBriefId] = useState<number | null>(null);
   const [editedBrief, setEditedBrief] = useState<string>('');
@@ -575,6 +649,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [scheduleMeetingFormData, setScheduleMeetingFormData] = useState({
     date: '',
     time: '09:00',
+    duration: DEFAULT_MEETING_DURATION_MINUTES,
     location: 'Teams',
     manager: '',
     helper: '',
@@ -679,6 +754,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [rescheduleFormData, setRescheduleFormData] = useState({
     date: '',
     time: '09:00',
+    duration: DEFAULT_MEETING_DURATION_MINUTES,
     location: 'Teams',
     calendar: 'active_client',
     manager: '',
@@ -703,6 +779,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     () => ({
       date: '',
       time: '09:00',
+      duration: DEFAULT_MEETING_DURATION_MINUTES,
       location: 'Teams',
       manager: '',
       helper: '',
@@ -721,6 +798,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     () => ({
       date: '',
       time: '09:00',
+      duration: DEFAULT_MEETING_DURATION_MINUTES,
       location: 'Teams',
       calendar: 'active_client',
       manager: '',
@@ -741,7 +819,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setShowScheduleDrawer(false);
     setNotifyClientOnSchedule(false);
     setScheduleMeetingFormData(initialScheduleMeetingFormData);
-  }, [initialScheduleMeetingFormData]);
+    if (isSchedulePage) {
+      onScheduleComplete?.();
+    }
+  }, [initialScheduleMeetingFormData, isSchedulePage, onScheduleComplete]);
 
   const closeRescheduleDrawer = useCallback(() => {
     setShowAuthRedirectOption(false);
@@ -751,7 +832,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setNotifyClientOnReschedule(false);
     setRescheduleFormData(initialRescheduleFormData);
     setRescheduleOption('cancel');
-  }, [initialRescheduleFormData]);
+    if (isReschedulePage) {
+      onRescheduleComplete?.();
+    }
+  }, [initialRescheduleFormData, isReschedulePage, onRescheduleComplete]);
 
   // Helper function to get tomorrow's date
   const getTomorrowDate = () => {
@@ -1462,6 +1546,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setScheduleMeetingFormData({
       date: '',
       time: '09:00',
+      duration: DEFAULT_MEETING_DURATION_MINUTES,
       location: teamsLocation.name,
       manager: '',
       helper: '',
@@ -1584,25 +1669,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // meeting-related state lives, including External Meeting support.
   useEffect(() => {
     const openSchedule = () => {
-      clearPendingMeetingScheduleDrawer();
-      setShowScheduleDrawer(true);
+      openScheduleMeetingUi();
     };
     const openReschedule = () => {
-      clearPendingMeetingRescheduleDrawer();
-      setShowRescheduleDrawer(true);
+      openRescheduleMeetingUi();
     };
     window.addEventListener('meeting-tab:open-schedule-drawer', openSchedule);
     window.addEventListener('meeting-tab:open-reschedule-drawer', openReschedule);
 
     const pending = consumePendingMeetingDrawers();
-    if (pending.schedule) setShowScheduleDrawer(true);
-    if (pending.reschedule) setShowRescheduleDrawer(true);
+    if (pending.schedule) openScheduleMeetingUi();
+    if (pending.reschedule) openRescheduleMeetingUi();
 
     return () => {
       window.removeEventListener('meeting-tab:open-schedule-drawer', openSchedule);
       window.removeEventListener('meeting-tab:open-reschedule-drawer', openReschedule);
     };
-  }, []);
+  }, [openScheduleMeetingUi, openRescheduleMeetingUi]);
 
   useEffect(() => {
     const onSubEffortsModalChange = (event: Event) => {
@@ -1749,6 +1832,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             client_id: m.client_id,
             date: m.meeting_date,
             time: m.meeting_time,
+            duration: m.duration ?? null,
             location: m.meeting_location,
             manager: m.meeting_manager,
             currency: m.meeting_currency,
@@ -1796,6 +1880,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             client_id: m.client_id,
             date: m.meeting_date,
             time: m.meeting_time,
+            duration: m.duration ?? null,
             location: m.meeting_location,
             manager: m.meeting_manager,
             currency: m.meeting_currency,
@@ -2907,8 +2992,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
 
       // Prepare date/time for calendar
+      const inviteDurationMinutes = normalizeMeetingDurationMinutes(meeting.duration);
       const startDateTime = new Date(`${meeting.date}T${formattedTime}:00`);
-      const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
+      const endDateTime = new Date(startDateTime.getTime() + inviteDurationMinutes * 60000);
 
       // Determine language based on client's language_id for automatic template selection
       // For rescheduled emails, automatically use language_id; for others, use manual selection
@@ -3023,7 +3109,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               subject: calendarSubject,
               date: meeting.date,
               time: formattedTime,
-              durationMinutes: 60,
+              durationMinutes: inviteDurationMinutes,
               location: calendarLocationDisplay,
               description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
               organizerEmail: account.username || 'noreply@lawoffice.org.il',
@@ -3719,6 +3805,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         legacy_lead_id: isLegacyLead ? legacyId : null,
         meeting_date: params.date,
         meeting_time: params.time,
+        duration: normalizeMeetingDurationMinutes(params.durationMinutes),
         meeting_location: params.location,
         meeting_subject: params.subject,
         meeting_brief: params.description || null,
@@ -3814,6 +3901,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         const result = await createExternalMeetingForLead({
           date: scheduleMeetingFormData.date,
           time: scheduleMeetingFormData.time,
+          durationMinutes: normalizeMeetingDurationMinutes(scheduleMeetingFormData.duration),
           subject,
           description: scheduleMeetingFormData.brief || '',
           location: scheduleMeetingFormData.location,
@@ -3830,6 +3918,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           setScheduleMeetingFormData({
             date: '',
             time: '09:00',
+            duration: DEFAULT_MEETING_DURATION_MINUTES,
             location: 'Teams',
             manager: '',
             helper: '',
@@ -3851,6 +3940,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           });
           if (onClientUpdate) await onClientUpdate();
           await fetchMeetings();
+          if (isSchedulePage) onScheduleComplete?.();
         }
         setIsSchedulingMeeting(false);
         return;
@@ -3954,7 +4044,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         const [year, month, day] = scheduleMeetingFormData.date.split('-').map(Number);
         const [hours, minutes] = scheduleMeetingFormData.time.split(':').map(Number);
         const start = new Date(year, month - 1, day, hours, minutes);
-        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+        const meetingDurationMinutes = normalizeMeetingDurationMinutes(scheduleMeetingFormData.duration);
+        const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
 
         const calendarEmail = scheduleMeetingFormData.calendar === 'active_client'
           ? 'shared-newclients@lawoffice.org.il'
@@ -4022,11 +4113,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         meetingSchedulerDisplayName = schedulerName !== '--' ? schedulerName : String(client.scheduler);
       }
 
+      const meetingDurationMinutes = normalizeMeetingDurationMinutes(scheduleMeetingFormData.duration);
+
       const meetingData = {
         client_id: isLegacyLead ? null : client.id,
         legacy_lead_id: isLegacyLead ? legacyId : null,
         meeting_date: scheduleMeetingFormData.date,
         meeting_time: scheduleMeetingFormData.time,
+        duration: meetingDurationMinutes,
         meeting_location: scheduleMeetingFormData.location,
         meeting_manager: scheduleMeetingFormData.manager || '',
         meeting_currency: '₪',
@@ -4161,6 +4255,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           client_id: insertedData[0].client_id,
           date: insertedData[0].meeting_date,
           time: insertedData[0].meeting_time,
+          duration: insertedData[0].duration ?? meetingDurationMinutes,
           location: insertedData[0].meeting_location,
           manager: insertedData[0].meeting_manager,
           currency: insertedData[0].meeting_currency,
@@ -4213,6 +4308,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setScheduleMeetingFormData({
         date: '',
         time: '09:00',
+        duration: DEFAULT_MEETING_DURATION_MINUTES,
         location: 'Teams',
         manager: '',
         helper: '',
@@ -4227,6 +4323,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       if (onClientUpdate) await onClientUpdate();
       await fetchMeetings();
+      if (isSchedulePage) onScheduleComplete?.();
     } catch (error) {
       console.error('Error scheduling meeting:', error);
       toast.error('Failed to schedule meeting. Please try again.');
@@ -4422,6 +4519,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setRescheduleFormData({
         date: '',
         time: '09:00',
+        duration: DEFAULT_MEETING_DURATION_MINUTES,
         location: 'Teams',
         calendar: 'active_client',
         manager: '',
@@ -4436,6 +4534,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
       await fetchMeetings();
+      if (isReschedulePage) onRescheduleComplete?.();
     } catch (error) {
       toast.error('Failed to cancel meeting.');
       console.error(error);
@@ -4482,6 +4581,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         const result = await createExternalMeetingForLead({
           date: rescheduleFormData.date,
           time: rescheduleFormData.time,
+          durationMinutes: normalizeMeetingDurationMinutes(rescheduleFormData.duration),
           subject,
           description: rescheduleFormData.brief || '',
           location: rescheduleFormData.location,
@@ -4499,6 +4599,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           setRescheduleFormData({
             date: '',
             time: '09:00',
+            duration: DEFAULT_MEETING_DURATION_MINUTES,
             location: 'Teams',
             calendar: 'active_client',
             manager: '',
@@ -4521,6 +4622,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           setRescheduleOption('cancel');
           if (onClientUpdate) await onClientUpdate();
           await fetchMeetings();
+          if (isReschedulePage) onRescheduleComplete?.();
         }
         setIsReschedulingMeeting(false);
         return;
@@ -4687,7 +4789,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
         const start = new Date(year, month - 1, day, hours, minutes);
-        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+        const meetingDurationMinutes = normalizeMeetingDurationMinutes(rescheduleFormData.duration);
+        const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
 
         const calendarEmail = 'shared-newclients@lawoffice.org.il'; // Always use active client calendar
 
@@ -4753,6 +4856,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         legacy_lead_id: isLegacyLead ? legacyId : null,
         meeting_date: rescheduleFormData.date,
         meeting_time: rescheduleFormData.time,
+        duration: normalizeMeetingDurationMinutes(rescheduleFormData.duration),
         meeting_location: rescheduleFormData.location,
         meeting_manager: rescheduleFormData.manager || '',
         meeting_currency: '₪',
@@ -4987,7 +5091,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
         const startDateTime = new Date(year, month - 1, day, hours, minutes);
-        const endDateTime = new Date(startDateTime.getTime() + 30 * 60000);
+        const endDateTime = new Date(
+          startDateTime.getTime() + normalizeMeetingDurationMinutes(rescheduleFormData.duration) * 60000,
+        );
 
         const categoryName = client.category || 'No Category';
         const meetingSubject = canceledMeeting
@@ -5045,6 +5151,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setRescheduleFormData({
         date: '',
         time: '09:00',
+        duration: DEFAULT_MEETING_DURATION_MINUTES,
         location: 'Teams',
         calendar: 'active_client',
         manager: '',
@@ -5059,6 +5166,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
       await fetchMeetings();
+      if (isReschedulePage) onRescheduleComplete?.();
     } catch (error) {
       toast.error('Failed to reschedule meeting.');
       console.error(error);
@@ -7134,7 +7242,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="px-1 sm:px-2 md:px-3 py-2 sm:py-3 md:py-3 space-y-10 sm:space-y-16">
+    <div className={isActionPage ? '' : 'px-1 sm:px-2 md:px-3 py-2 sm:py-3 md:py-3 space-y-10 sm:space-y-16'}>
+      {!isActionPage && (
+      <>
       <ClientTabPageHeader
         className="mb-14"
         icon={CalendarIcon}
@@ -7944,14 +8054,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       )}
+      </>
+      )}
 
 
+      {!isReschedulePage && (
       <MeetingFormDrawerSheet
-        open={showScheduleDrawer}
+        open={isSchedulePage ? true : showScheduleDrawer}
         onClose={closeScheduleDrawer}
         title="Schedule Meeting"
+        mobileOnly={!isSchedulePage}
+        inlinePage={isSchedulePage}
         footer={(
-          <MeetingFormDrawerFooter>
+          <MeetingFormDrawerFooter className={isSchedulePage ? 'px-0 md:px-0' : ''}>
             <MeetingFormDrawerActionButton
               className="btn-primary"
               onClick={handleScheduleMeetingFromDrawer}
@@ -7989,6 +8104,63 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             )}
 
+              <div
+                className={
+                  isSchedulePage
+                    ? 'grid grid-cols-1 gap-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] lg:grid-rows-[auto_1fr] lg:items-stretch'
+                    : undefined
+                }
+              >
+              {isSchedulePage && (
+                <section className="rounded-[18px] bg-white p-6 shadow-sm md:p-8 lg:col-start-1 lg:row-start-1">
+                  <div className="flex items-center gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gray-100 text-primary">
+                      <CalendarDaysIcon className="h-7 w-7" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-base-content/45">
+                        Schedule meeting
+                      </p>
+                      <h1 className="mt-1 text-2xl font-semibold text-base-content">
+                        {client.name || 'Client'}
+                      </h1>
+                      {client.lead_number ? (
+                        <p className="mt-1 text-sm text-gray-500">#{client.lead_number}</p>
+                      ) : null}
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {isSchedulePage && (
+                <div className="flex h-full min-h-0 flex-col justify-center rounded-[18px] bg-white p-5 shadow-sm md:p-6 [&_label]:text-gray-500 lg:col-start-1 lg:row-start-2">
+                  <WheelTimePicker
+                    label="Time"
+                    labelClassName="block font-semibold mb-1 text-left"
+                    value={scheduleMeetingFormData.time}
+                    onChange={(time) =>
+                      setScheduleMeetingFormData((prev) => ({ ...prev, time }))
+                    }
+                    minHour={8}
+                    maxHour={23}
+                    disabled={!scheduleMeetingFormData.date}
+                  />
+                </div>
+              )}
+
+              <div
+                className={
+                  isSchedulePage
+                    ? 'h-full rounded-[18px] bg-white p-5 shadow-sm md:p-8 [&_label]:text-gray-500 lg:col-start-2 lg:row-start-1 lg:row-span-2'
+                    : undefined
+                }
+              >
+              {isSchedulePage && !scheduleMeetingFormData.date && (
+                <p className="mb-5 rounded-xl bg-primary/10 px-4 py-3 text-sm text-primary/70">
+                  Pick a date first to enable duration and time.
+                </p>
+              )}
+
               {/* Notify Client Toggle */}
               <div className="mb-6 flex items-center justify-between">
                 <label className="block font-semibold text-base">Notify Client</label>
@@ -8000,10 +8172,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 />
               </div>
 
-              <div className="flex flex-col gap-4">
+              <div
+                className={
+                  isSchedulePage
+                    ? 'grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2'
+                    : 'flex flex-col gap-4'
+                }
+              >
                 {/* Location */}
                 <div>
-                  <label className="block font-semibold mb-1">Location</label>
+                  <MeetingFormFieldLabel icon={MapPinIcon}>Location</MeetingFormFieldLabel>
                   <select
                     className="select select-bordered w-full"
                     value={scheduleMeetingFormData.location}
@@ -8018,8 +8196,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </div>
 
                 {Number(allMeetingLocations.find((loc: any) => loc.name === scheduleMeetingFormData.location)?.id) === CUSTOM_LINK_LOCATION_ID && (
-                  <div>
-                    <label className="block font-semibold mb-1">Custom Link</label>
+                  <div className={isSchedulePage ? 'md:col-span-2' : undefined}>
+                    <MeetingFormFieldLabel icon={LinkIcon}>Custom Link</MeetingFormFieldLabel>
                     <button
                       type="button"
                       className="btn btn-outline w-full justify-start"
@@ -8030,8 +8208,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </div>
                 )}
                 {Number(allMeetingLocations.find((loc: any) => loc.name === scheduleMeetingFormData.location)?.id) === CUSTOM_ADDRESS_LOCATION_ID && (
-                  <div>
-                    <label className="block font-semibold mb-1">Custom Address</label>
+                  <div className={isSchedulePage ? 'md:col-span-2' : undefined}>
+                    <MeetingFormFieldLabel icon={MapPinIcon}>Custom Address</MeetingFormFieldLabel>
                     <button
                       type="button"
                       className="btn btn-outline w-full justify-start"
@@ -8044,7 +8222,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
                 {/* Calendar */}
                 <div>
-                  <label className="block font-semibold mb-1">Calendar</label>
+                  <MeetingFormFieldLabel icon={CalendarIcon}>Calendar</MeetingFormFieldLabel>
                   <select
                     className="select select-bordered w-full"
                     value={scheduleMeetingFormData.calendar}
@@ -8057,7 +8235,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
                 {/* Date */}
                 <div>
-                  <label className="block font-semibold mb-1">Date</label>
+                  <MeetingFormFieldLabel icon={CalendarDaysIcon}>Date</MeetingFormFieldLabel>
                   <input
                     type="date"
                     className="input input-bordered w-full"
@@ -8070,24 +8248,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   />
                 </div>
 
-                {/* Time */}
-                <WheelTimePicker
-                  label="Time"
-                  value={scheduleMeetingFormData.time}
-                  onChange={(time) =>
-                    setScheduleMeetingFormData((prev) => ({ ...prev, time }))
+                <MeetingDurationField
+                  value={scheduleMeetingFormData.duration}
+                  onChange={(duration) =>
+                    setScheduleMeetingFormData((prev) => ({ ...prev, duration }))
                   }
-                  minHour={8}
-                  maxHour={23}
+                  startTime={scheduleMeetingFormData.time}
                   disabled={!scheduleMeetingFormData.date}
                 />
 
                 {/* External Meeting fields (Internal Meeting with external participants) */}
                 {scheduleMeetingFormData.calendar === 'external' && (
-                  <>
+                  <div className="contents">
                     {/* Subject */}
-                    <div>
-                      <label className="block font-semibold mb-1">Meeting Subject</label>
+                    <div className={isSchedulePage ? 'md:col-span-2' : undefined}>
+                      <MeetingFormFieldLabel icon={DocumentTextIcon}>Meeting Subject</MeetingFormFieldLabel>
                       <input
                         type="text"
                         className="input input-bordered w-full"
@@ -8099,7 +8274,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
                     {/* Internal meeting type */}
                     <div>
-                      <label className="block font-semibold mb-1">Internal Meeting Type</label>
+                      <MeetingFormFieldLabel icon={TagIcon}>Internal Meeting Type</MeetingFormFieldLabel>
                       <select
                         className="select select-bordered w-full"
                         value={scheduleExternal.internalMeetingTypeId != null ? String(scheduleExternal.internalMeetingTypeId) : ''}
@@ -8120,8 +8295,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     </div>
 
                     {/* Staff attendees */}
-                    <div className="relative" ref={scheduleStaffDropdownRef}>
-                      <label className="block font-semibold mb-1">Staff Attendees</label>
+                    <div className={`relative ${isSchedulePage ? 'md:col-span-2' : ''}`} ref={scheduleStaffDropdownRef}>
+                      <MeetingFormFieldLabel icon={UserGroupIcon}>Staff Attendees</MeetingFormFieldLabel>
                       <input
                         type="text"
                         className="input input-bordered w-full"
@@ -8183,8 +8358,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     </div>
 
                     {/* Firm contacts */}
-                    <div className="relative" ref={scheduleFirmContactDropdownRef}>
-                      <label className="block font-semibold mb-1">Firm Contacts</label>
+                    <div className={`relative ${isSchedulePage ? 'md:col-span-2' : ''}`} ref={scheduleFirmContactDropdownRef}>
+                      <MeetingFormFieldLabel icon={BuildingOffice2Icon}>Firm Contacts</MeetingFormFieldLabel>
                       <input
                         type="text"
                         className="input input-bordered w-full"
@@ -8250,8 +8425,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     </div>
 
                     {/* Extern participant (free) */}
-                    <div>
-                      <label className="block font-semibold mb-1">Extern Participant</label>
+                    <div className={isSchedulePage ? 'md:col-span-2' : undefined}>
+                      <MeetingFormFieldLabel icon={UserIcon}>Extern Participant</MeetingFormFieldLabel>
                       <div className="grid grid-cols-1 gap-2">
                         <input
                           className="input input-bordered w-full"
@@ -8321,11 +8496,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         </div>
                       )}
                     </div>
-                  </>
+                  </div>
                 )}
 
-                {/* Meeting Brief (Optional) — always available, used as Outlook description for external too */}
-                <div>
+                {/* Meeting Brief (Optional) — hidden from schedule UI
+                <div className={isSchedulePage ? 'md:col-span-2' : undefined}>
                   <label htmlFor="meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
                   <textarea
                     id="meeting-brief"
@@ -8336,40 +8511,48 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     placeholder="Brief description of the meeting topic..."
                   />
                 </div>
+                */}
 
                 {/* Active-client-only fields: hidden for External Meeting */}
                 {scheduleMeetingFormData.calendar !== 'external' && (
-                  <>
-                    {/* Meeting Attendance Probability */}
-                    <div>
-                      <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={scheduleMeetingFormData.attendance_probability}
-                        onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
-                      >
-                        <option value="Low">Low</option>
-                        <option value="Medium">Medium</option>
-                        <option value="High">High</option>
-                        <option value="Very High">Very High</option>
-                      </select>
+                  <div className="contents">
+                    {/* Meeting Attendance Probability / Complexity — pushed lower with extra gap */}
+                    <div
+                      className={
+                        isSchedulePage
+                          ? 'col-span-full mt-6 grid grid-cols-1 gap-x-6 gap-y-4 border-t border-base-200 pt-8 md:grid-cols-2'
+                          : 'contents'
+                      }
+                    >
+                      <div>
+                        <MeetingFormFieldLabel icon={SignalIcon}>Meeting Attendance Probability</MeetingFormFieldLabel>
+                        <select
+                          className="select select-bordered w-full"
+                          value={scheduleMeetingFormData.attendance_probability}
+                          onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
+                        >
+                          <option value="Low">Low</option>
+                          <option value="Medium">Medium</option>
+                          <option value="High">High</option>
+                          <option value="Very High">Very High</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <MeetingFormFieldLabel icon={AcademicCapIcon}>Meeting Complexity</MeetingFormFieldLabel>
+                        <select
+                          className="select select-bordered w-full"
+                          value={scheduleMeetingFormData.complexity}
+                          onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
+                        >
+                          <option value="Simple">Simple</option>
+                          <option value="Complex">Complex</option>
+                        </select>
+                      </div>
                     </div>
 
-                    {/* Meeting Complexity */}
-                    <div>
-                      <label className="block font-semibold mb-1">Meeting Complexity</label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={scheduleMeetingFormData.complexity}
-                        onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
-                      >
-                        <option value="Simple">Simple</option>
-                        <option value="Complex">Complex</option>
-                      </select>
-                    </div>
-
-                    {/* Meeting Car Number */}
-                    <div>
+                    {/* Meeting Car Number — hidden from schedule UI
+                    <div className={isSchedulePage ? 'md:col-span-2' : undefined}>
                       <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
                       <input
                         id="car-number"
@@ -8380,18 +8563,43 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         placeholder="Enter car number..."
                       />
                     </div>
-                  </>
+                    */}
+                  </div>
                 )}
+
+                {/* Time — in form for mobile sheet only (page uses separate box) */}
+                {!isSchedulePage && (
+                  <div>
+                    <WheelTimePicker
+                      label="Time"
+                      labelClassName="block font-semibold mb-1 text-left"
+                      value={scheduleMeetingFormData.time}
+                      onChange={(time) =>
+                        setScheduleMeetingFormData((prev) => ({ ...prev, time }))
+                      }
+                      minHour={8}
+                      maxHour={23}
+                      disabled={!scheduleMeetingFormData.date}
+                    />
+                  </div>
+                )}
+              </div>
+              </div>
               </div>
 
       </MeetingFormDrawerSheet>
+      )}
 
+      {!isSchedulePage && (
+      <>
       <MeetingFormDrawerSheet
-        open={showRescheduleDrawer}
+        open={isReschedulePage ? true : showRescheduleDrawer}
         onClose={closeRescheduleDrawer}
         title="Reschedule Meeting"
+        mobileOnly={!isReschedulePage}
+        inlinePage={isReschedulePage}
         footer={(
-          <MeetingFormDrawerFooter>
+          <MeetingFormDrawerFooter className={isReschedulePage ? 'px-0 md:px-0' : ''}>
             <MeetingFormDrawerActionButton
               className="btn-ghost"
               onClick={closeRescheduleDrawer}
@@ -8452,6 +8660,89 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             )}
 
+              <div
+                className={
+                  isReschedulePage
+                    ? 'grid grid-cols-1 gap-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] lg:items-stretch'
+                    : undefined
+                }
+              >
+              {isReschedulePage && (
+                <section className="rounded-[18px] bg-white p-6 shadow-sm md:p-8 lg:col-start-1 lg:row-start-1">
+                  <div className="flex items-center gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gray-100 text-primary">
+                      <ArrowPathIcon className="h-7 w-7" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-base-content/45">
+                        Reschedule meeting
+                      </p>
+                      <h1 className="mt-1 text-2xl font-semibold text-base-content">
+                        {client.name || 'Client'}
+                      </h1>
+                      {client.lead_number ? (
+                        <p className="mt-1 text-sm text-gray-500">#{client.lead_number}</p>
+                      ) : null}
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {/* Action tabs */}
+              <div
+                className={
+                  isReschedulePage
+                    ? 'rounded-[18px] bg-white p-5 shadow-sm md:p-6 lg:col-start-2 lg:row-start-1'
+                    : undefined
+                }
+              >
+                <label className={`block font-semibold mb-2 ${isReschedulePage ? 'text-gray-500' : ''}`}>Action</label>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    className={`btn flex-1 ${rescheduleOption === 'cancel' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setRescheduleOption('cancel')}
+                  >
+                    Cancel Meeting
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn flex-1 ${rescheduleOption === 'reschedule' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setRescheduleOption('reschedule')}
+                  >
+                    Reschedule Meeting
+                  </button>
+                </div>
+                <p className="text-sm text-gray-500 mt-2">
+                  {rescheduleOption === 'cancel'
+                    ? 'Cancel the meeting and send cancellation email to client.'
+                    : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
+                </p>
+              </div>
+
+              {isReschedulePage && rescheduleOption === 'reschedule' && (
+                <div className="flex h-full min-h-0 flex-col justify-center rounded-[18px] bg-white p-5 shadow-sm md:p-6 [&_label]:text-gray-500 lg:col-start-1 lg:row-start-2">
+                  <WheelTimePicker
+                    label="New Time"
+                    labelClassName="block font-semibold mb-1 text-left"
+                    value={rescheduleFormData.time}
+                    onChange={(time) =>
+                      setRescheduleFormData((prev: any) => ({ ...prev, time }))
+                    }
+                    minHour={8}
+                    maxHour={23}
+                    disabled={!rescheduleFormData.date}
+                  />
+                </div>
+              )}
+
+              <div
+                className={
+                  isReschedulePage
+                    ? 'h-full rounded-[18px] bg-white p-5 shadow-sm md:p-8 [&_label]:text-gray-500 lg:col-start-2 lg:row-start-2'
+                    : undefined
+                }
+              >
               {/* Notify Client Toggle */}
               <div className="mb-6 flex items-center justify-between">
                 <label className="block font-semibold text-base">Notify Client</label>
@@ -8463,13 +8754,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 />
               </div>
 
-              <div className="flex flex-col gap-4">
+              <div
+                className={
+                  isReschedulePage
+                    ? 'grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2'
+                    : 'flex flex-col gap-4'
+                }
+              >
                 {/* Select Meeting */}
                 {rescheduleMeetings.length > 0 && (
-                  <div>
-                    <label className="block font-semibold mb-1">
+                  <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
+                    <MeetingFormFieldLabel icon={CalendarIcon}>
                       Select Meeting {rescheduleOption === 'reschedule' ? '(Optional)' : ''}
-                    </label>
+                    </MeetingFormFieldLabel>
                     <select
                       className="select select-bordered w-full"
                       value={meetingToDelete || ''}
@@ -8482,6 +8779,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           setRescheduleFormData({
                             date: selectedMeeting.meeting_date || getTomorrowDate(),
                             time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
+                            duration: normalizeMeetingDurationMinutes(selectedMeeting.duration),
                             location: selectedMeeting.meeting_location || 'Teams',
                             calendar: 'active_client',
                             manager: selectedMeeting.meeting_manager || '',
@@ -8507,38 +8805,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </div>
                 )}
 
-                {/* Reschedule Options */}
-                <div>
-                  <label className="block font-semibold mb-2">Action</label>
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      className={`btn flex-1 ${rescheduleOption === 'cancel' ? 'btn-primary' : 'btn-outline'}`}
-                      onClick={() => setRescheduleOption('cancel')}
-                    >
-                      Cancel Meeting
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn flex-1 ${rescheduleOption === 'reschedule' ? 'btn-primary' : 'btn-outline'}`}
-                      onClick={() => setRescheduleOption('reschedule')}
-                    >
-                      Reschedule Meeting
-                    </button>
-                  </div>
-                  <p className="text-sm text-gray-500 mt-2">
-                    {rescheduleOption === 'cancel'
-                      ? 'Cancel the meeting and send cancellation email to client.'
-                      : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
-                  </p>
-                </div>
-
                 {/* Form fields - only show when reschedule option is selected */}
                 {rescheduleOption === 'reschedule' && (
-                  <>
+                  <div className="contents">
                     {/* Location */}
                     <div>
-                      <label className="block font-semibold mb-1">Location</label>
+                      <MeetingFormFieldLabel icon={MapPinIcon}>Location</MeetingFormFieldLabel>
                       <select
                         className="select select-bordered w-full"
                         value={rescheduleFormData.location}
@@ -8553,8 +8825,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     </div>
 
                     {Number(allMeetingLocations.find((loc: any) => loc.name === rescheduleFormData.location)?.id) === CUSTOM_LINK_LOCATION_ID && (
-                      <div>
-                        <label className="block font-semibold mb-1">Custom Link</label>
+                      <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
+                        <MeetingFormFieldLabel icon={LinkIcon}>Custom Link</MeetingFormFieldLabel>
                         <button
                           type="button"
                           className="btn btn-outline w-full justify-start"
@@ -8565,8 +8837,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       </div>
                     )}
                     {Number(allMeetingLocations.find((loc: any) => loc.name === rescheduleFormData.location)?.id) === CUSTOM_ADDRESS_LOCATION_ID && (
-                      <div>
-                        <label className="block font-semibold mb-1">Custom Address</label>
+                      <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
+                        <MeetingFormFieldLabel icon={MapPinIcon}>Custom Address</MeetingFormFieldLabel>
                         <button
                           type="button"
                           className="btn btn-outline w-full justify-start"
@@ -8579,7 +8851,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
                     {/* Calendar */}
                     <div>
-                      <label className="block font-semibold mb-1">Calendar</label>
+                      <MeetingFormFieldLabel icon={CalendarIcon}>Calendar</MeetingFormFieldLabel>
                       <select
                         className="select select-bordered w-full"
                         value={rescheduleFormData.calendar}
@@ -8592,7 +8864,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
                     {/* Date */}
                     <div>
-                      <label className="block font-semibold mb-1">New Date</label>
+                      <MeetingFormFieldLabel icon={CalendarDaysIcon}>New Date</MeetingFormFieldLabel>
                       <input
                         type="date"
                         className="input input-bordered w-full"
@@ -8605,23 +8877,20 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       />
                     </div>
 
-                    {/* Time */}
-                    <WheelTimePicker
-                      label="New Time"
-                      value={rescheduleFormData.time}
-                      onChange={(time) =>
-                        setRescheduleFormData((prev: any) => ({ ...prev, time }))
+                    <MeetingDurationField
+                      value={rescheduleFormData.duration}
+                      onChange={(duration) =>
+                        setRescheduleFormData((prev: any) => ({ ...prev, duration }))
                       }
-                      minHour={8}
-                      maxHour={23}
+                      startTime={rescheduleFormData.time}
                       disabled={!rescheduleFormData.date}
                     />
 
                     {/* External Meeting fields (Internal Meeting with external participants) */}
                     {rescheduleFormData.calendar === 'external' && (
-                      <>
-                        <div>
-                          <label className="block font-semibold mb-1">Meeting Subject</label>
+                      <div className="contents">
+                        <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
+                          <MeetingFormFieldLabel icon={DocumentTextIcon}>Meeting Subject</MeetingFormFieldLabel>
                           <input
                             type="text"
                             className="input input-bordered w-full"
@@ -8632,7 +8901,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         </div>
 
                         <div>
-                          <label className="block font-semibold mb-1">Internal Meeting Type</label>
+                          <MeetingFormFieldLabel icon={TagIcon}>Internal Meeting Type</MeetingFormFieldLabel>
                           <select
                             className="select select-bordered w-full"
                             value={rescheduleExternal.internalMeetingTypeId != null ? String(rescheduleExternal.internalMeetingTypeId) : ''}
@@ -8652,8 +8921,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           </select>
                         </div>
 
-                        <div className="relative" ref={rescheduleStaffDropdownRef}>
-                          <label className="block font-semibold mb-1">Staff Attendees</label>
+                        <div className={`relative ${isReschedulePage ? 'md:col-span-2' : ''}`} ref={rescheduleStaffDropdownRef}>
+                          <MeetingFormFieldLabel icon={UserGroupIcon}>Staff Attendees</MeetingFormFieldLabel>
                           <input
                             type="text"
                             className="input input-bordered w-full"
@@ -8714,8 +8983,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           )}
                         </div>
 
-                        <div className="relative" ref={rescheduleFirmContactDropdownRef}>
-                          <label className="block font-semibold mb-1">Firm Contacts</label>
+                        <div className={`relative ${isReschedulePage ? 'md:col-span-2' : ''}`} ref={rescheduleFirmContactDropdownRef}>
+                          <MeetingFormFieldLabel icon={BuildingOffice2Icon}>Firm Contacts</MeetingFormFieldLabel>
                           <input
                             type="text"
                             className="input input-bordered w-full"
@@ -8780,8 +9049,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           )}
                         </div>
 
-                        <div>
-                          <label className="block font-semibold mb-1">Extern Participant</label>
+                        <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
+                          <MeetingFormFieldLabel icon={UserIcon}>Extern Participant</MeetingFormFieldLabel>
                           <div className="grid grid-cols-1 gap-2">
                             <input
                               className="input input-bordered w-full"
@@ -8851,11 +9120,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                             </div>
                           )}
                         </div>
-                      </>
+                      </div>
                     )}
 
-                    {/* Meeting Brief (Optional) — always available */}
-                    <div>
+                    {/* Meeting Brief (Optional) — hidden from reschedule UI
+                    <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
                       <label htmlFor="reschedule-meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
                       <textarea
                         id="reschedule-meeting-brief"
@@ -8866,12 +9135,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         placeholder="Brief description of the meeting topic..."
                       />
                     </div>
+                    */}
 
                     {/* Active-client-only fields: hidden for External Meeting */}
                     {rescheduleFormData.calendar !== 'external' && (
-                      <>
+                      <div className="contents">
                         <div>
-                          <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                          <MeetingFormFieldLabel icon={SignalIcon}>Meeting Attendance Probability</MeetingFormFieldLabel>
                           <select
                             className="select select-bordered w-full"
                             value={rescheduleFormData.attendance_probability}
@@ -8885,7 +9155,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         </div>
 
                         <div>
-                          <label className="block font-semibold mb-1">Meeting Complexity</label>
+                          <MeetingFormFieldLabel icon={AcademicCapIcon}>Meeting Complexity</MeetingFormFieldLabel>
                           <select
                             className="select select-bordered w-full"
                             value={rescheduleFormData.complexity}
@@ -8896,7 +9166,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           </select>
                         </div>
 
-                        <div>
+                        {/* Meeting Car Number — hidden from reschedule UI
+                        <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
                           <label htmlFor="reschedule-car-number" className="block font-semibold mb-1">Meeting Car Number</label>
                           <input
                             id="reschedule-car-number"
@@ -8907,13 +9178,35 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                             placeholder="Enter car number..."
                           />
                         </div>
-                      </>
+                        */}
+                      </div>
                     )}
-                  </>
+
+                    {/* Time — in form for mobile sheet only (page uses separate box above) */}
+                    {!isReschedulePage && (
+                      <div>
+                        <WheelTimePicker
+                          label="New Time"
+                          labelClassName="block font-semibold mb-1 text-left"
+                          value={rescheduleFormData.time}
+                          onChange={(time) =>
+                            setRescheduleFormData((prev: any) => ({ ...prev, time }))
+                          }
+                          minHour={8}
+                          maxHour={23}
+                          disabled={!rescheduleFormData.date}
+                        />
+                      </div>
+                    )}
+                  </div>
                 )}
+              </div>
+              </div>
               </div>
 
       </MeetingFormDrawerSheet>
+      </>
+      )}
 
       {showCustomLocationModal && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">

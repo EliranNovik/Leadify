@@ -5,8 +5,10 @@ import {
   ENTRY_KIOSK_DEFAULT_LOCATION_ID,
   announceClockInKioskSuccess,
   buildClockInEntryPath,
+  fetchMeetingClockAdjustment,
   validateClockInKioskToken,
   type ClockInKioskFlashAction,
+  type ClockInKioskWelcomeMeeting,
 } from '../lib/clockInKioskApi';
 import { fetchClockInGateProfile } from '../lib/employeeClockInGate';
 import {
@@ -82,6 +84,8 @@ const ClockInEntryPage: React.FC = () => {
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [clockedAt, setClockedAt] = useState<string | null>(null);
   const [action, setAction] = useState<ClockInKioskFlashAction>('in');
+  const [remark, setRemark] = useState<string | null>(null);
+  const [welcomeMeetings, setWelcomeMeetings] = useState<ClockInKioskWelcomeMeeting[]>([]);
   const [secondsLeft, setSecondsLeft] = useState(KIOSK_WELCOME_DURATION_SEC);
   const [now, setNow] = useState(() => new Date());
   const welcomeTickRef = useRef<number | null>(null);
@@ -119,12 +123,16 @@ const ClockInEntryPage: React.FC = () => {
       employeeId: number,
       resolvedLocationId: number,
       atIso: string,
+      nextRemark?: string | null,
+      nextMeetings?: ClockInKioskWelcomeMeeting[],
     ) => {
       if (cancelled) return;
       setAction(nextAction);
       setDisplayName(name);
       setPhotoUrl(nextPhotoUrl);
       setClockedAt(atIso);
+      setRemark(nextRemark || null);
+      setWelcomeMeetings(nextMeetings || []);
       setStatus('success');
       setMessage(nextAction === 'out' ? 'You are clocked out' : 'You are clocked in');
       setSecondsLeft(KIOSK_WELCOME_DURATION_SEC);
@@ -136,6 +144,7 @@ const ClockInEntryPage: React.FC = () => {
         nextPhotoUrl,
         employeeId,
         nextAction,
+        { remark: nextRemark || null, adjustedAt: atIso },
       ).catch((err) => console.warn('Kiosk announce failed:', err));
 
       clearWelcomeTimers();
@@ -228,13 +237,29 @@ const ClockInEntryPage: React.FC = () => {
         setMessage('Clocking you out…');
         setAction('out');
 
+        let outAt = nowIso;
+        let outRemark: string | null = null;
+        try {
+          const adjustment = await fetchMeetingClockAdjustment(
+            employeeId,
+            'out',
+            activeRecord.clock_in_time,
+          );
+          if (adjustment.success && adjustment.adjusted && adjustment.adjustedAt) {
+            outAt = adjustment.adjustedAt;
+            outRemark = adjustment.remark || null;
+          }
+        } catch (adjErr) {
+          console.warn('Meeting clock-out adjustment skipped:', adjErr);
+        }
+
         try {
           await clockOutEmployeeRecord(
             {
               ...activeRecord,
               clock_in_location_id: activeRecord.clock_in_location_id || resolvedLocationId,
             },
-            { skipGeolocation: true },
+            { skipGeolocation: true, clockOutTime: outAt },
           );
         } catch (err) {
           console.error('Entry kiosk clock-out failed:', err);
@@ -249,7 +274,15 @@ const ClockInEntryPage: React.FC = () => {
           return;
         }
 
-        finishSuccess('out', name, nextPhotoUrl, employeeId, resolvedLocationId, nowIso);
+        finishSuccess(
+          'out',
+          name,
+          nextPhotoUrl,
+          employeeId,
+          resolvedLocationId,
+          outAt,
+          outRemark,
+        );
         return;
       }
 
@@ -257,10 +290,22 @@ const ClockInEntryPage: React.FC = () => {
       setMessage('Clocking you in…');
       setAction('in');
 
+      let inAt = nowIso;
+      let inRemark: string | null = null;
+      try {
+        const adjustment = await fetchMeetingClockAdjustment(employeeId, 'in');
+        if (adjustment.success && adjustment.adjusted && adjustment.adjustedAt) {
+          inAt = adjustment.adjustedAt;
+          inRemark = adjustment.remark || null;
+        }
+      } catch (adjErr) {
+        console.warn('Meeting clock-in adjustment skipped:', adjErr);
+      }
+
       const payload = {
         employee_id: employeeId,
         user_id: session.user.id,
-        clock_in_time: nowIso,
+        clock_in_time: inAt,
         clock_in_location_id: resolvedLocationId,
         notes: 'Entry kiosk QR',
         is_active: true,
@@ -284,7 +329,15 @@ const ClockInEntryPage: React.FC = () => {
         return;
       }
 
-      finishSuccess('in', name, nextPhotoUrl, employeeId, resolvedLocationId, nowIso);
+      finishSuccess(
+        'in',
+        name,
+        nextPhotoUrl,
+        employeeId,
+        resolvedLocationId,
+        inAt,
+        inRemark,
+      );
     };
 
     void run();
@@ -301,6 +354,8 @@ const ClockInEntryPage: React.FC = () => {
         employeeName={displayName}
         photoUrl={photoUrl}
         clockedAt={clockedAt}
+        meetings={welcomeMeetings}
+        remark={remark}
         secondsLeft={secondsLeft}
         totalSeconds={KIOSK_WELCOME_DURATION_SEC}
         now={now}

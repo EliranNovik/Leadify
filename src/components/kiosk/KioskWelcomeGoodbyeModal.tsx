@@ -33,6 +33,8 @@ export type KioskWelcomeGoodbyeModalProps = {
   photoUrl?: string | null;
   clockedAt: string | Date;
   meetings?: ClockInKioskWelcomeMeeting[];
+  /** Meeting-aware line shown with Welcome / Goodbye. */
+  remark?: string | null;
   secondsLeft: number;
   totalSeconds?: number;
   /** Live clock in the footer (defaults to now). */
@@ -52,6 +54,7 @@ export default function KioskWelcomeGoodbyeModal({
   photoUrl,
   clockedAt,
   meetings = [],
+  remark = null,
   secondsLeft,
   totalSeconds = KIOSK_WELCOME_DURATION_SEC,
   now = new Date(),
@@ -148,6 +151,15 @@ export default function KioskWelcomeGoodbyeModal({
               </strong>
             </span>
           </p>
+
+          {remark ? (
+            <p
+              className="kiosk-success-footer-msg"
+              style={{ marginTop: '0.75rem', marginBottom: 0, opacity: 0.95 }}
+            >
+              {remark}
+            </p>
+          ) : null}
 
           {isOut ? (
             <>

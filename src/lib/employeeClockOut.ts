@@ -32,15 +32,28 @@ export async function fetchActiveClockInRecord(
 
 export async function clockOutEmployeeRecord(
   record: ActiveClockInRecord,
-  options?: { skipGeolocation?: boolean },
+  options?: { skipGeolocation?: boolean; clockOutTime?: string },
 ): Promise<void> {
   const clockOutLocationId = record.clock_in_location_id;
   if (!clockOutLocationId) {
     throw new Error('Missing workplace for clock-out');
   }
 
+  const clockOutTime =
+    options?.clockOutTime && !Number.isNaN(Date.parse(options.clockOutTime))
+      ? new Date(options.clockOutTime).toISOString()
+      : new Date().toISOString();
+
+  // Never violate employee_clock_in_time_check
+  const clockInMs = new Date(record.clock_in_time).getTime();
+  const clockOutMs = new Date(clockOutTime).getTime();
+  const safeClockOutTime =
+    Number.isFinite(clockInMs) && Number.isFinite(clockOutMs) && clockOutMs < clockInMs
+      ? new Date().toISOString()
+      : clockOutTime;
+
   const baseUpdate = {
-    clock_out_time: new Date().toISOString(),
+    clock_out_time: safeClockOutTime,
     is_active: false,
     notes: null,
     clock_out_location_id: clockOutLocationId,
