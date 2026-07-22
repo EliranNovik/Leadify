@@ -327,6 +327,19 @@ const EntryKioskPage: React.FC = () => {
   const kioskSuccessTimerRef = useRef<number | null>(null);
   const promoNextShowAtRef = useRef<number | null>(null);
   const promoHideAtRef = useRef<number | null>(null);
+
+  const dismissSuccessFlash = useCallback(() => {
+    if (successTimerRef.current) {
+      window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+    if (welcomeTickRef.current) {
+      window.clearInterval(welcomeTickRef.current);
+      welcomeTickRef.current = null;
+    }
+    setSuccessFlash(null);
+    setWelcomeSecondsLeft(KIOSK_SUCCESS_SEC);
+  }, []);
   const deviceUiModeRef = useRef<DeviceUiMode>('checking');
   const meetingsScreenOpenRef = useRef(false);
   const successFlashActiveRef = useRef(false);
@@ -934,7 +947,7 @@ const EntryKioskPage: React.FC = () => {
 
   if (deviceUiMode === 'checking') {
     return (
-      <div className="entry-kiosk relative flex h-[100dvh] items-center justify-center bg-[#0a1628] text-white">
+      <div className="entry-kiosk relative flex items-center justify-center bg-[#0a1628] text-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
@@ -946,7 +959,7 @@ const EntryKioskPage: React.FC = () => {
 
   if (deviceUiMode === 'unpaired') {
     return (
-      <div className="entry-kiosk relative flex h-[100dvh] flex-col overflow-hidden bg-[#0a1628] text-white">
+      <div className="entry-kiosk relative flex flex-col overflow-hidden bg-[#0a1628] text-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
@@ -961,7 +974,7 @@ const EntryKioskPage: React.FC = () => {
 
   if (deviceUiMode === 'locked') {
     return (
-      <div className="entry-kiosk relative flex h-[100dvh] items-center justify-center bg-[#0a1628] px-6 text-center text-white">
+      <div className="entry-kiosk relative flex items-center justify-center bg-[#0a1628] px-6 text-center text-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
@@ -976,7 +989,7 @@ const EntryKioskPage: React.FC = () => {
 
   if (deviceUiMode === 'document' && documentSession) {
     return (
-      <div className="entry-kiosk relative flex h-[100dvh] flex-col overflow-hidden bg-white">
+      <div className="entry-kiosk relative flex flex-col overflow-hidden bg-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
@@ -993,7 +1006,7 @@ const EntryKioskPage: React.FC = () => {
 
   return (
     <div
-      className="entry-kiosk relative flex h-[100dvh] max-h-[100dvh] flex-col overflow-hidden text-[var(--kiosk-text)]"
+      className="entry-kiosk relative flex flex-col overflow-hidden text-[var(--kiosk-text)]"
       style={
         {
           '--kiosk-text': '#f8fafc',
@@ -1001,6 +1014,7 @@ const EntryKioskPage: React.FC = () => {
           '--kiosk-gold': '#d8b15a',
           background:
             'radial-gradient(ellipse 80% 55% at 50% 8%, rgba(74, 110, 190, 0.28), transparent 55%), radial-gradient(ellipse 60% 40% at 80% 90%, rgba(40, 70, 140, 0.18), transparent 50%), radial-gradient(ellipse 50% 35% at 10% 70%, rgba(30, 55, 120, 0.12), transparent 45%), linear-gradient(180deg, #0a1630 0%, #050d1c 42%, #02060f 100%)',
+          backgroundColor: '#0a1628',
         } as React.CSSProperties
       }
     >
@@ -1877,15 +1891,17 @@ const EntryKioskPage: React.FC = () => {
           display: grid;
           place-items: center;
           container-type: size;
-          padding: 4px 4px 0;
-          overflow: hidden;
+          /* Room for the gold orbit stroke outside the QR frame */
+          padding: 18px;
+          overflow: visible;
         }
         .kiosk-qr-block {
           display: flex;
           flex-direction: column;
           align-items: center;
-          width: min(100cqi, calc(100cqb - 1.25rem), 580px);
+          width: min(100cqi, calc(100cqb - 2.5rem), 580px);
           max-width: 100%;
+          overflow: visible;
         }
         @supports not (width: 1cqi) {
           .kiosk-qr-block {
@@ -1897,11 +1913,13 @@ const EntryKioskPage: React.FC = () => {
           width: 100%;
           aspect-ratio: 1 / 1;
           z-index: 1;
+          overflow: visible;
         }
         .kiosk-scan-ring {
           position: absolute;
-          inset: -4px;
-          border-radius: 28px;
+          /* Outer gap = visible gold stroke thickness (no CSS mask — Chrome tablet broke it) */
+          inset: -14px;
+          border-radius: 36px;
           pointer-events: none;
           overflow: hidden;
           z-index: 0;
@@ -1909,12 +1927,14 @@ const EntryKioskPage: React.FC = () => {
         .kiosk-scan-ring::before {
           content: '';
           position: absolute;
-          inset: -45%;
+          inset: -55%;
           background: conic-gradient(
             from 0deg,
             transparent 0deg,
-            transparent 300deg,
-            rgba(216, 177, 90, 0.85) 330deg,
+            transparent 285deg,
+            rgba(216, 177, 90, 0.2) 305deg,
+            rgba(216, 177, 90, 0.95) 328deg,
+            rgba(216, 177, 90, 0.2) 348deg,
             transparent 360deg
           );
           animation: kiosk-scan-orbit 4.5s linear infinite;
@@ -2017,6 +2037,7 @@ const EntryKioskPage: React.FC = () => {
           totalSeconds={KIOSK_SUCCESS_SEC}
           now={now}
           variant="overlay"
+          onClose={dismissSuccessFlash}
         />
       ) : null}
 

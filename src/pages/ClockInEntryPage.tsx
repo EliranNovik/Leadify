@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import {
@@ -84,6 +84,24 @@ const ClockInEntryPage: React.FC = () => {
   const [action, setAction] = useState<ClockInKioskFlashAction>('in');
   const [secondsLeft, setSecondsLeft] = useState(KIOSK_WELCOME_DURATION_SEC);
   const [now, setNow] = useState(() => new Date());
+  const welcomeTickRef = useRef<number | null>(null);
+  const welcomeCloseRef = useRef<number | null>(null);
+
+  const clearWelcomeTimers = useCallback(() => {
+    if (welcomeTickRef.current != null) {
+      window.clearInterval(welcomeTickRef.current);
+      welcomeTickRef.current = null;
+    }
+    if (welcomeCloseRef.current != null) {
+      window.clearTimeout(welcomeCloseRef.current);
+      welcomeCloseRef.current = null;
+    }
+  }, []);
+
+  const dismissWelcome = useCallback(() => {
+    clearWelcomeTimers();
+    navigate('/', { replace: true });
+  }, [clearWelcomeTimers, navigate]);
 
   useEffect(() => {
     if (status !== 'success') return undefined;
@@ -120,13 +138,14 @@ const ClockInEntryPage: React.FC = () => {
         nextAction,
       ).catch((err) => console.warn('Kiosk announce failed:', err));
 
-      const tick = window.setInterval(() => {
+      clearWelcomeTimers();
+      welcomeTickRef.current = window.setInterval(() => {
         if (cancelled) return;
         setSecondsLeft((prev) => Math.max(0, prev - 1));
       }, 1000);
 
-      window.setTimeout(() => {
-        window.clearInterval(tick);
+      welcomeCloseRef.current = window.setTimeout(() => {
+        clearWelcomeTimers();
         if (!cancelled) navigate('/', { replace: true });
       }, KIOSK_WELCOME_DURATION_MS);
     };
@@ -271,8 +290,9 @@ const ClockInEntryPage: React.FC = () => {
     void run();
     return () => {
       cancelled = true;
+      clearWelcomeTimers();
     };
-  }, [token, locationId, navigate]);
+  }, [token, locationId, navigate, clearWelcomeTimers]);
 
   if (status === 'success' && displayName && clockedAt) {
     return (
@@ -285,6 +305,7 @@ const ClockInEntryPage: React.FC = () => {
         totalSeconds={KIOSK_WELCOME_DURATION_SEC}
         now={now}
         variant="page"
+        onClose={dismissWelcome}
       />
     );
   }

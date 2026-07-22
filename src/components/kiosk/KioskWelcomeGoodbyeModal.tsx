@@ -1,5 +1,5 @@
 import React from 'react';
-import { ClockIcon, UserGroupIcon, VideoCameraIcon } from '@heroicons/react/24/outline';
+import { ClockIcon, UserGroupIcon, VideoCameraIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type { ClockInKioskFlashAction, ClockInKioskWelcomeMeeting } from '../../lib/clockInKioskApi';
 import './kiosk-welcome-goodbye.css';
 
@@ -39,6 +39,8 @@ export type KioskWelcomeGoodbyeModalProps = {
   now?: Date;
   /** `overlay` = fixed over kiosk; `page` = fills phone QR result screen. */
   variant?: 'overlay' | 'page';
+  /** Optional early dismiss (X). When set, shown so the employee can close before the timer. */
+  onClose?: () => void;
 };
 
 /**
@@ -54,6 +56,7 @@ export default function KioskWelcomeGoodbyeModal({
   totalSeconds = KIOSK_WELCOME_DURATION_SEC,
   now = new Date(),
   variant = 'overlay',
+  onClose,
 }: KioskWelcomeGoodbyeModalProps) {
   const isOut = action === 'out';
   const clockedAtDate = clockedAt instanceof Date ? clockedAt : new Date(clockedAt);
@@ -73,6 +76,17 @@ export default function KioskWelcomeGoodbyeModal({
       aria-label={isOut ? 'Employee clocked out' : 'Employee clocked in'}
     >
       <div className="kiosk-success-card">
+        {onClose ? (
+          <button
+            type="button"
+            className="kiosk-success-close"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <XMarkIcon className="h-6 w-6" aria-hidden />
+          </button>
+        ) : null}
+
         <div className="kiosk-success-waves" aria-hidden>
           <svg className="kiosk-wave kiosk-wave-1" viewBox="0 0 1440 200" preserveAspectRatio="none">
             <path

@@ -234,6 +234,18 @@ html,
     overflow-x: hidden;
   }
 
+  /* Entry kiosk: never inherit the mobile white safe-area canvas */
+  html.entry-kiosk-active,
+  html.entry-kiosk-active body,
+  html.entry-kiosk-active #root {
+    background-color: #0a1628 !important;
+  }
+
+  html.entry-kiosk-active body::before {
+    display: none !important;
+    background-color: #0a1628 !important;
+  }
+
   /* Login page: video bleeds into safe areas — no separate top/bottom chrome strip */
   html.login-page-active,
   html.login-page-active body,
@@ -2300,21 +2312,82 @@ html.dark.theme-dark2 .hover\:bg-base-200:hover {
   }
 }
 
-/* --- Entry kiosk immersive tablet mode --- */
+/* --- Entry kiosk immersive tablet mode ---
+ * Chrome on Android tablets often leaves a light strip under 100dvh / max-height
+ * (gesture bar / collapsed toolbar). Paint past the viewport, force dark color-scheme,
+ * and pin the kiosk shell with fixed inset so nothing white shows through.
+ */
+html.entry-kiosk-active {
+  color-scheme: dark;
+  background-color: #0a1628 !important;
+  /* Extra bleed below the layout viewport for Chrome gesture / toolbar gaps */
+  background-image: linear-gradient(#0a1628, #0a1628);
+  background-attachment: fixed;
+}
+
 html.entry-kiosk-active,
 html.entry-kiosk-active body,
 html.entry-kiosk-active #root {
-  height: 100%;
-  max-height: 100dvh;
+  height: 100% !important;
+  min-height: 100% !important;
+  min-height: 100dvh !important;
+  min-height: 100lvh !important;
+  max-height: none !important;
   overflow: hidden !important;
   overscroll-behavior: none;
-  background: #0a1628;
-  /* Reduce pull-to-refresh / bounce that reveals browser chrome */
+  background: #0a1628 !important;
+  background-color: #0a1628 !important;
   touch-action: manipulation;
 }
 
 html.entry-kiosk-active body {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  min-height: -webkit-fill-available !important;
+}
+
+/* Kill the mobile safe-area white top strip while kiosk is open */
+html.entry-kiosk-active body::before {
+  display: none !important;
+  background-color: #0a1628 !important;
+}
+
+html.entry-kiosk-active #root {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  min-height: -webkit-fill-available !important;
+}
+
+/* Absolute fill for the page shell — survives dvh/lvh mismatch on Chrome tablets.
+ * Background stays on the page itself (dark idle / white document); html/body underlay
+ * covers any Chrome bottom strip behind the shell. */
+html.entry-kiosk-active .entry-kiosk {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  min-height: 100dvh !important;
+  min-height: 100lvh !important;
+  max-height: none !important;
+  box-sizing: border-box;
+}
+
+/* Fixed underlay past the bottom edge in case Chrome still exposes a strip */
+html.entry-kiosk-active::after {
+  content: '';
   position: fixed;
-  inset: 0;
-  width: 100%;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: -40vh;
+  z-index: -1;
+  pointer-events: none;
+  background: #0a1628;
 }
