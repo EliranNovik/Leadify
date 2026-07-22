@@ -166,6 +166,20 @@ export type PublicBookingMeeting = {
   client_booking_timezone?: string | null;
 };
 
+/** Value written to `meetings.scheduler` when a client books via /book or portal. */
+export const CLIENT_PORTAL_BOOKING_SCHEDULER = 'Client booking';
+
+export function isMeetingBookedViaClientPortal(meeting: {
+  scheduler?: string | null;
+  booked_via_client_link?: boolean | null;
+  client_booking_timezone?: string | null;
+} | null | undefined): boolean {
+  if (!meeting) return false;
+  if (meeting.booked_via_client_link === true) return true;
+  if ((meeting.scheduler || '').trim() === CLIENT_PORTAL_BOOKING_SCHEDULER) return true;
+  return Boolean((meeting.client_booking_timezone || '').trim());
+}
+
 export async function fetchPublicBookingMeetings(token: string): Promise<PublicBookingMeeting[]> {
   const response = await fetch(buildUrl('/api/client-booking/meetings'), {
     method: 'POST',

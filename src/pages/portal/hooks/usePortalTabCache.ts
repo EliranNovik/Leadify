@@ -13,6 +13,7 @@ import {
   type PortalContactContractRow,
   type PortalContactPoaRow,
   type PortalLeadSummary,
+  type PortalSubEffortFolder,
   type PortalSubEffortRow,
 } from '../../../lib/portalApi';
 import { useRealtimeRefresh, type RealtimeTableSubscription } from '../../../hooks/useRealtimeRefresh';
@@ -24,6 +25,7 @@ export type PortalTabCacheData = {
   summary: Awaited<ReturnType<typeof portalGetCaseSummary>>;
   subEfforts: PortalSubEffortRow[];
   subEffortsCategoryId: number | null;
+  subEffortFolders: PortalSubEffortFolder[];
   finances: Awaited<ReturnType<typeof portalGetFinances>>;
   meetings: Awaited<ReturnType<typeof portalGetMeetings>>;
   documents: Awaited<ReturnType<typeof portalGetDocuments>>;
@@ -46,9 +48,10 @@ function emptyCacheData(): PortalTabCacheData {
     summary: null,
     subEfforts: [],
     subEffortsCategoryId: null,
+    subEffortFolders: [],
     finances: { payments: [], proformas: [], is_legacy: false },
     meetings: { meetings: [], requests: [] },
-    documents: { documents: [], classifications: [], lead_number: '' },
+    documents: { documents: [], folders: [], classifications: [], lead_number: '' },
     contacts: { contacts: [] },
     poasByContact: {},
     contractsByContact: {},
@@ -170,6 +173,10 @@ function buildRealtimeTables(lead: PortalLeadSummary | null): RealtimeTableSubsc
     match: (p) => matchLeadRow(p.new) || matchLeadRow(p.old),
   });
 
+  subs.push({
+    table: 'lead_sub_effort_folders',
+  });
+
   if (lead.lead_number) {
     const leadNumber = lead.lead_number;
     subs.push({
@@ -208,6 +215,7 @@ async function fetchPortalScope(
     const sub = await portalGetSubEfforts();
     patch.subEfforts = sub?.rows ?? [];
     patch.subEffortsCategoryId = sub?.category_id ?? null;
+    patch.subEffortFolders = sub?.folders ?? [];
   }
 
   if (needs('finance') || needs('summary')) {
@@ -249,6 +257,8 @@ function mergeCache(
     subEfforts: patch.subEfforts !== undefined ? patch.subEfforts : base.subEfforts,
     subEffortsCategoryId:
       patch.subEffortsCategoryId !== undefined ? patch.subEffortsCategoryId : base.subEffortsCategoryId,
+    subEffortFolders:
+      patch.subEffortFolders !== undefined ? patch.subEffortFolders : base.subEffortFolders,
     finances: patch.finances !== undefined ? patch.finances : base.finances,
     meetings: patch.meetings !== undefined ? patch.meetings : base.meetings,
     documents: patch.documents !== undefined ? patch.documents : base.documents,

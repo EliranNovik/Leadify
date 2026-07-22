@@ -64,8 +64,8 @@ export function InternalMeetingTypeBadge({
 
   return (
     <span
-      className={`stage-badge inline-flex items-center rounded-md border px-2 py-1 text-xs font-semibold sm:px-2.5 sm:py-1 sm:text-sm ${className}`}
-      style={{ backgroundColor: palette.bg, color: palette.fg, borderColor: palette.border }}
+      className={`stage-badge inline-flex items-center rounded-md border-0 px-2 py-1 text-xs font-semibold sm:px-2.5 sm:py-1 sm:text-sm ${className}`}
+      style={{ backgroundColor: palette.bg, color: palette.fg }}
       title={titleParts.length ? titleParts.join(' · ') : undefined}
     >
       {label}

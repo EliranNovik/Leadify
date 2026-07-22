@@ -194,7 +194,7 @@ const ClockInGateHeader: React.FC<ClockInGateHeaderProps> = ({
       style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top, 0px))' }}
     >
       <div className="relative flex items-center justify-between gap-3 px-4 md:px-6 py-3 md:py-4">
-        {/* Hamburger + firm name */}
+        {/* Hamburger + mobile logo */}
         <div className="flex items-center gap-3 min-w-0 z-10">
           <div className="relative shrink-0">
             <button
@@ -218,7 +218,7 @@ const ClockInGateHeader: React.FC<ClockInGateHeaderProps> = ({
                       className="w-full text-left px-4 py-3 text-sm text-white/90 hover:bg-white/10 inline-flex items-center gap-2"
                     >
                       <ChatBubbleLeftRightIcon className="w-4 h-4 shrink-0" />
-                      RMQ Messaging
+                      RMQ
                     </button>
                   )}
                   {onOpenCalendar && (
@@ -254,34 +254,39 @@ const ClockInGateHeader: React.FC<ClockInGateHeaderProps> = ({
             alt="Decker Pex & Co."
             className="md:hidden h-9 w-auto max-w-[8rem] object-contain drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)] shrink-0"
           />
-          {headerProfile && (
-            <div className="hidden md:flex items-center gap-3 min-w-0">
+        </div>
+
+        {/* Desktop: profile + welcome centered in header */}
+        {headerProfile && (
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 hidden -translate-y-1/2 md:flex justify-center px-4">
+            <div className="pointer-events-auto flex max-w-[min(42rem,calc(100vw-22rem))] items-center justify-center gap-3 min-w-0">
               <EmployeeCircle
                 employee={headerProfile}
                 sizeClass="w-12 h-12 text-sm shrink-0"
                 showRing={false}
               />
               <p
-                className="text-white font-semibold text-3xl tracking-wide drop-shadow-[0_1px_4px_rgba(0,0,0,0.55)] text-left truncate"
+                className="text-white font-semibold text-3xl tracking-wide drop-shadow-[0_1px_4px_rgba(0,0,0,0.55)] text-center truncate"
                 style={{ fontFamily: "'Playfair Display', 'Libre Baskerville', serif" }}
               >
                 {welcomeText}
               </p>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* RMQ messaging, calendar, contact + profile */}
+        {/* RMQ messaging, calendar, contact + mobile profile */}
         <div className="flex items-center gap-2 md:gap-3 min-w-0 z-10">
           {onOpenMessaging && (
             <button
               type="button"
               onClick={onOpenMessaging}
               className="hidden md:inline-flex items-center gap-1.5 rounded-full bg-black/25 backdrop-blur-sm px-3 py-1.5 text-sm font-medium text-white hover:bg-black/40 transition-colors shrink-0"
-              title="RMQ Messaging"
+              title="RMQ"
+              aria-label="RMQ"
             >
               <ChatBubbleLeftRightIcon className="w-4 h-4 shrink-0" />
-              RMQ Messaging
+              RMQ
             </button>
           )}
 

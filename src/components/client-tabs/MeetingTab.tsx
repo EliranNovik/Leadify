@@ -16,6 +16,8 @@ import {
   preferEnglishMeetingTemplateLanguage,
   shouldIncludeMeetingJoinLink,
 } from '../../lib/meetingLocationUtils';
+import { isMeetingBookedViaClientPortal } from '../../lib/clientBookingApi';
+import ClientPortalBookingBadge from '../client-booking/ClientPortalBookingBadge';
 import {
   CalendarIcon,
   PencilSquareIcon,
@@ -145,6 +147,8 @@ interface Meeting {
   /** Guest participants stored as employee ids on `meetings.extern1` / `meetings.extern2`. */
   extern1?: string | null;
   extern2?: string | null;
+  /** Set when the client self-booked via portal / public booking link. */
+  client_booking_timezone?: string | null;
   lastEdited: {
     timestamp: string;
     user: string;
@@ -1769,6 +1773,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             meeting_subject: m.meeting_subject || undefined,
             extern1: m.extern1 ?? null,
             extern2: m.extern2 ?? null,
+            client_booking_timezone: m.client_booking_timezone ?? null,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -1815,6 +1820,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             meeting_subject: m.meeting_subject || undefined,
             extern1: m.extern1 ?? null,
             extern2: m.extern2 ?? null,
+            client_booking_timezone: m.client_booking_timezone ?? null,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -6047,6 +6053,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   {calendarTypeBadge.label}
                 </span>
               )}
+              {isMeetingBookedViaClientPortal(meeting) ? (
+                <ClientPortalBookingBadge className="shadow-sm" />
+              ) : null}
             </div>
           </div>
         </div>

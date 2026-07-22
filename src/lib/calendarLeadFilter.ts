@@ -72,6 +72,7 @@ const GLOBAL_MEETINGS_SELECT = `
   meeting_location, manual_address, teams_id, teams_meeting_url,
   custom_link, custom_address, meeting_amount, meeting_currency,
   status, client_id, legacy_lead_id, calendar_type,
+  scheduler, client_booking_timezone,
   leads!meetings_client_id_fkey (
     id, name, lead_number, manual_id, master_id, stage, manager, helper, scheduler,
     expert, phone, email, mobile, status, unactivated_at, category, category_id

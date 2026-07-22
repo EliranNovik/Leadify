@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownTrayIcon,
   CheckCircleIcon,
+  ChevronLeftIcon,
   DocumentArrowUpIcon,
   EyeIcon,
+  FolderIcon,
   PaperClipIcon,
   XCircleIcon,
   XMarkIcon,
@@ -18,6 +20,7 @@ import {
   portalGetLeadCaseDocumentTypes,
   portalUploadDocument,
   type PortalDocumentClassification,
+  type PortalDocumentFolder,
   type PortalDocumentRow,
   type PortalLeadCaseDocumentType,
 } from '../../../lib/portalApi';
@@ -107,6 +110,19 @@ function documentMatchesPortalTab(doc: PortalDocumentRow, tab: PortalDocumentTab
   );
   if (tab.key === 'sequence' && !hasCategoryMeta) return true;
 
+  return false;
+}
+
+function folderMatchesPortalTab(folder: PortalDocumentFolder, tab: PortalDocumentTab): boolean {
+  const def = PORTAL_DOCUMENT_TAB_DEFS.find((d) => d.key === tab.key);
+  if (!def) return false;
+
+  if (tab.id !== tab.key && folder.classification_id === tab.id) return true;
+
+  const slug = (folder.classification_slug ?? '').toLowerCase();
+  const label = (folder.classification_label ?? '').toLowerCase();
+  if (def.slugs.some((s) => slug === s)) return true;
+  if (def.labelMatches.some((m) => label.includes(m))) return true;
   return false;
 }
 
@@ -222,6 +238,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
   const { data, initialLoading, refresh } = usePortalTabData();
   const classifications = data?.documents?.classifications ?? [];
   const documents = data?.documents?.documents ?? [];
+  const folders = data?.documents?.folders ?? [];
   const signedUrls = data?.documentSignedUrls ?? {};
   const portalContacts = data?.contacts?.contacts ?? [];
   const [documentTypes, setDocumentTypes] = useState<PortalLeadCaseDocumentType[]>([]);
@@ -230,6 +247,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
   const [modalContactId, setModalContactId] = useState<number | ''>('');
   const [modalDocumentTypeId, setModalDocumentTypeId] = useState<string>('');
   const [activeTabKey, setActiveTabKey] = useState<PortalDocumentTabKey>('sequence');
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const loading = initialLoading && !data;
   const [isUploading, setIsUploading] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -310,16 +328,61 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
 
   const documentTabs = useMemo(() => resolvePortalDocumentTabs(classifications), [classifications]);
 
+  const activeTab = useMemo(
+    () => documentTabs.find((t) => t.key === activeTabKey) ?? documentTabs[0] ?? null,
+    [documentTabs, activeTabKey],
+  );
+
   const documentsInActiveCategory = useMemo(() => {
-    const tab = documentTabs.find((t) => t.key === activeTabKey) ?? documentTabs[0];
-    if (!tab) return documents;
-    return documents.filter((doc) => documentMatchesPortalTab(doc, tab));
-  }, [documents, documentTabs, activeTabKey]);
+    if (!activeTab) return documents;
+    return documents.filter((doc) => documentMatchesPortalTab(doc, activeTab));
+  }, [documents, activeTab]);
+
+  const foldersInActiveCategory = useMemo(() => {
+    if (!activeTab) return [] as PortalDocumentFolder[];
+    return folders.filter((folder) => folderMatchesPortalTab(folder, activeTab));
+  }, [folders, activeTab]);
+
+  const activeFolder = useMemo(
+    () => foldersInActiveCategory.find((folder) => folder.id === activeFolderId) ?? null,
+    [foldersInActiveCategory, activeFolderId],
+  );
+
+  const unfiledDocuments = useMemo(
+    () => documentsInActiveCategory.filter((doc) => !doc.folder_id),
+    [documentsInActiveCategory],
+  );
+
+  const documentsInActiveFolder = useMemo(() => {
+    if (!activeFolderId) return [];
+    return documentsInActiveCategory.filter((doc) => doc.folder_id === activeFolderId);
+  }, [documentsInActiveCategory, activeFolderId]);
+
+  const visibleDocuments = activeFolderId
+    ? documentsInActiveFolder
+    : foldersInActiveCategory.length > 0
+      ? unfiledDocuments
+      : documentsInActiveCategory;
 
   const countDocumentsForTab = useCallback(
     (tab: PortalDocumentTab) => documents.filter((doc) => documentMatchesPortalTab(doc, tab)).length,
     [documents],
   );
+
+  const countDocumentsInFolder = useCallback(
+    (folderId: string) => documentsInActiveCategory.filter((doc) => doc.folder_id === folderId).length,
+    [documentsInActiveCategory],
+  );
+
+  useEffect(() => {
+    setActiveFolderId(null);
+  }, [activeTabKey]);
+
+  useEffect(() => {
+    if (activeFolderId && !foldersInActiveCategory.some((folder) => folder.id === activeFolderId)) {
+      setActiveFolderId(null);
+    }
+  }, [activeFolderId, foldersInActiveCategory]);
 
   const uploadFiles = async (
     files: File[],
@@ -454,7 +517,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
       const items: DocumentPreviewItem[] = [];
       let index = 0;
 
-      for (const row of documentsInActiveCategory) {
+      for (const row of visibleDocuments) {
         const url = resolveDownloadUrl(row);
         if (!url) continue;
         if (row.id === doc.id) index = items.length;
@@ -473,7 +536,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
       setPreviewInitialIndex(index);
       setPreviewOpen(true);
     },
-    [documentsInActiveCategory, signedUrls],
+    [visibleDocuments, signedUrls],
   );
 
   const canSelectFiles = documentTypes.length > 0 && !isUploading;
@@ -628,93 +691,178 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         })}
       </nav>
 
-      {documents.length === 0 ? (
+      {activeFolder ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary"
+            onClick={() => setActiveFolderId(null)}
+          >
+            <ChevronLeftIcon className="h-4 w-4" />
+            Back to folders
+          </button>
+          <div className="min-w-0">
+            <p className="truncate text-base font-semibold text-base-content/90">{activeFolder.title}</p>
+            <p className="text-xs text-base-content/50">
+              {activeFolder.sub_effort_name ? `${activeFolder.sub_effort_name} · ` : ''}
+              {documentsInActiveFolder.length}{' '}
+              {documentsInActiveFolder.length === 1 ? 'document' : 'documents'}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {documents.length === 0 && folders.length === 0 ? (
         <PortalCard>
           <p className="text-sm text-base-content/45">No documents yet. Upload files using the area above.</p>
         </PortalCard>
-      ) : documentsInActiveCategory.length === 0 ? (
+      ) : documentsInActiveCategory.length === 0 && foldersInActiveCategory.length === 0 ? (
         <PortalCard>
           <p className="text-sm text-base-content/45">No documents in this category.</p>
         </PortalCard>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {documentsInActiveCategory.map((doc) => {
-            const url = resolveDownloadUrl(doc);
-            const mimeType = inferPortalDocumentMimeType(doc);
-            return (
-              <PortalCard key={doc.id} className="p-0">
-                <div
-                  className={`flex items-stretch justify-between gap-4 p-4 md:p-6 ${
-                    url ? 'cursor-pointer transition-shadow hover:shadow-md' : ''
-                  }`}
-                  onClick={url ? () => openDocumentPreview(doc) : undefined}
-                  onKeyDown={
-                    url
-                      ? (e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            openDocumentPreview(doc);
-                          }
-                        }
-                      : undefined
-                  }
-                  role={url ? 'button' : undefined}
-                  tabIndex={url ? 0 : undefined}
-                >
-                <div className="flex min-w-0 flex-1 items-start gap-3">
-                  <DocumentFileGlyph
-                    fileType={mimeType}
-                    fileName={doc.file_name}
-                    className="h-8 w-8 shrink-0 sm:h-9 sm:w-9"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="break-words font-semibold leading-snug text-base-content/90 [overflow-wrap:anywhere]">
-                      {doc.file_name}
-                    </p>
-                    <p className="mt-1 text-xs text-base-content/45">
-                      {new Date(doc.created_at).toLocaleDateString()}
-                      {doc.file_size ? ` · ${(doc.file_size / 1024).toFixed(0)} KB` : ''}
-                      {doc.contact_name ? ` · ${doc.contact_name}` : ''}
-                      {doc.document_type_name ? ` · ${doc.document_type_name}` : ''}
-                      {doc.uploaded_by ? ` · ${doc.uploaded_by}` : ''}
-                    </p>
-                    {url ? (
-                      <div className="mt-2 flex flex-wrap items-center gap-3">
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openDocumentPreview(doc);
-                          }}
-                        >
-                          <EyeIcon className="h-4 w-4" />
-                          View
-                        </button>
-                        <a
-                          href={url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <ArrowDownTrayIcon className="h-4 w-4" />
-                          Download
-                        </a>
+        <div className="space-y-4">
+          {!activeFolderId && foldersInActiveCategory.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-base-content/45">Folders</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {foldersInActiveCategory.map((folder) => {
+                  const count = countDocumentsInFolder(folder.id);
+                  return (
+                    <button
+                      key={folder.id}
+                      type="button"
+                      onClick={() => setActiveFolderId(folder.id)}
+                      className="flex items-center gap-3 rounded-[18px] border border-[rgba(20,20,30,0.06)] bg-white/90 px-4 py-3.5 text-left shadow-[0_12px_30px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_36px_rgba(15,23,42,0.08)]"
+                    >
+                      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                        <FolderIcon className="h-7 w-7" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-base font-semibold text-base-content/90">
+                          {folder.title}
+                        </span>
+                        <span className="mt-0.5 block truncate text-sm text-base-content/50">
+                          {folder.sub_effort_name ? `${folder.sub_effort_name} · ` : ''}
+                          {folder.created_by || 'Case team'}
+                          {folder.created_at
+                            ? ` · ${new Date(folder.created_at).toLocaleDateString()}`
+                            : ''}
+                        </span>
+                        {folder.note ? (
+                          <span className="mt-1 block truncate text-xs text-base-content/45" title={folder.note}>
+                            {folder.note}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="inline-flex min-w-[28px] shrink-0 items-center justify-center rounded-full bg-slate-700 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {!activeFolderId && foldersInActiveCategory.length > 0 && unfiledDocuments.length > 0 ? (
+            <p className="text-xs font-bold uppercase tracking-[0.12em] text-base-content/45">
+              Unfiled documents
+            </p>
+          ) : null}
+
+          {visibleDocuments.length === 0 ? (
+            <PortalCard>
+              <p className="text-sm text-base-content/45">
+                {activeFolderId
+                  ? 'This folder has no documents yet.'
+                  : foldersInActiveCategory.length > 0
+                    ? 'Open a folder above, or check another category.'
+                    : 'No documents in this category.'}
+              </p>
+            </PortalCard>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {visibleDocuments.map((doc) => {
+                const url = resolveDownloadUrl(doc);
+                const mimeType = inferPortalDocumentMimeType(doc);
+                return (
+                  <PortalCard key={doc.id} className="p-0">
+                    <div
+                      className={`flex items-stretch justify-between gap-4 p-4 md:p-6 ${
+                        url ? 'cursor-pointer transition-shadow hover:shadow-md' : ''
+                      }`}
+                      onClick={url ? () => openDocumentPreview(doc) : undefined}
+                      onKeyDown={
+                        url
+                          ? (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                openDocumentPreview(doc);
+                              }
+                            }
+                          : undefined
+                      }
+                      role={url ? 'button' : undefined}
+                      tabIndex={url ? 0 : undefined}
+                    >
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      <DocumentFileGlyph
+                        fileType={mimeType}
+                        fileName={doc.file_name}
+                        className="h-8 w-8 shrink-0 sm:h-9 sm:w-9"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="break-words font-semibold leading-snug text-base-content/90 [overflow-wrap:anywhere]">
+                          {doc.file_name}
+                        </p>
+                        <p className="mt-1 text-xs text-base-content/45">
+                          {new Date(doc.created_at).toLocaleDateString()}
+                          {doc.file_size ? ` · ${(doc.file_size / 1024).toFixed(0)} KB` : ''}
+                          {doc.contact_name ? ` · ${doc.contact_name}` : ''}
+                          {doc.document_type_name ? ` · ${doc.document_type_name}` : ''}
+                          {doc.sub_effort_name ? ` · ${doc.sub_effort_name}` : ''}
+                          {doc.uploaded_by ? ` · ${doc.uploaded_by}` : ''}
+                        </p>
+                        {url ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-3">
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openDocumentPreview(doc);
+                              }}
+                            >
+                              <EyeIcon className="h-4 w-4" />
+                              View
+                            </button>
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <ArrowDownTrayIcon className="h-4 w-4" />
+                              Download
+                            </a>
+                          </div>
+                        ) : null}
                       </div>
-                    ) : null}
-                  </div>
-                </div>
-                <PortalDocumentPreview
-                  url={url}
-                  fileName={doc.file_name}
-                  mimeType={mimeType}
-                  onOpen={url ? () => openDocumentPreview(doc) : undefined}
-                />
-                </div>
-              </PortalCard>
-            );
-          })}
+                    </div>
+                    <PortalDocumentPreview
+                      url={url}
+                      fileName={doc.file_name}
+                      mimeType={mimeType}
+                      onOpen={url ? () => openDocumentPreview(doc) : undefined}
+                    />
+                    </div>
+                  </PortalCard>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
       <DocumentPreviewModal

@@ -1,9 +1,13 @@
 import React, { useEffect, useMemo, useCallback, useState } from 'react';
 import {
+  ArrowPathIcon,
+  CheckCircleIcon,
   ChevronLeftIcon,
+  ClockIcon,
   DocumentIcon,
   EyeIcon,
   ArrowDownTrayIcon,
+  FolderIcon,
   QuestionMarkCircleIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
@@ -13,10 +17,18 @@ import {
   type DocumentPreviewItem,
 } from '../../../components/DocumentModal';
 import { portalGetDocumentSignedUrls } from '../../../lib/portalApi';
-import type { PortalSubEffortRow } from '../../../lib/portalSubEfforts';
+import {
+  findCurrentPortalSubEffortId,
+  getPortalSubEffortProgress,
+  type PortalSubEffortFolder,
+  type PortalSubEffortProgress,
+  type PortalSubEffortRow,
+} from '../../../lib/portalSubEfforts';
+import { EntityAvatar } from '../components/portalTheme';
 
 type Props = {
   rows: PortalSubEffortRow[];
+  folders?: PortalSubEffortFolder[];
   emptyMessage?: string;
 };
 
@@ -25,6 +37,7 @@ type DocItem = {
   path?: string;
   name?: string;
   mimeType?: string;
+  folder_id?: string | null;
 };
 
 function asArray(value: unknown): unknown[] {
@@ -61,6 +74,9 @@ function normalizeDocItems(documentUrl: unknown): DocItem[] {
       if (typeof o.name === 'string') item.name = o.name;
       if (typeof o.mimeType === 'string') item.mimeType = o.mimeType;
       else if (typeof o.contentType === 'string') item.mimeType = o.contentType;
+      const folderRaw = o.folder_id;
+      if (typeof folderRaw === 'string' && folderRaw.trim()) item.folder_id = folderRaw.trim();
+      else if (folderRaw === null) item.folder_id = null;
       return [item, ...candidates.flatMap((u) => normalizeDocItems(u))];
     }
     return candidates.flatMap((u) => normalizeDocItems(u));
@@ -88,13 +104,7 @@ function isPdfUrl(url: string): boolean {
 function resolveDocItems(
   documentUrl: unknown,
   signedUrls: Record<string, string>,
-): Array<{
-  raw: string;
-  url: string;
-  name?: string;
-  isImage: boolean;
-  isPdf: boolean;
-}> {
+): ResolvedDoc[] {
   return normalizeDocItems(documentUrl)
     .map((d) => {
       const raw = (d.url || d.path || '').trim();
@@ -116,15 +126,16 @@ function resolveDocItems(
         (url ? isPdfUrl(url) : false) ||
         (name ? isPdfUrl(name) : false) ||
         (raw ? isPdfUrl(raw) : false);
-      return { raw, url, name, isImage, isPdf };
+      return {
+        raw,
+        url,
+        name,
+        isImage,
+        isPdf,
+        folder_id: d.folder_id ?? null,
+      };
     })
-    .filter(Boolean) as Array<{
-    raw: string;
-    url: string;
-    name?: string;
-    isImage: boolean;
-    isPdf: boolean;
-  }>;
+    .filter(Boolean) as ResolvedDoc[];
 }
 
 function guessStoragePaths(documentUrl: unknown): string[] {
@@ -139,6 +150,7 @@ type ResolvedDoc = {
   name?: string;
   isImage: boolean;
   isPdf: boolean;
+  folder_id?: string | null;
 };
 
 function guessFileType(doc: ResolvedDoc): string {
@@ -175,20 +187,36 @@ function formatFileTypeLabel(doc: ResolvedDoc): string {
   return ext ? ext.toUpperCase() : 'Document';
 }
 
-type StageProgress = 'completed' | 'in_progress' | 'pending';
+function StageUpdaterMeta({
+  name,
+  photoUrl,
+  compact = false,
+}: {
+  name?: string | null;
+  photoUrl?: string | null;
+  compact?: boolean;
+}) {
+  const who = name?.trim() || '';
+  if (!who) return null;
 
-function findCurrentStageId(rows: PortalSubEffortRow[]): number | null {
-  const current = rows.find((row) => row.active !== false);
-  return current?.id ?? null;
+  return (
+    <div
+      className={`flex min-w-0 items-center gap-1.5 ${
+        compact ? 'mt-1.5 text-[12px] text-gray-500' : 'mt-2 text-sm text-gray-500'
+      }`}
+    >
+      <EntityAvatar
+        name={who}
+        imageUrl={photoUrl}
+        stableKey={`portal-stage-updater::${who}`}
+        className={compact ? 'h-8 w-8 text-[11px]' : 'h-7 w-7 text-[11px]'}
+      />
+      <span className="min-w-0 truncate font-medium text-gray-600">{who}</span>
+    </div>
+  );
 }
 
-function getPortalStageProgress(row: PortalSubEffortRow, currentStageId: number | null): StageProgress {
-  if (row.active === false) return 'completed';
-  if (currentStageId != null && row.id === currentStageId) return 'in_progress';
-  return 'pending';
-}
-
-function StageProgressIcon({ progress }: { progress: StageProgress }) {
+function StageProgressIcon({ progress }: { progress: PortalSubEffortProgress }) {
   if (progress === 'completed') {
     return <CheckCircleSolidIcon className="h-[22px] w-[22px] shrink-0 text-emerald-500" aria-hidden />;
   }
@@ -206,29 +234,56 @@ function StageProgressIcon({ progress }: { progress: StageProgress }) {
   );
 }
 
-function StageProgressBadge({ progress }: { progress: StageProgress }) {
+function StageProgressBadge({
+  progress,
+  iconOnly = false,
+}: {
+  progress: PortalSubEffortProgress;
+  iconOnly?: boolean;
+}) {
   if (progress === 'completed') {
     return (
-      <span className="inline-flex w-fit shrink-0 items-center rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-medium leading-tight text-emerald-700">
-        Done
+      <span
+        className={`inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70 ${
+          iconOnly ? 'h-9 w-9' : 'gap-1.5 px-3 py-1.5 text-sm font-semibold leading-none'
+        }`}
+        title="Done"
+        aria-label="Done"
+      >
+        <CheckCircleIcon className={iconOnly ? 'h-5 w-5' : 'h-4 w-4 shrink-0'} aria-hidden />
+        {iconOnly ? null : 'Done'}
       </span>
     );
   }
   if (progress === 'in_progress') {
     return (
-      <span className="inline-flex w-fit shrink-0 items-center rounded-md bg-blue-50 px-2.5 py-1 text-xs font-medium leading-tight text-blue-700">
-        Current
+      <span
+        className={`inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700 ring-1 ring-blue-200/70 ${
+          iconOnly ? 'h-9 w-9' : 'gap-1.5 px-3 py-1.5 text-sm font-semibold leading-none'
+        }`}
+        title="Current"
+        aria-label="Current"
+      >
+        <ArrowPathIcon className={iconOnly ? 'h-5 w-5' : 'h-4 w-4 shrink-0'} aria-hidden />
+        {iconOnly ? null : 'Current'}
       </span>
     );
   }
   return (
-    <span className="inline-flex w-fit shrink-0 items-center rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium leading-tight text-slate-500">
-      Pending
+    <span
+      className={`inline-flex shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 ring-1 ring-slate-200/80 ${
+        iconOnly ? 'h-9 w-9' : 'gap-1.5 px-3 py-1.5 text-sm font-semibold leading-none'
+      }`}
+      title="Pending"
+      aria-label="Pending"
+    >
+      <ClockIcon className={iconOnly ? 'h-5 w-5' : 'h-4 w-4 shrink-0'} aria-hidden />
+      {iconOnly ? null : 'Pending'}
     </span>
   );
 }
 
-function StageStepNumber({ step, progress }: { step: number; progress: StageProgress }) {
+function StageStepNumber({ step, progress }: { step: number; progress: PortalSubEffortProgress }) {
   const badgeClass =
     progress === 'completed'
       ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/80'
@@ -259,7 +314,7 @@ function PortalStageTimelineItem({
   stepNumber: number;
   isSelected: boolean;
   isLast: boolean;
-  progress: StageProgress;
+  progress: PortalSubEffortProgress;
   onSelect: () => void;
   onOpenDescription: () => void;
 }) {
@@ -299,19 +354,34 @@ function PortalStageTimelineItem({
                   : 'px-3 py-2.5 hover:bg-gray-50/80',
             ].join(' ')}
           >
-            <div className="min-w-0">
-              <p
-                className={[
-                  'line-clamp-2 break-words font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]',
-                  isSelected ? 'text-[15px]' : isPending ? 'text-[14px] text-gray-600' : 'text-[15px]',
-                ].join(' ')}
-                title={row.sub_effort_name}
-              >
-                {row.sub_effort_name}
-              </p>
-              <div className="mt-1.5">
-                <StageProgressBadge progress={progress} />
+            <div className="flex min-w-0 items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p
+                  className={[
+                    'line-clamp-2 break-words font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]',
+                    isSelected ? 'text-[15px]' : isPending ? 'text-[14px] text-gray-600' : 'text-[15px]',
+                  ].join(' ')}
+                  title={row.sub_effort_name}
+                >
+                  {row.sub_effort_name}
+                </p>
+                {(row.sub_category_efforts?.length ?? 0) > 0 ? (
+                  <p
+                    className={`mt-1 line-clamp-2 text-xs leading-snug ${
+                      isPending ? 'text-gray-400' : 'text-gray-500'
+                    }`}
+                    title={row.sub_category_efforts!.map((item) => item.name).join(' · ')}
+                  >
+                    {row.sub_category_efforts!.map((item) => item.name).join(' · ')}
+                  </p>
+                ) : null}
+                <StageUpdaterMeta
+                  name={row.updated_by}
+                  photoUrl={row.updated_by_photo_url}
+                  compact
+                />
               </div>
+              <StageProgressBadge progress={progress} iconOnly />
             </div>
           </button>
           <button
@@ -320,7 +390,7 @@ function PortalStageTimelineItem({
               e.stopPropagation();
               onOpenDescription();
             }}
-            className={`btn btn-ghost btn-xs btn-square mt-2 h-8 w-8 shrink-0 rounded-full ${
+            className={`btn btn-ghost btn-xs btn-square mt-1.5 h-8 w-8 shrink-0 rounded-full ${
               hasDescription ? 'text-primary hover:bg-blue-50' : 'text-gray-300'
             }`}
             title={hasDescription ? 'What is this stage?' : 'No description available'}
@@ -334,14 +404,11 @@ function PortalStageTimelineItem({
   );
 }
 
-const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
-  const currentStageId = useMemo(() => findCurrentStageId(rows), [rows]);
-  const defaultSelectedId = useMemo(
-    () => currentStageId ?? rows[0]?.id ?? null,
-    [currentStageId, rows],
-  );
-  const [selectedId, setSelectedId] = useState<number | null>(defaultSelectedId);
+const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMessage }) => {
+  const currentStageId = useMemo(() => findCurrentPortalSubEffortId(rows), [rows]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [urlsLoading, setUrlsLoading] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -350,12 +417,23 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
   const [descriptionRow, setDescriptionRow] = useState<PortalSubEffortRow | null>(null);
 
   const selected = useMemo(
-    () => rows.find((r) => r.id === selectedId) ?? rows[0] ?? null,
+    () => rows.find((r) => r.id === selectedId) ?? null,
     [rows, selectedId],
+  );
+
+  const stageFolders = useMemo(
+    () => (selected ? folders.filter((folder) => folder.lead_sub_effort_id === selected.id) : []),
+    [folders, selected],
+  );
+
+  const activeFolder = useMemo(
+    () => stageFolders.find((folder) => folder.id === activeFolderId) ?? null,
+    [stageFolders, activeFolderId],
   );
 
   const handleSelectRow = (id: number) => {
     setSelectedId(id);
+    setActiveFolderId(null);
     setMobileDetailOpen(true);
   };
 
@@ -370,26 +448,55 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
     [selected, signedUrls],
   );
 
+  const unfiledDocs = useMemo(() => docs.filter((doc) => !doc.folder_id), [docs]);
+
+  const docsInActiveFolder = useMemo(() => {
+    if (!activeFolderId) return [];
+    return docs.filter((doc) => doc.folder_id === activeFolderId);
+  }, [docs, activeFolderId]);
+
+  const visibleDocs = activeFolderId
+    ? docsInActiveFolder
+    : stageFolders.length > 0
+      ? unfiledDocs
+      : docs;
+
   const hasDocs = docs.length > 0;
-  const docsReady = docs.some((d) => d.url);
+  const hasFolders = stageFolders.length > 0;
+  const docsReady = visibleDocs.some((d) => d.url);
 
   const openDocPreview = useCallback(
     (doc: ResolvedDoc) => {
       if (!doc.url) return;
-      const items = docsToPreviewItems(docs);
+      const items = docsToPreviewItems(visibleDocs);
       const docId = doc.raw || doc.url;
       const idx = items.findIndex((item) => item.id === docId);
       setPreviewItems(items);
       setPreviewInitialIndex(idx >= 0 ? idx : 0);
       setPreviewOpen(true);
     },
-    [docs],
+    [visibleDocs],
   );
 
+  // Pick active (or first) stage only on first load / when the selected row disappears.
+  // Do not snap back to "current" on every rows refresh — that blocked browsing other stages.
   useEffect(() => {
-    setSelectedId(defaultSelectedId);
-    setMobileDetailOpen(false);
-  }, [defaultSelectedId, rows]);
+    if (!rows.length) {
+      setSelectedId(null);
+      setActiveFolderId(null);
+      return;
+    }
+    setSelectedId((prev) => {
+      if (prev != null && rows.some((row) => row.id === prev)) return prev;
+      return currentStageId ?? rows[0]?.id ?? null;
+    });
+  }, [rows, currentStageId]);
+
+  useEffect(() => {
+    if (activeFolderId && !stageFolders.some((folder) => folder.id === activeFolderId)) {
+      setActiveFolderId(null);
+    }
+  }, [activeFolderId, stageFolders]);
 
   useEffect(() => {
     if (!paths.length) {
@@ -417,7 +524,7 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
     );
   }
 
-  const selectedProgress = selected ? getPortalStageProgress(selected, currentStageId) : 'pending';
+  const selectedProgress = selected ? getPortalSubEffortProgress(selected, currentStageId) : 'pending';
 
   return (
     <div className="grid min-h-[320px] grid-cols-1 gap-4 md:grid-cols-[minmax(280px,340px)_1fr] lg:grid-cols-[minmax(300px,360px)_1fr]">
@@ -428,6 +535,16 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
       >
         <div className="mb-3 px-0.5">
           <span className="text-base font-semibold text-gray-800 md:text-lg">Workflow</span>
+          {currentStageId != null ? (
+            <p className="mt-0.5 text-xs text-gray-500 md:text-sm">
+              Current:{' '}
+              <span className="font-medium text-gray-700">
+                {rows.find((row) => row.id === currentStageId)?.sub_effort_name || '—'}
+              </span>
+            </p>
+          ) : rows.every((row) => row.active === false) ? (
+            <p className="mt-0.5 text-xs text-emerald-700 md:text-sm">All stages complete</p>
+          ) : null}
         </div>
         <div>
           {rows.map((row, index) => (
@@ -437,7 +554,7 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
               stepNumber={index + 1}
               isSelected={selected?.id === row.id}
               isLast={index === rows.length - 1}
-              progress={getPortalStageProgress(row, currentStageId)}
+              progress={getPortalSubEffortProgress(row, currentStageId)}
               onSelect={() => handleSelectRow(row.id)}
               onOpenDescription={() => setDescriptionRow(row)}
             />
@@ -457,25 +574,32 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
           </button>
 
           <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-start gap-2">
-                <h2
-                  className="min-w-0 max-w-full text-2xl font-bold leading-tight tracking-tight text-gray-900 line-clamp-2 break-words [overflow-wrap:anywhere] md:text-[28px]"
-                  title={selected.sub_effort_name}
-                >
-                  {selected.sub_effort_name}
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => setDescriptionRow(selected)}
-                  className="btn btn-ghost btn-xs btn-square h-9 w-9 shrink-0 rounded-full text-primary hover:bg-blue-50"
-                  title="What is this stage?"
-                  aria-label={`About ${selected.sub_effort_name}`}
-                >
-                  <QuestionMarkCircleIcon className="h-5 w-5" />
-                </button>
-                <StageProgressBadge progress={selectedProgress} />
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-start gap-2">
+                  <h2
+                    className="min-w-0 max-w-full text-2xl font-bold leading-tight tracking-tight text-gray-900 line-clamp-2 break-words [overflow-wrap:anywhere] md:text-[28px]"
+                    title={selected.sub_effort_name}
+                  >
+                    {selected.sub_effort_name}
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => setDescriptionRow(selected)}
+                    className="btn btn-ghost btn-xs btn-square h-9 w-9 shrink-0 rounded-full text-primary hover:bg-blue-50"
+                    title="What is this stage?"
+                    aria-label={`About ${selected.sub_effort_name}`}
+                  >
+                    <QuestionMarkCircleIcon className="h-5 w-5" />
+                  </button>
+                </div>
+                {(selected.sub_category_efforts?.length ?? 0) > 0 ? (
+                  <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
+                    {selected.sub_category_efforts!.map((item) => item.name).join(' · ')}
+                  </p>
+                ) : null}
               </div>
+              <StageProgressBadge progress={selectedProgress} />
             </div>
           </div>
 
@@ -503,82 +627,167 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, emptyMessage }) => {
               <span className="text-sm font-semibold text-gray-700">Documents</span>
             </div>
             <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-              {!hasDocs ? (
+              {activeFolder ? (
+                <div className="mb-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary"
+                    onClick={() => setActiveFolderId(null)}
+                  >
+                    <ChevronLeftIcon className="h-4 w-4" />
+                    Back to folders
+                  </button>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-gray-900">{activeFolder.title}</p>
+                    <p className="text-xs text-gray-500">
+                      {docsInActiveFolder.length}{' '}
+                      {docsInActiveFolder.length === 1 ? 'document' : 'documents'}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
+              {!hasDocs && !hasFolders ? (
                 <div className="flex min-h-[160px] flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 bg-gray-50/50 px-5 py-10 text-center text-sm text-gray-400">
                   No documents uploaded for this stage yet.
                 </div>
-              ) : urlsLoading && !docsReady ? (
+              ) : urlsLoading && !docsReady && !hasFolders ? (
                 <div className="flex items-center gap-3 py-6 text-sm text-gray-500">
                   <span className="loading loading-spinner loading-sm" />
                   Loading documents…
                 </div>
               ) : (
-                <div className="divide-y divide-gray-100">
-                  {docs.map((doc, idx) => {
-                    const label = doc.name || doc.raw.split('/').pop() || 'Document';
-                    const href = doc.url || doc.raw;
-                    const canPreview = !!doc.url;
-                    const typeLabel = formatFileTypeLabel(doc);
-
-                    return (
-                      <div
-                        key={`${doc.raw}-${idx}`}
-                        className="flex flex-col gap-3 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center"
-                      >
-                        <div className="flex min-w-0 flex-1 items-center gap-3">
-                          <button
-                            type="button"
-                            disabled={!canPreview}
-                            onClick={() => openDocPreview(doc)}
-                            className={`flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gray-100 ${
-                              canPreview ? 'cursor-pointer hover:ring-2 hover:ring-primary/20' : 'cursor-default'
-                            }`}
-                            aria-label={canPreview ? `Preview ${label}` : undefined}
-                          >
-                            {doc.isImage && canPreview ? (
-                              <img
-                                src={doc.url}
-                                alt=""
-                                className="h-full w-full object-cover"
-                                loading="lazy"
-                              />
-                            ) : doc.isPdf ? (
-                              <DocumentIcon className="h-7 w-7 text-red-500/80" />
-                            ) : (
-                              <DocumentIcon className="h-7 w-7 text-slate-400" />
-                            )}
-                          </button>
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold text-gray-900">{label}</div>
-                            <div className="mt-0.5 text-xs text-gray-500">{typeLabel}</div>
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1.5 sm:pl-2">
-                          {canPreview ? (
+                <div className="space-y-4">
+                  {!activeFolderId && hasFolders ? (
+                    <div className="space-y-2">
+                      <p className="text-xs font-bold uppercase tracking-[0.12em] text-gray-400">
+                        Folders
+                      </p>
+                      <div className="space-y-2">
+                        {stageFolders.map((folder) => {
+                          const count = docs.filter((doc) => doc.folder_id === folder.id).length;
+                          return (
                             <button
+                              key={folder.id}
                               type="button"
-                              onClick={() => openDocPreview(doc)}
-                              className="btn btn-ghost btn-xs h-8 rounded-full px-3"
+                              onClick={() => setActiveFolderId(folder.id)}
+                              className="flex w-full items-center gap-3 rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2.5 text-left transition hover:border-gray-200 hover:bg-gray-50"
                             >
-                              Preview
+                              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                                <FolderIcon className="h-7 w-7" />
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-sm font-semibold text-gray-900">
+                                  {folder.title}
+                                </span>
+                                <span className="mt-0.5 block truncate text-xs text-gray-500">
+                                  {folder.created_by || 'Case team'}
+                                  {folder.created_at
+                                    ? ` · ${new Date(folder.created_at).toLocaleDateString()}`
+                                    : ''}
+                                </span>
+                                {folder.note ? (
+                                  <span
+                                    className="mt-1 block truncate text-xs text-gray-400"
+                                    title={folder.note}
+                                  >
+                                    {folder.note}
+                                  </span>
+                                ) : null}
+                              </span>
+                              <span className="inline-flex min-w-[28px] shrink-0 items-center justify-center rounded-full bg-slate-700 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">
+                                {count}
+                              </span>
                             </button>
-                          ) : null}
-                          {canPreview ? (
-                            <a
-                              href={href}
-                              target="_blank"
-                              rel="noreferrer"
-                              download={label}
-                              className="btn btn-ghost btn-xs h-8 gap-1 rounded-full px-3"
-                            >
-                              <ArrowDownTrayIcon className="h-3.5 w-3.5" />
-                              Download
-                            </a>
-                          ) : null}
-                        </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
+                    </div>
+                  ) : null}
+
+                  {!activeFolderId && hasFolders && unfiledDocs.length > 0 ? (
+                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-gray-400">
+                      Unfiled documents
+                    </p>
+                  ) : null}
+
+                  {visibleDocs.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50/50 px-4 py-6 text-center text-sm text-gray-400">
+                      {activeFolderId
+                        ? 'This folder has no documents yet.'
+                        : hasFolders
+                          ? 'Open a folder above to view its documents.'
+                          : 'No documents uploaded for this stage yet.'}
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-gray-100">
+                      {visibleDocs.map((doc, idx) => {
+                        const label = doc.name || doc.raw.split('/').pop() || 'Document';
+                        const href = doc.url || doc.raw;
+                        const canPreview = !!doc.url;
+                        const typeLabel = formatFileTypeLabel(doc);
+
+                        return (
+                          <div
+                            key={`${doc.raw}-${idx}`}
+                            className="flex flex-col gap-3 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center"
+                          >
+                            <div className="flex min-w-0 flex-1 items-center gap-3">
+                              <button
+                                type="button"
+                                disabled={!canPreview}
+                                onClick={() => openDocPreview(doc)}
+                                className={`flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gray-100 ${
+                                  canPreview ? 'cursor-pointer hover:ring-2 hover:ring-primary/20' : 'cursor-default'
+                                }`}
+                                aria-label={canPreview ? `Preview ${label}` : undefined}
+                              >
+                                {doc.isImage && canPreview ? (
+                                  <img
+                                    src={doc.url}
+                                    alt=""
+                                    className="h-full w-full object-cover"
+                                    loading="lazy"
+                                  />
+                                ) : doc.isPdf ? (
+                                  <DocumentIcon className="h-7 w-7 text-red-500/80" />
+                                ) : (
+                                  <DocumentIcon className="h-7 w-7 text-slate-400" />
+                                )}
+                              </button>
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-semibold text-gray-900">{label}</div>
+                                <div className="mt-0.5 text-xs text-gray-500">{typeLabel}</div>
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5 sm:pl-2">
+                              {canPreview ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openDocPreview(doc)}
+                                  className="btn btn-ghost btn-xs h-8 rounded-full px-3"
+                                >
+                                  Preview
+                                </button>
+                              ) : null}
+                              {canPreview ? (
+                                <a
+                                  href={href}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  download={label}
+                                  className="btn btn-ghost btn-xs h-8 gap-1 rounded-full px-3"
+                                >
+                                  <ArrowDownTrayIcon className="h-3.5 w-3.5" />
+                                  Download
+                                </a>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

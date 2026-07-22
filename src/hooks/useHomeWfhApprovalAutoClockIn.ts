@@ -5,6 +5,10 @@ import {
   fetchEmployeeWorksFromHome,
 } from '../lib/clockInLocations';
 import { fetchPendingHomeWfhApproval } from '../lib/employeeClockInApproval';
+import {
+  employeeHasApprovedWfhPeriodOnDate,
+  fetchPendingWfhPeriodRequestCount,
+} from '../lib/employeeWfhPeriodRequests';
 
 const POLL_INTERVAL_MS = 4000;
 
@@ -15,22 +19,30 @@ type RealtimeRowPayload = {
 
 export type HomeWfhApprovalSnapshot = {
   worksFromHome: boolean;
+  /** Permanent flag or approved period covering today. */
+  canClockInFromHome: boolean;
   pendingApproval: boolean;
 };
 
 export async function fetchHomeWfhApprovalSnapshot(
   employeeId: number,
 ): Promise<HomeWfhApprovalSnapshot> {
-  const [worksFromHome, pendingApproval] = await Promise.all([
+  const [worksFromHome, pendingLegacy, pendingPeriod, approvedPeriodToday] = await Promise.all([
     fetchEmployeeWorksFromHome(employeeId),
-    fetchPendingHomeWfhApproval(employeeId),
+    fetchPendingHomeWfhApproval(employeeId).catch(() => false),
+    fetchPendingWfhPeriodRequestCount(employeeId).catch(() => false),
+    employeeHasApprovedWfhPeriodOnDate(employeeId).catch(() => false),
   ]);
-  return { worksFromHome, pendingApproval };
+  return {
+    worksFromHome,
+    canClockInFromHome: worksFromHome || approvedPeriodToday,
+    pendingApproval: pendingLegacy || pendingPeriod,
+  };
 }
 
-/** True once admin granted home access (even if the placeholder row is not deleted yet). */
+/** True once the employee may clock in from Home (permanent or approved period for today). */
 export function isHomeWfhAccessGranted(snapshot: HomeWfhApprovalSnapshot): boolean {
-  return snapshot.worksFromHome;
+  return snapshot.canClockInFromHome;
 }
 
 type UseHomeWfhApprovalAutoClockInOptions = {
@@ -41,8 +53,6 @@ type UseHomeWfhApprovalAutoClockInOptions = {
 
 /**
  * Live + polling watcher while the employee waits for home/WFH approval on the clock-in gate.
- * Realtime uses table-wide postgres_changes with client-side row matching (filtered
- * subscriptions are unreliable in this project).
  */
 export function useHomeWfhApprovalAutoClockIn({
   employeeId,
@@ -97,6 +107,13 @@ export function useHomeWfhApprovalAutoClockIn({
       return coerceEmployeeWorksFromHome(payload.new?.works_from_home);
     };
 
+    const matchesWfhPeriod = (payload: RealtimeRowPayload) => {
+      const rowEmployeeId = payload.new?.employee_id ?? payload.old?.employee_id;
+      if (Number(rowEmployeeId) !== employeeId) return false;
+      const status = payload.new?.status;
+      return status === 'approved' || status === 'declined' || status == null;
+    };
+
     const channel = supabase
       .channel(`wfh-approval-live-${employeeId}`)
       .on(
@@ -111,6 +128,13 @@ export function useHomeWfhApprovalAutoClockIn({
         { event: 'UPDATE', schema: 'public', table: 'tenants_employee' },
         (payload: RealtimeRowPayload) => {
           if (matchesEmployeeProfile(payload)) scheduleCheck();
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'employee_wfh_period_requests' },
+        (payload: RealtimeRowPayload) => {
+          if (matchesWfhPeriod(payload)) scheduleCheck();
         },
       )
       .subscribe();

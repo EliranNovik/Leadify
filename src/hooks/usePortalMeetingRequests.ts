@@ -1,23 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  fetchPendingPortalMeetingRequests,
-  type PortalMeetingRequest,
+  fetchUpcomingClientPortalBookings,
+  type ClientPortalBookedMeeting,
 } from '../lib/portalMeetingRequests';
 import { supabase } from '../lib/supabase';
 
+/** Upcoming (today+) meetings booked by clients via the portal / public booking link. */
 export function usePortalMeetingRequests(enabled = true) {
-  const [requests, setRequests] = useState<PortalMeetingRequest[]>([]);
+  const [meetings, setMeetings] = useState<ClientPortalBookedMeeting[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     if (!enabled) return;
     setLoading(true);
     try {
-      const data = await fetchPendingPortalMeetingRequests();
-      setRequests(data);
+      const data = await fetchUpcomingClientPortalBookings();
+      setMeetings(data);
     } catch (e) {
-      console.error('portal meeting requests', e);
-      setRequests([]);
+      console.error('client portal bookings', e);
+      setMeetings([]);
     } finally {
       setLoading(false);
     }
@@ -31,10 +32,10 @@ export function usePortalMeetingRequests(enabled = true) {
     if (!enabled) return;
 
     const channel = supabase
-      .channel('portal-meeting-requests-pending')
+      .channel('client-portal-booked-meetings')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'client_portal_meeting_requests' },
+        { event: '*', schema: 'public', table: 'meetings' },
         () => {
           void refresh();
         },
@@ -47,8 +48,10 @@ export function usePortalMeetingRequests(enabled = true) {
   }, [enabled, refresh]);
 
   return {
-    requests,
-    count: requests.length,
+    /** @deprecated use `meetings` — kept for CalendarPage naming compatibility */
+    requests: meetings,
+    meetings,
+    count: meetings.length,
     loading,
     refresh,
   };

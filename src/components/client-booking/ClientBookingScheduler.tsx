@@ -3,12 +3,14 @@ import { Link } from 'react-router-dom';
 import { DateTime } from 'luxon';
 import {
   CalendarDaysIcon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   MapPinIcon,
   VideoCameraIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import MobileBottomSheet from '../MobileBottomSheet';
 import BookingTimeWheel from './BookingTimeWheel';
 import { BookingMeetingCardActions } from './BookingMeetingCardActions';
 import {
@@ -33,8 +35,10 @@ import {
   persistClientTimezone,
   resolveCategoryAvailabilityForLead,
 } from '../../lib/bookingTimezone';
+import { isNarrowViewport } from '../../lib/mobileCache';
 import {
   getPortalTabHeaderCoverImage,
+  HorizontalCardCarousel,
   PortalCard,
   PortalLoading,
   PortalSectionLabel,
@@ -88,7 +92,7 @@ export function ScheduledMeetingsSection({
           </p>
         </PortalCard>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <HorizontalCardCarousel>
           {meetings.map((m) => {
             const tz = m.client_booking_timezone || clientTimezone;
             const jerusalemTime = m.meeting_time?.substring(0, 5) || '';
@@ -153,7 +157,7 @@ export function ScheduledMeetingsSection({
               </PortalCard>
             );
           })}
-        </div>
+        </HorizontalCardCarousel>
       )}
     </section>
   );
@@ -168,6 +172,8 @@ export type ClientBookingSchedulerProps = {
   hideScheduledMeetings?: boolean;
   onBooked?: () => void;
   onLeadRefLoaded?: (leadRef: string | null) => void;
+  /** True while the date/time/confirm (or done) flow is open — not the browse/CTA state */
+  onBookingFlowChange?: (inFlow: boolean) => void;
 };
 
 const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
@@ -178,6 +184,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   hideScheduledMeetings = false,
   onBooked,
   onLeadRefLoaded,
+  onBookingFlowChange,
 }) => {
   const embedded = variant === 'embedded';
   const usePublicExperience = variant === 'public';
@@ -193,7 +200,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   const [selectedContact, setSelectedContact] = useState<BookingContact | null>(null);
   const [selectedLocation, setSelectedLocation] = useState<ClientBookingLocation>('Teams');
   const [notes, setNotes] = useState('');
-  const [step, setStep] = useState<'datetime' | 'contact' | 'done'>('datetime');
+  const [step, setStep] = useState<'date' | 'time' | 'contact' | 'done'>('date');
   const [submitting, setSubmitting] = useState(false);
   const [confirmedMeeting, setConfirmedMeeting] = useState<{
     date: string;
@@ -203,12 +210,37 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     location: string;
   } | null>(null);
   const [scheduledMeetings, setScheduledMeetings] = useState<PublicBookingMeeting[]>([]);
-  const [bookingOpen, setBookingOpen] = useState(variant === 'embedded');
+  /** Portal meetings tab starts on browse; public booking link opens the step flow. */
+  const [bookingOpen, setBookingOpen] = useState(
+    () => variant === 'embedded' || (variant === 'public' && !inClientPortal),
+  );
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? isNarrowViewport() : false,
+  );
 
   useEffect(() => {
     const tz = persistClientTimezone(detectClientTimezone());
     setClientTimezone(tz);
   }, []);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  /** Browse = CTA + meeting lists; anything else is the focused booking flow */
+  const browsingMeetings = !bookingOpen && step === 'date';
+  const flowActive = bookingOpen && step !== 'done';
+  const useMobileBookingSheet = isMobile && usePublicExperience && flowActive;
+  const showBrowseChrome = browsingMeetings || useMobileBookingSheet;
+  const showScheduledMeetings = !hideScheduledMeetings && showBrowseChrome;
+
+  useEffect(() => {
+    onBookingFlowChange?.(!browsingMeetings);
+  }, [browsingMeetings, onBookingFlowChange]);
 
   const loadScheduledMeetings = useCallback(async () => {
     if (!bookingToken) return;
@@ -356,6 +388,14 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     }
   };
 
+  const handleConfirmDate = () => {
+    if (!selectedDate) {
+      toast.error('Please select a date');
+      return;
+    }
+    setStep('time');
+  };
+
   const handleBook = async () => {
     if (!selectedDate || !selectedTime || !selectedContact) return;
     setSubmitting(true);
@@ -401,7 +441,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   };
 
   const resetBooking = () => {
-    setStep('datetime');
+    setStep('date');
     setBookingOpen(variant === 'embedded');
     setSelectedDate(null);
     setSelectedTime(null);
@@ -414,6 +454,16 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     } else {
       setSelectedContact(null);
     }
+  };
+
+  const exitToMeetingsHome = () => {
+    setBookingOpen(false);
+    setStep('date');
+    setSelectedDate(null);
+    setSelectedTime(null);
+    setNotes('');
+    setSelectedLocation('Teams');
+    setConfirmedMeeting(null);
   };
 
   if (loading) {
@@ -435,15 +485,10 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   const leadRef = lead.lead_ref || lead.lead_number;
   const portalUrl = portalMeetingsUrl(leadRef);
 
-  const timezoneBanner = (
-    <div className="space-y-1 text-sm text-base-content/60">
-      <p>Times shown in your local time ({formatTimezoneLabel(clientTimezone)}).</p>
-      {clientTimezone !== BUSINESS_TZ ? (
-        <p className="text-xs text-base-content/50">
-          Our office schedules in Israel ({formatTimezoneLabel(BUSINESS_TZ)}).
-        </p>
-      ) : null}
-    </div>
+  const timezoneNote = (
+    <p className="text-xs text-gray-500 md:text-sm">
+      Times shown in your local time ({formatTimezoneLabel(clientTimezone)}).
+    </p>
   );
 
   const confirmationCard = confirmedMeeting ? (
@@ -489,226 +534,358 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     </PortalCard>
   ) : null;
 
+  const stepIndex = step === 'date' ? 0 : step === 'time' ? 1 : step === 'contact' ? 2 : 3;
+  const flowSteps = ['Date', 'Time', 'Confirm'] as const;
+
+  const dateStepCard = (
+    <PortalCard className={`w-full ${useMobileBookingSheet ? '' : 'mx-auto max-w-lg'}`}>
+      {usePublicExperience && !useMobileBookingSheet ? (
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm -ml-2 mb-2 gap-1 rounded-full"
+          onClick={exitToMeetingsHome}
+        >
+          <ChevronLeftIcon className="h-4 w-4" />
+          Back
+        </button>
+      ) : null}
+      {useMobileBookingSheet ? null : (
+        <h3 className="text-center text-lg font-bold text-gray-900">Select a date</h3>
+      )}
+      <div className={`${useMobileBookingSheet ? 'mt-0' : 'mt-4'} flex items-center justify-between`}>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm btn-circle"
+          onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+        >
+          <ChevronLeftIcon className="h-5 w-5" />
+        </button>
+        <span className="font-semibold text-gray-800">
+          {MONTH_NAMES[viewMonth.getMonth()]} {viewMonth.getFullYear()}
+        </span>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm btn-circle"
+          onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+        >
+          <ChevronRightIcon className="h-5 w-5" />
+        </button>
+      </div>
+
+      <div className="mt-3 grid grid-cols-7 gap-1 text-center text-xs font-semibold uppercase tracking-wide text-base-content/40">
+        {DAY_LABELS.map((d) => (
+          <div key={d} className="py-1">{d}</div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-7 gap-1">
+        {calendarDays.map((cell, idx) => {
+          if (!cell.day) return <div key={`empty-${idx}`} />;
+          return (
+            <button
+              key={cell.date!}
+              type="button"
+              disabled={!cell.isSelectable}
+              onClick={() => {
+                setSelectedDate(cell.date);
+                setSelectedTime(null);
+              }}
+              className={`aspect-square rounded-full text-sm font-medium transition-colors ${
+                cell.isSelected
+                  ? 'bg-primary text-primary-content shadow-sm'
+                  : cell.isSelectable
+                    ? 'text-gray-800 hover:bg-primary/10'
+                    : 'cursor-not-allowed text-gray-300'
+              } ${cell.isToday && !cell.isSelected ? 'ring-2 ring-primary/30' : ''}`}
+            >
+              {cell.day}
+            </button>
+          );
+        })}
+      </div>
+
+      <button
+        type="button"
+        className="btn btn-primary mt-6 w-full rounded-full"
+        disabled={!selectedDate}
+        onClick={handleConfirmDate}
+      >
+        Continue
+      </button>
+    </PortalCard>
+  );
+
+  const timeStepCard = (
+    <PortalCard className={`flex w-full flex-col ${useMobileBookingSheet ? '' : 'mx-auto max-w-lg'}`}>
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm -ml-2 mb-2 gap-1 self-start rounded-full"
+        onClick={() => setStep('date')}
+      >
+        <ChevronLeftIcon className="h-4 w-4" />
+        Back to date
+      </button>
+      {useMobileBookingSheet ? null : (
+        <h3 className="text-center text-lg font-bold text-gray-900">Select a time</h3>
+      )}
+      {selectedDate ? (
+        <>
+          <p className={`text-center text-sm text-base-content/55 ${useMobileBookingSheet ? '' : 'mt-1'}`}>
+            {formatBookingDisplayDate(selectedDate)}
+          </p>
+          <div className="mt-4 flex flex-col gap-4">
+            <BookingTimeWheel
+              value={selectedTime}
+              onChange={setSelectedTime}
+              loading={slotsLoading}
+              dayUnavailable={!slotsLoading && slots.length === 0}
+              allowedTimes={slots}
+              manualInputs={usePublicExperience ? 'toggle' : 'always'}
+            />
+            {!slotsLoading && slots.length > 0 && clientTimezone !== BUSINESS_TZ ? (
+              <p className="text-center text-xs text-base-content/45">
+                Only times within our Israel office hours are available in your timezone.
+              </p>
+            ) : null}
+            {selectedTime ? (
+              <p className="text-center text-sm font-medium text-gray-700">
+                Selected: {formatBookingTimeWithZone(selectedTime, clientTimezone, selectedDate)}
+              </p>
+            ) : null}
+            {!slotsLoading && selectedTime && slots.length > 0 ? (
+              <button
+                type="button"
+                className="btn btn-primary w-full rounded-full"
+                onClick={handleConfirmTime}
+              >
+                Continue
+              </button>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <p className="mt-6 text-center text-sm text-base-content/45">
+          Choose a date first to see available times.
+        </p>
+      )}
+    </PortalCard>
+  );
+
+  const contactStepCard = (
+    <PortalCard className={`w-full ${useMobileBookingSheet ? '' : 'mx-auto max-w-lg'}`}>
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm -ml-2 mb-2 gap-1 rounded-full"
+        onClick={() => setStep('time')}
+      >
+        <ChevronLeftIcon className="h-4 w-4" />
+        Back to time
+      </button>
+      {useMobileBookingSheet ? null : (
+        <h3 className="text-center text-lg font-bold text-gray-900">Confirm your details</h3>
+      )}
+      <p className={`text-center text-sm text-base-content/55 ${useMobileBookingSheet ? '' : 'mt-1'}`}>
+        {formatBookingDisplayDate(selectedDate!)} at{' '}
+        {formatBookingTimeWithZone(selectedTime!, clientTimezone, selectedDate || undefined)}
+      </p>
+
+      <div className="mt-6">
+        <p className="mb-2 text-sm font-medium text-gray-900">Meeting location</p>
+        <div className="grid gap-3">
+          {CLIENT_BOOKING_LOCATION_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition-colors ${
+                selectedLocation === opt.value
+                  ? 'border-primary bg-primary/5 ring-1 ring-primary/25'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name="booking-location"
+                className="radio radio-primary radio-sm mt-0.5"
+                checked={selectedLocation === opt.value}
+                onChange={() => setSelectedLocation(opt.value)}
+              />
+              <div>
+                <p className="flex items-center gap-2 font-medium text-gray-900">
+                  {opt.value === 'Teams' ? (
+                    <VideoCameraIcon className="h-4 w-4 text-gray-500" />
+                  ) : (
+                    <MapPinIcon className="h-4 w-4 text-gray-500" />
+                  )}
+                  {opt.label}
+                </p>
+                <p className="mt-1 text-xs text-base-content/50">{opt.description}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <p className="mb-2 text-sm font-medium text-gray-900">Confirmation recipient</p>
+        <div className="space-y-2">
+          {contactsWithReach.map((contact) => (
+            <label
+              key={contact.id}
+              className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition-colors ${
+                selectedContact?.id === contact.id
+                  ? 'border-primary bg-primary/5 ring-1 ring-primary/25'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name="booking-contact"
+                className="radio radio-primary radio-sm mt-0.5"
+                checked={selectedContact?.id === contact.id}
+                onChange={() => setSelectedContact(contact)}
+              />
+              <div>
+                <p className="font-medium text-gray-900">{contact.name}</p>
+                {contact.email ? <p className="text-xs text-base-content/50">{contact.email}</p> : null}
+                {contact.mobile || contact.phone ? (
+                  <p className="text-xs text-base-content/50">{contact.mobile || contact.phone}</p>
+                ) : null}
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <label className="mb-2 block text-sm font-medium text-gray-900" htmlFor="booking-notes">
+          Notes (optional)
+        </label>
+        <textarea
+          id="booking-notes"
+          className="textarea textarea-bordered w-full rounded-2xl"
+          rows={3}
+          placeholder="Anything we should know?"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+        />
+      </div>
+
+      <button
+        type="button"
+        className="btn btn-primary mt-6 w-full rounded-full"
+        disabled={!selectedContact || submitting}
+        onClick={() => void handleBook()}
+      >
+        {submitting ? 'Scheduling…' : 'Confirm meeting'}
+      </button>
+    </PortalCard>
+  );
+
+  const bookingProgress = (
+    <nav
+      className="rounded-2xl border border-gray-100 bg-white/90 px-3 py-3 shadow-[0_2px_14px_rgba(15,23,42,0.04)] sm:px-4"
+      aria-label="Booking progress"
+    >
+      <ol className="flex items-center gap-1 sm:gap-2">
+        {flowSteps.map((label, idx) => {
+          const active = idx === stepIndex;
+          const complete = idx < stepIndex;
+          return (
+            <React.Fragment key={label}>
+              {idx > 0 ? (
+                <div
+                  className={`h-0.5 min-w-[0.75rem] flex-1 rounded-full transition-colors ${
+                    complete || active ? 'bg-primary/40' : 'bg-base-200'
+                  }`}
+                  aria-hidden
+                />
+              ) : null}
+              <li className="flex shrink-0 flex-col items-center gap-1.5">
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold tracking-wide transition-all sm:px-3 sm:text-[13px] ${
+                    active
+                      ? 'bg-primary text-primary-content shadow-sm ring-4 ring-primary/15'
+                      : complete
+                        ? 'bg-primary/10 text-primary'
+                        : 'bg-base-200/80 text-base-content/40'
+                  }`}
+                  aria-current={active ? 'step' : undefined}
+                >
+                  <span
+                    className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold ${
+                      active
+                        ? 'bg-primary-content/20 text-primary-content'
+                        : complete
+                          ? 'bg-primary text-primary-content'
+                          : 'bg-base-300/80 text-base-content/50'
+                    }`}
+                  >
+                    {complete ? <CheckIcon className="h-3 w-3 stroke-[2.5]" /> : idx + 1}
+                  </span>
+                  {label}
+                </span>
+              </li>
+            </React.Fragment>
+          );
+        })}
+      </ol>
+      {!useMobileBookingSheet ? (
+        <div className="mt-3 text-center">{timezoneNote}</div>
+      ) : null}
+    </nav>
+  );
+
+  const bookingStepsBody = (
+    <div className={`space-y-5 ${useMobileBookingSheet ? 'px-4 pb-6 pt-2' : 'mx-auto w-full max-w-lg'}`}>
+      {step !== 'done' ? bookingProgress : null}
+      {step === 'date' ? dateStepCard : null}
+      {step === 'time' ? timeStepCard : null}
+      {step === 'contact' ? contactStepCard : null}
+    </div>
+  );
+
+  const sheetStepTitle =
+    step === 'date' ? 'Select a date' : step === 'time' ? 'Select a time' : 'Confirm details';
+
   const bookingFlow = (
-    <section className={`space-y-4 ${!bookingOpen && step === 'datetime' && usePublicExperience ? 'pb-4' : ''}`}>
-      <PortalSectionLabel>{embedded ? 'Schedule a meeting' : 'Book a new meeting'}</PortalSectionLabel>
-      {timezoneBanner}
+    <section className={`space-y-4 ${!bookingOpen && step === 'date' && usePublicExperience ? 'pb-4' : ''}`}>
+      {showBrowseChrome ? (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <PortalSectionLabel>{embedded ? 'Schedule a meeting' : 'Book a new meeting'}</PortalSectionLabel>
+          {timezoneNote}
+        </div>
+      ) : null}
 
       {step === 'done' && confirmationCard ? (
-        confirmationCard
-      ) : !bookingOpen && step === 'datetime' && usePublicExperience ? (
+        <div className="mx-auto w-full max-w-lg">{confirmationCard}</div>
+      ) : !bookingOpen && step === 'date' && usePublicExperience ? (
         <button
           type="button"
           className="btn btn-primary btn-lg mb-10 gap-2 rounded-full px-8"
-          onClick={() => setBookingOpen(true)}
+          onClick={() => {
+            setStep('date');
+            setBookingOpen(true);
+          }}
         >
           <CalendarDaysIcon className="h-5 w-5" />
           Schedule new meeting
         </button>
-      ) : step === 'contact' ? (
-        <PortalCard>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm -ml-2 mb-2 gap-1 rounded-full"
-            onClick={() => setStep('datetime')}
-          >
-            <ChevronLeftIcon className="h-4 w-4" />
-            Back to calendar
-          </button>
-          <h3 className="text-lg font-bold text-gray-900">Confirm your details</h3>
-          <p className="mt-1 text-sm text-base-content/55">
-            {formatBookingDisplayDate(selectedDate!)} at{' '}
-            {formatBookingTimeWithZone(selectedTime!, clientTimezone, selectedDate || undefined)}
-          </p>
+      ) : flowActive && !useMobileBookingSheet ? (
+        bookingStepsBody
+      ) : null}
 
-          <div className="mt-6">
-            <p className="mb-2 text-sm font-medium text-gray-900">Meeting location</p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {CLIENT_BOOKING_LOCATION_OPTIONS.map((opt) => (
-                <label
-                  key={opt.value}
-                  className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition-colors ${
-                    selectedLocation === opt.value
-                      ? 'border-primary bg-primary/5 ring-1 ring-primary/25'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="booking-location"
-                    className="radio radio-primary radio-sm mt-0.5"
-                    checked={selectedLocation === opt.value}
-                    onChange={() => setSelectedLocation(opt.value)}
-                  />
-                  <div>
-                    <p className="flex items-center gap-2 font-medium text-gray-900">
-                      {opt.value === 'Teams' ? (
-                        <VideoCameraIcon className="h-4 w-4 text-gray-500" />
-                      ) : (
-                        <MapPinIcon className="h-4 w-4 text-gray-500" />
-                      )}
-                      {opt.label}
-                    </p>
-                    <p className="mt-1 text-xs text-base-content/50">{opt.description}</p>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-6">
-            <p className="mb-2 text-sm font-medium text-gray-900">Confirmation recipient</p>
-            <div className="space-y-2">
-              {contactsWithReach.map((contact) => (
-                <label
-                  key={contact.id}
-                  className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition-colors ${
-                    selectedContact?.id === contact.id
-                      ? 'border-primary bg-primary/5 ring-1 ring-primary/25'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="booking-contact"
-                    className="radio radio-primary radio-sm mt-0.5"
-                    checked={selectedContact?.id === contact.id}
-                    onChange={() => setSelectedContact(contact)}
-                  />
-                  <div>
-                    <p className="font-medium text-gray-900">{contact.name}</p>
-                    {contact.email ? <p className="text-xs text-base-content/50">{contact.email}</p> : null}
-                    {contact.mobile || contact.phone ? (
-                      <p className="text-xs text-base-content/50">{contact.mobile || contact.phone}</p>
-                    ) : null}
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <label className="mb-2 block text-sm font-medium text-gray-900" htmlFor="booking-notes">
-              Notes (optional)
-            </label>
-            <textarea
-              id="booking-notes"
-              className="textarea textarea-bordered w-full rounded-2xl"
-              rows={3}
-              placeholder="Anything we should know?"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-            />
-          </div>
-
-          <button
-            type="button"
-            className="btn btn-primary mt-6 w-full rounded-full sm:w-auto sm:min-w-[200px]"
-            disabled={!selectedContact || submitting}
-            onClick={() => void handleBook()}
-          >
-            {submitting ? 'Scheduling…' : 'Confirm meeting'}
-          </button>
-        </PortalCard>
-      ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <PortalCard>
-            <h3 className="text-lg font-bold text-gray-900">Select a date</h3>
-            <div className="mt-4 flex items-center justify-between">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm btn-circle"
-                onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
-              >
-                <ChevronLeftIcon className="h-5 w-5" />
-              </button>
-              <span className="font-semibold text-gray-800">
-                {MONTH_NAMES[viewMonth.getMonth()]} {viewMonth.getFullYear()}
-              </span>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm btn-circle"
-                onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
-              >
-                <ChevronRightIcon className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="mt-3 grid grid-cols-7 gap-1 text-center text-xs font-semibold uppercase tracking-wide text-base-content/40">
-              {DAY_LABELS.map((d) => (
-                <div key={d} className="py-1">{d}</div>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-7 gap-1">
-              {calendarDays.map((cell, idx) => {
-                if (!cell.day) return <div key={`empty-${idx}`} />;
-                return (
-                  <button
-                    key={cell.date!}
-                    type="button"
-                    disabled={!cell.isSelectable}
-                    onClick={() => {
-                      setSelectedDate(cell.date);
-                      setSelectedTime(null);
-                    }}
-                    className={`aspect-square rounded-full text-sm font-medium transition-colors ${
-                      cell.isSelected
-                        ? 'bg-primary text-primary-content shadow-sm'
-                        : cell.isSelectable
-                          ? 'text-gray-800 hover:bg-primary/10'
-                          : 'cursor-not-allowed text-gray-300'
-                    } ${cell.isToday && !cell.isSelected ? 'ring-2 ring-primary/30' : ''}`}
-                  >
-                    {cell.day}
-                  </button>
-                );
-              })}
-            </div>
-          </PortalCard>
-
-          <PortalCard className="flex flex-col">
-            <h3 className="text-lg font-bold text-gray-900">Select a time</h3>
-            {selectedDate ? (
-              <>
-                <p className="mt-1 text-sm text-base-content/55">{formatBookingDisplayDate(selectedDate)}</p>
-                <div className="mt-4 flex flex-col gap-4">
-                  <BookingTimeWheel
-                    value={selectedTime}
-                    onChange={setSelectedTime}
-                    loading={slotsLoading}
-                    dayUnavailable={!slotsLoading && slots.length === 0}
-                    allowedTimes={slots}
-                  />
-                  {!slotsLoading && slots.length > 0 && clientTimezone !== BUSINESS_TZ ? (
-                    <p className="text-center text-xs text-base-content/45">
-                      Only times within our Israel office hours are available in your timezone.
-                    </p>
-                  ) : null}
-                  {selectedTime ? (
-                    <p className="text-center text-sm font-medium text-gray-700">
-                      Selected: {formatBookingTimeWithZone(selectedTime, clientTimezone, selectedDate)}
-                    </p>
-                  ) : null}
-                  {!slotsLoading && selectedTime && slots.length > 0 ? (
-                    <button
-                      type="button"
-                      className="btn btn-primary w-full rounded-full sm:self-center sm:px-10"
-                      onClick={handleConfirmTime}
-                    >
-                      Continue
-                    </button>
-                  ) : null}
-                </div>
-              </>
-            ) : (
-              <p className="mt-6 flex flex-1 items-center text-sm text-base-content/45">
-                Choose a date on the left to see available times.
-              </p>
-            )}
-          </PortalCard>
-        </div>
-      )}
+      {usePublicExperience ? (
+        <MobileBottomSheet
+          open={useMobileBookingSheet}
+          onClose={exitToMeetingsHome}
+          title={sheetStepTitle}
+          subtitle={`Times shown in your local time (${formatTimezoneLabel(clientTimezone)}).`}
+          mobileFullHeight
+          zIndex={120}
+          contentClassName="!p-0"
+        >
+          {bookingStepsBody}
+        </MobileBottomSheet>
+      ) : null}
     </section>
   );
 
@@ -721,31 +898,27 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       <PortalTabFrame
         title="You're scheduled"
         subtitle={`A confirmation was sent to ${selectedContact?.name || 'your contact'}.`}
-        headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
       >
-        {confirmationCard}
-        {!hideScheduledMeetings ? (
-          <ScheduledMeetingsSection
-            meetings={scheduledMeetings}
-            clientTimezone={clientTimezone}
-            durationMinutes={settings.duration_minutes}
-          />
-        ) : null}
+        <div className="mx-auto w-full max-w-lg">{confirmationCard}</div>
       </PortalTabFrame>
     );
   }
 
   return (
     <PortalTabFrame
-      title={settings.title}
+      title={showBrowseChrome ? settings.title : undefined}
       subtitle={
-        lead.display_name
-          ? `Schedule with ${host.name || 'our team'} · Case: ${lead.display_name}`
-          : `Schedule with ${host.name || 'our team'}`
+        showBrowseChrome
+          ? lead.display_name
+            ? `Schedule with ${host.name || 'our team'} · Case: ${lead.display_name}`
+            : `Schedule with ${host.name || 'our team'}`
+          : undefined
       }
-      headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
+      headerCoverImage={
+        showBrowseChrome ? getPortalTabHeaderCoverImage('meetings') : undefined
+      }
     >
-      {!hideScheduledMeetings ? (
+      {showScheduledMeetings ? (
         <ScheduledMeetingsSection
           meetings={scheduledMeetings}
           clientTimezone={clientTimezone}

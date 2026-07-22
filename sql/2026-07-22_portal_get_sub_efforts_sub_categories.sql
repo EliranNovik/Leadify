@@ -1,5 +1,5 @@
--- Flag for sub efforts manually added on a lead (outside / beyond category defaults).
--- Run in Supabase SQL editor (after 2026-07-21_lead_sub_effort_exclusions.sql if not yet applied).
+-- Portal Case Status: include sub_category_efforts under each workflow stage (same as CRM Clients modal).
+-- Safe to re-run after 2026-07-22_portal_get_sub_efforts_folders.sql.
 
 ALTER TABLE public.lead_sub_efforts
   ADD COLUMN IF NOT EXISTS manually_added boolean NOT NULL DEFAULT false;
@@ -20,9 +20,12 @@ DECLARE
   v_legacy_lead_id bigint;
   v_new_lead_id uuid;
   v_rows JSONB;
+  v_folders JSONB;
   v_has_junction boolean;
   v_has_exclusions boolean;
   v_has_manually_added boolean;
+  v_has_folders boolean;
+  v_has_sub_categories boolean;
 BEGIN
   v_session := public._portal_session_row(p_token);
   IF v_session IS NULL THEN
@@ -53,6 +56,20 @@ BEGIN
       AND table_name = 'lead_sub_efforts'
       AND column_name = 'manually_added'
   ) INTO v_has_manually_added;
+
+  SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = 'lead_sub_effort_folders'
+  ) INTO v_has_folders;
+
+  SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = 'sub_category_efforts'
+  ) INTO v_has_sub_categories;
 
   IF v_legacy_lead_id IS NOT NULL THEN
     SELECT ll.category_id INTO v_category_id
@@ -161,7 +178,26 @@ BEGIN
         se.sort_order AS template_sort_order,
         lse.created_at,
         lse.updated_at,
-        lse.updated_by
+        lse.updated_by,
+        CASE
+          WHEN v_has_sub_categories THEN (
+            SELECT COALESCE(
+              jsonb_agg(
+                jsonb_build_object(
+                  'id', sce.id,
+                  'name', sce.name,
+                  'description', sce.description,
+                  'sort_order', sce.sort_order
+                )
+                ORDER BY sce.sort_order ASC, sce.name ASC
+              ),
+              '[]'::JSONB
+            )
+            FROM public.sub_category_efforts sce
+            WHERE sce.sub_effort_id = se.id
+          )
+          ELSE '[]'::JSONB
+        END AS sub_category_efforts
       FROM public.lead_sub_efforts lse
       INNER JOIN public.sub_efforts se ON se.id = lse.sub_effort_id
       WHERE lse.legacy_lead_id = v_legacy_lead_id
@@ -209,7 +245,26 @@ BEGIN
         se.sort_order AS template_sort_order,
         lse.created_at,
         lse.updated_at,
-        lse.updated_by
+        lse.updated_by,
+        CASE
+          WHEN v_has_sub_categories THEN (
+            SELECT COALESCE(
+              jsonb_agg(
+                jsonb_build_object(
+                  'id', sce.id,
+                  'name', sce.name,
+                  'description', sce.description,
+                  'sort_order', sce.sort_order
+                )
+                ORDER BY sce.sort_order ASC, sce.name ASC
+              ),
+              '[]'::JSONB
+            )
+            FROM public.sub_category_efforts sce
+            WHERE sce.sub_effort_id = se.id
+          )
+          ELSE '[]'::JSONB
+        END AS sub_category_efforts
       FROM public.lead_sub_efforts lse
       INNER JOIN public.sub_efforts se ON se.id = lse.sub_effort_id
       WHERE lse.new_lead_id = v_new_lead_id
@@ -240,9 +295,38 @@ BEGIN
     ) t;
   END IF;
 
+  IF v_has_folders THEN
+    SELECT COALESCE(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', f.id,
+          'title', f.title,
+          'note', f.note,
+          'sort_order', f.sort_order,
+          'created_at', f.created_at,
+          'created_by', f.created_by,
+          'lead_sub_effort_id', f.lead_sub_effort_id
+        )
+        ORDER BY f.sort_order ASC, f.created_at ASC, f.title ASC
+      ),
+      '[]'::JSONB
+    )
+    INTO v_folders
+    FROM public.lead_sub_effort_folders f
+    INNER JOIN public.lead_sub_efforts lse ON lse.id = f.lead_sub_effort_id
+    WHERE lse.internal = FALSE
+      AND (
+        (v_legacy_lead_id IS NOT NULL AND lse.legacy_lead_id = v_legacy_lead_id)
+        OR (v_new_lead_id IS NOT NULL AND lse.new_lead_id = v_new_lead_id)
+      );
+  ELSE
+    v_folders := '[]'::JSONB;
+  END IF;
+
   RETURN jsonb_build_object(
     'rows', COALESCE(v_rows, '[]'::JSONB),
-    'category_id', v_category_id
+    'category_id', v_category_id,
+    'folders', COALESCE(v_folders, '[]'::JSONB)
   );
 END;
 $$;

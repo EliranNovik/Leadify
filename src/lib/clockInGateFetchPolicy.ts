@@ -6,6 +6,7 @@ let gateBlocksDataAccess = false;
 
 const ALLOWED_REST_PREFIXES = [
   '/rest/v1/employee_clock_in',
+  '/rest/v1/employee_wfh_period_requests',
   '/rest/v1/users',
   '/rest/v1/tenants_employee',
   '/rest/v1/tenant_departement',

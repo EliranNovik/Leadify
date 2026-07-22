@@ -279,6 +279,37 @@ export function PortalSectionLabel({ children }: { children: ReactNode }) {
   );
 }
 
+/** Horizontal snap carousel for meeting (and similar) cards — mobile + desktop. */
+export function HorizontalCardCarousel({
+  children,
+  className = '',
+  itemClassName = 'w-[min(85vw,20rem)] sm:w-[20rem]',
+}: {
+  children: ReactNode;
+  className?: string;
+  /** Width classes applied to each direct child wrapper */
+  itemClassName?: string;
+}) {
+  const items = React.Children.toArray(children).filter(Boolean);
+  if (items.length === 0) return null;
+
+  return (
+    <div
+      className={`-mx-1 flex gap-4 overflow-x-auto overscroll-x-contain px-1 pb-3 pt-1 scroll-smooth snap-x snap-mandatory [scrollbar-width:thin] ${className}`}
+      style={{ WebkitOverflowScrolling: 'touch' }}
+    >
+      {items.map((child, index) => (
+        <div
+          key={React.isValidElement(child) && child.key != null ? String(child.key) : index}
+          className={`shrink-0 snap-start ${itemClassName}`}
+        >
+          {child}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function getPortalTabHeaderCoverImage(
   tabId: 'summary' | 'stages' | 'finance' | 'documents' | 'contacts' | 'meetings',
 ): string {
@@ -343,27 +374,31 @@ export function PortalTabFrame({
   headerCoverImage,
   children,
 }: {
-  title: string;
+  title?: string;
   subtitle?: string;
   /** Same Unsplash covers as dashboard summary stat cards */
   headerCoverImage?: string;
   children: ReactNode;
 }) {
+  const hasHeader = Boolean(headerCoverImage || title);
+
   return (
-    <div className="space-y-8">
+    <div className={hasHeader ? 'space-y-8' : 'space-y-0'}>
       {headerCoverImage ? (
         <PortalTabHeaderCover coverImage={headerCoverImage}>
-          <h2 className="text-2xl font-bold tracking-tight text-white md:text-3xl">{title}</h2>
+          {title ? (
+            <h2 className="text-2xl font-bold tracking-tight text-white md:text-3xl">{title}</h2>
+          ) : null}
           {subtitle ? (
             <p className="mt-2 max-w-2xl text-sm text-white/85 md:text-base">{subtitle}</p>
           ) : null}
         </PortalTabHeaderCover>
-      ) : (
+      ) : title ? (
         <div>
           <h2 className="text-xl font-bold tracking-tight text-base-content/95">{title}</h2>
           {subtitle ? <p className="mt-2 text-sm text-base-content/50">{subtitle}</p> : null}
         </div>
-      )}
+      ) : null}
       {children}
     </div>
   );

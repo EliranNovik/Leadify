@@ -9,6 +9,7 @@ import { BookingMeetingCardActions } from '../../../components/client-booking/Bo
 import { portalGetBookingAccess, type PortalMeetingRow } from '../../../lib/portalApi';
 import {
   getPortalTabHeaderCoverImage,
+  HorizontalCardCarousel,
   PortalCard,
   PortalLoading,
   PortalSectionLabel,
@@ -182,6 +183,7 @@ const PortalMeetingsTab: React.FC<Props> = ({
   const [bookingToken, setBookingToken] = useState<string | null>(null);
   const [bookingAccessLoading, setBookingAccessLoading] = useState(true);
   const [bookingAccessError, setBookingAccessError] = useState<string | null>(null);
+  const [bookingFlowActive, setBookingFlowActive] = useState(false);
 
   useEffect(() => {
     setBookingAccessLoading(true);
@@ -243,9 +245,9 @@ const PortalMeetingsTab: React.FC<Props> = ({
               </span>
             </summary>
             <div className="border-t border-gray-100 px-4 pb-4 pt-2 md:px-6 md:pb-6">
-              <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+              <HorizontalCardCarousel>
                 {past.map((m) => renderMeetingCard(m, true))}
-              </div>
+              </HorizontalCardCarousel>
             </div>
           </details>
         </PortalCard>
@@ -273,8 +275,9 @@ const PortalMeetingsTab: React.FC<Props> = ({
           inClientPortal
           defaultContactId={sessionContactId}
           onBooked={onMeetingsChange}
+          onBookingFlowChange={setBookingFlowActive}
         />
-        {pastMeetingsSection}
+        {!bookingFlowActive ? pastMeetingsSection : null}
       </>
     );
   }
@@ -295,9 +298,9 @@ const PortalMeetingsTab: React.FC<Props> = ({
             </p>
           </PortalCard>
         ) : (
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+          <HorizontalCardCarousel>
             {upcoming.map((m) => renderMeetingCard(m))}
-          </div>
+          </HorizontalCardCarousel>
         )}
       </section>
 

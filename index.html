@@ -21,6 +21,19 @@
     <script>
       // Prevent browser from interfering with React Router scroll restoration
       if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+      // Entry kiosk: use fullscreen PWA manifest + dark theme-color before React boots
+      // so Chrome's "Install app" gets display:fullscreen (hides bottom browser chrome).
+      (function () {
+        try {
+          if (location.pathname.indexOf('/entry-kiosk') !== 0) return;
+          var manifest = document.querySelector('link[rel="manifest"]');
+          if (manifest) manifest.setAttribute('href', '/manifest-entry-kiosk.json');
+          var theme = document.querySelector('meta[name="theme-color"]');
+          if (theme) theme.setAttribute('content', '#0a1628');
+          document.documentElement.style.backgroundColor = '#0a1628';
+          document.documentElement.style.colorScheme = 'dark';
+        } catch (e) { /* ignore */ }
+      })();
     </script>
   </head>
   <body>

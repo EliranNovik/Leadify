@@ -1,5 +1,6 @@
--- Flag for sub efforts manually added on a lead (outside / beyond category defaults).
--- Run in Supabase SQL editor (after 2026-07-21_lead_sub_effort_exclusions.sql if not yet applied).
+-- Fix portal_get_sub_efforts payload to match portalApi: { rows, category_id }.
+-- Safe to re-run after 2026-07-21_lead_sub_efforts_manually_added.sql (IF NOT EXISTS + REPLACE).
+-- Previous manually_added migration briefly returned { sub_efforts } only, which emptied the portal workflow.
 
 ALTER TABLE public.lead_sub_efforts
   ADD COLUMN IF NOT EXISTS manually_added boolean NOT NULL DEFAULT false;

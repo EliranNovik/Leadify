@@ -1,4 +1,8 @@
-import { dedupePortalSubEffortRows, type PortalSubEffortRow } from './portalSubEfforts';
+import {
+  dedupePortalSubEffortRows,
+  normalizePortalSubEffortFolders,
+  type PortalSubEffortRow,
+} from './portalSubEfforts';
 import { supabase } from './supabase';
 import { getPortalSessionToken } from './portalSession';
 
@@ -64,6 +68,21 @@ export type PortalDocumentClassification = {
   sort_order?: number;
 };
 
+/** Employee-created folder on a sub-effort (CRM documents box). */
+export type PortalDocumentFolder = {
+  id: string;
+  title: string;
+  note?: string | null;
+  sort_order?: number;
+  created_at?: string;
+  created_by?: string | null;
+  lead_sub_effort_id?: number | null;
+  sub_effort_name?: string | null;
+  classification_id?: string | null;
+  classification_slug?: string | null;
+  classification_label?: string | null;
+};
+
 export type PortalDocumentRow = {
   id: string;
   file_name: string;
@@ -81,6 +100,10 @@ export type PortalDocumentRow = {
   document_type_name?: string | null;
   contact_name?: string | null;
   source?: 'case' | 'subeffort';
+  /** Set when the file lives in a CRM sub-effort folder. */
+  folder_id?: string | null;
+  lead_sub_effort_id?: number | null;
+  sub_effort_name?: string | null;
 };
 
 export type PortalLeadCaseDocumentType = {
@@ -194,15 +217,22 @@ export async function portalGetSubEfforts() {
     p_token: tokenOrThrow(),
   });
   if (error) throw error;
-  const payload = data as { rows?: Array<Record<string, unknown>>; category_id?: number | null } | null;
+  const payload = data as {
+    rows?: Array<Record<string, unknown>>;
+    sub_efforts?: Array<Record<string, unknown>>;
+    category_id?: number | null;
+    folders?: unknown;
+  } | null;
   if (!payload) return null;
+  const rawRows = payload.rows ?? payload.sub_efforts ?? [];
   return {
-    rows: dedupePortalSubEffortRows(payload.rows ?? []),
+    rows: dedupePortalSubEffortRows(rawRows),
     category_id: payload.category_id ?? null,
+    folders: normalizePortalSubEffortFolders(payload.folders),
   };
 }
 
-export type { PortalSubEffortRow };
+export type { PortalSubEffortRow, PortalSubEffortFolder } from './portalSubEfforts';
 
 export async function portalGetFinances() {
   const { data, error } = await supabase.rpc('portal_get_finances', {
@@ -223,6 +253,7 @@ export async function portalGetDocuments() {
   if (error) throw error;
   return data as {
     documents: PortalDocumentRow[];
+    folders?: PortalDocumentFolder[];
     classifications: PortalDocumentClassification[];
     lead_number: string;
   } | null;

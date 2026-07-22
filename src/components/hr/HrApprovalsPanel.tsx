@@ -17,6 +17,13 @@ import {
   manualClockInWorkplaceLabel,
   type ManualClockInApprovalRecord,
 } from '../../lib/employeeClockInApproval';
+import {
+  approveWfhPeriodRequest,
+  declineWfhPeriodRequest,
+  fetchPendingWfhPeriodRequestsForApproval,
+  formatWfhPeriodLabel,
+  type WfhPeriodRequest,
+} from '../../lib/employeeWfhPeriodRequests';
 import { formatClockDuration, formatClockTime } from '../../lib/employeeClockInFormat';
 import {
   approveUnavailabilityRecord,
@@ -56,6 +63,7 @@ export type HrApprovalKindFilter = 'all' | 'clock' | 'wfh' | 'leave';
 
 type UnifiedItem =
   | { kind: 'clock'; record: ManualClockInApprovalRecord }
+  | { kind: 'wfh'; record: WfhPeriodRequest }
   | { kind: 'leave'; record: UnavailabilityApprovalRecord };
 
 type EmployeeGroup = {
@@ -67,8 +75,8 @@ type EmployeeGroup = {
 };
 
 type DeclineTarget =
-  | { mode: 'single'; kind: 'clock' | 'leave'; id: number }
-  | { mode: 'bulk'; items: Array<{ kind: 'clock' | 'leave'; id: number }> };
+  | { mode: 'single'; kind: 'clock' | 'wfh' | 'leave'; id: number }
+  | { mode: 'bulk'; items: Array<{ kind: 'clock' | 'wfh' | 'leave'; id: number }> };
 
 const APPROVAL_TABLE_COL_SPAN = 10;
 const CLOCK_IN_DATE_BADGE_CLASS =
@@ -102,6 +110,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
   const { user } = useAuthContext();
   const [loading, setLoading] = useState(true);
   const [clockRecords, setClockRecords] = useState<ManualClockInApprovalRecord[]>([]);
+  const [wfhPeriodRecords, setWfhPeriodRecords] = useState<WfhPeriodRequest[]>([]);
   const [leaveRecords, setLeaveRecords] = useState<UnavailabilityApprovalRecord[]>([]);
   const [search, setSearch] = useState('');
   const [kindFilter, setKindFilter] = useState<HrApprovalKindFilter>('all');
@@ -112,18 +121,19 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
     Map<number, ClockInRevisionSnapshot>
   >(() => new Map());
 
-  const itemKey = (item: UnifiedItem) =>
-    item.kind === 'clock' ? `clock-${item.record.id}` : `leave-${item.record.id}`;
+  const itemKey = (item: UnifiedItem) => `${item.kind}-${item.record.id}`;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [clock, leave] = await Promise.all([
+      const [clock, wfhPeriods, leave] = await Promise.all([
         fetchPendingManualClockInsForApproval('all'),
+        fetchPendingWfhPeriodRequestsForApproval().catch(() => [] as WfhPeriodRequest[]),
         fetchPendingUnavailabilitiesForApproval().catch(() => [] as UnavailabilityApprovalRecord[]),
       ]);
       const pendingClock = clock.filter((r) => getClockInApprovalStatus(r) === 'pending');
       setClockRecords(pendingClock);
+      setWfhPeriodRecords(wfhPeriods);
       setLeaveRecords(leave);
 
       const revisionIds = pendingClock
@@ -153,6 +163,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
   const groups = useMemo(() => {
     const items: UnifiedItem[] = [
       ...clockRecords.map((record) => ({ kind: 'clock' as const, record })),
+      ...wfhPeriodRecords.map((record) => ({ kind: 'wfh' as const, record })),
       ...leaveRecords.map((record) => ({ kind: 'leave' as const, record })),
     ];
 
@@ -161,7 +172,10 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
         return item.kind === 'clock' && !isHomeWfhApprovalRequest(item.record);
       }
       if (kindFilter === 'wfh') {
-        return item.kind === 'clock' && isHomeWfhApprovalRequest(item.record);
+        return (
+          item.kind === 'wfh'
+          || (item.kind === 'clock' && isHomeWfhApprovalRequest(item.record))
+        );
       }
       if (kindFilter === 'leave') return item.kind === 'leave';
       return true;
@@ -170,14 +184,8 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
     const q = search.trim().toLowerCase();
     const searched = q
       ? filtered.filter((item) => {
-          const name =
-            item.kind === 'clock'
-              ? item.record.employee_name || ''
-              : item.record.employee_name || '';
-          const dept =
-            item.kind === 'clock'
-              ? item.record.employee_department || ''
-              : item.record.employee_department || '';
+          const name = item.record.employee_name || '';
+          const dept = item.record.employee_department || '';
           return name.toLowerCase().includes(q) || dept.toLowerCase().includes(q);
         })
       : filtered;
@@ -187,6 +195,12 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
       const record = item.record;
       const employeeId = record.employee_id;
       const existing = map.get(employeeId);
+      const photoUrl =
+        item.kind === 'leave'
+          ? (record as UnavailabilityApprovalRecord).employee_photo_url ?? null
+          : item.kind === 'wfh'
+            ? (record as WfhPeriodRequest).employee_photo_url ?? null
+            : (record as ManualClockInApprovalRecord).employee_photo_url ?? null;
       if (existing) {
         existing.items.push(item);
       } else {
@@ -194,7 +208,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
           employeeId,
           employeeName: record.employee_name || `Employee #${employeeId}`,
           department: record.employee_department || '—',
-          photoUrl: record.employee_photo_url ?? null,
+          photoUrl,
           items: [item],
         });
       }
@@ -202,13 +216,19 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
     return Array.from(map.values()).sort((a, b) =>
       a.employeeName.localeCompare(b.employeeName),
     );
-  }, [clockRecords, leaveRecords, kindFilter, search]);
+  }, [clockRecords, wfhPeriodRecords, leaveRecords, kindFilter, search]);
 
   const totals = useMemo(() => {
-    const wfh = clockRecords.filter(isHomeWfhApprovalRequest).length;
-    const clock = clockRecords.length - wfh;
-    return { clock, wfh, leave: leaveRecords.length, all: clockRecords.length + leaveRecords.length };
-  }, [clockRecords, leaveRecords]);
+    const legacyWfh = clockRecords.filter(isHomeWfhApprovalRequest).length;
+    const wfh = legacyWfh + wfhPeriodRecords.length;
+    const clock = clockRecords.length - legacyWfh;
+    return {
+      clock,
+      wfh,
+      leave: leaveRecords.length,
+      all: clockRecords.length + wfhPeriodRecords.length + leaveRecords.length,
+    };
+  }, [clockRecords, wfhPeriodRecords, leaveRecords]);
 
   const setBusy = (key: string, on: boolean) => {
     setBusyIds((prev) => {
@@ -224,7 +244,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
     onUpdated?.();
   };
 
-  const handleApprove = async (kind: 'clock' | 'leave', id: number) => {
+  const handleApprove = async (kind: 'clock' | 'wfh' | 'leave', id: number) => {
     if (!user?.id) {
       toast.error('Not signed in');
       return;
@@ -233,6 +253,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
     setBusy(key, true);
     try {
       if (kind === 'clock') await approveClockInRecord(id, user.id);
+      else if (kind === 'wfh') await approveWfhPeriodRequest(id, user.id);
       else await approveUnavailabilityRecord(id, user.id);
       toast.success('Approved');
       await afterChange();
@@ -255,6 +276,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
         setBusy(key, true);
         try {
           if (target.kind === 'clock') await declineClockInRecord(target.id, user.id, note);
+          else if (target.kind === 'wfh') await declineWfhPeriodRequest(target.id, user.id, note);
           else await declineUnavailabilityRecord(target.id, user.id, note);
           toast.success('Declined');
         } finally {
@@ -263,6 +285,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
       } else {
         for (const item of target.items) {
           if (item.kind === 'clock') await declineClockInRecord(item.id, user.id, note);
+          else if (item.kind === 'wfh') await declineWfhPeriodRequest(item.id, user.id, note);
           else await declineUnavailabilityRecord(item.id, user.id, note);
         }
         toast.success(`Declined ${target.items.length}`);
@@ -281,9 +304,10 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
     if (!user?.id || selected.size === 0) return;
     try {
       for (const key of selected) {
-        const [kind, idStr] = key.split('-') as ['clock' | 'leave', string];
+        const [kind, idStr] = key.split('-') as ['clock' | 'wfh' | 'leave', string];
         const id = Number(idStr);
         if (kind === 'clock') await approveClockInRecord(id, user.id);
+        else if (kind === 'wfh') await approveWfhPeriodRequest(id, user.id);
         else await approveUnavailabilityRecord(id, user.id);
       }
       toast.success(`Approved ${selected.size}`);
@@ -383,7 +407,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
               setDeclineTarget({
                 mode: 'bulk',
                 items: Array.from(selected).map((key) => {
-                  const [kind, idStr] = key.split('-') as ['clock' | 'leave', string];
+                  const [kind, idStr] = key.split('-') as ['clock' | 'wfh' | 'leave', string];
                   return { kind, id: Number(idStr) };
                 }),
               })
@@ -599,7 +623,86 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
                     ].filter(Boolean);
                   }
 
-                  const r = item.record;
+                  if (item.kind === 'wfh') {
+                    const r = item.record;
+                    const periodLabel = formatWfhPeriodLabel(r.start_date, r.end_date);
+                    return [
+                      <tr key={key} className="hover">
+                        <td>
+                          <input
+                            type="checkbox"
+                            className="checkbox checkbox-sm"
+                            checked={selected.has(key)}
+                            onChange={() => toggleSelected(key)}
+                            aria-label={`Select WFH request for ${group.employeeName}`}
+                          />
+                        </td>
+                        <td className="font-medium text-base text-gray-900 whitespace-nowrap">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <HrEmployeeAvatar
+                              employeeId={group.employeeId}
+                              name={group.employeeName}
+                              photoUrl={group.photoUrl}
+                              size="lg"
+                            />
+                            <div className="min-w-0">
+                              <div className="truncate">{group.employeeName}</div>
+                              <div className="text-sm font-bold text-gray-500 truncate">
+                                {group.department || '—'}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="inline-flex rounded-full px-3 py-1 text-sm font-semibold border-0 whitespace-nowrap bg-orange-100 text-orange-800">
+                            Home / WFH period
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap">
+                          <span
+                            className={CLOCK_IN_DATE_BADGE_CLASS}
+                            style={{ backgroundColor: HOME_WFH_DATE_BADGE_BG }}
+                          >
+                            {periodLabel}
+                          </span>
+                        </td>
+                        <td className="text-base text-gray-600" colSpan={4}>
+                          <span className="inline-flex items-center rounded-full bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-900 whitespace-nowrap">
+                            Work from home requested for {periodLabel}
+                          </span>
+                        </td>
+                        <td className="text-sm max-w-[10rem] sm:max-w-[16rem] lg:max-w-[28rem] xl:max-w-[36rem]">
+                          <ApprovalNotesButton notes={r.notes} title="WFH request notes" />
+                        </td>
+                        <td className="text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              className="btn btn-sm rounded-full bg-emerald-600 text-white border-0 hover:bg-emerald-700"
+                              onClick={() => void handleApprove('wfh', r.id)}
+                            >
+                              <CheckIcon className="w-4 h-4 stroke-[2.5]" />
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              className="btn btn-sm rounded-full bg-red-50 text-red-700 border-0 hover:bg-red-100"
+                              onClick={() =>
+                                setDeclineTarget({ mode: 'single', kind: 'wfh', id: r.id })
+                              }
+                            >
+                              <XMarkIcon className="w-4 h-4 stroke-[2.5]" />
+                              Decline
+                            </button>
+                          </div>
+                        </td>
+                      </tr>,
+                    ];
+                  }
+
+                  const r = item.record as UnavailabilityApprovalRecord;
                   const missingDoc = unavailabilityNeedsDocument(r);
                   return [
                     <tr key={key} className="hover">

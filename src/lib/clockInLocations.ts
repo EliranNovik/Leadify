@@ -39,6 +39,28 @@ export function persistLastSelectedWorkplaceId(id: number): void {
   }
 }
 
+/** Ramat Gan office — clock in/out only via entry-kiosk QR, not the CRM modal. */
+export const QR_ONLY_CLOCK_IN_LOCATION_ID = 1;
+
+export function isQrOnlyClockInLocationId(id: number | null | undefined): boolean {
+  return id === QR_ONLY_CLOCK_IN_LOCATION_ID;
+}
+
+export function isQrOnlyClockInLocation(loc: ClockInLocationOption): boolean {
+  if (isQrOnlyClockInLocationId(loc.id)) return true;
+  const slug = loc.slug?.toLowerCase() ?? '';
+  if (slug === 'ramat-gan-office') return true;
+  const name = loc.name.trim().toLowerCase();
+  return name === 'ramat gan - office' || name === 'ramat gan office';
+}
+
+/** Workplaces employees may pick in the CRM clock-in modal (excludes QR-only offices). */
+export function filterManualSelectableClockInLocations(
+  locations: ClockInLocationOption[],
+): ClockInLocationOption[] {
+  return locations.filter((loc) => !isQrOnlyClockInLocation(loc));
+}
+
 export function isHomeClockInLocation(loc: ClockInLocationOption): boolean {
   if (loc.slug?.toLowerCase() === 'home') return true;
   return loc.name.trim().toLowerCase() === 'home';

@@ -105,25 +105,50 @@ type DeviceUiMode = 'checking' | 'unpaired' | 'attendance' | 'document' | 'succe
 
 const KioskFullscreenGate: React.FC<{
   visible: boolean;
+  canInstall: boolean;
+  showInstallHint: boolean;
   onEnter: () => void;
-}> = ({ visible, onEnter }) => {
-  if (!visible) return null;
+  onInstall: () => void;
+}> = ({ visible, canInstall, showInstallHint, onEnter, onInstall }) => {
+  if (!visible) {
+    if (!showInstallHint) return null;
+    return (
+      <div className="fixed bottom-4 left-1/2 z-[99998] flex w-[min(92vw,28rem)] -translate-x-1/2 flex-col gap-2 rounded-2xl border border-white/15 bg-[#0a1628]/95 px-4 py-3 text-center text-white shadow-2xl backdrop-blur">
+        <p className="text-sm text-slate-200">
+          Chrome still shows a bottom bar in a normal tab. Install this kiosk as an app for true fullscreen.
+        </p>
+        <button
+          type="button"
+          className="rounded-full border border-[rgba(216,177,90,0.55)] bg-[rgba(216,177,90,0.18)] px-4 py-2 text-sm font-semibold text-[#f5e6c0]"
+          onClick={onInstall}
+        >
+          {canInstall ? 'Install Entry Kiosk app' : 'How to install'}
+        </button>
+      </div>
+    );
+  }
   return (
-    <button
-      type="button"
-      className="fixed inset-0 z-[99999] flex flex-col items-center justify-center gap-4 bg-[#0a1628]/95 px-8 text-center text-white"
-      onClick={onEnter}
-    >
-      <span className="text-2xl font-semibold tracking-tight">Tap to enter fullscreen</span>
+    <div className="fixed inset-0 z-[99999] flex flex-col items-center justify-center gap-5 bg-[#0a1628]/95 px-8 text-center text-white">
+      <span className="text-2xl font-semibold tracking-tight">Enter kiosk fullscreen</span>
       <span className="max-w-md text-sm text-slate-300 leading-relaxed">
-        For a true kiosk without browser bars, install this page as an app from Chrome
-        (Install app / Add to Home screen), then open it from the home-screen icon — not from a
-        Chrome tab.
+        Chrome on tablets only fully hides the bottom bar when this page runs as an installed app
+        (or after you allow fullscreen below).
       </span>
-      <span className="mt-2 rounded-full border border-white/25 px-5 py-2.5 text-sm font-medium text-white/90">
-        Enter fullscreen
-      </span>
-    </button>
+      <button
+        type="button"
+        className="rounded-full border border-white/25 bg-white/10 px-6 py-3 text-sm font-semibold text-white"
+        onClick={onEnter}
+      >
+        Tap for fullscreen
+      </button>
+      <button
+        type="button"
+        className="rounded-full border border-[rgba(216,177,90,0.55)] bg-[rgba(216,177,90,0.18)] px-6 py-3 text-sm font-semibold text-[#f5e6c0]"
+        onClick={onInstall}
+      >
+        {canInstall ? 'Install as kiosk app (recommended)' : 'Install instructions (recommended)'}
+      </button>
+    </div>
   );
 };
 
@@ -293,7 +318,14 @@ function formatDate(now: Date) {
  * Optimized for ~10" tablet kiosks (landscape first); QR stays dominant.
  */
 const EntryKioskPage: React.FC = () => {
-  const { needsTapToFullscreen, enterFullscreen } = useKioskImmersiveMode();
+  const {
+    needsTapToFullscreen,
+    needsInstallForTrueFullscreen,
+    canInstall,
+    isPwa,
+    enterFullscreen,
+    installKioskApp,
+  } = useKioskImmersiveMode();
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rotateInMs, setRotateInMs] = useState(15_000);
@@ -950,7 +982,10 @@ const EntryKioskPage: React.FC = () => {
       <div className="entry-kiosk relative flex items-center justify-center bg-[#0a1628] text-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
+          canInstall={canInstall}
+          showInstallHint={!isPwa && needsInstallForTrueFullscreen && !needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
+          onInstall={() => void installKioskApp()}
         />
         <span className="loading loading-spinner loading-lg text-slate-300" />
       </div>
@@ -962,7 +997,10 @@ const EntryKioskPage: React.FC = () => {
       <div className="entry-kiosk relative flex flex-col overflow-hidden bg-[#0a1628] text-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
+          canInstall={canInstall}
+          showInstallHint={!isPwa && needsInstallForTrueFullscreen && !needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
+          onInstall={() => void installKioskApp()}
         />
         <KioskPairingScreen
           locationId={ENTRY_KIOSK_DEFAULT_LOCATION_ID}
@@ -977,7 +1015,10 @@ const EntryKioskPage: React.FC = () => {
       <div className="entry-kiosk relative flex items-center justify-center bg-[#0a1628] px-6 text-center text-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
+          canInstall={canInstall}
+          showInstallHint={!isPwa && needsInstallForTrueFullscreen && !needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
+          onInstall={() => void installKioskApp()}
         />
         <div>
           <h1 className="text-2xl font-bold">Kiosk locked</h1>
@@ -992,7 +1033,10 @@ const EntryKioskPage: React.FC = () => {
       <div className="entry-kiosk relative flex flex-col overflow-hidden bg-white">
         <KioskFullscreenGate
           visible={needsTapToFullscreen}
+          canInstall={canInstall}
+          showInstallHint={!isPwa && needsInstallForTrueFullscreen && !needsTapToFullscreen}
           onEnter={() => void enterFullscreen()}
+          onInstall={() => void installKioskApp()}
         />
         <KioskDocumentShell
           sessionId={documentSession.sessionId}
@@ -1020,7 +1064,10 @@ const EntryKioskPage: React.FC = () => {
     >
       <KioskFullscreenGate
         visible={needsTapToFullscreen}
+        canInstall={canInstall}
+        showInstallHint={!isPwa && needsInstallForTrueFullscreen && !needsTapToFullscreen}
         onEnter={() => void enterFullscreen()}
+        onInstall={() => void installKioskApp()}
       />
       <div className="kiosk-waves" aria-hidden>
         <svg

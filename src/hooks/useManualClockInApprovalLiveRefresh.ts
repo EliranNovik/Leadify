@@ -25,6 +25,7 @@ export function useManualClockInApprovalLiveRefresh({
     tables: [
       { table: 'employee_clock_in', event: '*' },
       { table: 'employee_unavailability_reasons', event: '*' },
+      { table: 'employee_wfh_period_requests', event: '*' },
     ],
     onChange,
     debounceMs,

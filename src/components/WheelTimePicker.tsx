@@ -145,6 +145,11 @@ export type WheelTimePickerProps = {
   /** When set, only these HH:mm values can be selected (e.g. server slots in client local time). */
   allowedTimes?: string[];
   className?: string;
+  /**
+   * `always` — hour/minute inputs sit above the wheel (default).
+   * `toggle` — wheel is primary; inputs open via an alternate control (portal booking).
+   */
+  manualInputs?: 'always' | 'toggle';
 };
 
 type WheelColumnProps = {
@@ -154,6 +159,14 @@ type WheelColumnProps = {
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onActiveChange: (value: number) => void;
   onSettled: () => void;
+  /** When set, tapping the centered value opens inline editing for this column. */
+  editing?: boolean;
+  editDraft?: string;
+  onEditCenter?: () => void;
+  onEditDraftChange?: (digits: string) => void;
+  onEditCommit?: () => void;
+  onEditCancel?: () => void;
+  editInputRef?: React.RefObject<HTMLInputElement | null>;
 };
 
 function WheelColumn({
@@ -163,6 +176,13 @@ function WheelColumn({
   scrollRef,
   onActiveChange,
   onSettled,
+  editing = false,
+  editDraft,
+  onEditCenter,
+  onEditDraftChange,
+  onEditCommit,
+  onEditCancel,
+  editInputRef,
 }: WheelColumnProps) {
   const [scrollTop, setScrollTop] = useState(0);
   const isUserScroll = useRef(false);
@@ -281,7 +301,11 @@ function WheelColumn({
   }, [items, onActiveChange, scheduleSettle, scrollRef]);
 
   const handleItemSelect = useCallback(
-    (item: number) => {
+    (item: number, isCentered: boolean) => {
+      if (isCentered && onEditCenter) {
+        onEditCenter();
+        return;
+      }
       if (settleTimer.current) {
         clearTimeout(settleTimer.current);
         settleTimer.current = null;
@@ -292,7 +316,7 @@ function WheelColumn({
         isUserScroll.current = false;
       });
     },
-    [onSettled, scrollToValue],
+    [onEditCenter, onSettled, scrollToValue],
   );
 
   useEffect(() => {
@@ -339,9 +363,37 @@ function WheelColumn({
       </span>
       <div className="relative w-full" style={{ height: WHEEL_HEIGHT }}>
         <div
-          className="pointer-events-none absolute inset-x-1 top-1/2 z-10 h-11 -translate-y-1/2 rounded-lg border border-primary/35 bg-base-100/70 shadow-sm"
+          className={`pointer-events-none absolute inset-x-1 top-1/2 z-10 h-11 -translate-y-1/2 rounded-lg border shadow-sm ${
+            editing
+              ? 'border-primary bg-base-100'
+              : 'border-primary/35 bg-base-100/70'
+          }`}
           aria-hidden
         />
+        {editing ? (
+          <input
+            ref={editInputRef}
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            maxLength={2}
+            className="absolute inset-x-1 top-1/2 z-30 h-11 w-[calc(100%-0.5rem)] -translate-y-1/2 rounded-lg border-0 bg-transparent text-center text-lg font-semibold tabular-nums text-primary outline-none focus:ring-0"
+            value={editDraft ?? ''}
+            aria-label={`Edit ${label}`}
+            onChange={(e) => onEditDraftChange?.(e.target.value.replace(/\D/g, '').slice(0, 2))}
+            onBlur={() => onEditCommit?.()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onEditCommit?.();
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                onEditCancel?.();
+              }
+            }}
+          />
+        ) : null}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 z-20 h-[72px] bg-gradient-to-b from-base-100 via-base-100/90 to-transparent"
           aria-hidden
@@ -354,7 +406,10 @@ function WheelColumn({
           ref={scrollRef}
           role="listbox"
           aria-label={label}
-          className="wheel-time-picker-scroll relative z-0 h-full w-full overflow-y-auto overscroll-contain touch-pan-y select-none"
+          aria-hidden={editing}
+          className={`wheel-time-picker-scroll relative z-0 h-full w-full overflow-y-auto overscroll-contain touch-pan-y select-none ${
+            editing ? 'pointer-events-none opacity-0' : ''
+          }`}
           onScroll={handleScroll}
         >
           <div style={{ height: WHEEL_PAD }} aria-hidden />
@@ -373,7 +428,7 @@ function WheelColumn({
                   opacity: visual.opacity,
                   transform: visual.transform,
                 }}
-                onClick={() => handleItemSelect(item)}
+                onClick={() => handleItemSelect(item, isCentered)}
               >
                 {pad2(item)}
               </div>
@@ -400,6 +455,7 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   minuteStep = 1,
   allowedTimes,
   className = '',
+  manualInputs = 'always',
 }) => {
   const hourScrollRef = useRef<HTMLDivElement>(null);
   const minuteScrollRef = useRef<HTMLDivElement>(null);
@@ -460,6 +516,34 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   const [liveMinute, setLiveMinute] = useState(selectedMinute);
   const [hourDraft, setHourDraft] = useState<string | null>(null);
   const [minuteDraft, setMinuteDraft] = useState<string | null>(null);
+  const [manualInputsOpen, setManualInputsOpen] = useState(manualInputs === 'always');
+  const [editingColumn, setEditingColumn] = useState<'hour' | 'minute' | null>(null);
+  const hourColumnInputRef = useRef<HTMLInputElement>(null);
+  const minuteColumnInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setManualInputsOpen(manualInputs === 'always');
+  }, [manualInputs]);
+
+  const showManualInputs = manualInputs === 'always' || manualInputsOpen;
+  /** Portal (`toggle`): centered slot click becomes an inline input. */
+  const inlineCenterEdit = manualInputs === 'toggle';
+
+  const focusTopHourInput = useCallback(() => {
+    setHourDraft('');
+    requestAnimationFrame(() => {
+      hourInputRef.current?.focus();
+      hourInputRef.current?.select();
+    });
+  }, []);
+
+  const focusTopMinuteInput = useCallback(() => {
+    setMinuteDraft('');
+    requestAnimationFrame(() => {
+      minuteInputRef.current?.focus();
+      minuteInputRef.current?.select();
+    });
+  }, []);
 
   const activeMinutes = useMemo(() => getMinutesForHour(liveHour), [getMinutesForHour, liveHour]);
   const inputMinHour = hours[0] ?? minHour;
@@ -613,6 +697,79 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
     [applyTime, liveHour],
   );
 
+  const focusColumnInput = useCallback((column: 'hour' | 'minute') => {
+    requestAnimationFrame(() => {
+      const el = column === 'hour' ? hourColumnInputRef.current : minuteColumnInputRef.current;
+      if (!el) return;
+      el.focus();
+      el.select();
+    });
+  }, []);
+
+  const startEditColumn = useCallback(
+    (column: 'hour' | 'minute') => {
+      setEditingColumn(column);
+      if (column === 'hour') {
+        setHourDraft('');
+        setMinuteDraft(null);
+      } else {
+        setMinuteDraft('');
+        setHourDraft(null);
+      }
+      focusColumnInput(column);
+    },
+    [focusColumnInput],
+  );
+
+  const cancelEditColumn = useCallback(() => {
+    setEditingColumn(null);
+    setHourDraft(null);
+    setMinuteDraft(null);
+  }, []);
+
+  const commitHourColumnEdit = useCallback(() => {
+    if (hourDraft !== null && hourDraft.trim()) {
+      applyTime(Number(hourDraft), liveMinute);
+    }
+    setHourDraft(null);
+    setEditingColumn(null);
+  }, [applyTime, hourDraft, liveMinute]);
+
+  const commitMinuteColumnEdit = useCallback(() => {
+    if (minuteDraft !== null && minuteDraft.trim()) {
+      applyTime(liveHour, Number(minuteDraft));
+    }
+    setMinuteDraft(null);
+    setEditingColumn(null);
+  }, [applyTime, liveHour, minuteDraft]);
+
+  const handleHourColumnDraftChange = useCallback(
+    (next: string) => {
+      setHourDraft(next);
+      if (!next) return;
+      if (isHourEntryComplete(next, inputMinHour, inputMaxHour)) {
+        applyTime(Number(next), liveMinute);
+        setHourDraft(null);
+        setEditingColumn('minute');
+        setMinuteDraft('');
+        focusColumnInput('minute');
+      }
+    },
+    [applyTime, focusColumnInput, inputMaxHour, inputMinHour, liveMinute],
+  );
+
+  const handleMinuteColumnDraftChange = useCallback(
+    (next: string) => {
+      setMinuteDraft(next);
+      if (next.length >= 2) {
+        applyTime(liveHour, Number(next));
+        setMinuteDraft(null);
+        setEditingColumn(null);
+      }
+    },
+    [applyTime, liveHour],
+  );
+
   const emitChange = useCallback(() => {
     const hour = readCenteredValue(hourScrollRef.current, hours);
     const minuteOptions = getMinutesForHour(hour);
@@ -691,59 +848,63 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   const hourInputValue = hourDraft !== null ? hourDraft : pad2(liveHour);
   const minuteInputValue = minuteDraft !== null ? minuteDraft : pad2(liveMinute);
 
+  const renderManualInputs = (spacingClass: string) => (
+    <div className={`flex items-end justify-center gap-2 ${spacingClass}`}>
+      <div className="flex flex-col items-center gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">
+          Hour
+        </span>
+        <input
+          ref={hourInputRef}
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={2}
+          className="input input-bordered input-sm h-11 w-[4.25rem] text-center text-lg font-semibold tabular-nums"
+          value={hourInputValue}
+          onFocus={handleHourFocus}
+          onChange={handleHourInputChange}
+          onBlur={commitHourInput}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              commitHourInput();
+              focusMinuteInput();
+            }
+          }}
+          aria-label="Hour"
+        />
+      </div>
+      <span className="mb-2 text-2xl font-bold text-base-content/25">:</span>
+      <div className="flex flex-col items-center gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">
+          Min
+        </span>
+        <input
+          ref={minuteInputRef}
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={2}
+          className="input input-bordered input-sm h-11 w-[4.25rem] text-center text-lg font-semibold tabular-nums"
+          value={minuteInputValue}
+          onFocus={handleMinuteFocus}
+          onChange={handleMinuteInputChange}
+          onBlur={commitMinuteInput}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+          }}
+          aria-label="Minute"
+        />
+      </div>
+    </div>
+  );
+
   return (
     <div className={className}>
       {label ? <label className={labelClassName}>{label}</label> : null}
       <div className={disabled ? 'pointer-events-none opacity-50' : ''}>
         <div className="relative mx-auto max-w-xs">
-          <div className="mb-3 flex items-end justify-center gap-2">
-            <div className="flex flex-col items-center gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">
-                Hour
-              </span>
-              <input
-                ref={hourInputRef}
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={2}
-                className="input input-bordered input-sm h-11 w-[4.25rem] text-center text-lg font-semibold tabular-nums"
-                value={hourInputValue}
-                onFocus={handleHourFocus}
-                onChange={handleHourInputChange}
-                onBlur={commitHourInput}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    commitHourInput();
-                    focusMinuteInput();
-                  }
-                }}
-                aria-label="Hour"
-              />
-            </div>
-            <span className="mb-2 text-2xl font-bold text-base-content/25">:</span>
-            <div className="flex flex-col items-center gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">
-                Min
-              </span>
-              <input
-                ref={minuteInputRef}
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={2}
-                className="input input-bordered input-sm h-11 w-[4.25rem] text-center text-lg font-semibold tabular-nums"
-                value={minuteInputValue}
-                onFocus={handleMinuteFocus}
-                onChange={handleMinuteInputChange}
-                onBlur={commitMinuteInput}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.currentTarget.blur();
-                }}
-                aria-label="Minute"
-              />
-            </div>
-          </div>
+          {showManualInputs && manualInputs === 'always' ? renderManualInputs('mb-3') : null}
 
           <div className="flex items-stretch justify-center gap-1 sm:gap-2">
             <WheelColumn
@@ -753,6 +914,22 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
               scrollRef={hourScrollRef}
               onActiveChange={handleHourActiveChange}
               onSettled={handleSettled}
+              editing={inlineCenterEdit && editingColumn === 'hour'}
+              editDraft={hourDraft ?? ''}
+              onEditCenter={
+                inlineCenterEdit
+                  ? () => startEditColumn('hour')
+                  : showManualInputs
+                    ? focusTopHourInput
+                    : () => {
+                        setManualInputsOpen(true);
+                        focusTopHourInput();
+                      }
+              }
+              onEditDraftChange={handleHourColumnDraftChange}
+              onEditCommit={commitHourColumnEdit}
+              onEditCancel={cancelEditColumn}
+              editInputRef={hourColumnInputRef}
             />
             <div
               className="flex shrink-0 items-center self-center text-2xl font-bold text-base-content/25"
@@ -767,8 +944,49 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
               scrollRef={minuteScrollRef}
               onActiveChange={setLiveMinute}
               onSettled={handleSettled}
+              editing={inlineCenterEdit && editingColumn === 'minute'}
+              editDraft={minuteDraft ?? ''}
+              onEditCenter={
+                inlineCenterEdit
+                  ? () => startEditColumn('minute')
+                  : showManualInputs
+                    ? focusTopMinuteInput
+                    : () => {
+                        setManualInputsOpen(true);
+                        focusTopMinuteInput();
+                      }
+              }
+              onEditDraftChange={handleMinuteColumnDraftChange}
+              onEditCommit={commitMinuteColumnEdit}
+              onEditCancel={cancelEditColumn}
+              editInputRef={minuteColumnInputRef}
             />
           </div>
+
+          {manualInputs === 'toggle' ? (
+            <div className="mt-3 flex flex-col items-center gap-3">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm rounded-full font-medium text-base-content/55 hover:text-primary"
+                onClick={() => {
+                  setManualInputsOpen((open) => {
+                    const next = !open;
+                    if (next) {
+                      requestAnimationFrame(() => {
+                        hourInputRef.current?.focus();
+                        hourInputRef.current?.select();
+                      });
+                    }
+                    return next;
+                  });
+                }}
+                aria-expanded={showManualInputs}
+              >
+                {showManualInputs ? 'Hide typed time' : 'Type hour & minute'}
+              </button>
+              {showManualInputs ? renderManualInputs('') : null}
+            </div>
+          ) : null}
         </div>
       </div>
 

@@ -16,6 +16,8 @@ import {
   type StaffMeetingDocumentsContext,
 } from '../lib/staffMeetingDocuments';
 import { InternalMeetingTypeBadge } from '../lib/internalMeetingTypeBadge';
+import { isMeetingBookedViaClientPortal } from '../lib/clientBookingApi';
+import ClientPortalBookingBadge from './client-booking/ClientPortalBookingBadge';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
 import { createPortal } from 'react-dom';
@@ -34,7 +36,7 @@ import {
   isCalendarGlobalLeadSearchActive,
   meetingMatchesCalendarLeadFilter,
 } from '../lib/calendarLeadFilter';
-import { fetchStageNames, getStageName, refreshStageNames, getStageColour } from '../lib/stageUtils';
+import { fetchStageNames, getStageName, refreshStageNames, getStageColour, getSoftStageBadgeStyle } from '../lib/stageUtils';
 import TeamsMeetingModal from './TeamsMeetingModal';
 import StaffMeetingEditModal from './StaffMeetingEditModal';
 import MeetingNotifyControls from './MeetingNotifyControls';
@@ -349,8 +351,6 @@ function getCalendarResumeStaleMs(): number {
 }
 
 // Department mapping is now loaded dynamically from database
-
-const MEETING_PARTICIPANT_PREVIEW_COUNT = 1;
 
 type MeetingParticipantEntry = {
   key: string;
@@ -1217,6 +1217,12 @@ const CalendarPage: React.FC = () => {
     loading: portalMeetingRequestsLoading,
     refresh: refreshPortalMeetingRequests,
   } = usePortalMeetingRequests();
+
+  useEffect(() => {
+    if (showPortalMeetingRequestsModal) {
+      void refreshPortalMeetingRequests();
+    }
+  }, [showPortalMeetingRequestsModal, refreshPortalMeetingRequests]);
   // Desktop filter row collapse state (defaults to closed; user can toggle open)
   const [showDesktopFilters, setShowDesktopFilters] = usePersistedState<boolean>(
     'calendar-showDesktopFilters',
@@ -2865,6 +2871,7 @@ const CalendarPage: React.FC = () => {
           teams_id, teams_meeting_url, custom_link, custom_address,
           meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
           attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
+          scheduler, client_booking_timezone,
           internal_meeting_type_id,
           internal_meeting_types ( id, code, label, sort_order ),
           leads!meetings_client_id_fkey (
@@ -3748,9 +3755,7 @@ const CalendarPage: React.FC = () => {
 
 
 
-  const FALLBACK_STAGE_COLOR = '#3b28c7';
-  const NEUTRAL_STAGE_BG = '#f3f4f6';
-  const NEUTRAL_STAGE_TEXT = '#374151';
+
 
   const exportMeetingsToExcel = () => {
     try {
@@ -3857,29 +3862,33 @@ const CalendarPage: React.FC = () => {
   };
 
   const getStageBadge = (stage: string | number | null | undefined) => {
-    const label = formatStageLabel(stage);
-    const hasStage = label && label !== 'No Stage';
-
-    if (!hasStage) {
+    if (!stage && stage !== 0) {
       return (
-        <span
-          className="stage-badge inline-flex items-center px-2 py-1 sm:px-2.5 sm:py-1 rounded-md text-xs sm:text-sm font-semibold border"
-          style={{ backgroundColor: NEUTRAL_STAGE_BG, color: NEUTRAL_STAGE_TEXT, borderColor: '#e5e7eb' }}
-        >
+        <span className="badge stage-badge rounded-full shrink-0 border-0 text-xs px-2.5 py-0.5 max-w-full bg-gray-100 text-gray-600">
           No Stage
         </span>
       );
     }
 
-    const stageColour = resolveStageColour(stage) || FALLBACK_STAGE_COLOR;
-    const textColour = getContrastingTextColor(stageColour);
+    const stageStr = String(stage);
+    const stageName = formatStageLabel(stage) || getStageName(stageStr);
+    const stageColour = resolveStageColour(stage) || getStageColour(stageStr);
+    const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
 
     return (
       <span
-        className="stage-badge inline-flex items-center px-2 py-1 sm:px-2.5 sm:py-1 rounded-md text-xs sm:text-sm font-semibold shadow-sm"
-        style={{ backgroundColor: stageColour, color: textColour, border: `1px solid ${stageColour}` }}
+        className="badge stage-badge rounded-full shrink-0 border-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full"
+        style={{
+          backgroundColor: softBadgeStyle.backgroundColor,
+          color: softBadgeStyle.color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+        }}
+        title={stageName}
       >
-        {label}
+        {stageName}
       </span>
     );
   };
@@ -5760,31 +5769,36 @@ const CalendarPage: React.FC = () => {
         >
           {/* Header with Name, Badge */}
           <div className="mb-3 flex items-start justify-between gap-2 relative">
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <span className="text-sm md:text-base font-semibold text-gray-400 tracking-widest">
-                {meeting.calendar_type === 'staff' ? (
-                  (() => {
-                    const linkedLead = resolveStaffMeetingLinkedLead(meeting);
-                    if (linkedLead?.lead_number) {
-                      return (
-                        <Link
-                          to={buildClientRoute(linkedLead)}
-                          className="hover:opacity-80 font-semibold"
-                          style={{ color: '#3b28c7' }}
-                          onClick={(e) => e.stopPropagation()}
-                          title={`Open client ${linkedLead.lead_number}`}
-                        >
-                          {linkedLead.lead_number}
-                        </Link>
-                      );
-                    }
-                    return 'STAFF';
-                  })()
-                ) : (
-                  lead.lead_number || meeting.lead_number
-                )}
-              </span>
-              <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+            <div className="flex items-start gap-2 flex-1 min-w-0">
+              <div className="flex flex-col items-start gap-1 shrink-0">
+                <span className="text-sm md:text-base font-semibold text-gray-400 tracking-widest">
+                  {meeting.calendar_type === 'staff' ? (
+                    (() => {
+                      const linkedLead = resolveStaffMeetingLinkedLead(meeting);
+                      if (linkedLead?.lead_number) {
+                        return (
+                          <Link
+                            to={buildClientRoute(linkedLead)}
+                            className="hover:opacity-80 font-semibold"
+                            style={{ color: '#3b28c7' }}
+                            onClick={(e) => e.stopPropagation()}
+                            title={`Open client ${linkedLead.lead_number}`}
+                          >
+                            {linkedLead.lead_number}
+                          </Link>
+                        );
+                      }
+                      return 'STAFF';
+                    })()
+                  ) : (
+                    lead.lead_number || meeting.lead_number
+                  )}
+                </span>
+                {isMeetingBookedViaClientPortal(meeting) ? (
+                  <ClientPortalBookingBadge className="shadow-sm" />
+                ) : null}
+              </div>
+              <span className="mt-2 w-1 h-1 bg-gray-300 rounded-full shrink-0"></span>
               <h3 className="text-sm md:text-base font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words line-clamp-2">{lead.name || meeting.name}</h3>
               {/* Calendar type badge - next to client name */}
               {(() => {
@@ -6325,8 +6339,6 @@ const CalendarPage: React.FC = () => {
     const lead = meeting.lead || {};
     const isBoxExpanded = isMeetingBoxExpanded(meeting.id);
     const participantEntries = getMeetingParticipantEntries(meeting, lead);
-    const previewParticipants = participantEntries.slice(0, MEETING_PARTICIPANT_PREVIEW_COUNT);
-    const extraParticipants = participantEntries.slice(MEETING_PARTICIPANT_PREVIEW_COUNT);
     const hasCollapsibleBoxContent = meeting.calendar_type !== 'staff';
     const expandedData = expandedMeetingData[meeting.id] || {};
     const probability = lead.probability ?? meeting.probability;
@@ -6410,7 +6422,12 @@ const CalendarPage: React.FC = () => {
           <td className="font-bold">
             <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (
-                renderStaffMeetingLeadLabel(meeting, lead)
+                <div className="flex flex-col items-start gap-1 min-w-0">
+                  {renderStaffMeetingLeadLabel(meeting, lead)}
+                  {isMeetingBookedViaClientPortal(meeting) ? (
+                    <ClientPortalBookingBadge compact />
+                  ) : null}
+                </div>
               ) : (
                 <>
                   <div className="flex flex-col min-w-0 flex-1">
@@ -6428,6 +6445,9 @@ const CalendarPage: React.FC = () => {
                     >
                       ({lead.lead_number || meeting.lead_number})
                     </span>
+                    {isMeetingBookedViaClientPortal(meeting) ? (
+                      <ClientPortalBookingBadge compact className="mt-1" />
+                    ) : null}
                   </div>
                 </>
               )}
@@ -6503,22 +6523,13 @@ const CalendarPage: React.FC = () => {
             {meeting.calendar_type === 'staff' ? (
               <div className="max-w-xs">
                 <div className="text-xs font-medium text-gray-700">Attendees:</div>
-                <div className={`text-xs font-semibold text-gray-800 ${isBoxExpanded ? 'break-words' : 'line-clamp-2'}`}>
+                <div className="text-xs font-semibold text-gray-800 break-words whitespace-normal">
                   {meeting.meeting_manager || 'No attendees'}
                 </div>
-                {(meeting.meeting_manager || '').length > 48 ? (
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-xs mt-1 h-6 min-h-0 px-1 text-primary"
-                    onClick={(e) => toggleMeetingBoxExpanded(meeting.id, e)}
-                  >
-                    {isBoxExpanded ? 'Less' : 'More'}
-                  </button>
-                ) : null}
               </div>
             ) : (
               <div className="flex flex-col gap-2 py-1">
-                {(isBoxExpanded ? participantEntries : previewParticipants).map((entry) => (
+                {participantEntries.map((entry) => (
                   <div key={entry.key} className="flex items-center gap-2">
                     <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>
                       {entry.label}
@@ -6530,15 +6541,6 @@ const CalendarPage: React.FC = () => {
                     <span className="md:hidden text-xs">{getEmployeeDisplayName(entry.employeeId)}</span>
                   </div>
                 ))}
-                {hasCollapsibleBoxContent && participantEntries.length > MEETING_PARTICIPANT_PREVIEW_COUNT ? (
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-xs h-6 min-h-0 self-start px-1 text-primary"
-                    onClick={(e) => toggleMeetingBoxExpanded(meeting.id, e)}
-                  >
-                    {isBoxExpanded ? 'Less' : 'More'}
-                  </button>
-                ) : null}
               </div>
             )}
           </td>
@@ -7276,18 +7278,18 @@ const CalendarPage: React.FC = () => {
               <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">IM</span>
               <button
                 type="button"
-                className="relative ml-0.5 inline-flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/15"
-                title="Client portal meeting requests"
+                className="relative ml-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/15"
+                title="Client bookings"
                 aria-label={
                   portalMeetingRequestCount > 0
-                    ? `Client portal meeting requests (${portalMeetingRequestCount} pending)`
-                    : 'Client portal meeting requests'
+                    ? `Client bookings (${portalMeetingRequestCount} upcoming)`
+                    : 'Client bookings'
                 }
                 onClick={() => setShowPortalMeetingRequestsModal(true)}
               >
-                <CalendarDaysIcon className="h-4 w-4" aria-hidden />
+                <CalendarDaysIcon className="h-5 w-5" aria-hidden />
                 {portalMeetingRequestCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex min-h-[1rem] min-w-[1rem] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-content shadow-sm">
+                  <span className="absolute -right-1.5 -top-1.5 inline-flex min-h-[1.25rem] min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold leading-none text-primary-content shadow-sm">
                     {portalMeetingRequestCount > 99 ? '99+' : portalMeetingRequestCount}
                   </span>
                 ) : null}
@@ -7318,18 +7320,18 @@ const CalendarPage: React.FC = () => {
             </span>
             <button
               type="button"
-              className="relative inline-flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/15"
-              title="Client portal meeting requests"
+              className="relative inline-flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/15"
+              title="Client bookings"
               aria-label={
                 portalMeetingRequestCount > 0
-                  ? `Client portal meeting requests (${portalMeetingRequestCount} pending)`
-                  : 'Client portal meeting requests'
+                  ? `Client bookings (${portalMeetingRequestCount} upcoming)`
+                  : 'Client bookings'
               }
               onClick={() => setShowPortalMeetingRequestsModal(true)}
             >
-              <CalendarDaysIcon className="h-4 w-4" aria-hidden />
+              <CalendarDaysIcon className="h-5 w-5" aria-hidden />
               {portalMeetingRequestCount > 0 ? (
-                <span className="absolute -right-1 -top-1 inline-flex min-h-[1rem] min-w-[1rem] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-content shadow-sm">
+                <span className="absolute -right-1.5 -top-1.5 inline-flex min-h-[1.25rem] min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold leading-none text-primary-content shadow-sm">
                   {portalMeetingRequestCount > 99 ? '99+' : portalMeetingRequestCount}
                 </span>
               ) : null}

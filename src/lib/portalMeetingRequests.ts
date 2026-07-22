@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { CLIENT_PORTAL_BOOKING_SCHEDULER } from './clientBookingApi';
 
 export type PortalMeetingRequestContact = {
   name: string;
@@ -182,4 +183,142 @@ export async function updatePortalMeetingRequestStatus(
     .eq('id', id);
 
   if (error) throw error;
+}
+
+export type ClientPortalBookedMeetingLead = {
+  id: string | number;
+  name: string | null;
+  lead_number: string | null;
+  manual_id?: string | null;
+  master_id?: string | null;
+  stage?: number | null;
+};
+
+export type ClientPortalBookedMeeting = {
+  id: number;
+  meeting_date: string;
+  meeting_time: string | null;
+  meeting_location: string | null;
+  meeting_subject: string | null;
+  status: string | null;
+  scheduler: string | null;
+  client_booking_timezone: string | null;
+  client_id: string | null;
+  legacy_lead_id: number | null;
+  teams_meeting_url: string | null;
+  custom_link: string | null;
+  leads?: ClientPortalBookedMeetingLead | ClientPortalBookedMeetingLead[] | null;
+  leads_lead?: ClientPortalBookedMeetingLead | ClientPortalBookedMeetingLead[] | null;
+};
+
+function todayLocalDateKey(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function firstJoinedLead<T>(value: T | T[] | null | undefined): T | null {
+  if (!value) return null;
+  return Array.isArray(value) ? value[0] ?? null : value;
+}
+
+/** Upcoming (today+) meetings booked by clients via portal / public booking link. */
+export async function fetchUpcomingClientPortalBookings(): Promise<ClientPortalBookedMeeting[]> {
+  const today = todayLocalDateKey();
+  const { data, error } = await supabase
+    .from('meetings')
+    .select(
+      `
+      id,
+      meeting_date,
+      meeting_time,
+      meeting_location,
+      meeting_subject,
+      status,
+      scheduler,
+      client_booking_timezone,
+      client_id,
+      legacy_lead_id,
+      teams_meeting_url,
+      custom_link,
+      leads!meetings_client_id_fkey (id, name, lead_number, manual_id),
+      leads_lead!meetings_legacy_lead_id_fkey (id, name, lead_number, master_id, stage)
+    `,
+    )
+    .eq('scheduler', CLIENT_PORTAL_BOOKING_SCHEDULER)
+    .gte('meeting_date', today)
+    .or('status.is.null,status.neq.canceled')
+    .order('meeting_date', { ascending: true })
+    .order('meeting_time', { ascending: true });
+
+  if (error) throw error;
+  return (data ?? []) as ClientPortalBookedMeeting[];
+}
+
+export function resolveClientPortalBookedMeetingLead(
+  meeting: ClientPortalBookedMeeting,
+): { lead: ClientPortalBookedMeetingLead; leadType: 'new' | 'legacy' } | null {
+  const newLead = firstJoinedLead(meeting.leads);
+  if (meeting.client_id && newLead) {
+    return { lead: newLead, leadType: 'new' };
+  }
+  const legacyLead = firstJoinedLead(meeting.leads_lead);
+  if (meeting.legacy_lead_id && legacyLead) {
+    return { lead: legacyLead, leadType: 'legacy' };
+  }
+  return null;
+}
+
+export function getClientPortalBookedMeetingLeadNumber(meeting: ClientPortalBookedMeeting): string {
+  const resolved = resolveClientPortalBookedMeetingLead(meeting);
+  if (!resolved) {
+    if (meeting.client_id) return 'Unknown lead';
+    if (meeting.legacy_lead_id) return String(meeting.legacy_lead_id);
+    return 'Unknown lead';
+  }
+
+  const { lead, leadType } = resolved;
+  const raw = (lead.lead_number ?? '').toString().trim();
+  if (leadType === 'legacy') {
+    if (raw) {
+      const isSuccess = lead.stage === 100;
+      if (isSuccess && !raw.startsWith('C')) return `C${raw}`;
+      return raw;
+    }
+    const id = String(lead.id);
+    const masterId = lead.master_id?.toString().trim();
+    if (!masterId) {
+      return lead.stage === 100 ? `C${id}` : id;
+    }
+    return `${masterId}/?`;
+  }
+  return raw || String(lead.id);
+}
+
+export function buildClientPortalBookedMeetingRoute(meeting: ClientPortalBookedMeeting): string {
+  const resolved = resolveClientPortalBookedMeetingLead(meeting);
+  if (!resolved) return '/clients';
+
+  const { lead, leadType } = resolved;
+  if (leadType === 'new') {
+    return buildClientRouteFromLead({
+      lead_type: 'new',
+      lead_number: lead.lead_number || undefined,
+      manual_id: lead.manual_id,
+    });
+  }
+
+  return buildClientRouteFromLead({
+    lead_type: 'legacy',
+    id: `legacy_${lead.id}`,
+    lead_number: getClientPortalBookedMeetingLeadNumber(meeting),
+  });
+}
+
+export function buildClientPortalBookedMeetingTabRoute(meeting: ClientPortalBookedMeeting): string {
+  const base = buildClientPortalBookedMeetingRoute(meeting);
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}tab=meeting`;
 }

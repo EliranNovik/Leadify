@@ -13,15 +13,18 @@ import {
 import {
   fetchActiveClockInLocations,
   fetchEmployeeWorksFromHome,
+  filterManualSelectableClockInLocations,
   isHomeClockInLocation,
+  isQrOnlyClockInLocation,
+  isQrOnlyClockInLocationId,
   persistLastSelectedWorkplaceId,
+  QR_ONLY_CLOCK_IN_LOCATION_ID,
   readLastSelectedWorkplaceId,
   resolveWorkplaceName,
   type ClockInLocationOption,
 } from '../lib/clockInLocations';
 import {
   fetchPendingHomeWfhApproval,
-  insertHomeWfhApprovalRequest,
 } from '../lib/employeeClockInApproval';
 import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
@@ -31,6 +34,11 @@ import {
   useHomeWfhApprovalAutoClockIn,
 } from '../hooks/useHomeWfhApprovalAutoClockIn';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
+import HomeWfhPeriodRequestModal from './HomeWfhPeriodRequestModal';
+import {
+  employeeHasApprovedWfhPeriodOnDate,
+  fetchPendingWfhPeriodRequestCount,
+} from '../lib/employeeWfhPeriodRequests';
 
 interface ClockInModalProps {
   isOpen: boolean;
@@ -74,9 +82,11 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [workplaceOptions, setWorkplaceOptions] = useState<ClockInLocationOption[]>([]);
   const [worksFromHome, setWorksFromHome] = useState(false);
+  const [homePeriodAccessToday, setHomePeriodAccessToday] = useState(false);
   const [selectedWorkplaceId, setSelectedWorkplaceId] = useState<number | null>(null);
   const [successAction, setSuccessAction] = useState<'in' | 'out' | 'approval' | null>(null);
   const [pendingHomeApproval, setPendingHomeApproval] = useState(false);
+  const [wfhPeriodModalOpen, setWfhPeriodModalOpen] = useState(false);
   const [workplaceDropdownOpen, setWorkplaceDropdownOpen] = useState(false);
   const [sessionDuration, setSessionDuration] = useState('');
   const [employeeDisplayName, setEmployeeDisplayName] = useState('');
@@ -93,12 +103,6 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
   }, []);
 
   const AUTO_CLOSE_MS = 1800;
-
-  const selectedWorkplaceName =
-    workplaceOptions.find((o) => o.id === selectedWorkplaceId)?.name ?? '';
-
-  const workplaceDisplayLabel = selectedWorkplaceName
-    || (workplaceOptions.length === 0 ? 'Loading workplaces…' : 'Select workplace');
 
   const greetingName = (
     employeeDisplayName
@@ -131,23 +135,32 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
     void Promise.all([
       fetchActiveClockInLocations(),
       fetchEmployeeWorksFromHome(employeeId),
-      fetchPendingHomeWfhApproval(employeeId),
+      fetchPendingHomeWfhApproval(employeeId).catch(() => false),
+      fetchPendingWfhPeriodRequestCount(employeeId).catch(() => false),
+      employeeHasApprovedWfhPeriodOnDate(employeeId).catch(() => false),
       supabase
         .from('tenants_employee')
         .select('display_name')
         .eq('id', employeeId)
         .maybeSingle(),
-    ]).then(([locations, wfh, pendingApproval, employeeResult]) => {
-      setWorkplaceOptions(locations);
+    ]).then(([locations, wfh, pendingLegacy, pendingPeriod, periodToday, employeeResult]) => {
+      const selectable = filterManualSelectableClockInLocations(locations);
+      setWorkplaceOptions(selectable);
       setWorksFromHome(wfh);
-      setPendingHomeApproval(pendingApproval && !wfh);
+      setHomePeriodAccessToday(periodToday);
+      setPendingHomeApproval((pendingLegacy || pendingPeriod) && !wfh && !periodToday);
       setEmployeeDisplayName(employeeResult.data?.display_name?.trim() || '');
-      // Initialize selection (prefer last selected if still valid)
+      // Initialize selection (prefer last selected if still valid — never QR-only offices)
       setSelectedWorkplaceId((prev) => {
-        if (prev != null && locations.some((o) => o.id === prev)) return prev;
+        // Keep Ramat Gan selected when clocked in via QR (Clock Out stays disabled).
+        if (prev != null && isQrOnlyClockInLocationId(prev)) return prev;
+        if (prev != null && selectable.some((o) => o.id === prev)) return prev;
         const last = readLastSelectedWorkplaceId();
-        const validLast = last != null && locations.some((o) => o.id === last);
-        return validLast ? last : locations[0]?.id ?? null;
+        if (last != null && isQrOnlyClockInLocationId(last)) {
+          return selectable[0]?.id ?? null;
+        }
+        const validLast = last != null && selectable.some((o) => o.id === last);
+        return validLast ? last : selectable[0]?.id ?? null;
       });
     }).catch((error) => {
       console.error('Error loading clock-in modal data:', error);
@@ -252,6 +265,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
         setIsClockedIn(true);
         setCurrentRecord(data);
         if (data.clock_in_location_id != null) {
+          // QR Ramat Gan stays selected by default so Clock Out stays disabled until another workplace is chosen.
           setSelectedWorkplaceId(data.clock_in_location_id);
         }
       } else {
@@ -266,8 +280,43 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
 
   const selectedWorkplace = workplaceOptions.find((o) => o.id === selectedWorkplaceId) ?? null;
   const selectedIsHome = selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace);
-  const homeNeedsApproval = selectedIsHome && !worksFromHome;
+  const canClockInFromHome = worksFromHome || homePeriodAccessToday;
+  const homeNeedsApproval = selectedIsHome && !canClockInFromHome;
   const awaitingWfhApproval = pendingHomeApproval || successAction === 'approval';
+  const clockedInAtQrOnlyOffice =
+    Boolean(isClockedIn)
+    && isQrOnlyClockInLocationId(currentRecord?.clock_in_location_id);
+
+  // Default clock-out picker to Ramat Gan (QR) so Clock Out stays disabled until they pick elsewhere.
+  useEffect(() => {
+    if (!clockedInAtQrOnlyOffice) return;
+    const ramatGanId = currentRecord?.clock_in_location_id ?? QR_ONLY_CLOCK_IN_LOCATION_ID;
+    if (selectedWorkplaceId == null) {
+      setSelectedWorkplaceId(ramatGanId);
+    }
+  }, [clockedInAtQrOnlyOffice, currentRecord?.clock_in_location_id, selectedWorkplaceId]);
+
+  const ramatGanClockOutOption: ClockInLocationOption = {
+    id: currentRecord?.clock_in_location_id ?? QR_ONLY_CLOCK_IN_LOCATION_ID,
+    name: resolveWorkplaceName(currentRecord, 'in') || 'Ramat Gan - Office',
+    slug: 'ramat-gan-office',
+  };
+
+  const clockOutPickerOptions: ClockInLocationOption[] = clockedInAtQrOnlyOffice
+    ? [
+        ramatGanClockOutOption,
+        ...workplaceOptions.filter((o) => o.id !== ramatGanClockOutOption.id),
+      ]
+    : workplaceOptions;
+
+  const selectedWorkplaceName =
+    clockOutPickerOptions.find((o) => o.id === selectedWorkplaceId)?.name
+    ?? (isQrOnlyClockInLocationId(selectedWorkplaceId)
+      ? resolveWorkplaceName(currentRecord, 'in')
+      : '');
+
+  const workplaceDisplayLabel = selectedWorkplaceName
+    || (clockOutPickerOptions.length === 0 ? 'Loading workplaces…' : 'Select workplace');
 
   const performClockIn = useCallback(async (options?: {
     skipHomeApprovalCheck?: boolean;
@@ -285,9 +334,17 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
     }
 
     const workplace = workplaceOptions.find((o) => o.id === workplaceId) ?? null;
+    if (workplace != null && isQrOnlyClockInLocation(workplace)) {
+      toast.error('Ramat Gan Office clock-in is only available via the office QR code.');
+      return false;
+    }
+    if (isQrOnlyClockInLocationId(workplaceId)) {
+      toast.error('Ramat Gan Office clock-in is only available via the office QR code.');
+      return false;
+    }
     const clockingInFromHome = workplace != null && isHomeClockInLocation(workplace);
-    if (clockingInFromHome && !worksFromHome && !options?.skipHomeApprovalCheck) {
-      toast.error('You cannot clock in from Home until an admin approves your work-from-home access.');
+    if (clockingInFromHome && !worksFromHome && !homePeriodAccessToday && !options?.skipHomeApprovalCheck) {
+      toast.error('You cannot clock in from Home until an admin approves your work-from-home period.');
       return false;
     }
 
@@ -333,13 +390,14 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [employeeId, userId, selectedWorkplaceId, workplaceOptions, worksFromHome, location, required, onClockInSuccess]);
+  }, [employeeId, userId, selectedWorkplaceId, workplaceOptions, worksFromHome, homePeriodAccessToday, location, required, onClockInSuccess]);
 
   const handleWfhApprovalGranted = useCallback(async (snapshot: HomeWfhApprovalSnapshot) => {
     if (!employeeId || !userId || isClockedInRef.current || autoClockInInFlightRef.current) return;
 
     setWorksFromHome(snapshot.worksFromHome);
-    setPendingHomeApproval(snapshot.pendingApproval && !snapshot.worksFromHome);
+    setHomePeriodAccessToday(snapshot.canClockInFromHome);
+    setPendingHomeApproval(snapshot.pendingApproval && !snapshot.canClockInFromHome);
     setSuccessAction((current) => (current === 'approval' ? null : current));
 
     const homeWorkplace =
@@ -380,31 +438,16 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
     }
   }, [isOpen]);
 
-  const handleSendHomeForApproval = async () => {
+  const handleSendHomeForApproval = () => {
     if (!employeeId || !userId) {
       toast.error('Missing employee or user information');
-      return;
-    }
-    if (!selectedWorkplaceId) {
-      toast.error('Please select a workplace');
       return;
     }
     if (pendingHomeApproval) {
       toast('You already have a pending work-from-home approval request.');
       return;
     }
-
-    setIsLoading(true);
-    try {
-      await insertHomeWfhApprovalRequest(employeeId, userId, selectedWorkplaceId);
-      setPendingHomeApproval(true);
-      setSuccessAction('approval');
-    } catch (error: any) {
-      console.error('Error sending home approval request:', error);
-      toast.error(error.message || 'Failed to send approval request');
-    } finally {
-      setIsLoading(false);
-    }
+    setWfhPeriodModalOpen(true);
   };
 
   const handleClockIn = async () => {
@@ -417,22 +460,71 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
       return;
     }
 
-    const clockOutLocationId =
-      currentRecord.clock_in_location_id ?? selectedWorkplaceId;
-    if (!clockOutLocationId) {
-      toast.error('Missing workplace for clock-out');
-      return;
+    const clockedInAtRamatGanQr = isQrOnlyClockInLocationId(currentRecord.clock_in_location_id);
+    let clockOutLocationId: number | null | undefined;
+
+    if (clockedInAtRamatGanQr) {
+      // May leave Ramat Gan by clocking out at another workplace; Ramat Gan itself stays QR-only.
+      clockOutLocationId = selectedWorkplaceId;
+      if (!clockOutLocationId || isQrOnlyClockInLocationId(clockOutLocationId)) {
+        toast.error('Select another workplace to clock out, or scan the office QR code for Ramat Gan.');
+        return;
+      }
+    } else {
+      clockOutLocationId = currentRecord.clock_in_location_id ?? selectedWorkplaceId;
+      if (!clockOutLocationId) {
+        toast.error('Missing workplace for clock-out');
+        return;
+      }
+      if (isQrOnlyClockInLocationId(clockOutLocationId)) {
+        toast.error('Ramat Gan Office clock-out is only available via the office QR code.');
+        return;
+      }
     }
+
+    // Leaving Ramat Gan QR session from another workplace = manual entry pending approval
+    // (same as Working Hours → Add manual clock-in).
+    const needsManualApproval = clockedInAtRamatGanQr;
+    const clockOutWorkplace =
+      clockOutPickerOptions.find((o) => o.id === clockOutLocationId)
+      ?? workplaceOptions.find((o) => o.id === clockOutLocationId)
+      ?? null;
+    const clockingOutToHome =
+      clockOutWorkplace != null && isHomeClockInLocation(clockOutWorkplace);
 
     setIsLoading(true);
     try {
       const outLocation = await detectClockInLocation();
-      const baseUpdate = {
+      const approvalNotes = needsManualApproval
+        ? [
+            `Clocked out away from Ramat Gan Office (QR in) at ${
+              clockOutWorkplace?.name || 'another workplace'
+            }. Awaiting admin approval.`,
+            clockingOutToHome && !worksFromHome
+              ? 'Clock-out from Home — waiting for admin approval (auto-enables Works From Home when approved)'
+              : null,
+          ]
+            .filter(Boolean)
+            .join('\n')
+        : null;
+
+      const baseUpdate: Record<string, unknown> = {
         clock_out_time: new Date().toISOString(),
         is_active: false,
-        notes: null,
+        notes: approvalNotes,
         clock_out_location_id: clockOutLocationId,
       };
+
+      if (needsManualApproval) {
+        baseUpdate.manually = true;
+        baseUpdate.approved = false;
+        baseUpdate.declined = false;
+        baseUpdate.approved_by = null;
+        baseUpdate.approved_at = null;
+        baseUpdate.location_source = 'manual';
+        baseUpdate.clock_out_location_source = 'manual';
+      }
+
       const gpsFields = locationToDbFields(outLocation, 'clock_out_');
       let { error } = await supabase
         .from('employee_clock_in')
@@ -454,6 +546,15 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
             clock_out_time: baseUpdate.clock_out_time,
             is_active: false,
             notes: baseUpdate.notes,
+            ...(needsManualApproval
+              ? {
+                  manually: true,
+                  approved: false,
+                  declined: false,
+                  approved_by: null,
+                  approved_at: null,
+                }
+              : {}),
           })
           .eq('id', currentRecord.id);
         error = retry2.error;
@@ -473,9 +574,18 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
       } catch (gateError) {
         console.error('Clock-in gate refresh after clock-out failed:', gateError);
       }
-      onClockInSuccess?.();
-      onClose();
-      toast.success('Clocked out');
+
+      if (needsManualApproval) {
+        setIsClockedIn(false);
+        setCurrentRecord(null);
+        setSuccessAction('approval');
+        onClockInSuccess?.();
+        toast.success('Clock-out submitted for approval');
+      } else {
+        onClockInSuccess?.();
+        onClose();
+        toast.success('Clocked out');
+      }
     } catch (error: any) {
       console.error('Error clocking out:', error);
       toast.error(error.message || 'Failed to clock out');
@@ -486,21 +596,115 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
 
   if (!isOpen) return null;
 
+  const useCardLayout = clockedInAtQrOnlyOffice && !successAction;
+
   const dialogSurfaceClass = isGateStyle
     ? 'bg-gray-500/15 backdrop-blur-[24px] border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.28)] text-white'
     : 'bg-white shadow-2xl text-gray-900';
 
-  const dialogSizeClass = isGateStyle
-    ? 'w-[min(380px,92vw)] h-[min(380px,92vw)] md:w-[min(480px,88vh)] md:h-[min(480px,88vh)]'
-    : 'w-[min(380px,92vw)] h-[min(380px,92vw)]';
+  const dialogSizeClass = useCardLayout
+    ? 'w-[min(400px,92vw)] h-auto max-h-[min(90dvh,640px)]'
+    : isGateStyle
+      ? 'w-[min(380px,92vw)] h-[min(380px,92vw)] md:w-[min(480px,88vh)] md:h-[min(480px,88vh)]'
+      : 'w-[min(380px,92vw)] h-[min(380px,92vw)]';
 
-  const dialogPaddingClass = isGateStyle
-    ? 'pt-12 pb-6 md:pt-16 md:pb-8'
-    : 'pt-12 pb-8 md:pt-14 md:pb-10';
+  const dialogShapeClass = useCardLayout ? 'rounded-[1.75rem]' : 'rounded-full';
+
+  const dialogPaddingClass = useCardLayout
+    ? 'pt-7 pb-6'
+    : isGateStyle
+      ? 'pt-12 pb-6 md:pt-16 md:pb-8'
+      : 'pt-12 pb-8 md:pt-14 md:pb-10';
+
+  const workplacePicker = (
+    <>
+      <div className="hidden md:block relative" ref={workplaceDropdownRef}>
+        <button
+          type="button"
+          onClick={() => setWorkplaceDropdownOpen((open) => !open)}
+          disabled={clockOutPickerOptions.length === 0}
+          className={`w-full h-11 px-4 flex items-center justify-between gap-2 rounded-xl border text-left transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed ${
+            isGateStyle
+              ? `bg-white/10 backdrop-blur-sm ${
+                  workplaceDropdownOpen
+                    ? 'border-[#d4af37]/50 ring-2 ring-[#d4af37]/15'
+                    : 'border-white/15 hover:border-white/30'
+                }`
+              : `bg-white ${
+                  workplaceDropdownOpen
+                    ? 'border-violet-400 ring-2 ring-violet-100'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`
+          }`}
+        >
+          <span className={`font-medium truncate ${isGateStyle ? 'text-white' : 'text-gray-800'}`}>
+            {workplaceDisplayLabel}
+          </span>
+          <ChevronDownIcon
+            className={`w-4 h-4 shrink-0 transition-transform ${
+              isGateStyle ? 'text-white/50' : 'text-gray-400'
+            } ${workplaceDropdownOpen ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {workplaceDropdownOpen && clockOutPickerOptions.length > 0 && (
+          <div className="absolute z-30 w-full mt-1.5 max-h-48 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
+            {clockOutPickerOptions.map((opt) => {
+              const isSelected = opt.id === selectedWorkplaceId;
+              const isQrOnly = isQrOnlyClockInLocationId(opt.id);
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedWorkplaceId(opt.id);
+                    setWorkplaceDropdownOpen(false);
+                  }}
+                  className={`w-full px-4 py-2.5 text-left text-sm transition-colors ${
+                    isSelected
+                      ? 'bg-violet-50 text-violet-700 font-semibold'
+                      : 'text-gray-800 hover:bg-gray-50'
+                  }`}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span>{opt.name}</span>
+                    {isQrOnly ? (
+                      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                        QR only
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <select
+        className={`select select-bordered w-full md:hidden rounded-xl h-11 min-h-11 text-sm ${
+          isGateStyle ? 'bg-white/90 text-gray-900 border-white/30' : ''
+        }`}
+        value={selectedWorkplaceId ?? ''}
+        onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
+        disabled={clockOutPickerOptions.length === 0}
+      >
+        {clockOutPickerOptions.length === 0 ? (
+          <option value="">Loading…</option>
+        ) : (
+          clockOutPickerOptions.map((opt) => (
+            <option key={opt.id} value={opt.id}>
+              {isQrOnlyClockInLocationId(opt.id) ? `${opt.name} (QR only)` : opt.name}
+            </option>
+          ))
+        )}
+      </select>
+    </>
+  );
 
   const dialog = (
     <div
-      className={`pointer-events-auto relative rounded-full transform transition-all flex flex-col items-center justify-between text-center ${dialogSizeClass} ${dialogPaddingClass} ${dialogSurfaceClass}`}
+      className={`pointer-events-auto relative transform transition-all flex flex-col items-center text-center overflow-visible ${dialogShapeClass} ${dialogSizeClass} ${dialogPaddingClass} ${dialogSurfaceClass} ${
+        useCardLayout ? 'justify-start' : 'justify-between'
+      }`}
       role="dialog"
       aria-modal="true"
       aria-label="Clock in"
@@ -511,9 +715,9 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
           {!required && (
             <button
               onClick={onClose}
-              className={`absolute top-7 right-7 btn btn-sm btn-ghost btn-circle z-10 border-0 ${
-                isGateStyle ? 'text-white hover:bg-white/10' : ''
-              }`}
+              className={`absolute z-10 btn btn-sm btn-ghost btn-circle border-0 ${
+                useCardLayout ? 'top-3 right-3' : 'top-7 right-7'
+              } ${isGateStyle ? 'text-white hover:bg-white/10' : 'text-gray-500 hover:bg-gray-100'}`}
               title="Close"
             >
               <XMarkIcon className="w-5 h-5" />
@@ -550,6 +754,77 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                 <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>{selectedWorkplaceName}</p>
               ) : null}
               <p className={`text-xs mt-1 ${isGateStyle ? 'md:text-sm text-white/50' : 'text-gray-400'}`}>Closing automatically…</p>
+            </div>
+          ) : useCardLayout ? (
+            <div className={`flex w-full flex-col items-stretch gap-4 px-6 ${isGateStyle ? 'md:px-8' : ''}`}>
+              <div className="text-center pt-1">
+                <p className={`text-2xl font-bold tabular-nums tracking-tight ${isGateStyle ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                  {sessionDuration || 'Clocked In'}
+                </p>
+                <p className={`mt-1 text-sm font-semibold ${isGateStyle ? 'text-white/90' : 'text-gray-800'}`}>
+                  {greetingFirstName
+                    ? `Hi ${greetingFirstName}, ready to clock out?`
+                    : 'Ready to clock out?'}
+                </p>
+              </div>
+
+              <div
+                className={`rounded-2xl border px-3.5 py-3 text-left ${
+                  isGateStyle
+                    ? 'border-white/12 bg-white/8'
+                    : 'border-amber-100 bg-amber-50/90'
+                }`}
+              >
+                <div className="flex items-start gap-2.5">
+                  <span
+                    className={`mt-0.5 inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                      isGateStyle
+                        ? 'bg-[#d4af37]/20 text-[#f0d78c]'
+                        : 'bg-amber-200/80 text-amber-900'
+                    }`}
+                  >
+                    QR
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className={`text-sm font-semibold leading-snug ${isGateStyle ? 'text-white' : 'text-gray-900'}`}>
+                      {resolveWorkplaceName(currentRecord, 'in')}
+                    </p>
+                    <p className={`text-xs leading-relaxed ${isGateStyle ? 'text-white/70' : 'text-amber-950/70'}`}>
+                      Scan the office QR again to clock out there.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 text-left">
+                <label className={`block text-xs font-semibold uppercase tracking-wide ${isGateStyle ? 'text-white/55' : 'text-gray-500'}`}>
+                  Or clock out elsewhere
+                </label>
+                <p className={`text-xs leading-relaxed ${isGateStyle ? 'text-white/60' : 'text-gray-500'}`}>
+                  Choosing another workplace submits a manual clock-out for admin approval.
+                </p>
+                {workplacePicker}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleClockOut}
+                disabled={
+                  isLoading
+                  || selectedWorkplaceId == null
+                  || isQrOnlyClockInLocationId(selectedWorkplaceId)
+                }
+                className="btn mt-1 h-12 min-h-12 w-full gap-2 rounded-xl border-0 bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-base font-semibold text-white shadow-md hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 disabled:opacity-60"
+              >
+                {isLoading ? (
+                  <span className="loading loading-spinner loading-md" />
+                ) : (
+                  <>
+                    <ClockIcon className="h-5 w-5" />
+                    Clock Out
+                  </>
+                )}
+              </button>
             </div>
           ) : (
             <>
@@ -670,84 +945,14 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                   </div>
                 ) : (
                   <>
-                    {/* Desktop dropdown */}
-                    <div className="hidden md:block relative" ref={workplaceDropdownRef}>
-                      <button
-                        type="button"
-                        onClick={() => setWorkplaceDropdownOpen((open) => !open)}
-                        disabled={workplaceOptions.length === 0}
-                        className={`w-full h-10 md:h-12 px-4 md:px-5 flex items-center justify-between gap-2 rounded-full border text-left transition-colors text-sm md:text-base disabled:opacity-60 disabled:cursor-not-allowed ${
-                          isGateStyle
-                            ? `bg-white/8 backdrop-blur-sm ${
-                                workplaceDropdownOpen
-                                  ? 'border-[#d4af37]/50 ring-2 ring-[#d4af37]/15'
-                                  : 'border-white/12 hover:border-white/25'
-                              }`
-                            : `bg-white ${
-                                workplaceDropdownOpen
-                                  ? 'border-purple-400 ring-2 ring-purple-100'
-                                  : 'border-gray-200 hover:border-gray-300'
-                              }`
-                        }`}
-                      >
-                        <span className={`font-medium truncate ${isGateStyle ? 'text-white' : 'text-gray-800'}`}>
-                          {workplaceDisplayLabel}
-                        </span>
-                        <ChevronDownIcon
-                          className={`w-4 h-4 md:w-5 md:h-5 shrink-0 transition-transform ${
-                            isGateStyle ? 'text-white/50' : 'text-gray-400'
-                          } ${workplaceDropdownOpen ? 'rotate-180' : ''}`}
-                        />
-                      </button>
-                      {workplaceDropdownOpen && workplaceOptions.length > 0 && (
-                        <div className="absolute z-30 w-full mt-1 bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
-                          {workplaceOptions.map((opt) => {
-                            const isSelected = opt.id === selectedWorkplaceId;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedWorkplaceId(opt.id);
-                                  setWorkplaceDropdownOpen(false);
-                                }}
-                                className={`w-full px-4 py-2.5 text-left text-sm transition-colors ${
-                                  isSelected
-                                    ? 'bg-purple-50 text-purple-700 font-semibold'
-                                    : 'text-gray-800 hover:bg-gray-50'
-                                }`}
-                              >
-                                {opt.name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
+                    {workplacePicker}
                     {homeNeedsApproval && (
                       <p className={`mt-1.5 text-xs md:text-sm ${isGateStyle ? 'text-amber-300' : 'text-amber-700'}`}>
                         {pendingHomeApproval
                           ? 'Home access is pending approval.'
-                          : 'Home needs approval.'}
+                          : 'Home needs approval for a selected period.'}
                       </p>
                     )}
-                    {/* Mobile: native select */}
-                    <select
-                      className={`select select-bordered w-full md:hidden rounded-full h-10 min-h-10 text-base ${
-                        isGateStyle ? 'bg-white/90 text-gray-900 border-white/30' : ''
-                      }`}
-                      value={selectedWorkplaceId ?? ''}
-                      onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
-                      disabled={workplaceOptions.length === 0}
-                    >
-                      {workplaceOptions.length === 0 ? (
-                        <option value="">Loading…</option>
-                      ) : (
-                        workplaceOptions.map((opt) => (
-                          <option key={opt.id} value={opt.id}>{opt.name}</option>
-                        ))
-                      )}
-                    </select>
                   </>
                 )}
               </div>
@@ -778,30 +983,58 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
   );
 
   if (embedded) {
-    return dialog;
+    return (
+      <>
+        {dialog}
+        <HomeWfhPeriodRequestModal
+          isOpen={wfhPeriodModalOpen}
+          employeeId={employeeId}
+          userId={userId}
+          onClose={() => setWfhPeriodModalOpen(false)}
+          onSubmitted={() => {
+            setPendingHomeApproval(true);
+            setSuccessAction('approval');
+          }}
+        />
+      </>
+    );
   }
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[10050] overflow-y-auto overscroll-contain"
-      role="presentation"
-    >
-      <div
-        className={`fixed inset-0 transition-opacity ${required ? 'bg-transparent' : 'bg-black/50'}`}
-        onClick={required ? undefined : onClose}
-        aria-hidden="true"
-      />
-      <div
-        className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
-        style={{
-          paddingTop: 'max(1rem, env(safe-area-inset-top, 0px))',
-          paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
+  return (
+    <>
+      {createPortal(
+        <div
+          className="fixed inset-0 z-[10050] overflow-y-auto overscroll-contain"
+          role="presentation"
+        >
+          <div
+            className={`fixed inset-0 transition-opacity ${required ? 'bg-transparent' : 'bg-black/50'}`}
+            onClick={required ? undefined : onClose}
+            aria-hidden="true"
+          />
+          <div
+            className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
+            style={{
+              paddingTop: 'max(1rem, env(safe-area-inset-top, 0px))',
+              paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
+            }}
+          >
+            {dialog}
+          </div>
+        </div>,
+        document.body,
+      )}
+      <HomeWfhPeriodRequestModal
+        isOpen={wfhPeriodModalOpen}
+        employeeId={employeeId}
+        userId={userId}
+        onClose={() => setWfhPeriodModalOpen(false)}
+        onSubmitted={() => {
+          setPendingHomeApproval(true);
+          setSuccessAction('approval');
         }}
-      >
-        {dialog}
-      </div>
-    </div>,
-    document.body,
+      />
+    </>
   );
 };
 
