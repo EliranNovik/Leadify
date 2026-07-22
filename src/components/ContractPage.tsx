@@ -38,8 +38,13 @@ import DisplayOnKioskModal from './kiosk/DisplayOnKioskModal';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { fetchEmployeeProfileById } from '../lib/fetchEmployeeProfile';
+import {
+  fetchRecruitmentUserById,
+  recruitmentUserDisplayName,
+} from '../lib/recruitmentDigitalContracts';
 import { buildEmployeeContractPublicUrl } from '../lib/employeeDigitalContracts';
 import { buildFirmContractPublicUrl } from '../lib/firmDigitalContracts';
+import { buildRecruitmentContractPublicUrl } from '../lib/recruitmentDigitalContracts';
 
 /** Draft HR employee contracts should always follow the live admin template. */
 function isDraftEmployeeContract(contract: any): boolean {
@@ -1382,26 +1387,37 @@ function ContractEditorToolbar({
 }
 
 const ContractPage: React.FC<{
-  mode?: 'client' | 'employee' | 'firm';
+  mode?: 'client' | 'employee' | 'firm' | 'recruitment';
   employeeIdOverride?: number;
   firmIdOverride?: string;
+  userIdOverride?: string;
   contractIdOverride?: string;
-}> = ({ mode: modeProp, employeeIdOverride, firmIdOverride, contractIdOverride }) => {
+}> = ({ mode: modeProp, employeeIdOverride, firmIdOverride, userIdOverride, contractIdOverride }) => {
   const {
     leadNumber: paramLeadNumber,
     contractId: paramContractId,
     employeeId: paramEmployeeId,
     firmId: paramFirmId,
-  } = useParams<{ leadNumber?: string; contractId?: string; employeeId?: string; firmId?: string }>();
+    userId: paramUserId,
+  } = useParams<{
+    leadNumber?: string;
+    contractId?: string;
+    employeeId?: string;
+    firmId?: string;
+    userId?: string;
+  }>();
   const location = useLocation();
   const navigate = useNavigate();
 
   const isHrEmployeePath = location.pathname.includes('/hr/employees/') && location.pathname.includes('/contract/');
+  const isRecruitmentPath =
+    location.pathname.includes('/hr/recruitment/') && location.pathname.includes('/contract/');
   const isExternalFirmPath =
     location.pathname.includes('/reports/external-firms/') && location.pathname.includes('/contract/');
   const isEmployeeMode = modeProp === 'employee' || isHrEmployeePath;
+  const isRecruitmentMode = modeProp === 'recruitment' || isRecruitmentPath;
   const isFirmMode = modeProp === 'firm' || isExternalFirmPath;
-  const isNonClientContractMode = isEmployeeMode || isFirmMode;
+  const isNonClientContractMode = isEmployeeMode || isFirmMode || isRecruitmentMode;
 
   // Extract leadNumber from URL path manually (may be undefined if using /contract/:contractId route)
   const leadNumber = isNonClientContractMode
@@ -1416,9 +1432,11 @@ const ContractPage: React.FC<{
       ? location.pathname.split('/')[2]
       : isHrEmployeePath
         ? location.pathname.split('/')[5]
-        : isExternalFirmPath
+        : isRecruitmentPath
           ? location.pathname.split('/')[5]
-          : null);
+          : isExternalFirmPath
+            ? location.pathname.split('/')[5]
+            : null);
   const employeeIdFromRoute = employeeIdOverride ?? (paramEmployeeId ? Number(paramEmployeeId) : NaN);
   const employeeId =
     Number.isFinite(employeeIdFromRoute) && employeeIdFromRoute > 0
@@ -1430,6 +1448,10 @@ const ContractPage: React.FC<{
   const firmId =
     firmIdFromRoute ||
     (isExternalFirmPath ? location.pathname.split('/')[3] : null);
+  const userId =
+    userIdOverride ||
+    paramUserId ||
+    (isRecruitmentPath ? location.pathname.split('/')[3] : null);
 
   const [contract, setContract] = useState<any>(null);
   const [template, setTemplate] = useState<any>(null);
@@ -1581,6 +1603,9 @@ const ContractPage: React.FC<{
     if (isFirmMode || contract?.external_firm_id || firmId) {
       const fId = firmId || contract?.external_firm_id;
       return fId ? `/reports/external-firms?firmId=${fId}` : '/reports/external-firms';
+    }
+    if (isRecruitmentMode || contract?.user_id || userId) {
+      return '/reports/hr-management?tab=recruitment';
     }
     if (isEmployeeMode || contract?.employee_id || employeeId) {
       const empId = employeeId || contract?.employee_id;
@@ -2256,6 +2281,31 @@ const ContractPage: React.FC<{
             }
           } catch (empErr) {
             console.error('ContractPage: Error fetching employee for contract:', empErr);
+          }
+        } else if (
+          !leadNumber &&
+          (contractData.user_id || isRecruitmentMode) &&
+          (contractData.user_id || userId)
+        ) {
+          const uId = String(contractData.user_id || userId);
+          try {
+            const profile = await fetchRecruitmentUserById(uId);
+            if (profile) {
+              setClient({
+                id: `user_${profile.id}`,
+                name: recruitmentUserDisplayName(profile),
+                email: profile.email || contractData.contact_email || '',
+                phone: '',
+                mobile: '',
+                lead_number: `USER-${String(profile.id).slice(0, 8)}`,
+                lead_type: 'recruitment',
+                photo_url: null,
+                user_id: profile.id,
+              });
+              clientLoaded = true;
+            }
+          } catch (userErr) {
+            console.error('ContractPage: Error fetching recruitment user for contract:', userErr);
           }
         } else if (
           !leadNumber &&
@@ -3882,6 +3932,34 @@ const ContractPage: React.FC<{
     return rtlChars.test(text);
   };
 
+  const extractTextContent = (node: any): string => {
+    if (!node) return '';
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) return node.map(extractTextContent).join(' ');
+    if (node.type === 'text' && node.text) return node.text;
+    if (node.content) return extractTextContent(node.content);
+    return '';
+  };
+
+  /** Match PublicContractView: honor saved align, otherwise infer from Hebrew/Arabic text. */
+  const getBlockDirection = (
+    textContent: string,
+    savedAlign?: string | null,
+  ): { dir?: 'rtl' | 'ltr'; textAlign: React.CSSProperties['textAlign'] } => {
+    const rtl = isRTL(textContent);
+    // Editor uses dir="auto", so Hebrew often looked right-aligned even with textAlign left/null.
+    // Prefer script detection so signed/read-only view matches what was seen while editing.
+    if (savedAlign === 'right' || (rtl && (savedAlign === 'left' || !savedAlign))) {
+      return { dir: 'rtl', textAlign: 'right' };
+    }
+    if (savedAlign === 'left') return { dir: 'ltr', textAlign: 'left' };
+    if (savedAlign === 'center') return { textAlign: 'center' };
+    if (savedAlign === 'justify') {
+      return { dir: rtl ? 'rtl' : 'ltr', textAlign: 'justify' };
+    }
+    return { dir: rtl ? 'rtl' : 'ltr', textAlign: rtl ? 'right' : 'left' };
+  };
+
   const renderTiptapContent = (
     content: any,
     keyPrefix = '',
@@ -5157,113 +5235,112 @@ const ContractPage: React.FC<{
       case 'paragraph':
         const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex);
         // Always render paragraphs - even empty ones represent line breaks
-        // Check if there's a saved text alignment from the admin
-        const savedTextAlign = content.attrs?.textAlign;
+        const paragraphText = extractTextContent(content.content);
+        const savedTextAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: paragraphDir, textAlign: paragraphAlign } = getBlockDirection(
+          paragraphText,
+          savedTextAlign,
+        );
         const hasContent = paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim().length > 0 : true);
 
-        if (savedTextAlign) {
-          // Use the saved alignment from admin
-          return (
-            <p
-              key={keyPrefix}
-              className="mb-3"
-              style={{ textAlign: savedTextAlign }}
-            >
-              {hasContent ? paragraphContent : <br />}
-            </p>
-          );
-        } else {
-          // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
-          // In view mode, we should show content as saved, not auto-detect
-          return (
-            <p
-              key={keyPrefix}
-              className="mb-3"
-            >
-              {hasContent ? paragraphContent : <br />}
-            </p>
-          );
-        }
+        return (
+          <p
+            key={keyPrefix}
+            className="mb-3"
+            dir={paragraphDir}
+            style={{ textAlign: paragraphAlign }}
+          >
+            {hasContent ? paragraphContent : <br />}
+          </p>
+        );
       case 'heading':
         const level = content.attrs?.level || 1;
         const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
         const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
+        const headingText = extractTextContent(content.content);
+        const savedHeadingAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: headingDir, textAlign: headingAlign } = getBlockDirection(
+          headingText,
+          savedHeadingAlign,
+        );
 
-        // Check if there's a saved text alignment from the admin
-        const savedHeadingAlign = content.attrs?.textAlign;
-
-        if (savedHeadingAlign) {
-          // Use the saved alignment from admin
-          return React.createElement(
-            HeadingTag,
-            {
-              key: keyPrefix,
-              style: { textAlign: savedHeadingAlign }
-            },
-            renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
-          );
-        } else {
-          // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
-          // In view mode, we should show content as saved, not auto-detect
-          return React.createElement(
-            HeadingTag,
-            {
-              key: keyPrefix
-            },
-            renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
-          );
-        }
-      case 'bulletList':
-        // Check for saved alignment first
-        const savedBulletListAlign = content.attrs?.textAlign;
+        return React.createElement(
+          HeadingTag,
+          {
+            key: keyPrefix,
+            dir: headingDir,
+            style: { textAlign: headingAlign },
+          },
+          renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
+        );
+      case 'bulletList': {
+        const bulletText = extractTextContent(content.content);
+        const savedBulletListAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: bulletDir, textAlign: bulletAlign } = getBlockDirection(
+          bulletText,
+          savedBulletListAlign,
+        );
         return (
           <ul
             key={keyPrefix}
-            style={savedBulletListAlign ? { textAlign: savedBulletListAlign } : {}}
+            dir={bulletDir}
+            style={{ textAlign: bulletAlign }}
           >
             {renderTiptapContent(content.content, keyPrefix + '-ul', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
           </ul>
         );
-      case 'orderedList':
-        const orderedListText = JSON.stringify(content.content);
-        const isRTLOrderedList = isRTL(orderedListText);
+      }
+      case 'orderedList': {
+        const orderedListText = extractTextContent(content.content);
+        const savedOrderedListAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: orderedDir, textAlign: orderedAlign } = getBlockDirection(
+          orderedListText,
+          savedOrderedListAlign,
+        );
         return (
           <ol
             key={keyPrefix}
-            dir={isRTLOrderedList ? 'rtl' : 'ltr'}
-            style={{ textAlign: isRTLOrderedList ? 'right' : 'left' }}
+            dir={orderedDir}
+            style={{ textAlign: orderedAlign }}
           >
             {renderTiptapContent(content.content, keyPrefix + '-ol', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
           </ol>
         );
-      case 'listItem':
-        const listItemText = content.content?.map((n: any) => {
-          if (n.type === 'paragraph' && n.content) {
-            return n.content.map((c: any) => c.text || '').join('');
-          }
-          return '';
-        }).join('') || '';
-        const isRTLListItem = isRTL(listItemText);
+      }
+      case 'listItem': {
+        const listItemText = extractTextContent(content.content);
+        const savedListItemAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: listItemDir, textAlign: listItemAlign } = getBlockDirection(
+          listItemText,
+          savedListItemAlign,
+        );
         return (
           <li
             key={keyPrefix}
-            dir={isRTLListItem ? 'rtl' : 'ltr'}
-            style={{ textAlign: isRTLListItem ? 'right' : 'left' }}
+            dir={listItemDir}
+            style={{ textAlign: listItemAlign }}
           >
             {renderTiptapContent(content.content, keyPrefix + '-li', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
           </li>
         );
-      case 'blockquote':
-        // Check for saved alignment first
-        const savedBlockquoteAlign = content.attrs?.textAlign;
+      }
+      case 'blockquote': {
+        const blockquoteText = extractTextContent(content.content);
+        const savedBlockquoteAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: blockquoteDir, textAlign: blockquoteAlign } = getBlockDirection(
+          blockquoteText,
+          savedBlockquoteAlign,
+        );
         return (
           <blockquote
             key={keyPrefix}
-            style={savedBlockquoteAlign ? { textAlign: savedBlockquoteAlign } : {}}
+            dir={blockquoteDir}
+            style={{ textAlign: blockquoteAlign }}
           >
             {renderTiptapContent(content.content, keyPrefix + '-bq', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
           </blockquote>
         );
+      }
       case 'horizontalRule':
         return <hr key={keyPrefix} />;
       case 'hardBreak':
@@ -5347,11 +5424,13 @@ const ContractPage: React.FC<{
     }
     // Always use production domain for public contract links
     const publicUrl =
-      isEmployeeMode || contract.employee_id
-        ? buildEmployeeContractPublicUrl(contract.id, publicToken)
-        : isFirmMode || contract.external_firm_id
-          ? buildFirmContractPublicUrl(contract.id, publicToken)
-          : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+      isRecruitmentMode || contract.user_id
+        ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
+        : isEmployeeMode || contract.employee_id
+          ? buildEmployeeContractPublicUrl(contract.id, publicToken)
+          : isFirmMode || contract.external_firm_id
+            ? buildFirmContractPublicUrl(contract.id, publicToken)
+            : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
     await navigator.clipboard.writeText(publicUrl);
     alert('Contract link copied to clipboard!');
   };
@@ -5368,11 +5447,13 @@ const ContractPage: React.FC<{
         setContract((prev: any) => ({ ...prev, public_token: publicToken }));
       }
       const publicUrl =
-        isEmployeeMode || contract.employee_id
-          ? buildEmployeeContractPublicUrl(contract.id, publicToken)
-          : isFirmMode || contract.external_firm_id
-            ? buildFirmContractPublicUrl(contract.id, publicToken)
-            : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+        isRecruitmentMode || contract.user_id
+          ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
+          : isEmployeeMode || contract.employee_id
+            ? buildEmployeeContractPublicUrl(contract.id, publicToken)
+            : isFirmMode || contract.external_firm_id
+              ? buildFirmContractPublicUrl(contract.id, publicToken)
+              : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
 
       const clientName = contract?.contact_name || client?.name || 'Client';
       const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
@@ -5482,6 +5563,8 @@ const ContractPage: React.FC<{
         window.location.assign(
           fId ? `/reports/external-firms?firmId=${fId}` : '/reports/external-firms',
         );
+      } else if (isRecruitmentMode || contract.user_id) {
+        window.location.assign('/reports/hr-management?tab=recruitment');
       } else if (isEmployeeMode || contract.employee_id) {
         const empId = employeeId || contract.employee_id;
         window.location.assign(
@@ -5875,25 +5958,23 @@ const ContractPage: React.FC<{
     }
 
     switch (content.type) {
-      case 'paragraph':
+      case 'paragraph': {
         const paragraphContent = renderSignedContractContent(content.content, keyPrefix + '-p');
         if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
           // Check if paragraph contains input fields (React elements)
           const hasInputFields = React.isValidElement(paragraphContent) ||
             (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
 
-          // Check if there's a saved text alignment from the admin
-          const savedSignedAlign = content.attrs?.textAlign;
-
-          let styleProps;
-          if (savedSignedAlign) {
-            // Use the saved alignment from admin
-            styleProps = { style: { textAlign: savedSignedAlign } };
-          } else {
-            // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
-            // In view mode, we should show content as saved, not auto-detect
-            styleProps = {};
-          }
+          const paragraphText = extractTextContent(content.content);
+          const savedSignedAlign = content.attrs?.textAlign as string | undefined;
+          const { dir: signedDir, textAlign: signedAlign } = getBlockDirection(
+            paragraphText,
+            savedSignedAlign,
+          );
+          const styleProps = {
+            dir: signedDir,
+            style: { textAlign: signedAlign } as React.CSSProperties,
+          };
 
           if (hasInputFields) {
             // Use div instead of p to avoid DOM nesting issues with input fields
@@ -5903,80 +5984,96 @@ const ContractPage: React.FC<{
           }
         }
         return null;
-      case 'heading':
+      }
+      case 'heading': {
         const level = content.attrs?.level || 1;
         const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
         const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
+        const headingText = extractTextContent(content.content);
+        const savedSignedHeadingAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: signedHeadingDir, textAlign: signedHeadingAlign } = getBlockDirection(
+          headingText,
+          savedSignedHeadingAlign,
+        );
 
-        // Check if there's a saved text alignment from the admin
-        const savedSignedHeadingAlign = content.attrs?.textAlign;
-
-        if (savedSignedHeadingAlign) {
-          // Use the saved alignment from admin
-          return React.createElement(
-            HeadingTag,
-            {
-              key: keyPrefix,
-              style: { textAlign: savedSignedHeadingAlign }
-            },
-            renderSignedContractContent(content.content, keyPrefix + '-h')
-          );
-        } else {
-          // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
-          // In view mode, we should show content as saved, not auto-detect
-          return React.createElement(
-            HeadingTag,
-            {
-              key: keyPrefix
-            },
-            renderSignedContractContent(content.content, keyPrefix + '-h')
-          );
-        }
-      case 'bulletList':
-        // Check for saved alignment first
-        const savedSignedBulletListAlign = content.attrs?.textAlign;
+        return React.createElement(
+          HeadingTag,
+          {
+            key: keyPrefix,
+            dir: signedHeadingDir,
+            style: { textAlign: signedHeadingAlign },
+          },
+          renderSignedContractContent(content.content, keyPrefix + '-h')
+        );
+      }
+      case 'bulletList': {
+        const bulletText = extractTextContent(content.content);
+        const savedSignedBulletListAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: signedBulletDir, textAlign: signedBulletAlign } = getBlockDirection(
+          bulletText,
+          savedSignedBulletListAlign,
+        );
         return (
           <ul
             key={keyPrefix}
-            style={savedSignedBulletListAlign ? { textAlign: savedSignedBulletListAlign } : {}}
+            dir={signedBulletDir}
+            style={{ textAlign: signedBulletAlign }}
           >
             {renderSignedContractContent(content.content, keyPrefix + '-ul')}
           </ul>
         );
-      case 'orderedList':
-        const signedOrderedListText = JSON.stringify(content.content);
-        // Check for saved alignment first
-        const savedSignedOrderedListAlign = content.attrs?.textAlign;
+      }
+      case 'orderedList': {
+        const orderedText = extractTextContent(content.content);
+        const savedSignedOrderedListAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: signedOrderedDir, textAlign: signedOrderedAlign } = getBlockDirection(
+          orderedText,
+          savedSignedOrderedListAlign,
+        );
         return (
           <ol
             key={keyPrefix}
-            style={savedSignedOrderedListAlign ? { textAlign: savedSignedOrderedListAlign } : {}}
+            dir={signedOrderedDir}
+            style={{ textAlign: signedOrderedAlign }}
           >
             {renderSignedContractContent(content.content, keyPrefix + '-ol')}
           </ol>
         );
-      case 'listItem':
-        // Check for saved alignment first
-        const savedSignedListItemAlign = content.attrs?.textAlign;
+      }
+      case 'listItem': {
+        const listItemText = extractTextContent(content.content);
+        const savedSignedListItemAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: signedListItemDir, textAlign: signedListItemAlign } = getBlockDirection(
+          listItemText,
+          savedSignedListItemAlign,
+        );
         return (
           <li
             key={keyPrefix}
-            style={savedSignedListItemAlign ? { textAlign: savedSignedListItemAlign } : {}}
+            dir={signedListItemDir}
+            style={{ textAlign: signedListItemAlign }}
           >
             {renderSignedContractContent(content.content, keyPrefix + '-li')}
           </li>
         );
-      case 'blockquote':
-        // Check for saved alignment first
-        const savedSignedBlockquoteAlign = content.attrs?.textAlign;
+      }
+      case 'blockquote': {
+        const blockquoteText = extractTextContent(content.content);
+        const savedSignedBlockquoteAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: signedBlockquoteDir, textAlign: signedBlockquoteAlign } = getBlockDirection(
+          blockquoteText,
+          savedSignedBlockquoteAlign,
+        );
         return (
           <blockquote
             key={keyPrefix}
-            style={savedSignedBlockquoteAlign ? { textAlign: savedSignedBlockquoteAlign } : {}}
+            dir={signedBlockquoteDir}
+            style={{ textAlign: signedBlockquoteAlign }}
           >
             {renderSignedContractContent(content.content, keyPrefix + '-bq')}
           </blockquote>
         );
+      }
       case 'horizontalRule':
         return <hr key={keyPrefix} />;
       case 'hardBreak':
@@ -6466,6 +6563,15 @@ const ContractPage: React.FC<{
                   className="ProseMirror contract-page-prosemirror"
                   contentEditable="false"
                   key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}
+                  dir={
+                    isRTL(
+                      extractTextContent(
+                        contract?.custom_content || resolveContractBodyContent(contract, template),
+                      ),
+                    )
+                      ? 'rtl'
+                      : 'ltr'
+                  }
                   style={{ minHeight: '100%' }}
                 >
                   {contract.status === 'signed' && contract.custom_content ? (
@@ -6489,6 +6595,11 @@ const ContractPage: React.FC<{
                   className="ProseMirror contract-page-prosemirror"
                   contentEditable="false"
                   key={`readonly-${renderKey}-${template?.id || 'no-template'}-${contract?.template_id || contract?.custom_pricing?.legacy_template_id || 'no-id'}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}
+                  dir={
+                    isRTL(extractTextContent(resolveContractBodyContent(contract, template)))
+                      ? 'rtl'
+                      : 'ltr'
+                  }
                   style={{ minHeight: '100%' }}
                 >
                   {(() => {
@@ -7021,9 +7132,11 @@ const ContractPage: React.FC<{
         .ProseMirror h5[dir="rtl"],
         .ProseMirror h6[dir="rtl"],
         .ProseMirror li[dir="rtl"],
-        .ProseMirror blockquote[dir="rtl"] {
+        .ProseMirror blockquote[dir="rtl"],
+        .ProseMirror div[dir="rtl"] {
           text-align: right !important;
           direction: rtl !important;
+          unicode-bidi: isolate !important;
         }
         
         .ProseMirror p[dir="ltr"],
@@ -7034,9 +7147,11 @@ const ContractPage: React.FC<{
         .ProseMirror h5[dir="ltr"],
         .ProseMirror h6[dir="ltr"],
         .ProseMirror li[dir="ltr"],
-        .ProseMirror blockquote[dir="ltr"] {
+        .ProseMirror blockquote[dir="ltr"],
+        .ProseMirror div[dir="ltr"] {
           text-align: left !important;
           direction: ltr !important;
+          unicode-bidi: isolate !important;
         }
         
         .ProseMirror ul[dir="rtl"],

@@ -305,6 +305,22 @@
   color: rgba(248, 250, 252, 0.92);
 }
 
+.kiosk-success-remark {
+  margin: 1.15rem auto 0;
+  max-width: 36rem;
+  padding: 0.95rem 1.35rem;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.18), rgba(52, 211, 153, 0.14));
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+  font-size: 1.55rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: #fef3c7;
+  text-wrap: balance;
+}
+
 .kiosk-success-timer {
   margin-top: 1.4rem;
   display: flex;
@@ -379,6 +395,13 @@
 
   .kiosk-success-footer-msg {
     font-size: 1.05rem;
+  }
+
+  .kiosk-success-remark {
+    margin-top: 0.95rem;
+    padding: 0.8rem 1rem;
+    border-radius: 14px;
+    font-size: 1.2rem;
   }
 
   .kiosk-success-now {

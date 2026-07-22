@@ -78,6 +78,60 @@ function memoryGet(locationId) {
 }
 
 /**
+ * Prefer flash.adjusted_at; otherwise read the real clock in/out from employee_clock_in
+ * so the kiosk modal matches CRM even when adjusted_at was not persisted (older backends).
+ */
+async function resolveDisplayClockAt(event) {
+  if (!event) return null;
+  if (event.adjustedAt && !Number.isNaN(Date.parse(String(event.adjustedAt)))) {
+    return new Date(event.adjustedAt).toISOString();
+  }
+
+  const employeeId = normalizeEmployeeId(event.employeeId);
+  if (!employeeId) return event.at || null;
+
+  try {
+    if (event.action === 'out') {
+      const { data, error } = await supabase
+        .from('employee_clock_in')
+        .select('clock_out_time')
+        .eq('employee_id', employeeId)
+        .not('clock_out_time', 'is', null)
+        .order('clock_out_time', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!error && data?.clock_out_time) {
+        return new Date(data.clock_out_time).toISOString();
+      }
+    } else {
+      const { data, error } = await supabase
+        .from('employee_clock_in')
+        .select('clock_in_time')
+        .eq('employee_id', employeeId)
+        .order('clock_in_time', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!error && data?.clock_in_time) {
+        return new Date(data.clock_in_time).toISOString();
+      }
+    }
+  } catch (err) {
+    console.warn('[clockInKioskEvents] resolveDisplayClockAt failed:', err?.message || err);
+  }
+
+  return event.at || null;
+}
+
+async function withResolvedDisplayTime(event) {
+  if (!event) return null;
+  const adjustedAt = await resolveDisplayClockAt(event);
+  return {
+    ...event,
+    adjustedAt: adjustedAt || event.adjustedAt || null,
+  };
+}
+
+/**
  * Publish a clock-in flash for tablets.
  * Writes memory (same-process) and Supabase (cross-host / multi-instance).
  */
@@ -120,11 +174,14 @@ async function announce({
     };
     if (employeeId != null) row.employee_id = employeeId;
     if (remark) row.remark = remark;
+    if (adjustedAt) row.adjusted_at = adjustedAt;
 
     const { data, error } = await supabase
       .from('clock_in_kiosk_flash')
       .insert(row)
-      .select('id, location_id, employee_name, photo_url, employee_id, action, remark, created_at')
+      .select(
+        'id, location_id, employee_name, photo_url, employee_id, action, remark, adjusted_at, created_at',
+      )
       .single();
 
     if (error) {
@@ -135,9 +192,16 @@ async function announce({
         photo_url: photoUrlSafe,
         created_at: at,
       };
-      if (employeeId != null && !/employee_id/i.test(error.message || '')) {
+      if (employeeId != null && !/employee_id|adjusted_at/i.test(error.message || '')) {
         baseRow.employee_id = employeeId;
       }
+      if (remark && !/remark|adjusted_at/i.test(error.message || '')) {
+        baseRow.remark = remark;
+      }
+      if (action && !/action|adjusted_at/i.test(error.message || '')) {
+        baseRow.action = action;
+      }
+      // Retry without adjusted_at when the column is not applied yet.
       const retry = await supabase
         .from('clock_in_kiosk_flash')
         .insert(baseRow)
@@ -180,7 +244,9 @@ async function getRecent(locationIdInput) {
   try {
     const { data, error } = await supabase
       .from('clock_in_kiosk_flash')
-      .select('id, location_id, employee_name, photo_url, employee_id, action, remark, created_at')
+      .select(
+        'id, location_id, employee_name, photo_url, employee_id, action, remark, adjusted_at, created_at',
+      )
       .eq('location_id', locationId)
       .gte('created_at', sinceIso)
       .order('created_at', { ascending: false })
@@ -214,6 +280,14 @@ async function getRecent(locationIdInput) {
         (cached && String(cached.id) === String(data.id) ? cached.remark : null) ||
         null;
 
+      const adjustedFromDb =
+        data.adjusted_at && !Number.isNaN(Date.parse(String(data.adjusted_at)))
+          ? new Date(data.adjusted_at).toISOString()
+          : null;
+      const adjustedAt =
+        adjustedFromDb ||
+        (cached && String(cached.id) === String(data.id) ? cached.adjustedAt || null : null);
+
       const event = {
         id: String(data.id),
         locationId: Number(data.location_id),
@@ -223,15 +297,15 @@ async function getRecent(locationIdInput) {
         action,
         meetings,
         remark,
-        adjustedAt:
-          cached && String(cached.id) === String(data.id) ? cached.adjustedAt || null : null,
+        adjustedAt,
         at: data.created_at,
       };
-      memoryPut(event);
-      return event;
+      const resolved = await withResolvedDisplayTime(event);
+      memoryPut(resolved);
+      return resolved;
     }
     if (error) {
-      if (/action|remark|employee_id/i.test(error.message || '')) {
+      if (/action|remark|employee_id|adjusted_at/i.test(error.message || '')) {
         const fallback = await supabase
           .from('clock_in_kiosk_flash')
           .select('id, location_id, employee_name, photo_url, employee_id, created_at')
@@ -278,8 +352,9 @@ async function getRecent(locationIdInput) {
                 : null,
             at: fallback.data.created_at,
           };
-          memoryPut(event);
-          return event;
+          const resolved = await withResolvedDisplayTime(event);
+          memoryPut(resolved);
+          return resolved;
         }
       }
       console.warn('[clockInKioskEvents] supabase flash read failed:', error.message);
@@ -288,7 +363,7 @@ async function getRecent(locationIdInput) {
     console.warn('[clockInKioskEvents] supabase flash read error:', err?.message || err);
   }
 
-  return memoryGet(locationId);
+  return withResolvedDisplayTime(memoryGet(locationId));
 }
 
 module.exports = {

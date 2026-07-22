@@ -61,11 +61,15 @@ export const LazyScheduleMeetingPage = lazy(() => import('../pages/ScheduleMeeti
 export const LazyRescheduleMeetingPage = lazy(() => import('../pages/RescheduleMeetingPage'));
 export const LazyContractPage = lazy(() => import('../components/ContractPage'));
 export const LazyHrEmployeeContractPage = lazy(() => import('../pages/HrEmployeeContractPage'));
+export const LazyHrRecruitmentContractPage = lazy(() => import('../pages/HrRecruitmentContractPage'));
 export const LazyExternalFirmContractPage = lazy(() => import('../pages/ExternalFirmContractPage'));
 export const LazyPublicProformaViewPage = lazy(() => import('../pages/PublicProformaViewPage'));
 export const LazyPublicProformaLegacyViewPage = lazy(() => import('../pages/PublicProformaLegacyViewPage'));
 export const LazyPublicContractView = lazy(() => import('../pages/PublicContractView'));
 export const LazyPublicHrEmployeeContractView = lazy(() => import('../pages/PublicHrEmployeeContractView'));
+export const LazyPublicRecruitmentContractView = lazy(
+  () => import('../pages/PublicRecruitmentContractView'),
+);
 export const LazyPublicFirmContractView = lazy(() => import('../pages/PublicFirmContractView'));
 export const LazyPublicLegacyContractView = lazy(() => import('../pages/PublicLegacyContractView'));
 export const LazyPaymentPage = lazy(() => import('../pages/PaymentPage'));

@@ -47,6 +47,7 @@ import {
   LazyDuplicateContactsPage,
   LazyContractPage,
   LazyHrEmployeeContractPage,
+  LazyHrRecruitmentContractPage,
   LazyExternalFirmContractPage,
   LazyCreateNewLead,
   LazyCTIPopupPage,
@@ -109,6 +110,7 @@ import {
   LazyPublicBookingPage,
   LazyPublicContractView,
   LazyPublicHrEmployeeContractView,
+  LazyPublicRecruitmentContractView,
   LazyPublicFirmContractView,
   LazyPublicLegacyContractView,
   LazyPublicProfilePage,
@@ -151,8 +153,9 @@ const AppContentInner: React.FC = () => {
   const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
   const isContractPage = useMemo(() => {
     const path = location.pathname;
-    if (path.includes('/public-contract') || path.includes('/public-hr-contract') || path.includes('/public-firm-contract')) return false;
+    if (path.includes('/public-contract') || path.includes('/public-hr-contract') || path.includes('/public-firm-contract') || path.includes('/public-recruitment-contract')) return false;
     if (path.includes('/hr/employees/') && path.includes('/contract/')) return true;
+    if (path.includes('/hr/recruitment/') && path.includes('/contract/')) return true;
     if (path.includes('/reports/external-firms/') && path.includes('/contract/')) return true;
     return path.includes('/contract');
   }, [location.pathname]);
@@ -678,6 +681,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-proforma-legacy/:id/:token" element={<RouteSuspense><LazyPublicProformaLegacyViewPage /></RouteSuspense>} />
       <Route path="/public-contract/:contractId/:token" element={<RouteSuspense><LazyPublicContractView /></RouteSuspense>} />
       <Route path="/public-hr-contract/:contractId/:token" element={<RouteSuspense><LazyPublicHrEmployeeContractView /></RouteSuspense>} />
+      <Route path="/public-recruitment-contract/:contractId/:token" element={<RouteSuspense><LazyPublicRecruitmentContractView /></RouteSuspense>} />
       <Route path="/public-firm-contract/:contractId/:token" element={<RouteSuspense><LazyPublicFirmContractView /></RouteSuspense>} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
       <Route path="/payment/success" element={<RouteSuspense><LazyPaymentSuccessPage /></RouteSuspense>} />
@@ -1013,6 +1017,10 @@ const AppContentInner: React.FC = () => {
                     <Route
                       path="/hr/employees/:employeeId/contract/:contractId"
                       element={<RouteSuspense><LazyHrEmployeeContractPage key="hr-employee-contract" /></RouteSuspense>}
+                    />
+                    <Route
+                      path="/hr/recruitment/:userId/contract/:contractId"
+                      element={<RouteSuspense><LazyHrRecruitmentContractPage key="hr-recruitment-contract" /></RouteSuspense>}
                     />
                     <Route
                       path="/reports/external-firms/:firmId/contract/:contractId"

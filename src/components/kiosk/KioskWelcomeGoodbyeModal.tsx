@@ -10,6 +10,7 @@ const MEETING_DOT_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fb923c'];
 
 function formatClock(value: Date) {
   return value.toLocaleTimeString('en-GB', {
+    timeZone: 'Asia/Jerusalem',
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -153,10 +154,7 @@ export default function KioskWelcomeGoodbyeModal({
           </p>
 
           {remark ? (
-            <p
-              className="kiosk-success-footer-msg"
-              style={{ marginTop: '0.75rem', marginBottom: 0, opacity: 0.95 }}
-            >
+            <p className="kiosk-success-remark" role="status">
               {remark}
             </p>
           ) : null}

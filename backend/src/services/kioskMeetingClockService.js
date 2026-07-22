@@ -291,6 +291,11 @@ async function loadEmployeeMeetingsTodayForWelcome(employeeId) {
   }
 }
 
+function isClientSalesCalendarType(calendarType) {
+  const ct = String(calendarType || '').trim();
+  return ct === 'active_client' || ct === 'potential_client';
+}
+
 /**
  * @param {{ employeeId: number, action: 'in'|'out', sessionClockInAt?: string|null }} params
  */
@@ -322,35 +327,46 @@ async function resolveMeetingClockAdjustment({
     return { adjusted: false };
   }
 
+  const remark = buildRemark(action, chosen);
+  const meetingPayload = {
+    id: chosen.id,
+    calendarType: chosen.calendar_type,
+    location: chosen.meeting_location,
+    clientName: chosen.clientName,
+    startMinutes: chosen.startMinutes,
+    durationMinutes: chosen.durationMinutes,
+    time: chosen.meeting_time ? String(chosen.meeting_time).slice(0, 5) : null,
+  };
+
+  // Clock-out end-time adjustment: internal/external (staff) only — not active/potential client meetings.
+  if (action === 'out' && isClientSalesCalendarType(chosen.calendar_type)) {
+    return {
+      adjusted: false,
+      remark,
+      meeting: meetingPayload,
+    };
+  }
+
   let adjustedAt;
   if (action === 'in') {
     adjustedAt = jerusalemTodayAtMinutesToIso(chosen.startMinutes, 0);
   } else {
-    adjustedAt = jerusalemTodayAtMinutesToIso(chosen.startMinutes, chosen.durationMinutes);
+    // Clock-out at meeting end (start + duration) for internal/external meetings.
+    adjustedAt = jerusalemTodayAtMinutesToIso(chosen.endMinutes, 0);
     if (sessionClockInAt) {
       const sessionInMs = new Date(sessionClockInAt).getTime();
       const outMs = new Date(adjustedAt).getTime();
       if (Number.isFinite(sessionInMs) && Number.isFinite(outMs) && outMs < sessionInMs) {
-        return { adjusted: false };
+        return { adjusted: false, remark, meeting: meetingPayload };
       }
     }
   }
-
-  const remark = buildRemark(action, chosen);
 
   return {
     adjusted: true,
     adjustedAt,
     remark,
-    meeting: {
-      id: chosen.id,
-      calendarType: chosen.calendar_type,
-      location: chosen.meeting_location,
-      clientName: chosen.clientName,
-      startMinutes: chosen.startMinutes,
-      durationMinutes: chosen.durationMinutes,
-      time: chosen.meeting_time ? String(chosen.meeting_time).slice(0, 5) : null,
-    },
+    meeting: meetingPayload,
   };
 }
 
@@ -359,6 +375,7 @@ module.exports = {
   normalizeEmployeeId,
   normalizeAction,
   todayIsoJerusalem,
+  isClientSalesCalendarType,
   loadEmployeeMeetingsTodayDetailed,
   loadEmployeeMeetingsTodayForWelcome,
   resolveMeetingClockAdjustment,

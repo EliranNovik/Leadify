@@ -245,9 +245,12 @@ const ClockInEntryPage: React.FC = () => {
             'out',
             activeRecord.clock_in_time,
           );
-          if (adjustment.success && adjustment.adjusted && adjustment.adjustedAt) {
-            outAt = adjustment.adjustedAt;
-            outRemark = adjustment.remark || null;
+          if (adjustment.success) {
+            if (adjustment.remark) outRemark = adjustment.remark;
+            // End-time override only for internal/external (backend sets adjusted=true).
+            if (adjustment.adjusted && adjustment.adjustedAt) {
+              outAt = adjustment.adjustedAt;
+            }
           }
         } catch (adjErr) {
           console.warn('Meeting clock-out adjustment skipped:', adjErr);
@@ -294,9 +297,11 @@ const ClockInEntryPage: React.FC = () => {
       let inRemark: string | null = null;
       try {
         const adjustment = await fetchMeetingClockAdjustment(employeeId, 'in');
-        if (adjustment.success && adjustment.adjusted && adjustment.adjustedAt) {
-          inAt = adjustment.adjustedAt;
-          inRemark = adjustment.remark || null;
+        if (adjustment.success) {
+          if (adjustment.remark) inRemark = adjustment.remark;
+          if (adjustment.adjusted && adjustment.adjustedAt) {
+            inAt = adjustment.adjustedAt;
+          }
         }
       } catch (adjErr) {
         console.warn('Meeting clock-in adjustment skipped:', adjErr);

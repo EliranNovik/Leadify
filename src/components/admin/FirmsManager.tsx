@@ -18,6 +18,12 @@ export type AdminCrudEmbedProps = {
   onRecordSaved?: (record: { id: string; [key: string]: unknown }) => void;
   /** When set, pre-filters browse lists that support firm_id (e.g. create contact). */
   browseFirmId?: string;
+  /**
+   * HR Management add-user drawer: hide permission/audit/extern fields and
+   * default new users to active.
+   */
+  simplifiedHrAdd?: boolean;
+  createDefaults?: Record<string, unknown>;
 };
 
 const FirmsManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {

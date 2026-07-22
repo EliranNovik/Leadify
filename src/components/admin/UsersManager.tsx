@@ -48,8 +48,24 @@ const UserTableEmail: React.FC<{
   );
 };
 
+const HR_ADD_HIDDEN_FIELDS = new Set([
+  'role',
+  'is_active',
+  'is_staff',
+  'is_superuser',
+  'extern',
+  'extern_firm_id',
+  'extern_source_id',
+  'updated_by',
+  'created_at',
+  'updated_at',
+  'last_login',
+  'date_joined',
+]);
+
 const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
   const [employeeById, setEmployeeById] = useState<Record<string, ActiveStaffEmployee>>({});
+  const simplifiedHrAdd = Boolean(embed?.simplifiedHrAdd);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,8 +120,8 @@ const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
     [employeeById],
   );
 
-  const fields = useMemo(
-    () => [
+  const fields = useMemo(() => {
+    const base = [
       {
         name: 'email',
         label: 'Email',
@@ -276,9 +292,22 @@ const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
         hideInTable: true,
         readOnly: true,
       },
-    ],
-    [formatEmail],
-  );
+    ];
+
+    if (!simplifiedHrAdd) return base;
+
+    return base.map((field) =>
+      HR_ADD_HIDDEN_FIELDS.has(field.name) ? { ...field, hideInAdd: true } : field,
+    );
+  }, [formatEmail, simplifiedHrAdd]);
+
+  const createDefaults = useMemo(() => {
+    const defaults: Record<string, unknown> = { ...(embed?.createDefaults || {}) };
+    if (simplifiedHrAdd) {
+      defaults.is_active = true;
+    }
+    return Object.keys(defaults).length > 0 ? defaults : undefined;
+  }, [embed?.createDefaults, simplifiedHrAdd]);
 
   return (
     <GenericCRUDManager
@@ -296,6 +325,7 @@ const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
       onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
       onRecordCreated={embed?.onRecordCreated}
       onRecordSaved={embed?.onRecordSaved}
+      createDefaults={createDefaults}
     />
   );
 };

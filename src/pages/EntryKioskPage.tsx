@@ -823,12 +823,29 @@ const EntryKioskPage: React.FC = () => {
         `[data-meeting-id="${meetingsScrollAnchorId}"]`,
       ) as HTMLElement | null;
       if (!row || !wrap) return false;
+
+      // Prefer offset within the scroll container so we never clip the card top.
+      const wrapRect = wrap.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const alreadyVisible =
+        rowRect.top >= wrapRect.top + 4
+        && rowRect.bottom <= wrapRect.bottom - 4;
+      if (alreadyVisible) {
+        meetingsScrollDoneRef.current = true;
+        return true;
+      }
+
+      const topPad = 8;
       const delta =
-        row.getBoundingClientRect().top -
-        wrap.getBoundingClientRect().top +
-        wrap.scrollTop -
-        16;
-      wrap.scrollTo({ top: Math.max(0, delta), behavior: 'smooth' });
+        row.getBoundingClientRect().top
+        - wrap.getBoundingClientRect().top
+        + wrap.scrollTop
+        - topPad;
+      const maxScroll = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+      wrap.scrollTo({
+        top: Math.min(maxScroll, Math.max(0, delta)),
+        behavior: 'auto',
+      });
       meetingsScrollDoneRef.current = true;
       return true;
     };
@@ -1578,23 +1595,29 @@ const EntryKioskPage: React.FC = () => {
         .kiosk-meetings-screen {
           position: fixed;
           inset: 0;
-          z-index: 90;
+          z-index: 250;
           display: flex;
           flex-direction: column;
-          padding: max(0.85rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+          height: 100%;
+          height: 100dvh;
+          max-height: 100dvh;
+          padding: max(0.65rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(0.75rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
           background:
             radial-gradient(ellipse 70% 45% at 50% 0%, rgba(74, 110, 190, 0.32), transparent 58%),
             linear-gradient(180deg, #0a1630 0%, #050d1c 48%, #02060f 100%);
           color: #f8fafc;
           animation: kiosk-success-in 260ms ease-out;
+          overflow: hidden;
         }
         .kiosk-meetings-header {
-          flex-shrink: 0;
+          flex: 0 0 auto;
           display: flex;
           align-items: flex-start;
           justify-content: space-between;
           gap: 1rem;
-          margin-bottom: 0.85rem;
+          margin-bottom: 0.55rem;
+          padding-bottom: 0.35rem;
+          background: transparent;
         }
         .kiosk-meetings-title {
           font-size: clamp(1.5rem, 3.2vw, 2.1rem);
@@ -1618,12 +1641,16 @@ const EntryKioskPage: React.FC = () => {
           font-weight: 700;
         }
         .kiosk-meetings-list-wrap {
-          flex: 1 1 auto;
+          flex: 1 1 0%;
           min-height: 0;
-          overflow: auto;
+          max-height: none;
+          overflow-x: hidden;
+          overflow-y: auto;
+          overscroll-behavior: contain;
           scrollbar-width: none;
           -ms-overflow-style: none;
-          padding: 0.25rem 0 0.5rem;
+          padding: 0;
+          -webkit-overflow-scrolling: touch;
         }
         .kiosk-meetings-list-wrap::-webkit-scrollbar {
           display: none;
@@ -1634,6 +1661,7 @@ const EntryKioskPage: React.FC = () => {
           gap: 0.9rem;
           width: 100%;
           margin: 0 auto;
+          padding: 0.15rem 0 0.35rem;
         }
         .kiosk-meeting-card {
           position: relative;
@@ -1643,29 +1671,23 @@ const EntryKioskPage: React.FC = () => {
           gap: 1rem;
           padding: 1.1rem 1.15rem 1.15rem;
           border-radius: 20px;
-          border: 1.5px solid rgba(216, 177, 90, 0.28);
+          border: none;
+          outline: none;
           background: #121c32;
-          box-shadow:
-            0 12px 28px rgba(0, 0, 0, 0.35),
-            inset 0 1px 0 rgba(255, 255, 255, 0.06);
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+          scroll-margin-top: 0.5rem;
+          scroll-margin-bottom: 0.5rem;
         }
         .kiosk-meeting-card.is-current {
-          border-color: rgba(52, 211, 153, 0.65);
           background: #10261f;
-          box-shadow:
-            0 0 0 1px rgba(52, 211, 153, 0.25),
-            0 14px 32px rgba(0, 0, 0, 0.4);
+          box-shadow: 0 14px 32px rgba(0, 0, 0, 0.4);
         }
         .kiosk-meeting-card.is-upcoming {
-          border-color: rgba(96, 165, 250, 0.55);
           background: #101c32;
-          box-shadow:
-            0 0 0 1px rgba(96, 165, 250, 0.2),
-            0 12px 28px rgba(0, 0, 0, 0.35);
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
         }
         .kiosk-meeting-card.is-past {
           opacity: 0.7;
-          border-color: rgba(255, 255, 255, 0.12);
           background: #0e1628;
         }
         .kiosk-meeting-card-main {
@@ -1767,36 +1789,44 @@ const EntryKioskPage: React.FC = () => {
           color: #fff;
           line-height: 1.25;
           letter-spacing: -0.01em;
-          display: -webkit-box;
-          -webkit-box-orient: vertical;
-          -webkit-line-clamp: 2;
-          overflow: hidden;
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          gap: 0.4rem 0.65rem;
           word-break: break-word;
+        }
+        .kiosk-meeting-card-title-name {
+          min-width: 0;
         }
         .kiosk-meeting-card-meta {
           display: flex;
           flex-wrap: wrap;
           align-items: center;
-          gap: 0.45rem 0.75rem;
-          font-size: 0.88rem;
-          color: rgba(226, 232, 240, 0.78);
+          gap: 0.5rem 0.75rem;
+          color: rgba(226, 232, 240, 0.88);
         }
         .kiosk-meeting-card-lead-num {
+          font-size: 1.02rem;
           font-weight: 700;
           letter-spacing: 0.04em;
           color: var(--kiosk-gold);
+          flex-shrink: 0;
         }
         .kiosk-meeting-card-location {
           display: inline-flex;
           align-items: center;
-          gap: 0.35rem;
+          gap: 0.4rem;
           min-width: 0;
+          font-size: 1.12rem;
+          font-weight: 600;
+          line-height: 1.3;
+          color: rgba(248, 250, 252, 0.92);
         }
         .kiosk-meeting-card-location-icon {
-          width: 1rem;
-          height: 1rem;
+          width: 1.2rem;
+          height: 1.2rem;
           flex-shrink: 0;
-          opacity: 0.85;
+          opacity: 0.9;
         }
         .kiosk-meetings-participants-list {
           flex: 0 0 auto;
@@ -1861,11 +1891,29 @@ const EntryKioskPage: React.FC = () => {
           font-size: 1rem;
           padding: 2rem 1rem;
         }
-        .kiosk-meetings-back {
-          flex-shrink: 0;
-          margin-top: 0.85rem;
+        .kiosk-meetings-footer {
+          flex: 0 0 auto;
+          display: flex;
+          flex-direction: row;
+          align-items: center;
+          gap: 0.75rem;
+          margin-top: 0.65rem;
           width: 100%;
-          min-height: 3.4rem;
+          max-height: 3.5rem;
+        }
+        .kiosk-meetings-back {
+          flex: 1 1 auto;
+          flex-grow: 1;
+          flex-shrink: 1;
+          flex-basis: auto;
+          align-self: center;
+          box-sizing: border-box;
+          height: 3.1rem;
+          min-height: 3.1rem;
+          max-height: 3.1rem;
+          margin: 0;
+          width: auto;
+          padding: 0 1.25rem;
           border-radius: 18px;
           border: none;
           outline: none;
@@ -1873,6 +1921,7 @@ const EntryKioskPage: React.FC = () => {
           color: #fff;
           font-size: 1.05rem;
           font-weight: 700;
+          line-height: 1;
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -1889,17 +1938,20 @@ const EntryKioskPage: React.FC = () => {
         .kiosk-meetings-back-icon {
           width: 1.35rem;
           height: 1.35rem;
+          flex-shrink: 0;
         }
         .kiosk-meetings-idle-badge {
-          margin-top: 0.65rem;
+          margin: 0;
           align-self: center;
           position: relative;
           width: 2.75rem;
           height: 2.75rem;
+          min-width: 2.75rem;
+          min-height: 2.75rem;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          flex-shrink: 0;
+          flex: 0 0 auto;
         }
         .kiosk-meetings-idle-badge-value {
           font-size: 0.95rem;
@@ -2149,27 +2201,15 @@ const EntryKioskPage: React.FC = () => {
                             </span>
                           </div>
                         </div>
-                        {(m.isCurrent || m.isUpcoming) && (
-                          <div className="kiosk-meeting-card-status-row">
-                            {m.isCurrent ? (
-                              <span className="kiosk-meeting-card-live">
-                                <span className="kiosk-meeting-card-live-dot" aria-hidden />
-                                Now
-                              </span>
-                            ) : null}
-                            {m.isUpcoming ? (
-                              <span className="kiosk-meeting-card-soon">Coming up</span>
-                            ) : null}
-                          </div>
-                        )}
+                        <h3 className="kiosk-meeting-card-title">
+                          <span className="kiosk-meeting-card-title-name">{title}</span>
+                          {m.leadNumber ? (
+                            <span className="kiosk-meeting-card-lead-num">{m.leadNumber}</span>
+                          ) : null}
+                        </h3>
 
-                        <h3 className="kiosk-meeting-card-title">{title}</h3>
-
-                        {(m.leadNumber || m.location) && (
+                        {(m.location || m.isCurrent || m.isUpcoming) ? (
                           <div className="kiosk-meeting-card-meta">
-                            {m.leadNumber ? (
-                              <span className="kiosk-meeting-card-lead-num">{m.leadNumber}</span>
-                            ) : null}
                             {m.location ? (
                               <span className="kiosk-meeting-card-location">
                                 {m.isVirtual ? (
@@ -2186,8 +2226,17 @@ const EntryKioskPage: React.FC = () => {
                                 <span className="truncate">{m.location}</span>
                               </span>
                             ) : null}
+                            {m.isCurrent ? (
+                              <span className="kiosk-meeting-card-live">
+                                <span className="kiosk-meeting-card-live-dot" aria-hidden />
+                                Now
+                              </span>
+                            ) : null}
+                            {m.isUpcoming ? (
+                              <span className="kiosk-meeting-card-soon">Coming up</span>
+                            ) : null}
                           </div>
-                        )}
+                        ) : null}
                       </div>
 
                       {m.participants.length > 0 ? (
@@ -2220,42 +2269,44 @@ const EntryKioskPage: React.FC = () => {
             </div>
           )}
 
-          <button
-            type="button"
-            className="kiosk-meetings-back"
-            onClick={closeMeetingsScreen}
-            aria-label="Back to main screen"
-          >
-            <ArrowLeftIcon className="kiosk-meetings-back-icon" aria-hidden />
-            Back to main screen
-          </button>
-          <div
-            className="kiosk-meetings-idle-badge"
-            role="timer"
-            aria-label={`${meetingsIdleSecondsLeft} seconds until return to main screen`}
-          >
-            <svg className="absolute inset-0 -rotate-90" viewBox="0 0 44 44" aria-hidden>
-              <circle
-                cx="22"
-                cy="22"
-                r={meetingsIdleRingR}
-                fill="none"
-                stroke="rgba(255,255,255,0.12)"
-                strokeWidth="3"
-              />
-              <circle
-                cx="22"
-                cy="22"
-                r={meetingsIdleRingR}
-                fill="none"
-                stroke="var(--kiosk-gold)"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeDasharray={meetingsIdleRingC}
-                strokeDashoffset={meetingsIdleRingOffset}
-              />
-            </svg>
-            <span className="kiosk-meetings-idle-badge-value">{meetingsIdleSecondsLeft}</span>
+          <div className="kiosk-meetings-footer">
+            <button
+              type="button"
+              className="kiosk-meetings-back"
+              onClick={closeMeetingsScreen}
+              aria-label="Back to main screen"
+            >
+              <ArrowLeftIcon className="kiosk-meetings-back-icon" aria-hidden />
+              Back to main screen
+            </button>
+            <div
+              className="kiosk-meetings-idle-badge"
+              role="timer"
+              aria-label={`${meetingsIdleSecondsLeft} seconds until return to main screen`}
+            >
+              <svg className="absolute inset-0 -rotate-90" viewBox="0 0 44 44" aria-hidden>
+                <circle
+                  cx="22"
+                  cy="22"
+                  r={meetingsIdleRingR}
+                  fill="none"
+                  stroke="rgba(255,255,255,0.12)"
+                  strokeWidth="3"
+                />
+                <circle
+                  cx="22"
+                  cy="22"
+                  r={meetingsIdleRingR}
+                  fill="none"
+                  stroke="var(--kiosk-gold)"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeDasharray={meetingsIdleRingC}
+                  strokeDashoffset={meetingsIdleRingOffset}
+                />
+              </svg>
+              <span className="kiosk-meetings-idle-badge-value">{meetingsIdleSecondsLeft}</span>
+            </div>
           </div>
         </div>
       ) : null}

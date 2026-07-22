@@ -32,6 +32,12 @@ COMMENT ON COLUMN public.clock_in_kiosk_flash.action IS
 COMMENT ON COLUMN public.clock_in_kiosk_flash.remark IS
   'Optional meeting-aware welcome/goodbye line shown with the flash modal.';
 
+ALTER TABLE public.clock_in_kiosk_flash
+  ADD COLUMN IF NOT EXISTS adjusted_at timestamptz;
+
+COMMENT ON COLUMN public.clock_in_kiosk_flash.adjusted_at IS
+  'Meeting-adjusted clock in/out timestamp shown on the kiosk modal (meeting start on in, meeting end on out). NULL = use created_at / wall clock.';
+
 -- 4) Document that entry kiosk may backdate/forward-date clock times for meeting alignment
 COMMENT ON COLUMN public.employee_clock_in.clock_in_time IS
   'Timestamp when employee clocked in. Entry kiosk QR may set this to a past meeting start when the employee had a meeting earlier today.';

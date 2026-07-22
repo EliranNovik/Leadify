@@ -16,10 +16,14 @@ import PublicNeedAssistanceWidget from '../components/public/PublicNeedAssistanc
 import { OFFICE_EMAIL, OFFICE_PHONE_TEL, WHATSAPP_URL } from '../components/public/publicContactInfo';
 import toast from 'react-hot-toast';
 import { fetchEmployeeProfileById } from '../lib/fetchEmployeeProfile';
+import {
+  fetchRecruitmentUserById,
+  recruitmentUserDisplayName,
+} from '../lib/recruitmentDigitalContracts';
 
 /** Draft HR employee contracts should always follow the live admin template. */
 function isDraftEmployeeContract(contract: any): boolean {
-  if (!contract?.employee_id) return false;
+  if (!contract?.employee_id && !contract?.user_id) return false;
   return String(contract.status || 'draft').toLowerCase() !== 'signed';
 }
 
@@ -314,7 +318,16 @@ const PublicContractView: React.FC<{
   onKioskComplete?: () => void;
   employeeMode?: boolean;
   firmMode?: boolean;
-}> = ({ kioskMode = false, contractIdOverride, tokenOverride, onKioskComplete, employeeMode = false, firmMode = false }) => {
+  recruitmentMode?: boolean;
+}> = ({
+  kioskMode = false,
+  contractIdOverride,
+  tokenOverride,
+  onKioskComplete,
+  employeeMode = false,
+  firmMode = false,
+  recruitmentMode = false,
+}) => {
   const { contractId: routeContractId, token: routeToken } = useParams();
   const contractId = contractIdOverride ?? routeContractId;
   const token = tokenOverride ?? routeToken;
@@ -324,6 +337,9 @@ const PublicContractView: React.FC<{
   const isFirmContractMode =
     firmMode ||
     (typeof window !== 'undefined' && window.location.pathname.includes('/public-firm-contract/'));
+  const isRecruitmentContractMode =
+    recruitmentMode ||
+    (typeof window !== 'undefined' && window.location.pathname.includes('/public-recruitment-contract/'));
   const [contract, setContract] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [customPricing, setCustomPricing] = useState<any>(null);
@@ -664,6 +680,24 @@ const PublicContractView: React.FC<{
           if (Number.isFinite(empId) && empId > 0) {
             employeeDataPromise = fetchEmployeeProfileById(empId);
           }
+        } else if (contractData.user_id || isRecruitmentContractMode) {
+          const uId = String(contractData.user_id || '');
+          if (uId) {
+            employeeDataPromise = fetchRecruitmentUserById(uId).then((profile) => {
+              if (!profile) return null;
+              return {
+                id: profile.id,
+                official_name: recruitmentUserDisplayName(profile),
+                display_name: recruitmentUserDisplayName(profile),
+                email: profile.email,
+                phone: null,
+                mobile: null,
+                photo_url: null,
+                department_name: null,
+                __recruitment: true,
+              };
+            });
+          }
         } else if (contractData.external_firm_id || isFirmContractMode) {
           const firmId = String(contractData.external_firm_id || '');
           if (firmId) {
@@ -722,8 +756,9 @@ const PublicContractView: React.FC<{
             .then((profile) => {
               if (!profile) return;
               const name = profile.official_name || profile.display_name || contractData.contact_name || 'Employee';
+              const isRecruitment = Boolean(profile.__recruitment) || Boolean(contractData.user_id);
               setClient({
-                id: `employee_${profile.id}`,
+                id: isRecruitment ? `user_${profile.id}` : `employee_${profile.id}`,
                 name,
                 email: profile.email || contractData.contact_email || '',
                 phone: profile.phone || profile.mobile || '',
@@ -734,10 +769,12 @@ const PublicContractView: React.FC<{
               }
             })
             .catch((err) => {
-              console.error('Error fetching employee for public HR contract:', err);
+              console.error('Error fetching employee/user for public contract:', err);
               setClient({
-                id: `employee_${contractData.employee_id}`,
-                name: contractData.contact_name || 'Employee',
+                id: contractData.user_id
+                  ? `user_${contractData.user_id}`
+                  : `employee_${contractData.employee_id}`,
+                name: contractData.contact_name || (contractData.user_id ? 'User' : 'Employee'),
                 email: contractData.contact_email || '',
                 phone: '',
                 mobile: '',
@@ -1091,9 +1128,11 @@ const PublicContractView: React.FC<{
         .eq('id', contract.id)
         .single();
 
-      // For new leads (has client_id), directly update stage in leads and leads_leadstage tables
-      // Skip for HR employee / external firm digital contracts
-      if (updatedContract && (updatedContract.employee_id || updatedContract.external_firm_id)) {
+      // Skip for HR employee / recruitment / external firm digital contracts
+      if (
+        updatedContract &&
+        (updatedContract.employee_id || updatedContract.external_firm_id || updatedContract.user_id)
+      ) {
         console.log('📝 Public non-client contract signing: skipping lead stage update');
       } else if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
         console.log('📝 Public contract signing: Updating lead stage to "Client signed agreement" for new lead:', updatedContract.client_id);
@@ -1563,14 +1602,16 @@ const PublicContractView: React.FC<{
     textContent: string,
     savedAlign?: string | null
   ): { dir?: 'rtl' | 'ltr'; textAlign: React.CSSProperties['textAlign'] } => {
-    if (savedAlign === 'right') return { dir: 'rtl', textAlign: 'right' };
+    const rtl = isRTL(textContent);
+    // Editor uses dir="auto", so Hebrew often looked right-aligned even with textAlign left/null.
+    if (savedAlign === 'right' || (rtl && (savedAlign === 'left' || !savedAlign))) {
+      return { dir: 'rtl', textAlign: 'right' };
+    }
     if (savedAlign === 'left') return { dir: 'ltr', textAlign: 'left' };
     if (savedAlign === 'center') return { textAlign: 'center' };
     if (savedAlign === 'justify') {
-      const rtl = isRTL(textContent);
       return { dir: rtl ? 'rtl' : 'ltr', textAlign: 'justify' };
     }
-    const rtl = isRTL(textContent);
     return { dir: rtl ? 'rtl' : 'ltr', textAlign: rtl ? 'right' : 'left' };
   };
 

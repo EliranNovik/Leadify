@@ -90,6 +90,7 @@ import {
 import HrApprovalsPanel from '../components/hr/HrApprovalsPanel';
 import HrEmployeeAboutEditModal from '../components/hr/HrEmployeeAboutEditModal';
 import HrManagementSideRail from '../components/hr/HrManagementSideRail';
+import HrRecruitmentTab from '../components/hr/HrRecruitmentTab';
 import EmployeesManager from '../components/admin/EmployeesManager';
 import UsersManager from '../components/admin/UsersManager';
 import HrEmployeeAvatar from '../components/hr/HrEmployeeAvatar';
@@ -104,7 +105,16 @@ import EmployeeSalariesManager from '../components/admin/EmployeeSalariesManager
 import HrEntryKioskPanel from '../components/hr/HrEntryKioskPanel';
 import RMQMessagesPage from './RMQMessagesPage';
 
-type HubTab = 'overview' | 'approvals' | 'employees' | 'hours' | 'leave' | 'status' | 'salaries' | 'entry-kiosk';
+type HubTab =
+  | 'overview'
+  | 'approvals'
+  | 'employees'
+  | 'recruitment'
+  | 'hours'
+  | 'leave'
+  | 'status'
+  | 'salaries'
+  | 'entry-kiosk';
 type FileTab = 'about' | 'working-hours' | 'documents' | 'contribution';
 
 type HoursBoardEmployee = {
@@ -246,6 +256,7 @@ const HUB_TABS: Array<{ id: HubTab; label: string; icon: React.ElementType }> = 
   { id: 'overview', label: 'Overview', icon: HomeIcon },
   { id: 'approvals', label: 'Approvals', icon: ClipboardDocumentCheckIcon },
   { id: 'employees', label: 'Employees', icon: UsersIcon },
+  { id: 'recruitment', label: 'Recruitment', icon: IdentificationIcon },
   { id: 'hours', label: 'Working hours', icon: ClockIcon },
   { id: 'leave', label: 'Leave', icon: CalendarDaysIcon },
   { id: 'status', label: 'Status', icon: SignalIcon },
@@ -280,6 +291,7 @@ function parseHubTab(raw: string | null): HubTab {
   if (
     raw === 'approvals' ||
     raw === 'employees' ||
+    raw === 'recruitment' ||
     raw === 'hours' ||
     raw === 'leave' ||
     raw === 'status' ||
@@ -347,6 +359,7 @@ export default function HrManagementPage() {
   const [editEmployee, setEditEmployee] = useState<OrganizationEmployee | null>(null);
   const [addEmployeeDrawerOpen, setAddEmployeeDrawerOpen] = useState(false);
   const [addUserDrawerOpen, setAddUserDrawerOpen] = useState(false);
+  const [recruitmentRefreshKey, setRecruitmentRefreshKey] = useState(0);
   const [rmqOpen, setRmqOpen] = useState(false);
   const [rmqChatUserId, setRmqChatUserId] = useState<string | null>(null);
   const [leaveDocument, setLeaveDocument] = useState<{
@@ -1034,8 +1047,10 @@ export default function HrManagementPage() {
         embed={{
           addDrawerOpen: addUserDrawerOpen,
           onAddDrawerOpenChange: setAddUserDrawerOpen,
+          simplifiedHrAdd: true,
           onRecordCreated: () => {
             void loadHubData();
+            setRecruitmentRefreshKey((k) => k + 1);
           },
         }}
       />
@@ -2045,6 +2060,14 @@ export default function HrManagementPage() {
               />
             )}
           </div>
+        )}
+
+        {hubTab === 'recruitment' && (
+          <HrRecruitmentTab
+            isSuperUser={isSuperUser}
+            onAddUser={() => setAddUserDrawerOpen(true)}
+            refreshKey={recruitmentRefreshKey}
+          />
         )}
 
         {hubTab === 'hours' && (

@@ -245,7 +245,16 @@ export async function fetchClockInKioskRecentEvent(
         anyOk = true;
         const event = body.event ?? null;
         if (!event?.id) return;
-        if (!latest || String(event.at) > String(latest.at)) {
+        if (!latest) {
+          latest = event;
+          return;
+        }
+        const newer = String(event.at) > String(latest.at);
+        const sameMoment = String(event.at) === String(latest.at);
+        // Prefer the payload that carries the meeting-adjusted clock time.
+        const betterAdjusted =
+          sameMoment && Boolean(event.adjustedAt) && !latest.adjustedAt;
+        if (newer || betterAdjusted) {
           latest = event;
         }
       } catch (err) {
