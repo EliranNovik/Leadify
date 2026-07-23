@@ -62,6 +62,13 @@ export const LazyRescheduleMeetingPage = lazy(() => import('../pages/RescheduleM
 export const LazyContractPage = lazy(() => import('../components/ContractPage'));
 export const LazyHrEmployeeContractPage = lazy(() => import('../pages/HrEmployeeContractPage'));
 export const LazyHrRecruitmentContractPage = lazy(() => import('../pages/HrRecruitmentContractPage'));
+export const LazyHrRecruitmentCandidatePage = lazy(() => import('../pages/HrRecruitmentCandidatePage'));
+export const LazyRecruitmentScheduleMeetingPage = lazy(
+  () => import('../pages/RecruitmentScheduleMeetingPage'),
+);
+export const LazyRecruitmentRescheduleMeetingPage = lazy(
+  () => import('../pages/RecruitmentRescheduleMeetingPage'),
+);
 export const LazyExternalFirmContractPage = lazy(() => import('../pages/ExternalFirmContractPage'));
 export const LazyPublicProformaViewPage = lazy(() => import('../pages/PublicProformaViewPage'));
 export const LazyPublicProformaLegacyViewPage = lazy(() => import('../pages/PublicProformaLegacyViewPage'));

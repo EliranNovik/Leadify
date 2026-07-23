@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getFrontendBaseUrl } from './api';
+import { fetchTemplateContentSnapshot } from './contractContentSnapshot';
 import { fetchContractTypeBySlug } from './contractTypes';
 import { supabase } from './supabase';
 
@@ -96,6 +97,8 @@ export async function createFirmDigitalContract(params: {
   }
 
   const publicToken = uuidv4();
+  // Snapshot admin template body onto this contract so edits stay per-firm.
+  const customContent = await fetchTemplateContentSnapshot(params.templateId);
   const insertPayload = {
     external_firm_id: params.firmId,
     employee_id: null,
@@ -107,6 +110,7 @@ export async function createFirmDigitalContract(params: {
     public_token: publicToken,
     contact_name: params.contactName || null,
     contact_email: params.contactEmail || null,
+    custom_content: customContent,
     applicant_count: 1,
     custom_pricing: {
       applicant_count: 1,

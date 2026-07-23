@@ -2,88 +2,78 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
-  ChevronDownIcon,
   DocumentTextIcon,
-  EyeIcon,
   MagnifyingGlassIcon,
   PlusIcon,
-  ShareIcon,
   UserPlusIcon,
 } from '@heroicons/react/24/outline';
 import {
+  buildRecruitmentCandidatePath,
+  fetchRecruitmentListRows,
+  type RecruitmentListRow,
+} from '../../lib/recruitmentCandidates';
+import {
   buildRecruitmentContractEditorPath,
-  buildRecruitmentContractPublicUrl,
   createRecruitmentDigitalContract,
-  ensureRecruitmentContractPublicToken,
   fetchRecruitmentContractTemplates,
-  fetchRecruitmentDigitalContracts,
   fetchRecruitmentContractStatusByUserId,
-  fetchRecruitmentUsers,
   recruitmentUserDisplayName,
   type RecruitmentContractTemplateOption,
-  type RecruitmentDigitalContract,
   type RecruitmentUser,
 } from '../../lib/recruitmentDigitalContracts';
+import {
+  daysInStage,
+  fetchRecruitmentStages,
+  STUCK_STAGE_DAYS,
+  type RecruitmentStage,
+} from '../../lib/recruitmentStages';
+import HrEmployeeAvatar from './HrEmployeeAvatar';
 
 type Props = {
   isSuperUser: boolean;
   onAddUser: () => void;
-  /** Bump after creating a user so the list reloads. */
+  onAddEmployee?: (user?: RecruitmentUser) => void;
   refreshKey?: number;
 };
 
 type ActiveFilter = 'all' | 'active' | 'inactive';
 type ContractFilter = 'all' | 'pending' | 'signed' | 'without';
+type PipelineFilter = 'active' | 'all' | 'terminal';
 type ContractStatus = 'pending' | 'signed';
 
-function summarizeContractStatus(
-  rows: Array<{ status?: string | null; signed_at?: string | null }>,
-): ContractStatus | null {
-  if (!rows.length) return null;
-  const anySigned = rows.some(
-    (row) => String(row.status || '').toLowerCase() === 'signed' || Boolean(row.signed_at),
-  );
-  return anySigned ? 'signed' : 'pending';
-}
-
-function formatCreatedAt(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
-const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey = 0 }) => {
+const HrRecruitmentTab: React.FC<Props> = ({
+  isSuperUser,
+  onAddUser,
+  onAddEmployee,
+  refreshKey = 0,
+}) => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [users, setUsers] = useState<RecruitmentUser[]>([]);
+  const [rows, setRows] = useState<RecruitmentListRow[]>([]);
+  const [stages, setStages] = useState<RecruitmentStage[]>([]);
   const [contractStatusByUser, setContractStatusByUser] = useState<
     Record<string, ContractStatus>
   >({});
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>('all');
   const [contractFilter, setContractFilter] = useState<ContractFilter>('all');
-  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [stageFilter, setStageFilter] = useState<string>('all');
+  const [pipelineFilter, setPipelineFilter] = useState<PipelineFilter>('active');
   const [templates, setTemplates] = useState<RecruitmentContractTemplateOption[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
-  const [contractsByUser, setContractsByUser] = useState<Record<string, RecruitmentDigitalContract[]>>(
-    {},
-  );
-  const [contractsLoadingUserId, setContractsLoadingUserId] = useState<string | null>(null);
   const [creatingUserId, setCreatingUserId] = useState<string | null>(null);
 
-  const loadUsers = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rows, tmpl, statusByUser] = await Promise.all([
-        fetchRecruitmentUsers(),
+      const [listRows, stageRows, tmpl, statusByUser] = await Promise.all([
+        fetchRecruitmentListRows(),
+        fetchRecruitmentStages().catch(() => []),
         fetchRecruitmentContractTemplates().catch(() => []),
         fetchRecruitmentContractStatusByUserId().catch(() => ({})),
       ]);
-      setUsers(rows);
+      setRows(listRows);
+      setStages(stageRows);
       setContractStatusByUser(statusByUser);
       setTemplates(tmpl);
       setSelectedTemplateId((prev) => {
@@ -92,68 +82,51 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
       });
     } catch (error) {
       console.error('HrRecruitmentTab load:', error);
-      toast.error('Failed to load recruitment users');
-      setUsers([]);
-      setContractStatusByUser({});
+      toast.error('Failed to load recruitment pipeline');
+      setRows([]);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadUsers();
-  }, [loadUsers, refreshKey]);
+    void load();
+  }, [load, refreshKey]);
 
-  const filteredUsers = useMemo(() => {
+  const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return users.filter((u) => {
-      if (activeFilter === 'active' && u.is_active === false) return false;
-      if (activeFilter === 'inactive' && u.is_active !== false) return false;
+    return rows.filter(({ user, candidate }) => {
+      if (activeFilter === 'active' && user.is_active === false) return false;
+      if (activeFilter === 'inactive' && user.is_active !== false) return false;
 
-      const status = contractStatusByUser[u.id] ?? null;
+      const status = contractStatusByUser[user.id] ?? null;
       if (contractFilter === 'pending' && status !== 'pending') return false;
       if (contractFilter === 'signed' && status !== 'signed') return false;
       if (contractFilter === 'without' && status != null) return false;
 
+      const stage = candidate.stage || stages.find((s) => s.id === candidate.stage_id);
+      if (pipelineFilter === 'active' && stage?.is_terminal) return false;
+      if (pipelineFilter === 'terminal' && !stage?.is_terminal) return false;
+      if (stageFilter !== 'all' && String(candidate.stage_id) !== stageFilter) return false;
+
       if (!q) return true;
-      const name = recruitmentUserDisplayName(u).toLowerCase();
-      const email = String(u.email || '').toLowerCase();
-      return name.includes(q) || email.includes(q);
+      const name = recruitmentUserDisplayName(user).toLowerCase();
+      const email = String(user.email || '').toLowerCase();
+      const position = String(candidate.position_applied || '').toLowerCase();
+      return name.includes(q) || email.includes(q) || position.includes(q);
     });
-  }, [users, search, activeFilter, contractFilter, contractStatusByUser]);
+  }, [
+    rows,
+    search,
+    activeFilter,
+    contractFilter,
+    contractStatusByUser,
+    pipelineFilter,
+    stageFilter,
+    stages,
+  ]);
 
-  const loadContractsForUser = useCallback(async (userId: string) => {
-    setContractsLoadingUserId(userId);
-    try {
-      const rows = await fetchRecruitmentDigitalContracts(userId);
-      setContractsByUser((prev) => ({ ...prev, [userId]: rows }));
-      setContractStatusByUser((prev) => {
-        const next = { ...prev };
-        const status = summarizeContractStatus(rows);
-        if (status) next[userId] = status;
-        else delete next[userId];
-        return next;
-      });
-    } catch (error) {
-      console.error('Load recruitment contracts:', error);
-      toast.error('Failed to load contracts');
-      setContractsByUser((prev) => ({ ...prev, [userId]: [] }));
-    } finally {
-      setContractsLoadingUserId(null);
-    }
-  }, []);
-
-  const toggleExpand = (userId: string) => {
-    setExpandedUserId((prev) => {
-      const next = prev === userId ? null : userId;
-      if (next && contractsByUser[next] == null) {
-        void loadContractsForUser(next);
-      }
-      return next;
-    });
-  };
-
-  const handleCreate = async (user: RecruitmentUser) => {
+  const handleCreateContract = async (user: RecruitmentUser) => {
     if (!isSuperUser) {
       toast.error('Only superusers can create digital contracts');
       return;
@@ -171,39 +144,16 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
         contactEmail: user.email,
       });
       toast.success('Digital contract created');
-      setContractsByUser((prev) => ({
-        ...prev,
-        [user.id]: [created, ...(prev[user.id] || [])],
-      }));
       setContractStatusByUser((prev) => ({
         ...prev,
         [user.id]: prev[user.id] === 'signed' ? 'signed' : 'pending',
       }));
-      setExpandedUserId(user.id);
       navigate(buildRecruitmentContractEditorPath(user.id, created.id));
     } catch (error) {
-      console.error('Create recruitment contract failed:', error);
+      console.error(error);
       toast.error(error instanceof Error ? error.message : 'Failed to create contract');
     } finally {
       setCreatingUserId(null);
-    }
-  };
-
-  const handleShare = async (userId: string, contract: RecruitmentDigitalContract) => {
-    try {
-      const token = await ensureRecruitmentContractPublicToken(contract.id);
-      const url = buildRecruitmentContractPublicUrl(contract.id, token);
-      await navigator.clipboard.writeText(url);
-      toast.success('Signing link copied');
-      setContractsByUser((prev) => ({
-        ...prev,
-        [userId]: (prev[userId] || []).map((row) =>
-          row.id === contract.id ? { ...row, public_token: token } : row,
-        ),
-      }));
-    } catch (error) {
-      console.error('Share recruitment contract failed:', error);
-      toast.error('Failed to copy signing link');
     }
   };
 
@@ -214,8 +164,8 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
           <div>
             <h2 className="text-lg font-bold text-gray-900">Recruitment</h2>
             <p className="mt-0.5 text-sm text-gray-500">
-              Users without an employee profile (and not external). Create the same digital employee
-              contracts for hiring paperwork.
+              Candidate pipeline from application to hire. Click a row to open the candidate
+              dashboard.
             </p>
           </div>
           <div className="flex flex-wrap items-end gap-2">
@@ -242,7 +192,15 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
             ) : null}
             <button
               type="button"
-              className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+              className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 shadow-sm hover:bg-gray-50"
+              onClick={() => onAddEmployee?.()}
+            >
+              <PlusIcon className="h-4 w-4" />
+              Add employee
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700"
               onClick={onAddUser}
             >
               <UserPlusIcon className="h-4 w-4" />
@@ -259,7 +217,7 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
               <input
                 type="search"
                 className="w-full rounded-full border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-                placeholder="Search name or email…"
+                placeholder="Search name, email, position…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -267,9 +225,38 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium text-gray-600">Status</span>
+            <span className="text-sm font-medium text-gray-600">Pipeline</span>
             <select
-              className="min-w-[10rem] rounded-full border border-gray-200 bg-white px-3.5 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              className="min-w-[10rem] rounded-full border border-gray-200 bg-white px-3.5 py-2 text-sm"
+              value={pipelineFilter}
+              onChange={(e) => setPipelineFilter(e.target.value as PipelineFilter)}
+            >
+              <option value="active">Active only</option>
+              <option value="all">All stages</option>
+              <option value="terminal">Hired / Declined / Archived</option>
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-gray-600">Stage</span>
+            <select
+              className="min-w-[12rem] rounded-full border border-gray-200 bg-white px-3.5 py-2 text-sm"
+              value={stageFilter}
+              onChange={(e) => setStageFilter(e.target.value)}
+            >
+              <option value="all">All</option>
+              {stages.map((s) => (
+                <option key={s.id} value={String(s.id)}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-gray-600">User status</span>
+            <select
+              className="min-w-[10rem] rounded-full border border-gray-200 bg-white px-3.5 py-2 text-sm"
               value={activeFilter}
               onChange={(e) => setActiveFilter(e.target.value as ActiveFilter)}
             >
@@ -282,7 +269,7 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
           <label className="flex flex-col gap-1">
             <span className="text-sm font-medium text-gray-600">Contract</span>
             <select
-              className="min-w-[12rem] rounded-full border border-gray-200 bg-white px-3.5 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              className="min-w-[12rem] rounded-full border border-gray-200 bg-white px-3.5 py-2 text-sm"
               value={contractFilter}
               onChange={(e) => setContractFilter(e.target.value as ContractFilter)}
             >
@@ -300,28 +287,23 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
           <div className="flex justify-center py-16">
             <span className="loading loading-spinner loading-md text-emerald-600" />
           </div>
-        ) : filteredUsers.length === 0 ? (
+        ) : filteredRows.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-6 py-14 text-center text-sm text-gray-500">
             <DocumentTextIcon className="h-6 w-6 text-gray-300" />
             <p>
-              {users.length === 0
-                ? 'No recruitment users found.'
-                : 'No users match the current filters.'}
+              {rows.length === 0
+                ? 'No recruitment candidates found.'
+                : 'No candidates match the current filters.'}
             </p>
-            {users.length === 0 ? (
-              <>
-                <p className="text-xs text-gray-400">
-                  Create a user without linking an employee — they will appear here.
-                </p>
-                <button
-                  type="button"
-                  className="mt-2 inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
-                  onClick={onAddUser}
-                >
-                  <UserPlusIcon className="h-4 w-4" />
-                  Add user
-                </button>
-              </>
+            {rows.length === 0 ? (
+              <button
+                type="button"
+                className="mt-2 inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                onClick={onAddUser}
+              >
+                <UserPlusIcon className="h-4 w-4" />
+                Add user
+              </button>
             ) : null}
           </div>
         ) : (
@@ -329,179 +311,116 @@ const HrRecruitmentTab: React.FC<Props> = ({ isSuperUser, onAddUser, refreshKey 
             <table className="table w-full text-base">
               <thead>
                 <tr className="text-sm uppercase tracking-wider text-gray-500">
-                  <th className="bg-transparent font-semibold w-10" />
-                  <th className="bg-transparent font-semibold">User</th>
-                  <th className="bg-transparent font-semibold">Email</th>
-                  <th className="bg-transparent font-semibold text-center">Active</th>
+                  <th className="bg-transparent font-semibold">Candidate</th>
+                  <th className="bg-transparent font-semibold">Position</th>
+                  <th className="bg-transparent font-semibold">Stage</th>
+                  <th className="bg-transparent font-semibold">Referred by</th>
+                  {/* <th className="bg-transparent font-semibold">Recruiter</th> */}
+                  <th className="bg-transparent font-semibold text-center">Days</th>
                   <th className="bg-transparent font-semibold text-center">Contract</th>
-                  <th className="bg-transparent font-semibold">Created</th>
                   <th className="bg-transparent font-semibold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map((user) => {
-                  const expanded = expandedUserId === user.id;
-                  const contracts = contractsByUser[user.id];
-                  const contractsLoading = contractsLoadingUserId === user.id;
+                {filteredRows.map(({ user, candidate }) => {
+                  const stage =
+                    candidate.stage || stages.find((s) => s.id === candidate.stage_id);
+                  const days = daysInStage(candidate.stage_changed_at);
+                  const stuck = days >= STUCK_STAGE_DAYS && stage && !stage.is_terminal;
+                  const contractStatus = contractStatusByUser[user.id] ?? null;
                   const creating = creatingUserId === user.id;
                   const name = recruitmentUserDisplayName(user);
-                  const contractStatus = contractStatusByUser[user.id] ?? null;
                   return (
-                    <React.Fragment key={user.id}>
-                      <tr className="hover:bg-base-200/70">
-                        <td className="align-middle">
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm btn-circle"
-                            aria-label={expanded ? 'Collapse contracts' : 'Expand contracts'}
-                            onClick={() => toggleExpand(user.id)}
-                          >
-                            <ChevronDownIcon
-                              className={`h-5 w-5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                    <tr
+                      key={user.id}
+                      className="cursor-pointer hover:bg-base-200/70"
+                      onClick={() => navigate(buildRecruitmentCandidatePath(user.id))}
+                    >
+                      <td>
+                        <div className="font-medium text-gray-900 whitespace-nowrap">{name}</div>
+                        <div className="text-sm text-gray-500 whitespace-nowrap">
+                          {user.email || '—'}
+                        </div>
+                      </td>
+                      <td className="text-sm text-gray-700 whitespace-nowrap">
+                        {candidate.position_applied || '—'}
+                      </td>
+                      <td>
+                        <span
+                          className="text-sm font-semibold whitespace-nowrap"
+                          style={{ color: stage?.colour || '#374151' }}
+                        >
+                          {stage?.name || '—'}
+                        </span>
+                      </td>
+                      <td className="text-sm text-gray-700 whitespace-nowrap">
+                        {candidate.referred_by_employee_id && candidate.referred_by_name ? (
+                          <span className="inline-flex items-center gap-2">
+                            <HrEmployeeAvatar
+                              employeeId={candidate.referred_by_employee_id}
+                              name={candidate.referred_by_name}
+                              photoUrl={candidate.referred_by_photo_url}
+                              size="sm"
+                              className="!h-7 !w-7 !text-[10px]"
                             />
-                          </button>
-                        </td>
-                        <td className="font-medium text-gray-900 whitespace-nowrap">{name}</td>
-                        <td className="text-gray-700 whitespace-nowrap">{user.email || '—'}</td>
-                        <td className="text-center">
-                          {user.is_active === false ? (
-                            <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-500">
-                              Inactive
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                              Active
-                            </span>
-                          )}
-                        </td>
-                        <td className="text-center">
-                          {contractStatus === 'signed' ? (
-                            <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                              Signed
-                            </span>
-                          ) : contractStatus === 'pending' ? (
-                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">
-                              Pending
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-400">
-                              —
-                            </span>
-                          )}
-                        </td>
-                        <td className="text-sm text-gray-500 whitespace-nowrap">
-                          {user.created_at ? formatCreatedAt(user.created_at) : '—'}
-                        </td>
-                        <td className="text-right whitespace-nowrap">
-                          <div className="inline-flex items-center gap-1.5">
-                            {isSuperUser ? (
-                              <button
-                                type="button"
-                                className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-50"
-                                disabled={creating || !selectedTemplateId}
-                                onClick={() => void handleCreate(user)}
-                              >
-                                {creating ? (
-                                  <span className="loading loading-spinner loading-xs" />
-                                ) : (
-                                  <PlusIcon className="h-4 w-4" />
-                                )}
-                                Contract
-                              </button>
-                            ) : null}
+                            <span>{candidate.referred_by_name}</span>
+                          </span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      {/* <td className="text-sm text-gray-700 whitespace-nowrap">
+                        {candidate.recruiter_name || '—'}
+                      </td> */}
+                      <td
+                        className={`text-center text-sm font-medium ${
+                          stuck ? 'text-amber-700' : 'text-gray-700'
+                        }`}
+                      >
+                        {days}
+                      </td>
+                      <td className="text-center text-sm font-medium">
+                        {contractStatus === 'signed' ? (
+                          <span className="text-emerald-700">Signed</span>
+                        ) : contractStatus === 'pending' ? (
+                          <span className="text-amber-700">Pending</span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="text-right whitespace-nowrap">
+                        <div
+                          className="inline-flex items-center gap-1.5"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {onAddEmployee ? (
                             <button
                               type="button"
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => toggleExpand(user.id)}
+                              className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50"
+                              onClick={() => onAddEmployee(user)}
                             >
-                              Contracts
+                              <PlusIcon className="h-4 w-4" />
+                              Employee
                             </button>
-                          </div>
-                        </td>
-                      </tr>
-                      {expanded ? (
-                        <tr className="bg-base-200/40">
-                          <td colSpan={7} className="p-0">
-                            <div className="border-t border-base-300/60 px-4 py-3 sm:px-6">
-                              <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-base-content/70">
-                                <DocumentTextIcon className="h-4 w-4" />
-                                Digital contracts
-                              </div>
-                              {contractsLoading ? (
-                                <div className="flex justify-center py-6">
-                                  <span className="loading loading-spinner loading-sm text-primary" />
-                                </div>
-                              ) : !contracts || contracts.length === 0 ? (
-                                <p className="py-4 text-sm text-base-content/45">
-                                  No digital contracts yet for this user.
-                                </p>
+                          ) : null}
+                          {isSuperUser ? (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                              disabled={creating || !selectedTemplateId}
+                              onClick={() => void handleCreateContract(user)}
+                            >
+                              {creating ? (
+                                <span className="loading loading-spinner loading-xs" />
                               ) : (
-                                <table className="table w-full min-w-[28rem] text-sm">
-                                  <thead>
-                                    <tr>
-                                      <th>Template</th>
-                                      <th>Status</th>
-                                      <th>Created</th>
-                                      <th className="text-right">Actions</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {contracts.map((contract) => (
-                                      <tr key={contract.id}>
-                                        <td>{contract.template_name || 'Employee contract'}</td>
-                                        <td>
-                                          <span
-                                            className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${
-                                              contract.status === 'signed'
-                                                ? 'bg-emerald-100 text-emerald-800'
-                                                : 'bg-amber-100 text-amber-800'
-                                            }`}
-                                          >
-                                            {contract.status || 'draft'}
-                                          </span>
-                                        </td>
-                                        <td className="whitespace-nowrap text-base-content/60">
-                                          {contract.created_at
-                                            ? formatCreatedAt(contract.created_at)
-                                            : '—'}
-                                        </td>
-                                        <td className="text-right whitespace-nowrap">
-                                          <div className="inline-flex items-center gap-1">
-                                            <button
-                                              type="button"
-                                              className="btn btn-ghost btn-sm btn-circle"
-                                              title="Open editor"
-                                              onClick={() =>
-                                                navigate(
-                                                  buildRecruitmentContractEditorPath(
-                                                    user.id,
-                                                    contract.id,
-                                                  ),
-                                                )
-                                              }
-                                            >
-                                              <EyeIcon className="h-5 w-5" />
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="btn btn-ghost btn-sm btn-circle"
-                                              title="Copy signing link"
-                                              onClick={() => void handleShare(user.id, contract)}
-                                            >
-                                              <ShareIcon className="h-5 w-5" />
-                                            </button>
-                                          </div>
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
+                                <PlusIcon className="h-4 w-4" />
                               )}
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null}
-                    </React.Fragment>
+                              Contract
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   AcademicCapIcon,
@@ -93,6 +93,15 @@ import HrManagementSideRail from '../components/hr/HrManagementSideRail';
 import HrRecruitmentTab from '../components/hr/HrRecruitmentTab';
 import EmployeesManager from '../components/admin/EmployeesManager';
 import UsersManager from '../components/admin/UsersManager';
+import {
+  ensureRecruitmentCandidateForUser,
+} from '../lib/recruitmentCandidates';
+import { transferRecruitmentAssetsOnHire } from '../lib/recruitmentHireTransfer';
+import {
+  fetchRecruitmentStages,
+  getRecruitmentStageBySlug,
+  updateCandidateStageWithHistory,
+} from '../lib/recruitmentStages';
 import HrEmployeeAvatar from '../components/hr/HrEmployeeAvatar';
 import HrBonusesRoleBadge from '../components/hr/HrBonusesRoleBadge';
 import UnavailabilityTypeBadge from '../components/UnavailabilityTypeBadge';
@@ -358,6 +367,10 @@ export default function HrManagementPage() {
   const [loadingHub, setLoadingHub] = useState(true);
   const [editEmployee, setEditEmployee] = useState<OrganizationEmployee | null>(null);
   const [addEmployeeDrawerOpen, setAddEmployeeDrawerOpen] = useState(false);
+  const [addEmployeeDefaults, setAddEmployeeDefaults] = useState<Record<string, unknown> | undefined>(
+    undefined,
+  );
+  const pendingHireUserIdRef = useRef<string | null>(null);
   const [addUserDrawerOpen, setAddUserDrawerOpen] = useState(false);
   const [recruitmentRefreshKey, setRecruitmentRefreshKey] = useState(0);
   const [rmqOpen, setRmqOpen] = useState(false);
@@ -406,6 +419,37 @@ export default function HrManagementPage() {
     params.set('month', String(month));
     navigate(`/reports/hr-management/employees/${id}?${params.toString()}`);
   };
+
+  const openAddEmployeeDrawer = useCallback(
+    (user?: {
+      id: string;
+      full_name?: string | null;
+      first_name?: string | null;
+      last_name?: string | null;
+      email?: string | null;
+    }) => {
+      if (user?.id) {
+        const name =
+          String(user.full_name || '').trim() ||
+          [user.first_name, user.last_name]
+            .map((p) => String(p || '').trim())
+            .filter(Boolean)
+            .join(' ') ||
+          String(user.email || '').trim() ||
+          '';
+        pendingHireUserIdRef.current = String(user.id);
+        setAddEmployeeDefaults({
+          connected_user_id: String(user.id),
+          ...(name ? { display_name: name, official_name: name } : {}),
+        });
+      } else {
+        pendingHireUserIdRef.current = null;
+        setAddEmployeeDefaults(undefined);
+      }
+      setAddEmployeeDrawerOpen(true);
+    },
+    [],
+  );
 
   const loadHubData = useCallback(async () => {
     setLoadingHub(true);
@@ -1018,7 +1062,7 @@ export default function HrManagementPage() {
       pendingApprovals={pendingCount}
       hoursExporting={hoursExporting}
       onSelectTab={(id) => goHubTab(id as HubTab)}
-      onAddEmployee={() => setAddEmployeeDrawerOpen(true)}
+      onAddEmployee={() => openAddEmployeeDrawer()}
       onAddUser={() => setAddUserDrawerOpen(true)}
       onRefresh={() => {
         void loadHubData();
@@ -1037,9 +1081,69 @@ export default function HrManagementPage() {
       <EmployeesManager
         embed={{
           addDrawerOpen: addEmployeeDrawerOpen,
-          onAddDrawerOpenChange: setAddEmployeeDrawerOpen,
-          onRecordCreated: () => {
-            void loadHubData();
+          onAddDrawerOpenChange: (open) => {
+            setAddEmployeeDrawerOpen(open);
+            if (!open) {
+              setAddEmployeeDefaults(undefined);
+              pendingHireUserIdRef.current = null;
+            }
+          },
+          createDefaults: addEmployeeDefaults,
+          onRecordCreated: (record) => {
+            const linkedUserId = pendingHireUserIdRef.current;
+            const employeeId = record?.id != null ? Number(record.id) : NaN;
+            pendingHireUserIdRef.current = null;
+            void (async () => {
+              if (linkedUserId) {
+                try {
+                  const cand = await ensureRecruitmentCandidateForUser(linkedUserId);
+                  const stages = await fetchRecruitmentStages();
+                  const hired = getRecruitmentStageBySlug(stages, 'hired');
+                  if (hired) {
+                    await updateCandidateStageWithHistory({
+                      candidateId: cand.id,
+                      stageId: hired.id,
+                      note: 'Hired — employee profile created',
+                    });
+                  }
+
+                  if (Number.isFinite(employeeId) && employeeId > 0) {
+                    const transfer = await transferRecruitmentAssetsOnHire({
+                      userId: linkedUserId,
+                      employeeId,
+                    });
+                    const parts: string[] = [];
+                    if (transfer.contractsPromoted > 0) {
+                      parts.push(
+                        `${transfer.contractsPromoted} contract${transfer.contractsPromoted === 1 ? '' : 's'} moved`,
+                      );
+                    }
+                    if (transfer.documentsCopied > 0) {
+                      parts.push(
+                        `${transfer.documentsCopied} document${transfer.documentsCopied === 1 ? '' : 's'} copied`,
+                      );
+                    }
+                    if (parts.length) {
+                      toast.success(`Hire complete · ${parts.join(' · ')}`);
+                    }
+                    if (transfer.documentFailures > 0) {
+                      toast.error(
+                        `${transfer.documentFailures} document${transfer.documentFailures === 1 ? '' : 's'} failed to copy`,
+                      );
+                    }
+                  } else {
+                    toast.error('Could not copy documents/contracts — missing employee id');
+                  }
+                } catch (err) {
+                  console.error('Failed to finish recruitment hire handoff:', err);
+                  toast.error(
+                    'Employee created, but failed to finish hire handoff (stage / docs / contracts)',
+                  );
+                }
+              }
+              void loadHubData();
+              setRecruitmentRefreshKey((k) => k + 1);
+            })();
           },
         }}
       />
@@ -1048,9 +1152,19 @@ export default function HrManagementPage() {
           addDrawerOpen: addUserDrawerOpen,
           onAddDrawerOpenChange: setAddUserDrawerOpen,
           simplifiedHrAdd: true,
-          onRecordCreated: () => {
-            void loadHubData();
-            setRecruitmentRefreshKey((k) => k + 1);
+          onRecordCreated: (record) => {
+            void (async () => {
+              const newUserId = record?.id ? String(record.id) : null;
+              if (newUserId) {
+                try {
+                  await ensureRecruitmentCandidateForUser(newUserId);
+                } catch (err) {
+                  console.error('Failed to create recruitment candidate for user:', err);
+                }
+              }
+              void loadHubData();
+              setRecruitmentRefreshKey((k) => k + 1);
+            })();
           },
         }}
       />
@@ -1931,7 +2045,7 @@ export default function HrManagementPage() {
                 <button
                   type="button"
                   className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
-                  onClick={() => setAddEmployeeDrawerOpen(true)}
+                  onClick={() => openAddEmployeeDrawer()}
                 >
                   <PlusIcon className="h-4 w-4" />
                   Add employee
@@ -2066,6 +2180,7 @@ export default function HrManagementPage() {
           <HrRecruitmentTab
             isSuperUser={isSuperUser}
             onAddUser={() => setAddUserDrawerOpen(true)}
+            onAddEmployee={(user) => openAddEmployeeDrawer(user)}
             refreshKey={recruitmentRefreshKey}
           />
         )}

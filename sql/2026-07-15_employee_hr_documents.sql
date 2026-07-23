@@ -26,7 +26,8 @@ INSERT INTO public.hr_document_types (slug, label, sort_order) VALUES
   ('sick_leave', 'Sick leave', 90),
   ('form_106', 'Form 106', 100),
   ('equipment_checklist', 'Equipment checklist', 110),
-  ('system_access_codes', 'System access codes', 120)
+  ('system_access_codes', 'System access codes', 120),
+  ('other', 'Other', 130)
 ON CONFLICT (slug) DO UPDATE SET
   label = EXCLUDED.label,
   sort_order = EXCLUDED.sort_order,

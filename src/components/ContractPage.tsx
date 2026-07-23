@@ -45,53 +45,19 @@ import {
 import { buildEmployeeContractPublicUrl } from '../lib/employeeDigitalContracts';
 import { buildFirmContractPublicUrl } from '../lib/firmDigitalContracts';
 import { buildRecruitmentContractPublicUrl } from '../lib/recruitmentDigitalContracts';
-
-/** Draft HR employee contracts should always follow the live admin template. */
-function isDraftEmployeeContract(contract: any): boolean {
-  if (!contract?.employee_id) return false;
-  return String(contract.status || 'draft').toLowerCase() !== 'signed';
-}
-
-/** Draft external firm contracts should always follow the live admin template. */
-function isDraftFirmContract(contract: any): boolean {
-  if (!contract?.external_firm_id) return false;
-  return String(contract.status || 'draft').toLowerCase() !== 'signed';
-}
-
-function isDraftTemplateLinkedContract(contract: any): boolean {
-  return isDraftEmployeeContract(contract) || isDraftFirmContract(contract);
-}
+import {
+  cloneContractContent,
+  ensurePerEntityContractContentSnapshot,
+} from '../lib/contractContentSnapshot';
 
 function unwrapTemplateRelation(raw: any): any | null {
   if (!raw) return null;
   return Array.isArray(raw) ? raw[0] || null : raw;
 }
 
+/** Prefer per-contract body; fall back to template only when no instance content yet. */
 function resolveContractBodyContent(contract: any, template: any): any {
-  if (isDraftTemplateLinkedContract(contract)) {
-    return template?.content || contract?.custom_content || null;
-  }
   return contract?.custom_content || template?.content || null;
-}
-
-async function fetchFreshContractTemplate(templateId: string | number | null | undefined): Promise<any | null> {
-  if (templateId == null || templateId === '') return null;
-  const id = String(templateId);
-  const isLegacy = !Number.isNaN(Number(id)) && !id.includes('-');
-  if (isLegacy) {
-    const { data } = await supabase
-      .from('misc_contracttemplate')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-    return data || null;
-  }
-  const { data } = await supabase
-    .from('contract_templates')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  return data || null;
 }
 
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
@@ -2442,19 +2408,6 @@ const ContractPage: React.FC<{
         // Fetch template - check if it's a legacy template or new template
         let templateData = unwrapTemplateRelation(contractData.contract_templates);
 
-        // Draft template-linked contracts: always reload the live template so Admin edits sync.
-        if (isDraftTemplateLinkedContract(contractData) && contractData.template_id) {
-          const fresh = await fetchFreshContractTemplate(contractData.template_id);
-          if (fresh) templateData = fresh;
-          if (contractData.custom_content) {
-            await supabase
-              .from('contracts')
-              .update({ custom_content: null })
-              .eq('id', contractData.id);
-            contractData.custom_content = null;
-          }
-        }
-
         // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
         // This can happen if:
         // 1. template_id is set but join didn't work
@@ -2514,6 +2467,16 @@ const ContractPage: React.FC<{
               console.error('ContractPage: Error fetching legacy template from custom_pricing:', legacyTemplateError);
             }
           }
+        }
+
+        // Employee / recruitment / firm drafts must own their body in custom_content.
+        // Snapshot once for legacy rows that still only pointed at the admin template.
+        if (templateData?.content) {
+          contractData = await ensurePerEntityContractContentSnapshot({
+            contract: contractData,
+            templateContent: templateData.content,
+          });
+          setContract(contractData);
         }
 
         // Set the template if available
@@ -2845,9 +2808,30 @@ const ContractPage: React.FC<{
       // Check if the new template is a legacy template
       const isLegacyTemplate = !isNaN(Number(newTemplateId)) || newTemplateId.startsWith('legacy_');
 
+      // Load the chosen template body and snapshot it onto this contract only.
+      let fullTemplate: any = null;
+      if (isLegacyTemplate) {
+        const templateId = newTemplateId.toString().replace('legacy_', '');
+        const { data } = await supabase
+          .from('misc_contracttemplate')
+          .select('*')
+          .eq('id', templateId)
+          .single();
+        fullTemplate = data;
+      } else {
+        const { data } = await supabase
+          .from('contract_templates')
+          .select('*')
+          .eq('id', newTemplateId)
+          .single();
+        fullTemplate = data;
+      }
+
+      const contentSnapshot = cloneContractContent(fullTemplate?.content ?? null);
+
       // Prepare update data
       const updateData: any = {
-        custom_content: null // Clear custom_content so new template content is used
+        custom_content: contentSnapshot,
       };
 
       if (isLegacyTemplate) {
@@ -2900,30 +2884,7 @@ const ContractPage: React.FC<{
         has_custom_content: !!updatedContractData.custom_content
       });
 
-      // Fetch new template
-      const newTemplate = availableTemplates.find(t => t.id === newTemplateId);
-      if (newTemplate) {
-        // Fetch full template content
-        let fullTemplate;
-
-        if (isLegacyTemplate) {
-          const templateId = newTemplateId.toString().replace('legacy_', '');
-          const { data } = await supabase
-            .from('misc_contracttemplate')
-            .select('*')
-            .eq('id', templateId)
-            .single();
-          fullTemplate = data;
-        } else {
-          const { data } = await supabase
-            .from('contract_templates')
-            .select('*')
-            .eq('id', newTemplateId)
-            .single();
-          fullTemplate = data;
-        }
-
-        if (fullTemplate) {
+      if (fullTemplate) {
           // Process template to add IDs to placeholders
           let normalizedContent = normalizeTiptapContent(fullTemplate.content);
           const processedContent = normalizedContent && normalizedContent.type === 'doc' ?
@@ -2937,18 +2898,16 @@ const ContractPage: React.FC<{
 
           setTemplate(processedTemplate);
 
-          // Update contract state - clear custom_content so new template content is used
-          // Also update the contract with the new template_id/legacy_template_id
           const updatedContract = {
             ...updatedContractData,
-            custom_content: null // Clear custom_content to use new template
+            custom_content: contentSnapshot,
           };
           setContract(updatedContract);
 
-          // Update editor content
-          if (editor && processedTemplate.content) {
+          // Update editor content from the isolated snapshot
+          if (editor && contentSnapshot) {
             try {
-              editor.commands.setContent(processedTemplate.content);
+              editor.commands.setContent(contentSnapshot as any);
             } catch (error) {
               console.error('❌ Error setting editor content after template change:', error);
               editor.commands.setContent({ type: 'doc', content: [] });
@@ -2957,7 +2916,6 @@ const ContractPage: React.FC<{
 
           // Force re-render
           setRenderKey(prev => prev + 1);
-        }
       } else {
         // If template not found, still update contract state
         setContract(updatedContractData);
@@ -3030,7 +2988,7 @@ const ContractPage: React.FC<{
     let content = resolveContractBodyContent(contract, template);
 
     // If using custom_content, ensure it's preprocessed to add IDs to placeholders
-    if (content && contract.custom_content && !isDraftTemplateLinkedContract(contract)) {
+    if (content && contract.custom_content) {
       // Check if content has generic placeholders without IDs
       const contentStr = JSON.stringify(content);
       const hasGenericText = /\{\{text\}\}/.test(contentStr);
@@ -3040,7 +2998,7 @@ const ContractPage: React.FC<{
         console.log('🔧 Custom content has generic placeholders, preprocessing...');
         content = preprocessTemplatePlaceholders(content);
       }
-    } else if (content && isDraftTemplateLinkedContract(contract)) {
+    } else if (content && !contract.custom_content) {
       content = preprocessTemplatePlaceholders(content);
     }
 
@@ -3176,31 +3134,7 @@ const ContractPage: React.FC<{
     const paragraphCount = content?.content?.filter((node: any) => node.type === 'paragraph').length || 0;
     console.log(`📝 Paragraph count in saved content: ${paragraphCount}`);
 
-    // Draft template-linked contracts stay linked to the Admin template — persist body edits there
-    // so Documents / public pages stay in sync with template changes.
-    if (isDraftTemplateLinkedContract(contract) && contract.template_id) {
-      const { error: templateError } = await supabase
-        .from('contract_templates')
-        .update({ content })
-        .eq('id', contract.template_id);
-      if (templateError) {
-        console.error('Error saving template-linked contract template:', templateError);
-        toast.error('Failed to save template changes');
-        return;
-      }
-      await supabase
-        .from('contracts')
-        .update({ custom_content: null })
-        .eq('id', contract.id);
-      setTemplate((prev: any) => (prev ? { ...prev, content } : prev));
-      setContract((prev: any) => (prev ? { ...prev, custom_content: null } : prev));
-      setEditing(false);
-      setRenderKey((prev) => prev + 1);
-      toast.success('Template updated — all draft contracts using this template will use this content');
-      return;
-    }
-
-    // Update contract in database
+    // Always persist body on this contract instance — never write to admin templates from here.
     const { error } = await supabase
       .from('contracts')
       .update({ custom_content: content })
@@ -3208,6 +3142,7 @@ const ContractPage: React.FC<{
 
     if (error) {
       console.error('Error saving contract:', error);
+      toast.error('Failed to save contract');
       return;
     }
 
@@ -3217,6 +3152,7 @@ const ContractPage: React.FC<{
 
     // Force re-render to show saved content
     setRenderKey(prev => prev + 1);
+    toast.success('Contract saved');
   };
 
   const getCurrentContractSource = useCallback((): unknown => {
@@ -6106,16 +6042,13 @@ const ContractPage: React.FC<{
       setContract(refreshedContract);
       const joinedTemplate = unwrapTemplateRelation(refreshedContract.contract_templates);
       let templateData = joinedTemplate;
-      if (isDraftTemplateLinkedContract(refreshedContract) && refreshedContract.template_id) {
-        const fresh = await fetchFreshContractTemplate(refreshedContract.template_id);
-        if (fresh) templateData = fresh;
-        if (refreshedContract.custom_content) {
-          await supabase
-            .from('contracts')
-            .update({ custom_content: null })
-            .eq('id', refreshedContract.id);
-          refreshedContract.custom_content = null;
-          setContract({ ...refreshedContract, custom_content: null });
+      if (templateData?.content) {
+        const snapshotted = await ensurePerEntityContractContentSnapshot({
+          contract: refreshedContract,
+          templateContent: templateData.content,
+        });
+        if (snapshotted !== refreshedContract) {
+          setContract(snapshotted);
         }
       }
       if (templateData) {

@@ -20,32 +20,15 @@ import {
   fetchRecruitmentUserById,
   recruitmentUserDisplayName,
 } from '../lib/recruitmentDigitalContracts';
-
-/** Draft HR employee contracts should always follow the live admin template. */
-function isDraftEmployeeContract(contract: any): boolean {
-  if (!contract?.employee_id && !contract?.user_id) return false;
-  return String(contract.status || 'draft').toLowerCase() !== 'signed';
-}
-
-/** Draft external firm contracts should always follow the live admin template. */
-function isDraftFirmContract(contract: any): boolean {
-  if (!contract?.external_firm_id) return false;
-  return String(contract.status || 'draft').toLowerCase() !== 'signed';
-}
-
-function isDraftTemplateLinkedContract(contract: any): boolean {
-  return isDraftEmployeeContract(contract) || isDraftFirmContract(contract);
-}
+import { ensurePerEntityContractContentSnapshot } from '../lib/contractContentSnapshot';
 
 function unwrapTemplateRelation(raw: any): any | null {
   if (!raw) return null;
   return Array.isArray(raw) ? raw[0] || null : raw;
 }
 
+/** Prefer per-contract body; fall back to template only when no instance content yet. */
 function resolveContractBodyContent(contract: any, template: any): any {
-  if (isDraftTemplateLinkedContract(contract)) {
-    return template?.content || contract?.custom_content || null;
-  }
   return contract?.custom_content || template?.content || null;
 }
 
@@ -616,24 +599,6 @@ const PublicContractView: React.FC<{
         // STEP 2: Fetch template - handle both new templates (contract_templates) and legacy templates (misc_contracttemplate)
         let templateData = unwrapTemplateRelation(contractData.contract_templates);
 
-        // Draft employee contracts: always reload live template so Admin edits sync.
-        if (isDraftTemplateLinkedContract(contractData) && contractData.template_id) {
-          const { data: freshTemplate } = await supabase
-            .from('contract_templates')
-            .select('*')
-            .eq('id', contractData.template_id)
-            .maybeSingle();
-          if (freshTemplate) templateData = freshTemplate;
-          if (contractData.custom_content) {
-            await supabase
-              .from('contracts')
-              .update({ custom_content: null })
-              .eq('id', contractData.id);
-            contractData.custom_content = null;
-            setContract({ ...contractData, custom_content: null });
-          }
-        }
-
         // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
         let templatePromise: any = null;
 
@@ -668,6 +633,18 @@ const PublicContractView: React.FC<{
           const { data: legacyTemplate, error: legacyTemplateError } = await templatePromise;
           if (!legacyTemplateError && legacyTemplate) {
             templateData = legacyTemplate;
+          }
+        }
+
+        // Isolate per-entity drafts that still only pointed at the admin template.
+        if (templateData?.content) {
+          const snapshotted = await ensurePerEntityContractContentSnapshot({
+            contract: contractData,
+            templateContent: templateData.content,
+          });
+          if (snapshotted !== contractData) {
+            Object.assign(contractData, snapshotted);
+            setContract(snapshotted);
           }
         }
 

@@ -16,6 +16,7 @@ import {
   type StaffMeetingDocumentsContext,
 } from '../lib/staffMeetingDocuments';
 import { InternalMeetingTypeBadge } from '../lib/internalMeetingTypeBadge';
+import { recruitmentUserDisplayName } from '../lib/recruitmentDigitalContracts';
 import { isMeetingBookedViaClientPortal } from '../lib/clientBookingApi';
 import ClientPortalBookingBadge from './client-booking/ClientPortalBookingBadge';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
@@ -360,7 +361,7 @@ type MeetingParticipantEntry = {
 
 function getMeetingParticipantEntries(meeting: any, lead: any): MeetingParticipantEntry[] {
   const entries: MeetingParticipantEntry[] = [];
-  if (meeting.calendar_type === 'staff') return entries;
+  if (meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') return entries;
 
   if (meeting.calendar_type === 'active_client') {
     entries.push({
@@ -920,6 +921,14 @@ const CalendarPage: React.FC = () => {
       setStaffMeetingDbId(null);
       setStaffParticipantsLoading(true);
 
+      // Resolve DB meeting id: prefer numeric meetings.id (recruitment / already-hydrated rows), then teams_id
+      let dbMeetingId: number | null = null;
+      if (typeof m?.id === 'number' && Number.isFinite(m.id)) {
+        dbMeetingId = m.id;
+      } else if (typeof m?.id === 'string' && /^\d+$/.test(m.id)) {
+        dbMeetingId = Number(m.id);
+      }
+
       const outlookEventId = m?.teams_meeting_id || m?.teams_id || (typeof m?.id === 'string' && m.id.startsWith('staff-') ? m.id.replace('staff-', '') : null);
 
       if (outlookEventId) {
@@ -941,9 +950,7 @@ const CalendarPage: React.FC = () => {
         }
       }
 
-      // Resolve DB meeting id (teams_id preferred)
-      let dbMeetingId: number | null = null;
-      if (outlookEventId) {
+      if (!dbMeetingId && outlookEventId) {
         const byTeams = await supabase
           .from('meetings')
           .select('id')
@@ -964,7 +971,7 @@ const CalendarPage: React.FC = () => {
           const base = supabase
             .from('meetings')
             .select('id')
-            .eq('calendar_type', 'staff')
+            .in('calendar_type', ['staff', 'recruitment'])
             .eq('meeting_date', date)
             .eq('meeting_time', time)
             .eq('meeting_subject', subject)
@@ -2869,7 +2876,7 @@ const CalendarPage: React.FC = () => {
           meeting_subject, meeting_brief,
           meeting_manager, helper, meeting_location, manual_address,
           teams_id, teams_meeting_url, custom_link, custom_address,
-          meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
+          meeting_amount, meeting_currency, status, client_id, legacy_lead_id, user_id,
           attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
           scheduler, client_booking_timezone,
           internal_meeting_type_id,
@@ -2974,8 +2981,8 @@ const CalendarPage: React.FC = () => {
               if (isNaN(date.getTime())) return false;
 
               // Filter out meetings with inactive leads early
-              // Staff meetings are always allowed
-              if (meeting.calendar_type === 'staff') {
+              // Staff + recruitment meetings are always allowed (no CRM lead)
+              if (meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') {
                 return true;
               }
 
@@ -3140,6 +3147,39 @@ const CalendarPage: React.FC = () => {
                 lead: leadData
               };
             });
+
+          // Enrich recruitment meetings with candidate user display names
+          const recruitmentUserIds = [
+            ...new Set(
+              allProcessedMeetings
+                .filter((m: any) => m.calendar_type === 'recruitment' && m.user_id)
+                .map((m: any) => String(m.user_id)),
+            ),
+          ];
+          if (recruitmentUserIds.length > 0) {
+            const { data: recruitmentUsers } = await supabase
+              .from('users')
+              .select('id, first_name, last_name, full_name, email')
+              .in('id', recruitmentUserIds);
+            const userById = new Map(
+              (recruitmentUsers || []).map((u: any) => [String(u.id), u]),
+            );
+            allProcessedMeetings = allProcessedMeetings.map((m: any) => {
+              if (m.calendar_type !== 'recruitment') return m;
+              const u = userById.get(String(m.user_id));
+              const name = u ? recruitmentUserDisplayName(u) : 'Candidate';
+              return {
+                ...m,
+                meeting_amount: '--',
+                recruitment_user_name: name,
+                lead: {
+                  name: `Job Interview with (${name})`,
+                  lead_number: '',
+                  balance: '--',
+                },
+              };
+            });
+          }
         }
 
         if (fetchSeq !== meetingsFetchSeqRef.current) return;
@@ -3602,7 +3642,7 @@ const CalendarPage: React.FC = () => {
         if (selectedMeetingType === 'active' && m.calendar_type !== 'active_client') {
           return false;
         }
-        if (selectedMeetingType === 'staff' && m.calendar_type !== 'staff') {
+        if (selectedMeetingType === 'staff' && m.calendar_type !== 'staff' && m.calendar_type !== 'recruitment') {
           return false;
         }
         if (selectedMeetingType === 'paid') {
@@ -3622,8 +3662,8 @@ const CalendarPage: React.FC = () => {
     // Also exclude meetings that have a client_id or legacy_lead_id but no lead (because lead was filtered out as inactive)
     if (!globalSearchActive) {
     filtered = filtered.filter(m => {
-      // Staff meetings are always allowed (they don't have leads)
-      if (m.calendar_type === 'staff') {
+      // Staff + recruitment meetings are always allowed (they don't have leads)
+      if (m.calendar_type === 'staff' || m.calendar_type === 'recruitment') {
         return true;
       }
 
@@ -3912,12 +3952,35 @@ const CalendarPage: React.FC = () => {
     );
   };
 
-  /** Status column: pipeline stage for client meetings; internal type badge for staff meetings */
+  /** Status column: pipeline stage for client meetings; Staff type badge for staff/recruitment */
   const getCalendarMeetingStatusBadge = (meeting: any, lead: any) => {
+    if (meeting?.calendar_type === 'recruitment') {
+      return <InternalMeetingTypeBadge typeLabel="Staff" typeCode="staff" />;
+    }
     if (meeting?.calendar_type !== 'staff') {
       return getStageBadge(lead?.stage ?? meeting?.stage);
     }
     return renderInternalMeetingTypeBadge(meeting);
+  };
+
+  const getRecruitmentMeetingCandidateName = (meeting: any): string => {
+    const fromMeeting = String(meeting?.recruitment_user_name || '').trim();
+    if (fromMeeting) return fromMeeting;
+    const leadName = String(meeting?.lead?.name || '').trim();
+    const match = leadName.match(/^Job Interview with \((.+)\)$/i);
+    if (match?.[1]) return match[1];
+    return 'Candidate';
+  };
+
+  const renderRecruitmentMeetingLeadLabel = (meeting: any) => {
+    const name = getRecruitmentMeetingCandidateName(meeting);
+    return (
+      <div className="flex flex-col min-w-0">
+        <span className="text-black text-sm sm:text-base font-bold break-words line-clamp-2">
+          Job Interview with ({name})
+        </span>
+      </div>
+    );
   };
 
   // Helper to extract a valid Teams join link from various formats
@@ -5181,7 +5244,7 @@ const CalendarPage: React.FC = () => {
 
   const getCalendarTypeBadgeStyles = (calendarType?: string) => {
     if (!calendarType) return null;
-    if (calendarType === 'staff') {
+    if (calendarType === 'staff' || calendarType === 'recruitment') {
       return {
         label: 'IM',
         backgroundColor: '#FEF3C7', // amber-100
@@ -5753,7 +5816,7 @@ const CalendarPage: React.FC = () => {
         )}
         <div
           onClick={(e) => {
-            if (meeting.calendar_type === 'staff') {
+            if (meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') {
               e.stopPropagation();
               openStaffParticipantsModal(meeting);
               return;
@@ -5772,7 +5835,9 @@ const CalendarPage: React.FC = () => {
             <div className="flex items-start gap-2 flex-1 min-w-0">
               <div className="flex flex-col items-start gap-1 shrink-0">
                 <span className="text-sm md:text-base font-semibold text-gray-400 tracking-widest">
-                  {meeting.calendar_type === 'staff' ? (
+                  {meeting.calendar_type === 'recruitment' ? (
+                    'JOB'
+                  ) : meeting.calendar_type === 'staff' ? (
                     (() => {
                       const linkedLead = resolveStaffMeetingLinkedLead(meeting);
                       if (linkedLead?.lead_number) {
@@ -5799,7 +5864,11 @@ const CalendarPage: React.FC = () => {
                 ) : null}
               </div>
               <span className="mt-2 w-1 h-1 bg-gray-300 rounded-full shrink-0"></span>
-              <h3 className="text-sm md:text-base font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words line-clamp-2">{lead.name || meeting.name}</h3>
+              <h3 className="text-sm md:text-base font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words line-clamp-2">
+                {meeting.calendar_type === 'recruitment'
+                  ? `Job Interview with (${getRecruitmentMeetingCandidateName(meeting)})`
+                  : (lead.name || meeting.name)}
+              </h3>
               {/* Calendar type badge - next to client name */}
               {(() => {
                 const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
@@ -5860,7 +5929,9 @@ const CalendarPage: React.FC = () => {
             )}
 
             {/* Manager, Helper - show for potential_client and other non-active_client meetings */}
-            {meeting.calendar_type !== 'active_client' && meeting.calendar_type !== 'staff' && (
+            {meeting.calendar_type !== 'active_client' &&
+              meeting.calendar_type !== 'staff' &&
+              meeting.calendar_type !== 'recruitment' && (
               <>
                 {/* Manager */}
                 <div className="flex justify-between items-center py-1">
@@ -5887,8 +5958,8 @@ const CalendarPage: React.FC = () => {
               </>
             )}
 
-            {/* Staff Meeting Attendees */}
-            {meeting.calendar_type === 'staff' && (
+            {/* Staff / recruitment Meeting Attendees */}
+            {(meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') && (
               <div className="flex items-center justify-between gap-2 py-1">
                 <span className="text-sm md:text-base font-semibold text-gray-500">Attendees</span>
                 <div className="text-base md:text-lg font-bold text-gray-800 break-words text-right">
@@ -6126,7 +6197,7 @@ const CalendarPage: React.FC = () => {
             const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
             const hasCustomLink = !!meeting.custom_link;
             const hasCustomAddress = !!meeting.custom_address;
-            const isStaffMeeting = meeting.calendar_type === 'staff';
+            const isStaffMeeting = meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment';
             return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
           })() && (
             <>
@@ -6175,7 +6246,7 @@ const CalendarPage: React.FC = () => {
               <PlusIcon className="w-4 h-4" />
             </button>
           )}
-          {meeting.calendar_type !== 'staff' && (
+          {meeting.calendar_type !== 'staff' && meeting.calendar_type !== 'recruitment' && (
             <button
               className="btn btn-ghost btn-circle btn-sm text-primary"
               title={isExpanded ? 'Hide Details' : 'Show More'}
@@ -6190,8 +6261,8 @@ const CalendarPage: React.FC = () => {
           )}
         </div>
 
-        {/* Show edit button for staff meetings (at bottom) */}
-        {meeting.calendar_type === 'staff' && (
+        {/* Show edit button for staff / recruitment meetings (at bottom) */}
+        {(meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') && (
           <div className="mt-4 flex flex-row gap-2 justify-end items-center">
             <button
               className="btn btn-outline btn-warning btn-sm"
@@ -6339,7 +6410,7 @@ const CalendarPage: React.FC = () => {
     const lead = meeting.lead || {};
     const isBoxExpanded = isMeetingBoxExpanded(meeting.id);
     const participantEntries = getMeetingParticipantEntries(meeting, lead);
-    const hasCollapsibleBoxContent = meeting.calendar_type !== 'staff';
+    const hasCollapsibleBoxContent = meeting.calendar_type !== 'staff' && meeting.calendar_type !== 'recruitment';
     const expandedData = expandedMeetingData[meeting.id] || {};
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
@@ -6385,13 +6456,13 @@ const CalendarPage: React.FC = () => {
           id={`calendar-meeting-${meeting.id}`}
           className={`calendar-page-meeting-row relative z-0 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
-            if (meeting.calendar_type === 'staff') {
+            if (meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') {
               openStaffParticipantsModal(meeting);
               return;
             }
             if (meeting.lead) handleRowSelect(meeting.id);
           }}
-          style={{ cursor: meeting.calendar_type === 'staff' || meeting.lead ? 'pointer' : 'default' }}
+          style={{ cursor: meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment' || meeting.lead ? 'pointer' : 'default' }}
         >
           {/* TYPE Column - fixed-width icon slot so badge is always aligned */}
           <td className="w-10">
@@ -6421,7 +6492,9 @@ const CalendarPage: React.FC = () => {
           {/* Lead Column - Second */}
           <td className="font-bold">
             <div className="flex items-center gap-1 sm:gap-2">
-              {meeting.calendar_type === 'staff' ? (
+              {meeting.calendar_type === 'recruitment' ? (
+                renderRecruitmentMeetingLeadLabel(meeting)
+              ) : meeting.calendar_type === 'staff' ? (
                 <div className="flex flex-col items-start gap-1 min-w-0">
                   {renderStaffMeetingLeadLabel(meeting, lead)}
                   {isMeetingBookedViaClientPortal(meeting) ? (
@@ -6455,11 +6528,16 @@ const CalendarPage: React.FC = () => {
           </td>
           {/* Category Column */}
           <td className="text-xs sm:text-sm">
-            {getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}
+            {meeting.calendar_type === 'recruitment'
+              ? '—'
+              : (getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A')}
           </td>
           {/* Value Column - Third */}
           <td className="text-sm sm:text-base">
             {(() => {
+              if (meeting.calendar_type === 'recruitment' || meeting.calendar_type === 'staff') {
+                return '--';
+              }
               // Same logic as Clients.tsx balance badge
               const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
               let balanceValue: any;
@@ -6520,7 +6598,7 @@ const CalendarPage: React.FC = () => {
           </td>
           {/* Participants Column - Fourth: fixed width so employee avatars align across all rows */}
           <td className="w-20 min-w-[5rem]">
-            {meeting.calendar_type === 'staff' ? (
+            {meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment' ? (
               <div className="max-w-xs">
                 <div className="text-xs font-medium text-gray-700">Attendees:</div>
                 <div className="text-xs font-semibold text-gray-800 break-words whitespace-normal">
@@ -6544,7 +6622,11 @@ const CalendarPage: React.FC = () => {
               </div>
             )}
           </td>
-          <td className="text-sm sm:text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
+          <td className="text-sm sm:text-base">
+            {meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment'
+              ? (meeting.meeting_location || '—')
+              : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}
+          </td>
           <td>
             <div className="flex items-center justify-center">
               {getCalendarMeetingStatusBadge(meeting, lead)}
@@ -6595,7 +6677,7 @@ const CalendarPage: React.FC = () => {
                 const hasCustomAddress = !!meeting.custom_address;
 
                 // Also show for staff meetings (they have teams_meeting_url)
-                const isStaffMeeting = meeting.calendar_type === 'staff';
+                const isStaffMeeting = meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment';
 
                 return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
               })() && (
@@ -6622,11 +6704,11 @@ const CalendarPage: React.FC = () => {
                     )}
                   </>
                 )}
-              {/* Show edit button for internal (staff) meetings */}
-              {meeting.calendar_type === 'staff' && (
+              {/* Show edit button for internal (staff) / recruitment meetings */}
+              {(meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') && (
                 <button
                   className="btn btn-warning btn-xs sm:btn-sm"
-                  title="Edit Staff Meeting"
+                  title={meeting.calendar_type === 'recruitment' ? 'Edit Interview Meeting' : 'Edit Staff Meeting'}
                   onClick={(e) => {
                     e.stopPropagation();
                     setSelectedStaffMeeting(meeting);
@@ -6661,7 +6743,7 @@ const CalendarPage: React.FC = () => {
                   <PlusIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
               )}
-              {meeting.calendar_type !== 'staff' && hasCollapsibleBoxContent && (
+              {meeting.calendar_type !== 'staff' && meeting.calendar_type !== 'recruitment' && hasCollapsibleBoxContent && (
                 <button
                   className="btn btn-ghost btn-circle btn-xs sm:btn-sm text-primary"
                   title={isBoxExpanded ? 'Less' : 'More'}
@@ -6677,7 +6759,7 @@ const CalendarPage: React.FC = () => {
 
         {/* Expanded Details Row (staff uses participants modal, not inline expand) */}
         {
-          isBoxExpanded && meeting.calendar_type !== 'staff' && (
+          isBoxExpanded && meeting.calendar_type !== 'staff' && meeting.calendar_type !== 'recruitment' && (
             <tr className="calendar-page-meeting-row calendar-page-meeting-row--expanded-block">
               <td colSpan={10} className="p-0">
                 <div className="bg-base-100/50 p-4 border-t border-base-200/80">
@@ -8425,7 +8507,9 @@ const CalendarPage: React.FC = () => {
                                           <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 flex-shrink-0" />
                                         )}
                                         <div className="flex flex-col">
-                                          {meeting.calendar_type === 'staff' ? (
+                                          {meeting.calendar_type === 'recruitment' ? (
+                                            renderRecruitmentMeetingLeadLabel(meeting)
+                                          ) : meeting.calendar_type === 'staff' ? (
                                             renderStaffMeetingLeadLabel(meeting, meeting.lead || {})
                                           ) : (
                                             <>
@@ -9242,8 +9326,14 @@ const CalendarPage: React.FC = () => {
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 gap-y-2">
-                          <div className="text-lg font-semibold tracking-tight text-gray-900">Internal meeting</div>
-                          {renderInternalMeetingTypeBadge(m)}
+                          <div className="text-lg font-semibold tracking-tight text-gray-900">
+                            {m.calendar_type === 'recruitment' ? 'Job interview' : 'Internal meeting'}
+                          </div>
+                          {m.calendar_type === 'recruitment' ? (
+                            <InternalMeetingTypeBadge typeLabel="Staff" typeCode="staff" />
+                          ) : (
+                            renderInternalMeetingTypeBadge(m)
+                          )}
                         </div>
                         <div className="mt-1 truncate text-sm text-gray-500">{subtitle || '—'}</div>
                       </div>
@@ -9261,7 +9351,7 @@ const CalendarPage: React.FC = () => {
                             location: m.meeting_location ?? m.location ?? null,
                             link: m.teams_meeting_url || null,
                             brief: m.description || m.meeting_brief || null,
-                            calendar_type: 'staff',
+                            calendar_type: m.calendar_type === 'recruitment' ? 'recruitment' : 'staff',
                             custom_link: m.custom_link ?? null,
                             custom_address: m.custom_address ?? null,
                             manual_address: m.manual_address ?? null,

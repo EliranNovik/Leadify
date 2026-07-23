@@ -3207,21 +3207,20 @@ const LeadSearchPage: React.FC = () => {
       console.log('📋 New leads query base ready');
 
       // Resolve selected category labels → misc_category ids.
-      // Also expand any "(Main Category)" labels to ALL children of that main category,
-      // so Main Category USA picks never miss a USA subcategory due to label mismatch.
+      // Map selected "Subcategory (Main)" labels to category_ids only.
+      // Do NOT expand parenthetical main names — that made picking one subcategory
+      // behave like filtering the entire main category. Main Category dropdown already
+      // auto-selects all subcategory labels via handleMainCategorySelect.
       const resolveSelectedCategoryIds = async (
         selected: string[]
       ): Promise<{ categoryIds: number[]; unresolvedLabels: string[]; mainCategoriesExpanded: string[] }> => {
         const idSet = new Set<number>();
         const unresolvedLabels: string[] = [];
-        const mainNames = new Set<string>();
 
         for (const formattedCategoryName of selected) {
           const raw = formattedCategoryName.trim();
           if (!raw) continue;
           const stripped = raw.split(' (')[0].trim();
-          const parenMatch = raw.match(/\(([^)]+)\)\s*$/);
-          if (parenMatch?.[1]) mainNames.add(parenMatch[1].trim());
 
           const mapped =
             categoryNameToIdMapping.get(raw) ??
@@ -3233,46 +3232,10 @@ const LeadSearchPage: React.FC = () => {
           }
         }
 
-        const mainCategoriesExpanded: string[] = [];
-        const expandedMainNames = new Set<string>();
-        for (const mainName of mainNames) {
-          try {
-            const { data: mainRow, error: mainErr } = await supabase
-              .from('misc_maincategory')
-              .select('id, name')
-              .eq('name', mainName)
-              .maybeSingle();
-            if (mainErr || !mainRow?.id) {
-              console.warn('⚠️ [Category Resolve] Main category not found for expand:', mainName, mainErr);
-              continue;
-            }
-            const { data: kids, error: kidsErr } = await supabase
-              .from('misc_category')
-              .select('id, name')
-              .eq('parent_id', mainRow.id);
-            if (kidsErr) {
-              console.warn('⚠️ [Category Resolve] Failed loading children for', mainName, kidsErr);
-              continue;
-            }
-            (kids || []).forEach((k: { id: number }) => idSet.add(k.id));
-            expandedMainNames.add(mainName);
-            mainCategoriesExpanded.push(`${mainName} → ${(kids || []).length} children`);
-          } catch (err) {
-            console.warn('⚠️ [Category Resolve] Expand failed for', mainName, err);
-          }
-        }
-
-        // Labels under an expanded main are covered by child ids — don't text-fallback them.
-        const stillUnresolved = unresolvedLabels.filter((label) => {
-          const parenMatch = label.match(/\(([^)]+)\)\s*$/);
-          const main = parenMatch?.[1]?.trim();
-          return !(main && expandedMainNames.has(main));
-        });
-
         return {
           categoryIds: Array.from(idSet),
-          unresolvedLabels: stillUnresolved,
-          mainCategoriesExpanded,
+          unresolvedLabels,
+          mainCategoriesExpanded: [],
         };
       };
 

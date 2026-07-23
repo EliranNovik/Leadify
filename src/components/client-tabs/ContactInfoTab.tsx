@@ -4427,74 +4427,69 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
                       </div>
                     ) : (
-                      <div className="mt-4 grid grid-cols-[1fr_auto_1fr] gap-x-4">
-                        <div className="min-w-0 space-y-3">
-                          <div className="min-w-0">
-                            <div className="text-sm text-gray-400 mb-0.5">Mobile</div>
-                            <div className="flex items-center gap-0.5 min-w-0">
-                              {hasContactValue(contact.mobile) ? (
-                                <button
-                                  type="button"
-                                  className="text-base text-gray-800 font-medium truncate hover:text-primary text-left"
-                                  onClick={() => openContactPhone(contact.mobile, contact.name || '')}
-                                >
-                                  {displayContactValue(contact.mobile)}
-                                </button>
-                              ) : (
-                                <span className="text-base text-gray-800 font-medium">-</span>
-                              )}
-                              {renderContactCopyButton(contact.mobile, 'Mobile')}
-                            </div>
-                          </div>
-                          <div className="min-w-0">
-                            <div className="text-sm text-gray-400 mb-0.5">Email</div>
-                            <div className="flex items-center gap-0.5 min-w-0">
-                              {hasContactValue(contact.email) ? (
-                                <a
-                                  href={`mailto:${contact.email}`}
-                                  className="text-base text-gray-800 font-medium truncate hover:text-primary"
-                                >
-                                  {displayContactValue(contact.email)}
-                                </a>
-                              ) : (
-                                <span className="text-base text-gray-800 font-medium">-</span>
-                              )}
-                              {renderContactCopyButton(contact.email, 'Email')}
-                            </div>
-                          </div>
-                          <div className="min-w-0">
-                            <div className="text-sm text-gray-400 mb-0.5">Country</div>
-                            <div className="text-base text-gray-800 font-medium truncate">
-                              {contact.country_id
-                                ? countries.find((c) => c.id === contact.country_id)?.name || '-'
-                                : '-'}
-                            </div>
+                      <div className="mt-4 space-y-3">
+                        <div className="min-w-0">
+                          <div className="text-sm text-gray-400 mb-0.5">Mobile</div>
+                          <div className="flex items-center gap-0.5 min-w-0">
+                            {hasContactValue(contact.mobile) ? (
+                              <button
+                                type="button"
+                                className="text-base text-gray-800 font-medium truncate hover:text-primary text-left"
+                                onClick={() => openContactPhone(contact.mobile, contact.name || '')}
+                              >
+                                {displayContactValue(contact.mobile)}
+                              </button>
+                            ) : (
+                              <span className="text-base text-gray-800 font-medium">-</span>
+                            )}
+                            {renderContactCopyButton(contact.mobile, 'Mobile')}
                           </div>
                         </div>
-                        <div className="w-px bg-[#e8eaf0] self-stretch" aria-hidden />
-                        <div className="min-w-0 space-y-3">
-                          <div className="min-w-0">
-                            <div className="text-sm text-gray-400 mb-0.5">Phone</div>
-                            <div className="flex items-center gap-0.5 min-w-0">
-                              {hasContactValue(contact.phone) ? (
-                                <button
-                                  type="button"
-                                  className="text-base text-gray-800 font-medium truncate hover:text-primary text-left"
-                                  onClick={() => openContactPhone(contact.phone, contact.name || '')}
-                                >
-                                  {displayContactValue(contact.phone)}
-                                </button>
-                              ) : (
-                                <span className="text-base text-gray-800 font-medium">-</span>
-                              )}
-                              {renderContactCopyButton(contact.phone, 'Phone')}
-                            </div>
+                        <div className="min-w-0">
+                          <div className="text-sm text-gray-400 mb-0.5">Phone</div>
+                          <div className="flex items-center gap-0.5 min-w-0">
+                            {hasContactValue(contact.phone) ? (
+                              <button
+                                type="button"
+                                className="text-base text-gray-800 font-medium truncate hover:text-primary text-left"
+                                onClick={() => openContactPhone(contact.phone, contact.name || '')}
+                              >
+                                {displayContactValue(contact.phone)}
+                              </button>
+                            ) : (
+                              <span className="text-base text-gray-800 font-medium">-</span>
+                            )}
+                            {renderContactCopyButton(contact.phone, 'Phone')}
                           </div>
-                          <div className="min-w-0">
-                            <div className="text-sm text-gray-400 mb-0.5">Passport</div>
-                            <div className="text-base text-gray-800 font-medium truncate">
-                              {displayContactValue(contact.id_passport)}
-                            </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm text-gray-400 mb-0.5">Email</div>
+                          <div className="flex items-center gap-0.5 min-w-0">
+                            {hasContactValue(contact.email) ? (
+                              <a
+                                href={`mailto:${contact.email}`}
+                                className="text-base text-gray-800 font-medium truncate hover:text-primary"
+                              >
+                                {displayContactValue(contact.email)}
+                              </a>
+                            ) : (
+                              <span className="text-base text-gray-800 font-medium">-</span>
+                            )}
+                            {renderContactCopyButton(contact.email, 'Email')}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm text-gray-400 mb-0.5">Passport</div>
+                          <div className="text-base text-gray-800 font-medium truncate">
+                            {displayContactValue(contact.id_passport)}
+                          </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm text-gray-400 mb-0.5">Country</div>
+                          <div className="text-base text-gray-800 font-medium truncate">
+                            {contact.country_id
+                              ? countries.find((c) => c.id === contact.country_id)?.name || '-'
+                              : '-'}
                           </div>
                         </div>
                       </div>

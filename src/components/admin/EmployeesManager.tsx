@@ -108,16 +108,37 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       try {
         const { data, error } = await supabase
           .from('users')
-          .select('id, email, first_name, last_name, is_active')
+          .select('id, email, first_name, last_name, full_name, is_active, employee_id')
           .order('email');
 
         if (error) {
           console.error('Error fetching users:', error);
         } else {
-          const userOptions = data?.map(user => ({
-            value: user.id.toString(),
-            label: `${user.email}${user.first_name || user.last_name ? ` (${user.first_name || ''} ${user.last_name || ''})`.trim() : ''}${user.is_active ? '' : ' [INACTIVE]'}`
-          })) || [];
+          const userOptions = (data || []).map((user) => {
+            const nameParts = [user.first_name, user.last_name]
+              .map((p) => String(p || '').trim())
+              .filter(Boolean);
+            const displayName =
+              String(user.full_name || '').trim() ||
+              nameParts.join(' ') ||
+              '';
+            const linked =
+              user.employee_id != null && String(user.employee_id).trim() !== ''
+                ? ` [linked emp #${user.employee_id}]`
+                : '';
+            const inactive = user.is_active === false ? ' [INACTIVE]' : '';
+            return {
+              value: String(user.id),
+              label: `${user.email || 'No email'}${displayName ? ` (${displayName})` : ''}${linked}${inactive}`,
+            };
+          });
+          // Prefer unlinked users first so recruitment users are easy to pick.
+          userOptions.sort((a, b) => {
+            const aLinked = a.label.includes('[linked emp');
+            const bLinked = b.label.includes('[linked emp');
+            if (aLinked !== bLinked) return aLinked ? 1 : -1;
+            return a.label.localeCompare(b.label);
+          });
           setUsers(userOptions);
         }
       } catch (error) {
@@ -163,21 +184,16 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       ),
     },
     {
-      name: 'user_id',
+      name: 'connected_user_id',
       label: 'Connected User',
       type: 'select' as const,
       required: false,
       options: users,
-      placeholder: 'Select a user to connect (optional)',
+      placeholder: 'Select an existing user to link (optional)',
       hideInTable: true,
-      hideInEdit: true, // Only show in ADD form, not EDIT form
-      // Temporarily disabled foreign key lookup due to data type mismatch
-      // user_id contains integers but users.id is UUID
-      // foreignKey: {
-      //   table: 'users',
-      //   displayField: 'email',
-      //   valueField: 'id'
-      // }
+      hideInAdd: false,
+      hideInEdit: false,
+      searchableSelect: true,
     },
     {
       name: 'official_name',
@@ -401,6 +417,7 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
       onRecordCreated={embed?.onRecordCreated}
       onRecordSaved={embed?.onRecordSaved}
+      createDefaults={embed?.createDefaults}
     />
   );
 };

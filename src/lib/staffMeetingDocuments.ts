@@ -181,6 +181,11 @@ export function resolveStaffMeetingDocumentsContext(
     meeting?.meeting_subject || meeting?.subject || meeting?.lead?.name || 'Internal meeting',
   ).trim();
 
+  // Recruitment interviews never use lead document buckets.
+  if (meeting?.calendar_type === 'recruitment') {
+    return { mode: 'meeting', staffMeetingId: dbMeetingId, meetingTitle: title || 'Job Interview' };
+  }
+
   const lead = meeting?.lead;
   const legacyLead = meeting?.legacy_lead;
 

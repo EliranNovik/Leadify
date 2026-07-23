@@ -48,6 +48,9 @@ import {
   LazyContractPage,
   LazyHrEmployeeContractPage,
   LazyHrRecruitmentContractPage,
+  LazyHrRecruitmentCandidatePage,
+  LazyRecruitmentScheduleMeetingPage,
+  LazyRecruitmentRescheduleMeetingPage,
   LazyExternalFirmContractPage,
   LazyCreateNewLead,
   LazyCTIPopupPage,
@@ -1021,6 +1024,18 @@ const AppContentInner: React.FC = () => {
                     <Route
                       path="/hr/recruitment/:userId/contract/:contractId"
                       element={<RouteSuspense><LazyHrRecruitmentContractPage key="hr-recruitment-contract" /></RouteSuspense>}
+                    />
+                    <Route
+                      path="/hr/recruitment/:userId/schedule-meeting"
+                      element={<RouteSuspense><LazyRecruitmentScheduleMeetingPage key="hr-recruitment-schedule" /></RouteSuspense>}
+                    />
+                    <Route
+                      path="/hr/recruitment/:userId/reschedule-meeting/:meetingId"
+                      element={<RouteSuspense><LazyRecruitmentRescheduleMeetingPage key="hr-recruitment-reschedule" /></RouteSuspense>}
+                    />
+                    <Route
+                      path="/hr/recruitment/:userId"
+                      element={<RouteSuspense><LazyHrRecruitmentCandidatePage key="hr-recruitment-candidate" /></RouteSuspense>}
                     />
                     <Route
                       path="/reports/external-firms/:firmId/contract/:contractId"
