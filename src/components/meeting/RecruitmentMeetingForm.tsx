@@ -18,6 +18,10 @@ import {
   type FreeMeetingParticipant,
   type MeetingParticipantsSelection,
 } from '../../lib/meetingParticipants';
+import {
+  fetchRecruitmentCandidateContact,
+  withRecruitmentCandidateParticipant,
+} from '../../lib/recruitmentMeetingParticipants';
 import { loginRequest } from '../../msalConfig';
 
 type Props = {
@@ -63,6 +67,7 @@ const RecruitmentMeetingForm: React.FC<Props> = ({
   const [participants, setParticipants] = useState<MeetingParticipantsSelection>(emptySelection);
   const [freeDraft, setFreeDraft] = useState<FreeMeetingParticipant>(emptyFree);
   const [loadingParticipants, setLoadingParticipants] = useState(false);
+  const [candidateContactReady, setCandidateContactReady] = useState(false);
 
   useEffect(() => {
     if (meeting) {
@@ -75,29 +80,57 @@ const RecruitmentMeetingForm: React.FC<Props> = ({
   }, [meeting]);
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const contact = await fetchRecruitmentCandidateContact(userId, candidateName);
+        if (cancelled) return;
+        if (mode === 'schedule' && !meeting?.id) {
+          setParticipants((prev) => withRecruitmentCandidateParticipant(prev, contact));
+        }
+      } catch (err) {
+        console.error('Failed to load candidate contact for participants:', err);
+      } finally {
+        if (!cancelled) setCandidateContactReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, candidateName, mode, meeting?.id]);
+
+  useEffect(() => {
     if (!meeting?.id || mode !== 'reschedule') {
-      setParticipants(emptySelection());
-      setFreeDraft(emptyFree());
+      if (mode !== 'reschedule') {
+        setFreeDraft(emptyFree());
+      }
       return;
     }
     let cancelled = false;
     setLoadingParticipants(true);
-    fetchMeetingParticipants(meeting.id)
-      .then((rows) => {
+    (async () => {
+      try {
+        const [rows, contact] = await Promise.all([
+          fetchMeetingParticipants(meeting.id),
+          fetchRecruitmentCandidateContact(userId, candidateName),
+        ]);
         if (cancelled) return;
-        setParticipants(selectionFromLoadedParticipants(rows));
-      })
-      .catch((err) => {
+        const selection = withRecruitmentCandidateParticipant(
+          selectionFromLoadedParticipants(rows),
+          contact,
+        );
+        setParticipants(selection);
+      } catch (err) {
         console.error(err);
         if (!cancelled) toast.error('Failed to load participants');
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoadingParticipants(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [meeting?.id, mode]);
+  }, [meeting?.id, mode, userId, candidateName]);
 
   const createTeamsLinkIfPossible = async (): Promise<string | null> => {
     if (location !== 'Teams' || !account) return null;
@@ -252,7 +285,7 @@ const RecruitmentMeetingForm: React.FC<Props> = ({
         />
       </label>
 
-      {loadingParticipants ? (
+      {loadingParticipants || !candidateContactReady ? (
         <div className="flex justify-center py-6">
           <span className="loading loading-spinner loading-md text-emerald-600" />
         </div>

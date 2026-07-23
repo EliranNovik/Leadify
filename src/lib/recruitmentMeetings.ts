@@ -4,6 +4,10 @@ import {
   type MeetingParticipantsSelection,
   type FreeMeetingParticipant,
 } from './meetingParticipants';
+import {
+  fetchRecruitmentCandidateContact,
+  withRecruitmentCandidateParticipant,
+} from './recruitmentMeetingParticipants';
 
 export type RecruitmentMeeting = {
   id: number;
@@ -95,9 +99,24 @@ export async function createRecruitmentMeeting(params: {
   if (error) throw error;
   const meeting = mapMeetingRow(data);
 
-  if (params.participants) {
-    await replaceMeetingParticipants(meeting.id, params.participants, params.freeDraft);
-  }
+  const contact = await fetchRecruitmentCandidateContact(
+    params.userId,
+    params.candidateName,
+  );
+  const baseSelection: MeetingParticipantsSelection = params.participants || {
+    employeeIds: [],
+    firmContactIds: [],
+    freeParticipants: [],
+  };
+  const selectionWithCandidate = withRecruitmentCandidateParticipant(
+    baseSelection,
+    contact,
+  );
+  await replaceMeetingParticipants(
+    meeting.id,
+    selectionWithCandidate,
+    params.freeDraft,
+  );
 
   return meeting;
 }
@@ -139,7 +158,18 @@ export async function updateRecruitmentMeeting(
   }
 
   if (participants) {
-    await replaceMeetingParticipants(meetingId, participants, freeDraft);
+    const { data: meetingRow } = await supabase
+      .from('meetings')
+      .select('user_id')
+      .eq('id', meetingId)
+      .maybeSingle();
+    const userId = meetingRow?.user_id ? String(meetingRow.user_id) : null;
+    let selection = participants;
+    if (userId) {
+      const contact = await fetchRecruitmentCandidateContact(userId);
+      selection = withRecruitmentCandidateParticipant(participants, contact);
+    }
+    await replaceMeetingParticipants(meetingId, selection, freeDraft);
   }
 }
 
@@ -157,7 +187,6 @@ export function nextUpcomingMeeting(
   const now = Date.now();
   const upcoming = meetings
     .filter((m) => {
-      if (String(m.status || '').toLowerCase() === 'canceled') return false;
       if (!m.date) return false;
       const t = new Date(`${m.date}T${m.time || '00:00'}`).getTime();
       return Number.isFinite(t) && t >= now - 60 * 60 * 1000;
@@ -167,5 +196,13 @@ export function nextUpcomingMeeting(
       const tb = new Date(`${b.date}T${b.time || '00:00'}`).getTime();
       return ta - tb;
     });
-  return upcoming[0] ?? null;
+
+  const isCanceled = (m: RecruitmentMeeting) =>
+    String(m.status || '')
+      .trim()
+      .toLowerCase()
+      .includes('cancel');
+
+  // Prefer an active interview; if only canceled remain, still surface the soonest one.
+  return upcoming.find((m) => !isCanceled(m)) ?? upcoming[0] ?? null;
 }

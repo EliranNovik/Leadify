@@ -32,7 +32,7 @@ export const EXTERNAL_MEETING_EMAIL_TYPE_TO_PLACEMENT_CODE: Record<MeetingEmailN
 
 /** Internal / staff calendar meetings (MeetingTab “External Meeting” + Calendar internal meetings). */
 export function isStaffOrInternalMeeting(meeting: { calendar_type?: string } | null | undefined): boolean {
-  return meeting?.calendar_type === 'staff';
+  return meeting?.calendar_type === 'staff' || meeting?.calendar_type === 'recruitment';
 }
 
 /** misc_emailtemplate ids for IM / external meeting invitations (EN / HE). */

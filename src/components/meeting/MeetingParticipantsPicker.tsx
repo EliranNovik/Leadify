@@ -5,6 +5,7 @@ import type {
   FreeMeetingParticipant,
   MeetingParticipantsSelection,
 } from '../../lib/meetingParticipants';
+import { RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE } from '../../lib/recruitmentMeetingParticipants';
 
 type EmployeeOption = {
   id: number;
@@ -357,9 +358,15 @@ const MeetingParticipantsPicker: React.FC<Props> = ({
             {value.freeParticipants.map((p, idx) => (
               <span
                 key={`${p.name}-${idx}`}
-                className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium"
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${
+                  String(p.notes || '').trim() === RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                    : 'border-gray-200 bg-white'
+                }`}
               >
-                {p.name}
+                {String(p.notes || '').trim() === RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE
+                  ? `Candidate · ${p.name}`
+                  : p.name}
                 <button
                   type="button"
                   className="text-gray-400 hover:text-gray-700"

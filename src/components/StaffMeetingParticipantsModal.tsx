@@ -438,7 +438,9 @@ const StaffMeetingParticipantsModal: React.FC<Props> = ({
                               ? 'border-sky-200/70 bg-sky-50 text-sky-950/65'
                               : p.type === 'firm'
                                 ? 'border-fuchsia-200/65 bg-fuchsia-50 text-fuchsia-950/65'
-                                : 'border-amber-200/70 bg-amber-50 text-amber-950/65';
+                                : p.badge === 'Candidate'
+                                  ? 'border-emerald-200/70 bg-emerald-50 text-emerald-950/65'
+                                  : 'border-amber-200/70 bg-amber-50 text-amber-950/65';
                           const badgeIcon =
                             p.type === 'staff' ? (
                               <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
@@ -511,7 +513,11 @@ const StaffMeetingParticipantsModal: React.FC<Props> = ({
                                     className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium ${roleChip}`}
                                   >
                                     {badgeIcon}
-                                    {p.type === 'extern' ? 'External' : p.badge}
+                                    {p.badge === 'Candidate'
+                                      ? 'Candidate'
+                                      : p.type === 'extern'
+                                        ? 'External'
+                                        : p.badge}
                                   </span>
 
                                   {p.participantRowId ? (

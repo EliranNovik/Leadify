@@ -19,6 +19,7 @@ import {
   ShareIcon,
   TrashIcon,
   UserPlusIcon,
+  XCircleIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { StarIcon as StarIconSolid } from '@heroicons/react/24/solid';
@@ -43,6 +44,7 @@ import {
   buildRecruitmentContractEditorPath,
   buildRecruitmentContractPublicUrl,
   createRecruitmentDigitalContract,
+  deleteRecruitmentDigitalContract,
   ensureRecruitmentContractPublicToken,
   fetchRecruitmentContractTemplates,
   fetchRecruitmentDigitalContracts,
@@ -68,6 +70,7 @@ import {
   nextUpcomingMeeting,
   type RecruitmentMeeting,
 } from '../lib/recruitmentMeetings';
+import { ensureRecruitmentCandidateParticipant } from '../lib/recruitmentMeetingParticipants';
 import {
   daysInStage,
   fetchCandidateStageHistory,
@@ -103,6 +106,26 @@ function formatMeetingWhen(m: RecruitmentMeeting): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function RecruitmentMeetingStatusBadge({ status }: { status: string | null }) {
+  const normalized = String(status || 'scheduled').trim().toLowerCase();
+  const isCanceled = normalized.includes('cancel');
+
+  if (isCanceled) {
+    return (
+      <span className="badge badge-error badge-sm h-7 gap-1 border-0 px-2.5 text-xs font-semibold text-white">
+        <XCircleIcon className="h-5 w-5 shrink-0" aria-hidden />
+        Canceled
+      </span>
+    );
+  }
+
+  return (
+    <span className="badge badge-success badge-sm h-7 border-0 px-2.5 text-xs font-semibold capitalize text-white">
+      {status || 'scheduled'}
+    </span>
+  );
 }
 
 function formatCreatedAt(iso: string): string {
@@ -267,6 +290,14 @@ const HrRecruitmentCandidatePage: React.FC = () => {
       setInterviewDocuments(interviewDocs);
       const meetingIds = meets.map((m) => m.id).filter((id) => Number.isFinite(id));
       if (meetingIds.length > 0) {
+        const displayName = candidateDisplayName(u);
+        await Promise.all(
+          meetingIds.map((id) =>
+            ensureRecruitmentCandidateParticipant(id, userId, displayName).catch(
+              () => false,
+            ),
+          ),
+        );
         const byId = await fetchEnrichedParticipantsByMeetingIds(meetingIds);
         setParticipantsByMeetingId(byId);
       } else {
@@ -383,6 +414,7 @@ const HrRecruitmentCandidatePage: React.FC = () => {
   const toCalendarMeetingShape = useCallback(
     (m: RecruitmentMeeting) => ({
       id: m.id,
+      user_id: m.user_id || userId,
       calendar_type: 'recruitment',
       meeting_subject: m.subject || `Job Interview — ${name}`,
       meeting_date: m.date,
@@ -393,18 +425,23 @@ const HrRecruitmentCandidatePage: React.FC = () => {
       duration: m.duration,
       meeting_duration_minutes: m.duration,
     }),
-    [name],
+    [name, userId],
   );
 
   const refreshMeetingParticipants = useCallback(async (meetingId: number) => {
     try {
+      if (userId) {
+        await ensureRecruitmentCandidateParticipant(meetingId, userId, name).catch(
+          () => false,
+        );
+      }
       const byId = await fetchEnrichedParticipantsByMeetingIds([meetingId]);
       setParticipantsByMeetingId((prev) => ({ ...prev, ...byId }));
       setModalParticipants(byId[meetingId] || []);
     } catch (err) {
       console.error(err);
     }
-  }, []);
+  }, [userId, name]);
 
   const openMeetingParticipantsModal = useCallback(
     async (m: RecruitmentMeeting) => {
@@ -415,6 +452,11 @@ const HrRecruitmentCandidatePage: React.FC = () => {
       try {
         const cached = participantsByMeetingId[m.id];
         if (cached) setModalParticipants(cached);
+        if (userId) {
+          await ensureRecruitmentCandidateParticipant(m.id, userId, name).catch(
+            () => false,
+          );
+        }
         const byId = await fetchEnrichedParticipantsByMeetingIds([m.id]);
         const rows = byId[m.id] || [];
         setModalParticipants(rows);
@@ -427,7 +469,7 @@ const HrRecruitmentCandidatePage: React.FC = () => {
         setParticipantsModalLoading(false);
       }
     },
-    [participantsByMeetingId, toCalendarMeetingShape],
+    [participantsByMeetingId, toCalendarMeetingShape, userId, name],
   );
 
   const handleOpenMeetingDocuments = useCallback(
@@ -544,6 +586,25 @@ const HrRecruitmentCandidatePage: React.FC = () => {
     } catch (error) {
       console.error(error);
       toast.error('Failed to copy link');
+    }
+  };
+
+  const handleDeleteContract = async (contract: RecruitmentDigitalContract) => {
+    const label = contract.template_name || 'this contract';
+    if (
+      !window.confirm(
+        `Delete ${label}? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteRecruitmentDigitalContract(contract.id);
+      setContracts((prev) => prev.filter((c) => c.id !== contract.id));
+      toast.success('Contract deleted');
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : 'Failed to delete contract');
     }
   };
 
@@ -693,21 +754,29 @@ const HrRecruitmentCandidatePage: React.FC = () => {
             </div>
             <ul
               tabIndex={0}
-              className="dropdown-content menu z-30 mt-1 w-56 rounded-xl border border-gray-100 bg-white p-2 shadow-lg"
+              className="dropdown-content menu z-30 mt-1 w-64 rounded-xl border border-gray-100 bg-white p-2 shadow-lg"
             >
               {stages.map((s) => (
                 <li key={s.id}>
                   <button
                     type="button"
                     disabled={s.id === candidate.stage_id}
-                    className={`justify-between ${s.id === candidate.stage_id ? 'font-semibold opacity-60' : ''}`}
+                    className={`justify-between ${s.id === candidate.stage_id ? 'opacity-60' : ''}`}
                     onClick={() => {
                       const el = document.activeElement as HTMLElement | null;
                       el?.blur();
                       void handleSetStage(s.id);
                     }}
                   >
-                    <span style={{ color: s.colour }}>{s.name}</span>
+                    <span
+                      className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold"
+                      style={{
+                        color: s.colour || '#374151',
+                        backgroundColor: `${s.colour || '#9ca3af'}22`,
+                      }}
+                    >
+                      {s.name}
+                    </span>
                     {s.id === candidate.stage_id ? (
                       <span className="text-xs text-gray-400">Current</span>
                     ) : null}
@@ -716,7 +785,7 @@ const HrRecruitmentCandidatePage: React.FC = () => {
               ))}
             </ul>
           </div>
-          {isSuperUser ? (
+          {isSuperUser && !user.employee_id ? (
             <button
               type="button"
               className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700"
@@ -884,12 +953,27 @@ const HrRecruitmentCandidatePage: React.FC = () => {
             );
           })()}
           <div className="hidden h-4 w-px bg-gray-200 sm:block" aria-hidden />
-          <div className="inline-flex items-center gap-2 text-sm">
+          <div className="inline-flex flex-wrap items-center gap-2 text-sm">
             <CalendarDaysIcon className="h-4 w-4 text-gray-400" />
             <span className="text-gray-500">Next interview</span>
             <span className="font-semibold text-gray-800">
               {upcoming ? formatMeetingWhen(upcoming) : '—'}
             </span>
+            {upcoming &&
+            String(upcoming.status || '')
+              .trim()
+              .toLowerCase()
+              .includes('cancel') ? (
+              <RecruitmentMeetingStatusBadge status={upcoming.status} />
+            ) : null}
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-700 hover:text-emerald-800 hover:underline"
+              onClick={() => navigate(buildRecruitmentSchedulePath(userId))}
+            >
+              <PlusIcon className="h-5 w-5 shrink-0" />
+              Schedule new meeting
+            </button>
           </div>
         </div>
       </div>
@@ -1231,15 +1315,26 @@ const HrRecruitmentCandidatePage: React.FC = () => {
                           </div>
                         )}
                       </td>
-                      <td>{m.status || 'scheduled'}</td>
+                      <td>
+                        <RecruitmentMeetingStatusBadge status={m.status} />
+                      </td>
                       <td className="text-right" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm"
                           title="Edit meeting"
                           onClick={() => {
-                            setSelectedMeetingForEdit(toCalendarMeetingShape(m));
-                            setEditMeetingOpen(true);
+                            void (async () => {
+                              if (userId) {
+                                await ensureRecruitmentCandidateParticipant(
+                                  m.id,
+                                  userId,
+                                  name,
+                                ).catch(() => false);
+                              }
+                              setSelectedMeetingForEdit(toCalendarMeetingShape(m));
+                              setEditMeetingOpen(true);
+                            })();
                           }}
                         >
                           <PencilIcon className="h-4 w-4" />
@@ -1433,6 +1528,7 @@ const HrRecruitmentCandidatePage: React.FC = () => {
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm btn-circle"
+                        title="Open contract"
                         onClick={() =>
                           navigate(
                             buildRecruitmentContractEditorPath(user.id, contract.id),
@@ -1444,9 +1540,18 @@ const HrRecruitmentCandidatePage: React.FC = () => {
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm btn-circle"
+                        title="Copy signing link"
                         onClick={() => void handleShareContract(contract)}
                       >
                         <ShareIcon className="h-5 w-5" />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm btn-circle text-error"
+                        title="Delete contract"
+                        onClick={() => void handleDeleteContract(contract)}
+                      >
+                        <TrashIcon className="h-5 w-5" />
                       </button>
                     </td>
                   </tr>
@@ -1515,9 +1620,18 @@ const HrRecruitmentCandidatePage: React.FC = () => {
         loading={participantsModalLoading}
         onOpenDocuments={handleOpenMeetingDocuments}
         onEdit={(meeting) => {
-          setSelectedMeetingForEdit(meeting);
-          setEditMeetingOpen(true);
-          setParticipantsModalOpen(false);
+          void (async () => {
+            const mid = meeting?.id != null ? Number(meeting.id) : null;
+            const uid = meeting?.user_id || userId;
+            if (mid != null && uid) {
+              await ensureRecruitmentCandidateParticipant(mid, String(uid), name).catch(
+                () => false,
+              );
+            }
+            setSelectedMeetingForEdit(meeting);
+            setEditMeetingOpen(true);
+            setParticipantsModalOpen(false);
+          })();
         }}
         onRemoveParticipant={async (participantRowId) => {
           try {

@@ -11,6 +11,10 @@ import {
   isOutlookEventNotFoundError,
   updateStaffCalendarEvent,
 } from '../lib/graph';
+import {
+  ensureRecruitmentCandidateParticipant,
+  RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE,
+} from '../lib/recruitmentMeetingParticipants';
 
 interface StaffMeetingEditModalProps {
   isOpen: boolean;
@@ -300,6 +304,23 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       const dbMeetingId = await resolveOrCreateDbMeetingId();
       if (!dbMeetingId) return;
       setResolvedDbMeetingId(dbMeetingId);
+
+      const recruitmentUserId =
+        meeting?.calendar_type === 'recruitment' && meeting?.user_id
+          ? String(meeting.user_id)
+          : null;
+      if (recruitmentUserId) {
+        const fallbackName =
+          String(meeting?.meeting_subject || meeting?.lead?.name || '').replace(
+            /^Job Interview\s*[—-]\s*/i,
+            '',
+          ) || undefined;
+        await ensureRecruitmentCandidateParticipant(
+          dbMeetingId,
+          recruitmentUserId,
+          fallbackName,
+        ).catch(() => false);
+      }
 
       const { data: meetingRow } = await supabase
         .from('meetings')
@@ -1087,13 +1108,21 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
                 {freeParticipants.map((p, idx) => (
                   <div
                     key={`free-${idx}-${p.name}`}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold ring-1 bg-amber-100 text-amber-900 ring-amber-200"
+                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold ring-1 ${
+                      String(p.notes || '').trim() === RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE
+                        ? 'bg-emerald-100 text-emerald-900 ring-emerald-200'
+                        : 'bg-amber-100 text-amber-900 ring-amber-200'
+                    }`}
                     title={[p.email ? `Email: ${p.email}` : '', p.phone ? `Phone: ${p.phone}` : '', p.notes ? `Notes: ${p.notes}` : '']
                       .filter(Boolean)
                       .join('\n')}
                   >
                     <UserIcon className="w-3.5 h-3.5" />
-                    <span>Extern</span>
+                    <span>
+                      {String(p.notes || '').trim() === RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE
+                        ? 'Candidate'
+                        : 'Extern'}
+                    </span>
                     <span className="font-bold">{p.name}</span>
                     <button type="button" onClick={() => removeFreeParticipant(idx)} className="btn btn-ghost btn-xs -mr-1">
                       <XMarkIcon className="w-3 h-3" />

@@ -127,7 +127,8 @@ export async function fetchEnrichedMeetingParticipants(
     return {
       participantRowId: r.id != null ? String(r.id) : null,
       type: 'extern' as const,
-      badge: 'Extern',
+      badge:
+        String(r.notes || '').trim() === 'Candidate' ? 'Candidate' : 'Extern',
       name: r.free_name || 'Guest',
       imageUrl: null,
       details: {

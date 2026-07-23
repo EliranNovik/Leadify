@@ -51,7 +51,7 @@ export function fetchInternalMeetingWhatsAppTemplateNames(): string[] {
 }
 
 export function isStaffOrInternalMeeting(meeting: { calendar_type?: string } | null | undefined): boolean {
-  return meeting?.calendar_type === 'staff';
+  return meeting?.calendar_type === 'staff' || meeting?.calendar_type === 'recruitment';
 }
 
 export type MeetingWhatsAppParamContext = {

@@ -151,7 +151,6 @@ export async function fetchRecruitmentContractStatusByUserId(): Promise<
     .select('user_id, status, signed_at, created_at')
     .eq('contract_type_id', employeeType.id)
     .not('user_id', 'is', null)
-    .is('employee_id', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -245,6 +244,11 @@ export async function ensureRecruitmentContractPublicToken(contractId: string): 
 
   if (updateError) throw updateError;
   return token;
+}
+
+export async function deleteRecruitmentDigitalContract(contractId: string): Promise<void> {
+  const { error } = await supabase.from('contracts').delete().eq('id', contractId);
+  if (error) throw error;
 }
 
 export function buildRecruitmentContractEditorPath(userId: string, contractId: string): string {

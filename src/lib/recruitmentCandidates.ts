@@ -171,25 +171,23 @@ export async function fetchRecruitmentCandidateByUserId(
 }
 
 export async function fetchRecruitmentListRows(): Promise<RecruitmentListRow[]> {
-  const users = await fetchRecruitmentUsers();
-  if (!users.length) return [];
-
-  const userIds = users.map((u) => u.id);
-  const { data: candidates, error } = await supabase
+  const { data: candidateRows, error: candidatesError } = await supabase
     .from('recruitment_candidates')
     .select(CANDIDATE_SELECT)
-    .in('user_id', userIds);
+    .order('updated_at', { ascending: false });
 
-  if (error) throw error;
+  if (candidatesError) throw candidatesError;
 
   const byUser = new Map<string, RecruitmentCandidate>();
-  for (const row of candidates || []) {
+  for (const row of candidateRows || []) {
     const mapped = mapCandidateRow(row);
     byUser.set(mapped.user_id, mapped);
   }
 
-  const missing = users.filter((u) => !byUser.has(u.id));
-  for (const u of missing) {
+  // Keep open-pool users (no employee link) in the pipeline even before a stage exists.
+  const poolUsers = await fetchRecruitmentUsers();
+  for (const u of poolUsers) {
+    if (byUser.has(u.id)) continue;
     try {
       const created = await ensureRecruitmentCandidateForUser(u.id);
       byUser.set(u.id, created);
@@ -198,10 +196,39 @@ export async function fetchRecruitmentListRows(): Promise<RecruitmentListRow[]> 
     }
   }
 
-  return users
-    .map((user) => {
-      const candidate = byUser.get(user.id);
-      if (!candidate) return null;
+  const userIds = [...byUser.keys()];
+  if (!userIds.length) return [];
+
+  const { data: userRows, error: usersError } = await supabase
+    .from('users')
+    .select('id, email, first_name, last_name, full_name, is_active, employee_id, extern, created_at')
+    .in('id', userIds);
+
+  if (usersError) throw usersError;
+
+  const usersById = new Map<string, RecruitmentUser>();
+  for (const row of userRows || []) {
+    if (row.extern === true || row.extern === 'true' || row.extern === 1 || row.extern === '1') {
+      continue;
+    }
+    usersById.set(String(row.id), {
+      id: String(row.id),
+      email: row.email ?? null,
+      first_name: row.first_name ?? null,
+      last_name: row.last_name ?? null,
+      full_name: row.full_name ?? null,
+      is_active: row.is_active ?? null,
+      employee_id: row.employee_id != null ? Number(row.employee_id) : null,
+      extern: row.extern ?? null,
+      created_at: row.created_at ?? null,
+    });
+  }
+
+  return userIds
+    .map((userId) => {
+      const user = usersById.get(userId);
+      const candidate = byUser.get(userId);
+      if (!user || !candidate) return null;
       return { user, candidate };
     })
     .filter(Boolean) as RecruitmentListRow[];
@@ -240,6 +267,15 @@ export async function updateRecruitmentCandidateProfile(
 
   if (error) throw error;
   return mapCandidateRow(data);
+}
+
+/** Removes the ATS candidate row (stage history cascades). Does not delete the CRM user. */
+export async function deleteRecruitmentCandidate(candidateId: number): Promise<void> {
+  const { error } = await supabase
+    .from('recruitment_candidates')
+    .delete()
+    .eq('id', candidateId);
+  if (error) throw error;
 }
 
 export function candidateDisplayName(

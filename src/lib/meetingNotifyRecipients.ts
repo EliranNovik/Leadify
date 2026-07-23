@@ -92,7 +92,7 @@ export function getMeetingDbId(meeting: { id: number | string }): number | null 
 export async function fetchMeetingParticipantContacts(meetingId: number): Promise<NotifyRecipient[]> {
   const { data: partData, error: partErr } = await supabase
     .from('meeting_participants')
-    .select('id, employee_id, firm_contact_id, free_name, free_email, free_phone')
+    .select('id, employee_id, firm_contact_id, free_name, free_email, free_phone, notes')
     .eq('meeting_id', meetingId);
   if (partErr || !partData?.length) return [];
 
@@ -195,6 +195,7 @@ export async function fetchMeetingParticipantContacts(meetingId: number): Promis
       });
     } else {
       const name = String(r.free_name || '').trim() || 'External participant';
+      const isCandidate = String((r as any).notes || '').trim() === 'Candidate';
       recipients.push({
         id: allocId(r.id),
         recipientKey: `ext-${rowKey}`,
@@ -205,7 +206,7 @@ export async function fetchMeetingParticipantContacts(meetingId: number): Promis
         country_id: null,
         isMain: false,
         source: 'external',
-        sourceLabel: 'External',
+        sourceLabel: isCandidate ? 'Candidate' : 'External',
       });
     }
   }

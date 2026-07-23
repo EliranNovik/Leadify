@@ -568,7 +568,10 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
       }));
     }
 
-    if (meeting.calendar_type === 'staff' && dbMeetingId != null) {
+    if (
+      (meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') &&
+      dbMeetingId != null
+    ) {
       const participantContacts = await fetchMeetingParticipantContacts(dbMeetingId);
       allContacts = mergeNotifyRecipients(allContacts, participantContacts);
     }

@@ -17,6 +17,7 @@ import {
 } from '../lib/staffMeetingDocuments';
 import { InternalMeetingTypeBadge } from '../lib/internalMeetingTypeBadge';
 import { recruitmentUserDisplayName } from '../lib/recruitmentDigitalContracts';
+import { ensureRecruitmentCandidateParticipant } from '../lib/recruitmentMeetingParticipants';
 import { isMeetingBookedViaClientPortal } from '../lib/clientBookingApi';
 import ClientPortalBookingBadge from './client-booking/ClientPortalBookingBadge';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
@@ -987,7 +988,7 @@ const CalendarPage: React.FC = () => {
         const { data: mtMeta } = await supabase
           .from('meetings')
           .select(
-            'internal_meeting_type_id, meeting_location, manual_address, custom_address, custom_link, meeting_brief, calendar_type, client_id, legacy_lead_id, meeting_subject, internal_meeting_types ( id, code, label ), leads!meetings_client_id_fkey ( id, name, lead_number, email ), leads_lead!meetings_legacy_lead_id_fkey ( id, name, lead_number, email )',
+            'internal_meeting_type_id, meeting_location, manual_address, custom_address, custom_link, meeting_brief, calendar_type, user_id, client_id, legacy_lead_id, meeting_subject, internal_meeting_types ( id, code, label ), leads!meetings_client_id_fkey ( id, name, lead_number, email ), leads_lead!meetings_legacy_lead_id_fkey ( id, name, lead_number, email )',
           )
           .eq('id', dbMeetingId)
           .maybeSingle();
@@ -1001,6 +1002,7 @@ const CalendarPage: React.FC = () => {
               ? {
                   ...prev,
                   calendar_type: mtMeta.calendar_type ?? prev.calendar_type ?? 'staff',
+                  user_id: (mtMeta as any).user_id ?? prev.user_id,
                   meeting_location: mtMeta.meeting_location ?? prev.meeting_location,
                   manual_address: mtMeta.manual_address ?? prev.manual_address,
                   custom_address: mtMeta.custom_address ?? prev.custom_address,
@@ -1016,6 +1018,25 @@ const CalendarPage: React.FC = () => {
                 }
               : prev
           );
+
+          const recruitmentUserId =
+            (mtMeta.calendar_type === 'recruitment' || m?.calendar_type === 'recruitment') &&
+            ((mtMeta as any).user_id || m?.user_id)
+              ? String((mtMeta as any).user_id || m.user_id)
+              : null;
+          if (recruitmentUserId) {
+            await ensureRecruitmentCandidateParticipant(
+              dbMeetingId,
+              recruitmentUserId,
+              getRecruitmentMeetingCandidateName(m),
+            ).catch(() => false);
+          }
+        } else if (m?.calendar_type === 'recruitment' && m?.user_id) {
+          await ensureRecruitmentCandidateParticipant(
+            dbMeetingId,
+            String(m.user_id),
+            getRecruitmentMeetingCandidateName(m),
+          ).catch(() => false);
         }
       }
 
@@ -1119,7 +1140,7 @@ const CalendarPage: React.FC = () => {
         return {
           participantRowId: r.id != null ? String(r.id) : null,
           type: 'extern',
-          badge: 'Extern',
+          badge: String(r.notes || '').trim() === 'Candidate' ? 'Candidate' : 'Extern',
           name: String(r.free_name || '').trim() || 'Extern participant',
           imageUrl: null,
           details: {
@@ -9576,7 +9597,9 @@ const CalendarPage: React.FC = () => {
                                         ? 'border-sky-200/70 bg-sky-50 text-sky-950/65'
                                         : p.type === 'firm'
                                           ? 'border-fuchsia-200/65 bg-fuchsia-50 text-fuchsia-950/65'
-                                          : 'border-amber-200/70 bg-amber-50 text-amber-950/65';
+                                          : p.badge === 'Candidate'
+                                            ? 'border-emerald-200/70 bg-emerald-50 text-emerald-950/65'
+                                            : 'border-amber-200/70 bg-amber-50 text-amber-950/65';
                                     const badgeIcon =
                                       p.type === 'staff' ? (
                                         <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
@@ -9642,7 +9665,11 @@ const CalendarPage: React.FC = () => {
                                               className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium ${roleChip}`}
                                             >
                                               {badgeIcon}
-                                              {p.type === 'extern' ? 'External' : p.badge}
+                                              {p.badge === 'Candidate'
+                                                ? 'Candidate'
+                                                : p.type === 'extern'
+                                                  ? 'External'
+                                                  : p.badge}
                                             </span>
 
                                             {p.participantRowId ? (
