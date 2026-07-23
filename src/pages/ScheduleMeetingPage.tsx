@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import MeetingTab from '../components/client-tabs/MeetingTab';
+import MicrosoftSignInBox from '../components/meeting/MicrosoftSignInBox';
 import {
   getClientPagePathFromClient,
   safeDecodeRouteParam,
@@ -135,7 +136,7 @@ const ScheduleMeetingPage: React.FC = () => {
   return (
     <div className="min-h-full bg-[#ececec] px-4 py-6 md:px-8 md:py-10">
       <div className="mx-auto w-full max-w-6xl">
-        <div className="mb-5">
+        <div className="mb-5 flex items-center justify-between gap-3">
           <button
             type="button"
             onClick={goToClient}
@@ -144,6 +145,7 @@ const ScheduleMeetingPage: React.FC = () => {
             <ArrowLeftIcon className="h-4 w-4" />
             Back
           </button>
+          <MicrosoftSignInBox />
         </div>
 
         {loading ? (

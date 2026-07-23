@@ -6056,23 +6056,27 @@ const Clients: React.FC<ClientsProps> = ({
       const helperEmployeeId = getEmployeeIdFromDisplayName(meetingFormData.helper);
 
       // Resolve scheduler employee ID - use employee_id directly if available (most reliable)
+      // Only auto-assign creator as lead scheduler for Potential Client meetings
+      const isPotentialMeeting = meetingFormData.calendar !== 'active_client';
       let schedulerEmployeeId: number | null = null;
-      if (currentUserEmployeeId !== null) {
-        // Verify the employee exists in allEmployees
-        const employee = allEmployees.find((emp: any) => emp.id === currentUserEmployeeId);
-        if (employee) {
-          schedulerEmployeeId = currentUserEmployeeId;
-          console.log('✅ Found scheduler by employee_id:', schedulerEmployeeId, employee.display_name);
+      if (isPotentialMeeting) {
+        if (currentUserEmployeeId !== null) {
+          // Verify the employee exists in allEmployees
+          const employee = allEmployees.find((emp: any) => emp.id === currentUserEmployeeId);
+          if (employee) {
+            schedulerEmployeeId = currentUserEmployeeId;
+            console.log('✅ Found scheduler by employee_id:', schedulerEmployeeId, employee.display_name);
+          } else {
+            console.warn(`⚠️ Employee ID ${currentUserEmployeeId} not found in allEmployees, falling back to display_name matching`);
+            // Fallback to display_name matching
+            schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+          }
         } else {
-          console.warn(`⚠️ Employee ID ${currentUserEmployeeId} not found in allEmployees, falling back to display_name matching`);
-          // Fallback to display_name matching
+          // Fallback to display_name matching if employee_id is not available
           schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
-        }
-      } else {
-        // Fallback to display_name matching if employee_id is not available
-        schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
-        if (schedulerEmployeeId === null && currentUserFullName) {
-          console.warn(`⚠️ Could not resolve scheduler employee ID for "${currentUserFullName}" - employee_id was not available and display_name did not match`);
+          if (schedulerEmployeeId === null && currentUserFullName) {
+            console.warn(`⚠️ Could not resolve scheduler employee ID for "${currentUserFullName}" - employee_id was not available and display_name did not match`);
+          }
         }
       }
 
@@ -6114,6 +6118,21 @@ const Clients: React.FC<ClientsProps> = ({
 
       const meetingDurationMinutes = normalizeMeetingDurationMinutes(meetingFormData.duration);
 
+      // Meeting-row scheduler: creator only for Potential; otherwise keep existing lead scheduler
+      let meetingSchedulerDisplayName = '---';
+      if (isPotentialMeeting) {
+        meetingSchedulerDisplayName = currentUserFullName;
+      } else if (isLegacyLead) {
+        const schedulerName = getEmployeeDisplayName(selectedClient.meeting_scheduler_id);
+        if (schedulerName && schedulerName !== '--') {
+          meetingSchedulerDisplayName = schedulerName;
+        }
+      } else if (selectedClient.scheduler) {
+        const schedulerName = getEmployeeDisplayName(selectedClient.scheduler);
+        meetingSchedulerDisplayName =
+          schedulerName !== '--' ? schedulerName : String(selectedClient.scheduler);
+      }
+
       const meetingData = {
         client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
         legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads
@@ -6134,7 +6153,7 @@ const Clients: React.FC<ClientsProps> = ({
         attendance_probability: meetingFormData.attendance_probability,
         complexity: meetingFormData.complexity,
         car_number: meetingFormData.car_number || '',
-        scheduler: currentUserFullName, // Always use Supabase user's full_name
+        scheduler: meetingSchedulerDisplayName,
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
         calendar_type: meetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
@@ -6164,7 +6183,7 @@ const Clients: React.FC<ClientsProps> = ({
         throw meetingError;
       }
 
-      console.log('Meeting created successfully with scheduler:', currentUserFullName);
+      console.log('Meeting created successfully with scheduler:', meetingSchedulerDisplayName);
       console.log('Inserted meeting record:', insertedData);
 
 
@@ -6201,8 +6220,8 @@ const Clients: React.FC<ClientsProps> = ({
           stage_changed_at: stageTimestamp,
         };
 
-        // Update scheduler for legacy leads (must be numeric employee ID, not display name)
-        if (schedulerEmployeeId !== null) {
+        // Update scheduler for legacy leads only on Potential Client meetings
+        if (isPotentialMeeting && schedulerEmployeeId !== null) {
           updatePayload.meeting_scheduler_id = schedulerEmployeeId;
         }
 
@@ -6252,10 +6271,14 @@ const Clients: React.FC<ClientsProps> = ({
       } else {
         const updatePayload: any = {
           stage: mainLeadStageId,
-          scheduler: currentUserFullName,
           stage_changed_by: stageActor.fullName,
           stage_changed_at: stageTimestamp,
         };
+
+        // Potential meetings only: assign creator as scheduler on the lead
+        if (isPotentialMeeting) {
+          updatePayload.scheduler = currentUserFullName;
+        }
 
         // Update manager and helper for new leads (as employee IDs)
         if (managerEmployeeId !== null) {
@@ -8543,7 +8566,12 @@ const Clients: React.FC<ClientsProps> = ({
       const helperEmployeeId = getEmployeeIdFromDisplayName(rescheduleFormData.helper);
 
       // Resolve scheduler employee ID (for legacy leads, need numeric ID)
-      const schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+      // Only auto-assign creator as lead scheduler for Potential Client meetings
+      const isPotentialMeeting = rescheduleFormData.calendar !== 'active_client';
+      let schedulerEmployeeId: number | null = null;
+      if (isPotentialMeeting) {
+        schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+      }
 
       // Resolve expert employee ID (for legacy leads, need numeric ID)
       const expertEmployeeId = getEmployeeIdFromDisplayName(selectedClient.expert);
@@ -8724,6 +8752,21 @@ const Clients: React.FC<ClientsProps> = ({
       // Convert to number for legacy_lead_id (it's a bigint in the database)
       const legacyId = legacyIdStr && /^\d+$/.test(legacyIdStr) ? parseInt(legacyIdStr, 10) : legacyIdStr;
 
+      // Meeting-row scheduler: creator only for Potential; otherwise keep existing lead scheduler
+      let meetingSchedulerDisplayName = '---';
+      if (isPotentialMeeting) {
+        meetingSchedulerDisplayName = currentUserFullName;
+      } else if (isLegacyLead) {
+        const schedulerName = getEmployeeDisplayName(selectedClient.meeting_scheduler_id);
+        if (schedulerName && schedulerName !== '--') {
+          meetingSchedulerDisplayName = schedulerName;
+        }
+      } else if (selectedClient.scheduler) {
+        const schedulerName = getEmployeeDisplayName(selectedClient.scheduler);
+        meetingSchedulerDisplayName =
+          schedulerName !== '--' ? schedulerName : String(selectedClient.scheduler);
+      }
+
       const meetingData = {
         client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
         legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads (must be numeric)
@@ -8741,7 +8784,7 @@ const Clients: React.FC<ClientsProps> = ({
         attendance_probability: rescheduleFormData.attendance_probability,
         complexity: rescheduleFormData.complexity,
         car_number: rescheduleFormData.car_number || '',
-        scheduler: currentUserFullName, // Always use Supabase user's full_name
+        scheduler: meetingSchedulerDisplayName,
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
         calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
@@ -8777,34 +8820,44 @@ const Clients: React.FC<ClientsProps> = ({
       const currentStageName = getStageName(selectedClient.stage);
       const isAnotherMeeting = areStagesEquivalent(currentStageName, 'Another meeting');
 
-      // When rescheduling (new meeting is scheduled), change stage to "Meeting scheduled" (id 20)
-      // EXCEPT when in "Another meeting" stage - then keep the stage unchanged
-      const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled');
-      if (meetingScheduledStageId === null) {
-        toast.error('Unable to resolve the "Meeting scheduled" stage. Please contact an administrator.');
-        setIsReschedulingMeeting(false);
-        return;
+      // Reschedule stage rules:
+      // - From Meeting scheduled (20) → Meeting rescheduling (21)
+      // - From Meeting rescheduling (21) → Meeting scheduled (20)
+      // - Other stages → Meeting scheduled (20)
+      // - Another meeting → keep stage unchanged
+      const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled') ?? 20;
+      const meetingReschedulingStageId = getStageIdOrWarn('Meeting rescheduling') ?? 21;
+      const isMeetingScheduled =
+        currentStage === meetingScheduledStageId ||
+        areStagesEquivalent(currentStageName, 'Meeting scheduled');
+      const isMeetingRescheduling =
+        currentStage === meetingReschedulingStageId ||
+        areStagesEquivalent(currentStageName, 'Meeting rescheduling');
+
+      let rescheduledStageId: number | null = null;
+      if (!isAnotherMeeting) {
+        if (isMeetingScheduled) {
+          rescheduledStageId = meetingReschedulingStageId;
+        } else if (isMeetingRescheduling) {
+          rescheduledStageId = meetingScheduledStageId;
+        } else {
+          rescheduledStageId = meetingScheduledStageId;
+        }
       }
-      // Don't update stage if:
-      // 1. Already at "Meeting scheduled" stage, OR
-      // 2. Currently in "Another meeting" stage (exclusive condition)
-      const shouldUpdateStage = !isAnotherMeeting && (currentStage !== meetingScheduledStageId);
-      const rescheduledStageId = meetingScheduledStageId; // Meeting scheduled (id 20)
 
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         const updatePayload: any = {};
 
         // Only update stage if needed
-        if (shouldUpdateStage) {
+        if (rescheduledStageId !== null) {
           updatePayload.stage = rescheduledStageId;
           updatePayload.stage_changed_by = stageActor.fullName;
           updatePayload.stage_changed_at = stageTimestamp;
         }
 
-        // Always update scheduler for legacy leads (must be numeric employee ID, not display name)
-        // Same as in handleScheduleMeeting - always update if schedulerEmployeeId is available
-        if (schedulerEmployeeId !== null) {
+        // Update scheduler for legacy leads only on Potential Client meetings
+        if (isPotentialMeeting && schedulerEmployeeId !== null) {
           updatePayload.meeting_scheduler_id = schedulerEmployeeId;
         }
 
@@ -8832,7 +8885,7 @@ const Clients: React.FC<ClientsProps> = ({
         }
 
         // Record stage change only if stage was updated
-        if (shouldUpdateStage) {
+        if (rescheduledStageId !== null) {
           await recordLeadStageChange({
             lead: selectedClient,
             stage: rescheduledStageId,
@@ -8846,14 +8899,16 @@ const Clients: React.FC<ClientsProps> = ({
           const updatePayload: any = {};
 
           // Only update stage if needed
-          if (shouldUpdateStage) {
+          if (rescheduledStageId !== null) {
             updatePayload.stage = rescheduledStageId;
             updatePayload.stage_changed_by = stageActor.fullName;
             updatePayload.stage_changed_at = stageTimestamp;
           }
 
-          // Always update scheduler for new leads (same as in handleScheduleMeeting)
-          updatePayload.scheduler = currentUserFullName;
+          // Potential meetings only: assign creator as scheduler on the lead
+          if (isPotentialMeeting) {
+            updatePayload.scheduler = currentUserFullName;
+          }
 
           // Always update manager and helper for new leads (as employee IDs)
           if (managerEmployeeId !== null) {
@@ -8863,18 +8918,21 @@ const Clients: React.FC<ClientsProps> = ({
             updatePayload.helper = helperEmployeeId;
           }
 
-          const { error } = await supabase
-            .from('leads')
-            .update(updatePayload)
-            .eq('id', selectedClient.id);
+          // Only update if there's something to update
+          if (Object.keys(updatePayload).length > 0) {
+            const { error } = await supabase
+              .from('leads')
+              .update(updatePayload)
+              .eq('id', selectedClient.id);
 
-          if (error) throw error;
+            if (error) throw error;
+          }
         } else {
           console.warn('Attempted to update leads table for legacy lead in reschedule, skipping');
         }
 
         // Record stage change only if stage was updated
-        if (shouldUpdateStage) {
+        if (rescheduledStageId !== null) {
           await recordLeadStageChange({
             lead: selectedClient,
             stage: rescheduledStageId,
@@ -16818,7 +16876,7 @@ const Clients: React.FC<ClientsProps> = ({
                 </MeetingFormDrawerActionButton>
                 {rescheduleOption === 'cancel' ? (
                   <MeetingFormDrawerActionButton
-                    className="btn-primary"
+                    className="btn-primary !rounded-full"
                     onClick={handleCancelMeeting}
                     disabled={!meetingToDelete}
                   >
@@ -16826,7 +16884,7 @@ const Clients: React.FC<ClientsProps> = ({
                   </MeetingFormDrawerActionButton>
                 ) : (
                   <MeetingFormDrawerActionButton
-                    className="btn-primary"
+                    className="btn-primary !rounded-full"
                     onClick={handleRescheduleMeeting}
                     disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
                   >
@@ -16936,24 +16994,35 @@ const Clients: React.FC<ClientsProps> = ({
 
                     {/* Reschedule Options */}
                     <div>
-                      <label className="block font-semibold mb-2">Action</label>
-                      <div className="flex gap-3">
+                      <label className="mb-2 block font-semibold">Action</label>
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          className={`btn flex-1 ${rescheduleOption === 'cancel' ? 'btn-primary' : 'btn-outline'}`}
+                          className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-colors ${
+                            rescheduleOption === 'cancel'
+                              ? 'bg-[#3b28c7] text-white shadow-sm'
+                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          }`}
                           onClick={() => setRescheduleOption('cancel')}
                         >
                           Cancel Meeting
                         </button>
+                        <span className="px-1 text-sm font-semibold uppercase tracking-wide text-gray-400">
+                          or
+                        </span>
                         <button
                           type="button"
-                          className={`btn flex-1 ${rescheduleOption === 'reschedule' ? 'btn-primary' : 'btn-outline'}`}
+                          className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-colors ${
+                            rescheduleOption === 'reschedule'
+                              ? 'bg-[#3b28c7] text-white shadow-sm'
+                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          }`}
                           onClick={() => setRescheduleOption('reschedule')}
                         >
                           Reschedule Meeting
                         </button>
                       </div>
-                      <p className="text-sm text-gray-500 mt-2">
+                      <p className="mt-2 text-sm text-gray-500">
                         {rescheduleOption === 'cancel'
                           ? 'Cancel the meeting and send cancellation email to client.'
                           : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}

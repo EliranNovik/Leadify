@@ -5,7 +5,7 @@ export const MEETING_DURATION_OPTIONS_MINUTES = [
   15, 30, 45, 60, 90, 120, 150, 180, 210, 240,
 ] as const;
 
-export const DEFAULT_MEETING_DURATION_MINUTES = 60;
+export const DEFAULT_MEETING_DURATION_MINUTES = 30;
 
 export function normalizeMeetingDurationMinutes(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value);
@@ -70,6 +70,11 @@ export function MeetingDurationField({
       <label className="mb-1 flex items-center gap-2 font-semibold">
         <ClockIcon className="h-5 w-5 shrink-0 opacity-60" aria-hidden />
         <span>Duration</span>
+        {startTime && endTime ? (
+          <span className="font-normal text-sm text-gray-400">
+            {startTime.substring(0, 5)} – {endTime}
+          </span>
+        ) : null}
       </label>
       <select
         className="select select-bordered w-full"
@@ -83,15 +88,6 @@ export function MeetingDurationField({
           </option>
         ))}
       </select>
-      {startTime && endTime ? (
-        <p className="mt-2 text-sm text-base-content/60">
-          From <span className="font-semibold text-base-content/80">{startTime.substring(0, 5)}</span>
-          {' '}to{' '}
-          <span className="font-semibold text-base-content/80">{endTime}</span>
-        </p>
-      ) : (
-        <p className="mt-2 text-sm text-base-content/45">Select a start time to see the end time.</p>
-      )}
     </div>
   );
 }

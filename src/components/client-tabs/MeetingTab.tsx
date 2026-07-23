@@ -25,6 +25,21 @@ import { useNavigate } from 'react-router-dom';
 import { isMeetingBookedViaClientPortal } from '../../lib/clientBookingApi';
 import ClientPortalBookingBadge from '../client-booking/ClientPortalBookingBadge';
 import {
+  fetchStageActorInfo,
+  recordLeadStageChange,
+  updateLeadStageWithHistory,
+} from '../../lib/leadStageManager';
+import { areStagesEquivalent, getStageName } from '../../lib/stageUtils';
+import {
+  fetchAllUnavailabilitiesInRange,
+  formatUnavailabilityTime,
+  getUnavailabilityApprovalStatus,
+  unavailabilityDateRangeLabel,
+  unavailabilityGeneralTimeRange,
+  unavailabilityTypeLabel,
+  type EmployeeUnavailabilityEntry,
+} from '../../lib/employeeUnavailabilities';
+import {
   CalendarIcon,
   CalendarDaysIcon,
   PencilSquareIcon,
@@ -471,6 +486,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   const isReschedulePage = variant === 'reschedule-page';
   const isActionPage = isSchedulePage || isReschedulePage;
 
+  /** Stage 60 = Client signed agreement. Before that, only Potential Client calendar. */
+  const CLIENT_SIGNED_STAGE_ID = 60;
+  const clientStageId = useMemo(() => {
+    if (client?.stage == null) return null;
+    const raw = String(client.stage).trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }, [client?.stage]);
+  const allowActiveAndExternalCalendars =
+    clientStageId != null && clientStageId >= CLIENT_SIGNED_STAGE_ID;
+  const defaultScheduleCalendar = allowActiveAndExternalCalendars ? 'active_client' : 'current';
+
   // Holds the latest silent meetings reload so the realtime subscription can call it regardless of
   // where fetchMeetings is declared below.
   const fetchMeetingsRef = useRef<(() => Promise<void> | void) | null>(null);
@@ -603,6 +631,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
   const [creatingTeamsMeetingId, setCreatingTeamsMeetingId] = useState<number | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [activeEmployeeIds, setActiveEmployeeIds] = useState<Set<number>>(new Set());
   const [employeeEmailToDisplayName, setEmployeeEmailToDisplayName] = useState<Record<string, string>>({});
   const [allMeetingLocations, setAllMeetingLocations] = useState<any[]>([]);
   const [emailAutomationCache, setEmailAutomationCache] = useState<EmailAutomationCache | null>(null);
@@ -657,7 +686,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     attendance_probability: 'Medium',
     complexity: 'Simple',
     car_number: '',
-    calendar: 'current', // 'current' or 'active_client'
+    calendar: 'current', // 'current' (potential) | 'active_client' | 'external'
     custom_link: '',
     custom_address: '',
   });
@@ -666,6 +695,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   const [showManagerDropdown, setShowManagerDropdown] = useState(false);
   const managerDropdownRef = useRef<HTMLDivElement>(null);
   const [managerSearchTerm, setManagerSearchTerm] = useState('');
+  const [showHelperDropdown, setShowHelperDropdown] = useState(false);
+  const helperDropdownRef = useRef<HTMLDivElement>(null);
+  const [helperSearchTerm, setHelperSearchTerm] = useState('');
+  const [showRescheduleManagerDropdown, setShowRescheduleManagerDropdown] = useState(false);
+  const rescheduleManagerDropdownRef = useRef<HTMLDivElement>(null);
+  const [rescheduleManagerSearchTerm, setRescheduleManagerSearchTerm] = useState('');
+  const [showRescheduleHelperDropdown, setShowRescheduleHelperDropdown] = useState(false);
+  const rescheduleHelperDropdownRef = useRef<HTMLDivElement>(null);
+  const [rescheduleHelperSearchTerm, setRescheduleHelperSearchTerm] = useState('');
+  const [rolePickerUnavailabilities, setRolePickerUnavailabilities] = useState<EmployeeUnavailabilityEntry[]>([]);
 
   // External (Internal-Meeting-with-external-participants) state
   // Mirrors CalendarPage's TeamsMeetingModal so users can convert this lead's
@@ -756,7 +795,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     time: '09:00',
     duration: DEFAULT_MEETING_DURATION_MINUTES,
     location: 'Teams',
-    calendar: 'active_client',
+    calendar: 'current',
     manager: '',
     helper: '',
     brief: '',
@@ -787,11 +826,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       attendance_probability: 'Medium',
       complexity: 'Simple',
       car_number: '',
-      calendar: 'active_client',
+      calendar: defaultScheduleCalendar,
       custom_link: '',
       custom_address: '',
     }),
-    [],
+    [defaultScheduleCalendar],
   );
 
   const initialRescheduleFormData = useMemo(
@@ -800,7 +839,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       time: '09:00',
       duration: DEFAULT_MEETING_DURATION_MINUTES,
       location: 'Teams',
-      calendar: 'active_client',
+      calendar: defaultScheduleCalendar,
       manager: '',
       helper: '',
       brief: '',
@@ -810,7 +849,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       custom_link: '',
       custom_address: '',
     }),
-    [],
+    [defaultScheduleCalendar],
   );
 
   const closeScheduleDrawer = useCallback(() => {
@@ -873,6 +912,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     );
   };
 
+  /** Manager/Helper pickers: only active staff employees */
+  const activeRolePickerEmployees = useMemo(
+    () =>
+      allEmployees.filter((emp: any) => {
+        const id = Number(emp.id);
+        return Number.isFinite(id) && activeEmployeeIds.has(id);
+      }),
+    [allEmployees, activeEmployeeIds],
+  );
+
   const getLastEditedByDisplayName = (stored: string | null | undefined): string => {
     const raw = stored?.trim();
     if (!raw) return '--';
@@ -890,10 +939,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     return raw;
   };
 
-  const resolveEditorDisplayName = async (): Promise<string> => {
+  const resolveCurrentUserActor = async (): Promise<{
+    displayName: string;
+    employeeId: number | null;
+  }> => {
     const account = instance.getAllAccounts()[0];
+    let displayName = account?.name?.trim() || 'Staff';
+    let employeeId: number | null = null;
+
     try {
-      const { data: { user: authUser } } = await supabase.auth.getUser();
+      const {
+        data: { user: authUser },
+      } = await supabase.auth.getUser();
       if (authUser?.id) {
         const { data: userData } = await supabase
           .from('users')
@@ -912,19 +969,39 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             ? userData.tenants_employee[0]
             : userData.tenants_employee;
           const name = employee?.display_name || userData.full_name;
-          if (name?.trim()) return name.trim();
+          if (name?.trim()) displayName = name.trim();
+          if (userData.employee_id != null) {
+            const n = Number(userData.employee_id);
+            if (Number.isFinite(n) && n > 0) employeeId = n;
+          }
+        }
+      }
+
+      if (employeeId == null && displayName && displayName !== 'Staff') {
+        const byName = allEmployees.find(
+          (emp: any) =>
+            emp.display_name &&
+            emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase(),
+        );
+        if (byName?.id != null) {
+          const n = Number(byName.id);
+          if (Number.isFinite(n) && n > 0) employeeId = n;
         }
       }
 
       const email = account?.username?.trim().toLowerCase();
       if (email && employeeEmailToDisplayName[email]) {
-        return employeeEmailToDisplayName[email];
+        displayName = employeeEmailToDisplayName[email];
       }
     } catch {
       // fall through
     }
 
-    return account?.name?.trim() || 'Staff';
+    return { displayName, employeeId };
+  };
+
+  const resolveEditorDisplayName = async (): Promise<string> => {
+    return (await resolveCurrentUserActor()).displayName;
   };
 
   // Pill badge label for the meeting type shown in the meeting card's top-right corner.
@@ -985,6 +1062,36 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         onError={() => setImageError(true)}
         title={employee.display_name}
       />
+    );
+  };
+
+  const renderRolePickerEmployeeOption = (
+    emp: any,
+    date: string,
+    time: string,
+  ) => {
+    const unavailable = getEmployeeUnavailabilityInfo(emp.id, date, time);
+    return (
+      <>
+        <div className="flex min-w-0 items-center gap-3">
+          <EmployeeAvatar employeeId={emp.id} size="md" />
+          <div className="min-w-0">
+            <span className="block truncate">{emp.display_name || emp.full_name}</span>
+            {unavailable && (
+              <span className="mt-0.5 block text-[10px] leading-tight text-red-600/90">
+                {unavailable.typeLabel ? `${unavailable.typeLabel} · ` : ''}
+                {unavailable.periodLabel}
+              </span>
+            )}
+          </div>
+        </div>
+        {unavailable && (
+          <span className="ml-2 inline-flex shrink-0 items-center gap-1.5 rounded-full bg-red-100 px-3 py-1.5 text-sm font-semibold text-red-700">
+            <ClockIcon className="h-5 w-5" />
+            Unavailable
+          </span>
+        )}
+      </>
     );
   };
 
@@ -1377,11 +1484,37 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     const fetchEmployees = async () => {
       const { data, error } = await supabase
         .from('tenants_employee')
-        .select('id, display_name, bonuses_role, photo_url, photo')
+        .select('id, display_name, bonuses_role, photo_url, photo, unavailable_times, unavailable_ranges')
         .order('display_name', { ascending: true });
 
       if (!error && data) {
         setAllEmployees(data);
+
+        const employeeIds = data
+          .map((emp: any) => emp.id)
+          .filter((id: any) => id !== null && id !== undefined);
+        if (employeeIds.length > 0) {
+          const { data: activeUsers, error: usersError } = await supabase
+            .from('users')
+            .select('employee_id')
+            .in('employee_id', employeeIds)
+            .eq('is_active', true)
+            .eq('is_staff', true);
+          if (!usersError && activeUsers) {
+            setActiveEmployeeIds(
+              new Set(
+                activeUsers
+                  .map((u: any) => Number(u.employee_id))
+                  .filter((id: number) => Number.isFinite(id)),
+              ),
+            );
+          } else {
+            // Fallback: treat all loaded employees as selectable if user lookup fails
+            setActiveEmployeeIds(new Set(employeeIds.map((id: any) => Number(id))));
+          }
+        } else {
+          setActiveEmployeeIds(new Set());
+        }
       }
 
       const { data: userRows } = await supabase
@@ -1490,11 +1623,52 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     fetchMeetingCounts();
   }, [scheduleMeetingFormData.date, rescheduleFormData.date, editedMeeting.date]);
 
+  // Load unavailability (vacation / sick / general) for role pickers when a meeting date is chosen
+  useEffect(() => {
+    const date =
+      (isReschedulePage || showRescheduleDrawer) && rescheduleFormData.date
+        ? rescheduleFormData.date
+        : scheduleMeetingFormData.date;
+    if (!date) {
+      setRolePickerUnavailabilities([]);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await fetchAllUnavailabilitiesInRange(date, date);
+        if (!cancelled) setRolePickerUnavailabilities(rows);
+      } catch (error) {
+        console.error('Error fetching employee unavailabilities for role picker:', error);
+        if (!cancelled) setRolePickerUnavailabilities([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    scheduleMeetingFormData.date,
+    rescheduleFormData.date,
+    isReschedulePage,
+    showRescheduleDrawer,
+  ]);
+
   // Handle click outside for dropdowns
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (managerDropdownRef.current && !managerDropdownRef.current.contains(event.target as Node)) {
         setShowManagerDropdown(false);
+      }
+      if (helperDropdownRef.current && !helperDropdownRef.current.contains(event.target as Node)) {
+        setShowHelperDropdown(false);
+      }
+      if (rescheduleManagerDropdownRef.current && !rescheduleManagerDropdownRef.current.contains(event.target as Node)) {
+        setShowRescheduleManagerDropdown(false);
+      }
+      if (rescheduleHelperDropdownRef.current && !rescheduleHelperDropdownRef.current.contains(event.target as Node)) {
+        setShowRescheduleHelperDropdown(false);
       }
       if (editLocationDropdownRef.current && !editLocationDropdownRef.current.contains(event.target as Node)) {
         setShowEditLocationDropdown(false);
@@ -1554,11 +1728,22 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       attendance_probability: 'Medium',
       complexity: 'Simple',
       car_number: '',
-      calendar: 'active_client',
+      calendar: defaultScheduleCalendar,
       custom_link: '',
       custom_address: '',
     });
-  }, [showScheduleDrawer, selectableMeetingLocations]);
+  }, [showScheduleDrawer, selectableMeetingLocations, defaultScheduleCalendar]);
+
+  // Keep calendar selection valid for the lead's stage (pre-60 = potential only).
+  useEffect(() => {
+    if (allowActiveAndExternalCalendars) return;
+    setScheduleMeetingFormData((prev) =>
+      prev.calendar === 'current' ? prev : { ...prev, calendar: 'current' },
+    );
+    setRescheduleFormData((prev: any) =>
+      prev.calendar === 'current' ? prev : { ...prev, calendar: 'current' },
+    );
+  }, [allowActiveAndExternalCalendars]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1718,11 +1903,83 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, []);
 
-  // Simplified employee unavailability check (can be enhanced later)
-  const isEmployeeUnavailable = useCallback((employeeName: string, date: string, time: string): boolean => {
-    // This is a simplified version - can be enhanced with actual availability data
-    return false;
-  }, []);
+  const getEmployeeUnavailabilityInfo = useCallback(
+    (
+      employeeId: string | number | null | undefined,
+      date: string,
+      time: string,
+    ): { type: string; typeLabel: string; periodLabel: string } | null => {
+      if (!date || employeeId == null || employeeId === '') return null;
+      const empId = Number(employeeId);
+      if (!Number.isFinite(empId)) return null;
+
+      // Prefer typed leave records (vacation / sick / general)
+      for (const entry of rolePickerUnavailabilities) {
+        if (Number(entry.employee_id) !== empId) continue;
+        if (getUnavailabilityApprovalStatus(entry) === 'declined') continue;
+
+        const rangeEnd = entry.end_date || entry.start_date;
+        if (date < entry.start_date || date > rangeEnd) continue;
+
+        if (entry.unavailability_type === 'general' && (entry.start_time || entry.end_time) && time) {
+          const start = formatUnavailabilityTime(entry.start_time) || '00:00';
+          const end = formatUnavailabilityTime(entry.end_time) || '23:59';
+          if (time < start || time > end) continue;
+        }
+
+        const dateLabel = unavailabilityDateRangeLabel(entry.start_date, entry.end_date);
+        const timeLabel =
+          entry.unavailability_type === 'general' ? unavailabilityGeneralTimeRange(entry) : '';
+        return {
+          type: entry.unavailability_type,
+          typeLabel: unavailabilityTypeLabel(entry.unavailability_type),
+          periodLabel: timeLabel ? `${dateLabel} · ${timeLabel}` : dateLabel,
+        };
+      }
+
+      // Fallback: legacy JSON unavailable_times / unavailable_ranges on tenants_employee
+      const emp = allEmployees.find((e: any) => Number(e.id) === empId);
+      if (emp) {
+        const ranges = Array.isArray(emp.unavailable_ranges) ? emp.unavailable_ranges : [];
+        for (const range of ranges) {
+          const startDate = String(range.startDate || range.start_date || '').slice(0, 10);
+          const endDate = String(range.endDate || range.end_date || startDate).slice(0, 10);
+          if (!startDate || date < startDate || date > endDate) continue;
+          return {
+            type: 'general',
+            typeLabel: range.reason ? String(range.reason) : 'Unavailable',
+            periodLabel: unavailabilityDateRangeLabel(startDate, endDate),
+          };
+        }
+
+        const times = Array.isArray(emp.unavailable_times) ? emp.unavailable_times : [];
+        for (const slot of times) {
+          if (String(slot.date || '').slice(0, 10) !== date) continue;
+          const start = String(slot.startTime || slot.start_time || '').slice(0, 5);
+          const end = String(slot.endTime || slot.end_time || '').slice(0, 5);
+          if (start === 'All Day' || !start) {
+            return {
+              type: 'general',
+              typeLabel: slot.reason ? String(slot.reason) : 'Unavailable',
+              periodLabel: unavailabilityDateRangeLabel(date, date),
+            };
+          }
+          if (time && end && (time < start || time > end)) continue;
+          if (time && !end && time < start) continue;
+          return {
+            type: 'general',
+            typeLabel: slot.reason ? String(slot.reason) : 'Unavailable',
+            periodLabel: end
+              ? `${unavailabilityDateRangeLabel(date, date)} · ${start} – ${end}`
+              : `${unavailabilityDateRangeLabel(date, date)} · ${start}`,
+          };
+        }
+      }
+
+      return null;
+    },
+    [rolePickerUnavailabilities, allEmployees],
+  );
 
   const fetchMeetings = async () => {
     if (!client.id) return;
@@ -3926,7 +4183,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             attendance_probability: 'Medium',
             complexity: 'Simple',
             car_number: '',
-            calendar: 'active_client',
+            calendar: defaultScheduleCalendar,
             custom_link: '',
             custom_address: '',
           });
@@ -3945,8 +4202,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         setIsSchedulingMeeting(false);
         return;
       }
-
-      const editorDisplayName = await resolveEditorDisplayName();
 
       let teamsMeetingUrl = '';
       const selectedLocation = allMeetingLocations.find(
@@ -4102,8 +4357,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
 
+      // Auto-assign creator as lead scheduler only for Potential Client meetings
+      const isPotentialMeeting =
+        scheduleMeetingFormData.calendar !== 'active_client' &&
+        scheduleMeetingFormData.calendar !== 'external';
+      const actor = await resolveCurrentUserActor();
+      const editorDisplayName = actor.displayName;
+
       let meetingSchedulerDisplayName = '---';
-      if (isLegacyLead) {
+      let schedulerEmployeeId: number | null = null;
+      if (isPotentialMeeting) {
+        meetingSchedulerDisplayName = actor.displayName;
+        schedulerEmployeeId = actor.employeeId;
+      } else if (isLegacyLead) {
         const schedulerName = getEmployeeDisplayName(client.meeting_scheduler_id);
         if (schedulerName && schedulerName !== '--') {
           meetingSchedulerDisplayName = schedulerName;
@@ -4182,60 +4448,67 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       // Resolve expert employee ID
       const expertEmployeeId = getEmployeeIdFromDisplayName(client.expert);
 
-      // Update client/lead record with roles (but NOT stage - as per user requirement)
-      if (isLegacyLead) {
-        const updatePayload: any = {};
+      // Update lead stage + roles (same rules as Clients.tsx schedule drawer)
+      // - First schedule → Meeting scheduled
+      // - Stage >= 40 (except 60 Client signed / 70 Payment request) → Another meeting
+      // - External IM meetings do not change lead stage
+      if (scheduleMeetingFormData.calendar !== 'external') {
+        try {
+          const stageActor = await fetchStageActorInfo();
+          const stageTimestamp = new Date().toISOString();
+          const stageNumeric = clientStageId;
+          const targetStageKey =
+            stageNumeric != null &&
+            stageNumeric >= 40 &&
+            stageNumeric !== 60 &&
+            stageNumeric !== 70
+              ? 'another_meeting'
+              : 'meeting_scheduled';
 
-        // Update manager and helper for legacy leads
-        if (managerEmployeeId !== null) {
-          updatePayload.meeting_manager_id = managerEmployeeId;
-        }
-        if (helperEmployeeId !== null) {
-          updatePayload.meeting_lawyer_id = helperEmployeeId;
-        }
+          const roleFields: Record<string, unknown> = {};
 
-        // Update expert for legacy leads (must be numeric employee ID, not display name)
-        if (expertEmployeeId !== null) {
-          updatePayload.expert_id = expertEmployeeId;
-        }
-
-        // Only update if there are changes to make
-        if (Object.keys(updatePayload).length > 0) {
-          const { error: updateError } = await supabase
-            .from('leads_lead')
-            .update(updatePayload)
-            .eq('id', legacyId);
-
-          if (updateError) {
-            console.error('Error updating legacy lead roles:', updateError);
-            // Don't throw - meeting was created successfully, this is just a bonus update
+          if (isLegacyLead) {
+            if (isPotentialMeeting && schedulerEmployeeId !== null) {
+              roleFields.meeting_scheduler_id = schedulerEmployeeId;
+            }
+            if (managerEmployeeId !== null) {
+              roleFields.meeting_manager_id = managerEmployeeId;
+            }
+            if (helperEmployeeId !== null) {
+              roleFields.meeting_lawyer_id = helperEmployeeId;
+            }
+            if (expertEmployeeId !== null) {
+              roleFields.expert_id = expertEmployeeId;
+            }
+          } else {
+            if (isPotentialMeeting && meetingSchedulerDisplayName && meetingSchedulerDisplayName !== '---') {
+              roleFields.scheduler = meetingSchedulerDisplayName;
+            }
+            if (managerEmployeeId !== null) {
+              roleFields.manager = managerEmployeeId;
+              roleFields.meeting_manager_id = managerEmployeeId;
+            }
+            if (helperEmployeeId !== null) {
+              roleFields.helper = helperEmployeeId;
+              roleFields.meeting_lawyer_id = helperEmployeeId;
+            }
           }
+
+          await updateLeadStageWithHistory({
+            lead: client as any,
+            stage: targetStageKey,
+            additionalFields: roleFields,
+            actor: stageActor,
+            timestamp: stageTimestamp,
+          });
+        } catch (stageError) {
+          console.error('Error updating lead stage/roles after scheduling:', stageError);
+          toast.error(
+            'Meeting was created, but updating the lead stage failed. Please update the stage manually.',
+          );
         }
       } else {
-        const updatePayload: any = {};
-
-        // Update manager and helper for new leads (as employee IDs)
-        if (managerEmployeeId !== null) {
-          updatePayload.manager = managerEmployeeId;
-        }
-        if (helperEmployeeId !== null) {
-          updatePayload.helper = helperEmployeeId;
-        }
-
-        // Note: Expert is not updated for new leads in Clients.tsx, so we follow the same pattern
-
-        // Only update if there are changes to make
-        if (Object.keys(updatePayload).length > 0) {
-          const { error: updateError } = await supabase
-            .from('leads')
-            .update(updatePayload)
-            .eq('id', client.id);
-
-          if (updateError) {
-            console.error('Error updating new lead roles:', updateError);
-            // Don't throw - meeting was created successfully, this is just a bonus update
-          }
-        }
+        // External meetings: roles only are not applied to the client lead here
       }
 
       // Send meeting invitation email only when notify toggle is on
@@ -4316,7 +4589,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         attendance_probability: 'Medium',
         complexity: 'Simple',
         car_number: '',
-        calendar: 'active_client',
+        calendar: defaultScheduleCalendar,
         custom_link: '',
         custom_address: '',
       });
@@ -4512,6 +4785,22 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         });
       }
 
+      // Update stage to Meeting rescheduling (21) — same as Clients.tsx cancel path
+      try {
+        const currentStageNameForCheck = getStageName(String(client.stage ?? ''));
+        if (!areStagesEquivalent(currentStageNameForCheck, 'Another meeting')) {
+          await updateLeadStageWithHistory({
+            lead: client as any,
+            stage: 21, // Meeting rescheduling
+          });
+        }
+      } catch (stageError) {
+        console.error('Error updating stage after cancel:', stageError);
+        toast.error(
+          'Meeting was canceled, but updating the stage to Meeting rescheduling failed. Please update the stage manually.',
+        );
+      }
+
       toast.success(notifyClientOnReschedule ? 'Meeting canceled and client notified.' : 'Meeting canceled.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
@@ -4521,7 +4810,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         time: '09:00',
         duration: DEFAULT_MEETING_DURATION_MINUTES,
         location: 'Teams',
-        calendar: 'active_client',
+        calendar: defaultScheduleCalendar,
         manager: '',
         helper: '',
         brief: '',
@@ -4601,7 +4890,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             time: '09:00',
             duration: DEFAULT_MEETING_DURATION_MINUTES,
             location: 'Teams',
-            calendar: 'active_client',
+            calendar: defaultScheduleCalendar,
             manager: '',
             helper: '',
             brief: '',
@@ -4838,8 +5127,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       }
 
       // Use the isLegacyLead and legacyId already declared at the start of the function (line 2605-2606)
+      // Auto-assign creator as lead scheduler only for Potential Client meetings
+      const isPotentialMeeting =
+        rescheduleFormData.calendar !== 'active_client' &&
+        rescheduleFormData.calendar !== 'external';
+      const actor = await resolveCurrentUserActor();
+
       let meetingSchedulerDisplayName = '---';
-      if (canceledMeeting?.scheduler && canceledMeeting.scheduler !== '---') {
+      if (isPotentialMeeting) {
+        meetingSchedulerDisplayName = actor.displayName;
+      } else if (canceledMeeting?.scheduler && canceledMeeting.scheduler !== '---') {
         meetingSchedulerDisplayName = canceledMeeting.scheduler;
       } else if (isLegacyLead) {
         const schedulerName = getEmployeeDisplayName(client.meeting_scheduler_id);
@@ -4871,7 +5168,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         scheduler: meetingSchedulerDisplayName,
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: editorDisplayName,
-        calendar_type: 'active_client', // Always active_client for MeetingTab
+        calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
         custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
         custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
       };
@@ -4884,6 +5181,110 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       if (meetingError) {
         console.error('Meeting creation error:', meetingError);
         throw meetingError;
+      }
+
+      // Update lead roles + stage (aligned with Clients + Meeting rescheduling tracking)
+      // - From Meeting scheduled (20) → Meeting rescheduling (21) after a reschedule
+      // - From Meeting rescheduling (21) → Meeting scheduled (20) after booking the new meeting
+      // - Other stages → Meeting scheduled (20)
+      // - Another meeting / external → do not change stage
+      try {
+        const resolveEmployeeId = (displayName: string | null | undefined): number | null => {
+          if (!displayName || displayName === '---' || displayName.trim() === '') return null;
+          let employee = allEmployees.find(
+            (emp: any) => emp.display_name && emp.display_name.trim() === displayName.trim(),
+          );
+          if (!employee) {
+            employee = allEmployees.find(
+              (emp: any) =>
+                emp.display_name &&
+                emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase(),
+            );
+          }
+          if (!employee) return null;
+          return typeof employee.id === 'number' ? employee.id : parseInt(employee.id, 10);
+        };
+
+        const managerEmployeeId = resolveEmployeeId(rescheduleFormData.manager);
+        const helperEmployeeId = resolveEmployeeId(rescheduleFormData.helper);
+        const stageActor = await fetchStageActorInfo();
+        const stageTimestamp = new Date().toISOString();
+        const currentStageNumeric =
+          typeof client.stage === 'number'
+            ? client.stage
+            : client.stage != null && /^\d+$/.test(String(client.stage))
+              ? parseInt(String(client.stage), 10)
+              : null;
+        const currentStageName = getStageName(String(client.stage ?? ''));
+        const isAnotherMeeting =
+          currentStageNumeric === 55 || areStagesEquivalent(currentStageName, 'Another meeting');
+        const isMeetingScheduled =
+          currentStageNumeric === 20 || areStagesEquivalent(currentStageName, 'Meeting scheduled');
+        const isMeetingRescheduling =
+          currentStageNumeric === 21 || areStagesEquivalent(currentStageName, 'Meeting rescheduling');
+
+        let targetStageId: number | null = null;
+        if (rescheduleFormData.calendar !== 'external' && !isAnotherMeeting) {
+          if (isMeetingScheduled) {
+            // Rescheduling an already-scheduled meeting → Meeting rescheduling (21)
+            targetStageId = 21;
+          } else if (isMeetingRescheduling) {
+            // Booking the replacement meeting from stage 21 → Meeting scheduled (20)
+            targetStageId = 20;
+          } else {
+            targetStageId = 20;
+          }
+        }
+
+        const roleFields: Record<string, unknown> = {};
+
+        if (isPotentialMeeting) {
+          if (isLegacyLead && actor.employeeId !== null) {
+            roleFields.meeting_scheduler_id = actor.employeeId;
+          } else if (!isLegacyLead && meetingSchedulerDisplayName && meetingSchedulerDisplayName !== '---') {
+            roleFields.scheduler = meetingSchedulerDisplayName;
+          }
+        }
+
+        if (isLegacyLead) {
+          if (managerEmployeeId !== null) roleFields.meeting_manager_id = managerEmployeeId;
+          if (helperEmployeeId !== null) roleFields.meeting_lawyer_id = helperEmployeeId;
+        } else {
+          if (managerEmployeeId !== null) {
+            roleFields.manager = managerEmployeeId;
+            roleFields.meeting_manager_id = managerEmployeeId;
+          }
+          if (helperEmployeeId !== null) {
+            roleFields.helper = helperEmployeeId;
+            roleFields.meeting_lawyer_id = helperEmployeeId;
+          }
+        }
+
+        if (targetStageId !== null) {
+          await updateLeadStageWithHistory({
+            lead: client as any,
+            stage: targetStageId,
+            additionalFields: roleFields,
+            actor: stageActor,
+            timestamp: stageTimestamp,
+          });
+        } else if (Object.keys(roleFields).length > 0) {
+          const legacyIdNumeric =
+            legacyId != null && /^\d+$/.test(String(legacyId))
+              ? parseInt(String(legacyId), 10)
+              : legacyId;
+          const { error: leadUpdateError } = isLegacyLead
+            ? await supabase.from('leads_lead').update(roleFields).eq('id', legacyIdNumeric)
+            : await supabase.from('leads').update(roleFields).eq('id', client.id);
+          if (leadUpdateError) {
+            console.error('Error updating lead roles on reschedule:', leadUpdateError);
+          }
+        }
+      } catch (leadRoleError) {
+        console.error('Error updating lead stage/roles on reschedule:', leadRoleError);
+        toast.error(
+          'Meeting was rescheduled, but updating the lead stage failed. Please update the stage manually.',
+        );
       }
 
       // Send notification email to client (only if notify toggle is on)
@@ -5153,7 +5554,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         time: '09:00',
         duration: DEFAULT_MEETING_DURATION_MINUTES,
         location: 'Teams',
-        calendar: 'active_client',
+        calendar: defaultScheduleCalendar,
         manager: '',
         helper: '',
         brief: '',
@@ -8228,8 +8629,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                     value={scheduleMeetingFormData.calendar}
                     onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
                   >
-                    <option value="active_client">Active Client</option>
-                    <option value="external">External Meeting</option>
+                    {!allowActiveAndExternalCalendars ? (
+                      <option value="current">Potential Client</option>
+                    ) : (
+                      <>
+                        <option value="active_client">Active Client</option>
+                        <option value="external">External Meeting</option>
+                      </>
+                    )}
                   </select>
                 </div>
 
@@ -8256,6 +8663,144 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   startTime={scheduleMeetingFormData.time}
                   disabled={!scheduleMeetingFormData.date}
                 />
+
+                {/* Manager / Helper — Potential Client meetings only */}
+                {scheduleMeetingFormData.calendar !== 'active_client' &&
+                  scheduleMeetingFormData.calendar !== 'external' && (
+                  <>
+                    <div className="relative" ref={managerDropdownRef}>
+                      <MeetingFormFieldLabel icon={UserIcon}>Manager (Optional)</MeetingFormFieldLabel>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a manager..."
+                        value={scheduleMeetingFormData.manager}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setScheduleMeetingFormData((prev) => ({ ...prev, manager: value }));
+                          setManagerSearchTerm(value);
+                          setShowManagerDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setManagerSearchTerm(scheduleMeetingFormData.manager || '');
+                          setShowManagerDropdown(true);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showManagerDropdown && (
+                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-gray-300 bg-white shadow-lg">
+                          {(() => {
+                            const searchTerm = (managerSearchTerm || scheduleMeetingFormData.manager || '').toLowerCase();
+                            const filtered = activeRolePickerEmployees.filter((emp: any) => {
+                              const name = (emp.display_name || emp.full_name || '').toLowerCase();
+                              return !searchTerm || name.includes(searchTerm);
+                            });
+                            if (filtered.length === 0) {
+                              return <div className="px-4 py-2 text-center text-gray-500">No employees found</div>;
+                            }
+                            return filtered.map((emp: any) => {
+                              const unavailable = getEmployeeUnavailabilityInfo(
+                                emp.id,
+                                scheduleMeetingFormData.date,
+                                scheduleMeetingFormData.time,
+                              );
+                              return (
+                                <div
+                                  key={emp.id}
+                                  className={`flex cursor-pointer items-center justify-between gap-2 px-4 py-2 ${
+                                    unavailable
+                                      ? 'bg-red-50 text-red-700 hover:bg-red-100'
+                                      : 'hover:bg-gray-100'
+                                  }`}
+                                  onClick={() => {
+                                    setScheduleMeetingFormData((prev) => ({
+                                      ...prev,
+                                      manager: emp.display_name || emp.full_name || '',
+                                    }));
+                                    setManagerSearchTerm('');
+                                    setShowManagerDropdown(false);
+                                  }}
+                                >
+                                  {renderRolePickerEmployeeOption(
+                                    emp,
+                                    scheduleMeetingFormData.date,
+                                    scheduleMeetingFormData.time,
+                                  )}
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="relative" ref={helperDropdownRef}>
+                      <MeetingFormFieldLabel icon={UserGroupIcon}>Helper (Optional)</MeetingFormFieldLabel>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a helper..."
+                        value={scheduleMeetingFormData.helper}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setScheduleMeetingFormData((prev) => ({ ...prev, helper: value }));
+                          setHelperSearchTerm(value);
+                          setShowHelperDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setHelperSearchTerm(scheduleMeetingFormData.helper || '');
+                          setShowHelperDropdown(true);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showHelperDropdown && (
+                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-gray-300 bg-white shadow-lg">
+                          {(() => {
+                            const searchTerm = (helperSearchTerm || scheduleMeetingFormData.helper || '').toLowerCase();
+                            const filtered = activeRolePickerEmployees.filter((emp: any) => {
+                              const name = (emp.display_name || emp.full_name || '').toLowerCase();
+                              return !searchTerm || name.includes(searchTerm);
+                            });
+                            if (filtered.length === 0) {
+                              return <div className="px-4 py-2 text-center text-gray-500">No employees found</div>;
+                            }
+                            return filtered.map((emp: any) => {
+                              const unavailable = getEmployeeUnavailabilityInfo(
+                                emp.id,
+                                scheduleMeetingFormData.date,
+                                scheduleMeetingFormData.time,
+                              );
+                              return (
+                                <div
+                                  key={emp.id}
+                                  className={`flex cursor-pointer items-center justify-between gap-2 px-4 py-2 ${
+                                    unavailable
+                                      ? 'bg-red-50 text-red-700 hover:bg-red-100'
+                                      : 'hover:bg-gray-100'
+                                  }`}
+                                  onClick={() => {
+                                    setScheduleMeetingFormData((prev) => ({
+                                      ...prev,
+                                      helper: emp.display_name || emp.full_name || '',
+                                    }));
+                                    setHelperSearchTerm('');
+                                    setShowHelperDropdown(false);
+                                  }}
+                                >
+                                  {renderRolePickerEmployeeOption(
+                                    emp,
+                                    scheduleMeetingFormData.date,
+                                    scheduleMeetingFormData.time,
+                                  )}
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
 
                 {/* External Meeting fields (Internal Meeting with external participants) */}
                 {scheduleMeetingFormData.calendar === 'external' && (
@@ -8608,7 +9153,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             </MeetingFormDrawerActionButton>
             {rescheduleOption === 'cancel' ? (
               <MeetingFormDrawerActionButton
-                className="btn-primary"
+                className="btn-primary !rounded-full"
                 onClick={handleCancelMeeting}
                 disabled={!meetingToDelete || isReschedulingMeeting}
               >
@@ -8623,7 +9168,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               </MeetingFormDrawerActionButton>
             ) : (
               <MeetingFormDrawerActionButton
-                className="btn-primary"
+                className="btn-primary !rounded-full"
                 onClick={handleRescheduleMeeting}
                 disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
               >
@@ -8696,24 +9241,35 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                     : undefined
                 }
               >
-                <label className={`block font-semibold mb-2 ${isReschedulePage ? 'text-gray-500' : ''}`}>Action</label>
-                <div className="flex gap-3">
+                <label className={`mb-2 block font-semibold ${isReschedulePage ? 'text-gray-500' : ''}`}>Action</label>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    className={`btn flex-1 ${rescheduleOption === 'cancel' ? 'btn-primary' : 'btn-outline'}`}
+                    className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-colors ${
+                      rescheduleOption === 'cancel'
+                        ? 'bg-[#3b28c7] text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
                     onClick={() => setRescheduleOption('cancel')}
                   >
                     Cancel Meeting
                   </button>
+                  <span className="px-1 text-sm font-semibold uppercase tracking-wide text-gray-400">
+                    or
+                  </span>
                   <button
                     type="button"
-                    className={`btn flex-1 ${rescheduleOption === 'reschedule' ? 'btn-primary' : 'btn-outline'}`}
+                    className={`rounded-full px-5 py-2.5 text-sm font-semibold transition-colors ${
+                      rescheduleOption === 'reschedule'
+                        ? 'bg-[#3b28c7] text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
                     onClick={() => setRescheduleOption('reschedule')}
                   >
                     Reschedule Meeting
                   </button>
                 </div>
-                <p className="text-sm text-gray-500 mt-2">
+                <p className="mt-2 text-sm text-gray-500">
                   {rescheduleOption === 'cancel'
                     ? 'Cancel the meeting and send cancellation email to client.'
                     : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
@@ -8781,7 +9337,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                             time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
                             duration: normalizeMeetingDurationMinutes(selectedMeeting.duration),
                             location: selectedMeeting.meeting_location || 'Teams',
-                            calendar: 'active_client',
+                            calendar: allowActiveAndExternalCalendars ? 'active_client' : 'current',
                             manager: selectedMeeting.meeting_manager || '',
                             helper: selectedMeeting.helper || '',
                             brief: selectedMeeting.meeting_brief || '',
@@ -8857,8 +9413,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                         value={rescheduleFormData.calendar}
                         onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
                       >
-                        <option value="active_client">Active Client</option>
-                        <option value="external">External Meeting</option>
+                        {!allowActiveAndExternalCalendars ? (
+                          <option value="current">Potential Client</option>
+                        ) : (
+                          <>
+                            <option value="active_client">Active Client</option>
+                            <option value="external">External Meeting</option>
+                          </>
+                        )}
                       </select>
                     </div>
 
@@ -8885,6 +9447,144 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                       startTime={rescheduleFormData.time}
                       disabled={!rescheduleFormData.date}
                     />
+
+                    {/* Manager / Helper — Potential Client meetings only */}
+                    {rescheduleFormData.calendar !== 'active_client' &&
+                      rescheduleFormData.calendar !== 'external' && (
+                      <>
+                        <div className="relative" ref={rescheduleManagerDropdownRef}>
+                          <MeetingFormFieldLabel icon={UserIcon}>Manager (Optional)</MeetingFormFieldLabel>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            placeholder="Select a manager..."
+                            value={rescheduleFormData.manager}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setRescheduleFormData((prev: any) => ({ ...prev, manager: value }));
+                              setRescheduleManagerSearchTerm(value);
+                              setShowRescheduleManagerDropdown(true);
+                            }}
+                            onFocus={() => {
+                              setRescheduleManagerSearchTerm(rescheduleFormData.manager || '');
+                              setShowRescheduleManagerDropdown(true);
+                            }}
+                            autoComplete="off"
+                          />
+                          {showRescheduleManagerDropdown && (
+                            <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-gray-300 bg-white shadow-lg">
+                              {(() => {
+                                const searchTerm = (rescheduleManagerSearchTerm || rescheduleFormData.manager || '').toLowerCase();
+                                const filtered = activeRolePickerEmployees.filter((emp: any) => {
+                                  const name = (emp.display_name || emp.full_name || '').toLowerCase();
+                                  return !searchTerm || name.includes(searchTerm);
+                                });
+                                if (filtered.length === 0) {
+                                  return <div className="px-4 py-2 text-center text-gray-500">No employees found</div>;
+                                }
+                                return filtered.map((emp: any) => {
+                                  const unavailable = getEmployeeUnavailabilityInfo(
+                                    emp.id,
+                                    rescheduleFormData.date,
+                                    rescheduleFormData.time,
+                                  );
+                                  return (
+                                    <div
+                                      key={emp.id}
+                                      className={`flex cursor-pointer items-center justify-between gap-2 px-4 py-2 ${
+                                        unavailable
+                                          ? 'bg-red-50 text-red-700 hover:bg-red-100'
+                                          : 'hover:bg-gray-100'
+                                      }`}
+                                      onClick={() => {
+                                        setRescheduleFormData((prev: any) => ({
+                                          ...prev,
+                                          manager: emp.display_name || emp.full_name || '',
+                                        }));
+                                        setRescheduleManagerSearchTerm('');
+                                        setShowRescheduleManagerDropdown(false);
+                                      }}
+                                    >
+                                      {renderRolePickerEmployeeOption(
+                                        emp,
+                                        rescheduleFormData.date,
+                                        rescheduleFormData.time,
+                                      )}
+                                    </div>
+                                  );
+                                });
+                              })()}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="relative" ref={rescheduleHelperDropdownRef}>
+                          <MeetingFormFieldLabel icon={UserGroupIcon}>Helper (Optional)</MeetingFormFieldLabel>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            placeholder="Select a helper..."
+                            value={rescheduleFormData.helper}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setRescheduleFormData((prev: any) => ({ ...prev, helper: value }));
+                              setRescheduleHelperSearchTerm(value);
+                              setShowRescheduleHelperDropdown(true);
+                            }}
+                            onFocus={() => {
+                              setRescheduleHelperSearchTerm(rescheduleFormData.helper || '');
+                              setShowRescheduleHelperDropdown(true);
+                            }}
+                            autoComplete="off"
+                          />
+                          {showRescheduleHelperDropdown && (
+                            <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-gray-300 bg-white shadow-lg">
+                              {(() => {
+                                const searchTerm = (rescheduleHelperSearchTerm || rescheduleFormData.helper || '').toLowerCase();
+                                const filtered = activeRolePickerEmployees.filter((emp: any) => {
+                                  const name = (emp.display_name || emp.full_name || '').toLowerCase();
+                                  return !searchTerm || name.includes(searchTerm);
+                                });
+                                if (filtered.length === 0) {
+                                  return <div className="px-4 py-2 text-center text-gray-500">No employees found</div>;
+                                }
+                                return filtered.map((emp: any) => {
+                                  const unavailable = getEmployeeUnavailabilityInfo(
+                                    emp.id,
+                                    rescheduleFormData.date,
+                                    rescheduleFormData.time,
+                                  );
+                                  return (
+                                    <div
+                                      key={emp.id}
+                                      className={`flex cursor-pointer items-center justify-between gap-2 px-4 py-2 ${
+                                        unavailable
+                                          ? 'bg-red-50 text-red-700 hover:bg-red-100'
+                                          : 'hover:bg-gray-100'
+                                      }`}
+                                      onClick={() => {
+                                        setRescheduleFormData((prev: any) => ({
+                                          ...prev,
+                                          helper: emp.display_name || emp.full_name || '',
+                                        }));
+                                        setRescheduleHelperSearchTerm('');
+                                        setShowRescheduleHelperDropdown(false);
+                                      }}
+                                    >
+                                      {renderRolePickerEmployeeOption(
+                                        emp,
+                                        rescheduleFormData.date,
+                                        rescheduleFormData.time,
+                                      )}
+                                    </div>
+                                  );
+                                });
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
 
                     {/* External Meeting fields (Internal Meeting with external participants) */}
                     {rescheduleFormData.calendar === 'external' && (
