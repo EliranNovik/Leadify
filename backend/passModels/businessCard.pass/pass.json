@@ -5,7 +5,7 @@
   "teamIdentifier": "TEAM_ID_PLACEHOLDER",
   "organizationName": "Decker, Pex, Levi Law Offices",
   "description": "Business Card",
-  "logoText": "",
+  "logoText": "DPL",
   "foregroundColor": "rgb(255, 255, 255)",
   "backgroundColor": "rgb(15, 36, 31)",
   "labelColor": "rgb(201, 169, 110)",

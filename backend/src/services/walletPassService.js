@@ -346,8 +346,8 @@ async function buildApplePkPassBuffer(employeeId) {
       teamIdentifier: cfg.teamIdentifier,
       organizationName: FIRM_NAME,
       description: `${profile.official_name} — ${FIRM_NAME}`,
-      // Real logo image replaces the plain "DP" text when available
-      logoText: logoBuffers ? '' : 'DP',
+      // PassKit requires a non-empty value even when a logo image is bundled.
+      logoText: 'DPL',
       foregroundColor: 'rgb(255, 255, 255)',
       backgroundColor: 'rgb(15, 36, 31)',
       labelColor: 'rgb(201, 169, 110)',
