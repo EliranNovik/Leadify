@@ -273,8 +273,8 @@ async function fetchImageBuffer(url) {
 
 async function circularPngAtSize(input, size) {
   const image = await Jimp.read(input);
+  // Fill the full thumbnail slot (Apple caps display size; maximize visual weight).
   image.cover(size, size);
-  // Apple Wallet shows square slots; bake a circle so the photo looks rounded.
   image.circle();
   return image.getBufferAsync(Jimp.MIME_PNG);
 }
@@ -284,10 +284,12 @@ async function loadDpLogoBuffers() {
   if (!raw) return null;
   try {
     const base = await Jimp.read(raw);
-    const logo1x = base.clone().contain(160, 50).getBufferAsync(Jimp.MIME_PNG);
-    const logo2x = base.clone().contain(320, 100).getBufferAsync(Jimp.MIME_PNG);
-    const [buf1, buf2] = await Promise.all([logo1x, logo2x]);
-    return { logo1x: buf1, logo2x: buf2 };
+    // Compact mark like the reference card (logo + short title beside it)
+    const logo1x = base.clone().contain(100, 32).getBufferAsync(Jimp.MIME_PNG);
+    const logo2x = base.clone().contain(200, 64).getBufferAsync(Jimp.MIME_PNG);
+    const logo3x = base.clone().contain(300, 96).getBufferAsync(Jimp.MIME_PNG);
+    const [buf1, buf2, buf3] = await Promise.all([logo1x, logo2x, logo3x]);
+    return { logo1x: buf1, logo2x: buf2, logo3x: buf3 };
   } catch (err) {
     console.warn('[wallet] logo resize failed', err.message);
     return null;
@@ -298,11 +300,11 @@ async function loadThumbnailBuffers(photoUrl) {
   const raw = await fetchImageBuffer(photoUrl);
   if (!raw) return null;
   try {
-    // Larger assets for sharper display; Wallet layout still controls on-screen size.
+    // Apple’s thumbnail slot is fixed (~90pt); ship max @1x/@2x/@3x so it renders as large/sharp as Wallet allows.
     const [thumb1x, thumb2x, thumb3x] = await Promise.all([
-      circularPngAtSize(raw, 120),
-      circularPngAtSize(raw, 240),
-      circularPngAtSize(raw, 360),
+      circularPngAtSize(raw, 270),
+      circularPngAtSize(raw, 540),
+      circularPngAtSize(raw, 810),
     ]);
     return { thumb1x, thumb2x, thumb3x };
   } catch (err) {
@@ -324,10 +326,11 @@ async function buildApplePkPassBuffer(employeeId) {
 
   const profile = await fetchPublicBusinessCard(employeeId);
   const cardUrl = buildCardUrl(profile.id);
-  // v7: QR with no caption under it
-  const serialNumber = `dpl-bc-${profile.id}-v7`;
+  // v9: same color for labels + values; max thumbnail assets
+  const serialNumber = `dpl-bc-${profile.id}-v9`;
   const department = String(profile.department_name || 'General').trim();
   const phone = phoneLine(profile);
+  const addressLine = `${OFFICE_LABEL}, ${OFFICE_ADDRESS}`;
 
   const [logoBuffers, thumbBuffers] = await Promise.all([
     loadDpLogoBuffers(),
@@ -350,17 +353,20 @@ async function buildApplePkPassBuffer(employeeId) {
       teamIdentifier: cfg.teamIdentifier,
       organizationName: FIRM_NAME,
       description: `${profile.official_name} — ${FIRM_NAME}`,
-      // PassKit requires a non-empty value even when a logo image is bundled.
-      logoText: 'DPL',
+      logoText: 'Business Card',
       foregroundColor: 'rgb(255, 255, 255)',
       backgroundColor: 'rgb(15, 36, 31)',
-      labelColor: 'rgb(201, 169, 110)',
+      // Same as value text — no gray/gold label contrast
+      labelColor: 'rgb(255, 255, 255)',
     },
   );
 
   if (logoBuffers) {
     pass.addBuffer('logo.png', logoBuffers.logo1x);
     pass.addBuffer('paula.r@example.org', logoBuffers.logo2x);
+    if (logoBuffers.logo3x) {
+      pass.addBuffer('oscar.d@example.net', logoBuffers.logo3x);
+    }
   }
 
   if (thumbBuffers) {
@@ -375,33 +381,31 @@ async function buildApplePkPassBuffer(employeeId) {
   pass.auxiliaryFields.splice(0, pass.auxiliaryFields.length);
   pass.backFields.splice(0, pass.backFields.length);
 
+  // Name + circular photo
   pass.primaryFields.push({
     key: 'name',
     label: '',
     value: profile.official_name,
   });
 
-  // Department directly below the employee name, without a field title.
+  // Department directly under the name
   pass.secondaryFields.push({
     key: 'department',
     label: '',
     value: department,
   });
 
-  if (profile.email) {
-    pass.auxiliaryFields.push({
-      key: 'email',
-      label: 'EMAIL',
-      value: profile.email,
-    });
-  }
-  if (phone) {
-    pass.auxiliaryFields.push({
-      key: 'phone',
-      label: 'PHONE',
-      value: phone,
-    });
-  }
+  // Stack EMAIL → PHONE → ADDRESS in one column (two auxiliary fields sit side-by-side).
+  const contactBlocks = [];
+  if (profile.email) contactBlocks.push(profile.email);
+  if (phone) contactBlocks.push(`PHONE\n${phone}`);
+  contactBlocks.push(`ADDRESS\n${addressLine}`);
+
+  pass.auxiliaryFields.push({
+    key: 'contact',
+    label: profile.email ? 'EMAIL' : phone ? 'PHONE' : 'ADDRESS',
+    value: contactBlocks.join('\n'),
+  });
 
   pass.backFields.push({
     key: 'firm',
