@@ -203,6 +203,10 @@ const MobileBusinessCard: React.FC<MobileCardProps> = ({
   const [walletStatus, setWalletStatus] = useState<WalletBackendStatus | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
+  const walletPlatform = useMemo(() => detectWalletPlatform(), []);
+  const roleLine = `${getRoleDisplay(profile.bonuses_role)} – ${profile.department_name} Department`;
+  const employeeEmail = profile.email?.trim() || '';
+
   const openQrSheet = () => {
     setQrExiting(false);
     setQrOpen(true);
@@ -231,10 +235,6 @@ const MobileBusinessCard: React.FC<MobileCardProps> = ({
     if (walletPlatform !== 'apple' && walletPlatform !== 'google') return;
     void fetchWalletBackendStatus().then(setWalletStatus);
   }, [walletPlatform]);
-
-  const walletPlatform = useMemo(() => detectWalletPlatform(), []);
-  const roleLine = `${getRoleDisplay(profile.bonuses_role)} – ${profile.department_name} Department`;
-  const employeeEmail = profile.email?.trim() || '';
 
   const handleAddContact = async () => {
     if (actionBusy) return;
