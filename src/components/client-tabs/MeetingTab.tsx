@@ -5183,11 +5183,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         throw meetingError;
       }
 
-      // Update lead roles + stage (aligned with Clients + Meeting rescheduling tracking)
-      // - From Meeting scheduled (20) → Meeting rescheduling (21) after a reschedule
-      // - From Meeting rescheduling (21) → Meeting scheduled (20) after booking the new meeting
-      // - Other stages → Meeting scheduled (20)
-      // - Another meeting / external → do not change stage
+      // Update lead roles + stage after booking the replacement meeting.
+      // Cancel-only leaves the lead in Meeting rescheduling (21). Completing a
+      // reschedule (new meeting created) moves them to Meeting scheduled (20),
+      // including when they were already on stage 21.
+      // Another meeting / external → do not change stage.
       try {
         const resolveEmployeeId = (displayName: string | null | undefined): number | null => {
           if (!displayName || displayName === '---' || displayName.trim() === '') return null;
@@ -5218,23 +5218,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         const currentStageName = getStageName(String(client.stage ?? ''));
         const isAnotherMeeting =
           currentStageNumeric === 55 || areStagesEquivalent(currentStageName, 'Another meeting');
-        const isMeetingScheduled =
-          currentStageNumeric === 20 || areStagesEquivalent(currentStageName, 'Meeting scheduled');
-        const isMeetingRescheduling =
-          currentStageNumeric === 21 || areStagesEquivalent(currentStageName, 'Meeting rescheduling');
 
-        let targetStageId: number | null = null;
-        if (rescheduleFormData.calendar !== 'external' && !isAnotherMeeting) {
-          if (isMeetingScheduled) {
-            // Rescheduling an already-scheduled meeting → Meeting rescheduling (21)
-            targetStageId = 21;
-          } else if (isMeetingRescheduling) {
-            // Booking the replacement meeting from stage 21 → Meeting scheduled (20)
-            targetStageId = 20;
-          } else {
-            targetStageId = 20;
-          }
-        }
+        // Booking a replacement meeting → Meeting scheduled (20)
+        const targetStageId =
+          rescheduleFormData.calendar !== 'external' && !isAnotherMeeting ? 20 : null;
 
         const roleFields: Record<string, unknown> = {};
 

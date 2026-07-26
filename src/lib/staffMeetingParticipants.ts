@@ -157,6 +157,101 @@ export async function fetchEnrichedParticipantsByMeetingIds(
   return Object.fromEntries(entries);
 }
 
+/** Lightweight batch of participant display names for calendar list cells. */
+export async function fetchParticipantNamesByMeetingIds(
+  meetingIds: number[],
+): Promise<Record<number, string[]>> {
+  const unique = Array.from(
+    new Set(meetingIds.filter((id) => Number.isFinite(id) && id > 0)),
+  );
+  if (unique.length === 0) return {};
+
+  const { data: partData, error } = await supabase
+    .from('meeting_participants')
+    .select('meeting_id, employee_id, firm_contact_id, free_name')
+    .in('meeting_id', unique);
+  if (error) throw error;
+  if (!partData?.length) return {};
+
+  const employeeIds = Array.from(
+    new Set(
+      partData
+        .map((r: any) => (r.employee_id != null ? Number(r.employee_id) : null))
+        .filter((n: any) => Number.isFinite(n) && n > 0),
+    ),
+  ) as number[];
+  const firmIds = Array.from(
+    new Set(
+      partData
+        .map((r: any) => (r.firm_contact_id ? String(r.firm_contact_id) : null))
+        .filter(Boolean),
+    ),
+  ) as string[];
+
+  const [empsRes, firmsRes] = await Promise.all([
+    employeeIds.length
+      ? supabase.from('tenants_employee').select('id, display_name').in('id', employeeIds)
+      : Promise.resolve({ data: [] as any[] }),
+    firmIds.length
+      ? supabase.from('firm_contacts').select('id, name').in('id', firmIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  const empNameById = new Map<number, string>();
+  (empsRes as any).data?.forEach((e: any) => {
+    if (e?.display_name) empNameById.set(Number(e.id), String(e.display_name));
+  });
+  const firmNameById = new Map<string, string>();
+  (firmsRes as any).data?.forEach((f: any) => {
+    if (f?.name) firmNameById.set(String(f.id), String(f.name));
+  });
+
+  const byMeeting: Record<number, string[]> = {};
+  for (const row of partData) {
+    const mid = Number((row as any).meeting_id);
+    if (!Number.isFinite(mid)) continue;
+    let name = '';
+    if ((row as any).employee_id != null) {
+      name = empNameById.get(Number((row as any).employee_id)) || '';
+    } else if ((row as any).firm_contact_id) {
+      name = firmNameById.get(String((row as any).firm_contact_id)) || '';
+    } else {
+      name = String((row as any).free_name || '').trim();
+    }
+    if (!name) continue;
+    if (!byMeeting[mid]) byMeeting[mid] = [];
+    if (!byMeeting[mid].includes(name)) byMeeting[mid].push(name);
+  }
+  return byMeeting;
+}
+
+export function formatMeetingAttendeesDisplay(names: string[]): string {
+  if (!names.length) return '';
+  if (names.length === 1) return names[0];
+  if (names.length <= 3) return names.join(', ');
+  return `${names.slice(0, 2).join(', ')} +${names.length - 2} more`;
+}
+
+/**
+ * Persist a compact attendees summary onto meetings.meeting_manager so calendar
+ * list cells (and realtime patches) show guests without a join to meeting_participants.
+ * Used for staff / recruitment meetings where meeting_manager is the attendees label.
+ */
+export async function syncMeetingAttendeesDisplayColumn(
+  meetingId: number,
+): Promise<string> {
+  if (!Number.isFinite(meetingId) || meetingId <= 0) return '';
+  const namesById = await fetchParticipantNamesByMeetingIds([meetingId]);
+  const names = namesById[meetingId] || [];
+  const display = formatMeetingAttendeesDisplay(names);
+  const { error } = await supabase
+    .from('meetings')
+    .update({ meeting_manager: display || '' })
+    .eq('id', meetingId);
+  if (error) throw error;
+  return display;
+}
+
 export async function removeMeetingParticipantRow(participantRowId: string): Promise<void> {
   const { error } = await supabase
     .from('meeting_participants')

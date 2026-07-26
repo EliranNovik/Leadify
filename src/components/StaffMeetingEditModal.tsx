@@ -15,6 +15,7 @@ import {
   ensureRecruitmentCandidateParticipant,
   RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE,
 } from '../lib/recruitmentMeetingParticipants';
+import { syncMeetingAttendeesDisplayColumn } from '../lib/staffMeetingParticipants';
 
 interface StaffMeetingEditModalProps {
   isOpen: boolean;
@@ -725,6 +726,12 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
           console.log('insert error:', insErr);
           console.groupEnd();
           if (insErr) throw insErr;
+        }
+
+        try {
+          await syncMeetingAttendeesDisplayColumn(Number(dbMeetingId));
+        } catch (syncErr) {
+          console.warn('Failed to sync attendees display column:', syncErr);
         }
       } else {
         toast.error('Could not resolve internal meeting row in database (meeting id). Please refresh and try again.', {

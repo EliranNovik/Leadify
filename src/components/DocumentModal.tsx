@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useId } from 'react';
 import { 
   XMarkIcon, 
   EyeIcon, 
@@ -425,6 +425,7 @@ function DocumentRowActionMenu({
 }
 
 interface UploadedFile {
+  id: string;
   name: string;
   status: 'uploading' | 'success' | 'error';
   progress?: number;
@@ -591,6 +592,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   staffMeetingId = null,
   staffMeetingTitle = null,
 }) => {
+  const fileInputId = useId();
   const isStaffMeetingDocs = staffMeetingId != null && Number.isFinite(staffMeetingId);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1575,6 +1577,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!isOpen || isUploading || caseUploadBlocked) return;
     if (!isStaffMeetingDocs && requireCaseDocumentClassification && !uploadClassificationId) {
       toast.error('Select a document category below to upload.');
       return;
@@ -1587,31 +1590,43 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   // Handle file input change
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isOpen || isUploading || caseUploadBlocked) {
+      e.target.value = '';
+      return;
+    }
     if (!isStaffMeetingDocs && requireCaseDocumentClassification && !uploadClassificationId) {
       toast.error('Select a document category below to upload.');
       e.target.value = '';
       return;
     }
     const files = e.target.files;
-    if (files) {
+    if (files?.length) {
       await uploadFiles(Array.from(files));
     }
+    // Allow selecting the same file again after upload.
+    e.target.value = '';
   };
 
   // The main upload function
   const uploadFiles = async (files: File[]) => {
+    if (!files.length || isUploading) return;
     const classificationIdForBatch = uploadClassificationId;
     if (!isStaffMeetingDocs && requireCaseDocumentClassification && !classificationIdForBatch) {
       toast.error('Select a document category below to upload.');
       return;
     }
     setIsUploading(true);
-    const newUploads = files.map(file => ({ name: file.name, status: 'uploading' as const, progress: 5 }));
-    setUploadedFiles(prev => [...prev, ...newUploads]);
+    const newUploads: UploadedFile[] = files.map((file, index) => ({
+      id: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 9)}`,
+      name: file.name,
+      status: 'uploading',
+      progress: 5,
+    }));
+    setUploadedFiles((prev) => [...prev, ...newUploads]);
 
-    const progressIntervals: Map<string, NodeJS.Timeout> = new Map();
+    const progressIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
 
-    const startProgressSimulation = (fileName: string, fileSize: number) => {
+    const startProgressSimulation = (uploadId: string, fileSize: number) => {
       const initialProgress = 5;
       let currentProgress = initialProgress;
       const targetProgress = 90;
@@ -1619,45 +1634,59 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       const startTime = Date.now();
       const estimatedDuration = Math.max(2000, Math.min(10000, fileSize / 1024));
       const updateInterval = 100;
-      
+
       const interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
         const progressRatio = Math.min(elapsed / estimatedDuration, 0.95);
         const easedProgress = 1 - Math.pow(1 - progressRatio, 3);
         currentProgress = Math.min(
-          Math.floor(initialProgress + (easedProgress * progressRange)), 
-          targetProgress
+          Math.floor(initialProgress + easedProgress * progressRange),
+          targetProgress,
         );
-        
+
         if (currentProgress >= targetProgress) {
           clearInterval(interval);
-          progressIntervals.delete(fileName);
+          progressIntervals.delete(uploadId);
         }
-        
-        setUploadedFiles(prev => prev.map(f => 
-          f.name === fileName && f.status === 'uploading'
-            ? { ...f, progress: currentProgress }
-            : f
-        ));
+
+        setUploadedFiles((prev) =>
+          prev.map((f) =>
+            f.id === uploadId && f.status === 'uploading'
+              ? { ...f, progress: currentProgress }
+              : f,
+          ),
+        );
       }, updateInterval);
-      
-      progressIntervals.set(fileName, interval);
-      return interval;
+
+      progressIntervals.set(uploadId, interval);
     };
 
-    const stopProgressSimulation = (fileName: string) => {
-      const interval = progressIntervals.get(fileName);
+    const stopProgressSimulation = (uploadId: string) => {
+      const interval = progressIntervals.get(uploadId);
       if (interval) {
         clearInterval(interval);
-        progressIntervals.delete(fileName);
+        progressIntervals.delete(uploadId);
       }
     };
 
-    const subKey = onedriveSubFolder?.trim() ? onedriveSubFolder.trim() : null;
+    const markUpload = (
+      uploadId: string,
+      patch: Partial<UploadedFile>,
+    ) => {
+      setUploadedFiles((prev) =>
+        prev.map((f) => (f.id === uploadId ? { ...f, ...patch } : f)),
+      );
+    };
 
-    for (const file of files) {
-      startProgressSimulation(file.name, file.size);
-      
+    const subKey = onedriveSubFolder?.trim() ? onedriveSubFolder.trim() : null;
+    const uploadedBy = await getCurrentUserName();
+    let anySucceeded = false;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const uploadId = newUploads[i].id;
+      startProgressSimulation(uploadId, file.size);
+
       try {
         if (isStaffMeetingDocs && staffMeetingId != null) {
           const storagePath = buildStaffMeetingDocumentStoragePath(staffMeetingId, file.name);
@@ -1670,29 +1699,28 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               upsert: false,
             });
 
-          stopProgressSimulation(file.name);
+          stopProgressSimulation(uploadId);
 
           if (storageErr) throw storageErr;
-
-          const uploadedBy = await getCurrentUserName();
-          const mimeType = contentType;
 
           const { error: insErr } = await supabase.from('staff_meeting_documents').insert({
             meeting_id: staffMeetingId,
             storage_path: storagePath,
             file_name: file.name,
             file_size: file.size,
-            mime_type: mimeType,
+            mime_type: contentType,
             uploaded_by: uploadedBy,
             ai_summary_status: 'skipped',
           });
 
-          if (insErr) throw insErr;
+          if (insErr) {
+            console.error('staff_meeting_documents insert:', insErr);
+            await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([storagePath]);
+            throw new Error(insErr.message);
+          }
 
-          setUploadedFiles((prev) =>
-            prev.map((f) => (f.name === file.name ? { ...f, status: 'success' as const, progress: 100 } : f)),
-          );
-          await fetchDocuments();
+          markUpload(uploadId, { status: 'success', progress: 100 });
+          anySucceeded = true;
           continue;
         }
 
@@ -1706,12 +1734,9 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             upsert: false,
           });
 
-        stopProgressSimulation(file.name);
+        stopProgressSimulation(uploadId);
 
         if (storageErr) throw storageErr;
-
-        const uploadedBy = await getCurrentUserName();
-        const mimeType = contentType;
 
         const { data: insertedRow, error: insErr } = await supabase
           .from('lead_case_documents')
@@ -1722,9 +1747,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             storage_path: storagePath,
             file_name: file.name,
             file_size: file.size,
-            mime_type: mimeType,
+            mime_type: contentType,
             classification_id:
-              requireCaseDocumentClassification && classificationIdForBatch ? classificationIdForBatch : null,
+              requireCaseDocumentClassification && classificationIdForBatch
+                ? classificationIdForBatch
+                : null,
             uploaded_by: uploadedBy,
             ai_summary_status: 'pending',
           })
@@ -1741,38 +1768,31 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           void requestCaseDocumentSummarize(insertedRow.id as string);
         }
 
-        setUploadedFiles(prev => prev.map(f => 
-          f.name === file.name 
-            ? { ...f, status: 'success' as const, progress: 100 } 
-            : f
-        ));
-        
-        // Refresh documents list after successful upload
-        await fetchDocuments();
-
+        markUpload(uploadId, { status: 'success', progress: 100 });
+        anySucceeded = true;
       } catch (err) {
-        stopProgressSimulation(file.name);
+        stopProgressSimulation(uploadId);
         const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
-        setUploadedFiles(prev => prev.map(f => 
-          f.name === file.name 
-            ? { ...f, status: 'error' as const, error: errorMessage, progress: 0 } 
-            : f
-        ));
+        markUpload(uploadId, { status: 'error', error: errorMessage, progress: 0 });
         console.error(`Error uploading ${file.name}:`, err);
       }
     }
-    
+
     progressIntervals.forEach((interval) => clearInterval(interval));
     progressIntervals.clear();
     setIsUploading(false);
-    
+
+    if (anySucceeded) {
+      await fetchDocuments();
+    }
+
     // Clear uploaded files after a delay
     setTimeout(() => {
       setUploadedFiles([]);
     }, 3000);
   };
 
-  if (typeof window === 'undefined') return null;
+  if (typeof window === 'undefined' || !isOpen) return null;
 
   const showUploadZone =
     isStaffMeetingDocs || !requireCaseDocumentClassification || !!uploadClassificationId;
@@ -1780,9 +1800,9 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   return createPortal(
     <>
-    <div className={`fixed inset-0 z-[1000] flex items-end justify-end bg-black bg-opacity-40 transition-opacity duration-300 ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`} style={{ top: 0, left: 0 }}>
+    <div className="fixed inset-0 z-[1000] flex items-end justify-end bg-black bg-opacity-40 transition-opacity duration-300 opacity-100 pointer-events-auto" style={{ top: 0, left: 0 }}>
       <div
-        className={`fixed top-0 flex h-full max-h-full min-h-[350px] min-w-0 flex-col overflow-hidden bg-white shadow-2xl transition-transform duration-500 max-md:inset-x-0 max-md:w-full max-md:max-w-none max-md:rounded-none md:right-0 md:w-full md:max-w-2xl md:rounded-l-2xl px-3 py-5 sm:px-4 md:p-8 lg:p-10 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        className="fixed top-0 flex h-full max-h-full min-h-[350px] min-w-0 flex-col overflow-hidden bg-white shadow-2xl transition-transform duration-500 max-md:inset-x-0 max-md:w-full max-md:max-w-none max-md:rounded-none md:right-0 md:w-full md:max-w-2xl md:rounded-l-2xl px-3 py-5 sm:px-4 md:p-8 lg:p-10 translate-x-0"
         style={{ boxShadow: '0 0 40px 0 rgba(0,0,0,0.2)' }}
       >
         {/* Modal Header */}
@@ -1791,10 +1811,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             <input
               type="file"
               className="hidden"
-              id="file-upload-modal"
+              id={fileInputId}
               multiple
               onChange={handleFileInput}
-              disabled={isUploading || caseUploadBlocked}
+              disabled={uploadDisabled}
             />
           ) : null}
 
@@ -1834,12 +1854,13 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
               {showUploadZone ? (
                 <label
-                  htmlFor="file-upload-modal"
+                  htmlFor={uploadDisabled ? undefined : fileInputId}
                   className={`btn btn-ghost btn-sm h-auto min-h-0 gap-1 border-0 bg-transparent px-2 py-1 font-medium text-base-content shadow-none hover:bg-base-200/60 hover:text-base-content md:hidden ${
-                    uploadDisabled ? 'btn-disabled pointer-events-none opacity-40' : ''
+                    uploadDisabled ? 'pointer-events-none opacity-40' : 'cursor-pointer'
                   }`}
                   title={isUploading ? 'Processing…' : 'Upload document'}
                   aria-label={isUploading ? 'Processing files' : 'Upload document'}
+                  aria-disabled={uploadDisabled}
                 >
                   {isUploading ? (
                     <span className="loading loading-spinner loading-sm" />
@@ -1892,7 +1913,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     isUploading
                       ? 'border-primary bg-gray-50'
                       : 'border-gray-300 bg-gray-50 hover:border-primary hover:bg-purple-50'
-                  } ${caseUploadBlocked ? 'pointer-events-none opacity-50' : ''}`}
+                  } ${uploadDisabled ? 'pointer-events-none opacity-50' : ''}`}
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1909,11 +1930,14 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                       ? 'Processing files...'
                       : caseUploadBlocked
                         ? 'Unable to upload while classifications are loading.'
-                        : 'Drag and drop files here, or click to select files'}
+                        : 'Drag and drop files here, or click Upload Files'}
                   </div>
                   <label
-                    htmlFor="file-upload-modal"
-                    className={`btn btn-outline btn-primary ${isUploading || caseUploadBlocked ? 'btn-disabled' : ''}`}
+                    htmlFor={uploadDisabled ? undefined : fileInputId}
+                    className={`btn btn-outline btn-primary ${
+                      uploadDisabled ? 'pointer-events-none opacity-50' : 'cursor-pointer'
+                    }`}
+                    aria-disabled={uploadDisabled}
                   >
                     <PaperClipIcon className="h-5 w-5" />
                     Upload Files
@@ -1926,8 +1950,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           {/* Uploaded Files List */}
           {uploadedFiles.length > 0 && (
             <div className="space-y-2 mb-6">
-              {uploadedFiles.map((file, index) => (
-                <div key={index} className="flex min-w-0 items-center justify-between gap-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-800/50">
+              {uploadedFiles.map((file) => (
+                <div key={file.id} className="flex min-w-0 items-center justify-between gap-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-800/50">
                   <div className="flex min-w-0 flex-1 items-center gap-3">
                     <PaperClipIcon className="w-5 h-5 shrink-0 text-primary" />
                     <span className="min-w-0 truncate text-base font-medium text-gray-900">{file.name}</span>

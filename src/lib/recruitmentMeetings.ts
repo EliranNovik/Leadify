@@ -8,6 +8,7 @@ import {
   fetchRecruitmentCandidateContact,
   withRecruitmentCandidateParticipant,
 } from './recruitmentMeetingParticipants';
+import { syncMeetingAttendeesDisplayColumn } from './staffMeetingParticipants';
 
 export type RecruitmentMeeting = {
   id: number;
@@ -117,6 +118,11 @@ export async function createRecruitmentMeeting(params: {
     selectionWithCandidate,
     params.freeDraft,
   );
+  try {
+    await syncMeetingAttendeesDisplayColumn(meeting.id);
+  } catch (err) {
+    console.warn('Failed to sync recruitment attendees display:', err);
+  }
 
   return meeting;
 }
@@ -170,6 +176,11 @@ export async function updateRecruitmentMeeting(
       selection = withRecruitmentCandidateParticipant(participants, contact);
     }
     await replaceMeetingParticipants(meetingId, selection, freeDraft);
+    try {
+      await syncMeetingAttendeesDisplayColumn(meetingId);
+    } catch (err) {
+      console.warn('Failed to sync recruitment attendees display:', err);
+    }
   }
 }
 

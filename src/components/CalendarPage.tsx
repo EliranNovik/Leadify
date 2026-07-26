@@ -18,6 +18,10 @@ import {
 import { InternalMeetingTypeBadge } from '../lib/internalMeetingTypeBadge';
 import { recruitmentUserDisplayName } from '../lib/recruitmentDigitalContracts';
 import { ensureRecruitmentCandidateParticipant } from '../lib/recruitmentMeetingParticipants';
+import {
+  fetchParticipantNamesByMeetingIds,
+  formatMeetingAttendeesDisplay,
+} from '../lib/staffMeetingParticipants';
 import { isMeetingBookedViaClientPortal } from '../lib/clientBookingApi';
 import ClientPortalBookingBadge from './client-booking/ClientPortalBookingBadge';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
@@ -538,15 +542,69 @@ const CalendarPage: React.FC = () => {
 
     const patchMeeting = (next: any) => {
       if (!next || next.id == null) return;
+      const calType = String(next.calendar_type || '').trim();
+      const needsParticipantEnrich =
+        (calType === 'staff' || calType === 'recruitment') &&
+        Number.isFinite(Number(next.id));
+
       setMeetings(prev => {
         const idx = prev.findIndex((m: any) => m?.id === next.id);
-        if (idx === -1) return [next, ...prev];
+        if (idx === -1) {
+          return [next, ...prev];
+        }
         const existing = prev[idx];
         const merged = { ...existing, ...next };
+        const mergedType = String(merged.calendar_type || existing.calendar_type || '').trim();
+        // Realtime payloads are raw DB rows: meeting_manager is often '' for staff/
+        // recruitment while the UI stores participant names there. Don't wipe them.
+        if (mergedType === 'staff' || mergedType === 'recruitment') {
+          const incomingManager = String(next.meeting_manager || '').trim();
+          const existingManager = String(existing.meeting_manager || '').trim();
+          if (!incomingManager && existingManager) {
+            merged.meeting_manager = existing.meeting_manager;
+          }
+          if (
+            (!Array.isArray(next.attendees) || next.attendees.length === 0) &&
+            Array.isArray(existing.attendees) &&
+            existing.attendees.length > 0
+          ) {
+            merged.attendees = existing.attendees;
+          }
+          if (existing.recruitment_user_name && !merged.recruitment_user_name) {
+            merged.recruitment_user_name = existing.recruitment_user_name;
+          }
+          if (
+            mergedType === 'recruitment' &&
+            existing.lead &&
+            (!merged.lead || merged.lead === next.lead)
+          ) {
+            merged.lead = existing.lead;
+          }
+        }
         const out = prev.slice();
         out[idx] = merged;
         return out;
       });
+
+      if (needsParticipantEnrich) {
+        const mid = Number(next.id);
+        void fetchParticipantNamesByMeetingIds([mid])
+          .then((namesById) => {
+            const names = namesById[mid] || [];
+            if (!names.length) return;
+            const display = formatMeetingAttendeesDisplay(names);
+            setMeetings((prev) =>
+              prev.map((m: any) =>
+                m?.id === next.id
+                  ? { ...m, attendees: names, meeting_manager: display }
+                  : m,
+              ),
+            );
+          })
+          .catch(() => {
+            /* non-fatal */
+          });
+      }
     };
 
     const removeMeeting = (id: any) => {
@@ -3201,6 +3259,78 @@ const CalendarPage: React.FC = () => {
               };
             });
           }
+
+          // Recruitment (and staff rows without Outlook attendees) store guests in
+          // meeting_participants — hydrate Attendees column from that table.
+          const participantMeetingIds = allProcessedMeetings
+            .filter((m: any) => {
+              if (m?.id == null || !Number.isFinite(Number(m.id))) return false;
+              if (m.calendar_type === 'recruitment') return true;
+              if (m.calendar_type === 'staff') {
+                const hasManager = String(m.meeting_manager || '').trim();
+                const hasAttendees =
+                  Array.isArray(m.attendees) && m.attendees.length > 0;
+                return !hasManager && !hasAttendees;
+              }
+              return false;
+            })
+            .map((m: any) => Number(m.id));
+
+          if (participantMeetingIds.length > 0) {
+            try {
+              const namesByMeetingId =
+                await fetchParticipantNamesByMeetingIds(participantMeetingIds);
+              const healIds: Array<{ id: number; display: string }> = [];
+              allProcessedMeetings = allProcessedMeetings.map((m: any) => {
+                const mid = Number(m.id);
+                const names = namesByMeetingId[mid] || [];
+                if (names.length > 0) {
+                  const display = formatMeetingAttendeesDisplay(names);
+                  if (
+                    (m.calendar_type === 'recruitment' || m.calendar_type === 'staff') &&
+                    !String(m.meeting_manager || '').trim()
+                  ) {
+                    healIds.push({ id: mid, display });
+                  }
+                  return {
+                    ...m,
+                    attendees: names,
+                    meeting_manager: display,
+                  };
+                }
+                if (
+                  m.calendar_type === 'recruitment' &&
+                  !String(m.meeting_manager || '').trim() &&
+                  m.recruitment_user_name
+                ) {
+                  return {
+                    ...m,
+                    attendees: [m.recruitment_user_name],
+                    meeting_manager: m.recruitment_user_name,
+                  };
+                }
+                return m;
+              });
+              // Heal empty attendees labels in DB so realtime patches keep showing names.
+              if (healIds.length > 0) {
+                void Promise.all(
+                  healIds.map(({ id, display }) =>
+                    supabase
+                      .from('meetings')
+                      .update({ meeting_manager: display })
+                      .eq('id', id),
+                  ),
+                ).catch(() => {
+                  /* non-fatal */
+                });
+              }
+            } catch (participantErr) {
+              console.warn(
+                'Failed to enrich calendar attendees from meeting_participants:',
+                participantErr,
+              );
+            }
+          }
         }
 
         if (fetchSeq !== meetingsFetchSeqRef.current) return;
@@ -3991,6 +4121,21 @@ const CalendarPage: React.FC = () => {
     const match = leadName.match(/^Job Interview with \((.+)\)$/i);
     if (match?.[1]) return match[1];
     return 'Candidate';
+  };
+
+  /** Attendees label for staff / recruitment calendar rows. */
+  const getStaffOrRecruitmentAttendeesLabel = (meeting: any): string => {
+    const manager = String(meeting?.meeting_manager || '').trim();
+    if (manager && manager !== '--' && manager !== '---') return manager;
+    const attendees = Array.isArray(meeting?.attendees)
+      ? meeting.attendees.map((a: unknown) => String(a || '').trim()).filter(Boolean)
+      : [];
+    if (attendees.length > 0) return formatMeetingAttendeesDisplay(attendees);
+    if (meeting?.calendar_type === 'recruitment') {
+      const candidate = getRecruitmentMeetingCandidateName(meeting);
+      if (candidate && candidate !== 'Candidate') return candidate;
+    }
+    return 'No attendees';
   };
 
   const renderRecruitmentMeetingLeadLabel = (meeting: any) => {
@@ -5984,7 +6129,7 @@ const CalendarPage: React.FC = () => {
               <div className="flex items-center justify-between gap-2 py-1">
                 <span className="text-sm md:text-base font-semibold text-gray-500">Attendees</span>
                 <div className="text-base md:text-lg font-bold text-gray-800 break-words text-right">
-                  {meeting.meeting_manager || 'No attendees'}
+                  {getStaffOrRecruitmentAttendeesLabel(meeting)}
                 </div>
               </div>
             )}
@@ -6623,7 +6768,7 @@ const CalendarPage: React.FC = () => {
               <div className="max-w-xs">
                 <div className="text-xs font-medium text-gray-700">Attendees:</div>
                 <div className="text-xs font-semibold text-gray-800 break-words whitespace-normal">
-                  {meeting.meeting_manager || 'No attendees'}
+                  {getStaffOrRecruitmentAttendeesLabel(meeting)}
                 </div>
               </div>
             ) : (
@@ -9107,18 +9252,20 @@ const CalendarPage: React.FC = () => {
       })()}
 
       {/* Document Modal */}
-      <DocumentModal
-        isOpen={isDocumentModalOpen}
-        onClose={() => {
-          setIsDocumentModalOpen(false);
-          setSelectedMeeting(null);
-        }}
-        leadNumber={selectedMeeting?.lead?.lead_number || selectedMeeting?.lead_number || ''}
-        clientName={selectedMeeting?.lead?.name || selectedMeeting?.name || ''}
-        onDocumentCountChange={() => { }}
-      />
+      {isDocumentModalOpen ? (
+        <DocumentModal
+          isOpen={isDocumentModalOpen}
+          onClose={() => {
+            setIsDocumentModalOpen(false);
+            setSelectedMeeting(null);
+          }}
+          leadNumber={selectedMeeting?.lead?.lead_number || selectedMeeting?.lead_number || ''}
+          clientName={selectedMeeting?.lead?.name || selectedMeeting?.name || ''}
+          onDocumentCountChange={() => { }}
+        />
+      ) : null}
 
-      {staffMeetingDocsContext ? (
+      {staffMeetingDocsContext && isStaffMeetingDocumentModalOpen ? (
         <DocumentModal
           isOpen={isStaffMeetingDocumentModalOpen}
           onClose={() => {

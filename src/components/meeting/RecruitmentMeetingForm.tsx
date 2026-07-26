@@ -22,7 +22,15 @@ import {
   fetchRecruitmentCandidateContact,
   withRecruitmentCandidateParticipant,
 } from '../../lib/recruitmentMeetingParticipants';
+import { supabase } from '../../lib/supabase';
+import { isMeetingLocationActive, normalizeMeetingLocationRow } from '../../lib/meetingLocationUtils';
 import { loginRequest } from '../../msalConfig';
+
+type MeetingLocationOption = {
+  id: number;
+  name: string;
+  is_active: boolean;
+};
 
 type Props = {
   userId: string;
@@ -68,6 +76,43 @@ const RecruitmentMeetingForm: React.FC<Props> = ({
   const [freeDraft, setFreeDraft] = useState<FreeMeetingParticipant>(emptyFree);
   const [loadingParticipants, setLoadingParticipants] = useState(false);
   const [candidateContactReady, setCandidateContactReady] = useState(false);
+  const [meetingLocations, setMeetingLocations] = useState<MeetingLocationOption[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from('tenants_meetinglocation')
+        .select('id, name, is_active, order')
+        .order('order', { ascending: true, nullsFirst: false });
+      if (cancelled || error || !data) return;
+      const next = data
+        .map((row: any) => normalizeMeetingLocationRow(row))
+        .filter((row: any) => row?.name && isMeetingLocationActive(row))
+        .map((row: any) => ({
+          id: Number(row.id),
+          name: String(row.name).trim(),
+          is_active: true,
+        }))
+        .filter((row: MeetingLocationOption) => Number.isFinite(row.id) && row.name);
+      setMeetingLocations(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Default to Teams (or first) once locations load for a fresh interview.
+  useEffect(() => {
+    if (meetingLocations.length === 0) return;
+    const hasCurrent = meetingLocations.some((loc) => loc.name === location);
+    if (hasCurrent) return;
+    if (mode === 'schedule' && !meeting?.id) {
+      const preferred =
+        meetingLocations.find((loc) => loc.name === 'Teams') || meetingLocations[0];
+      setLocation(preferred.name);
+    }
+  }, [meetingLocations, mode, meeting?.id, location]);
 
   useEffect(() => {
     if (meeting) {
@@ -268,10 +313,20 @@ const RecruitmentMeetingForm: React.FC<Props> = ({
           value={location}
           onChange={(e) => setLocation(e.target.value)}
         >
-          <option value="Teams">Teams</option>
-          <option value="Office">Office</option>
-          <option value="Phone">Phone</option>
-          <option value="Other">Other</option>
+          {meetingLocations.length === 0 ? (
+            <option value={location || 'Teams'}>{location || 'Teams'}</option>
+          ) : (
+            <>
+              {!meetingLocations.some((loc) => loc.name === location) && location ? (
+                <option value={location}>{location}</option>
+              ) : null}
+              {meetingLocations.map((loc) => (
+                <option key={loc.id} value={loc.name}>
+                  {loc.name}
+                </option>
+              ))}
+            </>
+          )}
         </select>
       </label>
 

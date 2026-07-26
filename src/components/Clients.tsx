@@ -8813,36 +8813,21 @@ const Clients: React.FC<ClientsProps> = ({
       // Update lead stage and roles
       const stageActor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
-      const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage :
-        (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
 
       // Check if current stage is "Another meeting"
       const currentStageName = getStageName(selectedClient.stage);
       const isAnotherMeeting = areStagesEquivalent(currentStageName, 'Another meeting');
 
-      // Reschedule stage rules:
-      // - From Meeting scheduled (20) → Meeting rescheduling (21)
-      // - From Meeting rescheduling (21) → Meeting scheduled (20)
-      // - Other stages → Meeting scheduled (20)
+      // Reschedule stage rules (after booking the new meeting):
+      // - Meeting rescheduling (21) → Meeting scheduled (20)
+      // - Meeting scheduled / other stages → Meeting scheduled (20)
       // - Another meeting → keep stage unchanged
+      // Cancel-only (no new meeting) still moves to Meeting rescheduling (21) elsewhere.
       const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled') ?? 20;
-      const meetingReschedulingStageId = getStageIdOrWarn('Meeting rescheduling') ?? 21;
-      const isMeetingScheduled =
-        currentStage === meetingScheduledStageId ||
-        areStagesEquivalent(currentStageName, 'Meeting scheduled');
-      const isMeetingRescheduling =
-        currentStage === meetingReschedulingStageId ||
-        areStagesEquivalent(currentStageName, 'Meeting rescheduling');
 
       let rescheduledStageId: number | null = null;
       if (!isAnotherMeeting) {
-        if (isMeetingScheduled) {
-          rescheduledStageId = meetingReschedulingStageId;
-        } else if (isMeetingRescheduling) {
-          rescheduledStageId = meetingScheduledStageId;
-        } else {
-          rescheduledStageId = meetingScheduledStageId;
-        }
+        rescheduledStageId = meetingScheduledStageId;
       }
 
       if (isLegacyLead) {

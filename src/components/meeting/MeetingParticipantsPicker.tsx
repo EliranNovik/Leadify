@@ -145,6 +145,8 @@ const MeetingParticipantsPicker: React.FC<Props> = ({
         ? value.employeeIds.filter((x) => x !== id)
         : [...value.employeeIds, id],
     });
+    // Clear search so the next name can be typed immediately.
+    setStaffSearch('');
   };
 
   const toggleFirm = (id: string) => {
@@ -155,6 +157,7 @@ const MeetingParticipantsPicker: React.FC<Props> = ({
         ? value.firmContactIds.filter((x) => x !== id)
         : [...value.firmContactIds, id],
     });
+    setFirmSearch('');
   };
 
   const addFreeParticipant = () => {
