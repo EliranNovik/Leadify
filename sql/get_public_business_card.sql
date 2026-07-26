@@ -37,4 +37,4 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_public_business_card(BIGINT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_public_business_card(BIGINT) TO anon, authenticated, service_role;

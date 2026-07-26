@@ -101,6 +101,57 @@ function getWalletStatus() {
   };
 }
 
+async function fetchPublicBusinessCardDirect(employeeId) {
+  const { data: employee, error: empErr } = await supabase
+    .from('tenants_employee')
+    .select(
+      `
+      id,
+      display_name,
+      official_name,
+      photo_url,
+      mobile,
+      phone,
+      phone_ext,
+      bonuses_role,
+      linkedin_url,
+      department_id,
+      tenant_departement!department_id ( name )
+    `,
+    )
+    .eq('id', employeeId)
+    .maybeSingle();
+
+  if (empErr) {
+    console.error('[wallet] tenants_employee fallback failed', empErr);
+    return null;
+  }
+  if (!employee) return null;
+
+  const { data: userRow } = await supabase
+    .from('users')
+    .select('email')
+    .eq('employee_id', employeeId)
+    .maybeSingle();
+
+  const dept = employee.tenant_departement;
+  const departmentName = Array.isArray(dept) ? dept[0]?.name : dept?.name;
+
+  return {
+    id: Number(employee.id),
+    display_name: String(employee.display_name || ''),
+    official_name: String(employee.official_name || employee.display_name || ''),
+    photo_url: employee.photo_url || null,
+    mobile: String(employee.mobile || ''),
+    phone: String(employee.phone || ''),
+    phone_ext: String(employee.phone_ext || ''),
+    email: userRow?.email || null,
+    department_name: String(departmentName || 'General'),
+    bonuses_role: String(employee.bonuses_role || 'Employee'),
+    linkedin_url: employee.linkedin_url || null,
+  };
+}
+
 async function fetchPublicBusinessCard(employeeId) {
   const id = Number(employeeId);
   if (!Number.isFinite(id) || id <= 0) {
@@ -113,32 +164,42 @@ async function fetchPublicBusinessCard(employeeId) {
     p_employee_id: id,
   });
 
+  if (!error && data && typeof data === 'object' && data.id != null) {
+    return {
+      id: Number(data.id),
+      display_name: String(data.display_name || ''),
+      official_name: String(data.official_name || data.display_name || ''),
+      photo_url: data.photo_url || null,
+      mobile: String(data.mobile || ''),
+      phone: String(data.phone || ''),
+      phone_ext: String(data.phone_ext || ''),
+      email: data.email || null,
+      department_name: String(data.department_name || 'General'),
+      bonuses_role: String(data.bonuses_role || 'Employee'),
+      linkedin_url: data.linkedin_url || null,
+    };
+  }
+
   if (error) {
-    console.error('[wallet] get_public_business_card failed', error);
-    const err = new Error('Could not load business card');
-    err.status = 500;
-    throw err;
+    console.error('[wallet] get_public_business_card failed — falling back to direct query', {
+      message: error.message,
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+      employeeId: id,
+    });
   }
 
-  if (!data || !data.id) {
-    const err = new Error('Business card not found');
-    err.status = 404;
-    throw err;
-  }
+  const fallback = await fetchPublicBusinessCardDirect(id);
+  if (fallback) return fallback;
 
-  return {
-    id: Number(data.id),
-    display_name: String(data.display_name || ''),
-    official_name: String(data.official_name || data.display_name || ''),
-    photo_url: data.photo_url || null,
-    mobile: String(data.mobile || ''),
-    phone: String(data.phone || ''),
-    phone_ext: String(data.phone_ext || ''),
-    email: data.email || null,
-    department_name: String(data.department_name || 'General'),
-    bonuses_role: String(data.bonuses_role || 'Employee'),
-    linkedin_url: data.linkedin_url || null,
-  };
+  const err = new Error(
+    error
+      ? `Could not load business card (${error.code || error.message || 'rpc_error'})`
+      : 'Business card not found',
+  );
+  err.status = error ? 500 : 404;
+  throw err;
 }
 
 function roleLine(profile) {
