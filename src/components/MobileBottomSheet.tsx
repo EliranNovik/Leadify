@@ -15,7 +15,7 @@ const DISMISS_VELOCITY_PX_MS = 1.15;
 const UP_DRAG_RESISTANCE = 0.28;
 const SHEET_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
 const SNAP_MS = 360;
-const CLOSE_MS = 280;
+const CLOSE_MS = 340;
 
 function isNarrowViewport(): boolean {
   if (typeof window === 'undefined') return false;
@@ -101,6 +101,11 @@ export type MobileBottomSheetProps = {
   onOverlayClick?: () => void;
   /** Lock background page scroll. Use `mobile` to keep desktop page scrollable (e.g. side drawer). */
   scrollLock?: 'always' | 'mobile';
+  /**
+   * Increment to request an animated close from outside (e.g. a footer Close button).
+   * Triggers the same slide-down dismiss used by backdrop / drag.
+   */
+  closeRequestKey?: number;
 };
 
 export default function MobileBottomSheet({
@@ -126,6 +131,7 @@ export default function MobileBottomSheet({
   closeOnOverlayClick = true,
   onOverlayClick,
   scrollLock = 'always',
+  closeRequestKey,
 }: MobileBottomSheetProps) {
   const autoTitleId = useId();
   const titleId = ariaLabelledBy || (title ? autoTitleId : undefined);
@@ -283,10 +289,28 @@ export default function MobileBottomSheet({
     closingRef.current = true;
     const h = heightRef.current;
     applyVisual(h, h + 24, true, CLOSE_MS);
+    // Soften overlay fade on the way out
+    const overlay = overlayRef.current;
+    if (overlay) {
+      overlay.style.transition = `opacity ${CLOSE_MS}ms ${SHEET_EASING}`;
+      overlay.style.opacity = '0';
+    }
     window.setTimeout(() => {
       onCloseRef.current();
     }, CLOSE_MS);
   }, [applyVisual]);
+
+  const closeRequestKeyRef = useRef(closeRequestKey);
+  useEffect(() => {
+    if (!open) {
+      closeRequestKeyRef.current = closeRequestKey;
+      return;
+    }
+    if (closeRequestKey == null) return;
+    if (closeRequestKeyRef.current === closeRequestKey) return;
+    closeRequestKeyRef.current = closeRequestKey;
+    animateClose();
+  }, [closeRequestKey, open, animateClose]);
 
   const canStartDrag = useCallback((target: EventTarget | null) => {
     if (!isNarrowViewport()) return false;
@@ -372,6 +396,7 @@ export default function MobileBottomSheet({
   const handleOverlayClick = () => {
     if (!closeOnOverlayClick || closingRef.current) return;
     if (isMobile) {
+      onOverlayClick?.();
       animateClose();
       return;
     }

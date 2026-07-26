@@ -1,0 +1,7 @@
+# Place Apple WWDR intermediate PEM here as AppleWWDRCAG4.pem (optional).
+# Download: https://www.apple.com/certificateauthority/AppleWWDRCAG4.cer
+# Convert:  openssl x509 -inform DER -in AppleWWDRCAG4.cer -out AppleWWDRCAG4.pem
+#
+# Or set APPLE_WWDR_CERT_PEM in .env instead.
+*
+!.gitignore

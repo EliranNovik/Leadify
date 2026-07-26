@@ -1,0 +1,47 @@
+{
+  "formatVersion": 1,
+  "passTypeIdentifier": "PASS_TYPE_ID_PLACEHOLDER",
+  "serialNumber": "SERIAL_PLACEHOLDER",
+  "teamIdentifier": "TEAM_ID_PLACEHOLDER",
+  "organizationName": "Decker, Pex, Levi Law Offices",
+  "description": "Business Card",
+  "logoText": "DP",
+  "foregroundColor": "rgb(255, 255, 255)",
+  "backgroundColor": "rgb(15, 36, 31)",
+  "labelColor": "rgb(201, 169, 110)",
+  "generic": {
+    "primaryFields": [
+      {
+        "key": "name",
+        "label": "NAME",
+        "value": "Employee"
+      }
+    ],
+    "secondaryFields": [
+      {
+        "key": "role",
+        "label": "ROLE",
+        "value": "Team"
+      }
+    ],
+    "auxiliaryFields": [
+      {
+        "key": "email",
+        "label": "EMAIL",
+        "value": ""
+      }
+    ],
+    "backFields": [
+      {
+        "key": "firm",
+        "label": "FIRM",
+        "value": "Decker, Pex, Levi Law Offices"
+      },
+      {
+        "key": "office",
+        "label": "OFFICE",
+        "value": "Menachem Begin Rd. 11, Ramat Gan, Israel"
+      }
+    ]
+  }
+}
