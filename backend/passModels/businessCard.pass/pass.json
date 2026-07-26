@@ -26,9 +26,14 @@
     ],
     "auxiliaryFields": [
       {
-        "key": "contact",
+        "key": "email",
         "label": "EMAIL",
         "value": "email@example.com"
+      },
+      {
+        "key": "phone",
+        "label": "PHONE",
+        "value": "000"
       }
     ],
     "backFields": [

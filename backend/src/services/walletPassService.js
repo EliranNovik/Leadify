@@ -284,10 +284,10 @@ async function loadDpLogoBuffers() {
   if (!raw) return null;
   try {
     const base = await Jimp.read(raw);
-    // Compact mark like the reference card (logo + short title beside it)
-    const logo1x = base.clone().contain(100, 32).getBufferAsync(Jimp.MIME_PNG);
-    const logo2x = base.clone().contain(200, 64).getBufferAsync(Jimp.MIME_PNG);
-    const logo3x = base.clone().contain(300, 96).getBufferAsync(Jimp.MIME_PNG);
+    // Maximize the logo asset within Apple Wallet's fixed header slot.
+    const logo1x = base.clone().contain(160, 50).getBufferAsync(Jimp.MIME_PNG);
+    const logo2x = base.clone().contain(320, 100).getBufferAsync(Jimp.MIME_PNG);
+    const logo3x = base.clone().contain(480, 150).getBufferAsync(Jimp.MIME_PNG);
     const [buf1, buf2, buf3] = await Promise.all([logo1x, logo2x, logo3x]);
     return { logo1x: buf1, logo2x: buf2, logo3x: buf3 };
   } catch (err) {
@@ -326,11 +326,10 @@ async function buildApplePkPassBuffer(employeeId) {
 
   const profile = await fetchPublicBusinessCard(employeeId);
   const cardUrl = buildCardUrl(profile.id);
-  // v9: same color for labels + values; max thumbnail assets
-  const serialNumber = `dpl-bc-${profile.id}-v9`;
+  // v11: larger logo assets
+  const serialNumber = `dpl-bc-${profile.id}-v11`;
   const department = String(profile.department_name || 'General').trim();
   const phone = phoneLine(profile);
-  const addressLine = `${OFFICE_LABEL}, ${OFFICE_ADDRESS}`;
 
   const [logoBuffers, thumbBuffers] = await Promise.all([
     loadDpLogoBuffers(),
@@ -388,24 +387,29 @@ async function buildApplePkPassBuffer(employeeId) {
     value: profile.official_name,
   });
 
-  // Department directly under the name
+  // Department on its own row under the name (no title)
   pass.secondaryFields.push({
     key: 'department',
     label: '',
     value: department,
   });
 
-  // Stack EMAIL → PHONE → ADDRESS in one column (two auxiliary fields sit side-by-side).
-  const contactBlocks = [];
-  if (profile.email) contactBlocks.push(profile.email);
-  if (phone) contactBlocks.push(`PHONE\n${phone}`);
-  contactBlocks.push(`ADDRESS\n${addressLine}`);
-
-  pass.auxiliaryFields.push({
-    key: 'contact',
-    label: profile.email ? 'EMAIL' : phone ? 'PHONE' : 'ADDRESS',
-    value: contactBlocks.join('\n'),
-  });
+  // Single-line fields only — multiline values get truncated by Wallet (phone was disappearing).
+  // Two auxiliary fields share one row (email | phone), each with a tight label→value pair.
+  if (profile.email) {
+    pass.auxiliaryFields.push({
+      key: 'email',
+      label: 'EMAIL',
+      value: profile.email,
+    });
+  }
+  if (phone) {
+    pass.auxiliaryFields.push({
+      key: 'phone',
+      label: 'PHONE',
+      value: phone,
+    });
+  }
 
   pass.backFields.push({
     key: 'firm',
