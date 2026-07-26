@@ -326,8 +326,8 @@ async function buildApplePkPassBuffer(employeeId) {
 
   const profile = await fetchPublicBusinessCard(employeeId);
   const cardUrl = buildCardUrl(profile.id);
-  // v11: larger logo assets
-  const serialNumber = `dpl-bc-${profile.id}-v11`;
+  // v12: no logoText (logo image only)
+  const serialNumber = `dpl-bc-${profile.id}-v12`;
   const department = String(profile.department_name || 'General').trim();
   const phone = phoneLine(profile);
 
@@ -352,7 +352,7 @@ async function buildApplePkPassBuffer(employeeId) {
       teamIdentifier: cfg.teamIdentifier,
       organizationName: FIRM_NAME,
       description: `${profile.official_name} — ${FIRM_NAME}`,
-      logoText: 'Business Card',
+      // logoText omitted on purpose — PassKit rejects an empty string, so the key is left out.
       foregroundColor: 'rgb(255, 255, 255)',
       backgroundColor: 'rgb(15, 36, 31)',
       // Same as value text — no gray/gold label contrast
