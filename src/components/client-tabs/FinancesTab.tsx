@@ -11,6 +11,7 @@ import {
   type PaymentPlanTaxReceiptInfo,
 } from '../../lib/paymentLinkQueries';
 import { retryPayperInvoice } from '../../lib/pelecardPaymentApi';
+import { tryAdvanceHandlerStartedAfterPayment } from '../../lib/advanceHandlerStartedOnPaid';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
@@ -1250,6 +1251,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           setSelectedPaymentForPaid(null);
           setPaidDate('');
           await refreshPaymentPlans();
+          const advanced = await tryAdvanceHandlerStartedAfterPayment({
+            leadId: client?.id,
+            isLegacy: true,
+          });
+          if (advanced && onClientUpdate) await onClientUpdate();
+          if (typeof window !== 'undefined' && client?.id) {
+            window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+          }
         } else {
           // Revert the UI state if database update fails
           setPaidMap(prev => ({ ...prev, [id]: false }));
@@ -1321,6 +1330,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           setSelectedPaymentForPaid(null);
           setPaidDate('');
           await refreshPaymentPlans();
+          const isLegacyLead =
+            client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+          const advanced = await tryAdvanceHandlerStartedAfterPayment({
+            leadId: client?.id,
+            isLegacy: isLegacyLead,
+          });
+          if (advanced && onClientUpdate) await onClientUpdate();
           if (typeof window !== 'undefined' && client?.id) {
             window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
           }

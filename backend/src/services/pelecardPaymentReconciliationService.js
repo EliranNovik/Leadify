@@ -175,25 +175,49 @@ async function markPaymentPlanPaid(paymentLink) {
 
   if (isLegacy) {
     const paidDate = new Date().toISOString().split('T')[0];
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('finances_paymentplanrow')
       .update({ actual_date: paidDate })
-      .eq('id', paymentLink.payment_plan_id);
+      .eq('id', paymentLink.payment_plan_id)
+      .select('lead_id')
+      .maybeSingle();
     if (error) return { ok: false, error };
+    if (data?.lead_id != null) {
+      try {
+        await supabase.rpc('try_advance_handler_set_to_started', {
+          p_is_legacy: true,
+          p_lead_id: String(data.lead_id),
+        });
+      } catch (e) {
+        console.warn('try_advance_handler_set_to_started (legacy) failed:', e);
+      }
+    }
     return { ok: true };
   }
 
   const email = paymentLink.leads?.email || null;
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('payment_plans')
     .update({
       paid: true,
       paid_at: new Date().toISOString(),
       ...(email ? { paid_by: email } : {}),
     })
-    .eq('id', paymentLink.payment_plan_id);
+    .eq('id', paymentLink.payment_plan_id)
+    .select('lead_id')
+    .maybeSingle();
 
   if (error) return { ok: false, error };
+  if (data?.lead_id) {
+    try {
+      await supabase.rpc('try_advance_handler_set_to_started', {
+        p_is_legacy: false,
+        p_lead_id: String(data.lead_id),
+      });
+    } catch (e) {
+      console.warn('try_advance_handler_set_to_started (new) failed:', e);
+    }
+  }
   return { ok: true };
 }
 

@@ -5,6 +5,10 @@ const helpContent = (
   <>
     <ul className="space-y-2.5 text-xs md:text-sm text-white/80 leading-relaxed list-disc pl-4 md:pl-5">
       <li>You must clock in before using the CRM. The system stays locked until your shift starts.</li>
+      <li>
+        <span className="text-white/90 font-medium">Ramat Gan Office</span> clock-in is only via the
+        entry-kiosk QR at the office — do not pick Jerusalem from this screen if you are in Ramat Gan.
+      </li>
       <li>Clock in records your work hours and workplace for payroll and attendance.</li>
       <li>Remember to clock out when you finish your workday.</li>
     </ul>

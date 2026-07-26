@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from '../client-tabs/TimelineHistoryButtons';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 import { buildPaymentLinkLeadRef } from '../../lib/paymentLinkLeadRef';
+import { tryAdvanceHandlerStartedAfterPayment } from '../../lib/advanceHandlerStartedOnPaid';
 import toast from 'react-hot-toast';
 // HandlerTabProps interface
 interface HandlerLead {
@@ -779,6 +780,11 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           setSelectedPaymentForPaid(null);
           setPaidDate('');
           await refreshPaymentPlans();
+          const advanced = await tryAdvanceHandlerStartedAfterPayment({
+            leadId: client?.id,
+            isLegacy: true,
+          });
+          if (advanced && onClientUpdate) await onClientUpdate();
         } else {
           // Revert the UI state if database update fails
           setPaidMap(prev => ({ ...prev, [id]: false }));
@@ -850,6 +856,13 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           setSelectedPaymentForPaid(null);
           setPaidDate('');
           await refreshPaymentPlans();
+          const isLegacyLead =
+            client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+          const advanced = await tryAdvanceHandlerStartedAfterPayment({
+            leadId: client?.id,
+            isLegacy: isLegacyLead,
+          });
+          if (advanced && onClientUpdate) await onClientUpdate();
         } else {
           // Revert the UI state if database update fails
           setPaidMap(prev => ({ ...prev, [id]: false }));

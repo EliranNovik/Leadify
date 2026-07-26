@@ -10,6 +10,7 @@ import {
   type ClockInKioskFlashAction,
   type ClockInKioskWelcomeMeeting,
 } from '../lib/clockInKioskApi';
+import { clearPostLoginRedirect, persistPostLoginRedirect } from '../lib/postLoginRedirect';
 import { fetchClockInGateProfile } from '../lib/employeeClockInGate';
 import {
   clockOutEmployeeRecord,
@@ -30,6 +31,28 @@ type EntryStatus =
   | 'success'
   | 'no_employee'
   | 'error';
+
+/** Wait for PKCE / magic-link session exchange when the URL still carries auth params. */
+async function resolveSessionForEntryPage() {
+  const first = await supabase.auth.getSession();
+  if (first.data.session?.user) return first.data.session;
+
+  if (typeof window === 'undefined') return null;
+  const search = window.location.search || '';
+  const hash = window.location.hash || '';
+  const authInUrl =
+    /[?&#](code|access_token)=/.test(`${search}${hash}`)
+    || search.includes('type=magiclink')
+    || hash.includes('type=magiclink');
+  if (!authInUrl) return null;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await new Promise((r) => window.setTimeout(r, 250));
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.user) return data.session;
+  }
+  return null;
+}
 
 async function resolveEmployeeProfile(employeeId: number | null, fallbackEmail?: string | null) {
   let name = 'Employee';
@@ -114,6 +137,11 @@ const ClockInEntryPage: React.FC = () => {
   }, [status]);
 
   useEffect(() => {
+    // Arrived on the QR landing page (e.g. magic-link redirect) — drop stored return path.
+    clearPostLoginRedirect();
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     const finishSuccess = (
@@ -171,9 +199,9 @@ const ClockInEntryPage: React.FC = () => {
       setStatus('connecting');
       setMessage('Connecting to entry…');
 
-      const [validation, sessionResult] = await Promise.all([
+      const [validation, session] = await Promise.all([
         validateClockInKioskToken(token, locationId),
-        supabase.auth.getSession(),
+        resolveSessionForEntryPage(),
       ]);
       if (cancelled) return;
 
@@ -184,13 +212,13 @@ const ClockInEntryPage: React.FC = () => {
       }
 
       const resolvedLocationId = validation.locationId ?? locationId;
-      const session = sessionResult.data.session;
 
       if (!session?.user) {
         const returnPath = buildClockInEntryPath(resolvedLocationId, token);
+        persistPostLoginRedirect(returnPath);
         setStatus('need_login');
         setMessage('Sign in to finish…');
-        navigate('/login', {
+        navigate(`/login?redirect=${encodeURIComponent(returnPath)}`, {
           replace: true,
           state: { from: returnPath },
         });

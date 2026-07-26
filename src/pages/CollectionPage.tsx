@@ -565,17 +565,23 @@ const CollectionPage: React.FC = () => {
       }
     } catch {}
     // Update DB
-    const { error } = await supabase
+    const { data: updatedRows, error } = await supabase
       .from('payment_plans')
       .update({
         paid: true,
         paid_at: new Date().toISOString(),
         paid_by: paidBy,
       })
-      .eq('id', paymentId);
+      .eq('id', paymentId)
+      .select('lead_id');
     if (!error) {
       setAwaitingPayments(prev => prev.filter(p => p.id !== paymentId));
       toast.success('Payment marked as paid!');
+      const leadId = updatedRows?.[0]?.lead_id;
+      if (leadId) {
+        const { tryAdvanceHandlerStartedAfterPayment } = await import('../lib/advanceHandlerStartedOnPaid');
+        await tryAdvanceHandlerStartedAfterPayment({ leadId, isLegacy: false });
+      }
     } else {
       toast.error('Failed to mark as paid.');
     }

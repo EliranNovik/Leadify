@@ -3,6 +3,7 @@ import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/queryClient';
 import ScrollRestoration from './components/ScrollRestoration';
+import PostLoginRedirectRecovery from './components/PostLoginRedirectRecovery';
 import { MsalProvider, useMsal } from '@azure/msal-react';
 import { PublicClientApplication } from '@azure/msal-browser';
 import { msalConfig, loginRequest } from './msalConfig';
@@ -1194,6 +1195,7 @@ const AppContent: React.FC = () => {
           <CelebrationProvider>
             <Router>
               <ScrollRestoration />
+              <PostLoginRedirectRecovery />
               <AppContentInner />
               <MoneyRainCelebration />
               <MailboxReconnectModal />

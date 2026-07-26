@@ -2,7 +2,8 @@ const crypto = require('crypto');
 const supabase = require('../config/supabase');
 
 const ROTATE_MS = 15_000;
-const GRACE_MS = 60_000;
+/** How long a rotated token stays valid after leave the screen — long enough for phone login. */
+const GRACE_MS = 15 * 60_000;
 const DEFAULT_LOCATION_ID = 1;
 
 function getFrontendBaseUrl() {

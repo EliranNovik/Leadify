@@ -150,17 +150,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
       setHomePeriodAccessToday(periodToday);
       setPendingHomeApproval((pendingLegacy || pendingPeriod) && !wfh && !periodToday);
       setEmployeeDisplayName(employeeResult.data?.display_name?.trim() || '');
-      // Initialize selection (prefer last selected if still valid — never QR-only offices)
+      // Initialize selection (prefer last selected if still valid — never QR-only offices).
+      // Do NOT default to selectable[0] (Jerusalem) — require an explicit workplace pick.
       setSelectedWorkplaceId((prev) => {
-        // Keep Ramat Gan selected when clocked in via QR (Clock Out stays disabled).
-        if (prev != null && isQrOnlyClockInLocationId(prev)) return prev;
         if (prev != null && selectable.some((o) => o.id === prev)) return prev;
         const last = readLastSelectedWorkplaceId();
-        if (last != null && isQrOnlyClockInLocationId(last)) {
-          return selectable[0]?.id ?? null;
-        }
-        const validLast = last != null && selectable.some((o) => o.id === last);
-        return validLast ? last : selectable[0]?.id ?? null;
+        if (last != null && selectable.some((o) => o.id === last)) return last;
+        return null;
       });
     }).catch((error) => {
       console.error('Error loading clock-in modal data:', error);
@@ -684,17 +680,23 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
           isGateStyle ? 'bg-white/90 text-gray-900 border-white/30' : ''
         }`}
         value={selectedWorkplaceId ?? ''}
-        onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setSelectedWorkplaceId(raw ? Number(raw) : null);
+        }}
         disabled={clockOutPickerOptions.length === 0}
       >
         {clockOutPickerOptions.length === 0 ? (
           <option value="">Loading…</option>
         ) : (
-          clockOutPickerOptions.map((opt) => (
-            <option key={opt.id} value={opt.id}>
-              {isQrOnlyClockInLocationId(opt.id) ? `${opt.name} (QR only)` : opt.name}
-            </option>
-          ))
+          <>
+            <option value="">Select workplace</option>
+            {clockOutPickerOptions.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {isQrOnlyClockInLocationId(opt.id) ? `${opt.name} (QR only)` : opt.name}
+              </option>
+            ))}
+          </>
         )}
       </select>
     </>
@@ -900,7 +902,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                   <button
                     type="button"
                     onClick={handleClockIn}
-                    disabled={isLoading}
+                    disabled={isLoading || selectedWorkplaceId == null}
                     className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-green-600 via-emerald-600 to-teal-500 text-white hover:from-green-700 hover:via-emerald-700 hover:to-teal-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl"
                   >
                     {isLoading ? (
@@ -946,6 +948,9 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                 ) : (
                   <>
                     {workplacePicker}
+                    <p className={`mt-1.5 text-xs md:text-sm ${isGateStyle ? 'text-white/55' : 'text-gray-500'}`}>
+                      Ramat Gan Office: scan the entry-kiosk QR at the office (not listed here).
+                    </p>
                     {homeNeedsApproval && (
                       <p className={`mt-1.5 text-xs md:text-sm ${isGateStyle ? 'text-amber-300' : 'text-amber-700'}`}>
                         {pendingHomeApproval

@@ -1878,7 +1878,6 @@ const Clients: React.FC<ClientsProps> = ({
   const successStageHandlerContainerRefDesktop = useRef<HTMLDivElement | null>(null); // Desktop ref
   const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useState(false);
   const autoAdvanceHandlerSetRef = useRef<string>('');
-  const isAutoAdvancingHandlerStartedRef = useRef(false);
 
   // Mobile edge dropdowns state
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -11587,79 +11586,10 @@ const Clients: React.FC<ClientsProps> = ({
     })();
   }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
 
-  // Stage 105 ("Handler Set") is gated by payments plan:
-  // If there's at least one PAID payment, auto-advance to stage 110 ("Handler Started") in UI.
-  // (Stage 105 must still be recorded in lead stages history — this effect runs only when already in 105.)
-  useEffect(() => {
-    if (!selectedClient) return;
-
-    const isHandlerSetStage =
-      areStagesEquivalent(currentStageName, 'Handler Set') || (isStageNumeric && stageNumeric === 105);
-
-    if (!isHandlerSetStage) return;
-    if (hasPaymentPlan !== true) return;
-
-    if (isAutoAdvancingHandlerStartedRef.current) return;
-    isAutoAdvancingHandlerStartedRef.current = true;
-
-    void (async () => {
-      try {
-        const clientIdString = String(selectedClient.id ?? '');
-        const isLegacyLead =
-          selectedClient.lead_type === 'legacy' || clientIdString.startsWith('legacy_');
-
-        let hasAnyPaidPayment = false;
-
-        if (isLegacyLead) {
-          const legacyId = clientIdString.replace('legacy_', '');
-          const { data, error } = await supabase
-            .from('finances_paymentplanrow')
-            .select('id')
-            .eq('lead_id', legacyId)
-            .is('cancel_date', null)
-            .not('actual_date', 'is', null)
-            .limit(1);
-          if (error) throw error;
-          hasAnyPaidPayment = !!(data && data.length > 0);
-        } else {
-          const { data, error } = await supabase
-            .from('payment_plans')
-            .select('id')
-            .eq('lead_id', clientIdString)
-            .is('cancel_date', null)
-            .eq('paid', true)
-            .limit(1);
-          if (error) throw error;
-          hasAnyPaidPayment = !!(data && data.length > 0);
-        }
-
-        if (!hasAnyPaidPayment) return;
-
-        const handlerStartedStageId = getStageIdOrWarn('Handler Started') ?? 110;
-        const actor = await fetchStageActorInfo();
-        const timestamp = new Date().toISOString();
-
-        await updateLeadStageWithHistory({
-          lead: selectedClient,
-          stage: handlerStartedStageId,
-          additionalFields: {},
-          actor,
-          timestamp,
-        });
-
-        setSelectedClient((prev: any) => {
-          if (!prev) return prev;
-          return { ...prev, stage: handlerStartedStageId };
-        });
-
-        await onClientUpdate();
-      } catch (error) {
-        console.error('Error auto-advancing to Handler Started (stage 110):', error);
-      } finally {
-        isAutoAdvancingHandlerStartedRef.current = false;
-      }
-    })();
-  }, [selectedClient, currentStageName, isStageNumeric, stageNumeric, hasPaymentPlan]);
+  // Stage 105 ("Handler Set" / Nominated) → 110 ("Handler Started") is owned by the DB:
+  // sql/2026-07-26_handler_started_on_paid_payment.sql advances when a payment is marked
+  // paid (new: payment_plans.paid / paid_at; legacy: finances_paymentplanrow.actual_date)
+  // or when stage becomes 105 and a paid row already exists. Clients realtime sync picks it up.
 
   // Move useCallback BEFORE early returns to ensure hooks are always called in the same order
   const handleScheduleMenuClick = useCallback(

@@ -17,6 +17,11 @@ import LoginHeroBackground from './LoginHeroBackground';
 import LoginHeroTagline from './LoginHeroTagline';
 import ClockInGateVideos from './ClockInGateVideos';
 import LoginAdminAccessModal from './LoginAdminAccessModal';
+import {
+  buildAuthEmailRedirectTo,
+  persistPostLoginRedirect,
+  resolvePostLoginPath,
+} from '../lib/postLoginRedirect';
 
 const LOGIN_PAGE_THEME_COLOR = '#ffffff';
 
@@ -43,18 +48,25 @@ const LoginPage: React.FC = () => {
   const location = useLocation();
   const year = new Date().getFullYear();
 
-  const resolvePostLoginPath = (): string => {
-    const fromState = (location.state as { from?: string } | null)?.from;
-    if (typeof fromState === 'string' && fromState.startsWith('/') && !fromState.startsWith('//')) {
-      return fromState;
-    }
+  const resolvePostLoginDestination = (): string => {
     const params = new URLSearchParams(location.search);
-    const redirect = params.get('redirect');
-    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
-      return redirect;
-    }
-    return '/';
+    return resolvePostLoginPath({
+      stateFrom: (location.state as { from?: string } | null)?.from,
+      searchRedirect: params.get('redirect'),
+    });
   };
+
+  useEffect(() => {
+    // Keep QR / deep-link return path alive across refresh while on the login page.
+    const params = new URLSearchParams(location.search);
+    const fromState = (location.state as { from?: string } | null)?.from;
+    const redirect = params.get('redirect');
+    if (typeof fromState === 'string' && fromState.startsWith('/') && !fromState.startsWith('//')) {
+      persistPostLoginRedirect(fromState);
+    } else if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      persistPostLoginRedirect(redirect);
+    }
+  }, [location.search, location.state]);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -89,7 +101,7 @@ const LoginPage: React.FC = () => {
         void preCheckExternalUser(data.user.id);
       }
 
-      navigate(resolvePostLoginPath(), { replace: true });
+      navigate(resolvePostLoginDestination(), { replace: true });
     }
     setLoading(false);
   };
@@ -100,10 +112,20 @@ const LoginPage: React.FC = () => {
     setSuccess(null);
 
     try {
+      const postLoginPath = resolvePostLoginPath({
+        stateFrom: (location.state as { from?: string } | null)?.from,
+        searchRedirect: new URLSearchParams(location.search).get('redirect'),
+      });
+      // resolvePostLoginPath clears storage — re-persist so the email click still works
+      // if Supabase lands on a URL without the entry query string.
+      if (postLoginPath !== '/') {
+        persistPostLoginRedirect(postLoginPath);
+      }
+
       const { error: otpError } = await supabase.auth.signInWithOtp({
         email,
         options: {
-          emailRedirectTo: 'https://leadify-crm.onrender.com',
+          emailRedirectTo: buildAuthEmailRedirectTo(postLoginPath),
         },
       });
 
@@ -352,7 +374,7 @@ const LoginPage: React.FC = () => {
         onClose={() => setIsAdminModalOpen(false)}
         onWorkerSignedIn={() => {
           setIsAdminModalOpen(false);
-          navigate(resolvePostLoginPath(), { replace: true });
+          navigate(resolvePostLoginDestination(), { replace: true });
         }}
       />
     </div>
