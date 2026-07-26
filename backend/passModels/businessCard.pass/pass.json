@@ -10,13 +10,6 @@
   "backgroundColor": "rgb(15, 36, 31)",
   "labelColor": "rgb(201, 169, 110)",
   "generic": {
-    "headerFields": [
-      {
-        "key": "dept",
-        "label": "DEPT",
-        "value": "General"
-      }
-    ],
     "primaryFields": [
       {
         "key": "name",
@@ -26,9 +19,9 @@
     ],
     "secondaryFields": [
       {
-        "key": "role",
-        "label": "ROLE",
-        "value": "Team"
+        "key": "department",
+        "label": "",
+        "value": "Department"
       }
     ],
     "auxiliaryFields": [

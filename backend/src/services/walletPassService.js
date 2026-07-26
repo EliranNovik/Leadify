@@ -271,9 +271,11 @@ async function fetchImageBuffer(url) {
   }
 }
 
-async function pngAtSize(input, size) {
+async function circularPngAtSize(input, size) {
   const image = await Jimp.read(input);
   image.cover(size, size);
+  // Apple Wallet shows square slots; bake a circle so the photo looks rounded.
+  image.circle();
   return image.getBufferAsync(Jimp.MIME_PNG);
 }
 
@@ -296,11 +298,13 @@ async function loadThumbnailBuffers(photoUrl) {
   const raw = await fetchImageBuffer(photoUrl);
   if (!raw) return null;
   try {
-    const [thumb1x, thumb2x] = await Promise.all([
-      pngAtSize(raw, 90),
-      pngAtSize(raw, 180),
+    // Larger assets for sharper display; Wallet layout still controls on-screen size.
+    const [thumb1x, thumb2x, thumb3x] = await Promise.all([
+      circularPngAtSize(raw, 120),
+      circularPngAtSize(raw, 240),
+      circularPngAtSize(raw, 360),
     ]);
-    return { thumb1x, thumb2x };
+    return { thumb1x, thumb2x, thumb3x };
   } catch (err) {
     console.warn('[wallet] thumbnail resize failed', err.message);
     return null;
@@ -320,9 +324,9 @@ async function buildApplePkPassBuffer(employeeId) {
 
   const profile = await fetchPublicBusinessCard(employeeId);
   const cardUrl = buildCardUrl(profile.id);
-  // v3 serial so phones replace the earlier broken pass layout
-  const serialNumber = `dpl-bc-${profile.id}-v3`;
-  const role = getRoleDisplay(profile.bonuses_role);
+  // v7: QR with no caption under it
+  const serialNumber = `dpl-bc-${profile.id}-v7`;
+  const department = String(profile.department_name || 'General').trim();
   const phone = phoneLine(profile);
 
   const [logoBuffers, thumbBuffers] = await Promise.all([
@@ -362,6 +366,7 @@ async function buildApplePkPassBuffer(employeeId) {
   if (thumbBuffers) {
     pass.addBuffer('thumbnail.png', thumbBuffers.thumb1x);
     pass.addBuffer('uma.s@example.org', thumbBuffers.thumb2x);
+    pass.addBuffer('carlos.r@example.net', thumbBuffers.thumb3x);
   }
 
   pass.headerFields.splice(0, pass.headerFields.length);
@@ -370,22 +375,17 @@ async function buildApplePkPassBuffer(employeeId) {
   pass.auxiliaryFields.splice(0, pass.auxiliaryFields.length);
   pass.backFields.splice(0, pass.backFields.length);
 
-  pass.headerFields.push({
-    key: 'dept',
-    label: 'DEPT',
-    value: profile.department_name || 'General',
-  });
-
   pass.primaryFields.push({
     key: 'name',
     label: '',
     value: profile.official_name,
   });
 
+  // Department directly below the employee name, without a field title.
   pass.secondaryFields.push({
-    key: 'role',
-    label: 'ROLE',
-    value: role,
+    key: 'department',
+    label: '',
+    value: department,
   });
 
   if (profile.email) {
@@ -403,11 +403,6 @@ async function buildApplePkPassBuffer(employeeId) {
     });
   }
 
-  pass.backFields.push({
-    key: 'roleFull',
-    label: 'TITLE',
-    value: roleLine(profile),
-  });
   pass.backFields.push({
     key: 'firm',
     label: 'FIRM',
@@ -458,7 +453,6 @@ async function buildApplePkPassBuffer(employeeId) {
     message: cardUrl,
     format: 'PKBarcodeFormatQR',
     messageEncoding: 'iso-8859-1',
-    altText: 'Scan to open card',
   });
 
   return {
