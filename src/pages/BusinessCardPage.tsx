@@ -226,6 +226,12 @@ const MobileBusinessCard: React.FC<MobileCardProps> = ({
     setWalletCloseRequestKey((k) => k + 1);
   };
 
+  // Prefetch wallet backend status on phones so the bar tap feels instant.
+  useEffect(() => {
+    if (walletPlatform !== 'apple' && walletPlatform !== 'google') return;
+    void fetchWalletBackendStatus().then(setWalletStatus);
+  }, [walletPlatform]);
+
   const walletPlatform = useMemo(() => detectWalletPlatform(), []);
   const roleLine = `${getRoleDisplay(profile.bonuses_role)} – ${profile.department_name} Department`;
   const employeeEmail = profile.email?.trim() || '';
@@ -338,6 +344,16 @@ const MobileBusinessCard: React.FC<MobileCardProps> = ({
     }
   };
 
+  const handleWalletBarClick = () => {
+    // iPhone / Android: go straight to native Wallet save — no sheet.
+    if (walletPlatform === 'apple' || walletPlatform === 'google') {
+      void handleWalletPrimary();
+      return;
+    }
+    // Desktop / unknown: keep the helper sheet.
+    openWalletSheet();
+  };
+
   const actions = [
     {
       key: 'contact',
@@ -349,7 +365,7 @@ const MobileBusinessCard: React.FC<MobileCardProps> = ({
       key: 'wallet',
       label: 'Add to Wallet',
       icon: <WalletIcon className="h-10 w-10" strokeWidth={1.5} />,
-      onClick: openWalletSheet,
+      onClick: handleWalletBarClick,
     },
     {
       key: 'qr',
@@ -496,7 +512,7 @@ const MobileBusinessCard: React.FC<MobileCardProps> = ({
                 <span className="flex h-12 w-12 items-center justify-center text-[#1A2E28]">
                   {action.icon}
                 </span>
-                <span className="w-full truncate text-center text-[9px] font-semibold leading-tight tracking-wide text-[#1A2E28]/80">
+                <span className="w-full truncate text-center text-[11px] font-semibold leading-tight tracking-wide text-[#1A2E28]/80">
                   {action.label}
                 </span>
               </button>
@@ -964,6 +980,37 @@ const BusinessCardPage: React.FC = () => {
     update();
     mediaQuery.addEventListener('change', update);
     return () => mediaQuery.removeEventListener('change', update);
+  }, []);
+
+  // Tint browser chrome (Safari/Chrome bottom bar + overscroll) with the card green.
+  useEffect(() => {
+    let themeMeta = document.querySelector('meta[name="theme-color"]') as HTMLMetaElement | null;
+    const createdMeta = !themeMeta;
+    if (!themeMeta) {
+      themeMeta = document.createElement('meta');
+      themeMeta.setAttribute('name', 'theme-color');
+      document.head.appendChild(themeMeta);
+    }
+    const prevThemeColor = themeMeta.getAttribute('content');
+    const prevHtmlBg = document.documentElement.style.backgroundColor;
+    const prevBodyBg = document.body.style.backgroundColor;
+    const prevColorScheme = document.documentElement.style.colorScheme;
+
+    themeMeta.setAttribute('content', PANEL);
+    document.documentElement.style.backgroundColor = PANEL;
+    document.body.style.backgroundColor = PANEL;
+    document.documentElement.style.colorScheme = 'dark';
+
+    return () => {
+      if (createdMeta) {
+        themeMeta?.remove();
+      } else if (prevThemeColor != null) {
+        themeMeta?.setAttribute('content', prevThemeColor);
+      }
+      document.documentElement.style.backgroundColor = prevHtmlBg;
+      document.body.style.backgroundColor = prevBodyBg;
+      document.documentElement.style.colorScheme = prevColorScheme;
+    };
   }, []);
 
   const loadProfile = useCallback(async () => {

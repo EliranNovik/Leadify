@@ -34,6 +34,16 @@
           document.documentElement.style.colorScheme = 'dark';
         } catch (e) { /* ignore */ }
       })();
+      // Business card: tint browser chrome dark green before React boots (no white flash).
+      (function () {
+        try {
+          if (location.pathname.indexOf('/business-card/') !== 0) return;
+          var theme = document.querySelector('meta[name="theme-color"]');
+          if (theme) theme.setAttribute('content', '#0F241F');
+          document.documentElement.style.backgroundColor = '#0F241F';
+          document.documentElement.style.colorScheme = 'dark';
+        } catch (e) { /* ignore */ }
+      })();
     </script>
   </head>
   <body>

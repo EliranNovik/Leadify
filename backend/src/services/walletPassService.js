@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
+const Jimp = require('jimp');
 const { PKPass } = require('passkit-generator');
 const supabase = require('../config/supabase');
 
@@ -9,6 +11,40 @@ const OFFICE_ADDRESS = 'Menachem Begin Rd. 11, Ramat Gan, Israel';
 const OFFICE_LABEL = 'Tel Aviv Office';
 const PASS_MODEL_DIR = path.join(__dirname, '../../passModels/businessCard.pass');
 const LOCAL_WWDR_PATH = path.join(__dirname, '../../certs/AppleWWDRCAG4.pem');
+const DP_LOGO_CANDIDATES = [
+  path.join(__dirname, '../../assets/wallet/dp-logo.png'),
+  path.join(__dirname, '../../../public/DPLOGO1.png'),
+  path.join(__dirname, '../../../public/DPL-LOGO1.png'),
+  path.join(__dirname, '../../../public/dpl_logo2.jpg'),
+];
+
+/** Same role codes as BusinessCardPage / bonusCalculation */
+const ROLE_DISPLAY = {
+  c: 'Closer',
+  s: 'Scheduler',
+  h: 'Handler',
+  n: 'No role',
+  e: 'Expert',
+  z: 'Manager',
+  Z: 'Manager',
+  ma: 'Marketing',
+  p: 'Partner',
+  'helper-closer': 'Helper Closer',
+  lawyer: 'Helper Closer',
+  pm: 'Project Manager',
+  se: 'Secretary',
+  dv: 'Developer',
+  dm: 'Department Manager',
+  b: 'Book Keeper',
+  f: 'Finance',
+  col: 'Collection',
+};
+
+function getRoleDisplay(role) {
+  const code = String(role || '').trim();
+  if (!code) return 'Employee';
+  return ROLE_DISPLAY[code] || ROLE_DISPLAY[code.toLowerCase()] || code;
+}
 
 function normalizePem(value) {
   if (!value || typeof value !== 'string') return '';
@@ -203,7 +239,9 @@ async function fetchPublicBusinessCard(employeeId) {
 }
 
 function roleLine(profile) {
-  return `${profile.bonuses_role} – ${profile.department_name} Department`;
+  const role = getRoleDisplay(profile.bonuses_role);
+  const dept = String(profile.department_name || 'General').trim();
+  return `${role} – ${dept} Department`;
 }
 
 function phoneLine(profile) {
@@ -214,6 +252,59 @@ function phoneLine(profile) {
       : profile.phone;
   }
   return '';
+}
+
+async function fetchImageBuffer(url) {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const res = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 12_000,
+      maxContentLength: 8 * 1024 * 1024,
+      headers: { Accept: 'image/*' },
+      validateStatus: (s) => s >= 200 && s < 300,
+    });
+    return Buffer.from(res.data);
+  } catch (err) {
+    console.warn('[wallet] photo download failed', url, err.message);
+    return null;
+  }
+}
+
+async function pngAtSize(input, size) {
+  const image = await Jimp.read(input);
+  image.cover(size, size);
+  return image.getBufferAsync(Jimp.MIME_PNG);
+}
+
+async function loadDpLogoBuffers() {
+  const raw = DP_LOGO_CANDIDATES.map(readOptionalFile).find(Boolean);
+  if (!raw) return null;
+  try {
+    const base = await Jimp.read(raw);
+    const logo1x = base.clone().contain(160, 50).getBufferAsync(Jimp.MIME_PNG);
+    const logo2x = base.clone().contain(320, 100).getBufferAsync(Jimp.MIME_PNG);
+    const [buf1, buf2] = await Promise.all([logo1x, logo2x]);
+    return { logo1x: buf1, logo2x: buf2 };
+  } catch (err) {
+    console.warn('[wallet] logo resize failed', err.message);
+    return null;
+  }
+}
+
+async function loadThumbnailBuffers(photoUrl) {
+  const raw = await fetchImageBuffer(photoUrl);
+  if (!raw) return null;
+  try {
+    const [thumb1x, thumb2x] = await Promise.all([
+      pngAtSize(raw, 90),
+      pngAtSize(raw, 180),
+    ]);
+    return { thumb1x, thumb2x };
+  } catch (err) {
+    console.warn('[wallet] thumbnail resize failed', err.message);
+    return null;
+  }
 }
 
 async function buildApplePkPassBuffer(employeeId) {
@@ -229,7 +320,15 @@ async function buildApplePkPassBuffer(employeeId) {
 
   const profile = await fetchPublicBusinessCard(employeeId);
   const cardUrl = buildCardUrl(profile.id);
-  const serialNumber = `dpl-bc-${profile.id}`;
+  // v3 serial so phones replace the earlier broken pass layout
+  const serialNumber = `dpl-bc-${profile.id}-v3`;
+  const role = getRoleDisplay(profile.bonuses_role);
+  const phone = phoneLine(profile);
+
+  const [logoBuffers, thumbBuffers] = await Promise.all([
+    loadDpLogoBuffers(),
+    loadThumbnailBuffers(profile.photo_url),
+  ]);
 
   const pass = await PKPass.from(
     {
@@ -246,28 +345,47 @@ async function buildApplePkPassBuffer(employeeId) {
       passTypeIdentifier: cfg.passTypeIdentifier,
       teamIdentifier: cfg.teamIdentifier,
       organizationName: FIRM_NAME,
-      description: `${profile.official_name} — Business Card`,
-      logoText: 'DP',
+      description: `${profile.official_name} — ${FIRM_NAME}`,
+      // Real logo image replaces the plain "DP" text when available
+      logoText: logoBuffers ? '' : 'DP',
       foregroundColor: 'rgb(255, 255, 255)',
       backgroundColor: 'rgb(15, 36, 31)',
       labelColor: 'rgb(201, 169, 110)',
     },
   );
 
+  if (logoBuffers) {
+    pass.addBuffer('logo.png', logoBuffers.logo1x);
+    pass.addBuffer('paula.r@example.org', logoBuffers.logo2x);
+  }
+
+  if (thumbBuffers) {
+    pass.addBuffer('thumbnail.png', thumbBuffers.thumb1x);
+    pass.addBuffer('uma.s@example.org', thumbBuffers.thumb2x);
+  }
+
+  pass.headerFields.splice(0, pass.headerFields.length);
   pass.primaryFields.splice(0, pass.primaryFields.length);
   pass.secondaryFields.splice(0, pass.secondaryFields.length);
   pass.auxiliaryFields.splice(0, pass.auxiliaryFields.length);
   pass.backFields.splice(0, pass.backFields.length);
 
+  pass.headerFields.push({
+    key: 'dept',
+    label: 'DEPT',
+    value: profile.department_name || 'General',
+  });
+
   pass.primaryFields.push({
     key: 'name',
-    label: 'NAME',
+    label: '',
     value: profile.official_name,
   });
+
   pass.secondaryFields.push({
     key: 'role',
     label: 'ROLE',
-    value: roleLine(profile),
+    value: role,
   });
 
   if (profile.email) {
@@ -277,7 +395,6 @@ async function buildApplePkPassBuffer(employeeId) {
       value: profile.email,
     });
   }
-  const phone = phoneLine(profile);
   if (phone) {
     pass.auxiliaryFields.push({
       key: 'phone',
@@ -286,6 +403,11 @@ async function buildApplePkPassBuffer(employeeId) {
     });
   }
 
+  pass.backFields.push({
+    key: 'roleFull',
+    label: 'TITLE',
+    value: roleLine(profile),
+  });
   pass.backFields.push({
     key: 'firm',
     label: 'FIRM',
@@ -296,6 +418,29 @@ async function buildApplePkPassBuffer(employeeId) {
     label: 'OFFICE',
     value: `${OFFICE_LABEL} — ${OFFICE_ADDRESS}`,
   });
+  if (profile.email) {
+    pass.backFields.push({
+      key: 'emailBack',
+      label: 'EMAIL',
+      value: profile.email,
+    });
+  }
+  if (phone) {
+    pass.backFields.push({
+      key: 'phoneBack',
+      label: 'PHONE',
+      value: phone,
+    });
+  }
+  if (profile.mobile && profile.phone && profile.mobile !== profile.phone) {
+    pass.backFields.push({
+      key: 'officePhone',
+      label: 'OFFICE PHONE',
+      value: profile.phone_ext
+        ? `${profile.phone} Ext. ${profile.phone_ext}`
+        : profile.phone,
+    });
+  }
   if (profile.linkedin_url) {
     pass.backFields.push({
       key: 'linkedin',
@@ -369,7 +514,7 @@ function buildGoogleSaveUrl(profile) {
   };
 
   const textModulesData = [
-    { id: 'role', header: 'Role', body: profile.bonuses_role || 'Employee' },
+    { id: 'role', header: 'Role', body: getRoleDisplay(profile.bonuses_role) },
     { id: 'dept', header: 'Department', body: `${profile.department_name} Department` },
   ];
   if (profile.email) {
