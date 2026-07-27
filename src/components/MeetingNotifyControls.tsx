@@ -17,8 +17,8 @@ import {
   type MeetingEmailNotifyType,
 } from '../lib/emailTemplatesAutomation';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
-import { createCalendarEventWithAttendee, sendEmail } from '../lib/graph';
-import { generateICSFromDateTime } from '../lib/icsGenerator';
+import { sendEmail } from '../lib/graph';
+import { generateICSFromDateTime, stripHtmlForIcs } from '../lib/icsGenerator';
 import { getLinkType, resolveMeetingJoinLink } from '../lib/meetingJoinLink';
 import {
   fetchMeetingParticipantContacts,
@@ -727,15 +727,8 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
       const teamsJoinUrlForCalendar = includeJoinLink && joinLink && getLinkType(joinLink) === 'teams' ? joinLink : undefined;
       const calendarLocationDisplay = includeJoinLink && locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName;
 
-      const isMicrosoftEmail = (email: string | string[]): boolean => {
-        const emails = Array.isArray(email) ? email : [email];
-        const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
-        return emails.some((addr) => microsoftDomains.some((domain) => addr.toLowerCase().includes(`@${domain}`)));
-      };
-
       const recipientEmailArray = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
       const primaryRecipientEmail = recipientEmailArray[0];
-      const useOutlookCalendarInvite = isMicrosoftEmail(recipientEmail);
       const recipientName =
         contactName ||
         (Array.isArray(emailAddress)
@@ -743,17 +736,15 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
           : contacts.find((c) => c.email === emailAddress)?.name || client.name || 'Client');
 
       let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
-      if (joinLink) {
-        const joinLabel = getLinkType(joinLink) === 'teams' ? 'Join Teams Meeting' : 'Join Meeting';
-        descriptionHtml += `<p><strong>${joinLabel}:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
+      if (joinLink && getLinkType(joinLink) !== 'teams') {
+        descriptionHtml += `<p><strong>Join Meeting:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
       }
       if (meeting.brief) {
         descriptionHtml += `<p><strong>Brief:</strong><br>${meeting.brief.replace(/\n/g, '<br>')}</p>`;
       }
 
       const calendarSubject = 'Meeting with Decker, Pex, Levi Lawoffice';
-      const startDateTime = new Date(`${meeting.date}T${formattedTime}:00`);
-      const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000);
+      const inviteDurationMinutes = Number(meeting.duration) > 0 ? Number(meeting.duration) : 60;
 
       let languageToUse: 'en' | 'he';
       if (currentEmailType === 'rescheduled') {
@@ -811,70 +802,47 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
         });
       }
 
+      let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
       if (
         currentEmailType === 'invitation' ||
         currentEmailType === 'invitation_jlm' ||
         currentEmailType === 'invitation_tlv' ||
         currentEmailType === 'invitation_tlv_parking'
       ) {
-        if (useOutlookCalendarInvite) {
-          await createCalendarEventWithAttendee(tokenResponse.accessToken, {
+        try {
+          const icsContent = generateICSFromDateTime({
             subject: calendarSubject,
-            startDateTime: startDateTime.toISOString(),
-            endDateTime: endDateTime.toISOString(),
+            date: meeting.date,
+            time: formattedTime,
+            durationMinutes: inviteDurationMinutes,
             location: calendarLocationDisplay,
-            description: descriptionHtml,
-            attendeeEmail: primaryRecipientEmail,
-            attendeeName: recipientName,
+            description: stripHtmlForIcs(descriptionHtml),
             organizerEmail: account.username || 'noreply@lawoffice.org.il',
             organizerName: senderName,
+            attendeeEmail: primaryRecipientEmail,
+            attendeeName: recipientName,
             teamsJoinUrl: teamsJoinUrlForCalendar,
             timeZone: 'Asia/Jerusalem',
           });
-        } else {
-          let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
-          try {
-            const icsContent = generateICSFromDateTime({
-              subject: calendarSubject,
-              date: meeting.date,
-              time: formattedTime,
-              durationMinutes: 60,
-              location: calendarLocationDisplay,
-              description: descriptionHtml.replace(/<[^>]+>/g, ''),
-              organizerEmail: account.username || 'noreply@lawoffice.org.il',
-              organizerName: senderName,
-              attendeeEmail: primaryRecipientEmail,
-              attendeeName: recipientName,
-              teamsJoinUrl: teamsJoinUrlForCalendar,
-              timeZone: 'Asia/Jerusalem',
-            });
-            attachments = [
-              {
-                name: 'meeting-invite.ics',
-                contentBytes: btoa(unescape(encodeURIComponent(icsContent))),
-                contentType: 'text/calendar; charset=utf-8; method=REQUEST',
-              },
-            ];
-          } catch (icsError) {
-            console.error('Failed to generate ICS file:', icsError);
-          }
-
-          await sendEmail(tokenResponse.accessToken, {
-            to: recipientEmail,
-            subject,
-            body: htmlBody,
-            attachments,
-            skipSignature: true,
-          });
+          attachments = [
+            {
+              name: 'meeting-invite.ics',
+              contentBytes: btoa(unescape(encodeURIComponent(icsContent))),
+              contentType: 'text/calendar; charset=utf-8; method=REQUEST',
+            },
+          ];
+        } catch (icsError) {
+          console.error('Failed to generate ICS file:', icsError);
         }
-      } else {
-        await sendEmail(tokenResponse.accessToken, {
-          to: recipientEmail,
-          subject,
-          body: htmlBody,
-          skipSignature: true,
-        });
       }
+
+      await sendEmail(tokenResponse.accessToken, {
+        to: recipientEmail,
+        subject,
+        body: htmlBody,
+        attachments,
+        skipSignature: true,
+      });
 
       const emailTypeMessages: Record<EmailType, string> = {
         invitation: `Meeting invitation sent for meeting on ${meeting.date}`,

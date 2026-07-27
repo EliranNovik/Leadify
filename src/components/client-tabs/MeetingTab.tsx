@@ -15,6 +15,7 @@ import {
   pickTenantMeetingLocationAddress,
   preferEnglishMeetingTemplateLanguage,
   shouldIncludeMeetingJoinLink,
+  isTeamsMeetingLocationName,
 } from '../../lib/meetingLocationUtils';
 import {
   getRescheduleMeetingPath,
@@ -29,7 +30,7 @@ import {
   recordLeadStageChange,
   updateLeadStageWithHistory,
 } from '../../lib/leadStageManager';
-import { areStagesEquivalent, getStageName } from '../../lib/stageUtils';
+import { areStagesEquivalent, getStageName, shouldPreserveLeadStageOnMeeting } from '../../lib/stageUtils';
 import {
   fetchAllUnavailabilitiesInRange,
   formatUnavailabilityTime,
@@ -82,9 +83,10 @@ import { useAuthContext } from '../../contexts/AuthContext';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
-import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createStaffCalendarEvent, createStaffTeamsMeeting } from '../../lib/graph';
+import { createTeamsMeeting, sendEmail, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createStaffCalendarEvent, createStaffTeamsMeeting, resolveTeamsJoinUrlForEvent } from '../../lib/graph';
 import { saveOutlookTeamsMeeting, type OutlookTeamsMeeting } from '../../lib/outlookTeamsMeetingsApi';
-import { generateICSFromDateTime } from '../../lib/icsGenerator';
+import { getValidTeamsLink as getValidTeamsLinkShared } from '../../lib/meetingJoinLink';
+import { generateICSFromDateTime, stripHtmlForIcs } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
 import MeetingSummaryNotesModal from './MeetingSummaryNotesModal';
@@ -3217,29 +3219,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       const calendarLocationDisplay =
         includeJoinLink && locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName;
 
-      // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
-      const isMicrosoftEmail = (email: string | string[]): boolean => {
-        const emails = Array.isArray(email) ? email : [email];
-        const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
-        return emails.some(addr =>
-          microsoftDomains.some(domain => addr.toLowerCase().includes(`@${domain}`))
-        );
-      };
-
       const recipientEmailArray = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
       const primaryRecipientEmail = recipientEmailArray[0];
-      const useOutlookCalendarInvite = isMicrosoftEmail(recipientEmail);
 
       // Get recipient name (use provided contactName, or find from contacts, or fallback to client name)
       const recipientName = contactName || (Array.isArray(emailAddress)
         ? (contacts.find(c => c.email === primaryRecipientEmail)?.name || client.name)
         : (contacts.find(c => c.email === emailAddress)?.name || client.name));
 
-      // Build description HTML (category and topic removed)
+      // Build calendar description (Teams URL is added once by generateICS via teamsJoinUrl)
       let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
-      if (joinLink) {
-        const joinLabel = getLinkType(joinLink) === 'teams' ? 'Join Teams Meeting' : 'Join Meeting';
-        descriptionHtml += `<p><strong>${joinLabel}:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
+      if (joinLink && getLinkType(joinLink) !== 'teams') {
+        descriptionHtml += `<p><strong>Join Meeting:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
       }
       if (meeting.brief) {
         descriptionHtml += `<p><strong>Brief:</strong><br>${meeting.brief.replace(/\n/g, '<br>')}</p>`;
@@ -3329,83 +3320,43 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         });
       }
 
-      // Only create calendar invites for invitations (all invitation types)
+      // Always send the CRM template. Attach ICS for invitations so every client
+      // gets branding + a calendar item (avoids Graph auto-invite skipping templates
+      // and minting a second Teams meeting).
+      let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
       if (currentEmailType === 'invitation' || currentEmailType === 'invitation_jlm' || currentEmailType === 'invitation_tlv' || currentEmailType === 'invitation_tlv_parking') {
-        if (useOutlookCalendarInvite) {
-          // Use Microsoft Graph API to create a calendar event with attendees
-          // This automatically sends a proper Outlook meeting invitation that appears as a calendar box, not an attachment
-          // The invitation email is sent automatically by Outlook/Exchange, so we don't need to send a separate email
-          try {
-            await createCalendarEventWithAttendee(tokenResponse.accessToken, {
-              subject: calendarSubject,
-              startDateTime: startDateTime.toISOString(),
-              endDateTime: endDateTime.toISOString(),
-              location: calendarLocationDisplay,
-              description: descriptionHtml,
-              attendeeEmail: primaryRecipientEmail,
-              attendeeName: recipientName,
-              organizerEmail: account.username || 'noreply@lawoffice.org.il',
-              organizerName: senderName,
-              teamsJoinUrl: teamsJoinUrlForCalendar,
-              timeZone: 'Asia/Jerusalem'
-            });
-
-            // The calendar event creation automatically sends a meeting invitation email via Outlook
-            // This invitation appears as a proper calendar box in Outlook, not as an attachment
-          } catch (calendarError) {
-            console.error('Failed to create Outlook calendar event:', calendarError);
-            // Fallback to ICS attachment if Outlook calendar creation fails
-            throw calendarError; // Will be caught by outer catch
-          }
-        } else {
-          // For non-Microsoft email clients (Gmail, etc.), use ICS attachment
-          // Generate ICS calendar file attachment
-          let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
-          try {
-            const icsContent = generateICSFromDateTime({
-              subject: calendarSubject,
-              date: meeting.date,
-              time: formattedTime,
-              durationMinutes: inviteDurationMinutes,
-              location: calendarLocationDisplay,
-              description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
-              organizerEmail: account.username || 'noreply@lawoffice.org.il',
-              organizerName: senderName,
-              attendeeEmail: primaryRecipientEmail,
-              attendeeName: recipientName,
-              teamsJoinUrl: teamsJoinUrlForCalendar,
-              timeZone: 'Asia/Jerusalem'
-            });
-
-            const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
-
-            attachments = [{
-              name: 'meeting-invite.ics',
-              contentBytes: icsBase64,
-              contentType: 'text/calendar; charset=utf-8; method=REQUEST'
-            }];
-          } catch (icsError) {
-            console.error('Failed to generate ICS file:', icsError);
-          }
-
-          // Send email with ICS attachment
-          await sendEmail(tokenResponse.accessToken, {
-            to: recipientEmail,
-            subject,
-            body: htmlBody,
-            attachments,
-            skipSignature: true // Don't include user signature in template emails
+        try {
+          const icsContent = generateICSFromDateTime({
+            subject: calendarSubject,
+            date: meeting.date,
+            time: formattedTime,
+            durationMinutes: inviteDurationMinutes,
+            location: calendarLocationDisplay,
+            description: stripHtmlForIcs(descriptionHtml),
+            organizerEmail: account.username || 'noreply@lawoffice.org.il',
+            organizerName: senderName,
+            attendeeEmail: primaryRecipientEmail,
+            attendeeName: recipientName,
+            teamsJoinUrl: teamsJoinUrlForCalendar,
+            timeZone: 'Asia/Jerusalem'
           });
+          attachments = [{
+            name: 'meeting-invite.ics',
+            contentBytes: btoa(unescape(encodeURIComponent(icsContent))),
+            contentType: 'text/calendar; charset=utf-8; method=REQUEST'
+          }];
+        } catch (icsError) {
+          console.error('Failed to generate ICS file:', icsError);
         }
-      } else {
-        // For reminder and cancellation, just send email without calendar invite
-        await sendEmail(tokenResponse.accessToken, {
-          to: recipientEmail,
-          subject,
-          body: htmlBody,
-          skipSignature: true // Don't include user signature in template emails
-        });
       }
+
+      await sendEmail(tokenResponse.accessToken, {
+        to: recipientEmail,
+        subject,
+        body: htmlBody,
+        attachments,
+        skipSignature: true
+      });
       const emailTypeMessages: Record<'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled', string> = {
         invitation: `Meeting invitation sent for meeting on ${meeting.date}`,
         invitation_jlm: `Meeting invitation (JLM) sent for meeting on ${meeting.date}`,
@@ -3549,28 +3500,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     }
   };
 
-  const getValidTeamsLink = (link: string | undefined) => {
-    if (!link || link.trim() === '') return '';
-    try {
-      // If it's a plain URL, return as is
-      if (link.startsWith('http')) {
-        return link;
-      }
-      // If it's a stringified object, parse and extract joinUrl
-      const obj = JSON.parse(link);
-      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
-        return obj.joinUrl;
-      }
-      // Some Graph API responses use joinWebUrl
-      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
-        return obj.joinWebUrl;
-      }
-    } catch (e) {
-      // Not JSON, just return as is
-      if (typeof link === 'string' && link.startsWith('http')) return link;
-    }
-    return '';
-  };
+  const getValidTeamsLink = (link: string | undefined) => getValidTeamsLinkShared(link);
 
   /**
    * Resolve join URL for emails: Teams/Graph JSON in meeting.link, custom_link, or location default_link (Zoom etc.).
@@ -3857,7 +3787,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       },
     };
 
-    if (meetingDetails.location === 'Teams') {
+    if (isTeamsMeetingLocationName(meetingDetails.location)) {
       body.isOnlineMeeting = true;
       body.onlineMeetingProvider = 'teamsForBusiness';
     }
@@ -3887,12 +3817,25 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     }
 
     const data = await response.json();
-    const joinUrl = data.onlineMeeting?.joinUrl || data.webLink;
+    let joinUrl = '';
+    let onlineMeeting = data.onlineMeeting;
+    if (isTeamsMeetingLocationName(meetingDetails.location)) {
+      const resolved = await resolveTeamsJoinUrlForEvent(accessToken, {
+        calendarUserEmail: calendarEmail,
+        eventId: data.id,
+        eventData: data,
+        subject: meetingDetails.subject,
+        startDateTime: meetingDetails.startDateTime,
+        endDateTime: meetingDetails.endDateTime,
+      });
+      joinUrl = resolved.joinUrl;
+      onlineMeeting = resolved.onlineMeeting || data.onlineMeeting;
+    }
 
     return {
-      joinUrl: joinUrl,
+      joinUrl,
       id: data.id,
-      onlineMeeting: data.onlineMeeting
+      onlineMeeting,
     };
   };
 
@@ -4006,7 +3949,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         });
         if (!result || !result.id) throw new Error('Teams meeting creation returned invalid result');
         teamsMeetingId = result.id;
-        teamsJoinUrl = result.onlineMeeting?.joinUrl || result.joinUrl || null;
+        teamsJoinUrl = getValidTeamsLinkShared(result.joinUrl) || null;
       } else {
         const result = await createStaffCalendarEvent(accessToken, {
           subject: params.subject,
@@ -4270,7 +4213,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       }
 
       // If this is a Teams meeting, create an online event via Graph
-      if (scheduleMeetingFormData.location === 'Teams') {
+      if (isTeamsMeetingLocationName(scheduleMeetingFormData.location)) {
         let accessToken: string | null = null;
         try {
           const request = { ...loginRequest, account };
@@ -4338,7 +4281,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             amount: 0,
             currency: '₪',
           });
-          teamsMeetingUrl = calendarEventData.joinUrl;
+          teamsMeetingUrl = getValidTeamsLink(calendarEventData.joinUrl);
+          if (!teamsMeetingUrl) {
+            toast.error(
+              'Calendar event was created, but a Teams join link could not be obtained. The meeting was saved without a join link — try regenerating the Teams link from the meeting tab.',
+              { duration: 8000 }
+            );
+          }
         } catch (calendarError) {
           console.error('Calendar creation failed:', calendarError);
           const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
@@ -4450,20 +4399,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
       // Update lead stage + roles (same rules as Clients.tsx schedule drawer)
       // - First schedule → Meeting scheduled
-      // - Stage >= 40 (except 60 Client signed / 70 Payment request) → Another meeting
+      // - Stage >= 40 (before Client signed) → Another meeting
+      // - Stage >= 60 (Client signed and later) → never change stage
       // - External IM meetings do not change lead stage
       if (scheduleMeetingFormData.calendar !== 'external') {
         try {
           const stageActor = await fetchStageActorInfo();
           const stageTimestamp = new Date().toISOString();
           const stageNumeric = clientStageId;
+          const preserveStage = shouldPreserveLeadStageOnMeeting(client.stage);
           const targetStageKey =
-            stageNumeric != null &&
-            stageNumeric >= 40 &&
-            stageNumeric !== 60 &&
-            stageNumeric !== 70
-              ? 'another_meeting'
-              : 'meeting_scheduled';
+            preserveStage
+              ? null
+              : stageNumeric != null &&
+                  stageNumeric >= 40 &&
+                  stageNumeric < 60
+                ? 'another_meeting'
+                : 'meeting_scheduled';
 
           const roleFields: Record<string, unknown> = {};
 
@@ -4494,13 +4446,24 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             }
           }
 
-          await updateLeadStageWithHistory({
-            lead: client as any,
-            stage: targetStageKey,
-            additionalFields: roleFields,
-            actor: stageActor,
-            timestamp: stageTimestamp,
-          });
+          if (targetStageKey) {
+            await updateLeadStageWithHistory({
+              lead: client as any,
+              stage: targetStageKey,
+              additionalFields: roleFields,
+              actor: stageActor,
+              timestamp: stageTimestamp,
+            });
+          } else if (Object.keys(roleFields).length > 0) {
+            const legacyIdNumeric =
+              legacyId != null && /^\d+$/.test(String(legacyId))
+                ? parseInt(String(legacyId), 10)
+                : legacyId;
+            const { error: roleOnlyError } = isLegacyLead
+              ? await supabase.from('leads_lead').update(roleFields).eq('id', legacyIdNumeric)
+              : await supabase.from('leads').update(roleFields).eq('id', client.id);
+            if (roleOnlyError) throw roleOnlyError;
+          }
         } catch (stageError) {
           console.error('Error updating lead stage/roles after scheduling:', stageError);
           toast.error(
@@ -4522,6 +4485,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         meetingData: insertedData?.[0]
       });
 
+      let clientNotified = false;
       if (notifyClientOnSchedule && insertedData && insertedData.length > 0 && client.email) {
         const newMeeting: Meeting = {
           id: insertedData[0].id,
@@ -4544,35 +4508,64 @@ const MeetingTab: React.FC<ClientTabProps> = ({
           },
         };
 
-        // Determine the appropriate invitation type based on meeting location
         const invitationType = inferInvitationEmailTypeFromLocationName(scheduleMeetingFormData.location);
 
-        console.log('🎯 Auto-sending meeting invitation:', {
-          location: scheduleMeetingFormData.location,
-          invitationType,
-          clientEmail: client.email,
-          meetingDate: newMeeting.date
-        });
+        if (
+          isTeamsMeetingLocationName(scheduleMeetingFormData.location) &&
+          !getValidTeamsLink(newMeeting.link)
+        ) {
+          toast.error(
+            'Meeting scheduled, but invitation was not sent because a Teams join link was not available.',
+            { duration: 8000 },
+          );
+        } else {
+          try {
+            // Prefill automation templates before auto-notify (normally loaded by Notify modal).
+            const cache = emailAutomationCache ?? (await fetchEmailTemplatesAutomationCache());
+            if (!emailAutomationCache) setEmailAutomationCache(cache);
+            const templateIds = resolveMeetingEmailTemplateIdsForNotify(
+              cache,
+              newMeeting,
+              allMeetingLocations,
+              invitationType,
+            );
+            const idsToLoad = [templateIds.en, templateIds.he].filter(
+              (id): id is number => id != null && Number.isFinite(id),
+            );
+            if (idsToLoad.length > 0) {
+              const templatesById = await fetchMiscEmailTemplatesByIds(idsToLoad);
+              const nextTemplates: { en: { content: string; name: string | null } | null; he: { content: string; name: string | null } | null } = {
+                en: null,
+                he: null,
+              };
+              (['en', 'he'] as const).forEach((lang) => {
+                const templateId = templateIds[lang];
+                if (!templateId) return;
+                const row = templatesById.get(templateId);
+                if (!row?.content) return;
+                nextTemplates[lang] = {
+                  content: parseTemplateContent(row.content),
+                  name: row.name || null,
+                };
+              });
+              setEmailTemplates(nextTemplates);
+              // Mutate current state object so handleSendEmail (same tick) sees templates.
+              emailTemplates.en = nextTemplates.en;
+              emailTemplates.he = nextTemplates.he;
+            }
 
-        // Send the invitation email with calendar invite (ICS/Outlook)
-        // Pass invitationType directly as the 4th parameter
-        try {
-          await handleSendEmail(newMeeting, client.email, client.name, invitationType);
-          console.log('✅ Meeting invitation sent successfully');
-        } catch (emailError) {
-          console.error('❌ Error sending meeting invitation:', emailError);
-          toast('Meeting scheduled, but failed to send invitation email.', { icon: '⚠️' });
+            await handleSendEmail(newMeeting, client.email, client.name, invitationType);
+            clientNotified = true;
+          } catch (emailError) {
+            console.error('❌ Error sending meeting invitation:', emailError);
+            toast('Meeting scheduled, but failed to send invitation email.', { icon: '⚠️' });
+          }
         }
-      } else {
-        console.log('⚠️ Meeting created but email not sent:', {
-          hasInsertedData: !!insertedData,
-          dataLength: insertedData?.length,
-          hasClientEmail: !!client?.email
-        });
+      } else if (notifyClientOnSchedule) {
+        toast('Meeting scheduled, but no client email was available to notify.', { icon: '⚠️' });
       }
 
-      // Update UI
-      toast.success(notifyClientOnSchedule ? 'Meeting scheduled and client notified.' : 'Meeting scheduled.');
+      toast.success(clientNotified ? 'Meeting scheduled and client notified.' : 'Meeting scheduled.');
       setShowScheduleDrawer(false);
       setIsSchedulingMeeting(false);
       setNotifyClientOnSchedule(false);
@@ -4785,10 +4778,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         });
       }
 
-      // Update stage to Meeting rescheduling (21) — same as Clients.tsx cancel path
+      // Update stage to Meeting rescheduling (21) — same as Clients.tsx cancel path.
+      // Never move leads at/after Client signed agreement.
       try {
         const currentStageNameForCheck = getStageName(String(client.stage ?? ''));
-        if (!areStagesEquivalent(currentStageNameForCheck, 'Another meeting')) {
+        if (
+          !areStagesEquivalent(currentStageNameForCheck, 'Another meeting') &&
+          !shouldPreserveLeadStageOnMeeting(client.stage)
+        ) {
           await updateLeadStageWithHistory({
             lead: client as any,
             stage: 21, // Meeting rescheduling
@@ -4947,31 +4944,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         console.error('❌ Error querying for meetings to cancel:', queryError);
       } else if (upcomingMeetingsToCancel && upcomingMeetingsToCancel.length > 0) {
         meetingIdToCancel = upcomingMeetingsToCancel[0].id;
-        console.log('🔄 Automatically canceling oldest upcoming meeting before rescheduling:', meetingIdToCancel);
-
-        const editor = await resolveEditorDisplayName();
-        const { error: cancelError } = await supabase
-          .from('meetings')
-          .update({
-            status: 'canceled',
-            last_edited_timestamp: new Date().toISOString(),
-            last_edited_by: editor
-          })
-          .eq('id', meetingIdToCancel);
-
-        if (cancelError) {
-          console.error('❌ Failed to cancel old meeting:', cancelError);
-          throw new Error(`Failed to cancel old meeting: ${cancelError.message}`);
-        }
-
-        const { data: canceledMeetingData } = await supabase
-          .from('meetings')
-          .select('*')
-          .eq('id', meetingIdToCancel)
-          .single();
-
-        canceledMeeting = canceledMeetingData;
-        console.log('✅ Old meeting canceled successfully:', meetingIdToCancel);
+        canceledMeeting = upcomingMeetingsToCancel[0];
+        console.log('🔄 Will cancel oldest upcoming meeting after new meeting is created:', meetingIdToCancel);
       } else {
         console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
       }
@@ -5049,7 +5023,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       }
 
       // If this is a Teams meeting, create an online event via Graph
-      if (rescheduleFormData.location === 'Teams') {
+      if (isTeamsMeetingLocationName(rescheduleFormData.location)) {
         let accessToken: string | null = null;
         try {
           const request = { ...loginRequest, account };
@@ -5081,14 +5055,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         const meetingDurationMinutes = normalizeMeetingDurationMinutes(rescheduleFormData.duration);
         const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
 
-        const calendarEmail = 'shared-newclients@lawoffice.org.il'; // Always use active client calendar
+        const calendarEmail = rescheduleFormData.calendar === 'active_client'
+          ? 'shared-newclients@lawoffice.org.il'
+          : 'shared-potentialclients@lawoffice.org.il';
 
-        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-
-        if (!hasAccess) {
-          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`);
-          setIsReschedulingMeeting(false);
-          return;
+        try {
+          const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+          if (!hasAccess) {
+            toast.error(`Cannot access calendar ${calendarEmail}. Meeting will still be created without calendar sync.`);
+          }
+        } catch (accessError) {
+          console.warn('⚠️ Calendar access check failed:', accessError);
+          toast.error('Calendar access check failed. Meeting will still be created without calendar sync.');
         }
 
         const categoryName = client.category || 'No Category';
@@ -5111,7 +5089,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             amount: 0,
             currency: '₪',
           });
-          teamsMeetingUrl = calendarEventData.joinUrl;
+          teamsMeetingUrl = getValidTeamsLink(calendarEventData.joinUrl);
+          if (!teamsMeetingUrl) {
+            toast.error(
+              'Calendar event was created, but a Teams join link could not be obtained. The meeting was saved without a join link — try regenerating the Teams link from the meeting tab.',
+              { duration: 8000 }
+            );
+          }
         } catch (calendarError) {
           console.error('Calendar creation failed:', calendarError);
           const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
@@ -5183,6 +5167,30 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         throw meetingError;
       }
 
+      // Cancel the previous meeting only after the replacement was created successfully.
+      if (meetingIdToCancel) {
+        const { error: cancelError } = await supabase
+          .from('meetings')
+          .update({
+            status: 'canceled',
+            last_edited_timestamp: new Date().toISOString(),
+            last_edited_by: editorDisplayName,
+          })
+          .eq('id', meetingIdToCancel);
+        if (cancelError) {
+          console.error('❌ Failed to cancel old meeting after reschedule insert:', cancelError);
+          toast.error('New meeting was created, but canceling the previous meeting failed. Please cancel it manually.');
+        } else {
+          const { data: canceledMeetingData } = await supabase
+            .from('meetings')
+            .select('*')
+            .eq('id', meetingIdToCancel)
+            .single();
+          canceledMeeting = canceledMeetingData || canceledMeeting;
+          console.log('✅ Old meeting canceled after successful reschedule:', meetingIdToCancel);
+        }
+      }
+
       // Update lead roles + stage after booking the replacement meeting.
       // Cancel-only leaves the lead in Meeting rescheduling (21). Completing a
       // reschedule (new meeting created) moves them to Meeting scheduled (20),
@@ -5219,9 +5227,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         const isAnotherMeeting =
           currentStageNumeric === 55 || areStagesEquivalent(currentStageName, 'Another meeting');
 
-        // Booking a replacement meeting → Meeting scheduled (20)
+        // Booking a replacement meeting → Meeting scheduled (20).
+        // Never change stage at/after Client signed agreement (60+).
         const targetStageId =
-          rescheduleFormData.calendar !== 'external' && !isAnotherMeeting ? 20 : null;
+          rescheduleFormData.calendar !== 'external' &&
+          !isAnotherMeeting &&
+          !shouldPreserveLeadStageOnMeeting(client.stage)
+            ? 20
+            : null;
 
         const roleFields: Record<string, unknown> = {};
 
@@ -5275,6 +5288,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       }
 
       // Send notification email to client (only if notify toggle is on)
+      let rescheduleNotified = false;
       if (notifyClientOnReschedule && client.email) {
         let accessToken: string | null = null;
         try {
@@ -5315,7 +5329,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             ? meetingLink
             : undefined;
         const calendarLocationDisplayForReschedule =
-          includeRescheduleJoinLink && rescheduleFormData.location === 'Teams'
+          includeRescheduleJoinLink && isTeamsMeetingLocationName(rescheduleFormData.location)
             ? 'Microsoft Teams Meeting'
             : rescheduleFormData.location;
         const joinButton = meetingLink
@@ -5476,48 +5490,44 @@ const MeetingTab: React.FC<ClientTabProps> = ({
           ? `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`
           : `[${client.lead_number || client.id}] - ${client.name} - New Meeting Scheduled`);
 
-        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
-        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
-        const startDateTime = new Date(year, month - 1, day, hours, minutes);
-        const endDateTime = new Date(
-          startDateTime.getTime() + normalizeMeetingDurationMinutes(rescheduleFormData.duration) * 60000,
-        );
-
         const categoryName = client.category || 'No Category';
         const meetingSubject = canceledMeeting
           ? `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting Rescheduled`
           : `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting`;
 
+        let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
         try {
-          await createCalendarEventWithAttendee(accessToken, {
+          const icsContent = generateICSFromDateTime({
             subject: meetingSubject,
-            startDateTime: startDateTime.toISOString(),
-            endDateTime: endDateTime.toISOString(),
+            date: rescheduleFormData.date,
+            time: formattedNewTime,
+            durationMinutes: normalizeMeetingDurationMinutes(rescheduleFormData.duration),
             location: calendarLocationDisplayForReschedule,
-            description: emailBody,
-            attendeeEmail: client.email,
-            attendeeName: client.name,
+            description: stripHtmlForIcs(emailBody),
             organizerEmail: account.username || 'noreply@lawoffice.org.il',
             organizerName: userName,
+            attendeeEmail: client.email,
+            attendeeName: client.name,
             teamsJoinUrl: teamsJoinUrlForReschedule,
-            timeZone: 'Asia/Jerusalem'
+            timeZone: 'Asia/Jerusalem',
           });
-
-          await sendEmail(accessToken, {
-            to: client.email,
-            subject: emailSubject,
-            body: emailBody,
-            skipSignature: true // Don't include user signature in template emails
-          });
-        } catch (calendarError) {
-          console.error('Failed to create calendar invitation:', calendarError);
-          await sendEmail(accessToken, {
-            to: client.email,
-            subject: emailSubject,
-            body: emailBody,
-            skipSignature: true // Don't include user signature in template emails
-          });
+          attachments = [{
+            name: 'meeting-invite.ics',
+            contentBytes: btoa(unescape(encodeURIComponent(icsContent))),
+            contentType: 'text/calendar; charset=utf-8; method=REQUEST',
+          }];
+        } catch (icsError) {
+          console.error('Failed to generate reschedule ICS:', icsError);
         }
+
+        await sendEmail(accessToken, {
+          to: client.email,
+          subject: emailSubject,
+          body: emailBody,
+          attachments,
+          skipSignature: true,
+        });
+        rescheduleNotified = true;
 
         const rescheduleSentAt = new Date();
         await saveOutgoingEmailRecord({
@@ -5530,9 +5540,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
           sentAt: rescheduleSentAt,
           messageId: `meeting_reschedule_${rescheduleSentAt.getTime()}`,
         });
+      } else if (notifyClientOnReschedule && !client.email) {
+        toast('Meeting rescheduled, but no client email was available to notify.', { icon: '⚠️' });
       }
 
-      toast.success(notifyClientOnReschedule ? 'Meeting rescheduled and client notified.' : 'Meeting rescheduled.');
+      toast.success(rescheduleNotified ? 'Meeting rescheduled and client notified.' : 'Meeting rescheduled.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
       setNotifyClientOnReschedule(false); // Reset to default

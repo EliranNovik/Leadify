@@ -2,6 +2,134 @@
 // Usage: createTeamsMeeting(accessToken, meetingDetails)
 
 import { IPublicClientApplication, InteractionRequiredAuthError } from '@azure/msal-browser';
+import { extractTeamsJoinUrlFromGraphPayload } from './meetingJoinLink';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Create a Teams online meeting via the Online Meetings API (returns joinWebUrl reliably).
+ * Prefer this when calendar event POST leaves onlineMeeting null (common on shared mailboxes).
+ */
+export async function createOnlineMeetingJoinUrl(
+  accessToken: string,
+  meetingDetails: {
+    subject: string;
+    startDateTime: string;
+    endDateTime: string;
+  },
+  /** Mailbox UPN/email, or omit / use 'me' for the signed-in user */
+  mailboxEmail?: string | 'me'
+): Promise<string> {
+  const path =
+    !mailboxEmail || mailboxEmail === 'me'
+      ? 'https://graph.microsoft.com/v1.0/me/onlineMeetings'
+      : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailboxEmail)}/onlineMeetings`;
+
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      startDateTime: meetingDetails.startDateTime,
+      endDateTime: meetingDetails.endDateTime,
+      subject: meetingDetails.subject,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    console.warn('onlineMeetings create failed:', mailboxEmail || 'me', error);
+    return '';
+  }
+
+  const data = await response.json();
+  return extractTeamsJoinUrlFromGraphPayload(data);
+}
+
+/**
+ * After creating a calendar event with isOnlineMeeting, Graph often returns onlineMeeting: null
+ * (especially on shared calendars). Poll GET, then fall back to Online Meetings API.
+ * Never returns Outlook webLink — that is a calendar item URL, not a Teams join link.
+ */
+export async function resolveTeamsJoinUrlForEvent(
+  accessToken: string,
+  options: {
+    calendarUserEmail: string;
+    eventId: string;
+    eventData: unknown;
+    subject: string;
+    startDateTime: string;
+    endDateTime: string;
+  }
+): Promise<{ joinUrl: string; onlineMeeting: unknown }> {
+  let onlineMeeting =
+    options.eventData &&
+    typeof options.eventData === 'object' &&
+    'onlineMeeting' in options.eventData
+      ? (options.eventData as { onlineMeeting?: unknown }).onlineMeeting
+      : null;
+
+  let joinUrl = extractTeamsJoinUrlFromGraphPayload(options.eventData);
+
+  if (!joinUrl && options.eventId) {
+    const basePath =
+      !options.calendarUserEmail || options.calendarUserEmail === 'me'
+        ? 'https://graph.microsoft.com/v1.0/me'
+        : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(options.calendarUserEmail)}`;
+    const getUrl =
+      `${basePath}/events/${encodeURIComponent(options.eventId)}` +
+      `?$select=id,isOnlineMeeting,onlineMeetingProvider,onlineMeeting`;
+
+    for (let attempt = 0; attempt < 4 && !joinUrl; attempt++) {
+      await sleep(400 * (attempt + 1));
+      try {
+        const res = await fetch(getUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) continue;
+        const refreshed = await res.json();
+        onlineMeeting = refreshed.onlineMeeting ?? onlineMeeting;
+        joinUrl = extractTeamsJoinUrlFromGraphPayload(refreshed);
+      } catch (err) {
+        console.warn('Failed to refresh event for Teams join URL:', err);
+      }
+    }
+  }
+
+  if (!joinUrl) {
+    const mailbox =
+      !options.calendarUserEmail || options.calendarUserEmail === 'me'
+        ? undefined
+        : options.calendarUserEmail;
+    joinUrl =
+      (await createOnlineMeetingJoinUrl(
+        accessToken,
+        {
+          subject: options.subject,
+          startDateTime: options.startDateTime,
+          endDateTime: options.endDateTime,
+        },
+        mailbox
+      )) ||
+      (await createOnlineMeetingJoinUrl(accessToken, {
+        subject: options.subject,
+        startDateTime: options.startDateTime,
+        endDateTime: options.endDateTime,
+      }));
+  }
+
+  if (!joinUrl) {
+    console.warn(
+      'Teams join URL could not be resolved; refusing to use Outlook webLink as a meeting link.'
+    );
+  }
+
+  return { joinUrl, onlineMeeting };
+}
 
 /** Thrown when popup auth fails (blocked, iframe, mobile) so UI can offer redirect. */
 export class AuthPopupBlockedError extends Error {
@@ -162,12 +290,19 @@ export async function createTeamsMeeting(accessToken: string, meetingDetails: {
   }
 
   const data = await response.json();
-  
-  // Return the online meeting URL if available, otherwise the join URL
+  const resolved = await resolveTeamsJoinUrlForEvent(accessToken, {
+    calendarUserEmail: potentialClientsCalendarEmail,
+    eventId: data.id,
+    eventData: data,
+    subject: meetingDetails.subject,
+    startDateTime: meetingDetails.startDateTime,
+    endDateTime: meetingDetails.endDateTime,
+  });
+
   return {
-    joinUrl: data.onlineMeeting?.joinUrl || data.webLink,
+    joinUrl: resolved.joinUrl,
     id: data.id,
-    onlineMeeting: data.onlineMeeting
+    onlineMeeting: resolved.onlineMeeting || data.onlineMeeting
   };
 }
 
@@ -261,15 +396,20 @@ export async function createStaffTeamsMeeting(
   }
 
   const data = await response.json();
-  
-  // Return the online meeting URL if available, otherwise the join URL
-  const result = {
-    joinUrl: data.onlineMeeting?.joinUrl || data.webLink,
+  const resolved = await resolveTeamsJoinUrlForEvent(accessToken, {
+    calendarUserEmail: staffCalendarEmail,
+    eventId: data.id,
+    eventData: data,
+    subject: meetingDetails.subject,
+    startDateTime: meetingDetails.startDateTime,
+    endDateTime: meetingDetails.endDateTime,
+  });
+
+  return {
+    joinUrl: resolved.joinUrl,
     id: data.id,
-    onlineMeeting: data.onlineMeeting
+    onlineMeeting: resolved.onlineMeeting || data.onlineMeeting
   };
-  
-  return result;
 }
 
 /**
@@ -726,17 +866,28 @@ export async function createCalendarEventWithAttendee(accessToken: string, event
     timeZone = 'Asia/Jerusalem'
   } = eventDetails;
 
-  // Create the event body
-  // Convert ISO strings to proper format for Graph API
-  // Graph API expects dateTime in ISO format but interprets it according to timeZone
+  // Graph interprets dateTime as local wall-clock for the given timeZone.
+  // Never pass toISOString() (UTC/Z) with Asia/Jerusalem — that shifts the meeting.
+  const normalizeGraphLocal = (value: string): string => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return trimmed;
+    if (/Z$|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+      return formatLocalDateTimeForGraph(new Date(trimmed));
+    }
+    return trimmed.length >= 19 ? trimmed.slice(0, 19) : trimmed;
+  };
+
+  const localStart = normalizeGraphLocal(startDateTime);
+  const localEnd = normalizeGraphLocal(endDateTime);
+
   const eventBody: any = {
     subject: subject,
     start: {
-      dateTime: startDateTime,
+      dateTime: localStart,
       timeZone: timeZone
     },
     end: {
-      dateTime: endDateTime,
+      dateTime: localEnd,
       timeZone: timeZone
     },
     attendees: [
@@ -755,27 +906,16 @@ export async function createCalendarEventWithAttendee(accessToken: string, event
     ...(location ? { location: { displayName: location } } : {})
   };
 
-  // If we have an existing Teams URL, add it to the description and use it as onlineMeeting
-  // Otherwise, let Graph API create a new Teams meeting
+  // Reuse an existing Teams join URL in the body only. Setting isOnlineMeeting here
+  // would mint a *second* Teams meeting whose Join button disagrees with CRM/email.
   if (teamsJoinUrl) {
-    // Add the Teams link to the description if not already there
     if (description && !description.includes(teamsJoinUrl)) {
       eventBody.body.content += `<br><br><strong>Join Teams Meeting:</strong> <a href="${teamsJoinUrl}">${teamsJoinUrl}</a>`;
     }
-    // Use the existing Teams meeting URL
-    eventBody.isOnlineMeeting = true;
-    eventBody.onlineMeetingProvider = 'teamsForBusiness';
-    // Note: We can't set a custom joinUrl via Graph API, but we've added it to the description
   } else if (location?.toLowerCase().includes('teams')) {
-    // Create a new Teams meeting
     eventBody.isOnlineMeeting = true;
     eventBody.onlineMeetingProvider = 'teamsForBusiness';
   }
-
-  // If it's a Teams meeting, we'll create it in the calendar and the Teams link will be automatically generated
-  // But if we already have a Teams URL, we need to use it
-  // Note: When creating a Teams meeting via Graph API, the joinUrl is automatically generated
-  // If we have an existing Teams URL, we can add it to the body or create the meeting differently
 
   const url = 'https://graph.microsoft.com/v1.0/me/calendar/events';
   
@@ -795,10 +935,23 @@ export async function createCalendarEventWithAttendee(accessToken: string, event
   }
 
   const data = await response.json();
-  
+  let joinUrl = teamsJoinUrl || extractTeamsJoinUrlFromGraphPayload(data) || '';
+
+  if (!joinUrl && eventBody.isOnlineMeeting) {
+    const resolved = await resolveTeamsJoinUrlForEvent(accessToken, {
+      calendarUserEmail: 'me',
+      eventId: data.id,
+      eventData: data,
+      subject,
+      startDateTime: localStart,
+      endDateTime: localEnd,
+    });
+    joinUrl = resolved.joinUrl;
+  }
+
   return {
     id: data.id,
-    joinUrl: data.onlineMeeting?.joinUrl || teamsJoinUrl,
+    joinUrl,
     webLink: data.webLink
   };
 } 

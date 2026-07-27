@@ -201,6 +201,23 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
   return false;
 };
 
+/**
+ * Once a lead reaches Client signed agreement (60) or any later stage,
+ * scheduling / rescheduling meetings must not change the lead stage.
+ */
+export function shouldPreserveLeadStageOnMeeting(stage: unknown): boolean {
+  if (stage == null || stage === '') return false;
+  const numeric = Number(stage);
+  if (Number.isFinite(numeric) && numeric >= 60) return true;
+  const name = getStageName(String(stage));
+  return (
+    areStagesEquivalent(name, 'client_signed') ||
+    areStagesEquivalent(name, 'Client signed agreement') ||
+    areStagesEquivalent(name, 'Payment request sent') ||
+    areStagesEquivalent(name, 'payment_request_sent')
+  );
+}
+
 /** Created (0) and Precommunication (11) — assign scheduler replaces stage action buttons. */
 export const isAssignSchedulerStage = (
   stageName: string,

@@ -143,6 +143,24 @@ function escapeICS(text: string): string {
     .replace(/\r/g, '');
 }
 
+/** Convert simple HTML (or plain text) into ICS description text. */
+export function stripHtmlForIcs(html: string): string {
+  return String(html || '')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/\s*p\s*>/gi, '\n')
+    .replace(/<\/\s*div\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /**
  * Converts a date string (YYYY-MM-DD) and time string (HH:mm) to ISO string in specified timezone
  * This helper function is used when you only have date and time separately
@@ -262,10 +280,11 @@ export function generateICS(details: ICSMeetingDetails): string {
   const uid = generateUID();
   const now = formatToICSDateTime(new Date().toISOString());
   
-  // Build description with Teams link if available
+  // Build description with Teams link if available (once only).
+  // Use real newlines here; escapeICS converts them to ICS \n.
   let fullDescription = description;
-  if (teamsJoinUrl) {
-    fullDescription += (fullDescription ? '\\n\\n' : '') + `Join Teams Meeting: ${teamsJoinUrl}`;
+  if (teamsJoinUrl && !fullDescription.includes(teamsJoinUrl)) {
+    fullDescription += (fullDescription ? '\n\n' : '') + `Join Teams Meeting: ${teamsJoinUrl}`;
   }
   
   // Parse the start date to get timezone info
