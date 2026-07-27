@@ -87,6 +87,39 @@ export default function LeadEmployeeCostModal({
         ? 'Employee cost on this case'
         : 'Time on this case';
 
+  const remainingCostNis = summary
+    ? Math.max(0, Math.round((summary.maxAllowedCostNis - summary.totalCostNis) * 100) / 100)
+    : 0;
+
+  const hoursWorked =
+    summary && summary.totalWorkedMs > 0 ? summary.totalWorkedMs / (60 * 60 * 1000) : 0;
+  let leadHourRateNis: number | null = null;
+  if (summary) {
+    if (hoursWorked > 0.001 && summary.totalCostNis > 0) {
+      leadHourRateNis = summary.totalCostNis / hoursWorked;
+    } else {
+      const rates = summary.employees
+        .map((e) => e.hourRateNis)
+        .filter((r): r is number => r != null && r > 0);
+      if (rates.length > 0) {
+        leadHourRateNis = rates.reduce((sum, r) => sum + r, 0) / rates.length;
+      }
+    }
+  }
+
+  const remainingWorkedMs =
+    !exceeds && leadHourRateNis != null && leadHourRateNis > 0
+      ? Math.round((remainingCostNis / leadHourRateNis) * 60 * 60 * 1000)
+      : exceeds
+        ? 0
+        : null;
+
+  const timeLeftForEmployee = (hourRateNis: number | null): number | null => {
+    if (exceeds) return 0;
+    if (hourRateNis == null || !(hourRateNis > 0)) return null;
+    return Math.round((remainingCostNis / hourRateNis) * 60 * 60 * 1000);
+  };
+
   return (
     <div className="modal modal-open z-[120]">
       <div className="modal-box flex max-h-[85vh] max-w-3xl flex-col overflow-hidden p-0">
@@ -127,7 +160,7 @@ export default function LeadEmployeeCostModal({
             <>
               <div
                 className={`grid grid-cols-1 gap-3 ${
-                  showCosts ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
+                  showCosts ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-3'
                 }`}
               >
                 <div className="rounded-2xl bg-gray-50 px-4 py-3 ring-1 ring-gray-100">
@@ -146,6 +179,30 @@ export default function LeadEmployeeCostModal({
                     {formatAllocationWorkedDuration(summary.totalWorkedMs)}
                   </p>
                 </div>
+                <div
+                  className={`rounded-2xl px-4 py-3 ${
+                    exceeds ? 'bg-amber-50 ring-1 ring-amber-100' : 'bg-sky-50 ring-1 ring-sky-100'
+                  }`}
+                >
+                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    <ClockIcon className="h-3.5 w-3.5" />
+                    Time left
+                  </p>
+                  <p
+                    className={`mt-1 text-xl font-bold ${
+                      exceeds ? 'text-amber-800' : 'text-sky-900'
+                    }`}
+                  >
+                    {exceeds
+                      ? 'None'
+                      : remainingWorkedMs != null
+                        ? formatAllocationWorkedDuration(remainingWorkedMs)
+                        : '—'}
+                  </p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    {exceeds ? 'Budget fully used' : 'Until max budget'}
+                  </p>
+                </div>
                 {showCosts ? (
                   <div
                     className={`rounded-2xl px-4 py-3 ${
@@ -154,21 +211,43 @@ export default function LeadEmployeeCostModal({
                   >
                     <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">
                       <BanknotesIcon className="h-3.5 w-3.5" />
-                      Total cost
+                      Cost left
                     </p>
                     <p
                       className={`mt-1 text-xl font-bold ${
                         exceeds ? 'text-amber-800' : 'text-emerald-800'
                       }`}
                     >
-                      {formatAllocationCostNis(summary.totalCostNis)}
+                      {exceeds ? formatAllocationCostNis(0) : formatAllocationCostNis(remainingCostNis)}
                     </p>
                     <p className="mt-0.5 text-xs text-gray-500">
-                      Max {formatAllocationCostNis(summary.maxAllowedCostNis)}
+                      of {formatAllocationCostNis(summary.maxAllowedCostNis)} max
                     </p>
                   </div>
                 ) : null}
               </div>
+
+              {showCosts ? (
+                <div className="rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-600 ring-1 ring-gray-100">
+                  Spent{' '}
+                  <span className="font-semibold text-gray-900">
+                    {formatAllocationCostNis(summary.totalCostNis)}
+                  </span>
+                  {' · '}
+                  Max{' '}
+                  <span className="font-semibold text-gray-900">
+                    {formatAllocationCostNis(summary.maxAllowedCostNis)}
+                  </span>
+                  {!exceeds ? (
+                    <>
+                      {' · '}
+                      <span className="font-semibold text-emerald-700">
+                        {formatAllocationCostNis(remainingCostNis)} left to spend
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
 
               {showCosts && exceeds ? (
                 <div className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -185,6 +264,7 @@ export default function LeadEmployeeCostModal({
                       <th className="bg-transparent">Employee</th>
                       <th className="bg-transparent">Department</th>
                       <th className="bg-transparent text-right">Time</th>
+                      <th className="bg-transparent text-right">Time left</th>
                       {showCosts ? (
                         <>
                           <th className="bg-transparent text-right">Rate</th>
@@ -194,38 +274,56 @@ export default function LeadEmployeeCostModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {summary.employees.map((row) => (
-                      <tr key={row.employeeId} className="hover:bg-gray-50/80">
-                        <td>
-                          <div className="flex items-center gap-3">
-                            <EmployeeAvatar
-                              employeeId={row.employeeId}
-                              employeeName={row.employeeName}
-                              photoUrl={row.photoUrl}
-                            />
-                            <span className="font-medium text-gray-900">{row.employeeName}</span>
-                          </div>
-                        </td>
-                        <td className="text-sm text-gray-500">
-                          {row.departmentName || '—'}
-                        </td>
-                        <td className="text-right text-sm font-medium text-gray-900">
-                          {formatAllocationWorkedDuration(row.workedMs)}
-                        </td>
-                        {showCosts ? (
-                          <>
-                            <td className="text-right text-sm text-gray-500">
-                              {row.hourRateNis != null
-                                ? `${formatAllocationCostNis(row.hourRateNis)}/h`
+                    {summary.employees.map((row) => {
+                      const empTimeLeftMs = timeLeftForEmployee(row.hourRateNis);
+                      return (
+                        <tr key={row.employeeId} className="hover:bg-gray-50/80">
+                          <td>
+                            <div className="flex items-center gap-3">
+                              <EmployeeAvatar
+                                employeeId={row.employeeId}
+                                employeeName={row.employeeName}
+                                photoUrl={row.photoUrl}
+                              />
+                              <span className="font-medium text-gray-900">{row.employeeName}</span>
+                            </div>
+                          </td>
+                          <td className="text-sm text-gray-500">
+                            {row.departmentName || '—'}
+                          </td>
+                          <td className="text-right text-sm font-medium text-gray-900">
+                            {formatAllocationWorkedDuration(row.workedMs)}
+                          </td>
+                          <td
+                            className={`text-right text-sm font-semibold ${
+                              exceeds
+                                ? 'text-amber-700'
+                                : empTimeLeftMs != null
+                                  ? 'text-sky-800'
+                                  : 'text-gray-400'
+                            }`}
+                          >
+                            {exceeds
+                              ? 'None'
+                              : empTimeLeftMs != null
+                                ? formatAllocationWorkedDuration(empTimeLeftMs)
                                 : '—'}
-                            </td>
-                            <td className="text-right text-sm font-semibold text-gray-900">
-                              {formatAllocationCostNis(row.costNis)}
-                            </td>
-                          </>
-                        ) : null}
-                      </tr>
-                    ))}
+                          </td>
+                          {showCosts ? (
+                            <>
+                              <td className="text-right text-sm text-gray-500">
+                                {row.hourRateNis != null
+                                  ? `${formatAllocationCostNis(row.hourRateNis)}/h`
+                                  : '—'}
+                              </td>
+                              <td className="text-right text-sm font-semibold text-gray-900">
+                                {formatAllocationCostNis(row.costNis)}
+                              </td>
+                            </>
+                          ) : null}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                   <tfoot>
                     <tr className="border-t border-gray-200 bg-gray-50/60">
@@ -234,6 +332,17 @@ export default function LeadEmployeeCostModal({
                       </td>
                       <td className="text-right text-sm font-semibold text-gray-900">
                         {formatAllocationWorkedDuration(summary.totalWorkedMs)}
+                      </td>
+                      <td
+                        className={`text-right text-sm font-bold ${
+                          exceeds ? 'text-amber-800' : 'text-sky-900'
+                        }`}
+                      >
+                        {exceeds
+                          ? 'None'
+                          : remainingWorkedMs != null
+                            ? formatAllocationWorkedDuration(remainingWorkedMs)
+                            : '—'}
                       </td>
                       {showCosts ? (
                         <>
@@ -247,6 +356,13 @@ export default function LeadEmployeeCostModal({
                   </tfoot>
                 </table>
               </div>
+
+              {!exceeds ? (
+                <p className="text-xs text-gray-500">
+                  Time left per employee is how much more they can spend on this lead at their hourly
+                  rate before the shared max budget is reached.
+                </p>
+              ) : null}
             </>
           )}
         </div>

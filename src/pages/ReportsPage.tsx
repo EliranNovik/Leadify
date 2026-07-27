@@ -8335,6 +8335,7 @@ const reports: ReportSection[] = [
     items: [
       { label: 'Employee Info', icon: UserGroupIcon, route: '/reports/employee-info' },
       { label: 'Lead allocations', icon: ClipboardDocumentListIcon, route: '/reports/employee-lead-allocations', superuserOnly: true },
+      { label: 'Leads management', icon: ChartBarIcon, route: '/reports/leads-management', superuserOnly: true },
     ],
   },
 ];

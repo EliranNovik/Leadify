@@ -17,6 +17,13 @@ import {
   maxLeadEmployeeCostNis,
   resolveLeadTotalValueNis,
 } from './leadEmployeeCost';
+import {
+  fetchApprovedBudgetExtensionNis,
+} from './leadBudgetExtensionRequests';
+import {
+  fetchLeadCostMaxOverrideNis,
+  resolveEffectiveMaxAllowedCostNis,
+} from './leadEmployeeCostMaxOverride';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
 import { fetchClockInRecordsInRangeForReport } from './workingHoursExport';
 
@@ -382,18 +389,52 @@ export async function evaluateDailyLeadAllocationBudgets(params: {
 
   const results = await Promise.all(
     included.map(async (lead) => {
-      const [leadTotalValueNis, otherCostOnLeadNis] = await Promise.all([
-        fetchLeadTotalValueNisForRef(lead),
-        fetchOtherCostOnLeadNis({
-          lead,
-          excludeEmployeeId: params.employeeId,
-          excludeWorkDate: params.workDate,
-        }),
-      ]);
+      const [leadTotalValueNis, otherCostOnLeadNis, approvedExtra, maxOverrideNis] =
+        await Promise.all([
+          fetchLeadTotalValueNisForRef(lead),
+          fetchOtherCostOnLeadNis({
+            lead,
+            excludeEmployeeId: params.employeeId,
+            excludeWorkDate: params.workDate,
+          }),
+          fetchApprovedBudgetExtensionNis({
+            leadType: lead.lead_type,
+            newLeadId: lead.new_lead_id,
+            legacyLeadId: lead.legacy_lead_id,
+            leadNumber: lead.lead_number,
+          }),
+          fetchLeadCostMaxOverrideNis({
+            leadType: lead.lead_type,
+            newLeadId: lead.new_lead_id,
+            legacyLeadId: lead.legacy_lead_id,
+            leadNumber: lead.lead_number,
+          }),
+        ]);
 
-      const maxAllowedCostNis = maxLeadEmployeeCostNis(leadTotalValueNis);
-      // Without a reliable lead value, do not block the worker.
-      if (!(leadTotalValueNis > 0) || !(maxAllowedCostNis > 0)) {
+      const baseMax = maxLeadEmployeeCostNis(leadTotalValueNis);
+      const maxAllowedCostNis = resolveEffectiveMaxAllowedCostNis({
+        baseMaxAllowedCostNis: baseMax,
+        approvedExtensionCostNis: approvedExtra,
+        maxOverrideNis,
+      });
+      // Without a reliable lead value / max (and no extension), do not block the worker.
+      if (!(maxAllowedCostNis > 0) && !(leadTotalValueNis > 0)) {
+        return {
+          hint: {
+            key: lead.key,
+            maxAllowedPercent: 100,
+            maxAllocatedMs: params.dayWorkedMs,
+            remainingCostNis: 0,
+            maxAllowedCostNis: 0,
+            otherCostOnLeadNis,
+            proposedCostNis: 0,
+            overBudget: false,
+          } satisfies LeadAllocationBudgetHint,
+          violation: null,
+        };
+      }
+
+      if (!(maxAllowedCostNis > 0)) {
         return {
           hint: {
             key: lead.key,

@@ -3,7 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import {
   ArrowLeftIcon,
+  ArrowRightIcon,
   BanknotesIcon,
+  ChartBarIcon,
   ClipboardDocumentListIcon,
   ClockIcon,
   ExclamationTriangleIcon,
@@ -86,7 +88,7 @@ function EmployeeReportAvatar({
       <img
         src={resolvedUrl}
         alt=""
-        className={`${dim} shrink-0 rounded-full object-cover ring-4 ring-white shadow-md`}
+        className={`${dim} shrink-0 rounded-full object-cover shadow-md`}
         onError={() => setImageFailed(true)}
       />
     );
@@ -94,7 +96,7 @@ function EmployeeReportAvatar({
 
   return (
     <span
-      className={`flex ${dim} shrink-0 items-center justify-center rounded-full font-bold text-white ring-4 ring-white shadow-md`}
+      className={`flex ${dim} shrink-0 items-center justify-center rounded-full font-bold text-white shadow-md`}
       style={salaryAvatarGradientStyle(employeeId, employeeName)}
       aria-hidden
     >
@@ -352,7 +354,30 @@ function MissingReportingModal({
   );
 }
 
-function EmployeeAllocationHeader({ group }: { group: EmployeeAllocationGroup }) {
+/** Soft washed-out header tint, stable per employee. */
+function employeeHeaderWashStyle(
+  employeeId: number,
+  employeeName: string,
+): { background: string } {
+  let h = Math.abs(Number(employeeId) || 0) * 2654435761;
+  const label = employeeName || '';
+  for (let i = 0; i < label.length; i += 1) {
+    h = (h * 31 + label.charCodeAt(i)) >>> 0;
+  }
+  const hue = h % 360;
+  const hue2 = (hue + 28) % 360;
+  return {
+    background: `linear-gradient(105deg, hsl(${hue} 42% 94%) 0%, hsl(${hue2} 38% 97%) 55%, hsl(0 0% 100%) 100%)`,
+  };
+}
+
+function EmployeeAllocationHeader({
+  group,
+  embedded = false,
+}: {
+  group: EmployeeAllocationGroup;
+  embedded?: boolean;
+}) {
   const comparison = compareWorkedHoursToMin(group.totalWorkedMs, group.minHours);
   const totalCostNis = sumEmployeeAllocationRowCostsNis(group);
   const minMs = minHoursToMs(group.minHours);
@@ -366,9 +391,21 @@ function EmployeeAllocationHeader({ group }: { group: EmployeeAllocationGroup })
         ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
         : 'bg-gradient-to-r from-emerald-500 to-teal-500';
 
+  const headerTintStyle = employeeHeaderWashStyle(group.employeeId, group.employeeName);
+
   return (
-    <div className="overflow-hidden rounded-[18px] bg-white shadow-sm ring-1 ring-gray-100">
-      <div className="bg-gradient-to-r from-gray-50/80 via-white to-white px-5 py-4 md:px-6 md:py-5">
+    <div
+      className={
+        embedded
+          ? 'px-5 py-4 md:px-6 md:py-5'
+          : 'overflow-hidden rounded-[18px] bg-white shadow-sm ring-1 ring-gray-100'
+      }
+      style={embedded ? headerTintStyle : undefined}
+    >
+      <div
+        className={embedded ? undefined : 'px-5 py-4 md:px-6 md:py-5'}
+        style={embedded ? undefined : headerTintStyle}
+      >
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 items-start gap-4">
             <EmployeeReportAvatar
@@ -406,7 +443,7 @@ function EmployeeAllocationHeader({ group }: { group: EmployeeAllocationGroup })
                   {progressPercent}%
                 </span>
               </div>
-              <div className="h-2.5 overflow-hidden rounded-full bg-gray-100">
+              <div className="h-2.5 overflow-hidden rounded-full bg-white/70">
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${progressBarClass}`}
                   style={{
@@ -420,7 +457,7 @@ function EmployeeAllocationHeader({ group }: { group: EmployeeAllocationGroup })
                 </p>
               ) : null}
             </div>
-            <div className="flex flex-col justify-center rounded-2xl bg-gray-50/40 px-4 py-3 ring-1 ring-gray-100/70">
+            <div className="flex flex-col justify-center rounded-2xl bg-white/55 px-4 py-3 ring-1 ring-white/60">
               <p className="text-lg font-bold leading-tight text-gray-900">
                 {formatAllocationCostNis(totalCostNis)}
               </p>
@@ -502,7 +539,7 @@ type AllocationReportRowCardProps = {
   salaryHourRateNis: number | null;
 };
 
-function AllocationReportRowCard({
+function AllocationReportTableRow({
   row,
   totalWorkedMs,
   salaryHourRateNis,
@@ -511,66 +548,33 @@ function AllocationReportRowCard({
   const rowCostNis = workedMsAtHourlyRateToCostNis(workedMs, salaryHourRateNis);
 
   return (
-    <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6 lg:items-center lg:gap-4">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-600 lg:hidden">
-            Lead
-          </p>
-          {row.is_other_work ? (
-            <span className="text-sm text-gray-400">—</span>
-          ) : (
-            <Link
-              to={buildClientRouteFromAllocationRow(row) || '#'}
-              className="text-sm font-semibold text-primary hover:underline"
-            >
-              #{row.lead_number}
-            </Link>
-          )}
-        </div>
-
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-600 lg:hidden">
-            Client
-          </p>
-          <p className="text-sm text-gray-800">{row.client_name}</p>
-        </div>
-
-        <div className="min-w-0 lg:text-right">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-600 lg:hidden">
-            %
-          </p>
-          <span className="inline-flex min-w-[3rem] justify-center rounded-md bg-primary/8 px-2 py-0.5 text-sm font-semibold text-primary lg:justify-end">
-            {formatAllocationPercent(row.percent)}%
-          </span>
-        </div>
-
-        <div className="min-w-0 lg:text-right">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-600 lg:hidden">
-            Time
-          </p>
-          <span className="text-sm font-medium text-gray-800">
-            {formatAllocationWorkedDuration(workedMs)}
-          </span>
-        </div>
-
-        <div className="min-w-0 lg:text-right">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-600 lg:hidden">
-            Cost
-          </p>
-          <span className="text-sm font-semibold text-gray-900">
-            {formatAllocationCostNis(rowCostNis)}
-          </span>
-        </div>
-
-        <div className="min-w-0 text-right">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-600 lg:hidden">
-            Submitted
-          </p>
-          <p className="text-sm text-gray-500">{formatSubmittedAt(row.submitted_at)}</p>
-        </div>
-      </div>
-    </div>
+    <tr className="hover:bg-gray-50/90">
+      <td>
+        {row.is_other_work ? (
+          <span className="text-sm text-gray-400">—</span>
+        ) : (
+          <Link
+            to={buildClientRouteFromAllocationRow(row) || '#'}
+            className="text-sm font-semibold text-primary hover:underline"
+          >
+            #{row.lead_number}
+          </Link>
+        )}
+      </td>
+      <td className="text-sm text-gray-800">{row.client_name}</td>
+      <td className="text-right">
+        <span className="inline-flex min-w-[3rem] justify-center rounded-md bg-primary/8 px-2 py-0.5 text-sm font-semibold text-primary">
+          {formatAllocationPercent(row.percent)}%
+        </span>
+      </td>
+      <td className="text-right text-sm font-medium text-gray-900">
+        {formatAllocationWorkedDuration(workedMs)}
+      </td>
+      <td className="text-right text-sm font-semibold text-gray-900">
+        {formatAllocationCostNis(rowCostNis)}
+      </td>
+      <td className="text-right text-sm text-gray-500">{formatSubmittedAt(row.submitted_at)}</td>
+    </tr>
   );
 }
 
@@ -580,27 +584,32 @@ type EmployeeAllocationSectionProps = {
 
 function EmployeeAllocationSection({ group }: EmployeeAllocationSectionProps) {
   return (
-    <section className="space-y-2.5">
-      <EmployeeAllocationHeader group={group} />
+    <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
+      <EmployeeAllocationHeader group={group} embedded />
 
-      <div className="hidden lg:grid lg:grid-cols-6 lg:gap-4 px-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-        <span>Lead</span>
-        <span>Client</span>
-        <span className="text-right">%</span>
-        <span className="text-right">Time</span>
-        <span className="text-right">Cost</span>
-        <span className="text-right">Submitted</span>
-      </div>
-
-      <div className="space-y-2.5">
-        {group.rows.map((row) => (
-          <AllocationReportRowCard
-            key={allocationRowKey(row)}
-            row={row}
-            totalWorkedMs={group.totalWorkedMs}
-            salaryHourRateNis={group.salaryHourRateNis}
-          />
-        ))}
+      <div className="overflow-x-auto">
+        <table className="table">
+          <thead>
+            <tr className="border-b border-gray-100 text-xs uppercase tracking-wider text-gray-500">
+              <th>Lead</th>
+              <th>Client</th>
+              <th className="text-right">%</th>
+              <th className="text-right">Time</th>
+              <th className="text-right">Cost</th>
+              <th className="text-right">Submitted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {group.rows.map((row) => (
+              <AllocationReportTableRow
+                key={allocationRowKey(row)}
+                row={row}
+                totalWorkedMs={group.totalWorkedMs}
+                salaryHourRateNis={group.salaryHourRateNis}
+              />
+            ))}
+          </tbody>
+        </table>
       </div>
     </section>
   );
@@ -801,7 +810,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
 
   return (
     <div className="employee-lead-allocations-report-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec]">
-      <div className="mx-auto flex min-w-0 max-w-7xl flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-10 md:pb-12 md:pt-4">
+      <div className="flex min-w-0 w-full flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-8 md:pb-12 md:pt-4">
         <div className="space-y-5">
           <div className="flex w-full flex-wrap items-start justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
@@ -817,14 +826,25 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-              onClick={() => navigate('/reports')}
-            >
-              <ArrowLeftIcon className="h-4 w-4" />
-              Back
-            </button>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200 transition-colors hover:bg-gray-50"
+                onClick={() => navigate('/reports/leads-management')}
+              >
+                <ChartBarIcon className="h-5 w-5 text-primary" />
+                Leads management
+                <ArrowRightIcon className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                onClick={() => navigate('/reports')}
+              >
+                <ArrowLeftIcon className="h-4 w-4" />
+                Back
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -888,11 +908,11 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
               <span className="loading loading-spinner loading-lg text-primary" />
             </div>
           ) : rows.length === 0 ? (
-            <div className="rounded-[18px] bg-white px-5 py-16 text-center text-sm text-gray-500 shadow-sm">
+            <div className="rounded-2xl bg-white px-6 py-16 text-center text-sm text-gray-500 shadow-sm ring-1 ring-gray-100">
               No allocations found for these filters.
             </div>
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {employeeGroups.map((group) => (
                 <EmployeeAllocationSection key={group.employeeId} group={group} />
               ))}

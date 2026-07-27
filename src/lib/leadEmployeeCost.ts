@@ -11,6 +11,13 @@ import {
 } from './employeeLeadReporting';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
 import { fetchClockInRecordsInRangeForReport } from './workingHoursExport';
+import {
+  fetchApprovedBudgetExtensionNis,
+} from './leadBudgetExtensionRequests';
+import {
+  fetchLeadCostMaxOverrideNis,
+  resolveEffectiveMaxAllowedCostNis,
+} from './leadEmployeeCostMaxOverride';
 
 /** Share of lead total value treated as operating pool. */
 export const LEAD_VALUE_OPERATING_SHARE = 0.87;
@@ -71,6 +78,13 @@ export type LeadEmployeeCostSummary = {
   employees: LeadEmployeeCostRow[];
   totalWorkedMs: number;
   totalCostNis: number;
+  /** Base max from lead value (14% of 87%) */
+  baseMaxAllowedCostNis: number;
+  /** Approved management extensions (extra budget without changing lead value) */
+  approvedExtensionCostNis: number;
+  /** Absolute management override; when set, replaces formula + extensions. */
+  maxOverrideNis: number | null;
+  /** Effective max = override OR (base + extensions) */
   maxAllowedCostNis: number;
   leadTotalValueNis: number;
   exceedsCap: boolean;
@@ -183,18 +197,43 @@ export async function fetchLeadEmployeeCostSummary(params: {
   leadTotalValueNis: number;
 }): Promise<LeadEmployeeCostSummary> {
   const leadTotalValueNis = Math.max(0, Number(params.leadTotalValueNis) || 0);
-  const maxAllowedCostNis = maxLeadEmployeeCostNis(leadTotalValueNis);
+  const baseMaxAllowedCostNis = maxLeadEmployeeCostNis(leadTotalValueNis);
+  const identity = resolveLeadIdentityForCost(params.client);
+  const [approvedExtensionCostNis, maxOverrideNis] = identity
+    ? await Promise.all([
+        fetchApprovedBudgetExtensionNis({
+          leadType: identity.isLegacy ? 'legacy' : 'new',
+          newLeadId: identity.newLeadId,
+          legacyLeadId: identity.legacyLeadId,
+          leadNumber: identity.leadNumber,
+        }),
+        fetchLeadCostMaxOverrideNis({
+          leadType: identity.isLegacy ? 'legacy' : 'new',
+          newLeadId: identity.newLeadId,
+          legacyLeadId: identity.legacyLeadId,
+          leadNumber: identity.leadNumber,
+        }),
+      ])
+    : [0, null];
+  const maxAllowedCostNis = resolveEffectiveMaxAllowedCostNis({
+    baseMaxAllowedCostNis,
+    approvedExtensionCostNis,
+    maxOverrideNis,
+  });
+
   const empty: LeadEmployeeCostSummary = {
     employees: [],
     totalWorkedMs: 0,
     totalCostNis: 0,
+    baseMaxAllowedCostNis,
+    approvedExtensionCostNis,
+    maxOverrideNis,
     maxAllowedCostNis,
     leadTotalValueNis,
     exceedsCap: false,
     utilizationPercent: 0,
   };
 
-  const identity = resolveLeadIdentityForCost(params.client);
   if (!identity) return empty;
 
   let query = supabase.from('employee_daily_lead_allocation_items').select(
@@ -328,11 +367,14 @@ export async function fetchLeadEmployeeCostSummary(params: {
   const totalWorkedMs = employees.reduce((sum, row) => sum + row.workedMs, 0);
   const totalCostNis =
     Math.round(employees.reduce((sum, row) => sum + row.costNis, 0) * 100) / 100;
-  const exceedsCap = maxAllowedCostNis > 0 && totalCostNis > maxAllowedCostNis + 0.005;
+  const exceedsCap =
+    maxAllowedCostNis > 0
+      ? totalCostNis > maxAllowedCostNis + 0.005
+      : totalCostNis > 0.005 || totalWorkedMs > 0;
   const utilizationPercent =
     maxAllowedCostNis > 0
       ? Math.round((totalCostNis / maxAllowedCostNis) * 1000) / 10
-      : totalCostNis > 0
+      : totalCostNis > 0 || totalWorkedMs > 0
         ? 100
         : 0;
 
@@ -340,6 +382,9 @@ export async function fetchLeadEmployeeCostSummary(params: {
     employees,
     totalWorkedMs,
     totalCostNis,
+    baseMaxAllowedCostNis,
+    approvedExtensionCostNis,
+    maxOverrideNis,
     maxAllowedCostNis,
     leadTotalValueNis,
     exceedsCap,

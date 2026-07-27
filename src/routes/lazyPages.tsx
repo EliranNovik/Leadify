@@ -47,6 +47,12 @@ export const LazyEmployeeLeadReportingPage = lazy(() => import('../pages/Employe
 export const LazyEmployeeLeadAllocationsReportPage = lazy(() =>
   import('../pages/EmployeeLeadAllocationsReportPage'),
 );
+export const LazyLeadsManagementReportPage = lazy(() =>
+  import('../pages/LeadsManagementReportPage'),
+);
+export const LazyLeadManagementDetailPage = lazy(() =>
+  import('../pages/LeadManagementDetailPage'),
+);
 export const LazyLeadsReportPage = lazy(() => import('../pages/LeadsReportPage'));
 export const LazyTagsManagerPage = lazy(() => import('../pages/TagsManagerPage'));
 export const LazyExternalUserAccessLogsPage = lazy(() => import('../pages/ExternalUserAccessLogsPage'));

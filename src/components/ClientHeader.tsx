@@ -102,11 +102,19 @@ import EditFieldModal, {
 import ClientPortalAdminCard from './portal/ClientPortalAdminCard';
 import LeadEmployeeCostBadges from './LeadEmployeeCostBadges';
 import LeadEmployeeCostModal from './LeadEmployeeCostModal';
+import LeadRemainingTimeBar from './LeadRemainingTimeBar';
+import LeadOverBudgetGateModal, {
+    LeadBudgetExtensionRequestModal,
+} from './LeadOverBudgetGateModal';
 import {
     fetchLeadEmployeeCostSummary,
+    resolveLeadIdentityForCost,
     resolveLeadTotalValueNis,
     type LeadEmployeeCostSummary,
 } from '../lib/leadEmployeeCost';
+import {
+    createLeadBudgetExtensionRequest,
+} from '../lib/leadBudgetExtensionRequests';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -532,7 +540,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [leadEmployeeCostModalMode, setLeadEmployeeCostModalMode] = useState<
         'overview' | 'warning'
     >('overview');
+    const [overBudgetGateOpen, setOverBudgetGateOpen] = useState(false);
+    const [budgetExtensionRequestOpen, setBudgetExtensionRequestOpen] = useState(false);
+    const [budgetExtensionSubmitting, setBudgetExtensionSubmitting] = useState(false);
     const leadEmployeeCostFetchIdRef = useRef(0);
+    const overBudgetGateShownForLeadRef = useRef<string | null>(null);
 
     useEffect(() => {
         setAssignedTeamPanelOpen(false);
@@ -541,6 +553,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setInactiveNotesExpanded(false);
         setLeadEmployeeCostModalOpen(false);
         setLeadEmployeeCostSummary(null);
+        setOverBudgetGateOpen(false);
+        setBudgetExtensionRequestOpen(false);
+        overBudgetGateShownForLeadRef.current = null;
     }, [selectedClient?.id]);
 
     useEffect(() => {
@@ -565,6 +580,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             .then((summary) => {
                 if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
                 setLeadEmployeeCostSummary(summary);
+
+                const leadKey = String(selectedClient.id);
+                if (
+                    summary.exceedsCap &&
+                    overBudgetGateShownForLeadRef.current !== leadKey
+                ) {
+                    overBudgetGateShownForLeadRef.current = leadKey;
+                    setOverBudgetGateOpen(true);
+                } else if (!summary.exceedsCap) {
+                    setOverBudgetGateOpen(false);
+                }
             })
             .catch((err) => {
                 console.error('[ClientHeader] lead employee cost fetch failed:', err);
@@ -591,6 +617,54 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setLeadEmployeeCostModalMode(mode);
         setLeadEmployeeCostModalOpen(true);
     }, []);
+
+    const handleSkipOverBudgetGate = useCallback(() => {
+        if (selectedClient?.id) {
+            // Dismiss for this visit only — page refresh remounts and shows the gate again.
+            overBudgetGateShownForLeadRef.current = String(selectedClient.id);
+        }
+        setOverBudgetGateOpen(false);
+        setBudgetExtensionRequestOpen(false);
+    }, [selectedClient?.id]);
+
+    const handleOpenBudgetExtensionRequest = useCallback(() => {
+        setBudgetExtensionRequestOpen(true);
+    }, []);
+
+    const handleSubmitBudgetExtensionRequest = useCallback(
+        async (params: { requestedExtraMs: number; reason: string }) => {
+            if (!selectedClient || !leadEmployeeCostSummary) return;
+            const identity = resolveLeadIdentityForCost(selectedClient);
+            if (!identity) {
+                toast.error('Could not resolve lead identity for this request');
+                return;
+            }
+            setBudgetExtensionSubmitting(true);
+            try {
+                await createLeadBudgetExtensionRequest({
+                    leadType: identity.isLegacy ? 'legacy' : 'new',
+                    newLeadId: identity.newLeadId,
+                    legacyLeadId: identity.legacyLeadId,
+                    leadNumber: identity.leadNumber,
+                    clientName: selectedClient.name || null,
+                    requestedExtraMs: params.requestedExtraMs,
+                    requestReason: params.reason,
+                    costAtRequestNis: leadEmployeeCostSummary.totalCostNis,
+                    maxAtRequestNis: leadEmployeeCostSummary.maxAllowedCostNis,
+                    workedMsAtRequest: leadEmployeeCostSummary.totalWorkedMs,
+                });
+                toast.success('Management request sent');
+                setBudgetExtensionRequestOpen(false);
+                handleSkipOverBudgetGate();
+            } catch (error) {
+                console.error(error);
+                toast.error(error instanceof Error ? error.message : 'Failed to send request');
+            } finally {
+                setBudgetExtensionSubmitting(false);
+            }
+        },
+        [selectedClient, leadEmployeeCostSummary, handleSkipOverBudgetGate],
+    );
 
     /** Latest row identity + active_handler_type for poll + realtime client-side match (avoids stale closures). */
     const leadHandlerSyncRef = useRef<{
@@ -3255,7 +3329,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 {renderLeadNumber()}
                                             </p>
                                         </div>
-                                        <div className="flex shrink-0 items-center">{renderStageBadge('mobile')}</div>
+                                        <div className="flex shrink-0 flex-col items-end gap-1.5">
+                                            {renderStageBadge('mobile')}
+                                            <LeadRemainingTimeBar
+                                                summary={leadEmployeeCostSummary}
+                                                loading={leadEmployeeCostLoading}
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -3599,7 +3679,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             {renderLeadNumber()}
                                         </span>
                                     </div>
-                                    <div className="flex shrink-0 items-center">{renderStageBadge('desktop')}</div>
+                                    <div className="flex shrink-0 flex-col items-end gap-1.5">
+                                        {renderStageBadge('desktop')}
+                                        <LeadRemainingTimeBar
+                                            summary={leadEmployeeCostSummary}
+                                            loading={leadEmployeeCostLoading}
+                                        />
+                                    </div>
                                 </div>
                             </div>
                             <div className="flex w-fit shrink-0 items-start gap-4">
@@ -5702,6 +5788,25 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     summary={leadEmployeeCostSummary}
                     mode={leadEmployeeCostModalMode}
                     isSuperuser={isSuperuser}
+                />
+            )}
+            {selectedClient && (
+                <LeadOverBudgetGateModal
+                    open={overBudgetGateOpen && !budgetExtensionRequestOpen}
+                    summary={leadEmployeeCostSummary}
+                    isSuperuser={isSuperuser}
+                    onRequestManagement={handleOpenBudgetExtensionRequest}
+                    onSkip={handleSkipOverBudgetGate}
+                />
+            )}
+            {selectedClient && (
+                <LeadBudgetExtensionRequestModal
+                    open={budgetExtensionRequestOpen}
+                    summary={leadEmployeeCostSummary}
+                    isSuperuser={isSuperuser}
+                    submitting={budgetExtensionSubmitting}
+                    onClose={() => setBudgetExtensionRequestOpen(false)}
+                    onSubmit={handleSubmitBudgetExtensionRequest}
                 />
             )}
             {!openEditLeadDrawerProp && selectedClient && (
