@@ -89,7 +89,52 @@ function inferFileType(name: string, fileType?: string): string {
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (ext === 'pdf') return 'application/pdf';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+  if (ext === 'doc') return 'application/msword';
+  if (ext === 'docx') {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+  if (ext === 'xls') return 'application/vnd.ms-excel';
+  if (ext === 'xlsx') {
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  }
+  if (ext === 'ppt') return 'application/vnd.ms-powerpoint';
+  if (ext === 'pptx') {
+    return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  }
   return 'application/octet-stream';
+}
+
+/** Word / Excel / PowerPoint — preview via Microsoft Office Online embed. */
+function isOfficeDocument(name: string, fileType?: string, url?: string): boolean {
+  const mime = (fileType || '').toLowerCase();
+  const haystack = `${name} ${url || ''}`.toLowerCase();
+  if (
+    mime.includes('wordprocessingml') ||
+    mime.includes('msword') ||
+    mime.includes('spreadsheetml') ||
+    mime.includes('ms-excel') ||
+    mime.includes('presentationml') ||
+    mime.includes('ms-powerpoint') ||
+    mime.includes('officedocument')
+  ) {
+    return true;
+  }
+  return /\.(docx?|xlsx?|pptx?|docm|xlsm|pptm)(\?|#|$)/i.test(haystack);
+}
+
+/**
+ * Microsoft Office Online can fetch the file if the URL is publicly reachable HTTPS
+ * (signed Supabase URLs qualify for the signature lifetime).
+ */
+function buildOfficeOnlineEmbedUrl(fileUrl: string): string | null {
+  try {
+    const parsed = new URL(fileUrl);
+    if (parsed.protocol !== 'https:') return null;
+    if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') return null;
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(fileUrl)}`;
+  } catch {
+    return null;
+  }
 }
 
 function formatUploadedAt(dateString?: string): string {
@@ -233,6 +278,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const [previewIndex, setPreviewIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
   const [pdfError, setPdfError] = useState(false);
+  const [officeError, setOfficeError] = useState(false);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -421,6 +467,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     setRenameValue(activeName);
     setImageError(false);
     setPdfError(false);
+    setOfficeError(false);
     setCommentDraft('');
     setDraftHighlight(null);
     setHighlightMode(false);
@@ -654,6 +701,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     setLoadingUrl(true);
     setImageError(false);
     setPdfError(false);
+    setOfficeError(false);
 
     void (async () => {
       const url = await resolveSignedUrl(activeUrl, bucketName);
@@ -685,6 +733,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     activeFileType.includes('pdf') ||
     !!activeName.match(/\.pdf$/i) ||
     !!activeUrl.match(/\.pdf$/i);
+  const isOffice = !isImage && !isPdf && isOfficeDocument(activeName, activeFileType, activeUrl);
+  const officeEmbedUrl =
+    isOffice && displayUrl && !officeError ? buildOfficeOnlineEmbedUrl(displayUrl) : null;
 
   const goPrev = useCallback(() => {
     setPreviewIndex((i) => {
@@ -1361,7 +1412,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           ) : null}
           <div
             className={`flex min-h-0 w-full flex-1 bg-neutral-900 ${
-              isPdf && !(highlightMode || highlightMarkers.length > 0 || draftHighlight)
+              (isPdf || Boolean(officeEmbedUrl)) &&
+              !(highlightMode || highlightMarkers.length > 0 || draftHighlight)
                 ? 'flex-col overflow-hidden p-0'
                 : isPdf || highlightMarkers.length > 0 || draftHighlight
                   ? 'min-h-0 flex-col overflow-auto p-0'
@@ -1426,21 +1478,39 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   onError={() => setPdfError(true)}
                 />
               )
-            ) : imageError || pdfError ? (
+            ) : officeEmbedUrl ? (
+              <iframe
+                key={officeEmbedUrl}
+                src={officeEmbedUrl}
+                className="min-h-0 w-full flex-1 border-0 bg-white"
+                title={activeName}
+                allow="fullscreen"
+                onError={() => setOfficeError(true)}
+              />
+            ) : imageError || pdfError || (isOffice && (officeError || !officeEmbedUrl)) ? (
               <div className="max-w-md text-center text-neutral-200">
-                <p className="text-lg font-semibold">Failed to load document</p>
+                <p className="text-lg font-semibold">
+                  {isOffice ? 'Preview unavailable' : 'Failed to load document'}
+                </p>
+                <p className="mt-2 text-sm opacity-80">
+                  {isOffice
+                    ? 'Word and Excel previews need a public HTTPS link. You can still download the file.'
+                    : null}
+                </p>
                 <div className="mt-4 flex justify-center gap-3">
                   <button type="button" className="btn btn-primary btn-sm" onClick={() => void handleDownload()}>
                     Download
                   </button>
-                  <a
-                    href={displayUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-outline btn-sm border-neutral-500 text-neutral-100"
-                  >
-                    Open in new tab
-                  </a>
+                  {displayUrl ? (
+                    <a
+                      href={displayUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-outline btn-sm border-neutral-500 text-neutral-100"
+                    >
+                      Open in new tab
+                    </a>
+                  ) : null}
                 </div>
               </div>
             ) : (

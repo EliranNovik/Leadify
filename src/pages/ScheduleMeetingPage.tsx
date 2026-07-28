@@ -3,86 +3,12 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import MeetingTab from '../components/client-tabs/MeetingTab';
 import MicrosoftSignInBox from '../components/meeting/MicrosoftSignInBox';
+import { fetchClientForMeetingSchedule } from '../lib/fetchScheduleMeetingClient';
 import {
   getClientPagePathFromClient,
   safeDecodeRouteParam,
 } from '../lib/meetingScheduleNavigation';
-import { supabase } from '../lib/supabase';
 import type { Client } from '../types/client';
-
-function asLegacyClient(row: Record<string, unknown>, leadNumberOverride?: string): Client {
-  return {
-    ...row,
-    id: `legacy_${row.id}`,
-    lead_number: leadNumberOverride || String(row.manual_id || row.id),
-    lead_type: 'legacy',
-  } as Client;
-}
-
-async function fetchClientByLeadNumber(leadNumber: string): Promise<Client | null> {
-  const decoded = safeDecodeRouteParam(leadNumber);
-
-  const { data: newLead, error: newErr } = await supabase
-    .from('leads')
-    .select('*')
-    .eq('lead_number', decoded)
-    .maybeSingle();
-
-  if (!newErr && newLead) {
-    return { ...newLead, lead_type: 'new' } as Client;
-  }
-
-  const { data: legacyByManual } = await supabase
-    .from('leads_lead')
-    .select('*')
-    .eq('manual_id', decoded)
-    .maybeSingle();
-
-  if (legacyByManual) {
-    return asLegacyClient(legacyByManual);
-  }
-
-  // Legacy sub-leads use /clients/{id}?lead={base}/{n}; schedule routes may pass the sub-lead key.
-  if (decoded.includes('/')) {
-    const base = decoded.split('/')[0] || '';
-    if (base) {
-      const { data: legacyParentByManual } = await supabase
-        .from('leads_lead')
-        .select('*')
-        .eq('manual_id', base)
-        .maybeSingle();
-      if (legacyParentByManual) {
-        return asLegacyClient(legacyParentByManual, decoded);
-      }
-      const parentId = Number.parseInt(base, 10);
-      if (Number.isFinite(parentId) && String(parentId) === base) {
-        const { data: legacyParentById } = await supabase
-          .from('leads_lead')
-          .select('*')
-          .eq('id', parentId)
-          .maybeSingle();
-        if (legacyParentById) {
-          return asLegacyClient(legacyParentById, decoded);
-        }
-      }
-    }
-  }
-
-  const asId = Number.parseInt(decoded, 10);
-  if (Number.isFinite(asId) && String(asId) === decoded) {
-    const { data: legacyById } = await supabase
-      .from('leads_lead')
-      .select('*')
-      .eq('id', asId)
-      .maybeSingle();
-
-    if (legacyById) {
-      return asLegacyClient(legacyById);
-    }
-  }
-
-  return null;
-}
 
 /**
  * Desktop schedule-meeting route. Styled like /contacts/:id (grey canvas + white cards).
@@ -107,7 +33,7 @@ const ScheduleMeetingPage: React.FC = () => {
       setLoading(true);
       setError(null);
       try {
-        const result = await fetchClientByLeadNumber(lead_number);
+        const result = await fetchClientForMeetingSchedule(lead_number);
         if (cancelled) return;
         if (!result) {
           setError('Lead not found.');
@@ -162,7 +88,7 @@ const ScheduleMeetingPage: React.FC = () => {
               client={client}
               variant="schedule-page"
               onClientUpdate={async () => {
-                const refreshed = await fetchClientByLeadNumber(lead_number);
+                const refreshed = await fetchClientForMeetingSchedule(lead_number);
                 if (refreshed) setClient(refreshed);
               }}
               onScheduleComplete={goToClient}

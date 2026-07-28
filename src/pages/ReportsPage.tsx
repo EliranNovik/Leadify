@@ -8298,6 +8298,7 @@ const reports: ReportSection[] = [
       { label: 'Finance Management', icon: CurrencyDollarIcon, route: '/reports/finance-management' },
       { label: 'Collection', icon: BanknotesIcon, route: '/reports/finance-management?tab=collection' },
       { label: 'Collection Due', icon: BanknotesIcon, route: '/reports/finance-management?tab=collection-due' },
+      { label: 'Subcontractor fees', icon: BuildingOfficeIcon, route: '/reports/subcontractor-fees', superuserOnly: true },
     ],
   },
   {

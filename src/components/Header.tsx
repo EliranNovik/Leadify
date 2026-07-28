@@ -841,6 +841,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       { label: 'M&M Contribution profitability', category: 'Contribution', route: '/reports/sales-contribution' },
       { label: 'Collection', category: 'Finances', route: '/reports/collection-finances' },
       { label: 'Collection Due', category: 'Finances', route: '/reports/collection-due' },
+      { label: 'Subcontractor fees', category: 'Finances', route: '/reports/subcontractor-fees', superuserOnly: true },
       { label: 'Edit Contracts', category: 'Tools', route: '/reports/edit-contracts' },
       { label: 'Re-assign leads', category: 'Tools', route: '/reports/reassign-leads' },
       { label: 'Employee Unavailabilities', category: 'Tools', route: '/reports/employee-unavailabilities' },
