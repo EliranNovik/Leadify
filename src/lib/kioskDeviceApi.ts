@@ -29,8 +29,25 @@ export function getStoredKioskDeviceToken(): string | null {
   }
 }
 
+/** Require consecutive auth failures before unpairing (avoids blip → pairing screen). */
+let consecutiveAuthFailures = 0;
+const AUTH_FAILURES_BEFORE_CLEAR = 3;
+
+function noteAuthFailure(clearImmediately = false) {
+  consecutiveAuthFailures += 1;
+  if (clearImmediately || consecutiveAuthFailures >= AUTH_FAILURES_BEFORE_CLEAR) {
+    clearStoredKioskDeviceToken();
+    consecutiveAuthFailures = 0;
+  }
+}
+
+function noteAuthSuccess() {
+  consecutiveAuthFailures = 0;
+}
+
 export function setStoredKioskDeviceToken(token: string) {
   localStorage.setItem(KIOSK_DEVICE_TOKEN_KEY, token);
+  consecutiveAuthFailures = 0;
 }
 
 export function clearStoredKioskDeviceToken() {
@@ -86,24 +103,32 @@ export async function fetchKioskState(): Promise<KioskStateResponse> {
   });
   const body = (await res.json().catch(() => ({}))) as KioskStateResponse;
   if (!res.ok) {
-    if (res.status === 401) clearStoredKioskDeviceToken();
+    if (res.status === 401) noteAuthFailure(true);
     return { success: false, mode: 'locked', error: body.error || `Failed (${res.status})` };
   }
+  noteAuthSuccess();
   return body;
 }
 
 export async function kioskHeartbeat(): Promise<KioskStateResponse> {
-  const res = await fetch(buildBackendApiUrl('/api/kiosk/heartbeat'), {
-    method: 'POST',
-    headers: deviceHeaders(),
-    body: '{}',
-  });
-  const body = (await res.json().catch(() => ({}))) as KioskStateResponse;
-  if (!res.ok) {
-    if (res.status === 401) clearStoredKioskDeviceToken();
-    return { success: false, mode: 'locked', error: body.error || `Failed (${res.status})` };
+  try {
+    const res = await fetch(buildBackendApiUrl('/api/kiosk/heartbeat'), {
+      method: 'POST',
+      headers: deviceHeaders(),
+      body: '{}',
+    });
+    const body = (await res.json().catch(() => ({}))) as KioskStateResponse;
+    if (!res.ok) {
+      // Heartbeat 401s are often transient under load — don't unpair on a single failure.
+      if (res.status === 401) noteAuthFailure(false);
+      return { success: false, mode: 'locked', error: body.error || `Failed (${res.status})` };
+    }
+    noteAuthSuccess();
+    return body;
+  } catch (err) {
+    console.warn('[kioskHeartbeat] network error:', err);
+    return { success: false, mode: 'locked', error: 'Network error' };
   }
-  return body;
 }
 
 export async function fetchKioskSessionAccess(

@@ -41,10 +41,12 @@ import {
 } from '../lib/kioskDeviceApi';
 import { useKioskImmersiveMode } from '../hooks/useKioskImmersiveMode';
 
-const QR_RENDER_SIZE = 640;
-const EVENT_POLL_MS = 1_400;
+const QR_RENDER_SIZE = 720;
+/** Poll for welcome flash after a scan (was 1.4s — too aggressive with many tablets). */
+const EVENT_POLL_MS = 3_000;
 const DISPLAY_POLL_MS = 60_000;
-const KIOSK_STATE_POLL_MS = 2_000;
+/** Device mode / pairing state (was 2s). */
+const KIOSK_STATE_POLL_MS = 5_000;
 const KIOSK_HEARTBEAT_MS = 30_000;
 const KIOSK_SUCCESS_MS = KIOSK_WELCOME_DURATION_MS;
 const KIOSK_SUCCESS_SEC = KIOSK_WELCOME_DURATION_SEC;
@@ -55,6 +57,8 @@ const UPDATES_CAROUSEL_MS = 10_000;
 const KIOSK_PROMO_SRC = '/kiosk-promo-overlay.png';
 const KIOSK_PROMO_INTERVAL_MS = 2 * 60 * 1000;
 const KIOSK_PROMO_VISIBLE_MS = 20_000;
+const QR_RETRY_MIN_MS = 1_500;
+const QR_RETRY_MAX_MS = 15_000;
 
 type UpdatesCarouselSlide =
   | {
@@ -329,6 +333,63 @@ const EntryKioskPage: React.FC = () => {
   const kioskSuccessTimerRef = useRef<number | null>(null);
   const promoNextShowAtRef = useRef<number | null>(null);
   const promoHideAtRef = useRef<number | null>(null);
+  /** Absolute time when the current QR should rotate. */
+  const rotateDeadlineRef = useRef<number>(Date.now() + 15_000);
+  const refreshInFlightRef = useRef(false);
+  const qrRetryTimeoutRef = useRef<number | null>(null);
+  const qrRetryAttemptRef = useRef(0);
+  const rotateTimerRef = useRef<number | null>(null);
+  const refreshTokenRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const clearQrRetry = useCallback(() => {
+    if (qrRetryTimeoutRef.current) {
+      window.clearTimeout(qrRetryTimeoutRef.current);
+      qrRetryTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearRotateTimer = useCallback(() => {
+    if (rotateTimerRef.current) {
+      window.clearTimeout(rotateTimerRef.current);
+      rotateTimerRef.current = null;
+    }
+  }, []);
+
+  const syncSecondsFromDeadline = useCallback(() => {
+    const leftMs = Math.max(0, rotateDeadlineRef.current - Date.now());
+    setSecondsLeft(Math.max(0, Math.ceil(leftMs / 1000)));
+  }, []);
+
+  const applyQrRotationWindow = useCallback(
+    (nextRotateMs: number) => {
+      const rotateMs = Math.max(1_000, nextRotateMs);
+      setRotateInMs(rotateMs);
+      setTotalRotateMs(rotateMs);
+      rotateDeadlineRef.current = Date.now() + rotateMs;
+      setSecondsLeft(Math.ceil(rotateMs / 1000));
+    },
+    [],
+  );
+
+  const scheduleQrRetry = useCallback(
+    (reason?: string) => {
+      clearQrRetry();
+      const attempt = qrRetryAttemptRef.current;
+      const delay = Math.min(
+        QR_RETRY_MAX_MS,
+        QR_RETRY_MIN_MS * Math.pow(2, Math.min(attempt, 4)),
+      );
+      qrRetryAttemptRef.current = attempt + 1;
+      if (reason) {
+        console.warn(`[EntryKiosk] QR refresh retry in ${delay}ms (${reason})`);
+      }
+      qrRetryTimeoutRef.current = window.setTimeout(() => {
+        qrRetryTimeoutRef.current = null;
+        void refreshTokenRef.current();
+      }, delay);
+    },
+    [clearQrRetry],
+  );
 
   const dismissSuccessFlash = useCallback(() => {
     if (successTimerRef.current) {
@@ -341,6 +402,8 @@ const EntryKioskPage: React.FC = () => {
     }
     setSuccessFlash(null);
     setWelcomeSecondsLeft(KIOSK_SUCCESS_SEC);
+    // Resume QR rotation with a fresh token after the welcome overlay.
+    void refreshTokenRef.current();
   }, []);
   const deviceUiModeRef = useRef<DeviceUiMode>('checking');
   const meetingsScreenOpenRef = useRef(false);
@@ -561,48 +624,78 @@ const EntryKioskPage: React.FC = () => {
   }, [deviceUiMode, documentSession]);
 
   const refreshToken = useCallback(async () => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    clearQrRetry();
     try {
       const result = await fetchClockInKioskCurrent(ENTRY_KIOSK_DEFAULT_LOCATION_ID);
       if (!result.success || !result.qrUrl) {
         setError(result.error || 'Could not load QR code');
         setOnline(false);
+        scheduleQrRetry(result.error || 'empty QR response');
         return;
       }
       setQrUrl(toPublicClockInQrUrl(result.qrUrl));
       setError(null);
       setOnline(true);
+      qrRetryAttemptRef.current = 0;
       const nextRotate = Math.max(1_000, Number(result.rotateInMs) || 15_000);
-      setRotateInMs(nextRotate);
-      setTotalRotateMs(nextRotate);
-      setSecondsLeft(Math.ceil(nextRotate / 1000));
+      applyQrRotationWindow(nextRotate);
     } catch (err) {
       console.error('Entry kiosk refresh failed:', err);
       setError('Connection issue — retrying…');
       setOnline(false);
+      scheduleQrRetry(err instanceof Error ? err.message : 'network error');
     } finally {
+      refreshInFlightRef.current = false;
       setLoading(false);
     }
-  }, []);
+  }, [applyQrRotationWindow, clearQrRetry, scheduleQrRetry]);
 
   useEffect(() => {
-    void refreshToken();
+    refreshTokenRef.current = refreshToken;
   }, [refreshToken]);
 
   useEffect(() => {
-    if (!qrUrl || successFlash) return;
-    const timer = window.setTimeout(() => {
-      void refreshToken();
-    }, rotateInMs);
-    return () => window.clearTimeout(timer);
-  }, [qrUrl, rotateInMs, refreshToken, successFlash]);
+    void refreshToken();
+    return () => {
+      clearQrRetry();
+      clearRotateTimer();
+    };
+  }, [refreshToken, clearQrRetry, clearRotateTimer]);
 
+  // Schedule next QR rotation from the absolute deadline (survives flash pause cleanly).
   useEffect(() => {
-    if (!qrUrl || successFlash) return;
+    if (!qrUrl || successFlash) {
+      clearRotateTimer();
+      return undefined;
+    }
+
+    const scheduleNext = () => {
+      clearRotateTimer();
+      const delay = Math.max(250, rotateDeadlineRef.current - Date.now());
+      rotateTimerRef.current = window.setTimeout(() => {
+        rotateTimerRef.current = null;
+        void refreshToken();
+      }, delay);
+    };
+
+    scheduleNext();
+    return () => clearRotateTimer();
+  }, [qrUrl, rotateInMs, refreshToken, successFlash, clearRotateTimer]);
+
+  // Derive countdown from deadline so it never sticks at 0 while a refresh is pending.
+  useEffect(() => {
+    if (!qrUrl || successFlash) return undefined;
+    syncSecondsFromDeadline();
     const tick = window.setInterval(() => {
-      setSecondsLeft((prev) => Math.max(0, prev - 1));
+      syncSecondsFromDeadline();
+      if (rotateDeadlineRef.current - Date.now() <= 0 && !refreshInFlightRef.current) {
+        void refreshToken();
+      }
     }, 1000);
     return () => window.clearInterval(tick);
-  }, [qrUrl, rotateInMs, successFlash]);
+  }, [qrUrl, rotateInMs, successFlash, syncSecondsFromDeadline, refreshToken]);
 
   useEffect(() => {
     const clock = window.setInterval(() => setNow(new Date()), 1000);
@@ -694,6 +787,8 @@ const EntryKioskPage: React.FC = () => {
           window.clearInterval(welcomeTickRef.current);
           welcomeTickRef.current = null;
         }
+        // Fresh QR + countdown after welcome overlay auto-dismisses.
+        void refreshTokenRef.current();
       }, KIOSK_SUCCESS_MS);
     };
 
@@ -1953,13 +2048,13 @@ const EntryKioskPage: React.FC = () => {
           display: flex;
           flex-direction: column;
           align-items: center;
-          width: min(100cqi, calc(100cqb - 2.5rem), 580px);
+          width: min(100cqi, calc(100cqb - 2.5rem), 640px);
           max-width: 100%;
           overflow: visible;
         }
         @supports not (width: 1cqi) {
           .kiosk-qr-block {
-            width: min(76vw, 56vh, 580px);
+            width: min(80vw, 60vh, 640px);
           }
         }
         .kiosk-qr-shell {
@@ -2001,7 +2096,8 @@ const EntryKioskPage: React.FC = () => {
           height: 100%;
           border-radius: 26px;
           background: #fff;
-          padding: 16px;
+          padding: 5px;
+          overflow: hidden;
           box-shadow: 0 35px 80px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.06);
           display: flex;
           align-items: center;
@@ -2014,6 +2110,7 @@ const EntryKioskPage: React.FC = () => {
           max-width: 100%;
           max-height: 100%;
           display: block;
+          border-radius: 18px;
         }
 
         /* 10" landscape sweet spot (iPad / Android tablets) */
@@ -2026,8 +2123,8 @@ const EntryKioskPage: React.FC = () => {
           .kiosk-sub { font-size: 1rem; }
           .kiosk-countdown { width: 6.25rem; height: 6.25rem; }
           .kiosk-countdown-num { font-size: 1.45rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 560px); }
-          .kiosk-qr-frame { padding: 14px; border-radius: 24px; }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 620px); }
+          .kiosk-qr-frame { padding: 5px; border-radius: 24px; }
           .kiosk-main { padding-bottom: 2.75rem; }
         }
 
@@ -2042,15 +2139,15 @@ const EntryKioskPage: React.FC = () => {
           .kiosk-sub { font-size: 0.9rem; margin-top: 0.2rem; }
           .kiosk-countdown { width: 5.75rem; height: 5.75rem; }
           .kiosk-countdown-num { font-size: 1.35rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2rem), 520px); }
-          .kiosk-qr-frame { padding: 12px; }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2rem), 580px); }
+          .kiosk-qr-frame { padding: 4px; }
           .kiosk-main { padding-bottom: 2.5rem; }
         }
 
         /* Very short landscape — drop subtitle before shrinking QR further */
         @media (orientation: landscape) and (max-height: 740px) {
           .kiosk-sub { display: none; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 1.5rem), 480px); }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 1.5rem), 540px); }
         }
 
         /* 10" portrait (tablet upright) — QR can use more width */
@@ -2063,7 +2160,7 @@ const EntryKioskPage: React.FC = () => {
           .kiosk-sub { font-size: 1.05rem; }
           .kiosk-countdown { width: 6.25rem; height: 6.25rem; }
           .kiosk-countdown-num { font-size: 1.45rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 570px); }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 630px); }
         }
 
         /* Large desktop preview — don't let chrome balloon; keep QR capped */
@@ -2076,7 +2173,7 @@ const EntryKioskPage: React.FC = () => {
           .kiosk-sub { font-size: 1.1rem; }
           .kiosk-countdown { width: 6.75rem; height: 6.75rem; }
           .kiosk-countdown-num { font-size: 1.55rem; }
-          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 600px); }
+          .kiosk-qr-block { width: min(100cqi, calc(100cqb - 2.25rem), 660px); }
         }
       `}</style>
 

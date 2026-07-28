@@ -32,6 +32,9 @@ type EntryStatus =
   | 'no_employee'
   | 'error';
 
+/** Prevent Strict Mode / remount double clock-in → immediate clock-out races. */
+const inFlightEntryTokens = new Set<string>();
+
 /** Wait for PKCE / magic-link session exchange when the URL still carries auth params. */
 async function resolveSessionForEntryPage() {
   const first = await supabase.auth.getSession();
@@ -196,6 +199,13 @@ const ClockInEntryPage: React.FC = () => {
         return;
       }
 
+      if (inFlightEntryTokens.has(token)) {
+        // Another mount (e.g. Strict Mode) is already handling this scan.
+        return;
+      }
+      inFlightEntryTokens.add(token);
+
+      try {
       setStatus('connecting');
       setMessage('Connecting to entry…');
 
@@ -284,6 +294,8 @@ const ClockInEntryPage: React.FC = () => {
           console.warn('Meeting clock-out adjustment skipped:', adjErr);
         }
 
+        if (cancelled) return;
+
         try {
           await clockOutEmployeeRecord(
             {
@@ -305,6 +317,7 @@ const ClockInEntryPage: React.FC = () => {
           return;
         }
 
+        if (cancelled) return;
         finishSuccess(
           'out',
           name,
@@ -334,6 +347,8 @@ const ClockInEntryPage: React.FC = () => {
       } catch (adjErr) {
         console.warn('Meeting clock-in adjustment skipped:', adjErr);
       }
+
+      if (cancelled) return;
 
       const payload = {
         employee_id: employeeId,
@@ -371,6 +386,12 @@ const ClockInEntryPage: React.FC = () => {
         inAt,
         inRemark,
       );
+      } finally {
+        // Keep lock briefly so a remount cleanup+re-run cannot immediately clock out.
+        window.setTimeout(() => {
+          inFlightEntryTokens.delete(token);
+        }, 2_500);
+      }
     };
 
     void run();

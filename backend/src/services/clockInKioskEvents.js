@@ -73,6 +73,7 @@ function memoryGet(locationId) {
     meetings: event.meetings || [],
     remark: event.remark || null,
     adjustedAt: event.adjustedAt || null,
+    displayAtResolved: Boolean(event.displayAtResolved),
     at: event.at,
   };
 }
@@ -124,10 +125,21 @@ async function resolveDisplayClockAt(event) {
 
 async function withResolvedDisplayTime(event) {
   if (!event) return null;
+  // Already resolved once (announce or prior poll) — never hit employee_clock_in again.
+  if (event.adjustedAt && !Number.isNaN(Date.parse(String(event.adjustedAt)))) {
+    return event;
+  }
+  if (event.displayAtResolved) {
+    return {
+      ...event,
+      adjustedAt: event.adjustedAt || event.at || null,
+    };
+  }
   const adjustedAt = await resolveDisplayClockAt(event);
   return {
     ...event,
-    adjustedAt: adjustedAt || event.adjustedAt || null,
+    adjustedAt: adjustedAt || event.at || null,
+    displayAtResolved: true,
   };
 }
 
@@ -228,7 +240,8 @@ async function announce({
     action,
     meetings,
     remark,
-    adjustedAt,
+    adjustedAt: adjustedAt || at,
+    displayAtResolved: true,
     at,
   };
   memoryPut(event);
@@ -238,6 +251,12 @@ async function announce({
 async function getRecent(locationIdInput) {
   const locationId = normalizeLocationId(locationIdInput);
   if (locationId == null) return null;
+
+  // Prefer in-memory flash for same-process tablets — avoids repeated DB work every poll.
+  const cachedHot = memoryGet(locationId);
+  if (cachedHot) {
+    return withResolvedDisplayTime(cachedHot);
+  }
 
   const sinceIso = new Date(Date.now() - RECENT_MS).toISOString();
 
@@ -298,6 +317,7 @@ async function getRecent(locationIdInput) {
         meetings,
         remark,
         adjustedAt,
+        displayAtResolved: Boolean(adjustedAt),
         at: data.created_at,
       };
       const resolved = await withResolvedDisplayTime(event);
@@ -350,6 +370,9 @@ async function getRecent(locationIdInput) {
               cached && String(cached.id) === String(fallback.data.id)
                 ? cached.adjustedAt || null
                 : null,
+            displayAtResolved: Boolean(
+              cached && String(cached.id) === String(fallback.data.id) && cached.adjustedAt,
+            ),
             at: fallback.data.created_at,
           };
           const resolved = await withResolvedDisplayTime(event);

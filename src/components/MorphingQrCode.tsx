@@ -11,8 +11,8 @@ type MorphingQrCodeProps = {
 };
 
 function encodeModules(value: string): boolean[][] {
-  // Quiet zone (border) helps phone cameras lock onto the code reliably.
-  const result = encode(value, { ecc: 'M', border: 2 });
+  // Small quiet zone for reliable scans while keeping the code close to the frame edge.
+  const result = encode(value, { ecc: 'M', border: 1 });
   return result.data.map((row) => row.slice());
 }
 

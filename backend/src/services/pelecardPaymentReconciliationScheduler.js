@@ -1,7 +1,8 @@
 const {
   reconcileStalePaymentLinks,
 } = require('./pelecardPaymentReconciliationService');
-const { reconcilePendingPayperInvoices } = require('./payperInvoiceService');
+// TEMP DISABLED: Payper invoice-document reconcile batch — uncomment with call below when ready.
+// const { reconcilePendingPayperInvoices } = require('./payperInvoiceService');
 
 const SCHEDULER_ENABLED =
   (process.env.ENABLE_PELECARD_RECONCILE_SCHEDULER || 'true').toLowerCase() !== 'false';
@@ -20,7 +21,9 @@ async function runReconciliation(trigger = 'scheduled') {
   isRunning = true;
   try {
     const pelecardResult = await reconcileStalePaymentLinks({ trigger });
-    const payperResult = await reconcilePendingPayperInvoices({ trigger });
+    // TEMP DISABLED: Payper invoice-document reconcile batch (heavy; re-enable when ready).
+    // const payperResult = await reconcilePendingPayperInvoices({ trigger });
+    const payperResult = { skipped: true, reason: 'temporarily_disabled' };
     return { pelecard: pelecardResult, payper: payperResult };
   } catch (error) {
     console.error('[Pelecard] Reconciliation scheduler error:', error.message || error);
@@ -37,7 +40,7 @@ function startPelecardPaymentReconciliationScheduler() {
   }
 
   console.log(
-    `[Pelecard] Reconciliation scheduler: every ${Math.round(TICK_MS / 60000)} min (startup in ${STARTUP_DELAY_MS}ms)`,
+    `[Pelecard] Reconciliation scheduler: every ${Math.round(TICK_MS / 60000)} min (startup in ${STARTUP_DELAY_MS}ms); Payper invoice batch TEMP DISABLED`,
   );
 
   setTimeout(() => {
