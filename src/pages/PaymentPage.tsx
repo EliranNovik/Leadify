@@ -597,16 +597,21 @@ const PaymentPage: React.FC<{
     if (!token || !paymentUrl || sessionLoading || !canPay) return;
 
     let cancelled = false;
+    let failedStreak = 0;
     const poll = async () => {
       const data = await fetchPaymentStatus(token);
       if (cancelled || !data.success) return;
       if (data.status === 'paid') {
+        failedStreak = 0;
         if (kioskMode) {
           onKioskComplete?.();
           return;
         }
         navigate(`/payment/success?paymentId=${encodeURIComponent(token)}`);
       } else if (data.status === 'failed') {
+        // Avoid racing a soft Pelecard ErrorURL — require two consecutive failed polls.
+        failedStreak += 1;
+        if (failedStreak < 2) return;
         if (kioskMode) return;
         const qs = new URLSearchParams({
           paymentId: token,
@@ -619,12 +624,15 @@ const PaymentPage: React.FC<{
         });
         navigate(`/payment/failed?${qs.toString()}`);
       } else if (data.status === 'cancelled') {
+        failedStreak = 0;
         if (kioskMode) return;
         navigate(`/payment/cancelled?paymentId=${encodeURIComponent(token)}`);
+      } else {
+        failedStreak = 0;
       }
     };
 
-    const interval = window.setInterval(poll, 3000);
+    const interval = window.setInterval(poll, 2500);
     poll();
     return () => {
       cancelled = true;

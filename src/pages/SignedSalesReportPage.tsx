@@ -10,6 +10,10 @@ import {
 import { computeDateBounds, fetchStage60RecordsInRange } from '../lib/stage60SignDate';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 import { usePersistedFilters } from '../hooks/usePersistedState';
+import {
+  applySubcontractorFeeTotalsToLeads,
+  fetchSubcontractorFeeTotalsByLeadIds,
+} from '../lib/leadSubcontractorFees';
 
 type EmployeeOption = {
   id: string;
@@ -1333,6 +1337,17 @@ const resolveLegacyLanguage = (lead: any) => {
         (legacyLeadsData as any[]).forEach((lead: any) => {
           (lead as any)._formattedLeadNumber = formatLegacyLeadNumber(lead);
         });
+      }
+
+      try {
+        const feeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+          newLeadIds: (newLeads || []).map((l: any) => l.id),
+          legacyLeadIds: (legacyLeadsData || []).map((l: any) => l.id),
+        });
+        applySubcontractorFeeTotalsToLeads(newLeads || [], feeMaps, 'new');
+        applySubcontractorFeeTotalsToLeads(legacyLeadsData || [], feeMaps, 'legacy');
+      } catch (err) {
+        console.warn('[SignedSalesReport] fee-table totals fetch failed; using lead.subcontractor_fee', err);
       }
 
       const filteredNewLeads = (newLeads || [])

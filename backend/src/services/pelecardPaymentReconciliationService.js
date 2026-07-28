@@ -14,6 +14,10 @@ const {
   createPayperInvoiceForPayment,
   isAutomatedInvoiceEnabled,
 } = require('./payperInvoiceService');
+const {
+  clipParamX,
+  readStoredParamX,
+} = require('../lib/pelecardParamX');
 
 const DB_RETRY_ATTEMPTS = Number(process.env.PELECARD_DB_RETRY_ATTEMPTS || '3');
 const DB_RETRY_DELAY_MS = Number(process.env.PELECARD_DB_RETRY_DELAY_MS || '300');
@@ -35,7 +39,7 @@ function isSessionExpiredCode(statusCode) {
 
 function extractPelecardMeta(data = {}) {
   const statusCode = String(
-    data.PelecardStatusCode || data.StatusCode || data.statusCode || '',
+    data.PelecardStatusCode || data.StatusCode || data.statusCode || data.ShvaResult || '',
   ).trim();
   const statusDescription = String(
     data.StatusDescription ||
@@ -48,6 +52,7 @@ function extractPelecardMeta(data = {}) {
     data.PelecardTransactionId ||
     data.pelecardTransactionId ||
     data.TransactionId ||
+    data.TransactionPelecardId ||
     null;
   return { statusCode, statusDescription, transactionId };
 }
@@ -102,7 +107,66 @@ async function fetchPaymentByToken(secureToken) {
 
   if (error) throw error;
   if (!data) return null;
+  return enrichPaymentRow(data);
+}
 
+/**
+ * Resolve payment from Pelecard ParamX / paymentId (exact, stored short ParamX, or truncated prefix).
+ */
+async function fetchPaymentByCallbackRef(ref) {
+  const value = String(ref || '').trim();
+  if (!value) return null;
+
+  const exact = await fetchPaymentByToken(value);
+  if (exact) return exact;
+
+  const clipped = clipParamX(value);
+  if (clipped && clipped !== value) {
+    const exactClipped = await fetchPaymentByToken(clipped);
+    if (exactClipped) return exactClipped;
+  }
+
+  // Stored short ParamX on pelecard_raw_response
+  if (clipped) {
+    const { data: byParamRows, error: byParamError } = await supabase
+      .from('payment_links')
+      .select('secure_token')
+      .filter('pelecard_raw_response->>paramX', 'eq', clipped)
+      .order('created_at', { ascending: false })
+      .limit(2);
+    if (byParamError) {
+      logSupabaseError('fetchPaymentByCallbackRef paramX lookup failed', byParamError);
+    } else if (byParamRows?.length === 1) {
+      return fetchPaymentByToken(byParamRows[0].secure_token);
+    } else if (byParamRows?.length > 1) {
+      console.warn('[Pelecard] Ambiguous paramX match', { paramX: clipped, count: byParamRows.length });
+    }
+  }
+
+  // Legacy: Pelecard truncated long secure_token to ≤19 chars
+  if (clipped && clipped.length >= 12) {
+    const { data: prefixRows, error: prefixError } = await supabase
+      .from('payment_links')
+      .select('secure_token')
+      .like('secure_token', `${clipped}%`)
+      .order('created_at', { ascending: false })
+      .limit(2);
+    if (prefixError) {
+      logSupabaseError('fetchPaymentByCallbackRef prefix lookup failed', prefixError);
+    } else if (prefixRows?.length === 1) {
+      return fetchPaymentByToken(prefixRows[0].secure_token);
+    } else if (prefixRows?.length > 1) {
+      console.warn('[Pelecard] Ambiguous secure_token prefix match', {
+        prefix: clipped,
+        count: prefixRows.length,
+      });
+    }
+  }
+
+  return null;
+}
+
+async function enrichPaymentRow(data) {
   let enriched = data;
 
   if (!enriched.leads && enriched.legacy_id) {
@@ -286,7 +350,13 @@ async function verifyPelecardTransaction(transactionId, callbackData, profile = 
       verifyPayload.pelecard = tx.raw;
       resultData = tx.result || {};
       resolvedStatusCode = String(
-        resultData.StatusCode || resultData.statusCode || resolvedStatusCode || '',
+        resultData.StatusCode ||
+          resultData.statusCode ||
+          resultData.ShvaResult ||
+          resultData.shvaResult ||
+          tx.outerStatusCode ||
+          resolvedStatusCode ||
+          '',
       ).trim();
     } catch (verifyErr) {
       console.error('[Pelecard] GetTransaction failed:', verifyErr.message || verifyErr);
@@ -549,7 +619,7 @@ async function reconcilePaidLinkPlan(payment) {
 /**
  * Reconcile one link via GetTransaction (status poll, callbacks, scheduler).
  */
-async function tryReconcilePaymentLink(payment) {
+async function tryReconcilePaymentLink(payment, options = {}) {
   if (!payment?.secure_token) return payment;
 
   const full = await fetchPaymentByToken(payment.secure_token);
@@ -564,13 +634,50 @@ async function tryReconcilePaymentLink(payment) {
     return full;
   }
 
-  const transactionId = getStoredTransactionId(full);
+  let transactionId = options.transactionId || getStoredTransactionId(full);
+
+  // No tx id yet — ask Pelecard for the latest approved charge by ParamX (covers broken callbacks).
+  if (!transactionId) {
+    const paramCandidates = [
+      readStoredParamX(full),
+      clipParamX(full.secure_token),
+      full.secure_token,
+    ].filter(Boolean);
+    const uniqueParams = [...new Set(paramCandidates.map((p) => String(p)))];
+
+    for (const paramX of uniqueParams) {
+      try {
+        const found = await pelecardService.checkGoodParamX(paramX, profileFromPayment(full), {
+          shvaSuccessOnly: true,
+        });
+        if (found?.approved && found.transactionId) {
+          transactionId = found.transactionId;
+          await persistCallbackSnapshot(full, {
+            ParamX: paramX,
+            PelecardTransactionId: transactionId,
+            StatusCode: found.result?.StatusCode || found.outerStatusCode || '000',
+            ShvaResult: found.result?.ShvaResult || '000',
+            checkGoodParamX: true,
+          }, { pelecard: found.raw });
+          console.info('[Pelecard] Recovered transaction via CheckGoodParamX', {
+            paymentId: full.secure_token,
+            paramX,
+            transactionId,
+          });
+          break;
+        }
+      } catch (err) {
+        console.warn('[Pelecard] CheckGoodParamX failed:', err.message || err);
+      }
+    }
+  }
+
   if (!transactionId) return full;
 
   let callbackData = full.pelecard_raw_response?.callback;
   if (!callbackData || typeof callbackData !== 'object') {
     callbackData = {
-      ParamX: full.secure_token,
+      ParamX: readStoredParamX(full) || full.secure_token,
       PelecardTransactionId: transactionId,
     };
   }
@@ -580,17 +687,64 @@ async function tryReconcilePaymentLink(payment) {
     PelecardTransactionId: transactionId,
   }, profileFromPayment(full));
 
-  if (verifyResult.verified) {
+  const forcePaid = options.forcePaid === true;
+  if (verifyResult.verified || forcePaid) {
+    if (forcePaid && !verifyResult.verified) {
+      console.warn('[Pelecard] Force-marking paid after GetTransaction did not verify', {
+        paymentId: full.secure_token,
+        transactionId,
+        statusCode: verifyResult.resolvedStatusCode || null,
+        pelecardStatus: verifyResult.resultData?.Status ?? verifyResult.resultData?.Result ?? null,
+        shvaResult: verifyResult.resultData?.ShvaResult ?? null,
+      });
+    }
     await persistPaymentSuccess(
       full,
       full.secure_token,
-      { ...callbackData, PelecardTransactionId: transactionId },
-      verifyResult,
+      {
+        ...callbackData,
+        PelecardTransactionId: transactionId,
+        ...(forcePaid && !verifyResult.verified ? { forcePaid: true } : {}),
+      },
+      {
+        ...verifyResult,
+        verified: true,
+        resolvedStatusCode: verifyResult.resolvedStatusCode || (forcePaid ? '000' : verifyResult.resolvedStatusCode),
+      },
     );
     return fetchPaymentByToken(full.secure_token);
   }
 
-  return full;
+  // Keep last GetTransaction payload for ops debugging
+  const previousRaw =
+    full.pelecard_raw_response && typeof full.pelecard_raw_response === 'object'
+      ? full.pelecard_raw_response
+      : {};
+  await supabase
+    .from('payment_links')
+    .update({
+      pelecard_transaction_id: String(transactionId),
+      pelecard_status_code: verifyResult.resolvedStatusCode || full.pelecard_status_code || null,
+      pelecard_raw_response: {
+        ...previousRaw,
+        callback: { ...callbackData, PelecardTransactionId: transactionId },
+        pelecard: verifyResult.verifyPayload?.pelecard ?? verifyResult.verifyPayload,
+        lastReconcileAt: new Date().toISOString(),
+        lastReconcileVerified: false,
+      },
+    })
+    .eq('id', full.id);
+
+  return {
+    ...(await fetchPaymentByToken(full.secure_token)),
+    _reconcileMeta: {
+      verified: false,
+      statusCode: verifyResult.resolvedStatusCode || null,
+      getTransactionAttempted: verifyResult.getTransactionAttempted,
+      resultStatus: verifyResult.resultData?.Status ?? verifyResult.resultData?.Result ?? null,
+      shvaResult: verifyResult.resultData?.ShvaResult ?? null,
+    },
+  };
 }
 
 async function reconcilePaymentBySecureToken(secureToken, options = {}) {
@@ -609,16 +763,21 @@ async function reconcilePaymentBySecureToken(secureToken, options = {}) {
   if (!payment) return { ok: false, error: 'not_found' };
 
   const transactionId = options.transactionId || getStoredTransactionId(payment);
-  if (options.transactionId && !getStoredTransactionId(payment)) {
+  if (options.transactionId) {
     await persistCallbackSnapshot(payment, {
       ParamX: payment.secure_token,
       PelecardTransactionId: String(options.transactionId),
       ...(options.authNumber ? { AuthorizationNumber: String(options.authNumber) } : {}),
       manualReconcile: true,
     });
+    payment = (await fetchPaymentByToken(payment.secure_token)) || payment;
   }
 
-  const updated = await tryReconcilePaymentLink(payment);
+  const updated = await tryReconcilePaymentLink(payment, {
+    transactionId: transactionId ? String(transactionId) : null,
+    forcePaid: options.forcePaid === true,
+  });
+  const meta = updated?._reconcileMeta || null;
   return {
     ok: true,
     paymentId: updated?.secure_token || payment.secure_token,
@@ -626,11 +785,22 @@ async function reconcilePaymentBySecureToken(secureToken, options = {}) {
     paid: updated?.status === 'paid',
     pelecard_transaction_id: updated?.pelecard_transaction_id || null,
     planSynced: updated?.status === 'paid' ? isPlanMarkedPaid(updated) : undefined,
+    ...(meta && updated?.status !== 'paid'
+      ? {
+          verified: false,
+          reason: 'get_transaction_not_approved',
+          pelecardStatusCode: meta.statusCode,
+          pelecardResultStatus: meta.resultStatus,
+          shvaResult: meta.shvaResult,
+          hint:
+            'Pelecard GetTransaction did not return approval (000). Re-check the transaction id, or retry with {"forcePaid":true} only if Pelecard terminal shows a successful charge.',
+        }
+      : {}),
   };
 }
 
 /**
- * Batch reconcile stuck links (processing / failed with tx id, or paid without plan sync).
+ * Batch reconcile stuck links (processing / failed with or without tx id, or paid without plan sync).
  */
 async function reconcileStalePaymentLinks(options = {}) {
   const lookbackHours = Number(options.lookbackHours || process.env.PELECARD_RECONCILE_LOOKBACK_HOURS || '168');
@@ -658,8 +828,10 @@ async function reconcileStalePaymentLinks(options = {}) {
     const planPending =
       row.status === 'paid' &&
       (row.pelecard_raw_response?.reconcilePlanPending || !isPlanMarkedPaid(row));
+    const needsParamXRecovery =
+      (row.status === 'processing' || row.status === 'failed') && !hasTx;
 
-    if (!hasTx && !planPending) continue;
+    if (!hasTx && !planPending && !needsParamXRecovery) continue;
 
     checked += 1;
     const before = row.status;
@@ -676,6 +848,39 @@ async function reconcileStalePaymentLinks(options = {}) {
   }
 
   return { ok: true, checked, reconciled };
+}
+
+/**
+ * After a broken/empty Pelecard callback, try recovering recent processing links via ParamX.
+ */
+async function recoverRecentProcessingPayments(options = {}) {
+  const lookbackMinutes = Number(options.lookbackMinutes || 30);
+  const limit = Number(options.limit || 15);
+  const since = new Date(Date.now() - lookbackMinutes * 60 * 1000).toISOString();
+
+  const { data: rows, error } = await supabase
+    .from('payment_links')
+    .select('id, secure_token, status, pelecard_transaction_id, pelecard_raw_response, updated_at')
+    .eq('status', 'processing')
+    .gte('updated_at', since)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    logSupabaseError('recoverRecentProcessingPayments query failed', error);
+    return { ok: false, recovered: 0 };
+  }
+
+  let recovered = 0;
+  for (const row of rows || []) {
+    const updated = await tryReconcilePaymentLink(row);
+    if (updated?.status === 'paid') recovered += 1;
+  }
+
+  if (recovered > 0) {
+    console.info('[Pelecard] Recovered payments after incomplete callback', { recovered });
+  }
+  return { ok: true, recovered, checked: (rows || []).length };
 }
 
 async function tryCreatePayperInvoiceForPaidLink(payment) {
@@ -705,6 +910,7 @@ module.exports = {
   isSessionExpiredCode,
   pelecardDescriptionFromRaw,
   fetchPaymentByToken,
+  fetchPaymentByCallbackRef,
   persistCallbackSnapshot,
   verifyPelecardTransaction,
   persistPaymentSuccess,
@@ -713,6 +919,7 @@ module.exports = {
   tryReconcilePaymentLink,
   reconcilePaymentBySecureToken,
   reconcileStalePaymentLinks,
+  recoverRecentProcessingPayments,
   reconcilePaidLinkPlan,
   getStoredTransactionId,
   tryCreatePayperInvoiceForPaidLink,

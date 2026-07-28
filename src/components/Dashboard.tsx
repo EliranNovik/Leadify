@@ -61,6 +61,11 @@ import DashboardScoreboardDealsModal, {
   scoreboardDealsCellKey,
   type DashboardScoreboardDeal,
 } from './DashboardScoreboardDealsModal';
+import {
+  applySubcontractorFeeTotalsToLeads,
+  fetchSubcontractorFeeTotalsByLeadIds,
+  resolveLeadSubcontractorFeeAmount,
+} from '../lib/leadSubcontractorFees';
 
 function getDashboardScoreboardCacheTtlMs(): number {
   return getMobileAwareCacheTtlMs(10 * 60 * 1000, 2 * 60 * 1000);
@@ -3899,6 +3904,25 @@ const Dashboard: React.FC = () => {
       if (agreementRecords && agreementRecords.length > 0) {
         const processedRecordIds = new Set();
 
+        const agreementFeeLeadsNew: any[] = [];
+        const agreementFeeLeadsLegacy: any[] = [];
+        for (const record of agreementRecords) {
+          const lead = record.leads_lead as any;
+          if (!lead) continue;
+          if (record.isNewLead) agreementFeeLeadsNew.push(lead);
+          else agreementFeeLeadsLegacy.push(lead);
+        }
+        try {
+          const agreementFeeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+            newLeadIds: agreementFeeLeadsNew.map((l) => l.id),
+            legacyLeadIds: agreementFeeLeadsLegacy.map((l) => l.id),
+          });
+          applySubcontractorFeeTotalsToLeads(agreementFeeLeadsNew, agreementFeeMaps, 'new');
+          applySubcontractorFeeTotalsToLeads(agreementFeeLeadsLegacy, agreementFeeMaps, 'legacy');
+        } catch (feeErr) {
+          console.warn('[Dashboard] agreement fee-table totals:', feeErr);
+        }
+
         for (const record of agreementRecords) {
           if (processedRecordIds.has(record.id)) {
             continue;
@@ -4000,6 +4024,25 @@ const Dashboard: React.FC = () => {
       // Process month data separately
       if (monthAgreementRecords && monthAgreementRecords.length > 0) {
         const processedMonthRecordIds = new Set();
+
+        const monthFeeLeadsNew: any[] = [];
+        const monthFeeLeadsLegacy: any[] = [];
+        for (const record of monthAgreementRecords) {
+          const lead = record.leads_lead as any;
+          if (!lead) continue;
+          if (record.isNewLead) monthFeeLeadsNew.push(lead);
+          else monthFeeLeadsLegacy.push(lead);
+        }
+        try {
+          const monthFeeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+            newLeadIds: monthFeeLeadsNew.map((l) => l.id),
+            legacyLeadIds: monthFeeLeadsLegacy.map((l) => l.id),
+          });
+          applySubcontractorFeeTotalsToLeads(monthFeeLeadsNew, monthFeeMaps, 'new');
+          applySubcontractorFeeTotalsToLeads(monthFeeLeadsLegacy, monthFeeMaps, 'legacy');
+        } catch (feeErr) {
+          console.warn('[Dashboard] month agreement fee-table totals:', feeErr);
+        }
 
         for (const record of monthAgreementRecords) {
           if (processedMonthRecordIds.has(record.id)) {
@@ -4602,6 +4645,34 @@ const Dashboard: React.FC = () => {
         }
       }
 
+      let invoicedFeeMaps = {
+        byNewLeadId: new Map<string, number>(),
+        byLegacyLeadId: new Map<number, number>(),
+      };
+      try {
+        invoicedFeeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+          newLeadIds,
+          legacyLeadIds,
+        });
+        const uniqueNewLeads = Array.from(
+          new Map(
+            Array.from(newLeadsMap.values()).map((l: any) => [String(l.id), l]),
+          ).values(),
+        );
+        const uniqueLegacyLeads = Array.from(
+          new Map(
+            Array.from(legacyLeadsMap.values()).map((l: any) => [
+              String(l.id).replace(/^legacy_/i, ''),
+              l,
+            ]),
+          ).values(),
+        );
+        applySubcontractorFeeTotalsToLeads(uniqueNewLeads as any[], invoicedFeeMaps, 'new');
+        applySubcontractorFeeTotalsToLeads(uniqueLegacyLeads as any[], invoicedFeeMaps, 'legacy');
+      } catch (feeErr) {
+        console.warn('[Dashboard] invoiced fee-table totals:', feeErr);
+      }
+
       // Contact names for invoiced deals (match CollectionDueReport drawer)
       // New: main contact via lead_leadcontact; Legacy: payment.client_id → leads_contact
       const newLeadContactByLeadId = new Map<string, string>();
@@ -4904,7 +4975,7 @@ const Dashboard: React.FC = () => {
         const leadKey = String(payment.lead_id || lead.id);
         leadPlanTotalNis.set(leadKey, (leadPlanTotalNis.get(leadKey) || 0) + amountInNIS);
         if (!leadFeeNis.has(leadKey)) {
-          const feeRaw = Number(lead.subcontractor_fee) || 0;
+          const feeRaw = resolveLeadSubcontractorFeeAmount(lead, invoicedFeeMaps, 'new');
           leadFeeNis.set(
             leadKey,
             feeRaw > 0 ? await boiConverter.toNis(feeRaw, currencyForConversion, rateAsOf) : 0,
@@ -4981,7 +5052,7 @@ const Dashboard: React.FC = () => {
         const leadKey = String(payment.lead_id || lead.id);
         leadPlanTotalNis.set(leadKey, (leadPlanTotalNis.get(leadKey) || 0) + amountInNIS);
         if (!leadFeeNis.has(leadKey)) {
-          const feeRaw = Number(lead.subcontractor_fee) || 0;
+          const feeRaw = resolveLeadSubcontractorFeeAmount(lead, invoicedFeeMaps, 'legacy');
           leadFeeNis.set(
             leadKey,
             feeRaw > 0 ? await boiConverter.toNis(feeRaw, currencyForConversion, rateAsOf) : 0,

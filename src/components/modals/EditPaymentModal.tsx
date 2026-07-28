@@ -355,7 +355,7 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
               <option value="Intermediate Payment">Intermediate Payment</option>
               <option value="Final Payment">Final Payment</option>
               <option value="Single Payment">Single Payment</option>
-              <option value="Expense (no VAT)">Expense (no VAT)</option>
+              <option value="Expense">Expense</option>
             </select>
           </div>
 

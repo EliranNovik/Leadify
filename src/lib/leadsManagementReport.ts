@@ -15,6 +15,10 @@ import {
   maxLeadEmployeeCostNis,
   resolveLeadTotalValueNis,
 } from './leadEmployeeCost';
+import {
+  fetchFirmPaidExpenseReductionTotal,
+  resolveLeadFeeIdentity,
+} from './leadExpenses';
 import { isExpenseNoVatPayment } from './proformaVat';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
 import { fetchClockInRecordsInRangeForReport } from './workingHoursExport';
@@ -212,12 +216,17 @@ async function fetchLeadMeta(params: {
   hasPaymentPlan: boolean;
 }> {
   if (params.leadType === 'legacy' && params.legacyLeadId != null) {
-    const [{ data }, planBase] = await Promise.all([
+    const identity = resolveLeadFeeIdentity({
+      id: `legacy_${params.legacyLeadId}`,
+      lead_type: 'legacy',
+      lead_number: params.leadNumber,
+    });
+    const [{ data }, planBase, firmPaidExpenseTotal] = await Promise.all([
       supabase
         .from('leads_lead')
         .select(
           `
-          id, name, category, category_id, total, total_base, currency_id, manual_id,
+          id, name, category, category_id, total, total_base, currency_id, manual_id, subcontractor_fee,
           misc_category!leads_lead_category_id_fkey (
             id, name, parent_id,
             misc_maincategory!parent_id ( id, name )
@@ -227,12 +236,17 @@ async function fetchLeadMeta(params: {
         .eq('id', params.legacyLeadId)
         .maybeSingle(),
       fetchLegacyLeadPaymentPlanBaseTotal(params.legacyLeadId),
+      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
     ]);
     const leadTotalValueNis = resolveLeadTotalValueNis(
       data
         ? { ...data, lead_type: 'legacy', id: `legacy_${data.id}` }
         : { lead_type: 'legacy', id: `legacy_${params.legacyLeadId}` },
-      { hasPaymentPlan: planBase != null, paymentPlanBaseTotal: planBase },
+      {
+        hasPaymentPlan: planBase != null,
+        paymentPlanBaseTotal: planBase,
+        firmPaidExpenseTotal,
+      },
     );
     const cats = formatLeadCategoryParts(data);
     return {
@@ -254,12 +268,17 @@ async function fetchLeadMeta(params: {
   }
 
   if (newLeadId) {
-    const [{ data }, planBase] = await Promise.all([
+    const identity = resolveLeadFeeIdentity({
+      id: newLeadId,
+      lead_type: 'new',
+      lead_number: params.leadNumber,
+    });
+    const [{ data }, planBase, firmPaidExpenseTotal] = await Promise.all([
       supabase
         .from('leads')
         .select(
           `
-          id, name, category, category_id, balance, proposal_total, lead_number,
+          id, name, category, category_id, balance, proposal_total, lead_number, subcontractor_fee,
           misc_category!category_id (
             id, name, parent_id,
             misc_maincategory!parent_id ( id, name )
@@ -269,10 +288,12 @@ async function fetchLeadMeta(params: {
         .eq('id', newLeadId)
         .maybeSingle(),
       fetchNewLeadPaymentPlanBaseTotal(newLeadId),
+      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
     ]);
     const leadTotalValueNis = resolveLeadTotalValueNis(data ?? { id: newLeadId }, {
       hasPaymentPlan: planBase != null,
       paymentPlanBaseTotal: planBase,
+      firmPaidExpenseTotal,
     });
     const cats = formatLeadCategoryParts(data);
     return {

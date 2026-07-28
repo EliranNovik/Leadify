@@ -30,19 +30,64 @@ function appRedirect(path, query = {}, profile = 'production') {
   return `${appPublicUrl}${path}${qs ? `?${qs}` : ''}`;
 }
 
+function flattenCallbackSource(source, into = {}) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return into;
+  for (const [key, value] of Object.entries(source)) {
+    if (value == null) continue;
+    if (typeof value === 'object' && !Array.isArray(value)) {
+      // Pelecard sometimes nests ResultData / UserData
+      if (key === 'ResultData' || key === 'resultData' || key === 'UserData' || key === 'userData') {
+        flattenCallbackSource(value, into);
+      }
+      continue;
+    }
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      into[key] = value;
+    }
+  }
+  return into;
+}
+
 function mergeCallbackData(req) {
-  return { ...(req.query || {}), ...(req.body || {}) };
+  const merged = {
+    ...flattenCallbackSource(req.query || {}),
+    ...flattenCallbackSource(req.body || {}),
+  };
+
+  // Some gateways post a JSON string in a single field
+  for (const key of ['data', 'payload', 'json', 'ResultData']) {
+    const raw = req.body?.[key];
+    if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+      try {
+        flattenCallbackSource(JSON.parse(raw), merged);
+      } catch {
+        /* ignore */
+      }
+    } else if (raw && typeof raw === 'object') {
+      flattenCallbackSource(raw, merged);
+    }
+  }
+
+  return merged;
 }
 
 function hasCallbackIdentity(data) {
   return Boolean(
     data.ParamX ||
       data.paramX ||
+      data.AdditionalDetailsParamX ||
       data.paymentId ||
       data.PelecardTransactionId ||
       data.pelecardTransactionId ||
-      data.TransactionId,
+      data.TransactionId ||
+      data.TransactionPelecardId,
   );
+}
+
+function summarizeCallbackForLog(data, req) {
+  const keys = Object.keys(data || {}).slice(0, 40);
+  const bodyKeys = req?.body && typeof req.body === 'object' ? Object.keys(req.body).slice(0, 40) : [];
+  return { keys, bodyKeys, contentType: req?.headers?.['content-type'] || null };
 }
 
 function sendNoCacheJson(res, payload) {
@@ -112,6 +157,11 @@ async function createPaymentSession(req, res) {
         ? Number(session.charge.rateToIls)
         : null;
 
+    const previousRaw =
+      payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
+        ? payment.pelecard_raw_response
+        : {};
+
     const { error: updateError } = await supabase
       .from('payment_links')
       .update({
@@ -126,8 +176,11 @@ async function createPaymentSession(req, res) {
         pelecard_voucher_id: null,
         ...(sessionRate != null ? { rate: sessionRate } : {}),
         pelecard_raw_response: {
+          ...previousRaw,
           init: session.rawResponse,
           pelecardCharge: session.charge,
+          paramX: session.paramX,
+          initParamX: session.paramX,
           customerIdField: pelecardService.getCustomerIdFieldMode(),
           sessionCreatedAt: new Date().toISOString(),
         },
@@ -178,7 +231,7 @@ async function getPaymentStatus(req, res) {
       return sendNoCacheJson(res, { success: false, error: 'Missing paymentId' });
     }
 
-    let payment = await reconciliation.fetchPaymentByToken(paymentId);
+    let payment = await reconciliation.fetchPaymentByCallbackRef(paymentId);
     if (!payment) {
       return sendNoCacheJson(res, { success: false, error: 'Payment not found' });
     }
@@ -260,6 +313,7 @@ async function reconcilePayment(req, res) {
     const result = await reconciliation.reconcilePaymentBySecureToken(paymentId, {
       transactionId: transactionId ? String(transactionId) : null,
       authNumber: authNumber ? String(authNumber) : null,
+      forcePaid: Boolean(req.body?.forcePaid || req.query?.forcePaid),
     });
     if (!result.ok && result.error === 'not_found') {
       return sendNoCacheJson(res, { success: false, error: 'Payment not found' });
@@ -284,7 +338,13 @@ async function handlePelecardReturn(req, res, outcome) {
   try {
     data = mergeCallbackData(req);
     const { statusCode, statusDescription, transactionId } = reconciliation.extractPelecardMeta(data);
-    secureToken = data.ParamX || data.paramX || data.paymentId || req.query.paymentId;
+    secureToken =
+      data.ParamX ||
+      data.paramX ||
+      data.AdditionalDetailsParamX ||
+      data.paymentId ||
+      req.query.paymentId ||
+      null;
 
     console.info('[Pelecard] Return callback', {
       outcome,
@@ -295,26 +355,51 @@ async function handlePelecardReturn(req, res, outcome) {
       transactionId: transactionId || null,
       hasBody: Boolean(req.body && Object.keys(req.body).length),
       hasQuery: Boolean(req.query && Object.keys(req.query).length),
+      ...summarizeCallbackForLog(data, req),
     });
 
     if (!hasCallbackIdentity(data)) {
+      console.error('[Pelecard] Incomplete callback — missing ParamX/transaction id', {
+        outcome,
+        method: req.method,
+        ...summarizeCallbackForLog(data, req),
+      });
+      // Best-effort: recover any recent processing charges Pelecard completed without notifying us.
+      setImmediate(() => {
+        void reconciliation.recoverRecentProcessingPayments({ lookbackMinutes: 45, limit: 20 });
+      });
       if (req.method === 'POST') {
         return res.status(200).send('OK');
       }
       return res.redirect(appRedirect('/payment/failed', { reason: 'missing_payment_id' }));
     }
 
+    if (!secureToken && transactionId) {
+      // Identity is only a transaction id — still attempt recovery of recent processing links.
+      setImmediate(() => {
+        void reconciliation.recoverRecentProcessingPayments({ lookbackMinutes: 45, limit: 20 });
+      });
+    }
+
     if (!secureToken) {
       return res.redirect(appRedirect('/payment/failed', { reason: 'missing_payment_id' }));
     }
 
-    payment = await reconciliation.fetchPaymentByToken(secureToken);
+    payment = await reconciliation.fetchPaymentByCallbackRef(secureToken);
     if (!payment) {
+      console.error('[Pelecard] Callback ParamX did not match a payment_links row', {
+        paramX: secureToken,
+        outcome,
+      });
+      setImmediate(() => {
+        void reconciliation.recoverRecentProcessingPayments({ lookbackMinutes: 45, limit: 20 });
+      });
       return res.redirect(
         appRedirect('/payment/failed', { paymentId: secureToken, reason: 'payment_not_found' }, redirectProfile),
       );
     }
 
+    secureToken = payment.secure_token;
     redirectProfile = profileFromPayment(payment);
 
     // Save callback + transaction id immediately — survives later verification/DB failures.
@@ -384,12 +469,48 @@ async function handlePelecardReturn(req, res, outcome) {
       return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }, redirectProfile));
     }
 
-    if (outcome === 'success' && transactionId) {
-      const reconciled = await reconciliation.tryReconcilePaymentLink(
-        await reconciliation.fetchPaymentByToken(secureToken),
-      );
-      if (reconciled?.status === 'paid') {
-        return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }, redirectProfile));
+    // Success feedback without verify, OR error feedback after a real charge (digital transfer etc.)
+    const reconciled = await reconciliation.tryReconcilePaymentLink(
+      await reconciliation.fetchPaymentByToken(secureToken),
+      { transactionId: transactionId ? String(transactionId) : null },
+    );
+    if (reconciled?.status === 'paid') {
+      return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }, redirectProfile));
+    }
+
+    // Browser/server hit ErrorURL but Pelecard may still have charged — don't hard-fail the row yet.
+    // Send the client to the thank-you/verifying page so they are not stuck on an error screen.
+    if (outcome === 'error' && !verifyResult.verified) {
+      const hardDecline =
+        Boolean(statusCode) &&
+        statusCode !== '000' &&
+        !reconciliation.isSessionExpiredCode(statusCode);
+
+      if (!hardDecline) {
+        console.warn('[Pelecard] Soft error callback — redirecting client to confirming/thank-you', {
+          paymentId: secureToken,
+          statusCode: statusCode || null,
+          method: req.method,
+        });
+        // Server-side feedback only (no browser): acknowledge and recover in background.
+        const isBrowserReturn =
+          req.method === 'GET' ||
+          Boolean(req.headers.accept && String(req.headers.accept).includes('text/html'));
+        if (!isBrowserReturn && req.method === 'POST') {
+          setImmediate(() => {
+            void reconciliation.tryReconcilePaymentLink(
+              { secure_token: secureToken },
+              { transactionId: transactionId ? String(transactionId) : null },
+            );
+          });
+          return res.status(200).send('OK');
+        }
+        return res.redirect(
+          appRedirect('/payment/success', {
+            paymentId: secureToken,
+            confirming: '1',
+          }, redirectProfile),
+        );
       }
     }
 

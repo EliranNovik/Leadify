@@ -1,6 +1,10 @@
 import { convertToNIS } from '../lib/currencyConversion';
 import type { BoiDateRateConverter } from '../lib/boiCurrencyConversion';
 import {
+  applySubcontractorFeeTotalsToLeads,
+  fetchSubcontractorFeeTotalsByLeadIds,
+} from '../lib/leadSubcontractorFees';
+import {
   calculateSignedPortionAmount,
   calculateSignedPortionPercentage,
   getExpertPercentageDecimal,
@@ -219,6 +223,23 @@ export const enrichLeadsMapsWithSignedNis = async (
     signDates: { newLeadSignDates: Map<string, string>; legacyLeadSignDates: Map<number, string> },
     converter: BoiDateRateConverter,
 ): Promise<void> => {
+    const newLeads = Array.from(
+        new Map(Array.from(newLeadsMap.values()).map((l: any) => [String(l.id), l])).values(),
+    );
+    const legacyLeads = Array.from(
+        new Map(Array.from(legacyLeadsMap.values()).map((l: any) => [Number(l.id), l])).values(),
+    );
+    try {
+        const feeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+            newLeadIds: newLeads.map((l: any) => l.id),
+            legacyLeadIds: legacyLeads.map((l: any) => l.id),
+        });
+        applySubcontractorFeeTotalsToLeads(newLeads, feeMaps, 'new');
+        applySubcontractorFeeTotalsToLeads(legacyLeads, feeMaps, 'legacy');
+    } catch (err) {
+        console.warn('[salesContribution] fee-table totals fetch failed; using lead.subcontractor_fee', err);
+    }
+
     for (const [id, lead] of newLeadsMap) {
         await enrichLeadWithSignedNisAmounts(
             lead,

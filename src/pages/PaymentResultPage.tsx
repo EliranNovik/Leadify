@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CheckCircleIcon,
   DocumentTextIcon,
@@ -20,11 +20,13 @@ interface PaymentResultPageProps {
 }
 
 const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const paymentId = searchParams.get('paymentId') || '';
   const urlPelecardStatus = searchParams.get('pelecardStatus') || '';
   const urlPelecardMessage = searchParams.get('pelecardMessage') || '';
   const urlReason = searchParams.get('reason') || '';
+  const confirming = searchParams.get('confirming') === '1' || urlReason === 'pending_confirmation';
 
   const [statusData, setStatusData] = useState<PaymentStatusResponse | null>(null);
   /** True while polling the backend for a final status (paid / failed / cancelled). */
@@ -39,8 +41,9 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       pelecardStatus: urlPelecardStatus || null,
       pelecardMessage: urlPelecardMessage || null,
       reason: urlReason || null,
+      confirming,
     }),
-    [paymentId, urlPelecardStatus, urlPelecardMessage, urlReason]
+    [paymentId, urlPelecardStatus, urlPelecardMessage, urlReason, confirming]
   );
 
   // After iframe checkout, Pelecard redirects inside the frame — break out to full page
@@ -73,7 +76,9 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     let cancelled = false;
     let attempts = 0;
     let timer: ReturnType<typeof setInterval> | null = null;
-    const maxAttempts = variant === 'success' ? 25 : 12;
+    // Soft ErrorURL / confirming flow needs longer for CheckGoodParamX recovery.
+    const maxAttempts =
+      confirming || variant === 'success' ? 45 : variant === 'failed' ? 30 : 12;
     const intervalMs = 2000;
 
     const applyStatus = (data: PaymentStatusResponse) => {
@@ -91,7 +96,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
     const isFinalStatus = (status?: PaymentStatusResponse['status']) => {
       if (status === 'paid') return true;
-      if (variant === 'success') {
+      if (confirming || variant === 'success') {
+        // Keep waiting while still processing — do not flip to failure early.
         return status === 'failed' || status === 'cancelled' || status === 'expired';
       }
       if (variant === 'failed') {
@@ -106,6 +112,17 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
       applyStatus(data);
       attempts += 1;
+
+      // Landed on failed/cancelled but charge actually succeeded — move to thank-you URL.
+      if (data.status === 'paid' && (variant === 'failed' || variant === 'cancelled')) {
+        navigate(`/payment/success?paymentId=${encodeURIComponent(paymentId)}`, { replace: true });
+        setVerifying(false);
+        if (timer) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+        return;
+      }
 
       if (attempts === 1) {
         logPelecardResult('Payment status from API', {
@@ -159,7 +176,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, [paymentId, variant, redirectMeta]);
+  }, [paymentId, variant, redirectMeta, confirming, navigate]);
 
   // Email + tax invoice are created asynchronously after redirect — poll briefly
   useEffect(() => {
@@ -225,11 +242,22 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const cancelledCopy = useMemo(() => getPelecardCancelledCopy(), []);
 
   const backendPaid = statusData?.status === 'paid';
+  const stillProcessing =
+    !statusData?.status ||
+    statusData.status === 'processing' ||
+    statusData.status === 'pending';
   const resolvedCancelled = statusData?.status === 'cancelled';
   const showSuccess = backendPaid;
-  const showCancelled = !verifying && !backendPaid && (variant === 'cancelled' || resolvedCancelled);
+  // Prefer thank-you/verifying over a hard error while confirmation is in flight.
+  const showConfirming =
+    !backendPaid && (verifying || ((confirming || variant === 'success') && stillProcessing));
+  const showCancelled =
+    !showConfirming && !backendPaid && (variant === 'cancelled' || resolvedCancelled);
   const showFailed =
-    !verifying && !backendPaid && !showCancelled && (variant === 'failed' || variant === 'success');
+    !showConfirming &&
+    !backendPaid &&
+    !showCancelled &&
+    (variant === 'failed' || variant === 'success');
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
@@ -253,11 +281,16 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
       <div className="flex flex-col items-center justify-center px-4 pb-12">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full">
-          {verifying ? (
+          {showConfirming ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <span className="loading loading-spinner loading-lg text-primary" />
-              <p className="text-sm text-gray-600">Verifying payment status…</p>
-              <p className="text-xs text-gray-400">This usually takes a few seconds.</p>
+              <h2 className="text-xl font-bold text-gray-900">Confirming your payment…</h2>
+              <p className="text-sm text-gray-600 text-center">
+                Please wait — we are verifying the charge with the payment provider.
+              </p>
+              <p className="text-xs text-gray-400 text-center">
+                Do not close this window. You will see a thank-you screen when it is confirmed.
+              </p>
             </div>
           ) : showSuccess ? (
             <div className="text-center">

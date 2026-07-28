@@ -62,6 +62,9 @@ import { useSignOutWithClockOut } from '../hooks/useSignOutWithClockOut';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useAdminProfileBypass } from '../hooks/useAdminProfileBypass';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
+import { useUpcomingMeetingReminder } from '../hooks/useUpcomingMeetingReminder';
+import UpcomingMeetingHeaderBadge from './UpcomingMeetingHeaderBadge';
+import UpcomingMeetingsModal from './UpcomingMeetingsModal';
 import { ADMIN_PROFILE_BYPASS_CHANGED_EVENT } from '../lib/adminClockInBypass';
 import { clearAdminImpersonationGrant } from '../lib/adminImpersonationGrant';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
@@ -177,6 +180,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const navigate = useNavigate();
   const { sendNotificationForNewMessage } = usePushNotifications();
   const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
+  const { next: upcomingMeeting, meetings: upcomingMeetings } = useUpcomingMeetingReminder(
+    !isExternalUser && !isLoadingExternal,
+  );
+  const [showUpcomingMeetingsModal, setShowUpcomingMeetingsModal] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
@@ -4904,6 +4911,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
         {/* Right section with notifications and user */}
         <div className={`ml-auto md:ml-0 shrink-0 flex items-center justify-end gap-1.5 md:gap-4 pr-1 md:pr-0 transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+          {upcomingMeeting ? (
+            <UpcomingMeetingHeaderBadge
+              reminder={upcomingMeeting}
+              compact={isMobile}
+              className="mr-0.5 md:mr-0"
+              onClick={() => setShowUpcomingMeetingsModal(true)}
+            />
+          ) : null}
           {/* Sign out button and Welcome message - desktop only */}
           {/* <button
             className="btn btn-ghost btn-circle btn-sm mr-2 hidden md:inline-flex"
@@ -5387,6 +5402,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <HighlightsPanel
         isOpen={isHighlightsPanelOpen}
         onClose={() => setIsHighlightsPanelOpen(false)}
+      />
+
+      <UpcomingMeetingsModal
+        open={showUpcomingMeetingsModal}
+        onClose={() => setShowUpcomingMeetingsModal(false)}
+        meetings={upcomingMeetings}
       />
 
       {isSuperUser && (

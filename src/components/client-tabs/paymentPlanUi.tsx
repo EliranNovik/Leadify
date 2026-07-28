@@ -61,6 +61,8 @@ export type PaymentPlanRowLike = {
   currency_id?: number | string | null;
   isLegacy?: boolean;
   order?: string;
+  /** Expense rows only: firm reduces lead total; client does not. */
+  expensePaidBy?: 'firm' | 'client' | null;
   invoice_send_automation_active?: boolean;
 };
 
@@ -122,14 +124,21 @@ export interface PlanSummaryStats {
   totalByCurrency: CurrencyAmountMap;
   paidByCurrency: CurrencyAmountMap;
   outstandingByCurrency: CurrencyAmountMap;
+  /** Client-paid expenses only — shown as + under contract (do not inflate contract total). */
   expenseNoVatByCurrency: CurrencyAmountMap;
   expenseNoVatCount: number;
+  /** Firm-paid expenses — reduce lead total value; never added to contract total. */
+  firmExpenseByCurrency: CurrencyAmountMap;
+  firmExpenseCount: number;
   nextDuePayment: PaymentPlanRowLike | null;
 }
 
 export function computePlanSummary(payments: PaymentPlanRowLike[]): PlanSummaryStats {
   const contractPayments = payments.filter((p) => !isExpenseNoVatPayment(p.order));
   const expensePayments = payments.filter((p) => isExpenseNoVatPayment(p.order));
+  const firmExpensePayments = expensePayments.filter((p) => p.expensePaidBy === 'firm');
+  // Client-paid (or unset) expenses: pass-through — not in contract total, do not reduce lead value
+  const clientExpensePayments = expensePayments.filter((p) => p.expensePaidBy !== 'firm');
   const scheduledCount = contractPayments.length;
   const paidCount = contractPayments.filter((p) => p.paid).length;
   const unpaidCount = scheduledCount - paidCount;
@@ -150,8 +159,10 @@ export function computePlanSummary(payments: PaymentPlanRowLike[]): PlanSummaryS
     totalByCurrency: sumByCurrency(contractPayments),
     paidByCurrency: sumByCurrency(contractPayments, (p) => !!p.paid),
     outstandingByCurrency: sumByCurrency(contractPayments, (p) => !p.paid),
-    expenseNoVatByCurrency: sumByCurrency(expensePayments),
-    expenseNoVatCount: expensePayments.length,
+    expenseNoVatByCurrency: sumByCurrency(clientExpensePayments),
+    expenseNoVatCount: clientExpensePayments.length,
+    firmExpenseByCurrency: sumByCurrency(firmExpensePayments),
+    firmExpenseCount: firmExpensePayments.length,
     nextDuePayment,
   };
 }
@@ -431,10 +442,20 @@ export function PaymentPlanSummaryCards({
     expenseNoVatNis?.loading
       ? '…'
       : expenseNoVatNis?.primary
-        ? `+ ${expenseNoVatNis.primary} expenses (no VAT)`
+        ? `+ ${expenseNoVatNis.primary} client expenses`
         : expenseNoVatAmounts.primary !== '—'
-          ? `+ ${expenseNoVatAmounts.primary} expenses (no VAT)`
+          ? `+ ${expenseNoVatAmounts.primary} client expenses`
           : undefined;
+  const firmExpenseAmounts = formatMultiCurrencyAmounts(
+    summary.firmExpenseByCurrency,
+    getCurrencySymbol,
+    { emphasizeGross: true },
+  );
+  const firmExpenseLine =
+    summary.firmExpenseCount > 0 && firmExpenseAmounts.primary !== '—'
+      ? `− ${firmExpenseAmounts.primary} firm expenses`
+      : undefined;
+  const expenseTertiary = [firmExpenseLine, expenseNoVatLine].filter(Boolean).join(' · ') || undefined;
   const outstanding =
     outstandingNis?.loading
       ? { primary: '…' }
@@ -461,7 +482,7 @@ export function PaymentPlanSummaryCards({
         label="Total contract value"
         primary={total.primary}
         secondary={total.secondary}
-        tertiary={expenseNoVatLine}
+        tertiary={expenseTertiary}
         icon={BanknotesIcon}
         tone="neutral"
       />
@@ -517,8 +538,6 @@ export function ContactPlanHeader({
   totalNis,
   profileImageUrl,
   automationActiveCount = 0,
-  onPaymentHistoryClick,
-  paymentHistoryActive = false,
 }: {
   contactName: string;
   payments: PaymentPlanRowLike[];
@@ -528,8 +547,6 @@ export function ContactPlanHeader({
   totalNis?: { primary: string; loading?: boolean };
   profileImageUrl?: string | null;
   automationActiveCount?: number;
-  onPaymentHistoryClick?: () => void;
-  paymentHistoryActive?: boolean;
 }) {
   const stats = computePlanSummary(payments);
   const initials = contactInitials(contactName);
@@ -607,21 +624,6 @@ export function ContactPlanHeader({
             style={{ width: `${stats.progressPct}%` }}
           />
         </div>
-        {onPaymentHistoryClick ? (
-          <div className="mt-2 flex justify-end">
-            <button
-              type="button"
-              className={`btn btn-xs btn-ghost h-7 min-h-7 rounded-lg px-2 normal-case ${
-                paymentHistoryActive
-                  ? 'bg-indigo-50 text-indigo-700'
-                  : 'text-indigo-700 hover:bg-indigo-50'
-              }`}
-              onClick={onPaymentHistoryClick}
-            >
-              Payment history
-            </button>
-          </div>
-        ) : null}
       </div>
     </div>
   );

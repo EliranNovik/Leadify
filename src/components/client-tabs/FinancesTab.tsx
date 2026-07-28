@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline';
+import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon, ReceiptPercentIcon } from '@heroicons/react/24/outline';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
+import FinancesExpensesFeesPage from './FinancesExpensesFeesPage';
 import {
   fetchContactPaymentHistory,
   insertPaymentLinkRecord,
@@ -19,7 +20,6 @@ import { useContactProfileImageUrls } from '../../hooks/useContactProfileImageUr
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../../msalConfig';
 import ReactDOM from 'react-dom';
-import { BanknotesIcon as BanknotesIconSolid } from '@heroicons/react/24/solid';
 import { PencilLine, Trash2 } from 'lucide-react';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
 import EditPaymentModal from '../modals/EditPaymentModal';
@@ -169,6 +169,8 @@ interface PaymentPlan {
   ready_to_pay_by?: number | null; // Employee ID who marked it as ready to pay
   ready_to_pay_by_display_name?: string | null; // Display name of employee who marked it as ready to pay
   client_id?: number | null; // Contact ID (client_id from payment plan row)
+  /** Expense rows only: firm reduces lead total; client does not inflate/reduce contract total. */
+  expensePaidBy?: 'firm' | 'client' | null;
   sent_to_finance?: boolean; // Flag to indicate if payment was sent to finance
   sent_to_finance_at?: string | null; // Timestamp when payment was sent to finance
   invoice_send_automation_active?: boolean;
@@ -317,6 +319,57 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
   const [editingPaymentInModal, setEditingPaymentInModal] = useState<PaymentPlan | null>(null);
   const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
+  const [financesSubTab, setFinancesSubTab] = useState<'payment-plan' | 'expenses-fees'>(() => {
+    try {
+      if (sessionStorage.getItem('financesSubTab') === 'expenses-fees') {
+        sessionStorage.removeItem('financesSubTab');
+        return 'expenses-fees';
+      }
+    } catch {
+      /* ignore */
+    }
+    return 'payment-plan';
+  });
+  const [openAddExpenseRequest, setOpenAddExpenseRequest] = useState<{
+    token: number;
+    contactId?: number | null;
+    contactName?: string | null;
+  } | null>(null);
+
+  const openAddExpenseDrawer = (contactName?: string | null) => {
+    const name = String(contactName || '').trim();
+    const contact = name
+      ? contacts.find((c) => c.name && c.name.trim() === name)
+      : null;
+    const contactId =
+      contact?.id != null && Number.isFinite(Number(contact.id)) ? Number(contact.id) : null;
+    setAddingPaymentModalContact(null);
+    setAddingPaymentContact(null);
+    setShowDrawerNewPayment(false);
+    setFinancesSubTab('expenses-fees');
+    setOpenAddExpenseRequest({
+      token: Date.now(),
+      contactId,
+      contactName: name || null,
+    });
+  };
+
+  useEffect(() => {
+    const openExpensesFees = (e: Event) => {
+      const evt = e as CustomEvent<{ leadId?: string | number }>;
+      const leadId = evt?.detail?.leadId;
+      if (leadId != null && client?.id != null && String(leadId) !== String(client.id)) return;
+      setFinancesSubTab('expenses-fees');
+      try {
+        sessionStorage.removeItem('financesSubTab');
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener('finances:openExpensesFees', openExpensesFees as EventListener);
+    return () => window.removeEventListener('finances:openExpensesFees', openExpensesFees as EventListener);
+  }, [client?.id]);
+
   const [paymentSummaryFilter, setPaymentSummaryFilter] = useState<PaymentPlanSummaryFilter | null>(null);
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
   const [openDropdownPaymentId, setOpenDropdownPaymentId] = useState<string | number | null>(null);
@@ -516,9 +569,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const getOrderText = (orderNumber: number | string | null | undefined): string => {
     // Handle string input (for new leads that might already be text)
     if (typeof orderNumber === 'string') {
-      // If it's already a descriptive string, return it as-is
       const lowerStr = orderNumber.toLowerCase();
-      if (lowerStr.includes('first') || lowerStr.includes('intermediate') || lowerStr.includes('final') || lowerStr.includes('single') || lowerStr.includes('expense')) {
+      // Normalize legacy "Expense (no VAT)" and any expense label to "Expense"
+      if (lowerStr.includes('expense')) {
+        return 'Expense';
+      }
+      // If it's already a descriptive string, return it as-is
+      if (lowerStr.includes('first') || lowerStr.includes('intermediate') || lowerStr.includes('final') || lowerStr.includes('single')) {
         return orderNumber;
       }
       // Try to parse as number
@@ -537,7 +594,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         case 5: return 'Intermediate Payment';
         case 9: return 'Final Payment';
         case 90: return 'Single Payment';
-        case 99: return 'Expense (no VAT)';
+        case 99: return 'Expense';
         default: return 'First Payment'; // Default fallback
       }
     }
@@ -2207,6 +2264,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 ready_to_pay_by: readyToPayBy,
                 ready_to_pay_by_display_name: readyToPayByDisplayName,
                 client_id: plan.client_id ? Number(plan.client_id) : null, // Include client_id (contact_id) for proforma creation
+                expensePaidBy:
+                  plan.expense_paid_by === 'firm' || plan.expense_paid_by === 'client'
+                    ? plan.expense_paid_by
+                    : null,
                 sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
                 sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
                 original_due_date: plan.due_date || null, // Store original due_date for legacy leads to check if it exists
@@ -2285,7 +2346,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 value,
                 valueVat,
                 client: contactName,
-                order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment'),
+                order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : getOrderText(plan.payment_order || 'First Payment'),
                 proforma: plan.proforma || null,
                 notes: plan.notes || '',
                 paid: plan.paid || false,
@@ -2300,6 +2361,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 ready_to_pay_by: plan.ready_to_pay_by || null,
                 ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
                 client_id: plan.client_id ? Number(plan.client_id) : null,
+                expensePaidBy:
+                  plan.expense_paid_by === 'firm' || plan.expense_paid_by === 'client'
+                    ? plan.expense_paid_by
+                    : null,
                 sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
                 sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
                 invoice_send_automation_active: plan.invoice_send_automation_active || false,
@@ -2467,8 +2532,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       refreshPaymentPlans();
     };
 
+    const handlePaymentPlanChanged = (event: CustomEvent) => {
+      const leadId = event?.detail?.leadId != null ? String(event.detail.leadId) : '';
+      if (!leadId || !client?.id) return;
+      if (leadId !== String(client.id)) return;
+      void refreshPaymentPlans();
+    };
+
     // Add the event listener
     window.addEventListener('paymentMarkedPaid', handlePaymentMarkedPaid as EventListener);
+    window.addEventListener('paymentPlan:changed', handlePaymentPlanChanged as EventListener);
 
     // Fetch contacts first, then fetch payment plans (which needs contacts to be loaded)
     // Note: fetchPaymentPlans now ensures contacts are loaded internally via await fetchContacts()
@@ -2521,6 +2594,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Cleanup function to remove event listener
     return () => {
       window.removeEventListener('paymentMarkedPaid', handlePaymentMarkedPaid as EventListener);
+      window.removeEventListener('paymentPlan:changed', handlePaymentPlanChanged as EventListener);
     };
   }, [client?.id]);
 
@@ -2796,6 +2870,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               ready_to_pay: isReadyToPay,
               ready_to_pay_by: readyToPayBy,
               ready_to_pay_by_display_name: readyToPayByDisplayName,
+              expensePaidBy:
+                plan.expense_paid_by === 'firm' || plan.expense_paid_by === 'client'
+                  ? plan.expense_paid_by
+                  : null,
               invoice_send_automation_active: plan.invoice_send_automation_active || false,
               invoice_send_automation_language: plan.invoice_send_automation_language || null,
               invoice_send_automation_at: plan.invoice_send_automation_at || null,
@@ -2871,7 +2949,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               value,
               valueVat,
               client: contactName,
-              order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment'),
+              order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : getOrderText(plan.payment_order || 'First Payment'),
               proforma: plan.proforma || null,
               notes: plan.notes || '',
               paid: plan.paid || false,
@@ -2883,6 +2961,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               ready_to_pay: plan.ready_to_pay || false,
               ready_to_pay_by: plan.ready_to_pay_by || null,
               ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
+              expensePaidBy:
+                plan.expense_paid_by === 'firm' || plan.expense_paid_by === 'client'
+                  ? plan.expense_paid_by
+                  : null,
               invoice_send_automation_active: plan.invoice_send_automation_active || false,
               invoice_send_automation_language: plan.invoice_send_automation_language || null,
               invoice_send_automation_at: plan.invoice_send_automation_at || null,
@@ -3096,9 +3178,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Fallback: Use percentage-based calculation
     const totalAmount = getTotalAmount();
 
-    // Calculate total planned amount based on due percentages (excluding "Expense (no VAT)" payments)
+    // Calculate total planned amount based on due percentages (excluding "Expense" payments)
     const totalPlannedPercent = financePlan.payments.reduce((sum, payment) => {
-      // Skip "Expense (no VAT)" payments
+      // Skip "Expense" payments
       if (isExpenseNoVatPayment(payment.order)) {
         return sum;
       }
@@ -3736,6 +3818,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             case 'Intermediate Payment': return 5;
             case 'Final Payment': return 9;
             case 'Single Payment': return 90;
+            case 'Expense':
             case 'Expense (no VAT)': return 99;
             default: return 1;
           }
@@ -3747,7 +3830,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             case 5: return 'Intermediate Payment';
             case 9: return 'Final Payment';
             case 90: return 'Single Payment';
-            case 99: return 'Expense (no VAT)';
+            case 99: return 'Expense';
             default: return 'First Payment';
           }
         };
@@ -3845,6 +3928,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             case 'Intermediate Payment': return 5;
             case 'Final Payment': return 9;
             case 'Single Payment': return 90;
+            case 'Expense':
             case 'Expense (no VAT)': return 99;
             default: return 1; // Default to first payment
           }
@@ -4469,6 +4553,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Handler to save new payment (original, now accepts data parameter)
   const handleSaveNewPaymentWithData = async (dataToSave: any, contactForPayment: string) => {
+    if ((dataToSave?.paymentOrder === 'Expense' || dataToSave?.paymentOrder === 'Expense (no VAT)')) {
+      openAddExpenseDrawer(contactForPayment);
+      return;
+    }
     if (!dataToSave.value || !contactForPayment || !dataToSave.duePercent) {
       toast.error('Please fill in all required fields (Value and Due Percentage)');
       return;
@@ -4506,6 +4594,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             case 'Intermediate Payment': return 5;
             case 'Final Payment': return 9;
             case 'Single Payment': return 90;
+            case 'Expense':
             case 'Expense (no VAT)': return 99;
             default: return 1; // Default to first payment
           }
@@ -4692,6 +4781,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             case 'Intermediate Payment': return 5;
             case 'Final Payment': return 9;
             case 'Single Payment': return 90;
+            case 'Expense':
             case 'Expense (no VAT)': return 99;
             default: return 5; // Default to intermediate
           }
@@ -5167,6 +5257,45 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return financePlan.payments.filter((p) => keys.has(paymentPlanSelectionKey(p)));
   }, [financePlan, selectedSendInvoicePaymentKeys]);
 
+  const financesSubTabSwitcher = (
+    <div
+      className="relative inline-grid grid-cols-2 rounded-full bg-slate-200/80 p-1"
+      role="tablist"
+      aria-label="Finances sections"
+    >
+      <span
+        aria-hidden
+        className={`pointer-events-none absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-white shadow-sm transition-transform duration-200 ease-out ${
+          financesSubTab === 'expenses-fees' ? 'translate-x-full' : 'translate-x-0'
+        }`}
+      />
+      <button
+        type="button"
+        role="tab"
+        aria-selected={financesSubTab === 'payment-plan'}
+        className={`relative z-[1] inline-flex h-8 items-center justify-center gap-1.5 rounded-full border-0 bg-transparent px-3 text-xs font-semibold normal-case transition-colors ${
+          financesSubTab === 'payment-plan' ? 'text-slate-900' : 'text-slate-500 hover:text-slate-700'
+        }`}
+        onClick={() => setFinancesSubTab('payment-plan')}
+      >
+        <BanknotesIcon className="h-4 w-4 shrink-0" />
+        <span className="whitespace-nowrap">Payment plan</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={financesSubTab === 'expenses-fees'}
+        className={`relative z-[1] inline-flex h-8 items-center justify-center gap-1.5 rounded-full border-0 bg-transparent px-3 text-xs font-semibold normal-case transition-colors ${
+          financesSubTab === 'expenses-fees' ? 'text-slate-900' : 'text-slate-500 hover:text-slate-700'
+        }`}
+        onClick={() => setFinancesSubTab('expenses-fees')}
+      >
+        <ReceiptPercentIcon className="h-4 w-4 shrink-0" />
+        <span className="whitespace-nowrap">Expenses / fees</span>
+      </button>
+    </div>
+  );
+
   if (isLoadingFinancePlan) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center">
@@ -5183,23 +5312,37 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           <ClientTabPageHeader
             icon={BanknotesIcon}
             title="Finances"
-            subtitle="Payment plans and collections"
+            subtitle={
+              financesSubTab === 'expenses-fees'
+                ? 'Fees and expenses'
+                : 'Payment plans and collections'
+            }
+            titleExtra={financesSubTabSwitcher}
           />
-        </div>
-        <div className="flex flex-col items-center justify-center h-64 text-center">
-          <BanknotesIcon className="w-16 h-16 text-primary mb-4" />
-          <div className="text-2xl font-bold text-gray-800 mb-2">No finance plan created yet.</div>
-          <div className="text-gray-500 mb-6">Create a payments plan to see finances here.</div>
-          <button
-            type="button"
-            className="btn btn-md bg-black text-white border-none gap-3 shadow-sm text-lg font-bold py-3 px-6"
-            onClick={() => {
-              handleOpenStagesDrawer();
-            }}
-          >
-            <BanknotesIcon className="w-5 h-5 text-white" />
-            Create Finance Plan
-          </button>
+          {financesSubTab === 'expenses-fees' ? (
+            <FinancesExpensesFeesPage
+              client={client}
+              onClientUpdate={onClientUpdate}
+              openAddExpenseRequest={openAddExpenseRequest}
+              onOpenAddExpenseHandled={() => setOpenAddExpenseRequest(null)}
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-64 text-center">
+              <BanknotesIcon className="w-16 h-16 text-primary mb-4" />
+              <div className="text-2xl font-bold text-gray-800 mb-2">No finance plan created yet.</div>
+              <div className="text-gray-500 mb-6">Create a payments plan to see finances here.</div>
+              <button
+                type="button"
+                className="btn btn-md bg-black text-white border-none gap-3 shadow-sm text-lg font-bold py-3 px-6"
+                onClick={() => {
+                  handleOpenStagesDrawer();
+                }}
+              >
+                <BanknotesIcon className="w-5 h-5 text-white" />
+                Create Finance Plan
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Stages Drawer for creating a new finance plan */}
@@ -5485,18 +5628,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   className="select select-bordered w-48 text-sm"
                                   value={currentOrder}
                                   onChange={(e) => {
+                                    const next = e.target.value;
+                                    if ((next === 'Expense' || next === 'Expense (no VAT)')) {
+                                      openAddExpenseDrawer(autoPlanData.contact || null);
+                                      return;
+                                    }
                                     setAutoPlanData(prev => {
-                                      const next = [...(prev.paymentOrders || [])];
+                                      const nextOrders = [...(prev.paymentOrders || [])];
                                       // Ensure array length
-                                      while (next.length < prev.numberOfPayments) {
-                                        const idx = next.length;
+                                      while (nextOrders.length < prev.numberOfPayments) {
+                                        const idx = nextOrders.length;
                                         const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
-                                        next.push(defaultOrder);
+                                        nextOrders.push(defaultOrder);
                                       }
-                                      next[index] = e.target.value;
+                                      nextOrders[index] = next;
                                       return {
                                         ...prev,
-                                        paymentOrders: next,
+                                        paymentOrders: nextOrders,
                                       };
                                     });
                                   }}
@@ -5505,7 +5653,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   <option value="Intermediate Payment">Intermediate Payment</option>
                                   <option value="Final Payment">Final Payment</option>
                                   <option value="Single Payment">Single Payment</option>
-                                  <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                  <option value="Expense">Expense</option>
                                 </select>
                                 <input
                                   type="number"
@@ -6487,12 +6635,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   return (
     <>
-      <div className="overflow-x-auto w-full p-1 sm:p-2 md:p-3">
+      <div className="overflow-x-auto w-full">
         <ClientTabPageHeader
           icon={BanknotesIcon}
           title="Finances"
-          subtitle="Payment plans and collections"
+          subtitle={
+            financesSubTab === 'expenses-fees'
+              ? 'Fees and expenses'
+              : 'Payment plans and collections'
+          }
+          titleExtra={financesSubTabSwitcher}
         />
+        {financesSubTab === 'expenses-fees' ? (
+          <FinancesExpensesFeesPage
+            client={client}
+            onClientUpdate={onClientUpdate}
+            openAddExpenseRequest={openAddExpenseRequest}
+            onOpenAddExpenseHandled={() => setOpenAddExpenseRequest(null)}
+          />
+        ) : (
+          <>
         {/* Contract Information Section */}
         {/* COMMENTED OUT - Contract Information Section
         {contracts.length > 0 ? (
@@ -6652,11 +6814,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         {/* Payments Plan Section */}
         <div className="mb-8 space-y-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <BanknotesIconSolid className="h-6 w-6 text-slate-800" />
-                  <h3 className="text-xl font-bold text-slate-900">Payments Plan</h3>
-                </div>
+          <div className="flex flex-wrap items-center justify-end gap-4">
                 <div className="flex flex-wrap items-center gap-2">
                   {financePlan && client?.balance !== total && (
                     <button
@@ -6827,11 +6985,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   const dueDatePaymentId = dueDatePayment ? dueDatePayment.id : sortedContactPayments[0]?.id;
                   const contactAccentColor = getContactAccentColor(contactName);
                   return (
-                    <div key={contactName} className="space-y-2">
-                      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                        <div className="px-6 py-4">
-                      {/* Contact Header */}
-                      <div>
+                    <div
+                      key={contactName}
+                      className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                      style={{ '--contact-accent': contactAccentColor } as React.CSSProperties}
+                    >
+                      {/* Contact header */}
+                      <div className="px-6 py-4">
                         <ContactPlanHeader
                           contactName={contactName}
                           payments={sortedContactPayments}
@@ -6845,11 +7005,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             sortedContactPayments[0]?.client_id,
                           )}
                           automationActiveCount={automationActiveCountForContact(contactName)}
-                          onPaymentHistoryClick={() => fetchPaymentHistory(contactName)}
-                          paymentHistoryActive={openHistoryContact === contactName}
                         />
                         {openHistoryContact === contactName && (
-                          <div className="bg-base-100 rounded-lg shadow p-4 mt-3">
+                          <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 p-4">
                             <h4 className="font-semibold mb-2">Payment History</h4>
                             {paymentHistory[contactName]?.length ? (
                               <table className="table w-full text-sm">
@@ -6878,17 +7036,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           </div>
                         )}
                       </div>
-                        </div>
-                      </div>
 
-                      {/* Table or Box view for this contact */}
+                      {/* Table or Box view for this contact — same white card */}
                       {!collapsedContacts[contactName] && (
-                        <>
+                        <div className="px-4 pb-4 pt-2 md:px-6 md:pb-5">
                           {viewMode === 'table' ? (
-                            <div
-                              className="finances-payments-table-shell overflow-x-auto rounded-[18px] bg-[#f3f4f6] px-3 pb-3 pt-1"
-                              style={{ '--contact-accent': contactAccentColor } as React.CSSProperties}
-                            >
+                            <div className="finances-payments-table-shell overflow-x-auto">
                               <table className="finances-payments-table w-full min-w-[960px] text-sm">
                                 <thead>
                                   <tr className="text-xs font-semibold uppercase tracking-wider text-base-content/40">
@@ -7115,13 +7268,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <select
                                             className="select select-bordered select-sm w-full max-w-[180px]"
                                             value={newPaymentData.paymentOrder}
-                                            onChange={e => setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))}
+                                            onChange={e => {
+                                              const next = e.target.value;
+                                              if ((next === 'Expense' || next === 'Expense (no VAT)')) {
+                                                openAddExpenseDrawer(
+                                                  newPaymentData.client || addingPaymentContact || null,
+                                                );
+                                                return;
+                                              }
+                                              setNewPaymentData((d: any) => ({ ...d, paymentOrder: next }));
+                                            }}
                                           >
                                             <option value="First Payment">First Payment</option>
                                             <option value="Intermediate Payment">Intermediate Payment</option>
                                             <option value="Final Payment">Final Payment</option>
                                             <option value="Single Payment">Single Payment</option>
-                                            <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                            <option value="Expense">Expense</option>
                                           </select>
                                         </td>
                                         <td className="px-4 py-4 align-middle text-slate-400">—</td>
@@ -7326,13 +7488,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <select
                                               className="select select-bordered w-full"
                                               value={newPaymentData.paymentOrder}
-                                              onChange={e => setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))}
+                                              onChange={e => {
+                                                const next = e.target.value;
+                                                if ((next === 'Expense' || next === 'Expense (no VAT)')) {
+                                                  openAddExpenseDrawer(
+                                                    newPaymentData.client || addingPaymentContact || null,
+                                                  );
+                                                  return;
+                                                }
+                                                setNewPaymentData((d: any) => ({ ...d, paymentOrder: next }));
+                                              }}
                                             >
                                               <option value="First Payment">First Payment</option>
                                               <option value="Intermediate Payment">Intermediate Payment</option>
                                               <option value="Final Payment">Final Payment</option>
                                               <option value="Single Payment">Single Payment</option>
-                                              <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                              <option value="Expense">Expense</option>
                                             </select>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
@@ -7353,19 +7524,35 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               {/* Add payment / delete plan (table view) */}
                               {!addingPaymentContact && (
                                 <div className="mt-4 flex items-center justify-between gap-3">
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm rounded-xl border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
-                                    onClick={() => handleAddNewPayment(contactName)}
-                                  >
-                                    <PlusIcon className="h-4 w-4" />
-                                    Add Payment
-                                  </button>
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50"
+                                      onClick={() => handleAddNewPayment(contactName)}
+                                    >
+                                      <PlusIcon className="h-4 w-4" />
+                                      Add Payment
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn btn-sm btn-ghost rounded-xl border-0 ${
+                                        openHistoryContact === contactName
+                                          ? 'bg-indigo-50 text-indigo-700'
+                                          : 'text-indigo-700 hover:bg-indigo-50'
+                                      }`}
+                                      onClick={() => fetchPaymentHistory(contactName)}
+                                      title="Payment history"
+                                    >
+                                      <ClockIcon className="h-4 w-4" />
+                                      Payment History
+                                    </button>
+                                  </div>
                                   <button
                                     type="button"
                                     className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600"
                                     onClick={() => handleDeletePaymentPlan(contactName)}
                                   >
+                                    <TrashIcon className="h-4 w-4" />
                                     Delete Plan
                                   </button>
                                 </div>
@@ -7428,7 +7615,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             </div>
                           ) : (
                             <>
-                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 gap-y-8">
+                              <div className="divide-y divide-slate-100 rounded-xl border border-slate-100">
                                 {visibleContactPayments.map((p: PaymentPlan, idx: number) => {
                                   const isPaid = p.paid;
                                   const rowSelectable = Boolean(paymentRowPickMode);
@@ -7436,10 +7623,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   return (
                                     <div
                                       key={p.id || idx}
-                                      className={`finance-payment-row flex min-h-[420px] flex-col gap-0 rounded-2xl border border-l-4 border-slate-200 bg-white p-6 shadow-sm transition-all duration-200 hover:shadow-md ${
+                                      className={`finance-payment-row flex flex-col gap-0 border-l-4 bg-transparent p-5 transition-colors ${
                                         isPaid ? 'finance-payment-row-paid' : ''
                                       } ${rowSelectable ? 'cursor-pointer' : ''} ${
-                                        selected ? 'ring-2 ring-primary/50' : ''
+                                        selected ? 'bg-blue-50/60' : 'hover:bg-slate-50/80'
                                       }`}
                                       style={{ borderLeftColor: contactAccentColor }}
                                       onClick={
@@ -7624,26 +7811,42 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               </div>
                               {!addingPaymentContact && (
                                 <div className="mt-4 flex items-center justify-between gap-3">
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm rounded-xl border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
-                                    onClick={() => handleAddNewPayment(contactName)}
-                                  >
-                                    <PlusIcon className="h-4 w-4" />
-                                    Add Payment
-                                  </button>
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50"
+                                      onClick={() => handleAddNewPayment(contactName)}
+                                    >
+                                      <PlusIcon className="h-4 w-4" />
+                                      Add Payment
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`btn btn-sm btn-ghost rounded-xl border-0 ${
+                                        openHistoryContact === contactName
+                                          ? 'bg-indigo-50 text-indigo-700'
+                                          : 'text-indigo-700 hover:bg-indigo-50'
+                                      }`}
+                                      onClick={() => fetchPaymentHistory(contactName)}
+                                      title="Payment history"
+                                    >
+                                      <ClockIcon className="h-4 w-4" />
+                                      Payment History
+                                    </button>
+                                  </div>
                                   <button
                                     type="button"
                                     className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600"
                                     onClick={() => handleDeletePaymentPlan(contactName)}
                                   >
+                                    <TrashIcon className="h-4 w-4" />
                                     Delete Plan
                                   </button>
                                 </div>
                               )}
                             </>
                           )}
-                        </>
+                        </div>
                       )}
                     </div>
                   );
@@ -7837,6 +8040,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 )}
               </div>
         </div>
+          </>
+        )}
       </div>
 
       {/* Proforma Drawer */}
@@ -8388,18 +8593,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 className="select select-bordered w-48 text-sm"
                                 value={currentOrder}
                                 onChange={(e) => {
+                                  const next = e.target.value;
+                                  if ((next === 'Expense' || next === 'Expense (no VAT)')) {
+                                    openAddExpenseDrawer(autoPlanData.contact || null);
+                                    return;
+                                  }
                                   setAutoPlanData(prev => {
-                                    const next = [...(prev.paymentOrders || [])];
+                                    const nextOrders = [...(prev.paymentOrders || [])];
                                     // Ensure array length
-                                    while (next.length < prev.numberOfPayments) {
-                                      const idx = next.length;
+                                    while (nextOrders.length < prev.numberOfPayments) {
+                                      const idx = nextOrders.length;
                                       const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
-                                      next.push(defaultOrder);
+                                      nextOrders.push(defaultOrder);
                                     }
-                                    next[index] = e.target.value;
+                                    nextOrders[index] = next;
                                     return {
                                       ...prev,
-                                      paymentOrders: next,
+                                      paymentOrders: nextOrders,
                                     };
                                   });
                                 }}
@@ -8408,7 +8618,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 <option value="Intermediate Payment">Intermediate Payment</option>
                                 <option value="Final Payment">Final Payment</option>
                                 <option value="Single Payment">Single Payment</option>
-                                <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                <option value="Expense">Expense</option>
                               </select>
                               <input
                                 type="number"
@@ -8713,6 +8923,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         isOpen={!!addingPaymentModalContact}
         onClose={() => setAddingPaymentModalContact(null)}
         onSave={handleSaveNewPaymentModal}
+        onSelectExpenseNoVat={() => openAddExpenseDrawer(addingPaymentModalContact)}
         isSaving={isSavingPaymentRow}
         contactName={addingPaymentModalContact || ''}
         availableCurrencies={availableCurrencies}
@@ -8950,9 +9161,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       )}
       <style>{`
         .finances-payments-table-shell table.finances-payments-table {
-          border-collapse: separate !important;
-          border-spacing: 0 12px !important;
+          border-collapse: collapse !important;
+          border-spacing: 0 !important;
           width: 100% !important;
+        }
+
+        .finances-payments-table-shell table.finances-payments-table thead th {
+          background: transparent !important;
+          border: none !important;
+          border-bottom: 1px solid #e2e8f0 !important;
+          box-shadow: none !important;
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody tr {
@@ -8960,54 +9178,37 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           box-shadow: none !important;
         }
 
-        .finances-payments-table-shell table.finances-payments-table tbody tr:hover {
-          background: transparent !important;
-        }
-
         .finances-payments-table-shell table.finances-payments-table tbody td {
           border: none !important;
-          background: #ffffff !important;
-          box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08) !important;
+          border-bottom: 1px solid #f1f5f9 !important;
+          background: transparent !important;
+          box-shadow: none !important;
           vertical-align: middle;
-          padding: 1rem 1.1rem !important;
+          padding: 0.85rem 1rem !important;
+        }
+
+        .finances-payments-table-shell table.finances-payments-table tbody tr:last-child td {
+          border-bottom: none !important;
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody td:first-child {
           position: relative;
-          border-top-left-radius: 18px !important;
-          border-bottom-left-radius: 18px !important;
+          padding-left: 1.25rem !important;
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody td:first-child::before {
           content: '';
           position: absolute;
-          left: 0.35rem;
-          top: 0.45rem;
-          bottom: 0.45rem;
+          left: 0;
+          top: 0.55rem;
+          bottom: 0.55rem;
           width: 3px;
           border-radius: 999px;
           background: var(--contact-accent, #94a3b8);
         }
 
-        .finances-payments-table-shell table.finances-payments-table tbody td:last-child {
-          border-top-right-radius: 18px !important;
-          border-bottom-right-radius: 18px !important;
-        }
-
         .finances-payments-table-shell table.finances-payments-table tbody tr:hover td {
-          background: #ffffff !important;
-        }
-
-        .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-paid td {
-          background: #ffffff !important;
-        }
-
-        .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-paid:hover td {
-          background: #ffffff !important;
-        }
-
-        .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-new td {
-          background: #ffffff !important;
+          background: #f8fafc !important;
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-new:hover td {
@@ -9015,16 +9216,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-picked td {
-          box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.45), 0 1px 3px rgba(15, 23, 42, 0.08) !important;
-        }
-
-        .finances-payments-table-shell table.finances-payments-table thead,
-        .finances-payments-table-shell table.finances-payments-table thead tr,
-        .finances-payments-table-shell table.finances-payments-table thead th {
-          background: transparent !important;
-          background-image: none !important;
-          border: none !important;
-          box-shadow: none !important;
+          background: #eff6ff !important;
+          box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.35) !important;
         }
 
         .finance-payment-row-paid .text-white {

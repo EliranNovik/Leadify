@@ -37,6 +37,7 @@ import LanguagesManager from './LanguagesManager';
 import HolidaysManager from './HolidaysManager';
 import LeadTagsManager from './LeadTagsManager';
 import FlagTypesManager from './FlagTypesManager';
+import LeadExpenseTypesManager from './LeadExpenseTypesManager';
 import LeadStageReasonsManager from './LeadStageReasonsManager';
 import MainCategoriesManager from './MainCategoriesManager';
 import SubCategoriesManager from './SubCategoriesManager';
@@ -90,7 +91,7 @@ const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Finances',
     icon: BanknotesIcon,
-    subcategories: [/* 'Payment plan rows', */ 'Payment Plans'],
+    subcategories: [/* 'Payment plan rows', */ 'Payment Plans', 'Expense Types'],
     requiresAdmin: true,
   },
   {
@@ -1601,12 +1602,15 @@ const AdminPage: React.FC = () => {
               ) : selectedTab?.label === 'Authentication' &&
                 selectedTab?.subcategories[selected.sub] === 'Users' ? (
                 <div className="w-full"><UsersManager /></div>
-              ) : /* selectedTab?.label === 'Finances' &&
+                ) : /* selectedTab?.label === 'Finances' &&
             selectedTab?.subcategories[selected.sub] === 'Payment plan rows' ? (
               <div className="w-full"><PaymentPlanRowsManager /></div>
             ) : */ selectedTab?.label === 'Finances' &&
                   selectedTab?.subcategories[selected.sub] === 'Payment Plans' ? (
                   <div className="w-full"><PaymentPlansManager /></div>
+                ) : selectedTab?.label === 'Finances' &&
+                  selectedTab?.subcategories[selected.sub] === 'Expense Types' ? (
+                  <div className="w-full"><LeadExpenseTypesManager /></div>
                 ) : selectedTab?.label === 'Hooks' &&
                   selectedTab?.subcategories[selected.sub] === 'Access Logs' ? (
                   <div className="w-full"><AccessLogsManager /></div>

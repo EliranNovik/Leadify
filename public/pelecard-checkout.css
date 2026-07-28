@@ -180,6 +180,57 @@ form .row:has(.tab-button) > .col-sm-12 {
   background-color: transparent !important;
 }
 
+/* Hide installment / "number of payments" UI — single payment only */
+#payments,
+#Payments,
+#totalPayments,
+#TotalPayments,
+#numberOfPayments,
+#NumberOfPayments,
+#payments_number,
+#paymentsNumber,
+input[name='payments'],
+input[name='Payments'],
+input[name='totalPayments'],
+input[name='TotalPayments'],
+input[name='numberOfPayments'],
+input[name='NumberOfPayments'],
+input[name='paymentsNumber'],
+select[name='payments'],
+select[name='Payments'],
+select[name='totalPayments'],
+select[name='TotalPayments'],
+select[name='numberOfPayments'],
+select[name='NumberOfPayments'],
+.form-group:has(#payments),
+.form-group:has(#Payments),
+.form-group:has(#totalPayments),
+.form-group:has(#TotalPayments),
+.form-group:has(#numberOfPayments),
+.form-group:has(#NumberOfPayments),
+.form-group:has(input[name='payments']),
+.form-group:has(select[name='payments']),
+.form-group:has(input[name='totalPayments']),
+.form-group:has(select[name='totalPayments']),
+.form-group:has(input[name='numberOfPayments']),
+.form-group:has(select[name='numberOfPayments']),
+[class*='payment-number'],
+[class*='payments-number'],
+[class*='PaymentNumber'],
+[class*='PaymentsNumber'],
+[id*='PaymentNumber'],
+[id*='PaymentsNumber'],
+[id*='payment_number'],
+[id*='payments_number'] {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: none !important;
+}
+
 .form-group {
   margin-bottom: 18px !important;
 }

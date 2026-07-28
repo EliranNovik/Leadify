@@ -45,6 +45,10 @@ import {
 } from '../utils/categoryResolver';
 import { fetchInvoicedTotalDueNisForDateRange } from '../lib/fetchInvoicedLast30TotalDueNis';
 import { resolveNewLeadIdsForHandler } from '../utils/handlerNewLeadIds';
+import {
+  applySubcontractorFeeTotalsToLeads,
+  fetchSubcontractorFeeTotalsByLeadIds,
+} from '../lib/leadSubcontractorFees';
 
 interface EmployeeData {
   employeeId: number;
@@ -3359,6 +3363,15 @@ const SalesContributionPage = () => {
         if (!newLeadsError && newLeads) {
           const uncategorizedLeads: any[] = [];
 
+          try {
+            const feeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+              newLeadIds: newLeads.map((l: any) => l.id),
+            });
+            applySubcontractorFeeTotalsToLeads(newLeads, feeMaps, 'new');
+          } catch (err) {
+            console.warn('[SalesContribution] category breakdown new fee totals failed', err);
+          }
+
           for (const lead of newLeads) {
             await enrichLeadWithSignedNisAmounts(
               lead,
@@ -3447,6 +3460,15 @@ const SalesContributionPage = () => {
 
         if (!legacyLeadsError && legacyLeads) {
           const uncategorizedLegacyLeads: any[] = [];
+
+          try {
+            const feeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+              legacyLeadIds: legacyLeads.map((l: any) => l.id),
+            });
+            applySubcontractorFeeTotalsToLeads(legacyLeads, feeMaps, 'legacy');
+          } catch (err) {
+            console.warn('[SalesContribution] category breakdown legacy fee totals failed', err);
+          }
 
           for (const lead of legacyLeads) {
             await enrichLeadWithSignedNisAmounts(

@@ -5,12 +5,17 @@
 
 const PELECARD_INIT_PATH = 'PaymentGW/init';
 const PELECARD_GET_TRANSACTION_PATH = 'PaymentGW/GetTransaction';
+const PELECARD_CHECK_GOOD_PARAM_X_PATH = 'services/CheckGoodParamX';
 const { resolvePelecardChargeAmount } = require('./paymentChargeAmountService');
 const {
   getPelecardConfig,
   assertCredentials: assertProfileCredentials,
   normalizeProfile,
 } = require('../lib/pelecardProfiles');
+const {
+  resolvePelecardParamX,
+  PELECARD_PARAM_X_MAX,
+} = require('../lib/pelecardParamX');
 
 function getConfig(profile = 'production') {
   return getPelecardConfig(normalizeProfile(profile));
@@ -116,7 +121,7 @@ function resolvePelecardCssUrl(config) {
     return buildBuiltinPelecardCssUrl(config.baseUrl, language, variant);
   }
 
-  const cssVersion = (process.env.PELECARD_CSS_VERSION || '10').trim();
+  const cssVersion = (process.env.PELECARD_CSS_VERSION || '11').trim();
   const explicit = parseHttpsUrl(process.env.PELECARD_CSS_URL, 'PELECARD_CSS_URL');
   if (explicit) {
     const cssPath = explicit.endsWith('.css') ? explicit : `${explicit}/pelecard-checkout.css`;
@@ -202,7 +207,7 @@ function getCheckoutCssDebugInfo(profile = 'production') {
     appPublicUrl: config.appPublicUrl,
     backendPublicUrl: config.backendPublicUrl,
     explicitCssUrl: (process.env.PELECARD_CSS_URL || '').trim() || null,
-    cssVersion: (process.env.PELECARD_CSS_VERSION || '10').trim(),
+    cssVersion: (process.env.PELECARD_CSS_VERSION || '11').trim(),
     terminal: config.terminal || null,
     cssUrlSupportNote: builtin
       ? 'Using Pelecard gateway CSS (variant). Set PELECARD_CSS_VARIANT=1–4 and PELECARD_CHECKOUT_LANGUAGE=en|he. English: variants 1 and 4 only.'
@@ -273,12 +278,26 @@ function resolveShopNo() {
 }
 
 function buildInstallmentOptions() {
+  // Single payment only unless explicitly enabled. Leaving MaxPayments>1 shows a
+  // "number of payments" field that often defaults to 0 and breaks the charge.
+  const allowInstallments =
+    String(process.env.PELECARD_ALLOW_INSTALLMENTS || '')
+      .trim()
+      .toLowerCase() === 'true';
+
+  if (!allowInstallments) {
+    // Omit MinPayments / MaxPayments / FirstPayment entirely — matches pre-installment
+    // init and hides the tashlumim UI so the payer can only complete one installment.
+    return {};
+  }
+
   const minRaw = (process.env.PELECARD_MIN_PAYMENTS || '1').trim();
   const maxRaw = (process.env.PELECARD_MAX_PAYMENTS || '1').trim();
   const min = Math.max(1, Number(minRaw) || 1);
   const max = Math.max(min, Number(maxRaw) || min);
-  // Single-payment checkout: omit installment fields (matches pre-installment init; avoids tashlumim UI).
+
   if (max <= 1) return {};
+
   return {
     MinPayments: String(min),
     MaxPayments: String(max),
@@ -407,7 +426,8 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
 
   const charge = await resolvePelecardChargeAmount(payment);
   const totalAgorot = totalToAgorot(charge.chargeTotalNis);
-  const paymentRef = secureToken || payment.secure_token;
+  // Pelecard truncates ParamX (~19 chars). Never send the full secure_token.
+  const paymentRef = resolvePelecardParamX(payment, secureToken);
 
   const returnBase = `${config.backendPublicUrl}/api/payments/pelecard/return`;
   const payload = {
@@ -446,7 +466,7 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
     Currency: payload.Currency,
     installments: payload.MaxPayments
       ? { MinPayments: payload.MinPayments, MaxPayments: payload.MaxPayments }
-      : 'single',
+      : 'single (number-of-payments field omitted)',
     FeedbackOnTop: payload.FeedbackOnTop,
     Target: payload.Target,
   });
@@ -486,6 +506,7 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
     cssUrl,
     cssApplied,
     confirmationKey: data.ConfirmationKey || data.confirmationKey || null,
+    paramX: paymentRef,
     rawResponse: data,
     charge,
     profile: config.profile,
@@ -497,6 +518,17 @@ function buildPelecardDetails(payment, charge) {
   if (!charge.converted) return base.slice(0, 250);
   const note = ` (${charge.originalCurrency} ${charge.originalTotal} @ BOI ${charge.rateToIls})`;
   return `${base}${note}`.slice(0, 250);
+}
+
+function normalizeTransactionResult(raw) {
+  if (!raw || typeof raw !== 'object') return { result: {}, outerStatusCode: '' };
+  const outerStatusCode = String(raw.StatusCode || raw.statusCode || '').trim();
+  let result = raw.ResultData ?? raw.resultData ?? raw;
+  if (Array.isArray(result)) {
+    result = result[0] && typeof result[0] === 'object' ? result[0] : {};
+  }
+  if (!result || typeof result !== 'object') result = {};
+  return { result, outerStatusCode };
 }
 
 async function getTransaction(transactionId, profile = 'production') {
@@ -521,8 +553,58 @@ async function getTransaction(transactionId, profile = 'production') {
     throw err;
   }
 
-  const resultData = data?.ResultData || data?.resultData || data;
-  return { raw: data, result: resultData };
+  const { result, outerStatusCode } = normalizeTransactionResult(data);
+  return { raw: data, result, outerStatusCode };
+}
+
+/**
+ * Lookup latest successful (or any) transaction by ParamX — last ~7 days.
+ * Used when callbacks arrive without a transaction id.
+ */
+async function checkGoodParamX(paramX, profile = 'production', { shvaSuccessOnly = true } = {}) {
+  const config = getConfig(profile);
+  assertCredentials(config);
+  const value = String(paramX || '').trim();
+  if (!value) return { found: false, result: null, raw: null };
+
+  const { ok, data } = await pelecardPost(
+    PELECARD_CHECK_GOOD_PARAM_X_PATH,
+    {
+      terminalNumber: config.terminal,
+      user: config.user,
+      password: config.password,
+      shopNumber: resolveShopNo(),
+      paramX: value.slice(0, PELECARD_PARAM_X_MAX),
+      shvaSuccessOnly: shvaSuccessOnly ? 'true' : 'false',
+    },
+    config,
+  );
+
+  if (!ok) {
+    console.warn('[Pelecard] CheckGoodParamX HTTP failure', { paramX: value, status: data });
+    return { found: false, result: null, raw: data };
+  }
+
+  const { result, outerStatusCode } = normalizeTransactionResult(data);
+  const txId =
+    result?.PelecardTransactionId ||
+    result?.pelecardTransactionId ||
+    result?.TransactionId ||
+    result?.TransactionPelecardId ||
+    null;
+  const approved = isSuccessfulStatus(
+    result?.StatusCode || result?.statusCode || outerStatusCode,
+    result,
+  );
+
+  return {
+    found: Boolean(txId) || approved || outerStatusCode === '000',
+    approved,
+    transactionId: txId ? String(txId) : null,
+    result,
+    raw: data,
+    outerStatusCode,
+  };
 }
 
 function isSuccessfulStatus(statusCode, resultData) {
@@ -531,12 +613,16 @@ function isSuccessfulStatus(statusCode, resultData) {
   // Explicit Pelecard approval
   if (code === '000') return true;
 
+  // Digital transfer / wallet rows often expose ShvaResult instead of StatusCode
+  const shva = String(resultData?.ShvaResult ?? resultData?.shvaResult ?? '').trim();
+  if (shva === '000') return true;
+
   // Any other non-empty status code is not a successful charge
   if (code) return false;
 
   if (resultData?.Status === 'Success' || resultData?.Result === 'Success') return true;
 
-  // Do not treat "approval field present but no status code" as paid — that caused false positives.
+  // DebitApproveNumber alone is not enough (false positives historically).
   return false;
 }
 
@@ -549,6 +635,7 @@ module.exports = {
   totalToAgorot,
   createPaymentSession,
   getTransaction,
+  checkGoodParamX,
   isSuccessfulStatus,
   extractPaymentUrl,
   resolvePelecardCssUrl,
@@ -557,4 +644,5 @@ module.exports = {
   probeTerminalCssUrlSupport,
   verifyCssAppliedOnPaymentPage,
   pelecardPost,
+  normalizeTransactionResult,
 };

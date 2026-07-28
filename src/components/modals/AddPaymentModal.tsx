@@ -11,6 +11,8 @@ interface AddPaymentModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (paymentData: any, includeVat: boolean) => Promise<void>;
+  /** When user picks Expense, open the lead-expense drawer instead of saving a payment row. */
+  onSelectExpenseNoVat?: () => void;
   isSaving?: boolean;
   contactName: string;
   availableCurrencies?: Array<{ id: number; name: string; iso_code: string }>;
@@ -32,6 +34,7 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
   isOpen,
   onClose,
   onSave,
+  onSelectExpenseNoVat,
   isSaving = false,
   contactName,
   availableCurrencies = [],
@@ -301,13 +304,20 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
             <select
               className="select select-bordered w-full"
               value={newPaymentData.paymentOrder || 'Intermediate Payment'}
-              onChange={e => setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))}
+              onChange={e => {
+                const next = e.target.value;
+                if ((next === 'Expense' || next === 'Expense (no VAT)') && onSelectExpenseNoVat) {
+                  onSelectExpenseNoVat();
+                  return;
+                }
+                setNewPaymentData((d: any) => ({ ...d, paymentOrder: next }));
+              }}
             >
               <option value="First Payment">First Payment</option>
               <option value="Intermediate Payment">Intermediate Payment</option>
               <option value="Final Payment">Final Payment</option>
               <option value="Single Payment">Single Payment</option>
-              <option value="Expense (no VAT)">Expense (no VAT)</option>
+              <option value="Expense">Expense</option>
             </select>
           </div>
 

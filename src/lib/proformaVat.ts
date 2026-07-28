@@ -4,12 +4,14 @@ import { parseExplicitPaymentPlanVat } from './paymentPlanVat';
 
 export { getVatRateForLegacyLead };
 
-/** Matches FinancesTab — order 99 / "Expense (no VAT)". */
+/** Matches FinancesTab — order 99 / "Expense" (also legacy "Expense (no VAT)"). */
 export function isExpenseNoVatPayment(order: number | string | null | undefined): boolean {
   if (order === 99 || order === '99') return true;
   if (typeof order === 'string') {
-    const text = order.toLowerCase();
-    return text.includes('expense') && text.includes('no vat');
+    const text = order.toLowerCase().trim();
+    if (!text) return false;
+    // New label "Expense" and legacy "Expense (no VAT)"
+    return text === 'expense' || text.includes('expense');
   }
   return false;
 }
@@ -52,6 +54,15 @@ export function computeProformaVatFromPayment({
   const numericVat = Number(valueVat) || 0;
 
   if (isExpenseNoVatPayment(paymentOrder)) {
+    // Expenses may include VAT when value_vat was set from the expense drawer.
+    if (numericVat > 0) {
+      return {
+        addVat: true,
+        vat: numericVat,
+        vatRate,
+        totalWithVat: Math.round((subtotal + numericVat) * 100) / 100,
+      };
+    }
     return { addVat: false, vat: 0, vatRate, totalWithVat: subtotal };
   }
 
@@ -150,11 +161,12 @@ function resolveVatFromExplicitPaymentPlan(
 
   const vatRate = getVatRateForLegacyLead(dueDate);
   if (isExpenseNoVatPayment(paymentOrder)) {
+    // Respect stored VAT on expense rows (include_vat from lead_expenses).
     return {
       subtotal,
-      addVat: false,
-      vat: 0,
-      totalWithVat: subtotal,
+      addVat: explicitVat.amount > 0,
+      vat: explicitVat.amount,
+      totalWithVat: Math.round((subtotal + explicitVat.amount) * 100) / 100,
       vatRate,
       vatPercentLabel: Math.round(vatRate * 100),
     };

@@ -37,6 +37,13 @@ import {
   type ProbabilitySlidersValues,
 } from './client-tabs/ProbabilitySlidersModal';
 import {
+  ClientTabPageHeaderExtrasProvider,
+} from './client-tabs/ClientTabPageHeader';
+import {
+  HandlerPaymentPlanBanner,
+  shouldShowHandlerPaymentBanner,
+} from './client-tabs/HandlerPaymentPlanBanner';
+import {
   PencilIcon,
   TrashIcon,
   InformationCircleIcon,
@@ -3015,7 +3022,7 @@ const Clients: React.FC<ClientsProps> = ({
             balance: String(data.total || ''), // Map total to balance
             total: data.total || null, // Include total for balance badge logic
             total_base: data.total_base || null, // Include total_base for balance badge logic (when currency_id is 1)
-            subcontractor_fee: data.subcontractor_fee || null, // Include subcontractor_fee for balance badge logic
+            subcontractor_fee: data.subcontractor_fee ?? null, // Denormalized SUM(lead_subcontractor_fees.amount)
             external_firm_id: data.external_firm_id || null,
             balance_currency: (() => {
               // Use accounting_currencies name if available, otherwise fallback
@@ -9990,7 +9997,7 @@ const Clients: React.FC<ClientsProps> = ({
         console.log('[paymentPlanTotal][legacy] fetching rows', { legacyId, leadCurrencyId, clientId });
         const { data, error } = await supabase
           .from('finances_paymentplanrow')
-          .select('value, vat_value, currency_id, order')
+          .select('value, vat_value, currency_id, order, expense_paid_by')
           .eq('lead_id', legacyId)
           .is('cancel_date', null);
         if (error) throw error;
@@ -10022,6 +10029,8 @@ const Clients: React.FC<ClientsProps> = ({
           if (!Number.isFinite(rowCurrencyId) || rowCurrencyId <= 0) rowCurrencyId = leadCurrencyId;
 
           if (isExpenseNoVatPayment(order)) {
+            // Client-paid (or unset) only — firm-paid reduce Net separately and must not inflate Exp.
+            if (String(r?.expense_paid_by || '').toLowerCase() === 'firm') continue;
             expenseByCurrencyId.set(
               rowCurrencyId,
               (expenseByCurrencyId.get(rowCurrencyId) || 0) + rowGross,
@@ -10068,7 +10077,7 @@ const Clients: React.FC<ClientsProps> = ({
       } else {
         const { data, error } = await supabase
           .from('payment_plans')
-          .select('value, value_vat, currency, payment_order')
+          .select('value, value_vat, currency, payment_order, expense_paid_by')
           .eq('lead_id', clientId)
           .is('cancel_date', null);
         if (error) throw error;
@@ -10085,6 +10094,8 @@ const Clients: React.FC<ClientsProps> = ({
         }, 0);
         const expenseTotal = rows.reduce((sum, r: any) => {
           if (!isExpenseNoVatPayment(r?.payment_order)) return sum;
+          // Client-paid (or unset) only — firm-paid reduce Net separately
+          if (String(r?.expense_paid_by || '').toLowerCase() === 'firm') return sum;
           const base = Number(r?.value ?? 0);
           const vat = Number(r?.value_vat ?? 0);
           const gross = (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
@@ -10293,6 +10304,28 @@ const Clients: React.FC<ClientsProps> = ({
     window.addEventListener('paymentPlan:changed', handler as EventListener);
     return () => window.removeEventListener('paymentPlan:changed', handler as EventListener);
   }, [selectedClient?.id, refreshPaymentPlanBadge]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const evt = e as CustomEvent<{ leadId?: string | number; feeSum?: number }>;
+      const leadId = evt?.detail?.leadId;
+      if (leadId == null || !selectedClient?.id) return;
+      if (String(selectedClient.id) !== String(leadId)) return;
+      const feeSum = Number(evt?.detail?.feeSum);
+      if (!Number.isFinite(feeSum)) return;
+      setSelectedClient((prev: any) => {
+        if (!prev || String(prev.id) !== String(leadId)) return prev;
+        const prevFee = Number(prev.subcontractor_fee ?? NaN);
+        if (prevFee === feeSum) return prev;
+        return {
+          ...prev,
+          subcontractor_fee: feeSum,
+        };
+      });
+    };
+    window.addEventListener('subcontractorFees:changed', handler as EventListener);
+    return () => window.removeEventListener('subcontractorFees:changed', handler as EventListener);
+  }, [selectedClient?.id, setSelectedClient]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -11945,6 +11978,19 @@ const Clients: React.FC<ClientsProps> = ({
     activeTab === 'finances'
       ? { onCreateFinancePlan: () => setShowPaymentsPlanDrawer(true) }
       : {};
+  const showTabPaymentBanner =
+    Boolean(selectedClient) &&
+    (areStagesEquivalent(currentStageName, 'Handler Set') ||
+      (isStageNumeric && stageNumeric === 105) ||
+      Number((selectedClient as any)?.stage) === 105) &&
+    shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment);
+  const tabPageHeaderExtra = showTabPaymentBanner ? (
+    <HandlerPaymentPlanBanner
+      hasPaymentPlan={hasPaymentPlan}
+      nextDuePayment={nextDuePayment}
+      variant="inline"
+    />
+  ) : null;
   // Before the return statement, add:
   let dropdownItems = null;
 
@@ -14302,6 +14348,7 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Client header — cards on grey page background */}
           <ClientHeader
             connectToAppHeader
+            showHandlerPaymentBanner={false}
             selectedClient={selectedClient}
             assignSchedulerContent={
               selectedClient &&
@@ -14528,7 +14575,13 @@ const Clients: React.FC<ClientsProps> = ({
             }
           />
           {/* Client record shell — tabs and tab content */}
-          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 mt-3 md:mt-4 lg:mt-5">
+          <div
+            className={`w-full min-w-0 mt-3 md:mt-4 lg:mt-5 ${
+              activeTab === 'finances'
+                ? 'px-1 sm:px-2 md:px-2 lg:px-3'
+                : 'px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8'
+            }`}
+          >
           {/* Tabs Navigation */}
 
           {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Fixed at bottom with glassy blur effect */}
@@ -14904,11 +14957,17 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Tab Content */}
           <div
             ref={tabContentRef}
-            className="w-full min-h-[50vh] bg-gray-100 dark:bg-base-300 md:pl-28"
+            className={`w-full min-h-[50vh] bg-gray-100 dark:bg-base-300 ${
+              activeTab === 'finances' ? 'md:pl-24' : 'md:pl-28'
+            }`}
           >
             <div
               key={`${activeTab}-${interactionCount}`}
-              className="pl-2 pr-2 sm:pl-3 sm:pr-3 md:pr-3 lg:pr-4 pt-4 sm:pt-5 md:pt-5 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6"
+              className={
+                activeTab === 'finances'
+                  ? 'px-0 sm:px-1 md:px-1 pt-3 sm:pt-4 md:pt-4 pb-8 md:pb-10 mb-4 md:mb-0 space-y-4 md:space-y-5'
+                  : 'pl-2 pr-2 sm:pl-3 sm:pr-3 md:pr-3 lg:pr-4 pt-4 sm:pt-5 md:pt-5 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6'
+              }
             >
               {ActiveComponent && selectedClient && (
                 <div className="md:pb-0 pb-32">
@@ -14919,20 +14978,22 @@ const Clients: React.FC<ClientsProps> = ({
                       </div>
                     }
                   >
-                    <ActiveComponent
-                      key={`${activeTab}-${selectedClient.id}`}
-                      client={selectedClient}
-                      onClientUpdate={onClientUpdate}
-                      interactionsCache={interactionsCacheForLead}
-                      onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
-                      onInteractionCountUpdate={handleInteractionCountUpdate}
-                      onFlaggedConversationCountUpdate={setHeaderFlaggedConversationCount}
-                      onSwitchClientTab={setActiveTabWithUrl}
-                      onProbabilityConversationPending={handleProbabilityConversationPending}
-                      flaggedConversationCount={headerFlaggedConversationCount}
-                      allEmployees={allEmployees}
-                      {...financeProps}
-                    />
+                    <ClientTabPageHeaderExtrasProvider value={tabPageHeaderExtra}>
+                      <ActiveComponent
+                        key={`${activeTab}-${selectedClient.id}`}
+                        client={selectedClient}
+                        onClientUpdate={onClientUpdate}
+                        interactionsCache={interactionsCacheForLead}
+                        onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
+                        onInteractionCountUpdate={handleInteractionCountUpdate}
+                        onFlaggedConversationCountUpdate={setHeaderFlaggedConversationCount}
+                        onSwitchClientTab={setActiveTabWithUrl}
+                        onProbabilityConversationPending={handleProbabilityConversationPending}
+                        flaggedConversationCount={headerFlaggedConversationCount}
+                        allEmployees={allEmployees}
+                        {...financeProps}
+                      />
+                    </ClientTabPageHeaderExtrasProvider>
                   </Suspense>
                 </div>
               )}

@@ -96,9 +96,11 @@ export async function sumPaymentPlanTotalsInNis(
 export async function sumExpenseNoVatPlanTotalsInNis(
   payments: PaymentPlanRowLike[],
 ): Promise<PaymentPlanTotalsInNis> {
+  // Client-paid (or unset) expenses only — shown as + under contract; never inflate contract total.
+  // Firm-paid expenses reduce lead total separately and are excluded here.
   return sumFilteredPaymentPlanTotalsInNis(
     payments,
-    (p) => isExpenseNoVatPayment(p.order),
+    (p) => isExpenseNoVatPayment(p.order) && p.expensePaidBy !== 'firm',
   );
 }
 

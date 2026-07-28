@@ -36,6 +36,8 @@ export function resolveLeadTotalValueNis(
   options?: {
     hasPaymentPlan?: boolean | null;
     paymentPlanBaseTotal?: number | null;
+    /** Firm-paid expenses (amount + VAT) — reduces lead total. Client-paid must not be included. */
+    firmPaidExpenseTotal?: number | null;
   },
 ): number {
   if (!client) return 0;
@@ -61,7 +63,14 @@ export function resolveLeadTotalValueNis(
     baseAmount = Number(options.paymentPlanBaseTotal) || 0;
   }
 
-  return Number.isFinite(baseAmount) ? Math.max(0, baseAmount) : 0;
+  const subcontractorFee = Number(client.subcontractor_fee ?? 0);
+  const firmExpense = Math.max(0, Number(options?.firmPaidExpenseTotal ?? 0) || 0);
+  const reductions =
+    (Number.isFinite(subcontractorFee) && subcontractorFee > 0 ? subcontractorFee : 0) +
+    firmExpense;
+  const netAmount = baseAmount - reductions;
+
+  return Number.isFinite(netAmount) ? Math.max(0, netAmount) : 0;
 }
 
 export type LeadEmployeeCostRow = {

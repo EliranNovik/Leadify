@@ -297,7 +297,12 @@ function extractNumOfPayments(callbackData, verifyPayload) {
   ];
   for (const src of flattenPelecardSources(callbackData, verifyPayload)) {
     const raw = pickFirst(src, keys);
-    if (raw && /^\d+$/.test(raw)) return raw;
+    if (raw && /^\d+$/.test(raw)) {
+      // Pelecard sometimes returns 0 for a regular (non-installment) charge — treat as 1.
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 1) return String(n);
+      return '1';
+    }
   }
   return '1';
 }

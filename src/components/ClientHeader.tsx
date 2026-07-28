@@ -115,6 +115,10 @@ import {
 import {
     createLeadBudgetExtensionRequest,
 } from '../lib/leadBudgetExtensionRequests';
+import {
+    fetchFirmPaidExpenseReductionTotal,
+    resolveLeadFeeIdentity,
+} from '../lib/leadExpenses';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -411,6 +415,11 @@ interface ClientHeaderProps {
     onDismissPendingProbability?: () => void;
     /** Flush layout on client detail page: no outer white band, aligned page padding. */
     connectToAppHeader?: boolean;
+    /**
+     * When false, hides the stage-105 missing-plan / next-payment banner in the header
+     * (Clients shows it next to tab titles instead). Default true for modals.
+     */
+    showHandlerPaymentBanner?: boolean;
 }
 
 const ClientHeader: React.FC<ClientHeaderProps> = ({
@@ -472,6 +481,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     pendingProbabilitySaving = false,
     onDismissPendingProbability,
     connectToAppHeader = false,
+    showHandlerPaymentBanner = true,
 }) => {
     const navigate = useNavigate();
     const [subEfforts, setSubEfforts] = useState<Array<{ id: number; name: string; sort_order: number }>>([]);
@@ -536,6 +546,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [leadEmployeeCostSummary, setLeadEmployeeCostSummary] =
         useState<LeadEmployeeCostSummary | null>(null);
     const [leadEmployeeCostLoading, setLeadEmployeeCostLoading] = useState(false);
+    /** Firm-paid expenses (amount + VAT) — reduce Net / employee-cost base; client-paid do not. */
+    const [firmPaidExpenseTotal, setFirmPaidExpenseTotal] = useState(0);
     const [leadEmployeeCostModalOpen, setLeadEmployeeCostModalOpen] = useState(false);
     const [leadEmployeeCostModalMode, setLeadEmployeeCostModalMode] = useState<
         'overview' | 'warning'
@@ -553,10 +565,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setInactiveNotesExpanded(false);
         setLeadEmployeeCostModalOpen(false);
         setLeadEmployeeCostSummary(null);
+        setFirmPaidExpenseTotal(0);
         setOverBudgetGateOpen(false);
         setBudgetExtensionRequestOpen(false);
         overBudgetGateShownForLeadRef.current = null;
     }, [selectedClient?.id]);
+
+    useEffect(() => {
+        if (!selectedClient?.id) {
+            setFirmPaidExpenseTotal(0);
+            return;
+        }
+        let cancelled = false;
+        const identity = resolveLeadFeeIdentity(selectedClient);
+        if (!identity) {
+            setFirmPaidExpenseTotal(0);
+            return;
+        }
+        void fetchFirmPaidExpenseReductionTotal(identity)
+            .then((total) => {
+                if (!cancelled) setFirmPaidExpenseTotal(total);
+            })
+            .catch((err) => {
+                console.error('[ClientHeader] firm-paid expense total fetch failed:', err);
+                if (!cancelled) setFirmPaidExpenseTotal(0);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedClient?.id, selectedClient?.lead_type]);
 
     useEffect(() => {
         if (!selectedClient?.id) {
@@ -571,6 +608,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const leadTotalValueNis = resolveLeadTotalValueNis(selectedClient, {
             hasPaymentPlan,
             paymentPlanBaseTotal,
+            firmPaidExpenseTotal,
         });
 
         void fetchLeadEmployeeCostSummary({
@@ -609,14 +647,32 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         selectedClient?.total_base,
         selectedClient?.currency_id,
         selectedClient?.lead_type,
+        selectedClient?.subcontractor_fee,
         hasPaymentPlan,
         paymentPlanBaseTotal,
+        firmPaidExpenseTotal,
     ]);
 
     const openLeadEmployeeCostModal = useCallback((mode: 'overview' | 'warning') => {
         setLeadEmployeeCostModalMode(mode);
         setLeadEmployeeCostModalOpen(true);
     }, []);
+
+    const openFinancesExpensesFeesTab = useCallback(() => {
+        try {
+            sessionStorage.setItem('financesSubTab', 'expenses-fees');
+        } catch {
+            /* ignore */
+        }
+        onSwitchClientTab?.('finances');
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+                new CustomEvent('finances:openExpensesFees', {
+                    detail: { leadId: selectedClient?.id },
+                }),
+            );
+        }
+    }, [onSwitchClientTab, selectedClient?.id]);
 
     const handleSkipOverBudgetGate = useCallback(() => {
         if (selectedClient?.id) {
@@ -887,6 +943,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 } catch {
                     setUnpaidByCurrency(null);
                     setUnpaidExpenseByCurrency(null);
+                }
+                const identity = resolveLeadFeeIdentity(selectedClient);
+                if (identity) {
+                    try {
+                        setFirmPaidExpenseTotal(await fetchFirmPaidExpenseReductionTotal(identity));
+                    } catch {
+                        setFirmPaidExpenseTotal(0);
+                    }
                 }
             })();
         };
@@ -3444,10 +3508,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 if (paymentPlanBaseTotal !== null) baseAmount = Number(paymentPlanBaseTotal) || 0;
                             }
                             const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                            // Primary figure = full lead total (ex VAT in DB); subcontractor is shown + net below
+                            const firmExpense = Math.max(0, Number(firmPaidExpenseTotal) || 0);
+                            // Primary figure = full lead total (ex VAT in DB); fees + firm-paid expenses reduce Net below
                             const mainAmount = baseAmount;
-                            const netAfterSubcontractor =
-                                subcontractorFee > 0 ? baseAmount - subcontractorFee : null;
+                            const totalReductions =
+                                (subcontractorFee > 0 ? subcontractorFee : 0) + firmExpense;
+                            const netAfterReductions =
+                                totalReductions > 0 ? Math.max(0, baseAmount - totalReductions) : null;
                             const potentialAmount = isLegacyLead
                                 ? Number((selectedClient as any)?.potential_total ?? 0) || 0
                                 : Number(
@@ -3513,6 +3580,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <div className="space-y-2">
                                         <div className="flex items-center justify-end gap-2">
                                             <span
+                                                className="inline-flex items-center gap-1.5"
                                                 onClick={(e) => e.stopPropagation()}
                                                 onKeyDown={(e) => e.stopPropagation()}
                                             >
@@ -3523,6 +3591,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     onOpenWarning={() => openLeadEmployeeCostModal('warning')}
                                                     isSuperuser={isSuperuser}
                                                 />
+                                                {subcontractorFee > 0 ? (
+                                                    <button
+                                                        type="button"
+                                                        className="badge badge-sm h-5 min-h-5 shrink-0 border-0 bg-red-100 px-2 font-semibold text-red-700 hover:bg-red-200"
+                                                        title="View fees in Finances"
+                                                        onClick={() => openFinancesExpensesFeesTab()}
+                                                    >
+                                                        Fee {currency}
+                                                        {Number(subcontractorFee.toFixed(2)).toLocaleString()}
+                                                    </button>
+                                                ) : null}
                                             </span>
                                             <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
                                         </div>
@@ -3544,10 +3623,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             subtotal={mainAmount}
                                             vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
                                         />
-                                        {subcontractorFee > 0 && netAfterSubcontractor !== null && (
+                                        {netAfterReductions !== null && (
                                             <p className="text-[11px] text-base-content/50">
                                                 Net {currency}
-                                                {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
+                                                {Number(netAfterReductions.toFixed(2)).toLocaleString()}
                                             </p>
                                         )}
                                         {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
@@ -3750,9 +3829,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 }
 
                                 const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                                const firmExpense = Math.max(0, Number(firmPaidExpenseTotal) || 0);
                                 const mainAmount = baseAmount;
-                                const netAfterSubcontractor =
-                                    subcontractorFee > 0 ? baseAmount - subcontractorFee : null;
+                                const totalReductions =
+                                    (subcontractorFee > 0 ? subcontractorFee : 0) + firmExpense;
+                                const netAfterReductions =
+                                    totalReductions > 0 ? Math.max(0, baseAmount - totalReductions) : null;
                                 const potentialAmount = isLegacyLead
                                     ? Number((selectedClient as any)?.potential_total ?? 0) || 0
                                     : Number(
@@ -3816,7 +3898,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 const unpaidExpenseAmountDesktop = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
 
                                 const hasExpandableFinancialDetails =
-                                    (subcontractorFee > 0 && netAfterSubcontractor !== null) ||
+                                    netAfterReductions !== null ||
                                     (paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0) ||
                                     potentialAmount > 0 ||
                                     potentialApplicantsMeeting > 0 ||
@@ -3833,6 +3915,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 onOpenWarning={() => openLeadEmployeeCostModal('warning')}
                                                 isSuperuser={isSuperuser}
                                             />
+                                            {subcontractorFee > 0 ? (
+                                                <button
+                                                    type="button"
+                                                    className="badge badge-sm h-5 min-h-5 shrink-0 border-0 bg-red-100 px-2 font-semibold text-red-700 hover:bg-red-200"
+                                                    title="View fees in Finances"
+                                                    onClick={() => openFinancesExpensesFeesTab()}
+                                                >
+                                                    Fee {currency}
+                                                    {Number(subcontractorFee.toFixed(2)).toLocaleString()}
+                                                </button>
+                                            ) : null}
                                             <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
                                         </div>
                                         <button
@@ -3876,10 +3969,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     subtotal={mainAmount}
                                                     vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
                                                 />
-                                                {subcontractorFee > 0 && netAfterSubcontractor !== null && (
+                                                {netAfterReductions !== null && (
                                                     <p className="text-[11px] text-base-content/50">
                                                         Net {currency}
-                                                        {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
+                                                        {Number(netAfterReductions.toFixed(2)).toLocaleString()}
                                                     </p>
                                                 )}
                                                 {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
@@ -4336,23 +4429,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             ) : (
                                                 <>
                                                     {/* Stage 105 (Handler Nominated): show missing plan or next payment banner */}
-                                                    {(((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
+                                                    {showHandlerPaymentBanner &&
+                                                    (((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
                                                         shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment)) ? (
                                                         <div className="w-full flex justify-center">
                                                             {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
-                                                                <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
+                                                                <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
                                                                     <div className="flex items-center justify-between gap-3">
                                                                         <div className="flex items-center gap-2 text-sm font-semibold">
                                                                             <ExclamationTriangleIcon className="h-5 w-5" />
                                                                             Missing payment plan
                                                                         </div>
-                                                                        <div className="text-xs text-red-800/80 whitespace-nowrap">
+                                                                        <div className="text-xs text-slate-500 whitespace-nowrap">
                                                                             Finances → payment plan
                                                                         </div>
                                                                     </div>
                                                                 </div>
                                                             ) : (
-                                                                <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                                                <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
                                                                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
                                                                         <div className="text-sm font-semibold">Next payment due</div>
                                                                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
@@ -4408,7 +4502,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                                             <CheckCircleIcon className="h-4 w-4" />
                                                                                             Sent to finance
                                                                                         </span>
-                                                                                        <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                                        <span className="text-xs text-slate-500 whitespace-nowrap">
                                                                                             by <span className="font-semibold">{String(by)}</span>
                                                                                         </span>
                                                                                     </div>
@@ -4849,23 +4943,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         return (
                             <>
                                 {/* Stage 105: no action buttons (advances via payments plan) */}
-                                {(areStagesEquivalent(currentStageName, 'Handler Set') ||
+                                {showHandlerPaymentBanner &&
+                                (areStagesEquivalent(currentStageName, 'Handler Set') ||
                                     (isStageNumeric && stageNumeric === 105)) && shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment) ? (
                                     <div className="w-full flex justify-center">
                                         {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
-                                            <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
+                                            <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
                                                 <div className="flex items-center justify-between gap-3">
                                                     <div className="flex items-center gap-2 text-sm font-semibold">
                                                         <ExclamationTriangleIcon className="h-5 w-5" />
                                                         Missing payment plan
                                                     </div>
-                                                    <div className="text-xs text-red-800/80 whitespace-nowrap">
+                                                    <div className="text-xs text-slate-500 whitespace-nowrap">
                                                         Finances → payment plan
                                                     </div>
                                                 </div>
                                             </div>
                                         ) : (
-                                            <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                            <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
                                                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
                                                     <div className="text-sm font-semibold">Next payment due</div>
                                                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
@@ -4921,7 +5016,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                         <CheckCircleIcon className="h-4 w-4" />
                                                                         Sent to finance
                                                                     </span>
-                                                                    <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                    <span className="text-xs text-slate-500 whitespace-nowrap">
                                                                         by <span className="font-semibold">{String(by)}</span>
                                                                     </span>
                                                                 </div>

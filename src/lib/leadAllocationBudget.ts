@@ -18,6 +18,10 @@ import {
   resolveLeadTotalValueNis,
 } from './leadEmployeeCost';
 import {
+  fetchFirmPaidExpenseReductionTotal,
+  resolveLeadFeeIdentity,
+} from './leadExpenses';
+import {
   fetchApprovedBudgetExtensionNis,
 } from './leadBudgetExtensionRequests';
 import {
@@ -163,13 +167,19 @@ async function fetchLegacyLeadPaymentPlanBaseTotal(legacyId: number): Promise<nu
 
 async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Promise<number> {
   if (lead.lead_type === 'legacy' && lead.legacy_lead_id != null) {
-    const [{ data, error }, planBase] = await Promise.all([
+    const identity = resolveLeadFeeIdentity({
+      id: `legacy_${lead.legacy_lead_id}`,
+      lead_type: 'legacy',
+      lead_number: lead.lead_number,
+    });
+    const [{ data, error }, planBase, firmPaidExpenseTotal] = await Promise.all([
       supabase
         .from('leads_lead')
-        .select('id, total, total_base, currency_id')
+        .select('id, total, total_base, currency_id, subcontractor_fee')
         .eq('id', lead.legacy_lead_id)
         .maybeSingle(),
       fetchLegacyLeadPaymentPlanBaseTotal(lead.legacy_lead_id),
+      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
     ]);
     if (error) {
       console.warn('[leadAllocationBudget] legacy lead value fetch failed:', error);
@@ -181,6 +191,7 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
       {
         hasPaymentPlan: planBase != null,
         paymentPlanBaseTotal: planBase,
+        firmPaidExpenseTotal,
       },
     );
   }
@@ -196,13 +207,19 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
   }
 
   if (newLeadId) {
-    const [{ data, error }, planBase] = await Promise.all([
+    const identity = resolveLeadFeeIdentity({
+      id: newLeadId,
+      lead_type: 'new',
+      lead_number: lead.lead_number,
+    });
+    const [{ data, error }, planBase, firmPaidExpenseTotal] = await Promise.all([
       supabase
         .from('leads')
-        .select('id, balance, proposal_total, lead_type')
+        .select('id, balance, proposal_total, lead_type, subcontractor_fee')
         .eq('id', newLeadId)
         .maybeSingle(),
       fetchNewLeadPaymentPlanBaseTotal(newLeadId),
+      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
     ]);
     if (error) {
       console.warn('[leadAllocationBudget] lead value fetch failed:', error);
@@ -210,6 +227,7 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
     return resolveLeadTotalValueNis(data ?? { id: newLeadId }, {
       hasPaymentPlan: planBase != null,
       paymentPlanBaseTotal: planBase,
+      firmPaidExpenseTotal,
     });
   }
 
