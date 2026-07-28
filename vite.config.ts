@@ -24,8 +24,10 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return;
-          // Keep React core in ONE chunk — splitting react / react-dom causes
-          // "can't access property Children, r is undefined" at runtime.
+
+          // React core + React bindings must stay together. Isolating packages that
+          // call React.createContext / forwardRef / Children into other chunks causes
+          // "X of undefined" crashes at runtime (seen with react-dom + recharts).
           if (
             id.includes('node_modules/react/') ||
             id.includes('node_modules\\react\\') ||
@@ -33,20 +35,23 @@ export default defineConfig({
             id.includes('node_modules\\react-dom') ||
             id.includes('node_modules/scheduler') ||
             id.includes('node_modules\\scheduler') ||
-            id.includes('react-router')
+            id.includes('react-router') ||
+            id.includes('@azure/msal-react')
           ) {
             return 'react-vendor';
           }
+
+          // Heavy non-React libs only — safe to isolate for build memory / caching.
+          if (
+            id.includes('@azure/msal-browser') ||
+            id.includes('@azure/msal-common')
+          ) {
+            return 'msal';
+          }
           if (id.includes('@supabase')) return 'supabase';
-          if (id.includes('msal') || id.includes('@azure')) return 'msal';
-          if (id.includes('@tanstack')) return 'tanstack';
           if (id.includes('xlsx')) return 'xlsx';
-          if (id.includes('recharts') || id.includes('/d3-')) return 'charts';
-          if (id.includes('@tiptap') || id.includes('prosemirror')) return 'editor';
           if (id.includes('pdfjs')) return 'pdfjs';
           if (id.includes('html2pdf') || id.includes('jspdf')) return 'pdf-export';
-          if (id.includes('emoji-picker')) return 'emoji';
-          if (id.includes('framer-motion')) return 'motion';
         },
       },
     },
