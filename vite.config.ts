@@ -24,6 +24,19 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return;
+          // Keep React core in ONE chunk — splitting react / react-dom causes
+          // "can't access property Children, r is undefined" at runtime.
+          if (
+            id.includes('node_modules/react/') ||
+            id.includes('node_modules\\react\\') ||
+            id.includes('node_modules/react-dom') ||
+            id.includes('node_modules\\react-dom') ||
+            id.includes('node_modules/scheduler') ||
+            id.includes('node_modules\\scheduler') ||
+            id.includes('react-router')
+          ) {
+            return 'react-vendor';
+          }
           if (id.includes('@supabase')) return 'supabase';
           if (id.includes('msal') || id.includes('@azure')) return 'msal';
           if (id.includes('@tanstack')) return 'tanstack';
@@ -34,12 +47,6 @@ export default defineConfig({
           if (id.includes('html2pdf') || id.includes('jspdf')) return 'pdf-export';
           if (id.includes('emoji-picker')) return 'emoji';
           if (id.includes('framer-motion')) return 'motion';
-          if (id.includes('react-dom')) return 'react-dom';
-          if (id.includes('react-router')) return 'react-router';
-          if (id.includes('node_modules/react/') || id.includes('node_modules\\react\\')) {
-            return 'react';
-          }
-          // Let Vite/Rollup split remaining deps instead of one mega vendor chunk.
         },
       },
     },
