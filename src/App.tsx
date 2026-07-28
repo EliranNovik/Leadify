@@ -27,7 +27,6 @@ import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import ProtectedRoute from './components/ProtectedRoute';
 import WhatsAppModal, { type WhatsAppModalSelectedContact } from './components/WhatsAppModal';
 import CTIPopupModal from './components/CTIPopupModal';
-import RMQMessagesPage from './pages/RMQMessagesPage';
 import PageLoader from './components/PageLoader';
 import {
   LazyAboutPage,
@@ -134,6 +133,7 @@ import {
   LazyWaitingForPriceOfferPage,
   LazyWhatsAppLeadsPage,
   LazyWhatsAppPage,
+  LazyRMQMessagesPage,
 } from './routes/lazyPages';
 import HomeEntryPage from './pages/HomeEntryPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
@@ -875,12 +875,14 @@ const AppContentInner: React.FC = () => {
               </RouteSuspense>
               </main>
             </div>
-            <RMQMessagesPage
-              isOpen={isMessagingOpen}
-              onClose={handleCloseMessaging}
-              initialConversationId={rmqInitialConversationId}
-              initialScrollToMessageId={rmqInitialScrollToMessageId}
-            />
+            <Suspense fallback={null}>
+              <LazyRMQMessagesPage
+                isOpen={isMessagingOpen}
+                onClose={handleCloseMessaging}
+                initialConversationId={rmqInitialConversationId}
+                initialScrollToMessageId={rmqInitialScrollToMessageId}
+              />
+            </Suspense>
           </div>
         </ProtectedRoute>
 
@@ -961,12 +963,14 @@ const AppContentInner: React.FC = () => {
               }}
               selectedContact={selectedContactForThread}
             />
-            <RMQMessagesPage
-              isOpen={isMessagingOpen}
-              onClose={handleCloseMessaging}
-              initialConversationId={rmqInitialConversationId}
-              initialScrollToMessageId={rmqInitialScrollToMessageId}
-            />
+            <Suspense fallback={null}>
+              <LazyRMQMessagesPage
+                isOpen={isMessagingOpen}
+                onClose={handleCloseMessaging}
+                initialConversationId={rmqInitialConversationId}
+                initialScrollToMessageId={rmqInitialScrollToMessageId}
+              />
+            </Suspense>
             <CTIPopupModal />
           </div>
         </ProtectedRoute >
@@ -1176,12 +1180,14 @@ const AppContentInner: React.FC = () => {
                 }}
                 selectedContact={selectedContactForThread}
               />
-              <RMQMessagesPage
-                isOpen={isMessagingOpen}
-                onClose={handleCloseMessaging}
-                initialConversationId={rmqInitialConversationId}
-                initialScrollToMessageId={rmqInitialScrollToMessageId}
-              />
+              <Suspense fallback={null}>
+                <LazyRMQMessagesPage
+                  isOpen={isMessagingOpen}
+                  onClose={handleCloseMessaging}
+                  initialConversationId={rmqInitialConversationId}
+                  initialScrollToMessageId={rmqInitialScrollToMessageId}
+                />
+              </Suspense>
               {/* CTI Popup Modal - shows on any authenticated page when phone parameter is present */}
               <CTIPopupModal />
             </div>

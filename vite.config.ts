@@ -19,6 +19,7 @@ export default defineConfig({
     },
   },
   build: {
+    // Avoid one giant vendor chunk — Rollup peak memory spikes on Render (~2GB default heap).
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -26,10 +27,19 @@ export default defineConfig({
           if (id.includes('@supabase')) return 'supabase';
           if (id.includes('msal') || id.includes('@azure')) return 'msal';
           if (id.includes('@tanstack')) return 'tanstack';
+          if (id.includes('xlsx')) return 'xlsx';
+          if (id.includes('recharts') || id.includes('/d3-')) return 'charts';
+          if (id.includes('@tiptap') || id.includes('prosemirror')) return 'editor';
+          if (id.includes('pdfjs')) return 'pdfjs';
+          if (id.includes('html2pdf') || id.includes('jspdf')) return 'pdf-export';
+          if (id.includes('emoji-picker')) return 'emoji';
+          if (id.includes('framer-motion')) return 'motion';
           if (id.includes('react-dom')) return 'react-dom';
           if (id.includes('react-router')) return 'react-router';
-          if (id.includes('node_modules/react/')) return 'react';
-          return 'vendor';
+          if (id.includes('node_modules/react/') || id.includes('node_modules\\react\\')) {
+            return 'react';
+          }
+          // Let Vite/Rollup split remaining deps instead of one mega vendor chunk.
         },
       },
     },

@@ -99,7 +99,7 @@ export const LazyPaymentCancelledPage = lazy(() =>
   import('../pages/PaymentResultPage').then((m) => ({ default: m.PaymentCancelledPage }))
 );
 export const LazyCTIPopupPage = lazy(() => import('../pages/CTIPopupPage'));
-export const LazyCTIPopupModal = lazy(() => import('../components/CTIPopupModal'));
+export const LazyRMQMessagesPage = lazy(() => import('../pages/RMQMessagesPage'));
 export const LazyProformaCreatePage = lazy(() => import('../pages/ProformaCreatePage'));
 export const LazyAboutPage = lazy(() => import('../pages/AboutPage'));
 export const LazyDocumentsPage = lazy(() => import('../pages/DocumentsPage'));

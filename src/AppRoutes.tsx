@@ -6,7 +6,7 @@ import {
   LazyCalendarPage,
   LazyClients,
   LazyCreateNewLead,
-  LazyCTIPopupModal,
+  LazyCTIPopupPage,
   LazyDashboard,
   LazyExpertPage,
   LazyMeetingSummaryTestPage,
@@ -24,6 +24,7 @@ import {
   LazyTeamsPage,
   LazyWhatsAppPage,
 } from './routes/lazyPages';
+import CTIPopupModal from './components/CTIPopupModal';
 
 function RouteSuspense({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageLoader />}>{children}</Suspense>;
@@ -79,12 +80,10 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
       <Route path="/public-firm-contract/:contractId/:token" element={<RouteSuspense><LazyPublicFirmContractView /></RouteSuspense>} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
       <Route path="/test-meeting-summary" element={<RouteSuspense><LazyMeetingSummaryTestPage /></RouteSuspense>} />
-      <Route path="/cti/pop" element={<RouteSuspense><LazyCTIPopupModal /></RouteSuspense>} />
+      <Route path="/cti/pop" element={<RouteSuspense><LazyCTIPopupPage /></RouteSuspense>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-    <RouteSuspense>
-      <LazyCTIPopupModal />
-    </RouteSuspense>
+    <CTIPopupModal />
   </>
 );
 
