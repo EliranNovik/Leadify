@@ -182,6 +182,7 @@ interface Meeting {
   helper: string;
   expert: string;
   link: string;
+  teams_meeting_url?: string;
   status?: string;
   expert_notes?: string;
   handler_notes?: string;
@@ -2100,7 +2101,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             scheduler: m.scheduler,
             helper: m.helper,
             expert: m.expert,
-            link: m.custom_link || m.teams_meeting_url,
+            link: m.teams_meeting_url || m.custom_link || '',
+            teams_meeting_url: m.teams_meeting_url || undefined,
             status: m.status || 'scheduled',
             expert_notes: m.expert_notes,
             handler_notes: m.handler_notes,
@@ -2148,7 +2150,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             scheduler: m.scheduler,
             helper: m.helper,
             expert: m.expert,
-            link: m.custom_link || m.teams_meeting_url,
+            link: m.teams_meeting_url || m.custom_link || '',
+            teams_meeting_url: m.teams_meeting_url || undefined,
             status: m.status || 'scheduled',
             expert_notes: m.expert_notes,
             handler_notes: m.handler_notes,
@@ -3502,25 +3505,20 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
   const getValidTeamsLink = (link: string | undefined) => getValidTeamsLinkShared(link);
 
-  /**
-   * Resolve join URL for emails: Teams/Graph JSON in meeting.link, custom_link, or location default_link (Zoom etc.).
-   * English templates often failed when only default_link was set — getValidTeamsLink(meeting.link) returned ''.
-   */
+  /** Resolve a direct join URL; never return an Outlook calendar-item webLink. */
   const getMeetingJoinLink = (meeting: Meeting): string => {
-    const fromStored = getValidTeamsLink(meeting.link);
-    if (fromStored) return fromStored;
+    // Unique Teams/Graph URL first. meeting.link remains for legacy rows.
+    const teams = getValidTeamsLink(meeting.teams_meeting_url || meeting.link);
+    if (teams) return teams;
 
-    const custom = (meeting as any).custom_link?.trim?.();
-    if (custom && /^https?:\/\//i.test(custom)) return custom;
+    const custom = getValidTeamsLink((meeting as any).custom_link);
+    if (custom) return custom;
 
     const locRaw = meeting.location;
     if (locRaw === null || locRaw === undefined || locRaw === '') return '';
 
     const location = resolveMeetingLocationRecord(locRaw);
-    const dl = location?.default_link?.trim?.();
-    if (dl && /^https?:\/\//i.test(dl)) return dl;
-    if (dl) return dl;
-    return '';
+    return getValidTeamsLink(location?.default_link);
   };
 
   const copyTextToClipboard = async (text: string) => {
@@ -6292,22 +6290,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({
           </>
         )}
         {(() => {
-          const meetingLinkValue = meeting.link;
-          const validLink = getValidTeamsLink(meeting.link);
-          const hasLink = meetingLinkValue && meetingLinkValue.trim() !== '';
+          const validLink = getMeetingJoinLink(meeting);
+          const hasLink = Boolean(validLink);
           const locationName = getMeetingLocationName(meeting.location);
           const isTeams = locationName === 'Teams';
           const location = resolveMeetingLocationRecord(meeting.location);
-          const defaultLink = location?.default_link;
+          const defaultLink = getValidTeamsLink(location?.default_link);
 
           if (!past) {
-            // Determine which link to use: default_link first (if available), then valid link
-            const linkToUse = defaultLink || validLink;
+            // Unique Teams link first, then custom/default location link.
+            const linkToUse = validLink;
 
             // If we have a link (either default_link or valid link), show it
             if (linkToUse) {
               // Check if the link being used is a Teams link
-              const isTeamsLink = linkToUse === validLink && getLinkType(validLink) === 'teams';
+              const isTeamsLink = getLinkType(linkToUse) === 'teams';
               const iconToShow = isTeamsLink ? <VideoCameraIcon className="w-5 h-5" /> : <LinkIcon className="w-5 h-5" />;
               const title = isTeamsLink ? 'Join Teams Meeting' : 'Join Meeting';
 
@@ -6327,20 +6324,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                     onClick={(e) => e.stopPropagation()}
                   >
                     <li>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const url = getMeetingJoinLink(meeting);
-                          if (!url) {
-                            toast.error('No meeting URL available');
-                            return;
-                          }
-                          window.open(url, '_blank');
-                        }}
+                      <a
+                        href={linkToUse}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
                       >
                         Enter meeting
-                      </button>
+                      </a>
                     </li>
                     <li>
                       <button
@@ -6406,72 +6397,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             }
           }
           return null;
-        })()}
-        {/* Fallback for legacy stored URL strings that don't parse as Teams JSON but still look like a URL */}
-        {(() => {
-          const raw = (meeting.link || '').trim();
-          const looksLikeUrl = /^https?:\/\//i.test(raw);
-          if (!raw || !looksLikeUrl) return null;
-          if (getMeetingJoinLink(meeting)) return null; // already handled above
-          return (
-            <div className="dropdown dropdown-end">
-              <button
-                type="button"
-                className={sideBtnClass}
-                onClick={(e) => e.stopPropagation()}
-                title="Meeting link"
-              >
-                <LinkIcon className="w-5 h-5" />
-              </button>
-              <ul
-                tabIndex={0}
-                className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <li>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      window.open(raw, '_blank');
-                    }}
-                  >
-                    Enter meeting
-                  </button>
-                </li>
-                <li>
-                  <button
-                    type="button"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const ok = await copyTextToClipboard(raw);
-                      if (ok) toast.success('Meeting link copied');
-                      else toast.error('Failed to copy link');
-                    }}
-                  >
-                    Copy link
-                  </button>
-                </li>
-                {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
-                  <li>
-                    <button
-                      type="button"
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        try {
-                          await (navigator as any).share({ title: 'Meeting link', url: raw });
-                        } catch {
-                          // user cancelled / unsupported
-                        }
-                      }}
-                    >
-                      Share
-                    </button>
-                  </li>
-                )}
-              </ul>
-            </div>
-          );
         })()}
       </div>
     );

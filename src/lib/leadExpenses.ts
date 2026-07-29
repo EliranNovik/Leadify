@@ -56,6 +56,11 @@ export type LeadExpenseContactOption = {
   isMain?: boolean;
 };
 
+export type SplitLeadExpenseTarget = {
+  identity: LeadFeeIdentity;
+  contactId: number;
+};
+
 const EXPENSE_SELECT = `
   id,
   created_at,
@@ -580,6 +585,121 @@ export async function insertLeadExpense(input: {
   dispatchPaymentPlanChanged(leadId);
 
   return normalizeExpenseRow(data);
+}
+
+/** Split an amount in cents so every share is exact and the shares always equal the total. */
+export function splitExpenseAmountEvenly(total: number, count: number): number[] {
+  if (!Number.isFinite(total) || total < 0 || !Number.isInteger(count) || count <= 0) return [];
+  const totalCents = Math.round(total * 100);
+  const baseCents = Math.floor(totalCents / count);
+  const remainder = totalCents % count;
+  return Array.from(
+    { length: count },
+    (_, index) => (baseCents + (index < remainder ? 1 : 0)) / 100,
+  );
+}
+
+/**
+ * Atomically create one expense + Finances row for each selected lead/contact.
+ * Requires sql/2026-07-29_split_lead_expenses.sql.
+ */
+export async function insertSplitLeadExpenses(input: {
+  targets: SplitLeadExpenseTarget[];
+  expenseTypeId: string;
+  totalAmount: number;
+  currencyId: number | null;
+  expenseDate?: string | null;
+  notes?: string | null;
+  includeVat?: boolean;
+  paidBy: LeadExpensePaidBy;
+  isReimbursable: boolean;
+  isReimbursed: boolean;
+}): Promise<void> {
+  if (input.targets.length < 2) {
+    throw new Error('Select at least two lead contacts to split the expense');
+  }
+
+  const uniqueTargets = new Map<string, SplitLeadExpenseTarget>();
+  for (const target of input.targets) {
+    const leadKey =
+      target.identity.leadType === 'legacy'
+        ? `legacy:${target.identity.legacyLeadId}`
+        : `new:${target.identity.newLeadId}`;
+    const key = `${leadKey}:contact:${target.contactId}`;
+    if (uniqueTargets.has(key)) throw new Error('The same lead contact was selected more than once');
+    uniqueTargets.set(key, target);
+  }
+
+  const targets = [...uniqueTargets.values()];
+  const amounts = splitExpenseAmountEvenly(input.totalAmount, targets.length);
+  if (amounts.length !== targets.length || amounts.some((share) => share <= 0)) {
+    throw new Error('The total must allow at least 0.01 for every selected contact');
+  }
+
+  const includeVat = Boolean(input.includeVat);
+  const flags = normalizePaidFlags(input);
+  const currencyId = resolveCurrencyIdForSave(
+    { currency_id: input.currencyId },
+    undefined,
+  );
+  const currency = displaySymbolForPaymentSave(
+    { currency_id: currencyId },
+    undefined,
+  );
+  const [typeLabel, createdByDisplay] = await Promise.all([
+    resolveExpenseTypeLabel(input.expenseTypeId),
+    resolveCreatedByDisplayName(),
+  ]);
+  const financeNotes = buildFinanceNotes({
+    typeLabel,
+    paidBy: flags.paid_by,
+    includeVat,
+    notes: input.notes,
+  });
+
+  const lines = targets.map((target, index) => ({
+    lead_type: target.identity.leadType,
+    new_lead_id: target.identity.leadType === 'new' ? target.identity.newLeadId : null,
+    legacy_lead_id:
+      target.identity.leadType === 'legacy' ? target.identity.legacyLeadId : null,
+    lead_number: target.identity.leadNumber || null,
+    contact_id: target.contactId,
+    amount: amounts[index],
+    vat_amount: resolveExpenseVatAmount({
+      amount: amounts[index],
+      includeVat,
+      expenseDate: input.expenseDate,
+    }),
+  }));
+
+  const { error } = await supabase.rpc('create_split_lead_expenses', {
+    p_lines: lines,
+    p_expense_type_id: input.expenseTypeId,
+    p_currency_id: currencyId,
+    p_currency: currency,
+    p_expense_date: input.expenseDate?.trim() || null,
+    p_notes: input.notes?.trim() || null,
+    p_finance_notes: financeNotes,
+    p_include_vat: includeVat,
+    p_paid_by: flags.paid_by,
+    p_is_reimbursable: flags.is_reimbursable,
+    p_is_reimbursed: flags.is_reimbursed,
+    p_created_by_display: createdByDisplay,
+  });
+  if (error) {
+    if (String((error as any).code || '') === 'PGRST202') {
+      throw new Error('Split expense database migration has not been installed');
+    }
+    throw error;
+  }
+
+  for (const target of targets) {
+    const leadId =
+      target.identity.leadType === 'legacy'
+        ? `legacy_${target.identity.legacyLeadId}`
+        : target.identity.newLeadId;
+    dispatchPaymentPlanChanged(leadId);
+  }
 }
 
 export async function updateLeadExpense(input: {

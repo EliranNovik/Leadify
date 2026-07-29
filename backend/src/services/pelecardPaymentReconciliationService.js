@@ -17,6 +17,7 @@ const {
 const {
   clipParamX,
   readStoredParamX,
+  parseLeadContactParamX,
 } = require('../lib/pelecardParamX');
 
 const DB_RETRY_ATTEMPTS = Number(process.env.PELECARD_DB_RETRY_ATTEMPTS || '3');
@@ -111,7 +112,8 @@ async function fetchPaymentByToken(secureToken) {
 }
 
 /**
- * Resolve payment from Pelecard ParamX / paymentId (exact, stored short ParamX, or truncated prefix).
+ * Resolve payment from Pelecard ParamX / paymentId (exact, stored ParamX,
+ * leadNumber-planContactId, or truncated secure_token prefix).
  */
 async function fetchPaymentByCallbackRef(ref) {
   const value = String(ref || '').trim();
@@ -126,7 +128,7 @@ async function fetchPaymentByCallbackRef(ref) {
     if (exactClipped) return exactClipped;
   }
 
-  // Stored short ParamX on pelecard_raw_response
+  // Stored ParamX on pelecard_raw_response (lead-contact or legacy short codes)
   if (clipped) {
     const { data: byParamRows, error: byParamError } = await supabase
       .from('payment_links')
@@ -140,6 +142,34 @@ async function fetchPaymentByCallbackRef(ref) {
       return fetchPaymentByToken(byParamRows[0].secure_token);
     } else if (byParamRows?.length > 1) {
       console.warn('[Pelecard] Ambiguous paramX match', { paramX: clipped, count: byParamRows.length });
+    }
+  }
+
+  // ParamX format: {leadNumber}-{plan_contact_id}
+  const leadContact = parseLeadContactParamX(clipped || value);
+  if (leadContact) {
+    const { data: byContactRows, error: byContactError } = await supabase
+      .from('payment_links')
+      .select('secure_token, status, created_at')
+      .eq('plan_contact_id', leadContact.planContactId)
+      .order('created_at', { ascending: false })
+      .limit(5);
+    if (byContactError) {
+      logSupabaseError('fetchPaymentByCallbackRef plan_contact_id lookup failed', byContactError);
+    } else if (byContactRows?.length) {
+      const preferred =
+        byContactRows.find((r) => ['processing', 'pending', 'failed'].includes(String(r.status))) ||
+        byContactRows[0];
+      if (byContactRows.length > 1) {
+        console.info('[Pelecard] Resolved ParamX via plan_contact_id', {
+          paramX: clipped,
+          planContactId: leadContact.planContactId,
+          leadNumber: leadContact.leadNumber,
+          candidates: byContactRows.length,
+          chosenStatus: preferred.status,
+        });
+      }
+      return fetchPaymentByToken(preferred.secure_token);
     }
   }
 
@@ -169,31 +199,65 @@ async function fetchPaymentByCallbackRef(ref) {
 async function enrichPaymentRow(data) {
   let enriched = data;
 
-  if (!enriched.leads && enriched.legacy_id) {
-    const { data: legacyLead } = await supabase
-      .from('leads_lead')
-      .select('id, name, email, phone, topic')
-      .eq('id', enriched.legacy_id)
-      .maybeSingle();
-
-    if (legacyLead) {
-      enriched = {
-        ...enriched,
-        leads: {
-          lead_number: String(legacyLead.id),
-          name: legacyLead.name,
-          email: legacyLead.email,
-          phone: legacyLead.phone,
-          topic: legacyLead.topic,
-        },
-      };
-    }
-  }
-
   const isLegacy =
     enriched.legacy_id != null ||
     enriched.is_legacy_payment_plan === true ||
     String(enriched.client_id || '').startsWith('legacy_');
+
+  if (isLegacy) {
+    // Legacy lead number = leads_lead.id on payment_links.legacy_id
+    if (!enriched.leads?.lead_number && enriched.legacy_id != null) {
+      const { data: legacyLead } = await supabase
+        .from('leads_lead')
+        .select('id, name, email, phone, topic')
+        .eq('id', enriched.legacy_id)
+        .maybeSingle();
+
+      if (legacyLead) {
+        enriched = {
+          ...enriched,
+          leads: {
+            lead_number: String(legacyLead.id),
+            name: legacyLead.name,
+            email: legacyLead.email,
+            phone: legacyLead.phone,
+            topic: legacyLead.topic,
+          },
+        };
+      } else {
+        enriched = {
+          ...enriched,
+          leads: {
+            ...(enriched.leads || {}),
+            lead_number: String(enriched.legacy_id),
+          },
+        };
+      }
+    }
+  } else if (
+    enriched.client_id &&
+    !String(enriched.client_id).startsWith('legacy_') &&
+    !(enriched.leads?.lead_number && String(enriched.leads.lead_number).trim())
+  ) {
+    // New lead: lead_number lives on leads (payment_links.client_id → leads.id)
+    const { data: newLead } = await supabase
+      .from('leads')
+      .select('lead_number, topic, name, email, phone')
+      .eq('id', enriched.client_id)
+      .maybeSingle();
+    if (newLead?.lead_number) {
+      enriched = {
+        ...enriched,
+        leads: {
+          lead_number: String(newLead.lead_number).trim(),
+          topic: newLead.topic,
+          name: newLead.name,
+          email: newLead.email,
+          phone: newLead.phone,
+        },
+      };
+    }
+  }
 
   if (isLegacy && enriched.payment_plan_id) {
     const { data: legacyPlan } = await supabase
@@ -575,6 +639,45 @@ async function persistPaymentFailure(payment, secureToken, callbackData, verifyR
   });
 }
 
+/**
+ * Preserve an asynchronous Open Finance transfer while the receiving bank is
+ * processing it. A later GetTransaction/reconciliation pass will mark it paid.
+ */
+async function persistPaymentPending(payment, callbackData, verifyResult = {}) {
+  if (!payment?.id) return { ok: false };
+
+  const previousRaw =
+    payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
+      ? payment.pelecard_raw_response
+      : {};
+  const { statusCode: callbackStatusCode, transactionId } = extractPelecardMeta(callbackData);
+  const resolvedStatusCode = verifyResult.resolvedStatusCode || callbackStatusCode || null;
+  const verifyPayload = verifyResult.verifyPayload;
+
+  return withDbRetry('payment_links pending Open Finance update', async () => {
+    const { error } = await supabase
+      .from('payment_links')
+      .update({
+        status: 'processing',
+        pelecard_status_code: resolvedStatusCode,
+        ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
+        pelecard_raw_response: {
+          ...previousRaw,
+          callback: callbackData,
+          ...(verifyPayload
+            ? { pelecard: verifyPayload?.pelecard ?? verifyPayload }
+            : {}),
+          openFinancePending: true,
+          lastReconcileAt: new Date().toISOString(),
+          lastReconcileVerified: false,
+        },
+      })
+      .eq('id', payment.id);
+
+    return error ? { ok: false, error } : { ok: true };
+  });
+}
+
 async function handleSessionExpired(payment, callbackData) {
   const previousRaw =
     payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
@@ -915,6 +1018,7 @@ module.exports = {
   verifyPelecardTransaction,
   persistPaymentSuccess,
   persistPaymentFailure,
+  persistPaymentPending,
   handleSessionExpired,
   tryReconcilePaymentLink,
   reconcilePaymentBySecureToken,

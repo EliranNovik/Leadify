@@ -9,6 +9,10 @@ import { usePersistedState } from '../hooks/usePersistedState';
 import { CalendarIcon, CalendarDaysIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, UserPlusIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon, DocumentTextIcon, BuildingOfficeIcon } from '@heroicons/react/24/outline';
 import MobileBottomSheet from './MobileBottomSheet';
 import { MeetingJoinLinkMenu } from './MeetingJoinLinkMenu';
+import {
+  extractTeamsJoinUrlFromGraphPayload,
+  getValidTeamsLink as normalizeMeetingJoinLink,
+} from '../lib/meetingJoinLink';
 import DocumentModal from './DocumentModal';
 import {
   resolveStaffMeetingDocumentsContext,
@@ -4149,24 +4153,6 @@ const CalendarPage: React.FC = () => {
     );
   };
 
-  // Helper to extract a valid Teams join link from various formats
-  const getValidTeamsLink = (link: string | undefined) => {
-    if (!link) return '';
-    try {
-      if (link.startsWith('http')) return link;
-      const obj = JSON.parse(link);
-      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
-        return obj.joinUrl;
-      }
-      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
-        return obj.joinWebUrl;
-      }
-    } catch (e) {
-      if (typeof link === 'string' && link.startsWith('http')) return link;
-    }
-    return '';
-  };
-
   const copyTextToClipboard = async (text: string) => {
     if (!text) return false;
     try {
@@ -4197,7 +4183,22 @@ const CalendarPage: React.FC = () => {
   const getMeetingJoinUrl = (meeting: any) => {
     const locationName = getMeetingLocationName(meeting?.meeting_location || meeting?.location);
     const defaultLink = meetingLocationLinks[locationName] || '';
-    return getValidTeamsLink(meeting?.custom_link || meeting?.teams_meeting_url || defaultLink);
+
+    // Prefer Graph's actual onlineMeeting.joinUrl/joinWebUrl. Never open an
+    // Outlook calendar-item webLink: that URL requires mailbox authentication
+    // and commonly causes repeated Microsoft sign-in prompts.
+    const graphJoinUrl = extractTeamsJoinUrlFromGraphPayload(meeting);
+    if (graphJoinUrl) return graphJoinUrl;
+
+    const teamsUrl = normalizeMeetingJoinLink(
+      meeting?.teams_meeting_url || meeting?.teams_join_url || meeting?.link,
+    );
+    if (teamsUrl) return teamsUrl;
+
+    const customUrl = normalizeMeetingJoinLink(meeting?.custom_link);
+    if (customUrl) return customUrl;
+
+    return normalizeMeetingJoinLink(defaultLink);
   };
 
   // Helper function to build client route (similar to SchedulerToolPage and Clients.tsx)
@@ -6367,13 +6368,15 @@ const CalendarPage: React.FC = () => {
             return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
           })() && (
             <>
-              <MeetingJoinLinkMenu
-                meeting={meeting}
-                getMeetingJoinUrl={getMeetingJoinUrl}
-                copyTextToClipboard={copyTextToClipboard}
-                buttonClassName="btn btn-outline btn-primary btn-sm"
-                iconClassName="w-4 h-4"
-              />
+              {getMeetingJoinUrl(meeting) ? (
+                <MeetingJoinLinkMenu
+                  meeting={meeting}
+                  getMeetingJoinUrl={getMeetingJoinUrl}
+                  copyTextToClipboard={copyTextToClipboard}
+                  buttonClassName="btn btn-outline btn-primary btn-sm"
+                  iconClassName="w-4 h-4"
+                />
+              ) : null}
               {meeting.custom_address && (
                 <button
                   className="btn btn-outline btn-secondary btn-sm"
@@ -6848,13 +6851,15 @@ const CalendarPage: React.FC = () => {
                 return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
               })() && (
                   <>
-                    <MeetingJoinLinkMenu
-                      meeting={meeting}
-                      getMeetingJoinUrl={getMeetingJoinUrl}
-                      copyTextToClipboard={copyTextToClipboard}
-                      buttonClassName="btn btn-primary btn-xs sm:btn-sm"
-                      iconClassName="w-3 h-3 sm:w-4 sm:h-4"
-                    />
+                    {getMeetingJoinUrl(meeting) ? (
+                      <MeetingJoinLinkMenu
+                        meeting={meeting}
+                        getMeetingJoinUrl={getMeetingJoinUrl}
+                        copyTextToClipboard={copyTextToClipboard}
+                        buttonClassName="btn btn-primary btn-xs sm:btn-sm"
+                        iconClassName="w-3 h-3 sm:w-4 sm:h-4"
+                      />
+                    ) : null}
                     {meeting.custom_address && (
                       <button
                         className="btn btn-outline btn-secondary btn-xs sm:btn-sm"

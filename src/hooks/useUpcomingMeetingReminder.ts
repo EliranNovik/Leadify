@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
+import { getValidTeamsLink as getValidMeetingJoinLink } from '../lib/meetingJoinLink';
 
 export type UpcomingMeetingReminder = {
   id: string;
@@ -37,18 +38,7 @@ function formatTimeLabel(dt: Date): string {
 }
 
 export function getValidTeamsLink(link: string | null | undefined): string {
-  if (!link) return '';
-  try {
-    if (link.startsWith('http')) return link;
-    const obj = JSON.parse(link);
-    if (obj && typeof obj === 'object') {
-      if (typeof obj.joinUrl === 'string') return obj.joinUrl;
-      if (typeof obj.joinWebUrl === 'string') return obj.joinWebUrl;
-    }
-  } catch {
-    if (typeof link === 'string' && link.startsWith('http')) return link;
-  }
-  return '';
+  return getValidMeetingJoinLink(link);
 }
 
 export function isOnlineMeetingLocation(location: string | null | undefined): boolean {

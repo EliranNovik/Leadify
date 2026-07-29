@@ -6,6 +6,7 @@ import {
   XMarkIcon,
   EllipsisVerticalIcon,
   PencilSquareIcon,
+  ScissorsIcon,
   TrashIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
@@ -18,15 +19,19 @@ import {
   fetchLeadExpenseTypes,
   fetchLeadExpenses,
   insertLeadExpense,
+  insertSplitLeadExpenses,
   paidByLabel,
   resolveLeadFeeIdentity,
+  splitExpenseAmountEvenly,
   sumLeadExpenseAmounts,
   updateLeadExpense,
   type LeadExpenseContactOption,
   type LeadExpensePaidBy,
   type LeadExpenseRow,
   type LeadExpenseTypeRow,
+  type SplitLeadExpenseTarget,
 } from '../../lib/leadExpenses';
+import ExpenseSplitTargetPicker from './ExpenseSplitTargetPicker';
 
 type CurrencyOption = { id: number; name: string; iso_code: string | null };
 
@@ -142,6 +147,10 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [drawerMode, setDrawerMode] = useState<'single' | 'split'>('single');
+  const [drawerStep, setDrawerStep] = useState(0);
+  const [furthestDrawerStep, setFurthestDrawerStep] = useState(0);
+  const [splitTargets, setSplitTargets] = useState<SplitLeadExpenseTarget[]>([]);
   const [openRowMenuId, setOpenRowMenuId] = useState<number | null>(null);
   const rowMenuButtonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
 
@@ -195,6 +204,10 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     setIsReimbursable(false);
     setIsReimbursed(false);
     setContactId('');
+    setDrawerMode('single');
+    setDrawerStep(0);
+    setFurthestDrawerStep(0);
+    setSplitTargets([]);
   };
 
   const closeDrawer = () => {
@@ -237,7 +250,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
         ) {
           setExpenseTypeId(preferred.expenseTypeId);
         } else if (!preferred?.expenseTypeId) {
-          setExpenseTypeId(types[0]?.id || '');
+          setExpenseTypeId('');
         }
 
         if (
@@ -267,8 +280,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
         ) {
           setContactId(String(preferred.contactId));
         } else if (!preferred?.contactId) {
-          const main = contactRows.find((c) => c.isMain);
-          setContactId(main ? String(main.id) : contactRows[0] ? String(contactRows[0].id) : '');
+          setContactId('');
         }
       } catch (err: any) {
         console.error('[FinancesLeadExpensesSection] options:', err);
@@ -285,6 +297,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     contactName?: string | null;
   }) => {
     resetForm();
+    setDrawerMode('single');
     setDrawerOpen(true);
     void (async () => {
       let preferredContactId: string | null =
@@ -309,6 +322,17 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     })();
   };
 
+  const openSplitDrawer = () => {
+    if (!identity) {
+      toast.error('Lead not found');
+      return;
+    }
+    resetForm();
+    setDrawerMode('split');
+    setDrawerOpen(true);
+    void loadDrawerOptions();
+  };
+
   useEffect(() => {
     if (!openAddExpenseRequest?.token) return;
     openAddDrawer({
@@ -319,8 +343,14 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open once per request token
   }, [openAddExpenseRequest?.token]);
 
+  useEffect(() => {
+    setFurthestDrawerStep((furthest) => Math.max(furthest, drawerStep));
+  }, [drawerStep]);
+
   const openEditDrawer = (row: LeadExpenseRow) => {
     setOpenRowMenuId(null);
+    setDrawerMode('single');
+    setDrawerStep(1);
     setEditingId(row.id);
     setExpenseTypeId(row.expense_type_id);
     setAmount(String(row.amount ?? ''));
@@ -350,13 +380,21 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
       return;
     }
     const contactNum = contactId ? Number(contactId) : NaN;
-    if (!Number.isFinite(contactNum)) {
+    if (drawerMode === 'single' && !Number.isFinite(contactNum)) {
       toast.error('Select a related client contact');
+      return;
+    }
+    if (drawerMode === 'split' && splitTargets.length < 2) {
+      toast.error('Select at least two lead contacts');
       return;
     }
     const amountNum = Number(amount);
     if (!Number.isFinite(amountNum) || amountNum < 0) {
       toast.error('Enter a valid amount');
+      return;
+    }
+    if (drawerMode === 'split' && amountNum <= 0) {
+      toast.error('Enter a total amount greater than zero');
       return;
     }
     const currencyNum = currencyId ? Number(currencyId) : null;
@@ -365,7 +403,20 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
 
     setSaving(true);
     try {
-      if (editingId != null) {
+      if (drawerMode === 'split') {
+        await insertSplitLeadExpenses({
+          targets: splitTargets,
+          expenseTypeId,
+          totalAmount: amountNum,
+          currencyId: Number.isFinite(currencyNum as number) ? currencyNum : null,
+          expenseDate: expenseDate || null,
+          notes,
+          includeVat,
+          paidBy,
+          isReimbursable: reimbursable,
+          isReimbursed: reimbursed,
+        });
+      } else if (editingId != null) {
         await updateLeadExpense({
           expenseId: editingId,
           identity,
@@ -398,7 +449,13 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
         });
       }
 
-      toast.success(editingId != null ? 'Expense updated' : 'Expense added');
+      toast.success(
+        drawerMode === 'split'
+          ? `Expense split across ${splitTargets.length} contacts`
+          : editingId != null
+            ? 'Expense updated'
+            : 'Expense added',
+      );
       setDrawerOpen(false);
       resetForm();
       await loadExpenses();
@@ -408,6 +465,35 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleContinue = () => {
+    if (drawerMode !== 'split' || drawerStep !== 2) return;
+    if (splitTargets.length < 2) {
+      toast.error('Add at least one more lead contact, then continue');
+      return;
+    }
+    setDrawerStep(3);
+  };
+
+  const completeAmountStep = (showError = false) => {
+    const amountNum = Number(amount);
+    const invalid =
+      amount.trim() === '' ||
+      !Number.isFinite(amountNum) ||
+      amountNum < 0 ||
+      (drawerMode === 'split' && amountNum <= 0);
+    if (invalid || !currencyId) {
+      if (showError) {
+        toast.error(
+          drawerMode === 'split'
+            ? 'Enter a total amount greater than zero'
+            : 'Enter a valid amount and currency',
+        );
+      }
+      return;
+    }
+    setDrawerStep(2);
   };
 
   const handleDelete = async (row: LeadExpenseRow) => {
@@ -434,6 +520,14 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
   };
 
   const total = sumLeadExpenseAmounts(expenses);
+  const splitAmounts = useMemo(
+    () => splitExpenseAmountEvenly(Number(amount), splitTargets.length),
+    [amount, splitTargets.length],
+  );
+  const splitCurrencyLabel =
+    currencies.find((currency) => String(currency.id) === currencyId)?.name ||
+    currencies.find((currency) => String(currency.id) === currencyId)?.iso_code ||
+    '';
 
   const statusChips = (row: LeadExpenseRow) => {
     const chips: string[] = [paidByLabel(row.paid_by)];
@@ -467,14 +561,24 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            className="btn btn-sm btn-ghost gap-1 rounded-xl border-0 px-2 text-indigo-700 hover:bg-indigo-50"
-            onClick={openAddDrawer}
-          >
-            <PlusIcon className="h-4 w-4" />
-            Add expense
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost gap-1 rounded-xl border-0 px-2 text-indigo-700 hover:bg-indigo-50"
+              onClick={openAddDrawer}
+            >
+              <PlusIcon className="h-4 w-4" />
+              Add expense
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost gap-1 rounded-xl border-0 px-2 text-indigo-700 hover:bg-indigo-50"
+              onClick={openSplitDrawer}
+            >
+              <ScissorsIcon className="h-4 w-4" />
+              Split
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -561,14 +665,31 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
         ReactDOM.createPortal(
           <div className="fixed inset-0 z-[100]">
             <div className="absolute inset-0 bg-black/30" onClick={closeDrawer} />
-            <div className="absolute inset-y-0 right-0 flex w-full max-w-md flex-col overflow-hidden bg-white shadow-2xl animate-slideInRight">
+            <div
+              className={`absolute inset-y-0 right-0 flex w-full flex-col overflow-hidden bg-white shadow-2xl animate-slideInRight ${
+                drawerMode === 'split' ? 'max-w-xl' : 'max-w-md'
+              }`}
+            >
               <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-6 py-5">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">
-                    {editingId != null ? 'Edit expense' : 'Add expense'}
+                    {drawerMode === 'split'
+                      ? 'Split expense'
+                      : editingId != null
+                        ? 'Edit expense'
+                        : 'Add expense'}
                   </h2>
-                  <p className="mt-0.5 text-sm text-slate-500">
-                    Creates an Expense row on Finances for the selected contact
+                  <p className="mt-1 text-xs font-medium text-slate-500">
+                    Step {drawerStep + 1} of 7 ·{' '}
+                    {[
+                      'Expense type',
+                      'Amount',
+                      drawerMode === 'split' ? 'Leads & contacts' : 'Client',
+                      'Paid by',
+                      'VAT',
+                      'Reimbursement',
+                      'Review',
+                    ][drawerStep]}
                   </p>
                 </div>
                 <button
@@ -581,6 +702,12 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                   <XMarkIcon className="h-5 w-5" />
                 </button>
               </div>
+              <div className="h-1 bg-slate-100">
+                <div
+                  className="h-full bg-indigo-600 transition-all duration-300"
+                  style={{ width: `${((drawerStep + 1) / 7) * 100}%` }}
+                />
+              </div>
 
               <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
                 {loadingOptions ? (
@@ -588,15 +715,22 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                     <span className="loading loading-spinner loading-md text-primary" />
                   </div>
                 ) : (
-                  <>
-                    <div className="form-control">
+                  <div className="space-y-5">
+                    {drawerStep === 0 ? (
+                    <div className="form-control animate-fade-in">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">Expense type</span>
                       </label>
                       <select
                         className="select select-bordered w-full"
                         value={expenseTypeId}
-                        onChange={(e) => setExpenseTypeId(e.target.value)}
+                        onChange={(e) => {
+                          setExpenseTypeId(e.target.value);
+                          if (e.target.value) setDrawerStep(1);
+                        }}
+                        onBlur={() => {
+                          if (expenseTypeId) setDrawerStep(1);
+                        }}
                         disabled={saving}
                       >
                         <option value="" disabled>
@@ -609,23 +743,11 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         ))}
                       </select>
                     </div>
+                    ) : null}
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="form-control">
-                        <label className="label py-1">
-                          <span className="label-text font-medium text-slate-700">Amount</span>
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          className="input input-bordered w-full"
-                          placeholder="0.00"
-                          value={amount}
-                          onChange={(e) => setAmount(e.target.value)}
-                          disabled={saving}
-                        />
-                      </div>
+                    {drawerStep === 1 ? (
+                    <div className="animate-fade-in space-y-5">
+                      <div className="grid grid-cols-2 gap-3">
                       <div className="form-control">
                         <label className="label py-1">
                           <span className="label-text font-medium text-slate-700">Currency</span>
@@ -643,54 +765,119 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                           ))}
                         </select>
                       </div>
-                    </div>
-
-                    <div className="form-control">
-                      <label className="label py-1">
-                        <span className="label-text font-medium text-slate-700">Due date</span>
-                      </label>
-                      <input
-                        type="date"
-                        className="input input-bordered w-full"
-                        value={expenseDate}
-                        onChange={(e) => setExpenseDate(e.target.value)}
-                        disabled={saving}
-                      />
-                    </div>
-
-                    <div className="form-control">
-                      <label className="label py-1">
-                        <span className="label-text font-medium text-slate-700">
-                          Related client
-                        </span>
-                      </label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={contactId}
-                        onChange={(e) => setContactId(e.target.value)}
-                        disabled={saving}
-                      >
-                        <option value="" disabled>
-                          Select contact…
-                        </option>
-                        {contacts.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                            {c.isMain ? ' (main)' : ''}
-                          </option>
-                        ))}
-                      </select>
-                      {contacts.length === 0 ? (
-                        <p className="mt-1.5 text-xs text-amber-700">
-                          No contacts on this lead. Add a contact before creating an expense.
-                        </p>
-                      ) : (
+                        <div className="form-control">
+                          <label className="label py-1">
+                            <span className="label-text font-medium text-slate-700">Due date</span>
+                          </label>
+                          <input
+                            type="date"
+                            className="input input-bordered w-full"
+                            value={expenseDate}
+                            onChange={(e) => setExpenseDate(e.target.value)}
+                            disabled={saving}
+                          />
+                        </div>
+                      </div>
+                      <div className="form-control">
+                        <label className="label py-1">
+                          <span className="label-text font-medium text-slate-700">
+                            {drawerMode === 'split' ? 'Total amount' : 'Amount'}
+                          </span>
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          className="input input-bordered w-full"
+                          placeholder="0.00"
+                          value={amount}
+                          onChange={(e) => setAmount(e.target.value)}
+                          onBlur={() => completeAmountStep(false)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              completeAmountStep(true);
+                            }
+                          }}
+                          disabled={saving}
+                        />
                         <p className="mt-1.5 text-xs text-slate-500">
-                          Finances payment row will appear under this contact.
+                          Enter the amount and press Enter or leave the field to continue.
                         </p>
-                      )}
+                      </div>
                     </div>
+                    ) : null}
 
+                    {drawerMode === 'split' && identity ? (
+                      <div className={drawerStep === 2 ? 'animate-fade-in space-y-5' : 'hidden'}>
+                        <ExpenseSplitTargetPicker
+                          currentIdentity={identity}
+                          currentLeadName={client?.name || identity.leadNumber || 'Current lead'}
+                          disabled={saving}
+                          onChange={setSplitTargets}
+                        />
+                        <div className="rounded-xl bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+                          {splitTargets.length < 2 ||
+                          splitAmounts.length === 0 ||
+                          Number(amount) <= 0 ? (
+                            <span>Select at least two contacts to preview the split.</span>
+                          ) : (
+                            <span>
+                              The total will create {splitTargets.length} expense rows.{' '}
+                              {Math.min(...splitAmounts) === Math.max(...splitAmounts)
+                                ? `Each contact receives ${splitCurrencyLabel} ${splitAmounts[0].toFixed(2)}.`
+                                : `Shares range from ${splitCurrencyLabel} ${Math.min(
+                                    ...splitAmounts,
+                                  ).toFixed(2)} to ${splitCurrencyLabel} ${Math.max(
+                                    ...splitAmounts,
+                                  ).toFixed(2)} so the total remains exact.`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ) : drawerStep === 2 ? (
+                      <div className="form-control">
+                        <label className="label py-1">
+                          <span className="label-text font-medium text-slate-700">
+                            Related client
+                          </span>
+                        </label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={contactId}
+                          onChange={(e) => {
+                            setContactId(e.target.value);
+                            if (e.target.value) setDrawerStep(3);
+                          }}
+                          onBlur={() => {
+                            if (contactId) setDrawerStep(3);
+                          }}
+                          disabled={saving}
+                        >
+                          <option value="" disabled>
+                            Select contact…
+                          </option>
+                          {contacts.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                              {c.isMain ? ' (main)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        {contacts.length === 0 ? (
+                          <p className="mt-1.5 text-xs text-amber-700">
+                            No contacts on this lead. Add a contact before creating an expense.
+                          </p>
+                        ) : (
+                          <p className="mt-1.5 text-xs text-slate-500">
+                            Finances payment row will appear under this contact.
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
+
+                    {drawerStep === 3 ? (
+                    <div className="animate-fade-in space-y-5">
                     <div className="form-control">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">Paid by</span>
@@ -703,7 +890,10 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => setPaidBy('client')}
+                          onClick={() => {
+                            setPaidBy('client');
+                            setDrawerStep(4);
+                          }}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             paidBy === 'client'
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -715,7 +905,10 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => setPaidBy('firm')}
+                          onClick={() => {
+                            setPaidBy('firm');
+                            setDrawerStep(4);
+                          }}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             paidBy === 'firm'
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -726,7 +919,11 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         </button>
                       </div>
                     </div>
+                    </div>
+                    ) : null}
 
+                    {drawerStep === 4 ? (
+                    <div className="animate-fade-in space-y-5">
                     <div className="form-control">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">VAT</span>
@@ -739,7 +936,10 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => setIncludeVat(false)}
+                          onClick={() => {
+                            setIncludeVat(false);
+                            setDrawerStep(5);
+                          }}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             !includeVat
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -751,7 +951,10 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => setIncludeVat(true)}
+                          onClick={() => {
+                            setIncludeVat(true);
+                            setDrawerStep(5);
+                          }}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             includeVat
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -762,40 +965,88 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         </button>
                       </div>
                     </div>
+                    </div>
+                    ) : null}
 
-                    <div className="space-y-2">
-                      <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-slate-200 px-3 py-2.5 hover:bg-slate-50">
-                        <input
-                          type="checkbox"
-                          className="checkbox checkbox-sm"
-                          checked={isReimbursable}
-                          onChange={(e) => {
-                            const next = e.target.checked;
-                            setIsReimbursable(next);
-                            if (!next) setIsReimbursed(false);
+                    {drawerStep === 5 ? (
+                    <div className="animate-fade-in space-y-2">
+                      {[
+                        {
+                          label: 'Not reimbursable',
+                          description: 'No reimbursement is expected.',
+                          reimbursable: false,
+                          reimbursed: false,
+                        },
+                        {
+                          label: 'Reimbursable',
+                          description: 'The client is expected to reimburse this expense.',
+                          reimbursable: true,
+                          reimbursed: false,
+                        },
+                        {
+                          label: 'Already reimbursed',
+                          description: 'The reimbursement has already been received.',
+                          reimbursable: true,
+                          reimbursed: true,
+                        },
+                      ].map((option) => (
+                        <button
+                          key={option.label}
+                          type="button"
+                          className="w-full rounded-xl bg-slate-50 px-4 py-3 text-left transition hover:bg-indigo-50"
+                          onClick={() => {
+                            setIsReimbursable(option.reimbursable);
+                            setIsReimbursed(option.reimbursed);
+                            setDrawerStep(6);
                           }}
                           disabled={saving}
-                        />
-                        <span className="text-sm text-slate-800">Reimbursable</span>
-                      </label>
-                      <label
-                        className={`flex items-center gap-2.5 rounded-xl border border-slate-200 px-3 py-2.5 ${
-                          isReimbursable
-                            ? 'cursor-pointer hover:bg-slate-50'
-                            : 'cursor-not-allowed opacity-50'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          className="checkbox checkbox-sm"
-                          checked={isReimbursed}
-                          onChange={(e) => setIsReimbursed(e.target.checked)}
-                          disabled={saving || !isReimbursable}
-                        />
-                        <span className="text-sm text-slate-800">Already reimbursed</span>
-                      </label>
+                        >
+                          <span className="block text-sm font-semibold text-slate-800">
+                            {option.label}
+                          </span>
+                          <span className="mt-0.5 block text-xs text-slate-500">
+                            {option.description}
+                          </span>
+                        </button>
+                      ))}
                     </div>
+                    ) : null}
 
+                    {drawerStep === 6 ? (
+                    <div className="animate-fade-in space-y-5">
+                    <div className="rounded-xl bg-slate-50 p-4">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                        <div>
+                          <p className="text-xs text-slate-500">Type</p>
+                          <p className="font-medium text-slate-800">
+                            {expenseTypes.find((type) => type.id === expenseTypeId)?.label || '—'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-500">Amount</p>
+                          <p className="font-medium text-slate-800">
+                            {splitCurrencyLabel} {Number(amount || 0).toFixed(2)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-500">
+                            {drawerMode === 'split' ? 'Destinations' : 'Client'}
+                          </p>
+                          <p className="font-medium text-slate-800">
+                            {drawerMode === 'split'
+                              ? `${splitTargets.length} lead contact${splitTargets.length === 1 ? '' : 's'}`
+                              : contacts.find((contact) => String(contact.id) === contactId)?.name || '—'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-500">Options</p>
+                          <p className="font-medium text-slate-800">
+                            {paidBy === 'firm' ? 'Firm paid' : 'Client paid'} ·{' '}
+                            {includeVat ? 'With VAT' : 'Without VAT'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
                     <div className="form-control">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">Notes</span>
@@ -809,33 +1060,76 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         dir={/[\u0590-\u05FF]/.test(notes) ? 'rtl' : 'ltr'}
                       />
                     </div>
-                  </>
+                    </div>
+                    ) : null}
+                  </div>
                 )}
               </div>
 
-              <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-6 py-4">
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={closeDrawer}
-                  disabled={saving}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => void handleSave()}
-                  disabled={saving || loadingOptions || contacts.length === 0}
-                >
-                  {saving ? (
-                    <span className="loading loading-spinner loading-sm" />
-                  ) : editingId != null ? (
-                    'Save changes'
+              <div className="flex items-center justify-between gap-2 px-6 py-4">
+                <div>
+                  {drawerStep > 0 ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setDrawerStep((step) => Math.max(0, step - 1))}
+                      disabled={saving}
+                    >
+                      Back
+                    </button>
                   ) : (
-                    'Add expense'
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={closeDrawer}
+                      disabled={saving}
+                    >
+                      Cancel
+                    </button>
                   )}
-                </button>
+                </div>
+                {drawerMode === 'split' && drawerStep === 2 ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary min-w-28"
+                    onClick={handleContinue}
+                    disabled={saving || loadingOptions}
+                  >
+                    Continue
+                  </button>
+                ) : drawerStep < furthestDrawerStep ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary min-w-28"
+                    onClick={() => setDrawerStep((step) => Math.min(6, step + 1))}
+                    disabled={saving || loadingOptions}
+                  >
+                    Continue
+                  </button>
+                ) : drawerStep === 6 ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary min-w-28"
+                    onClick={() => void handleSave()}
+                    disabled={saving || loadingOptions}
+                  >
+                    {saving ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : drawerMode === 'split' ? (
+                      'Split expense'
+                    ) : editingId != null ? (
+                      'Save changes'
+                    ) : (
+                      'Add expense'
+                    )}
+                  </button>
+                ) : (
+                  <p className="text-xs font-medium text-slate-400">
+                    {drawerStep === 1
+                      ? 'Complete the amount to continue'
+                      : 'Choose an option to continue'}
+                  </p>
+                )}
               </div>
             </div>
           </div>,

@@ -52,6 +52,7 @@ import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { employeeHasAnySalesRoleOnLeadBundle } from '../utils/rolePercentageCalculator';
 import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
+import { getValidTeamsLink as getValidMeetingJoinLink } from '../lib/meetingJoinLink';
 
 import { resolveCategoryAndDepartment, shouldUseScoreboardOtherColumn } from '../lib/resolveCategoryDepartment';
 import { hasDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
@@ -1508,26 +1509,8 @@ const Dashboard: React.FC = () => {
   };
 
   // Helper function to extract valid Teams link from stored data
-  const getValidTeamsLink = (link: string | undefined): string => {
-    if (!link) return '';
-    try {
-      // If it's a plain URL, return as is
-      if (link.startsWith('http')) return link;
-      // If it's a stringified object, parse and extract joinUrl
-      const obj = JSON.parse(link);
-      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
-        return obj.joinUrl;
-      }
-      // Some Graph API responses use joinWebUrl
-      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
-        return obj.joinWebUrl;
-      }
-    } catch (e) {
-      // Not JSON, just return as is
-      if (typeof link === 'string' && link.startsWith('http')) return link;
-    }
-    return '';
-  };
+  const getValidTeamsLink = (link: string | undefined): string =>
+    getValidMeetingJoinLink(link);
 
   // Helper function to check if location is online/teams/zoom
   const isOnlineLocation = (location: string | undefined): boolean => {
@@ -7304,24 +7287,15 @@ const Dashboard: React.FC = () => {
                       })() && (
                           <div className="absolute bottom-4 left-4 right-4">
                             {/* Join Meeting (Teams) */}
-                            <button
+                            <a
+                              href={getValidTeamsLink(meeting.link)}
+                              target="_blank"
+                              rel="noopener noreferrer"
                               className="btn btn-primary btn-xs sm:btn-sm w-full"
-                              onClick={() => {
-                                const url = getValidTeamsLink(
-                                  meeting.link ||
-                                  meeting.teams_meeting_url ||
-                                  meetingLocationLinks[meeting.location]
-                                );
-                                if (url) {
-                                  window.open(url, '_blank');
-                                } else {
-                                  alert('No meeting URL available');
-                                }
-                              }}
                               title={meeting.isStaffMeeting ? "Join Meeting" : "Teams Meeting"}
                             >
                               <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                            </button>
+                            </a>
                           </div>
                         )}
                     </div>

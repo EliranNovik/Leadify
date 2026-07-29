@@ -94,7 +94,7 @@ Steps (`pelecardPaymentController.js`):
 2. **Reconcile** if status is `processing` or `failed` (recover charges that succeeded at Pelecard but failed to save locally).
 3. Call `pelecardService.createPaymentSession()`:
    - **`resolvePelecardChargeAmount`**: converts foreign currency to **ILS** using latest **Bank of Israel** rates in `boi_exchange_rates` (Pelecard always charges in ILS, `Currency: '1'`).
-   - **`PaymentGW/init`** with terminal credentials, amount in **agorot** (`Total`), `ActionType: 'J4'`, `ShopNo: '001'`, `ParamX` = secure token.
+   - **`PaymentGW/init`** with terminal credentials, amount in **agorot** (`Total`), `ActionType: 'J4'`, `ShopNo: '001'`, `ParamX` = `{leadNumber}-{plan_contact_id}` from `payment_links` (≤19 chars; Pelecard “more information” / AdditionalDetails). Lead number: **new** = `leads.lead_number` via `payment_links.client_id`; **legacy** = `payment_links.legacy_id` (`leads_lead.id`). Fallback short code only when lead/contact are missing. Never send the long `payment_…` secure_token (it truncates to `payment_176…`).
    - **E-commerce classification**: `J4` + CVV required + phone hidden; never `AuthNum` (telephone/MOTO). `CustomerIdField` defaults to `hide` (no ID/passport in the iframe); override with `PELECARD_CUSTOMER_ID_FIELD` if needed.
    - **Return URLs** point to **`BACKEND_PUBLIC_URL`** (`/api/payments/pelecard/return/success|error|cancel`), not the React app directly.
    - **Display options**: `CssURL`, language, cardholder prefill, email field, iframe-safe flags (`FeedbackOnTop: 'False'`, `Target: '_self'`).
@@ -119,12 +119,14 @@ Pelecard calls our backend (GET/POST):
 | Route | Outcome |
 | ----- | ------- |
 | `/api/payments/pelecard/return/success` | Verify transaction via `GetTransaction`, mark paid, update `payment_plans` / legacy plan |
-| `/api/payments/pelecard/return/error` | Mark failed with Pelecard status code |
+| `/api/payments/pelecard/return/error` | Soft-fail path: keep `processing` when status is pending (e.g. Open Finance `665` / `RCVD`), redirect to confirming/thank-you; only hard-fail real declines |
 | `/api/payments/pelecard/return/cancel` | Mark `cancelled` |
+
+**Open Finance / digital bank transfer:** Pelecard may post JSON mislabeled as `application/x-www-form-urlencoded` (entire payload as one form field name). The backend parses that shape. Status `665` with `BankTransferStatus: RCVD` means the bank received the initiation (intermediate)—not paid and not declined. Mark paid only after `GetTransaction` / reconciliation shows a final OF success status (`ACSC`, `ACTC`, `ACSP`, `ACWC`, `ACFC`, `ACCC`). Pelecard’s merchant UI can show a green row while status is still `RCVD`.
 
 Then Pelecard redirects the browser to **`APP_PUBLIC_URL`**:
 
-- `/payment/success?paymentId=…`
+- `/payment/success?paymentId=…` (or `confirming=1` while OF is still pending)
 - `/payment/failed?paymentId=…&pelecardStatus=…`
 - `/payment/cancelled?paymentId=…`
 

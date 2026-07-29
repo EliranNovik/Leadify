@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { VideoCameraIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 
-type MeetingJoinAction = 'enter' | 'copy' | 'share';
+type MeetingJoinAction = 'copy' | 'share';
 
 type MeetingJoinLinkMenuProps = {
   meeting: unknown;
@@ -36,6 +36,7 @@ export function MeetingJoinLinkMenu({
   const menuRef = useRef<HTMLDivElement>(null);
 
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const meetingUrl = getMeetingJoinUrl(meeting);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) {
@@ -80,13 +81,9 @@ export function MeetingJoinLinkMenu({
 
   const runAction = async (action: MeetingJoinAction) => {
     setOpen(false);
-    const url = getMeetingJoinUrl(meeting);
+    const url = meetingUrl;
     if (!url) {
       toast.error('No meeting URL available');
-      return;
-    }
-    if (action === 'enter') {
-      window.open(url, '_blank', 'noopener,noreferrer');
       return;
     }
     if (action === 'copy') {
@@ -142,16 +139,23 @@ export function MeetingJoinLinkMenu({
             >
               <ul className="menu menu-sm p-0">
                 <li>
-                  <button
-                    type="button"
+                  <a
+                    href={meetingUrl || undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="touch-manipulation"
                     onClick={(e) => {
                       stopPropagationOnly(e);
-                      void runAction('enter');
+                      if (!meetingUrl) {
+                        e.preventDefault();
+                        toast.error('No meeting URL available');
+                        return;
+                      }
+                      setOpen(false);
                     }}
                   >
                     Enter meeting
-                  </button>
+                  </a>
                 </li>
                 <li>
                   <button

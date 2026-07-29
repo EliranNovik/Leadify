@@ -17,6 +17,10 @@ const {
   profileFromPayment,
   getProfilesStatus,
 } = require('../lib/pelecardProfiles');
+const {
+  mergeCallbackData,
+  isPendingOpenFinanceCallback,
+} = require('../lib/pelecardCallback');
 
 function appRedirect(path, query = {}, profile = 'production') {
   const { appPublicUrl } = pelecardService.getConfig(profile);
@@ -28,47 +32,6 @@ function appRedirect(path, query = {}, profile = 'production') {
   }
   const qs = params.toString();
   return `${appPublicUrl}${path}${qs ? `?${qs}` : ''}`;
-}
-
-function flattenCallbackSource(source, into = {}) {
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return into;
-  for (const [key, value] of Object.entries(source)) {
-    if (value == null) continue;
-    if (typeof value === 'object' && !Array.isArray(value)) {
-      // Pelecard sometimes nests ResultData / UserData
-      if (key === 'ResultData' || key === 'resultData' || key === 'UserData' || key === 'userData') {
-        flattenCallbackSource(value, into);
-      }
-      continue;
-    }
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      into[key] = value;
-    }
-  }
-  return into;
-}
-
-function mergeCallbackData(req) {
-  const merged = {
-    ...flattenCallbackSource(req.query || {}),
-    ...flattenCallbackSource(req.body || {}),
-  };
-
-  // Some gateways post a JSON string in a single field
-  for (const key of ['data', 'payload', 'json', 'ResultData']) {
-    const raw = req.body?.[key];
-    if (typeof raw === 'string' && raw.trim().startsWith('{')) {
-      try {
-        flattenCallbackSource(JSON.parse(raw), merged);
-      } catch {
-        /* ignore */
-      }
-    } else if (raw && typeof raw === 'object') {
-      flattenCallbackSource(raw, merged);
-    }
-  }
-
-  return merged;
 }
 
 function hasCallbackIdentity(data) {
@@ -478,13 +441,42 @@ async function handlePelecardReturn(req, res, outcome) {
       return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }, redirectProfile));
     }
 
+    // Open Finance callbacks can arrive on ErrorURL with 665 / RCVD while the
+    // receiving bank is still processing. This is not a decline: preserve the
+    // link as processing and let polling/reconciliation confirm the final result.
+    if (isPendingOpenFinanceCallback(data)) {
+      await reconciliation.persistPaymentPending(payment, data, verifyResult);
+      console.info('[Pelecard] Open Finance transfer pending', {
+        paymentId: secureToken,
+        statusCode: statusCode || verifyResult.resolvedStatusCode || null,
+        bankTransferStatus: data.BankTransferStatus || null,
+        transactionId: transactionId || null,
+      });
+
+      const isBrowserReturn =
+        req.method === 'GET' ||
+        Boolean(req.headers.accept && String(req.headers.accept).includes('text/html'));
+      if (!isBrowserReturn && req.method === 'POST') {
+        return res.status(200).send('OK');
+      }
+      return res.redirect(
+        appRedirect('/payment/success', {
+          paymentId: secureToken,
+          confirming: '1',
+        }, redirectProfile),
+      );
+    }
+
     // Browser/server hit ErrorURL but Pelecard may still have charged — don't hard-fail the row yet.
     // Send the client to the thank-you/verifying page so they are not stuck on an error screen.
     if (outcome === 'error' && !verifyResult.verified) {
+      // 665 is Open Finance "in progress" — never treat as a hard card decline.
       const hardDecline =
         Boolean(statusCode) &&
         statusCode !== '000' &&
-        !reconciliation.isSessionExpiredCode(statusCode);
+        statusCode !== '665' &&
+        !reconciliation.isSessionExpiredCode(statusCode) &&
+        !isPendingOpenFinanceCallback(data);
 
       if (!hardDecline) {
         console.warn('[Pelecard] Soft error callback — redirecting client to confirming/thank-you', {

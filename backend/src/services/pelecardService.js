@@ -7,6 +7,7 @@ const PELECARD_INIT_PATH = 'PaymentGW/init';
 const PELECARD_GET_TRANSACTION_PATH = 'PaymentGW/GetTransaction';
 const PELECARD_CHECK_GOOD_PARAM_X_PATH = 'services/CheckGoodParamX';
 const { resolvePelecardChargeAmount } = require('./paymentChargeAmountService');
+const { isSuccessfulOpenFinanceStatus } = require('../lib/pelecardCallback');
 const {
   getPelecardConfig,
   assertCredentials: assertProfileCredentials,
@@ -14,8 +15,11 @@ const {
 } = require('../lib/pelecardProfiles');
 const {
   resolvePelecardParamX,
+  ensureLeadNumberForParamX,
+  resolveLeadNumberForParamX,
   PELECARD_PARAM_X_MAX,
 } = require('../lib/pelecardParamX');
+const supabase = require('../config/supabase');
 
 function getConfig(profile = 'production') {
   return getPelecardConfig(normalizeProfile(profile));
@@ -424,10 +428,11 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
   const config = getConfig(profile);
   assertCredentials(config);
 
-  const charge = await resolvePelecardChargeAmount(payment);
+  const paymentWithLead = await ensureLeadNumberForParamX(payment, supabase);
+  const charge = await resolvePelecardChargeAmount(paymentWithLead);
   const totalAgorot = totalToAgorot(charge.chargeTotalNis);
   // Pelecard truncates ParamX (~19 chars). Never send the full secure_token.
-  const paymentRef = resolvePelecardParamX(payment, secureToken);
+  const paymentRef = resolvePelecardParamX(paymentWithLead, secureToken);
 
   const returnBase = `${config.backendPublicUrl}/api/payments/pelecard/return`;
   const payload = {
@@ -446,18 +451,24 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
     CreateToken: 'False',
     Language: 'en',
     FreeTotal: 'False',
-    Details: buildPelecardDetails(payment, charge),
+    Details: buildPelecardDetails(paymentWithLead, charge),
   };
 
   if (config.sandboxMode) {
     payload.QAResultStatus = '000';
   }
 
-  Object.assign(payload, buildCheckoutDisplayOptions(config, payment));
+  Object.assign(payload, buildCheckoutDisplayOptions(config, paymentWithLead));
 
   console.info('[Pelecard] Checkout init (internet e-commerce)', {
     profile: config.profile,
     terminal: config.terminal,
+    ParamX: paymentRef,
+    planContactId: paymentWithLead?.plan_contact_id ?? null,
+    leadNumber: resolveLeadNumberForParamX(paymentWithLead),
+    isLegacyLead: Boolean(
+      paymentWithLead?.legacy_id != null || paymentWithLead?.is_legacy_payment_plan === true,
+    ),
     ActionType: payload.ActionType,
     ShopNo: payload.ShopNo,
     CustomerIdField: payload.CustomerIdField,
@@ -514,10 +525,21 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
 }
 
 function buildPelecardDetails(payment, charge) {
-  const base = (payment.description || 'CRM Payment').slice(0, 200);
-  if (!charge.converted) return base.slice(0, 250);
+  const lead = resolveLeadNumberForParamX(payment);
+  const contactId = payment?.plan_contact_id != null ? String(payment.plan_contact_id) : null;
+  const refParts = [];
+  if (lead) refParts.push(`Lead ${lead}`);
+  if (contactId) refParts.push(`Contact ${contactId}`);
+  const ref = refParts.length ? refParts.join(' · ') : null;
+
+  const base = (payment.description || ref || 'CRM Payment').slice(0, 200);
+  const withRef =
+    ref && !String(payment.description || '').includes(String(lead || ''))
+      ? `${base} (${ref})`
+      : base;
+  if (!charge?.converted) return withRef.slice(0, 250);
   const note = ` (${charge.originalCurrency} ${charge.originalTotal} @ BOI ${charge.rateToIls})`;
-  return `${base}${note}`.slice(0, 250);
+  return `${withRef}${note}`.slice(0, 250);
 }
 
 function normalizeTransactionResult(raw) {
@@ -612,6 +634,10 @@ function isSuccessfulStatus(statusCode, resultData) {
 
   // Explicit Pelecard approval
   if (code === '000') return true;
+
+  // Open Finance uses its bank-transfer lifecycle status even when Pelecard's
+  // outer/Shva code remains 665. Only documented final success states qualify.
+  if (isSuccessfulOpenFinanceStatus(resultData)) return true;
 
   // Digital transfer / wallet rows often expose ShvaResult instead of StatusCode
   const shva = String(resultData?.ShvaResult ?? resultData?.shvaResult ?? '').trim();
