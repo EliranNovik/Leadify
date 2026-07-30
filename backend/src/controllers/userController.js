@@ -76,12 +76,18 @@ class UserController {
   updateUserPassword = async (req, res) => {
     try {
       const { userId } = req.params;
-      const { newPassword } = req.body;
+      const newPassword = String(req.body?.newPassword || req.body?.new_password || '');
 
-      if (!newPassword) {
+      if (!newPassword.trim()) {
         return res.status(400).json({
           success: false,
           error: 'New password is required'
+        });
+      }
+      if (newPassword.length < 6) {
+        return res.status(400).json({
+          success: false,
+          error: 'Password must be at least 6 characters long'
         });
       }
 

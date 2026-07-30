@@ -421,7 +421,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setAuthState((prev) => ({ ...prev, sessionCheckComplete: true }));
       markSupabaseSessionReady(true);
       if (session?.user?.id) {
-        preCheckExternalUser(session.user.id).catch(err => {
+        preCheckExternalUser(session.user.id, session.user.email).catch(err => {
           console.error('Error pre-checking external user:', err);
         });
       }
@@ -443,7 +443,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Pre-check external user status in the background
         // This ensures the check is ready when the dashboard loads
         if (session?.user?.id) {
-          preCheckExternalUser(session.user.id).catch(err => {
+          preCheckExternalUser(session.user.id, session.user.email).catch(err => {
             console.error('Error pre-checking external user:', err);
           });
         }

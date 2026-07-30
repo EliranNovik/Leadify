@@ -15,6 +15,7 @@ import {
   fetchBypassStaffUsers,
   verifyAuthUserIsSuperuser,
   writeAdminClockInBypass,
+  type BypassAccountKind,
   type BypassStaffUser,
 } from '../lib/adminClockInBypass';
 import { whatsAppAvatarBackgroundStyle } from '../lib/whatsappAvatarColors';
@@ -24,13 +25,28 @@ import {
 } from '../lib/adminWorkerLoginApi';
 import { writeAdminImpersonationGrant } from '../lib/adminImpersonationGrant';
 import { fetchWelcomeProfileForEmail } from '../lib/loginWelcomeProfile';
-import { setDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
+import {
+  clearDashboardWelcomePending,
+  setDashboardWelcomePending,
+} from '../lib/dashboardWelcomeSession';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 
 type LoginAdminAccessModalProps = {
   isOpen: boolean;
   onClose: () => void;
-  onWorkerSignedIn: () => void;
+  onWorkerSignedIn: (destination: string) => void;
+};
+
+const ACCOUNT_KIND_LABEL: Record<BypassAccountKind, string> = {
+  employee: 'Employee',
+  user: 'User',
+  external: 'External',
+};
+
+const ACCOUNT_KIND_BADGE_CLASS: Record<BypassAccountKind, string> = {
+  employee: 'bg-primary/10 text-primary',
+  user: 'bg-base-300/45 text-base-content/60',
+  external: 'bg-secondary/10 text-secondary',
 };
 
 type Step = 'verify' | 'pick';
@@ -154,7 +170,7 @@ const LoginAdminAccessModal: React.FC<LoginAdminAccessModalProps> = ({
       setStep('pick');
       setIsLoadingStaff(true);
 
-      const users = await fetchBypassStaffUsers();
+      const users = await fetchBypassStaffUsers({ includeAllAccounts: true });
       setStaffUsers(users);
     } catch (verifyError) {
       const message = verifyError instanceof Error ? verifyError.message : 'Admin verification failed';
@@ -196,13 +212,22 @@ const LoginAdminAccessModal: React.FC<LoginAdminAccessModalProps> = ({
         buildUserAdminBypass(adminAuthUserId, staffUser, authUserId, switchGrant),
       );
 
-      const profile = await fetchWelcomeProfileForEmail(tokenPayload.email, { email: tokenPayload.email });
+      const externalUser = await preCheckExternalUser(authUserId, tokenPayload.email);
+      if (externalUser?.isExternalUser || staffUser.accountKind === 'external') {
+        clearDashboardWelcomePending();
+        toast.success(`Signed in as ${staffUser.displayName}`);
+        onWorkerSignedIn('/external-home');
+        return;
+      }
+
+      const profile = await fetchWelcomeProfileForEmail(tokenPayload.email, {
+        email: tokenPayload.email,
+      });
       setDashboardWelcomePending(profile);
       void import('../components/Dashboard');
-      void preCheckExternalUser(authUserId);
 
       toast.success(`Signed in as ${staffUser.displayName}`);
-      onWorkerSignedIn();
+      onWorkerSignedIn('/');
     } catch (workerError) {
       console.error('Worker admin sign-in failed:', workerError);
       const message = workerError instanceof Error ? workerError.message : 'Failed to sign in as worker';
@@ -235,7 +260,7 @@ const LoginAdminAccessModal: React.FC<LoginAdminAccessModalProps> = ({
             <p className="mt-1 text-sm text-base-content/60">
               {step === 'verify'
                 ? 'Verify your superuser account to continue on this page.'
-                : 'Choose a worker account to sign in as.'}
+                : 'Choose an employee, user, or external account to sign in as.'}
             </p>
           </div>
           <button
@@ -311,7 +336,7 @@ const LoginAdminAccessModal: React.FC<LoginAdminAccessModalProps> = ({
                     <span className="loading loading-spinner loading-md text-primary" />
                   </div>
                 ) : filteredStaff.length === 0 ? (
-                  <p className="px-4 py-6 text-center text-sm text-base-content/55">No matching staff found.</p>
+                  <p className="px-4 py-6 text-center text-sm text-base-content/55">No matching accounts found.</p>
                 ) : (
                   <ul className="flex flex-col gap-2">
                     {filteredStaff.map((staff) => (
@@ -331,6 +356,11 @@ const LoginAdminAccessModal: React.FC<LoginAdminAccessModalProps> = ({
                             {staff.email ? (
                               <span className="block truncate text-xs text-base-content/55">{staff.email}</span>
                             ) : null}
+                          </span>
+                          <span
+                            className={`badge badge-sm shrink-0 border-0 font-medium ${ACCOUNT_KIND_BADGE_CLASS[staff.accountKind]}`}
+                          >
+                            {ACCOUNT_KIND_LABEL[staff.accountKind]}
                           </span>
                           <ChevronRightIcon className="h-5 w-5 shrink-0 text-base-content/35" aria-hidden />
                         </button>

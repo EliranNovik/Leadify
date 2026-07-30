@@ -15,7 +15,7 @@ const LazyDashboard = lazy(() => import('../components/Dashboard'));
  * staff `Dashboard` chunk never mounts for external users (no flash).
  */
 export default function HomeEntryPage() {
-  const { isExternalUser, isLoading } = useExternalUser();
+  const { isExternalUser, isLoading, isResolved } = useExternalUser();
   const gate = useOptionalClockInGate();
   const isGateOpen = gate?.isGateOpen ?? true;
   const [welcomeActive, setWelcomeActive] = useState(() => hasDashboardWelcomePending());
@@ -34,7 +34,18 @@ export default function HomeEntryPage() {
     return <Navigate to="/external-home" replace />;
   }
 
-  const showWelcomeOverlay = welcomeActive && isGateOpen;
+  if (!isLoading && !isResolved) {
+    return (
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-6 text-center">
+        <p className="font-medium text-base-content">We couldn’t load your user profile.</p>
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => window.location.reload()}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const showWelcomeOverlay = welcomeActive && isGateOpen && isResolved && !isExternalUser;
 
   return (
     <>

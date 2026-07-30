@@ -71,6 +71,17 @@ function persistExternalUserGate(entry: {
     }
 }
 
+export function clearExternalUserGateCache(): void {
+    cachedExternalUser = null;
+    if (typeof window !== 'undefined') {
+        try {
+            sessionStorage.removeItem(EXTERNAL_USER_GATE_SS_KEY);
+        } catch {
+            /* private mode */
+        }
+    }
+}
+
 /**
  * On `/` and `/external-home`, hide internal Sidebar / Header / bottom nav while
  * `useExternalUser` is still resolving (Sidebar previously only hid when `!isLoadingExternal`).
@@ -118,10 +129,43 @@ type ResolvedExternalSession = {
     userId: string;
 };
 
-/**
- * Single source of truth: `public.users.auth_id` = Supabase auth user id.
- * No email-based user or firm_contact lookups (avoids refresh / casing mismatches).
- */
+const EXTERNAL_USER_SELECT = `
+  id,
+  extern,
+  email,
+  full_name,
+  first_name,
+  last_name,
+  employee_id,
+  tenants_employee!users_employee_id_fkey(
+    official_name,
+    display_name,
+    photo_url
+  )
+`;
+
+async function queryExternalUserRow(user: { id: string; email?: string | null }) {
+    const byAuthId = await supabase
+        .from('users')
+        .select(EXTERNAL_USER_SELECT)
+        .eq('auth_id', user.id)
+        .maybeSingle();
+    if (!byAuthId.error && byAuthId.data) return { row: byAuthId.data, error: null };
+
+    if (user.email?.trim()) {
+        const byEmail = await supabase
+            .from('users')
+            .select(EXTERNAL_USER_SELECT)
+            .ilike('email', user.email.trim())
+            .maybeSingle();
+        if (!byEmail.error && byEmail.data) return { row: byEmail.data, error: null };
+        if (byEmail.error) return { row: null, error: byEmail.error };
+    }
+
+    return { row: null, error: byAuthId.error || null };
+}
+
+/** Resolve external status by auth id, with email fallback and one JWT/RLS-race retry. */
 async function resolveExternalUserFromAuthSession(
     authUser?: { id: string; email?: string | null } | null,
 ): Promise<ResolvedExternalSession | null> {
@@ -140,35 +184,15 @@ async function resolveExternalUserFromAuthSession(
         user = fetched;
     }
 
-    const { data: row, error } = await supabase
-        .from('users')
-        .select(
-            `
-      id,
-      extern,
-      email,
-      full_name,
-      first_name,
-      last_name,
-      employee_id,
-      tenants_employee!users_employee_id_fkey(
-        official_name,
-        display_name,
-        photo_url
-      )
-    `,
-        )
-        .eq('auth_id', user.id)
-        .maybeSingle();
-
-    if (error || !row) {
-        return {
-            isExternalUser: false,
-            userName: null,
-            userImage: null,
-            userId: user.id,
-        };
+    let { row, error } = await queryExternalUserRow(user);
+    if (!row && !error) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await supabase.auth.getSession().catch(() => null);
+        ({ row, error } = await queryExternalUserRow(user));
     }
+    if (error) throw error;
+    // An empty row is unresolved, never a confirmed internal user.
+    if (!row) return null;
 
     const isExternal = parseExternFlag((row as any).extern);
     const emp = normalizeTenantsEmployee((row as any).tenants_employee);
@@ -203,23 +227,28 @@ async function resolveExternalUserFromAuthSession(
  * Pre-check external user status in the background (e.g. during login).
  * Uses `users.auth_id` only; updates module cache when complete.
  */
-export const preCheckExternalUser = async (userId?: string): Promise<void> => {
+export const preCheckExternalUser = async (
+    userId?: string,
+    email?: string | null,
+): Promise<CachedExternalUser | null> => {
     if (checkInProgress && checkPromise) {
-        await checkPromise;
-        return;
+        const waited = await checkPromise;
+        if (!userId || waited?.userId === userId) return waited;
     }
 
     if (cachedExternalUser) {
         const now = Date.now();
         if (now - cachedExternalUser.timestamp < CACHE_DURATION && (!userId || cachedExternalUser.userId === userId)) {
-            return;
+            return cachedExternalUser;
         }
     }
 
     checkInProgress = true;
     checkPromise = (async (): Promise<CachedExternalUser | null> => {
         try {
-            const resolved = await resolveExternalUserFromAuthSession();
+            const resolved = await resolveExternalUserFromAuthSession(
+                userId ? { id: userId, email: email || null } : undefined,
+            );
             if (!resolved) return null;
             if (userId && resolved.userId !== userId) return null;
 
@@ -244,7 +273,7 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
         }
     })();
 
-    await checkPromise;
+    return await checkPromise;
 };
 
 export const useExternalUser = () => {
@@ -263,6 +292,7 @@ export const useExternalUser = () => {
                         userName: boot.userName,
                         userImage: boot.userImage,
                         isLoading: false,
+                        isResolved: true,
                     };
                 }
             }
@@ -275,6 +305,7 @@ export const useExternalUser = () => {
                         userName: cachedExternalUser.userName,
                         userImage: cachedExternalUser.userImage,
                         isLoading: false,
+                        isResolved: true,
                     };
                 }
             }
@@ -286,6 +317,7 @@ export const useExternalUser = () => {
                 userName: null,
                 userImage: null,
                 isLoading: hasSessionHint,
+                isResolved: !hasSessionHint,
             };
         } catch {
             return {
@@ -293,6 +325,7 @@ export const useExternalUser = () => {
                 userName: null,
                 userImage: null,
                 isLoading: hasAnySupabaseAuthKey(),
+                isResolved: !hasAnySupabaseAuthKey(),
             };
         }
     };
@@ -302,6 +335,25 @@ export const useExternalUser = () => {
     const [isLoading, setIsLoading] = useState<boolean>(initialState.isLoading);
     const [userName, setUserName] = useState<string | null>(initialState.userName);
     const [userImage, setUserImage] = useState<string | null>(initialState.userImage);
+    const [isResolved, setIsResolved] = useState<boolean>(initialState.isResolved);
+    const initialAuthUser = readCachedSupabaseSessionFromStorage()?.user ?? null;
+    const [authUser, setAuthUser] = useState<{ id: string; email?: string | null } | null>(
+        initialAuthUser?.id ? initialAuthUser : null,
+    );
+
+    useEffect(() => {
+        let active = true;
+        void supabase.auth.getSession().then(({ data }) => {
+            if (active) setAuthUser(data.session?.user ?? null);
+        });
+        const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+            if (active) setAuthUser(session?.user ?? null);
+        });
+        return () => {
+            active = false;
+            listener.subscription.unsubscribe();
+        };
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -309,8 +361,10 @@ export const useExternalUser = () => {
         const checkExternalUser = async () => {
             let authUserId: string | null = null;
             try {
+                setIsLoading(true);
+                setIsResolved(false);
                 const cachedUser = readCachedSupabaseSessionFromStorage()?.user;
-                let user = cachedUser?.id ? cachedUser : null;
+                let user = authUser?.id ? authUser : cachedUser?.id ? cachedUser : null;
                 if (!user) {
                     const { data: { session } } = await supabase.auth.getSession();
                     user = session?.user ?? null;
@@ -322,6 +376,7 @@ export const useExternalUser = () => {
                         setUserName(null);
                         setUserImage(null);
                         setIsLoading(false);
+                        setIsResolved(true);
                     }
                     return;
                 }
@@ -339,6 +394,7 @@ export const useExternalUser = () => {
                         setUserName(cachedExternalUser.userName);
                         setUserImage(cachedExternalUser.userImage);
                         setIsLoading(false);
+                        setIsResolved(true);
                     }
                     return;
                 }
@@ -351,11 +407,18 @@ export const useExternalUser = () => {
                         setUserName(waited.userName);
                         setUserImage(waited.userImage);
                         setIsLoading(false);
+                        setIsResolved(true);
                         return;
                     }
                 }
 
-                const resolved = await resolveExternalUserFromAuthSession(user);
+                let resolved: ResolvedExternalSession | null = null;
+                for (let attempt = 0; attempt < 3 && !resolved; attempt++) {
+                    resolved = await resolveExternalUserFromAuthSession(user);
+                    if (!resolved && attempt < 2) {
+                        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+                    }
+                }
                 if (cancelled) return;
 
                 if (!resolved) {
@@ -363,6 +426,7 @@ export const useExternalUser = () => {
                     setUserName(null);
                     setUserImage(null);
                     setIsLoading(false);
+                    setIsResolved(false);
                     return;
                 }
 
@@ -381,6 +445,7 @@ export const useExternalUser = () => {
                 setUserName(entry.userName);
                 setUserImage(entry.userImage);
                 setIsLoading(false);
+                setIsResolved(true);
             } catch (error) {
                 console.error('❌ Error checking external user status:', error);
                 if (cancelled) return;
@@ -389,11 +454,13 @@ export const useExternalUser = () => {
                     setUserName(cachedExternalUser.userName);
                     setUserImage(cachedExternalUser.userImage);
                     setIsLoading(false);
+                    setIsResolved(true);
                 } else {
                     setIsExternalUser(false);
                     setUserName(null);
                     setUserImage(null);
                     setIsLoading(false);
+                    setIsResolved(false);
                 }
             }
         };
@@ -402,8 +469,8 @@ export const useExternalUser = () => {
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [authUser?.id, authUser?.email]);
 
 
-    return { isExternalUser, isLoading, userName, userImage };
+    return { isExternalUser, isLoading, isResolved, userName, userImage };
 };

@@ -7,6 +7,7 @@ import { fetchClockInGateProfile, fetchIsEmployeeClockedIn } from '../lib/employ
 import { clearClockInGateCache } from '../lib/clockInGateCache';
 import { clearAdminClockInBypass } from '../lib/adminClockInBypass';
 import { clearAdminImpersonationGrant } from '../lib/adminImpersonationGrant';
+import { clearExternalUserGateCache } from './useExternalUser';
 import {
   clockOutEmployeeRecord,
   fetchActiveClockInRecord,
@@ -33,6 +34,7 @@ export function useSignOutWithClockOut(options: UseSignOutWithClockOutOptions = 
     clearClockInGateCache();
     clearAdminClockInBypass();
     clearAdminImpersonationGrant();
+    clearExternalUserGateCache();
     const { error } = await supabase.auth.signOut();
     if (error) {
       console.error('Error signing out:', error);

@@ -18,13 +18,41 @@ export type AdminClockInBypass = {
   switchGrant?: string | null;
 };
 
+export type BypassAccountKind = 'employee' | 'user' | 'external';
+
 export type BypassStaffUser = {
   userId: string;
-  employeeId: number;
+  employeeId: number | null;
   displayName: string;
   photoUrl: string | null;
   email: string;
+  accountKind: BypassAccountKind;
 };
+
+export type FetchBypassUsersOptions = {
+  /** When true, include non-employee and external accounts (login admin access). */
+  includeAllAccounts?: boolean;
+};
+
+function parseExternFlag(value: unknown): boolean {
+  return (
+    value === true ||
+    value === 'true' ||
+    value === 1 ||
+    value === '1' ||
+    (typeof value === 'string' && value.toLowerCase() === 'true')
+  );
+}
+
+function resolveAccountKind(row: {
+  extern?: unknown;
+  employee_id?: unknown;
+}): BypassAccountKind {
+  if (parseExternFlag(row.extern)) return 'external';
+  const employeeId = Number(row.employee_id);
+  if (Number.isFinite(employeeId) && employeeId > 0) return 'employee';
+  return 'user';
+}
 
 function parseSuperuserFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
@@ -131,9 +159,12 @@ function photoFromUserRow(row: {
   return resolved || null;
 }
 
-export async function fetchBypassStaffUsers(): Promise<BypassStaffUser[]> {
+export async function fetchBypassStaffUsers(
+  options: FetchBypassUsersOptions = {},
+): Promise<BypassStaffUser[]> {
+  const includeAllAccounts = options.includeAllAccounts === true;
   const { supabase } = await import('./supabase');
-  const { data, error } = await supabase
+  let query = supabase
     .from('users')
     .select(`
       id,
@@ -141,6 +172,7 @@ export async function fetchBypassStaffUsers(): Promise<BypassStaffUser[]> {
       last_name,
       full_name,
       email,
+      auth_id,
       employee_id,
       is_active,
       extern,
@@ -151,8 +183,14 @@ export async function fetchBypassStaffUsers(): Promise<BypassStaffUser[]> {
       )
     `)
     .eq('is_active', true)
-    .not('employee_id', 'is', null)
+    .not('auth_id', 'is', null)
     .order('full_name', { ascending: true });
+
+  if (!includeAllAccounts) {
+    query = query.not('employee_id', 'is', null);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error('Failed to load staff users for admin bypass:', error);
@@ -161,17 +199,20 @@ export async function fetchBypassStaffUsers(): Promise<BypassStaffUser[]> {
 
   return (data || [])
     .filter((row) => {
-      const extern = row.extern;
-      const isExternal =
-        extern === true ||
-        extern === 'true' ||
-        extern === 1 ||
-        extern === '1';
-      const employeeId = Number(row.employee_id);
-      return !isExternal && Number.isFinite(employeeId) && employeeId > 0;
+      if (!String(row.email || '').trim() || !row.auth_id) return false;
+      const accountKind = resolveAccountKind(row);
+      if (!includeAllAccounts) {
+        return accountKind === 'employee';
+      }
+      return true;
     })
     .map((row) => {
-      const employeeId = Number(row.employee_id);
+      const accountKind = resolveAccountKind(row);
+      const rawEmployeeId = Number(row.employee_id);
+      const employeeId =
+        accountKind === 'employee' && Number.isFinite(rawEmployeeId) && rawEmployeeId > 0
+          ? rawEmployeeId
+          : null;
       const displayName = displayNameFromUserRow(row);
       return {
         userId: String(row.id),
@@ -179,9 +220,19 @@ export async function fetchBypassStaffUsers(): Promise<BypassStaffUser[]> {
         displayName,
         photoUrl: photoFromUserRow(row),
         email: String(row.email || ''),
+        accountKind,
       };
     })
-    .sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }));
+    .sort((a, b) => {
+      const kindOrder: Record<BypassAccountKind, number> = {
+        employee: 0,
+        user: 1,
+        external: 2,
+      };
+      const byKind = kindOrder[a.accountKind] - kindOrder[b.accountKind];
+      if (byKind !== 0) return byKind;
+      return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
+    });
 }
 
 export async function buildSelfAdminBypass(adminAuthUserId: string): Promise<AdminClockInBypass | null> {

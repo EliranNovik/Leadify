@@ -79,15 +79,6 @@ export async function createWorkerLoginTokenForUser(
     throw new Error('Target user is inactive');
   }
 
-  const isExternal =
-    targetUser.extern === true ||
-    targetUser.extern === 'true' ||
-    targetUser.extern === 1 ||
-    targetUser.extern === '1';
-  if (isExternal) {
-    throw new Error('Cannot sign in as an external user');
-  }
-
   if (!targetUser.email || !targetUser.auth_id) {
     throw new Error('Target user is missing email or auth account');
   }

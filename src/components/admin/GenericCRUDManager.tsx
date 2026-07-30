@@ -14,6 +14,7 @@ import {
   insertWithNextNumericId,
   syncEmployeeConnectedUser,
 } from '../../lib/employeeUserLink';
+import { buildApiUrl } from '../../lib/api';
 
 interface Field {
   name: string;
@@ -1092,25 +1093,36 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         // Update existing record
         if (tableName === 'users' && record.new_password && record.new_password.trim() !== '') {
           // Special handling for password change in users table
-          const API_BASE_URL = 'https://leadify-crm-backend.onrender.com/api';
+          const newPassword = record.new_password.trim();
+          if (newPassword.length < 6) {
+            throw new Error('Password must be at least 6 characters long');
+          }
+
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+          if (!session?.access_token) {
+            throw new Error('Your admin session has expired. Please sign in again.');
+          }
           
           // Remove new_password from the record before updating
           const { new_password, ...updateData } = record;
           
           // Call API to update password
-          const response = await fetch(`${API_BASE_URL}/users/${existingRecordId}/password`, {
+          const response = await fetch(buildApiUrl(`/api/users/${existingRecordId}/password`), {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
             },
             body: JSON.stringify({
-              new_password: new_password
+              newPassword,
             })
           });
 
-          const passwordResult = await response.json();
-          if (!passwordResult.success) {
-            throw new Error(passwordResult.error || 'Failed to update password');
+          const passwordResult = await response.json().catch(() => null);
+          if (!response.ok || !passwordResult?.success) {
+            throw new Error(passwordResult?.error || 'Failed to update password');
           }
 
           // Update other fields via Supabase - remove fields that shouldn't be updated
@@ -1582,6 +1594,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       const conflictMessage = formatSaveConflictError(tableName, error);
       if (conflictMessage) {
         toast.error(conflictMessage);
+      } else if (tableName === 'users' && error?.message) {
+        toast.error(error.message);
       } else {
         toast.error(`Failed to save ${title}`);
       }

@@ -12,7 +12,10 @@ import {
 } from '@heroicons/react/24/outline';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 import { fetchWelcomeProfileForEmail } from '../lib/loginWelcomeProfile';
-import { setDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
+import {
+  clearDashboardWelcomePending,
+  setDashboardWelcomePending,
+} from '../lib/dashboardWelcomeSession';
 import LoginHeroBackground from './LoginHeroBackground';
 import LoginHeroTagline from './LoginHeroTagline';
 import ClockInGateVideos from './ClockInGateVideos';
@@ -90,15 +93,21 @@ const LoginPage: React.FC = () => {
     const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
     if (signInError) setError(signInError.message);
     else if (data?.user) {
+      const externalUser = await preCheckExternalUser(data.user.id, data.user.email);
+      if (externalUser?.isExternalUser) {
+        clearDashboardWelcomePending();
+        navigate('/external-home', { replace: true });
+        setLoading(false);
+        return;
+      }
+
       const profile = data.user.email
         ? await fetchWelcomeProfileForEmail(data.user.email, data.user)
         : { name: email, imageUrl: '' };
 
       setDashboardWelcomePending(profile);
-
-      void import('../components/Dashboard');
-      if (data.user.id) {
-        void preCheckExternalUser(data.user.id);
+      if (externalUser && !externalUser.isExternalUser) {
+        void import('../components/Dashboard');
       }
 
       navigate(resolvePostLoginDestination(), { replace: true });
@@ -372,9 +381,12 @@ const LoginPage: React.FC = () => {
       <LoginAdminAccessModal
         isOpen={isAdminModalOpen}
         onClose={() => setIsAdminModalOpen(false)}
-        onWorkerSignedIn={() => {
+        onWorkerSignedIn={(destination) => {
           setIsAdminModalOpen(false);
-          navigate(resolvePostLoginDestination(), { replace: true });
+          navigate(
+            destination === '/external-home' ? destination : resolvePostLoginDestination(),
+            { replace: true },
+          );
         }}
       />
     </div>

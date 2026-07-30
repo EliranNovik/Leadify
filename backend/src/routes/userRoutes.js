@@ -1,5 +1,6 @@
 const express = require('express');
 const userController = require('../controllers/userController');
+const { requireSuperuser } = require('../lib/adminAuth');
 require('dotenv').config();
 const router = express.Router();
 
@@ -10,7 +11,7 @@ router.post('/users', userController.createUser);
 router.get('/users', userController.getAllUsers);
 
 // Update user password
-router.put('/users/:userId/password', userController.updateUserPassword);
+router.put('/users/:userId/password', requireSuperuser, userController.updateUserPassword);
 
 // Update user details
 router.put('/users/:userId', userController.updateUser);

@@ -149,6 +149,9 @@ class UserService {
       if (fetchError || !user) {
         throw new Error('User not found');
       }
+      if (!user.auth_id) {
+        throw new Error('This CRM user is not linked to a Supabase Auth user');
+      }
 
       // Update password in auth.users
       const { error: authError } = await supabase.auth.admin.updateUserById(

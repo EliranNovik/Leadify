@@ -235,10 +235,11 @@ const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
         required: true,
         placeholder: 'Enter password (required for new users)',
         hideInTable: true,
+        hideInEdit: true,
       },
       {
         name: 'new_password',
-        label: 'New Password',
+        label: 'Change Auth Password',
         type: 'password' as const,
         required: false,
         placeholder: 'Enter new password (leave blank to keep current)',
