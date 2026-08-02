@@ -1,4 +1,6 @@
--- Client portal: list scheduled meetings and meeting requests for the logged-in case.
+-- Fix portal_get_meetings for legacy leads:
+-- leads_lead.meeting_datetime is TEXT; `AT TIME ZONE` requires timestamp/timestamptz
+-- (error: function pg_catalog.timezone(unknown, text) does not exist).
 
 CREATE OR REPLACE FUNCTION public._portal_parse_meeting_datetime(p_value TEXT)
 RETURNS TIMESTAMPTZ
@@ -21,65 +23,6 @@ BEGIN
     END;
   END;
 END;
-$$;
-
-CREATE OR REPLACE FUNCTION public._portal_known_booking_address(p_meeting_location TEXT)
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-AS $$
-  SELECT CASE lower(trim(COALESCE(p_meeting_location, '')))
-    WHEN 'ramat gan office' THEN 'Menachem Begin Rd. 11, Ramat Gan, Israel'
-    ELSE NULL
-  END;
-$$;
-
-CREATE OR REPLACE FUNCTION public._portal_is_physical_meeting(
-  p_meeting_location TEXT,
-  p_manual_address TEXT DEFAULT NULL
-)
-RETURNS BOOLEAN
-LANGUAGE sql
-STABLE
-AS $$
-  SELECT
-    COALESCE(
-      (
-        SELECT COALESCE(tml.is_physical_location, false)
-        FROM public.tenants_meetinglocation tml
-        WHERE lower(trim(tml.name)) = lower(trim(COALESCE(p_meeting_location, '')))
-        ORDER BY tml.id
-        LIMIT 1
-      ),
-      false
-    )
-    OR NULLIF(trim(COALESCE(p_manual_address, '')), '') IS NOT NULL
-    OR public._portal_known_booking_address(p_meeting_location) IS NOT NULL;
-$$;
-
-CREATE OR REPLACE FUNCTION public._portal_meeting_address(
-  p_meeting_location TEXT,
-  p_manual_address TEXT DEFAULT NULL
-)
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-AS $$
-  SELECT CASE
-    WHEN public._portal_is_physical_meeting(p_meeting_location, p_manual_address) THEN
-      NULLIF(trim(COALESCE(
-        NULLIF(trim(COALESCE(p_manual_address, '')), ''),
-        (
-          SELECT NULLIF(trim(COALESCE(tml.address, '')), '')
-          FROM public.tenants_meetinglocation tml
-          WHERE lower(trim(tml.name)) = lower(trim(COALESCE(p_meeting_location, '')))
-          ORDER BY tml.id
-          LIMIT 1
-        ),
-        public._portal_known_booking_address(p_meeting_location)
-      )), '')
-    ELSE NULL
-  END;
 $$;
 
 CREATE OR REPLACE FUNCTION public.portal_get_meetings(p_token UUID)

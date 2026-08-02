@@ -1,4 +1,6 @@
--- Portal finances: ensure public invoice tokens for rows with proformas; tax receipts; legacy proforma links.
+-- Fix portal_get_finances for legacy leads:
+-- proformainvoice has `cdate` (date), not `created_at`.
+-- Expose it as created_at for the portal API / UI contract.
 
 CREATE OR REPLACE FUNCTION public.portal_get_finances(p_token UUID)
 RETURNS JSONB

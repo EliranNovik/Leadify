@@ -260,6 +260,7 @@ function ImageAnnotatable({
   onSelectHighlight,
   onDeleteHighlight,
   onError,
+  zoom = 1,
 }: {
   src: string;
   alt: string;
@@ -271,39 +272,104 @@ function ImageAnnotatable({
   onSelectHighlight: (id: string) => void;
   onDeleteHighlight?: (id: string) => void;
   onError?: () => void;
+  /** 1 = fit entire image in the viewer (landscape or portrait); >1 zooms in. */
+  zoom?: number;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const [fitSize, setFitSize] = useState<{ w: number; h: number } | null>(null);
+
   const { surfaceRef, drawing, handlers } = useDrawOnSurface({
     enabled: drawEnabled,
     onDraftChange,
   });
   const activeDraft = drawing || draft;
 
+  useEffect(() => {
+    setNatural(null);
+    setFitSize(null);
+  }, [src]);
+
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    const applyNatural = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+      }
+    };
+    if (img.complete) applyNatural();
+  }, [src]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !natural || natural.w <= 0 || natural.h <= 0) return;
+
+    const updateFit = () => {
+      const cw = el.clientWidth;
+      const ch = el.clientHeight;
+      if (cw <= 0 || ch <= 0) return;
+      // Fit full image in the box for both landscape (width-bound) and portrait (height-bound).
+      const scale = Math.min(cw / natural.w, ch / natural.h);
+      setFitSize({
+        w: Math.max(1, Math.floor(natural.w * scale)),
+        h: Math.max(1, Math.floor(natural.h * scale)),
+      });
+    };
+
+    updateFit();
+    const ro = new ResizeObserver(updateFit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [natural]);
+
+  const displayW = fitSize ? Math.round(fitSize.w * zoom) : undefined;
+  const displayH = fitSize ? Math.round(fitSize.h * zoom) : undefined;
+
   return (
     <div
-      ref={surfaceRef}
-      className={`relative inline-block max-h-full max-w-full ${
-        drawEnabled ? 'cursor-crosshair touch-none' : ''
+      ref={containerRef}
+      className={`relative flex h-full w-full min-h-0 min-w-0 items-center justify-center ${
+        zoom > 1 ? 'overflow-auto' : 'overflow-hidden'
       }`}
-      {...(drawEnabled ? handlers : {})}
     >
-      <img
-        src={src}
-        alt={alt}
-        className="pointer-events-none max-h-[min(100%,calc(100vh-8rem))] max-w-full object-contain select-none"
-        draggable={false}
-        onError={onError}
-      />
-      <div className="pointer-events-none absolute inset-0">
-        <div className={`absolute inset-0 ${drawEnabled ? '' : 'pointer-events-auto'}`}>
-          <HighlightBoxes
-            markers={highlights}
-            draft={activeDraft}
-            focusedId={focusedId}
-            onSelect={(id) => {
-              if (!drawEnabled) onSelectHighlight(id);
-            }}
-            onDelete={drawEnabled ? undefined : onDeleteHighlight}
-          />
+      <div
+        ref={surfaceRef}
+        className={`relative shrink-0 ${drawEnabled ? 'cursor-crosshair touch-none' : ''}`}
+        style={
+          displayW && displayH
+            ? { width: displayW, height: displayH }
+            : { maxWidth: '100%', maxHeight: '100%' }
+        }
+        {...(drawEnabled ? handlers : {})}
+      >
+        <img
+          ref={imgRef}
+          src={src}
+          alt={alt}
+          className="pointer-events-none block h-full w-full object-contain select-none"
+          draggable={false}
+          onLoad={(e) => {
+            const img = e.currentTarget;
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+              setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+            }
+          }}
+          onError={onError}
+        />
+        <div className="pointer-events-none absolute inset-0">
+          <div className={`absolute inset-0 ${drawEnabled ? '' : 'pointer-events-auto'}`}>
+            <HighlightBoxes
+              markers={highlights}
+              draft={activeDraft}
+              focusedId={focusedId}
+              onSelect={(id) => {
+                if (!drawEnabled) onSelectHighlight(id);
+              }}
+              onDelete={drawEnabled ? undefined : onDeleteHighlight}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -528,6 +594,8 @@ type DocumentAnnotatableViewProps = {
   onDeleteHighlight?: (id: string) => void;
   onImageError?: () => void;
   onPdfError?: () => void;
+  /** Image mode only: 1 = fit full image (landscape or portrait); >1 zooms in. */
+  zoom?: number;
 };
 
 export function DocumentAnnotatableView({
@@ -544,6 +612,7 @@ export function DocumentAnnotatableView({
   onDeleteHighlight,
   onImageError,
   onPdfError,
+  zoom = 1,
 }: DocumentAnnotatableViewProps) {
   if (mode === 'image') {
     return (
@@ -558,6 +627,7 @@ export function DocumentAnnotatableView({
         onSelectHighlight={onSelectHighlight}
         onDeleteHighlight={onDeleteHighlight}
         onError={onImageError}
+        zoom={zoom}
       />
     );
   }

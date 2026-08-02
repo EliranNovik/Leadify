@@ -1,15 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowDownTrayIcon,
+  ArrowsPointingInIcon,
   ChatBubbleLeftRightIcon,
   CheckCircleIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ChevronDownIcon,
   CursorArrowRaysIcon,
+  MinusIcon,
   PaperAirplaneIcon,
   PaperClipIcon,
   PencilSquareIcon,
+  PlusIcon,
   RectangleGroupIcon,
   ShareIcon,
   TrashIcon,
@@ -279,6 +283,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const [imageError, setImageError] = useState(false);
   const [pdfError, setPdfError] = useState(false);
   const [officeError, setOfficeError] = useState(false);
+  /** 1 = fit to viewer; >1 zooms in. */
+  const [imageZoom, setImageZoom] = useState(1);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -307,6 +313,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   );
   const commentsEndRef = useRef<HTMLDivElement | null>(null);
   const commentsListRef = useRef<HTMLDivElement | null>(null);
+  const imageZoomPaneRef = useRef<HTMLDivElement | null>(null);
 
   const itemsRef = useRef(galleryItems);
   itemsRef.current = galleryItems;
@@ -468,6 +475,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     setImageError(false);
     setPdfError(false);
     setOfficeError(false);
+    setImageZoom(1);
     setCommentDraft('');
     setDraftHighlight(null);
     setHighlightMode(false);
@@ -737,6 +745,26 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const officeEmbedUrl =
     isOffice && displayUrl && !officeError ? buildOfficeOnlineEmbedUrl(displayUrl) : null;
 
+  useEffect(() => {
+    if (!isOpen || !isImage || imageError || !displayUrl) return;
+    const pane = imageZoomPaneRef.current;
+    if (!pane) return;
+
+    const onWheel = (e: WheelEvent) => {
+      // Trackpad pinch (ctrlKey) or two-finger / mouse-wheel scroll → rezoom.
+      e.preventDefault();
+      const direction = e.deltaY > 0 ? -1 : 1;
+      const step = e.ctrlKey || e.metaKey ? 0.08 : 0.12;
+      setImageZoom((z) => {
+        const next = Math.round((z + direction * step) * 100) / 100;
+        return Math.min(4, Math.max(0.5, next));
+      });
+    };
+
+    pane.addEventListener('wheel', onWheel, { passive: false });
+    return () => pane.removeEventListener('wheel', onWheel);
+  }, [isOpen, isImage, imageError, displayUrl, activeDoc?.id]);
+
   const goPrev = useCallback(() => {
     setPreviewIndex((i) => {
       const len = itemsRef.current.length;
@@ -957,7 +985,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       : formatDateTimeVerbose(activeUploadedAt)
     : '';
 
-  return (
+  const modal = (
     <div
       className="fixed inset-0 z-[1200] flex flex-col overflow-hidden bg-base-100"
       role="dialog"
@@ -1412,12 +1440,14 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           ) : null}
           <div
             className={`flex min-h-0 w-full flex-1 bg-neutral-900 ${
-              (isPdf || Boolean(officeEmbedUrl)) &&
-              !(highlightMode || highlightMarkers.length > 0 || draftHighlight)
-                ? 'flex-col overflow-hidden p-0'
-                : isPdf || highlightMarkers.length > 0 || draftHighlight
-                  ? 'min-h-0 flex-col overflow-auto p-0'
-                  : 'items-center justify-center overflow-auto p-3 md:p-6'
+              isImage && !imageError
+                ? 'min-h-0 flex-col overflow-hidden p-0'
+                : (isPdf || Boolean(officeEmbedUrl)) &&
+                    !(highlightMode || highlightMarkers.length > 0 || draftHighlight)
+                  ? 'flex-col overflow-hidden p-0'
+                  : isPdf || highlightMarkers.length > 0 || draftHighlight
+                    ? 'min-h-0 flex-col overflow-auto p-0'
+                    : 'items-center justify-center overflow-auto p-3 md:p-6'
             }`}
           >
             {loadingUrl ? (
@@ -1434,21 +1464,67 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 </button>
               </div>
             ) : isImage && !imageError ? (
-              <div className="flex min-h-0 w-full flex-1 items-center justify-center">
-                <DocumentAnnotatableView
-                  mode="image"
-                  src={displayUrl}
-                  storagePath={activeStoragePath}
-                  alt={activeName}
-                  highlights={highlightMarkers}
-                  draft={draftHighlight}
-                  focusedId={focusedCommentId}
-                  drawEnabled={highlightMode}
-                  onDraftChange={handleDraftHighlight}
-                  onSelectHighlight={focusComment}
-                  onDeleteHighlight={deleteHighlightById}
-                  onImageError={() => setImageError(true)}
-                />
+              <div className="relative flex min-h-0 h-full w-full flex-1 flex-col">
+                <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/15 bg-black/55 px-1.5 py-1 shadow-lg backdrop-blur-md">
+                  <button
+                    type="button"
+                    className="pointer-events-auto btn btn-ghost btn-xs btn-square h-8 w-8 min-h-0 border-0 text-white hover:bg-white/15"
+                    aria-label="Zoom out"
+                    title="Zoom out"
+                    disabled={imageZoom <= 0.5}
+                    onClick={() => setImageZoom((z) => Math.max(0.5, Math.round((z - 0.25) * 100) / 100))}
+                  >
+                    <MinusIcon className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="pointer-events-auto btn btn-ghost btn-xs h-8 min-h-0 border-0 px-2 text-xs font-semibold tabular-nums text-white hover:bg-white/15"
+                    aria-label="Fit to screen"
+                    title="Fit full image"
+                    onClick={() => setImageZoom(1)}
+                  >
+                    {Math.round(imageZoom * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    className="pointer-events-auto btn btn-ghost btn-xs btn-square h-8 w-8 min-h-0 border-0 text-white hover:bg-white/15"
+                    aria-label="Zoom in"
+                    title="Zoom in"
+                    disabled={imageZoom >= 4}
+                    onClick={() => setImageZoom((z) => Math.min(4, Math.round((z + 0.25) * 100) / 100))}
+                  >
+                    <PlusIcon className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="pointer-events-auto btn btn-ghost btn-xs btn-square h-8 w-8 min-h-0 border-0 text-white hover:bg-white/15"
+                    aria-label="Fit full image"
+                    title="Fit full image"
+                    onClick={() => setImageZoom(1)}
+                  >
+                    <ArrowsPointingInIcon className="h-4 w-4" />
+                  </button>
+                </div>
+                <div
+                  ref={imageZoomPaneRef}
+                  className="min-h-0 h-full w-full flex-1 touch-none p-3 md:p-6"
+                >
+                  <DocumentAnnotatableView
+                    mode="image"
+                    src={displayUrl}
+                    storagePath={activeStoragePath}
+                    alt={activeName}
+                    highlights={highlightMarkers}
+                    draft={draftHighlight}
+                    focusedId={focusedCommentId}
+                    drawEnabled={highlightMode}
+                    onDraftChange={handleDraftHighlight}
+                    onSelectHighlight={focusComment}
+                    onDeleteHighlight={deleteHighlightById}
+                    onImageError={() => setImageError(true)}
+                    zoom={imageZoom}
+                  />
+                </div>
               </div>
             ) : isPdf && !pdfError ? (
               highlightMode || highlightMarkers.length > 0 || draftHighlight ? (
@@ -1778,6 +1854,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       </div>
     </div>
   );
+
+  if (typeof document === 'undefined') return modal;
+  return createPortal(modal, document.body);
 };
 
 export default DocumentViewerModal;
