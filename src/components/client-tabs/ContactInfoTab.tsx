@@ -422,6 +422,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Holds the latest silent contacts reload so the realtime subscription can call it regardless of
   // where fetchContacts is declared below.
   const fetchContactsRef = useRef<(() => Promise<void> | void) | null>(null);
+  // Track completed contract fetches; cleared on lead change / realtime so we can refetch.
+  const contractsFetchedRef = useRef<Set<string>>(new Set());
+  const [contractsRefreshKey, setContractsRefreshKey] = useState(0);
 
   // Live updates: when a contact is linked/unlinked/reassigned for this lead, refresh the contacts
   // list in place. Direct edits on leads_contact field values are also picked up on window focus
@@ -447,21 +450,16 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       return [{ table: 'lead_leadcontact', event: '*' as const, match: matchLead }];
     })(),
     onChange: () => {
+      // Contract HTML is stored on lead_leadcontact for legacy leads — invalidate so we refetch.
+      contractsFetchedRef.current.clear();
+      setContractsRefreshKey((k) => k + 1);
       void fetchContactsRef.current?.();
     },
   });
 
-  const [contacts, setContacts] = useState<ContactEntry[]>([
-    {
-      id: 1,
-      name: client.name || '---',
-      mobile: client.mobile || '---',
-      phone: client.phone || '---',
-      email: client.email || '---',
-      id_passport: '---',
-      isMain: true,
-    }
-  ]);
+  // Start empty so we never fetch contracts against a fake placeholder contact (id: 1).
+  // Contacts are loaded from the DB (or cache) in the effect below.
+  const [contacts, setContacts] = useState<ContactEntry[]>([]);
   const contactProfileImageUrls = useContactProfileImageUrls(
     contacts.map((c) => c.portal_profile_image_path),
   );
@@ -481,7 +479,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const [contactContracts, setContactContracts] = usePersistedState<{ [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null }>(
     `contactContracts_${client?.id}`,
     {},
-    { storage: 'sessionStorage' }
+    { storage: 'sessionStorage', retainOnPageRefresh: true }
   );
   const [contractTemplates, setContractTemplates] = useState<ContractTemplate[]>([]);
 
@@ -996,8 +994,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   }, [mainContactId, contactContracts]);
 
   // Track if we've already fetched contracts for this client to prevent double-fetching
-  const contractsFetchedRef = useRef<Set<string>>(new Set());
   const prevClientIdRef = useRef<string | null>(null);
+  const contactsFingerprint = contacts.map((c) => c.id).sort((a, b) => a - b).join(',');
 
   // Fetch contracts for each contact
   useEffect(() => {
@@ -1005,13 +1003,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       return;
     }
     
-    const clientKey = `${client.id}_${contacts.map(c => c.id).sort().join(',')}`;
+    const clientKey = `${client.id}_${contactsFingerprint}`;
     
-    // Check if we already have contracts loaded for this client (from persisted state)
-    const hasContracts = Object.keys(contactContracts).length > 0;
+    // A map of all-nulls is common after an early/racey fetch (e.g. right after sameContract
+    // sublead creation) and must NOT skip a real refetch — that caused "missing until refresh".
     const allContactsCovered = contacts.every(contact => contact.id in contactContracts);
     
-    // If we've already fetched for this exact client+contacts combo, skip
+    // If we've already fetched for this exact client+contacts combo this mount, skip
     if (contractsFetchedRef.current.has(clientKey)) {
       // Just ensure all contacts are in the map (don't fetch again)
       if (!allContactsCovered) {
@@ -1027,12 +1025,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           return needsUpdate ? updated : prev;
         });
       }
-      return;
-    }
-    
-    // If we have contracts from persisted state and all contacts are covered, mark as fetched and skip
-    if (hasContracts && allContactsCovered) {
-      contractsFetchedRef.current.add(clientKey);
       return;
     }
     
@@ -1287,13 +1279,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         console.error('❌ Error fetching contracts:', error);
         // Remove from fetched set on error so we can retry
         if (client?.id && contacts.length > 0) {
-          const clientKey = `${client.id}_${contacts.map(c => c.id).sort().join(',')}`;
+          const clientKey = `${client.id}_${contactsFingerprint}`;
           contractsFetchedRef.current.delete(clientKey);
         }
       }
     })();
     return () => { mounted = false; };
-  }, [client?.id, mainContactId]); // Re-fetch when client or main contact changes (contracts are persisted in sessionStorage)
+  }, [client?.id, mainContactId, contactsFingerprint, contractsRefreshKey]); // Re-fetch when client, contacts, or realtime refresh
 
   // Fetch country codes and countries from database
   useEffect(() => {
@@ -1464,7 +1456,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
     const clientKey = String(client.id);
 
-    // When lead changes: clear stale data so we never show previous lead's contacts first
+    // When lead changes: clear stale contacts so we never show previous lead's contacts first.
+    // Contracts are keyed by client.id in usePersistedState; remount on client change handles that.
     if (prevClientIdRef.current !== clientKey) {
       prevClientIdRef.current = clientKey;
       setContacts([]);

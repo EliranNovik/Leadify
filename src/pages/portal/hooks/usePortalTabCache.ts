@@ -18,7 +18,7 @@ import {
 } from '../../../lib/portalApi';
 import { useRealtimeRefresh, type RealtimeTableSubscription } from '../../../hooks/useRealtimeRefresh';
 import type { PortalTabId } from '../portalTabTypes';
-import { readPortalTabCache, writePortalTabCache } from './portalTabCacheStorage';
+import { readPortalTabCache, writePortalTabCache, portalTabCacheKey } from './portalTabCacheStorage';
 import { seedPortalContactProfileUrls } from './usePortalContactProfileUrls';
 
 export type PortalTabCacheData = {
@@ -279,19 +279,30 @@ export function usePortalTabCache(
   leadRef: string | null | undefined,
   leadSummary: PortalLeadSummary | null,
 ): PortalTabCacheState {
-  const [data, setData] = useState<PortalTabCacheData | null>(() =>
-    readPortalTabCache(leadRef),
+  const cacheKey = useMemo(
+    () => portalTabCacheKey(leadSummary, leadRef),
+    [leadSummary, leadRef],
   );
-  const [initialLoading, setInitialLoading] = useState(() => !readPortalTabCache(leadRef));
-  const [refreshing, setRefreshing] = useState(false);
-  const fetchingRef = useRef(false);
 
-  const hasCachedDataRef = useRef(Boolean(readPortalTabCache(leadRef)));
+  const [data, setData] = useState<PortalTabCacheData | null>(() =>
+    readPortalTabCache(portalTabCacheKey(leadSummary, leadRef)),
+  );
+  const [initialLoading, setInitialLoading] = useState(
+    () => !readPortalTabCache(portalTabCacheKey(leadSummary, leadRef)),
+  );
+  const [refreshing, setRefreshing] = useState(false);
+  const fetchGenerationRef = useRef(0);
+  const cacheKeyRef = useRef(cacheKey);
+  cacheKeyRef.current = cacheKey;
+
+  const hasCachedDataRef = useRef(
+    Boolean(readPortalTabCache(portalTabCacheKey(leadSummary, leadRef))),
+  );
 
   const refresh = useCallback(
     async (scope: PortalTabId | 'all' = 'all') => {
-      if (fetchingRef.current) return;
-      fetchingRef.current = true;
+      const generation = ++fetchGenerationRef.current;
+      const keyAtStart = cacheKeyRef.current;
       if (hasCachedDataRef.current) {
         setRefreshing(true);
       } else {
@@ -300,34 +311,41 @@ export function usePortalTabCache(
 
       try {
         const existingProfileUrls =
-          readPortalTabCache(leadRef)?.contactProfileSignedUrls ?? {};
+          readPortalTabCache(keyAtStart)?.contactProfileSignedUrls ?? {};
         const patch = await fetchPortalScope(scope, existingProfileUrls);
+        // Drop stale responses if the lead (cache key) changed mid-flight.
+        if (generation !== fetchGenerationRef.current || keyAtStart !== cacheKeyRef.current) {
+          return;
+        }
         setData((prev) => {
           const merged = mergeCache(prev, patch);
           if (merged.contactProfileSignedUrls) {
             seedPortalContactProfileUrls(merged.contactProfileSignedUrls);
           }
-          writePortalTabCache(leadRef, merged);
+          writePortalTabCache(keyAtStart, merged);
           return merged;
         });
         hasCachedDataRef.current = true;
       } catch (err) {
         console.error('portal tab cache refresh failed', err);
       } finally {
-        fetchingRef.current = false;
-        setInitialLoading(false);
-        setRefreshing(false);
+        if (generation === fetchGenerationRef.current) {
+          setInitialLoading(false);
+          setRefreshing(false);
+        }
       }
     },
-    [leadRef],
+    [],
   );
 
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
   useEffect(() => {
-    const cached = readPortalTabCache(leadRef);
+    const cached = readPortalTabCache(cacheKey);
     hasCachedDataRef.current = Boolean(cached);
+    // Invalidate in-flight fetches tied to a previous lead/cache key.
+    fetchGenerationRef.current += 1;
     if (cached) {
       if (cached.contactProfileSignedUrls) {
         seedPortalContactProfileUrls(cached.contactProfileSignedUrls);
@@ -335,18 +353,19 @@ export function usePortalTabCache(
       setData(cached);
       setInitialLoading(false);
     } else {
+      // Do not keep previous lead's finances/payments while the next lead loads.
       setData(null);
       setInitialLoading(true);
     }
     void refreshRef.current('all');
-  }, [leadRef]);
+  }, [cacheKey]);
 
   const realtimeTables = useMemo(() => buildRealtimeTables(leadSummary), [leadSummary]);
 
   useRealtimeRefresh({
-    channelName: leadRef ? `portal-case-tabs:${leadRef}` : 'portal-case-tabs:inactive',
+    channelName: cacheKey ? `portal-case-tabs:${cacheKey}` : 'portal-case-tabs:inactive',
     tables: realtimeTables,
-    enabled: Boolean(leadRef && leadSummary),
+    enabled: Boolean(cacheKey && leadSummary),
     debounceMs: 650,
     onChange: () => refreshRef.current('all'),
   });

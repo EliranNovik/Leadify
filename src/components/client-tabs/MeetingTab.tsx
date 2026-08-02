@@ -22,6 +22,18 @@ import {
   getScheduleMeetingPath,
   isMobileMeetingScheduleUi,
 } from '../../lib/meetingScheduleNavigation';
+import {
+  ACTIVE_MEETING_STATUS_FILTER,
+  cancelMeetingById,
+  findMeetingToCancelOnReschedule,
+  localTodayYmd,
+  parseLegacyLeadId,
+} from '../../lib/meetingRescheduleCancel';
+import {
+  clientsTabCacheLeadKey,
+  readClientsTabCache,
+  writeClientsTabCache,
+} from '../../lib/clientsTabCache';
 import { useNavigate } from 'react-router-dom';
 import { isMeetingBookedViaClientPortal } from '../../lib/clientBookingApi';
 import ClientPortalBookingBadge from '../client-booking/ClientPortalBookingBadge';
@@ -210,6 +222,30 @@ interface Meeting {
     user: string;
   };
 }
+
+/** Cached bundle for the 'meetings' slice — everything the tab's main effect reloads. */
+type MeetingTabCacheSlice = {
+  meetings?: Meeting[];
+  leadSchedulingInfo?: {
+    scheduler?: string;
+    meeting_scheduling_notes?: string;
+    next_followup?: string;
+    followup?: string;
+    meeting_confirmation?: boolean | null;
+    meeting_confirmation_by?: number | null;
+  };
+  schedulingHistory?: Array<{
+    id: string;
+    meeting_scheduling_notes?: string;
+    next_followup?: string;
+    followup?: string;
+    followup_log?: string;
+    created_by: string;
+    created_at: string;
+    note_id?: string;
+    from_notes?: boolean;
+  }>;
+};
 
 type MeetingParticipantRow = {
   id: string;
@@ -533,9 +569,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     },
   });
 
+  // Cache-first: paint this lead's last-known meetings/scheduling data immediately (no spinner),
+  // then silently refresh from the network below.
+  const meetingsLeadKey = clientsTabCacheLeadKey(client);
+  const cachedMeetingsTabData = readClientsTabCache<MeetingTabCacheSlice>(meetingsLeadKey, 'meetings');
+
   const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
   const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [meetings, setMeetings] = useState<Meeting[]>(() => cachedMeetingsTabData?.meetings ?? []);
   const [externalFirmName, setExternalFirmName] = useState<string | null>(null);
   const [meetingParticipantsById, setMeetingParticipantsById] = useState<
     Record<number, { loading: boolean; participants: MeetingParticipantRow[] }>
@@ -614,7 +655,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     followup?: string;
     meeting_confirmation?: boolean | null;
     meeting_confirmation_by?: number | null;
-  }>({});
+  }>(() => cachedMeetingsTabData?.leadSchedulingInfo ?? {});
 
   // Scheduling information history
   const [showPastMeetingsPanel, setShowPastMeetingsPanel] = useState(false);
@@ -630,7 +671,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     created_at: string;
     note_id?: string;
     from_notes?: boolean; // Flag to indicate if this came from lead_notes
-  }>>([]);
+  }>>(() => cachedMeetingsTabData?.schedulingHistory ?? []);
 
   const [creatingTeamsMeetingId, setCreatingTeamsMeetingId] = useState<number | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
@@ -808,7 +849,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     custom_link: '',
     custom_address: '',
   });
-  const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
+  const [meetingsToCancel, setMeetingsToCancel] = useState<number[]>([]);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
@@ -870,7 +911,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     setShowAuthRedirectOption(false);
     authRedirectParamsRef.current = null;
     setShowRescheduleDrawer(false);
-    setMeetingToDelete(null);
+    setMeetingsToCancel([]);
     setNotifyClientOnReschedule(false);
     setRescheduleFormData(initialRescheduleFormData);
     setRescheduleOption('cancel');
@@ -2185,6 +2226,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         m?.isLegacy ? { ...m, calendar_type: 'potential_client' } : m
       );
       setMeetings(normalizedMeetings);
+      const leadKey = clientsTabCacheLeadKey(client);
+      const prevCache = readClientsTabCache<MeetingTabCacheSlice>(leadKey, 'meetings') ?? {};
+      writeClientsTabCache(leadKey, 'meetings', { ...prevCache, meetings: normalizedMeetings });
 
     } catch (error) {
       console.error('Error fetching meetings:', error);
@@ -2378,14 +2422,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         error = legacyError;
 
         if (data) {
-          setLeadSchedulingInfo({
+          const nextInfo = {
             scheduler: data.meeting_scheduler_id || '',
             meeting_scheduling_notes: data.meeting_scheduling_notes || '',
             next_followup: data.next_followup || '',
             followup: data.followup_log || '',
             meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
             meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
-          });
+          };
+          setLeadSchedulingInfo(nextInfo);
+          const leadKey = clientsTabCacheLeadKey(client);
+          const prevCache = readClientsTabCache<MeetingTabCacheSlice>(leadKey, 'meetings') ?? {};
+          writeClientsTabCache(leadKey, 'meetings', { ...prevCache, leadSchedulingInfo: nextInfo });
         } else {
           setLeadSchedulingInfo({});
         }
@@ -2401,14 +2449,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         error = newError;
 
         if (data) {
-          setLeadSchedulingInfo({
+          const nextInfo = {
             scheduler: data.scheduler || '',
             meeting_scheduling_notes: data.meeting_scheduling_notes || '',
             next_followup: data.next_followup || '',
             followup: data.followup || '',
             meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
             meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
-          });
+          };
+          setLeadSchedulingInfo(nextInfo);
+          const leadKey = clientsTabCacheLeadKey(client);
+          const prevCache = readClientsTabCache<MeetingTabCacheSlice>(leadKey, 'meetings') ?? {};
+          writeClientsTabCache(leadKey, 'meetings', { ...prevCache, leadSchedulingInfo: nextInfo });
         } else {
           setLeadSchedulingInfo({});
         }
@@ -2515,6 +2567,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
       setSchedulingHistory(allHistory);
+      const leadKey = clientsTabCacheLeadKey(client);
+      const prevCache = readClientsTabCache<MeetingTabCacheSlice>(leadKey, 'meetings') ?? {};
+      writeClientsTabCache(leadKey, 'meetings', { ...prevCache, schedulingHistory: allHistory });
     } catch (error) {
       console.error('Error fetching scheduling history:', error);
       setSchedulingHistory([]);
@@ -2522,12 +2577,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   };
 
   // Add useEffect after both functions are defined
+  // Cache-first: initial state above already hydrated from the last-known cache for this lead so
+  // the tab paints instantly; this effect just kicks off a silent background refresh. Deps are
+  // narrowed to client?.id (not the whole client object / onClientUpdate) so the parent's silent
+  // lead-field sync doesn't thrash these fetches on every unrelated client update.
   useEffect(() => {
     console.log('MeetingTab useEffect triggered - client changed:', client?.id, client?.lead_type);
     fetchMeetings();
     fetchLeadSchedulingInfo();
     fetchSchedulingHistory();
-  }, [client, onClientUpdate]);
+  }, [client?.id]);
 
   // Fetch latest notes from leads table when a meeting is expanded
   useEffect(() => {
@@ -3588,7 +3647,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
   // Helper to determine if a meeting is in the past (based on date only, not time)
   const isPastMeeting = (meeting: Meeting) => {
-    if (meeting.status === 'canceled') return true;
+    const status = String(meeting.status || '').toLowerCase();
+    if (status === 'canceled' || status === 'cancelled') return true;
     const meetingDate = new Date(meeting.date);
     const today = new Date();
     // Set both dates to start of day for comparison
@@ -3620,13 +3680,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       let query = supabase
         .from('meetings')
         .select('*')
-        .neq('status', 'canceled')
-        .gte('meeting_date', new Date().toISOString().split('T')[0])
+        .or(ACTIVE_MEETING_STATUS_FILTER)
+        .gte('meeting_date', localTodayYmd())
         .order('meeting_date', { ascending: true });
 
       if (isLegacyLead) {
-        const legacyId = client.id.toString().replace('legacy_', '');
-        query = query.eq('legacy_lead_id', legacyId);
+        query = query.eq('legacy_lead_id', parseLegacyLeadId(client.id));
       } else {
         query = query.eq('client_id', client.id);
       }
@@ -3635,8 +3694,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
       if (!error && data) {
         setRescheduleMeetings(data);
+        setMeetingsToCancel(
+          data
+            .map((m: any) => Number(m.id))
+            .filter((id: number) => Number.isFinite(id)),
+        );
       } else {
         setRescheduleMeetings([]);
+        setMeetingsToCancel([]);
       }
     };
 
@@ -4597,29 +4662,30 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
   // Handle cancel meeting
   const handleCancelMeeting = async () => {
-    if (!client || !meetingToDelete) return;
+    if (!client || meetingsToCancel.length === 0) return;
     setIsReschedulingMeeting(true);
     try {
       const account = instance.getAllAccounts()[0];
 
-      // Cancel the meeting
+      // Cancel all selected meetings
       const editor = await resolveEditorDisplayName();
-      const { error: cancelError } = await supabase
-        .from('meetings')
-        .update({
-          status: 'canceled',
-          last_edited_timestamp: new Date().toISOString(),
-          last_edited_by: editor
-        })
-        .eq('id', meetingToDelete);
+      const idsToCancel = [...meetingsToCancel];
+      for (const meetingId of idsToCancel) {
+        const canceled = await cancelMeetingById({
+          supabase,
+          meetingId,
+          editorDisplayName: editor,
+        });
+        if (!canceled) {
+          throw new Error(`Failed to cancel meeting #${meetingId}`);
+        }
+      }
 
-      if (cancelError) throw cancelError;
-
-      // Get meeting details for email
+      // Use the first selected meeting for cancellation email details
       const { data: canceledMeeting, error: fetchError } = await supabase
         .from('meetings')
         .select('*')
-        .eq('id', meetingToDelete)
+        .eq('id', idsToCancel[0])
         .single();
 
       if (fetchError) throw fetchError;
@@ -4796,9 +4862,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         );
       }
 
-      toast.success(notifyClientOnReschedule ? 'Meeting canceled and client notified.' : 'Meeting canceled.');
+      toast.success(
+        notifyClientOnReschedule
+          ? `${idsToCancel.length > 1 ? 'Meetings' : 'Meeting'} canceled and client notified.`
+          : `${idsToCancel.length > 1 ? 'Meetings' : 'Meeting'} canceled.`,
+      );
       setShowRescheduleDrawer(false);
-      setMeetingToDelete(null);
+      setMeetingsToCancel([]);
       setNotifyClientOnReschedule(false); // Reset to default
       setRescheduleFormData({
         date: '',
@@ -4838,27 +4908,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       // new internal meeting with external participants tied to this lead.
       if (rescheduleFormData.calendar === 'external') {
         const isLegacyLeadExt = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-        const legacyIdExt = isLegacyLeadExt ? client.id.toString().replace('legacy_', '') : null;
-
-        // Cancel oldest upcoming meeting (mirrors normal reschedule semantics).
-        let cancelQuery = supabase
-          .from('meetings')
-          .select('id, meeting_date, meeting_time, meeting_location')
-          .neq('status', 'canceled')
-          .gte('meeting_date', new Date().toISOString().split('T')[0])
-          .order('meeting_date', { ascending: true })
-          .order('meeting_time', { ascending: true })
-          .limit(1);
-        if (isLegacyLeadExt) cancelQuery = cancelQuery.eq('legacy_lead_id', legacyIdExt);
-        else cancelQuery = cancelQuery.eq('client_id', client.id);
-        const { data: toCancel } = await cancelQuery;
-        if (toCancel && toCancel.length > 0) {
-          const editor = await resolveEditorDisplayName();
-          await supabase
-            .from('meetings')
-            .update({ status: 'canceled', last_edited_timestamp: new Date().toISOString(), last_edited_by: editor })
-            .eq('id', toCancel[0].id);
-        }
+        const priorExternal = await findMeetingToCancelOnReschedule({
+          supabase,
+          clientId: client.id,
+          isLegacyLead: isLegacyLeadExt,
+          preferredMeetingId: meetingsToCancel[0] ?? null,
+        });
+        const selectedExternalIds =
+          meetingsToCancel.length > 0
+            ? meetingsToCancel
+            : priorExternal?.id != null
+              ? [Number(priorExternal.id)]
+              : [];
 
         const subject = rescheduleExternal.subject.trim()
           || `[#${client.lead_number || client.id}] ${client.name} - Internal Meeting`;
@@ -4876,9 +4937,25 @@ const MeetingTab: React.FC<ClientTabProps> = ({
           freeDraft: rescheduleExternal.freeDraft,
         });
         if (result) {
+          if (selectedExternalIds.length > 0) {
+            try {
+              const editor = await resolveEditorDisplayName();
+              for (const meetingId of selectedExternalIds) {
+                await cancelMeetingById({
+                  supabase,
+                  meetingId: Number(meetingId),
+                  editorDisplayName: editor,
+                  excludeMeetingId: result.meetingId != null ? Number(result.meetingId) : null,
+                });
+              }
+            } catch (cancelExtError) {
+              console.error('❌ Failed to cancel previous meeting after external reschedule:', cancelExtError);
+              toast.error('New meeting was created, but canceling the previous meeting failed. Please cancel it manually.');
+            }
+          }
           toast.success('Internal meeting created with external participants.');
           setShowRescheduleDrawer(false);
-          setMeetingToDelete(null);
+          setMeetingsToCancel([]);
           setNotifyClientOnReschedule(false);
           setRescheduleFormData({
             date: '',
@@ -4912,40 +4989,32 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         return;
       }
 
-      // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
-      // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
+      // Resolve previous meeting now; cancel only after the replacement is created.
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
+      const legacyId = isLegacyLead ? parseLegacyLeadId(client.id) : null;
 
-      // Query for the oldest upcoming meeting to cancel
-      let query = supabase
-        .from('meetings')
-        .select('id, meeting_date, meeting_time, meeting_location, meeting_location_old')
-        .neq('status', 'canceled')
-        .gte('meeting_date', new Date().toISOString().split('T')[0])
-        .order('meeting_date', { ascending: true })
-        .order('meeting_time', { ascending: true })
-        .limit(1);
-
-      if (isLegacyLead) {
-        query = query.eq('legacy_lead_id', legacyId);
+      let canceledMeeting: any = null;
+      let meetingIdsToCancel: number[] = [];
+      if (meetingsToCancel.length > 0) {
+        meetingIdsToCancel = [...meetingsToCancel];
+        canceledMeeting =
+          rescheduleMeetings.find((m) => Number(m.id) === Number(meetingIdsToCancel[0])) || null;
+        console.log('🔄 Will cancel selected meetings after new meeting is created:', meetingIdsToCancel);
       } else {
-        query = query.eq('client_id', client.id);
-      }
-
-      const { data: upcomingMeetingsToCancel, error: queryError } = await query;
-
-      let canceledMeeting = null;
-      let meetingIdToCancel: number | null = null;
-
-      if (queryError) {
-        console.error('❌ Error querying for meetings to cancel:', queryError);
-      } else if (upcomingMeetingsToCancel && upcomingMeetingsToCancel.length > 0) {
-        meetingIdToCancel = upcomingMeetingsToCancel[0].id;
-        canceledMeeting = upcomingMeetingsToCancel[0];
-        console.log('🔄 Will cancel oldest upcoming meeting after new meeting is created:', meetingIdToCancel);
-      } else {
-        console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
+        const priorMeeting = await findMeetingToCancelOnReschedule({
+          supabase,
+          clientId: client.id,
+          isLegacyLead,
+          preferredMeetingId: null,
+          select: 'id, meeting_date, meeting_time, meeting_location, meeting_location_old, scheduler, status',
+        });
+        if (priorMeeting?.id != null) {
+          meetingIdsToCancel = [Number(priorMeeting.id)];
+          canceledMeeting = priorMeeting;
+          console.log('🔄 Will cancel previous meeting after new meeting is created:', meetingIdsToCancel);
+        } else {
+          console.log('ℹ️ No previous meeting found to cancel (this is a new meeting, not a reschedule)');
+        }
       }
 
       const editorDisplayName = await resolveEditorDisplayName();
@@ -4991,8 +5060,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         } else if (allMeetingsForDate && allMeetingsForDate.length > 0) {
           // Filter meetings to check if any are in the same hour (excluding the meeting being rescheduled)
           const conflictingMeetings = allMeetingsForDate.filter((meeting: any) => {
-            // Exclude the meeting we're rescheduling (if it exists)
-            if (meetingIdToCancel && meeting.id === meetingIdToCancel) return false;
+            // Exclude meetings we're canceling as part of this reschedule
+            if (meetingIdsToCancel.includes(Number(meeting.id))) return false;
             if (!meeting.meeting_time) return false;
             const meetingHour = meeting.meeting_time.split(':')[0];
             return meetingHour === selectedTimeHour;
@@ -5153,6 +5222,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
         custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
         custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
+        status: 'scheduled',
       };
 
       const { data: insertedData, error: meetingError } = await supabase
@@ -5165,27 +5235,35 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         throw meetingError;
       }
 
-      // Cancel the previous meeting only after the replacement was created successfully.
-      if (meetingIdToCancel) {
-        const { error: cancelError } = await supabase
-          .from('meetings')
-          .update({
-            status: 'canceled',
-            last_edited_timestamp: new Date().toISOString(),
-            last_edited_by: editorDisplayName,
-          })
-          .eq('id', meetingIdToCancel);
-        if (cancelError) {
+      // Cancel selected previous meetings only after the replacement was created successfully.
+      if (meetingIdsToCancel.length > 0) {
+        try {
+          const newMeetingId = insertedData?.[0]?.id != null ? Number(insertedData[0].id) : null;
+          let lastCanceled: any = null;
+          let failedCount = 0;
+          for (const meetingId of meetingIdsToCancel) {
+            const canceledMeetingData = await cancelMeetingById({
+              supabase,
+              meetingId,
+              editorDisplayName,
+              excludeMeetingId: newMeetingId,
+            });
+            if (!canceledMeetingData) {
+              failedCount += 1;
+            } else {
+              lastCanceled = canceledMeetingData;
+            }
+          }
+          if (failedCount > 0) {
+            console.error('❌ Failed to cancel some old meetings after reschedule insert');
+            toast.error('New meeting was created, but canceling one or more previous meetings failed. Please cancel them manually.');
+          } else {
+            canceledMeeting = lastCanceled || canceledMeeting;
+            console.log('✅ Old meetings canceled after successful reschedule:', meetingIdsToCancel);
+          }
+        } catch (cancelError) {
           console.error('❌ Failed to cancel old meeting after reschedule insert:', cancelError);
           toast.error('New meeting was created, but canceling the previous meeting failed. Please cancel it manually.');
-        } else {
-          const { data: canceledMeetingData } = await supabase
-            .from('meetings')
-            .select('*')
-            .eq('id', meetingIdToCancel)
-            .single();
-          canceledMeeting = canceledMeetingData || canceledMeeting;
-          console.log('✅ Old meeting canceled after successful reschedule:', meetingIdToCancel);
         }
       }
 
@@ -5544,7 +5622,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
       toast.success(rescheduleNotified ? 'Meeting rescheduled and client notified.' : 'Meeting rescheduled.');
       setShowRescheduleDrawer(false);
-      setMeetingToDelete(null);
+      setMeetingsToCancel([]);
       setNotifyClientOnReschedule(false); // Reset to default
       setRescheduleFormData({
         date: '',
@@ -9079,7 +9157,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               <MeetingFormDrawerActionButton
                 className="btn-primary !rounded-full"
                 onClick={handleCancelMeeting}
-                disabled={!meetingToDelete || isReschedulingMeeting}
+                disabled={meetingsToCancel.length === 0 || isReschedulingMeeting}
               >
                 {isReschedulingMeeting ? (
                   <>
@@ -9241,47 +9319,101 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                     : 'flex flex-col gap-4'
                 }
               >
-                {/* Select Meeting */}
+                {/* Select meeting(s) to cancel */}
                 {rescheduleMeetings.length > 0 && (
                   <div className={isReschedulePage ? 'md:col-span-2' : undefined}>
                     <MeetingFormFieldLabel icon={CalendarIcon}>
-                      Select Meeting {rescheduleOption === 'reschedule' ? '(Optional)' : ''}
+                      Select meeting{rescheduleMeetings.length > 1 ? 's' : ''} to cancel
+                      {rescheduleOption === 'reschedule' ? ' (optional)' : ''}
                     </MeetingFormFieldLabel>
-                    <select
-                      className="select select-bordered w-full"
-                      value={meetingToDelete || ''}
-                      onChange={(e) => {
-                        const meetingId = e.target.value ? parseInt(e.target.value) : null;
-                        setMeetingToDelete(meetingId);
-                        // Pre-fill form with selected meeting data
-                        const selectedMeeting = rescheduleMeetings.find(m => m.id === meetingId);
-                        if (selectedMeeting) {
-                          setRescheduleFormData({
-                            date: selectedMeeting.meeting_date || getTomorrowDate(),
-                            time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
-                            duration: normalizeMeetingDurationMinutes(selectedMeeting.duration),
-                            location: selectedMeeting.meeting_location || 'Teams',
-                            calendar: allowActiveAndExternalCalendars ? 'active_client' : 'current',
-                            manager: selectedMeeting.meeting_manager || '',
-                            helper: selectedMeeting.helper || '',
-                            brief: selectedMeeting.meeting_brief || '',
-                            attendance_probability: selectedMeeting.attendance_probability || 'Medium',
-                            complexity: selectedMeeting.complexity || 'Simple',
-                            car_number: selectedMeeting.car_number || '',
-                            custom_link: selectedMeeting.custom_link || '',
-                            custom_address: selectedMeeting.custom_address || '',
-                          });
-                        }
-                      }}
-                      required={rescheduleOption === 'cancel'}
-                    >
-                      <option value="">Select a meeting...</option>
-                      {rescheduleMeetings.map((meeting) => (
-                        <option key={meeting.id} value={meeting.id}>
-                          {meeting.meeting_date} {meeting.meeting_time ? meeting.meeting_time.substring(0, 5) : ''} - {meeting.meeting_location || 'Teams'}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="overflow-hidden rounded-xl border border-base-300 bg-base-100">
+                      {rescheduleMeetings.length > 1 && (
+                        <div className="flex items-center justify-between gap-2 border-b border-base-200 px-3 py-2">
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs"
+                            onClick={() =>
+                              setMeetingsToCancel(
+                                rescheduleMeetings
+                                  .map((m) => Number(m.id))
+                                  .filter((id) => Number.isFinite(id)),
+                              )
+                            }
+                          >
+                            Select all
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs"
+                            onClick={() => setMeetingsToCancel([])}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      )}
+                      <ul className="max-h-56 divide-y divide-base-200 overflow-y-auto">
+                        {rescheduleMeetings.map((meeting) => {
+                          const meetingId = Number(meeting.id);
+                          const checked = meetingsToCancel.includes(meetingId);
+                          const timeLabel = meeting.meeting_time
+                            ? String(meeting.meeting_time).substring(0, 5)
+                            : '';
+                          return (
+                            <li key={meeting.id}>
+                              <label className="flex cursor-pointer items-start gap-3 px-3 py-3 hover:bg-base-200/50">
+                                <input
+                                  type="checkbox"
+                                  className="checkbox checkbox-primary checkbox-sm mt-0.5"
+                                  checked={checked}
+                                  onChange={() => {
+                                    setMeetingsToCancel((prev) => {
+                                      if (prev.includes(meetingId)) {
+                                        return prev.filter((id) => id !== meetingId);
+                                      }
+                                      return [...prev, meetingId];
+                                    });
+                                    if (!checked) {
+                                      setRescheduleFormData({
+                                        date: meeting.meeting_date || getTomorrowDate(),
+                                        time: timeLabel || '09:00',
+                                        duration: normalizeMeetingDurationMinutes(meeting.duration),
+                                        location: meeting.meeting_location || 'Teams',
+                                        calendar: allowActiveAndExternalCalendars ? 'active_client' : 'current',
+                                        manager: meeting.meeting_manager || '',
+                                        helper: meeting.helper || '',
+                                        brief: meeting.meeting_brief || '',
+                                        attendance_probability: meeting.attendance_probability || 'Medium',
+                                        complexity: meeting.complexity || 'Simple',
+                                        car_number: meeting.car_number || '',
+                                        custom_link: meeting.custom_link || '',
+                                        custom_address: meeting.custom_address || '',
+                                      });
+                                    }
+                                  }}
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-sm font-medium text-base-content">
+                                    {meeting.meeting_date}
+                                    {timeLabel ? ` · ${timeLabel}` : ''}
+                                  </span>
+                                  <span className="block truncate text-xs text-base-content/55">
+                                    {meeting.meeting_location || 'Teams'}
+                                    {meeting.meeting_manager ? ` · ${meeting.meeting_manager}` : ''}
+                                  </span>
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                    {rescheduleOption === 'cancel' && meetingsToCancel.length === 0 ? (
+                      <p className="mt-1 text-xs text-error">Select at least one meeting to cancel.</p>
+                    ) : meetingsToCancel.length > 0 ? (
+                      <p className="mt-1 text-xs text-base-content/55">
+                        {meetingsToCancel.length} meeting{meetingsToCancel.length === 1 ? '' : 's'} selected
+                      </p>
+                    ) : null}
                   </div>
                 )}
 

@@ -119,6 +119,16 @@ import {
     fetchFirmPaidExpenseReductionTotal,
     resolveLeadFeeIdentity,
 } from '../lib/leadExpenses';
+import {
+    clientsTabCacheLeadKey,
+    readClientsTabCache,
+    writeClientsTabCache,
+} from '../lib/clientsTabCache';
+
+type ClientHeaderCostCacheSlice = {
+    summary: LeadEmployeeCostSummary | null;
+    firmPaidExpenseTotal?: number;
+};
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -310,11 +320,6 @@ const MORE_ACTIONS_ICON_TONE_PRIMARY =
 
 const MORE_ACTIONS_ICON_TONE_PURPLE =
     'bg-purple-50 text-purple-700 group-hover:bg-purple-100 dark:bg-purple-900/25 dark:text-purple-300';
-
-const TEAM_CARD_VISIBLE_COLLAPSED = 2;
-
-const TEAM_PANEL_MORE_BTN =
-    'w-full rounded-lg border-0 bg-base-200/80 px-3 py-2 text-center text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content/80';
 
 /** Stage workflow actions — unified size on desktop and mobile. */
 const STAGE_ACTION_BTN_BASE =
@@ -540,14 +545,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const selectedClientRef = useRef(selectedClient);
     /** Bumped after a successful active-handler toggle so avatar ring flash replays. */
     const [handlerActiveRingNonce, setHandlerActiveRingNonce] = useState(0);
-    const [assignedTeamPanelOpen, setAssignedTeamPanelOpen] = useState(false);
     const [headerFinancialDetailsOpen, setHeaderFinancialDetailsOpen] = useState(false);
-    const activeHandlerLeadRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [leadEmployeeCostSummary, setLeadEmployeeCostSummary] =
-        useState<LeadEmployeeCostSummary | null>(null);
+        useState<LeadEmployeeCostSummary | null>(() => {
+            const key = clientsTabCacheLeadKey(selectedClient);
+            return readClientsTabCache<ClientHeaderCostCacheSlice>(key, 'header')?.summary ?? null;
+        });
     const [leadEmployeeCostLoading, setLeadEmployeeCostLoading] = useState(false);
     /** Firm-paid expenses (amount + VAT) — reduce Net / employee-cost base; client-paid do not. */
-    const [firmPaidExpenseTotal, setFirmPaidExpenseTotal] = useState(0);
+    const [firmPaidExpenseTotal, setFirmPaidExpenseTotal] = useState(() => {
+        const key = clientsTabCacheLeadKey(selectedClient);
+        return readClientsTabCache<ClientHeaderCostCacheSlice>(key, 'header')?.firmPaidExpenseTotal ?? 0;
+    });
     const [leadEmployeeCostModalOpen, setLeadEmployeeCostModalOpen] = useState(false);
     const [leadEmployeeCostModalMode, setLeadEmployeeCostModalMode] = useState<
         'overview' | 'warning'
@@ -559,13 +568,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const overBudgetGateShownForLeadRef = useRef<string | null>(null);
 
     useEffect(() => {
-        setAssignedTeamPanelOpen(false);
         setHeaderFinancialDetailsOpen(false);
         setMoreActionsSheetOpen(false);
         setInactiveNotesExpanded(false);
         setLeadEmployeeCostModalOpen(false);
-        setLeadEmployeeCostSummary(null);
-        setFirmPaidExpenseTotal(0);
         setOverBudgetGateOpen(false);
         setBudgetExtensionRequestOpen(false);
         overBudgetGateShownForLeadRef.current = null;
@@ -584,7 +590,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         }
         void fetchFirmPaidExpenseReductionTotal(identity)
             .then((total) => {
-                if (!cancelled) setFirmPaidExpenseTotal(total);
+                if (cancelled) return;
+                setFirmPaidExpenseTotal(total);
+                const leadKey = clientsTabCacheLeadKey(selectedClient);
+                const prev = readClientsTabCache<ClientHeaderCostCacheSlice>(leadKey, 'header');
+                writeClientsTabCache(leadKey, 'header', {
+                    summary: prev?.summary ?? null,
+                    firmPaidExpenseTotal: total,
+                });
             })
             .catch((err) => {
                 console.error('[ClientHeader] firm-paid expense total fetch failed:', err);
@@ -602,13 +615,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return;
         }
 
+        const leadKey = clientsTabCacheLeadKey(selectedClient);
+        const cached = readClientsTabCache<ClientHeaderCostCacheSlice>(leadKey, 'header');
+        if (cached?.summary) {
+            setLeadEmployeeCostSummary(cached.summary);
+        }
+        if (cached?.firmPaidExpenseTotal != null) {
+            setFirmPaidExpenseTotal(cached.firmPaidExpenseTotal);
+        }
+
         const fetchId = ++leadEmployeeCostFetchIdRef.current;
-        setLeadEmployeeCostLoading(true);
+        // Only show loading when we have nothing cached/painted for this lead.
+        if (!cached?.summary) {
+            setLeadEmployeeCostLoading(true);
+        } else {
+            setLeadEmployeeCostLoading(false);
+        }
 
         const leadTotalValueNis = resolveLeadTotalValueNis(selectedClient, {
             hasPaymentPlan,
             paymentPlanBaseTotal,
-            firmPaidExpenseTotal,
+            firmPaidExpenseTotal: cached?.firmPaidExpenseTotal ?? firmPaidExpenseTotal,
         });
 
         void fetchLeadEmployeeCostSummary({
@@ -618,22 +645,32 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             .then((summary) => {
                 if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
                 setLeadEmployeeCostSummary(summary);
+                writeClientsTabCache(leadKey, 'header', {
+                    summary,
+                    firmPaidExpenseTotal: cached?.firmPaidExpenseTotal ?? firmPaidExpenseTotal,
+                });
 
-                const leadKey = String(selectedClient.id);
+                const leadKeyGate = String(selectedClient.id);
                 if (
                     summary.exceedsCap &&
-                    overBudgetGateShownForLeadRef.current !== leadKey
+                    overBudgetGateShownForLeadRef.current !== leadKeyGate
                 ) {
-                    overBudgetGateShownForLeadRef.current = leadKey;
-                    setOverBudgetGateOpen(true);
+                    const stageId = Number(
+                        (isStageNumeric && stageNumeric != null
+                            ? stageNumeric
+                            : (selectedClient as any)?.stage) ?? NaN,
+                    );
+                    if (Number.isFinite(stageId) && stageId >= 105) {
+                        overBudgetGateShownForLeadRef.current = leadKeyGate;
+                        setOverBudgetGateOpen(true);
+                    }
                 } else if (!summary.exceedsCap) {
                     setOverBudgetGateOpen(false);
                 }
             })
             .catch((err) => {
                 console.error('[ClientHeader] lead employee cost fetch failed:', err);
-                if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
-                setLeadEmployeeCostSummary(null);
+                // Keep painted cache on soft failure
             })
             .finally(() => {
                 if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
@@ -657,6 +694,53 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setLeadEmployeeCostModalMode(mode);
         setLeadEmployeeCostModalOpen(true);
     }, []);
+
+    /** Lead Cost badge + time bar + cost modal: from Handler Set (105) onward only. */
+    const showLeadCostUi = useMemo(() => {
+        const fromProp =
+            isStageNumeric && stageNumeric != null && Number.isFinite(stageNumeric)
+                ? stageNumeric
+                : null;
+        const fromClient = Number((selectedClient as any)?.stage);
+        const stageId =
+            fromProp != null
+                ? fromProp
+                : Number.isFinite(fromClient)
+                  ? fromClient
+                  : null;
+        if (stageId != null) return stageId >= 105;
+        return (
+            areStagesEquivalent(currentStageName, 'Handler Set') ||
+            areStagesEquivalent(currentStageName, 'Handler Started') ||
+            areStagesEquivalent(currentStageName, 'Application submitted') ||
+            areStagesEquivalent(currentStageName, 'Case Closed')
+        );
+    }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
+
+    /** Handler / R-Handler chips: from Client signed agreement (60) onward only. */
+    const showHandlerRolesInHeader = useMemo(() => {
+        const fromProp =
+            isStageNumeric && stageNumeric != null && Number.isFinite(stageNumeric)
+                ? stageNumeric
+                : null;
+        const fromClient = Number((selectedClient as any)?.stage);
+        const stageId =
+            fromProp != null
+                ? fromProp
+                : Number.isFinite(fromClient)
+                  ? fromClient
+                  : null;
+        if (stageId != null) return stageId >= 60;
+        return (
+            areStagesEquivalent(currentStageName, 'Client signed agreement') ||
+            areStagesEquivalent(currentStageName, 'payment_request_sent') ||
+            areStagesEquivalent(currentStageName, 'Success') ||
+            areStagesEquivalent(currentStageName, 'Handler Set') ||
+            areStagesEquivalent(currentStageName, 'Handler Started') ||
+            areStagesEquivalent(currentStageName, 'Application submitted') ||
+            areStagesEquivalent(currentStageName, 'Case Closed')
+        );
+    }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
 
     const openFinancesExpensesFeesTab = useCallback(() => {
         try {
@@ -722,180 +806,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         [selectedClient, leadEmployeeCostSummary, handleSkipOverBudgetGate],
     );
 
-    /** Latest row identity + active_handler_type for poll + realtime client-side match (avoids stale closures). */
-    const leadHandlerSyncRef = useRef<{
-        clientId: string | number;
-        idStr: string;
-        isLegacy: boolean;
-        legacyNum: number | null;
-        canonicalNewId: string | null;
-        activeType: number;
-    } | null>(null);
-
-    /** Keep header (incl. active handler toggle) in sync when this row changes in the DB (other tabs, My Cases, etc.). */
-    useEffect(() => {
-        if (!selectedClient?.id) return;
-        const clientId = selectedClient.id;
-        const idStr = String(clientId);
-        const isLegacy = idStr.startsWith('legacy_') || selectedClient.lead_type === 'legacy';
-
-        let legacyNum: number | null = null;
-        if (isLegacy) {
-            const n = parseInt(idStr.replace(/^legacy_/, ''), 10);
-            if (Number.isNaN(n)) return;
-            legacyNum = n;
-        }
-        const canonicalNewId = !isLegacy ? idStr.toLowerCase() : null;
-
-        const activeType = Number((selectedClient as any).active_handler_type) === 1 ? 1 : 2;
-        leadHandlerSyncRef.current = {
-            clientId,
-            idStr,
-            isLegacy,
-            legacyNum,
-            canonicalNewId,
-            activeType,
-        };
-
-        const table: 'leads' | 'leads_lead' = isLegacy ? 'leads_lead' : 'leads';
-
-        const rowMatchesPayload = (payload: { new?: Record<string, unknown> } | null) => {
-            const nid = payload?.new?.id;
-            if (nid == null) return false;
-            if (isLegacy && legacyNum != null) return Number(nid) === legacyNum;
-            if (!canonicalNewId) return false;
-            return String(nid).toLowerCase() === canonicalNewId;
-        };
-
-        const debounceMs = 400;
-        const scheduleRefresh = () => {
-            if (activeHandlerLeadRealtimeTimerRef.current) {
-                clearTimeout(activeHandlerLeadRealtimeTimerRef.current);
-            }
-            activeHandlerLeadRealtimeTimerRef.current = setTimeout(() => {
-                activeHandlerLeadRealtimeTimerRef.current = null;
-                void refreshClientData(clientId);
-            }, debounceMs);
-        };
-
-        const pollMs = 10000;
-        const pollActiveHandlerFromDb = async () => {
-            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-            const snap = leadHandlerSyncRef.current;
-            if (!snap) return;
-            try {
-                if (snap.isLegacy && snap.legacyNum != null) {
-                    const { data, error } = await supabase
-                        .from('leads_lead')
-                        .select('active_handler_type')
-                        .eq('id', snap.legacyNum)
-                        .maybeSingle();
-                    if (error || !data) return;
-                    const remote = Number(data.active_handler_type) === 1 ? 1 : 2;
-                    if (remote !== snap.activeType) void refreshClientData(snap.clientId);
-                } else {
-                    const { data, error } = await supabase
-                        .from('leads')
-                        .select('active_handler_type')
-                        .eq('id', snap.idStr)
-                        .maybeSingle();
-                    if (error || !data) return;
-                    const remote = Number(data.active_handler_type) === 1 ? 1 : 2;
-                    if (remote !== snap.activeType) void refreshClientData(snap.clientId);
-                }
-            } catch {
-                /* ignore */
-            }
-        };
-
-        let cancelled = false;
-        let channel: ReturnType<typeof supabase.channel> | null = null;
-        let pollIntervalId: number | null = null;
-
-        void supabase.auth
-            .getSession()
-            .then(async ({ data: { session } }) => {
-                if (cancelled) return;
-                const token = session?.access_token;
-                if (token) {
-                    try {
-                        await supabase.realtime.setAuth(token);
-                    } catch {
-                        /* Realtime may still work with anon JWT */
-                    }
-                }
-                if (cancelled) return;
-
-                // No server-side filter: filtered postgres_changes often fails (UUID/RLS/replication).
-                // Match CalendarPage pattern — filter client-side to this lead only.
-                channel = supabase
-                    .channel(`client-header-lead-${encodeURIComponent(idStr)}`)
-                    .on(
-                        'postgres_changes',
-                        { event: 'UPDATE', schema: 'public', table },
-                        (payload: { new?: Record<string, unknown> }) => {
-                            if (!rowMatchesPayload(payload)) return;
-                            scheduleRefresh();
-                        }
-                    )
-                    .subscribe((status, err) => {
-                        if (import.meta.env.DEV) {
-                            if (status === 'SUBSCRIBED') {
-                                console.info('[ClientHeader] Realtime subscribed:', table, idStr);
-                            }
-                            if (status === 'CHANNEL_ERROR' || err) {
-                                console.warn('[ClientHeader] Realtime channel issue:', status, err);
-                            }
-                        }
-                    });
-
-                pollIntervalId = window.setInterval(() => {
-                    void pollActiveHandlerFromDb();
-                }, pollMs);
-                void pollActiveHandlerFromDb();
-            })
-            .catch(() => {
-                if (cancelled) return;
-                channel = supabase
-                    .channel(`client-header-lead-${encodeURIComponent(idStr)}-fallback`)
-                    .on(
-                        'postgres_changes',
-                        { event: 'UPDATE', schema: 'public', table },
-                        (payload: { new?: Record<string, unknown> }) => {
-                            if (!rowMatchesPayload(payload)) return;
-                            scheduleRefresh();
-                        }
-                    )
-                    .subscribe();
-                pollIntervalId = window.setInterval(() => {
-                    void pollActiveHandlerFromDb();
-                }, pollMs);
-                void pollActiveHandlerFromDb();
-            });
-
-        return () => {
-            cancelled = true;
-            if (activeHandlerLeadRealtimeTimerRef.current) {
-                clearTimeout(activeHandlerLeadRealtimeTimerRef.current);
-                activeHandlerLeadRealtimeTimerRef.current = null;
-            }
-            if (pollIntervalId != null) {
-                window.clearInterval(pollIntervalId);
-                pollIntervalId = null;
-            }
-            if (channel) {
-                void supabase.removeChannel(channel);
-                channel = null;
-            }
-        };
-    }, [selectedClient?.id, selectedClient?.lead_type, refreshClientData]);
-
-    /** Keep poll + realtime row match in sync when active_handler_type updates without remounting the channel. */
-    useEffect(() => {
-        const r = leadHandlerSyncRef.current;
-        if (!r || String(r.idStr) !== String(selectedClient?.id ?? '')) return;
-        r.activeType = Number((selectedClient as any)?.active_handler_type) === 1 ? 1 : 2;
-    }, [selectedClient?.id, (selectedClient as any)?.active_handler_type]);
+    // Lead row live sync is owned by Clients.tsx (useRealtimeRefresh + silent syncClientFromServer).
+    // Header renders stage/roles/handler from selectedClient props — do not duplicate RT or poll here.
 
     useEffect(() => {
         selectedClientRef.current = selectedClient;
@@ -3357,49 +3269,41 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     >                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2">
                             <div className="flex w-full min-w-0 items-start gap-3">
                                 <div className="min-w-0 flex-1 pr-1 text-left">
-                                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                        <div className="min-w-0">
-                                            <div className="flex min-w-0 items-center gap-1.5">
-                                            <h1 className="min-w-0 text-2xl font-bold leading-tight tracking-tight text-base-content/95">
-                                                {renderClickableClientName('w-full font-bold')}
+                                    <div className="min-w-0">
+                                        <div className="flex min-w-0 items-center gap-1.5">
+                                            <h1 className="min-w-0 truncate text-2xl font-bold leading-tight tracking-tight text-base-content/95">
+                                                {renderClickableClientName('font-bold')}
                                             </h1>
-                                                {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                                    <button
-                                                        onClick={() => {
-                                                            if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
-                                                            else if (isMasterLead && selectedClient) {
-                                                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                                const identifier = isLegacyLead
-                                                                    ? selectedClient.id.toString().replace('legacy_', '')
-                                                                    : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
-                                                                navigate(`/clients/${encodeURIComponent(identifier)}/master`);
-                                                            }
-                                                        }}
-                                                        className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
-                                                        title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
-                                                        aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
+                                            {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                                <button
+                                                    onClick={() => {
+                                                        if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
+                                                        else if (isMasterLead && selectedClient) {
+                                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                            const identifier = isLegacyLead
+                                                                ? selectedClient.id.toString().replace('legacy_', '')
+                                                                : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+                                                            navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                        }
+                                                    }}
+                                                    className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                                    title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
+                                                    aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
+                                                >
+                                                    <Squares2X2Icon className="h-6 w-6" />
+                                                    <span
+                                                        className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                        style={{ backgroundColor: '#3a3a3a' }}
                                                     >
-                                                        <Squares2X2Icon className="h-6 w-6" />
-                                                        <span
-                                                            className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
-                                                            style={{ backgroundColor: '#3a3a3a' }}
-                                                        >
-                                                            {(subLeadsCount || 0) + 1}
-                                                        </span>
-                                                    </button>
-                                                ) : null}
-                                            </div>
-                                            <p className={CLIENT_HEADER_LEAD_NUMBER}>
-                                                {renderLeadNumber()}
-                                            </p>
+                                                        {(subLeadsCount || 0) + 1}
+                                                    </span>
+                                                </button>
+                                            ) : null}
+                                            <div className="shrink-0">{renderStageBadge('mobile')}</div>
                                         </div>
-                                        <div className="flex shrink-0 flex-col items-end gap-1.5">
-                                            {renderStageBadge('mobile')}
-                                            <LeadRemainingTimeBar
-                                                summary={leadEmployeeCostSummary}
-                                                loading={leadEmployeeCostLoading}
-                                            />
-                                        </div>
+                                        <p className={CLIENT_HEADER_LEAD_NUMBER}>
+                                            {renderLeadNumber()}
+                                        </p>
                                     </div>
                                 </div>
                             </div>
@@ -3584,13 +3488,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 onClick={(e) => e.stopPropagation()}
                                                 onKeyDown={(e) => e.stopPropagation()}
                                             >
-                                                <LeadEmployeeCostBadges
-                                                    summary={leadEmployeeCostSummary}
-                                                    loading={leadEmployeeCostLoading}
-                                                    onOpenOverview={() => openLeadEmployeeCostModal('overview')}
-                                                    onOpenWarning={() => openLeadEmployeeCostModal('warning')}
-                                                    isSuperuser={isSuperuser}
-                                                />
                                                 {subcontractorFee > 0 ? (
                                                     <button
                                                         type="button"
@@ -3705,71 +3602,68 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <div
                             className={
                                 connectToAppHeader
-                                    ? 'flex w-full min-w-0 items-center justify-center gap-6 lg:gap-10'
+                                    ? 'flex w-full min-w-0 items-center justify-between gap-6 lg:gap-10'
                                     : 'flex w-full min-w-0 items-center justify-between gap-4'
                             }
                         >
                             <div
                                 className={
                                     connectToAppHeader
-                                        ? 'min-w-0 shrink text-left'
-                                        : 'min-w-0 max-w-[55%] shrink-0 flex-1 text-left sm:max-w-none'
+                                        ? 'min-w-0 max-w-[42%] shrink text-left'
+                                        : 'min-w-0 max-w-[42%] shrink text-left sm:max-w-[48%]'
                                 }
                             >
-                                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-                                    <div className="min-w-0 shrink">
-                                        <div className="flex min-w-0 items-center gap-1.5">
-                                            <h1 className="min-w-0 max-w-full text-lg font-bold leading-tight tracking-tight text-base-content/95 sm:text-xl">
-                                                {renderClickableClientName('w-full font-bold sm:text-xl')}
-                                            </h1>                                            {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                                <button
-                                                    onClick={() => {
-                                                        if (isSubLead && masterLeadNumber) {
-                                                            navigate(`/clients/${masterLeadNumber}/master`);
-                                                        } else if (isMasterLead && selectedClient) {
-                                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                            let identifier: string;
-                                                            if (isLegacyLead) {
-                                                                identifier = selectedClient.id.toString().replace('legacy_', '');
-                                                            } else {
-                                                                identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
-                                                            }
-                                                            navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                <div className="min-w-0 shrink">
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        <h1 className="min-w-0 truncate text-lg font-bold leading-tight tracking-tight text-base-content/95 sm:text-xl">
+                                            {renderClickableClientName('font-bold sm:text-xl')}
+                                        </h1>
+                                        {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                            <button
+                                                onClick={() => {
+                                                    if (isSubLead && masterLeadNumber) {
+                                                        navigate(`/clients/${masterLeadNumber}/master`);
+                                                    } else if (isMasterLead && selectedClient) {
+                                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                        let identifier: string;
+                                                        if (isLegacyLead) {
+                                                            identifier = selectedClient.id.toString().replace('legacy_', '');
+                                                        } else {
+                                                            identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
                                                         }
-                                                    }}
-                                                    className="btn btn-square btn-sm btn-ghost relative shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
-                                                    title={
-                                                        isSubLead
-                                                            ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
-                                                            : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
+                                                        navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                                     }
+                                                }}
+                                                className="btn btn-square btn-sm btn-ghost relative shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                                title={
+                                                    isSubLead
+                                                        ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
+                                                        : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
+                                                }
+                                            >
+                                                <Squares2X2Icon className="w-6 h-6" />
+                                                <span
+                                                    className="absolute -top-1 -right-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                    style={{ backgroundColor: '#3a3a3a' }}
                                                 >
-                                                    <Squares2X2Icon className="w-6 h-6" />
-                                                    <span
-                                                        className="absolute -top-1 -right-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
-                                                        style={{ backgroundColor: '#3a3a3a' }}
-                                                    >
-                                                        {(subLeadsCount || 0) + 1}
-                                                    </span>
-                                                </button>
-                                            ) : null}
-                                        </div>
-                                        <span className={CLIENT_HEADER_LEAD_NUMBER}>
-                                            {renderLeadNumber()}
-                                        </span>
+                                                    {(subLeadsCount || 0) + 1}
+                                                </span>
+                                            </button>
+                                        ) : null}
+                                        <div className="shrink-0">{renderStageBadge('desktop')}</div>
                                     </div>
-                                    <div className="flex shrink-0 flex-col items-end gap-1.5">
-                                        {renderStageBadge('desktop')}
-                                        <LeadRemainingTimeBar
-                                            summary={leadEmployeeCostSummary}
-                                            loading={leadEmployeeCostLoading}
-                                        />
-                                    </div>
+                                    <span className={CLIENT_HEADER_LEAD_NUMBER}>
+                                        {renderLeadNumber()}
+                                    </span>
                                 </div>
                             </div>
-                            <div className="flex w-fit shrink-0 items-start gap-4">
+                            <div
+                                className={`flex min-w-0 flex-1 basis-0 items-start gap-3 ${
+                                    !hideTotalValueBadge ? 'border-l border-base-200/70 pl-4' : ''
+                                }`.trim()}
+                            >
                             {!hideTotalValueBadge ? (
-                                <div className="w-fit max-w-[min(100%,14rem)] shrink-0 text-right sm:max-w-xs">
+                                <div className="w-fit max-w-[min(100%,14rem)] shrink-0 text-left sm:max-w-xs">
                             {(() => {
                                 const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -3907,14 +3801,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                                 return (
                                     <>
-                                        <div className="flex w-full items-center justify-end gap-2">
-                                            <LeadEmployeeCostBadges
-                                                summary={leadEmployeeCostSummary}
-                                                loading={leadEmployeeCostLoading}
-                                                onOpenOverview={() => openLeadEmployeeCostModal('overview')}
-                                                onOpenWarning={() => openLeadEmployeeCostModal('warning')}
-                                                isSuperuser={isSuperuser}
-                                            />
+                                        <div className="flex w-full items-center justify-start gap-2">
                                             {subcontractorFee > 0 ? (
                                                 <button
                                                     type="button"
@@ -3930,38 +3817,46 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         </div>
                                         <button
                                             type="button"
-                                            className="w-full text-right"
+                                            className="w-full text-left"
                                             onClick={() => setIsBalanceModalOpen(true)}
                                         >
-                                            <div className="flex flex-col items-end">
+                                            <div className="flex flex-col items-start">
                                                 <p className="inline-flex items-center gap-2 text-2xl font-bold leading-none tracking-tight text-base-content/95 sm:text-3xl">
                                                     <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
                                                     {hasPaymentPlan === true && (
                                                         <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />
                                                     )}
                                                 </p>
-                                                {shouldShowVAT && vatAmount > 0 && (
-                                                    <p className="mt-0.5 text-sm text-base-content/55">
-                                                        +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
-                                                    </p>
-                                                )}
                                             </div>
                                         </button>
-                                        {hasExpandableFinancialDetails ? (
-                                            <button
-                                                type="button"
-                                                className="btn btn-ghost btn-xs mt-0.5 h-7 min-h-7 gap-1 font-medium text-base-content/55"
-                                                onClick={() => setHeaderFinancialDetailsOpen((open) => !open)}
-                                                aria-expanded={headerFinancialDetailsOpen}
-                                            >
-                                                {headerFinancialDetailsOpen ? 'Less' : 'More'}
-                                                <ChevronDownIcon
-                                                    className={`h-3.5 w-3.5 transition-transform duration-200 ${headerFinancialDetailsOpen ? 'rotate-180' : ''}`}
-                                                />
-                                            </button>
+                                        {(shouldShowVAT && vatAmount > 0) || hasExpandableFinancialDetails ? (
+                                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                                                {shouldShowVAT && vatAmount > 0 ? (
+                                                    <button
+                                                        type="button"
+                                                        className="text-sm text-base-content/55"
+                                                        onClick={() => setIsBalanceModalOpen(true)}
+                                                    >
+                                                        +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                                    </button>
+                                                ) : null}
+                                                {hasExpandableFinancialDetails ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-xs h-7 min-h-7 gap-1 font-medium text-base-content/55"
+                                                        onClick={() => setHeaderFinancialDetailsOpen((open) => !open)}
+                                                        aria-expanded={headerFinancialDetailsOpen}
+                                                    >
+                                                        {headerFinancialDetailsOpen ? 'Less' : 'More'}
+                                                        <ChevronDownIcon
+                                                            className={`h-3.5 w-3.5 transition-transform duration-200 ${headerFinancialDetailsOpen ? 'rotate-180' : ''}`}
+                                                        />
+                                                    </button>
+                                                ) : null}
+                                            </div>
                                         ) : null}
                                         {headerFinancialDetailsOpen && hasExpandableFinancialDetails ? (
-                                            <div className="mt-1.5 space-y-1 border-t border-base-200/70 pt-2 text-right">
+                                            <div className="mt-1.5 space-y-1 border-t border-base-200/70 pt-2 text-left">
                                                 <ClientHeaderTotalInNis
                                                     clientId={selectedClient?.id}
                                                     leadType={selectedClient?.lead_type}
@@ -3993,10 +3888,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     </p>
                                                 )}
                                                 {(unpaidGrossDesktop > 0 || unpaidExpenseAmountDesktop > 0) && (
-                                                    <div className="mt-1 rounded-lg bg-base-200/35 px-2.5 py-2 text-right">
+                                                    <div className="mt-1 rounded-lg bg-base-200/35 px-2.5 py-2 text-left">
                                                         <p className={CLIENT_HEADER_SECTION_LABEL}>Outstanding</p>
                                                         {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
-                                                            <div className="flex items-end justify-end gap-2">
+                                                            <div className="flex items-end justify-start gap-2">
                                                                 <p className="text-xl font-bold leading-none text-base-content/55">
                                                                     {currency}
                                                                     {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
@@ -4029,7 +3924,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </div>
                             ) : null}
 
-                    <div className={`w-fit shrink-0 ${!hideTotalValueBadge ? 'border-l border-base-200/70 pl-4' : ''}`.trim()}>
+                    <div className="min-w-0 flex-1">
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -4151,35 +4046,38 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             : (selectedClient?.status === 'inactive');
 
                         const activeHandlerTypeForLead = Number((selectedClient as any).active_handler_type) === 1 ? 1 : 2;
-                        const hasHandlerRole = !isRoleEmpty(handlerId, handlerDisplay);
-                        const hasRetentionRole = !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
+                        const hasHandlerRole = showHandlerRolesInHeader && !isRoleEmpty(handlerId, handlerDisplay);
+                        const hasRetentionRole = showHandlerRolesInHeader && !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
                         const showDualHandlerToggle = hasHandlerRole && hasRetentionRole && !isUnactivated;
 
-                        // Group roles by employee ID
+                        // Group roles by employee ID. From Handler Set (105)+ with cost UI:
+                        // only Handler + Retention + time bar (hide Expert / Scheduler / Closer).
                         const roleGroups = new Map<string, { id: string | number | null; roles: string[]; display: string }>();
 
-                        if (!isRoleEmpty(closerId, closerDisplay)) {
-                            const key = closerId ? closerId.toString() : closerDisplay;
-                            if (!roleGroups.has(key)) {
-                                roleGroups.set(key, { id: closerId, roles: [], display: closerDisplay });
+                        if (!showLeadCostUi) {
+                            if (!isRoleEmpty(closerId, closerDisplay)) {
+                                const key = closerId ? closerId.toString() : closerDisplay;
+                                if (!roleGroups.has(key)) {
+                                    roleGroups.set(key, { id: closerId, roles: [], display: closerDisplay });
+                                }
+                                roleGroups.get(key)!.roles.push('Closer');
                             }
-                            roleGroups.get(key)!.roles.push('Closer');
-                        }
 
-                        if (!isRoleEmpty(expertId, expertDisplay)) {
-                            const key = expertId ? expertId.toString() : expertDisplay;
-                            if (!roleGroups.has(key)) {
-                                roleGroups.set(key, { id: expertId, roles: [], display: expertDisplay });
+                            if (!isRoleEmpty(expertId, expertDisplay)) {
+                                const key = expertId ? expertId.toString() : expertDisplay;
+                                if (!roleGroups.has(key)) {
+                                    roleGroups.set(key, { id: expertId, roles: [], display: expertDisplay });
+                                }
+                                roleGroups.get(key)!.roles.push('Expert');
                             }
-                            roleGroups.get(key)!.roles.push('Expert');
-                        }
 
-                        if (!isRoleEmpty(schedulerId, schedulerDisplay)) {
-                            const key = schedulerId ? schedulerId.toString() : schedulerDisplay;
-                            if (!roleGroups.has(key)) {
-                                roleGroups.set(key, { id: schedulerId, roles: [], display: schedulerDisplay });
+                            if (!isRoleEmpty(schedulerId, schedulerDisplay)) {
+                                const key = schedulerId ? schedulerId.toString() : schedulerDisplay;
+                                if (!roleGroups.has(key)) {
+                                    roleGroups.set(key, { id: schedulerId, roles: [], display: schedulerDisplay });
+                                }
+                                roleGroups.get(key)!.roles.push('Scheduler');
                             }
-                            roleGroups.get(key)!.roles.push('Scheduler');
                         }
 
                         type TeamEntry = {
@@ -4218,11 +4116,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 kind: 'retention',
                             });
                         }
-
-                        const hiddenTeamCount = Math.max(0, teamEntries.length - TEAM_CARD_VISIBLE_COLLAPSED);
-                        const visibleTeamEntries = assignedTeamPanelOpen
-                            ? teamEntries
-                            : teamEntries.slice(0, TEAM_CARD_VISIBLE_COLLAPSED);
 
                         const renderTeamMemberContent = (
                             entry: TeamEntry,
@@ -4290,89 +4183,87 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         });
 
                         return (
-                            <div className="flex w-fit max-w-[28rem] shrink-0 flex-col items-end gap-1.5">
-                                {teamEntries.length === 0 ? (
-                                    <span className="text-sm text-base-content/45">No team assigned</span>
+                            <div className="flex w-full min-w-0 items-start justify-between gap-8 lg:gap-12">
+                                {showLeadCostUi ? (
+                                    <LeadRemainingTimeBar
+                                        summary={leadEmployeeCostSummary}
+                                        loading={leadEmployeeCostLoading}
+                                        align="start"
+                                        className="w-auto shrink-0"
+                                        leadingAccessory={
+                                            <LeadEmployeeCostBadges
+                                                summary={leadEmployeeCostSummary}
+                                                loading={leadEmployeeCostLoading}
+                                                onOpenOverview={() => openLeadEmployeeCostModal('overview')}
+                                                onOpenWarning={() => openLeadEmployeeCostModal('warning')}
+                                                isSuperuser={isSuperuser}
+                                            />
+                                        }
+                                    />
                                 ) : (
-                                    <>
-                                        <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-                                            {visibleTeamEntries.map((entry) =>
-                                                renderTeamMemberCard(entry, teamMemberCardOptions(entry)),
-                                            )}
-                                            {!assignedTeamPanelOpen && hiddenTeamCount > 0 ? (
+                                    <span className="min-w-0" />
+                                )}
+                                <div className="flex min-w-0 flex-col items-end gap-2">
+                                    <div className="flex max-w-full flex-wrap items-center justify-end gap-x-4 gap-y-2">
+                                        {teamEntries.map((entry) =>
+                                            renderTeamMemberCard(entry, teamMemberCardOptions(entry)),
+                                        )}
+                                    </div>
+                                    {teamEntries.length === 0 && !showLeadCostUi ? (
+                                        <span className="text-sm text-base-content/45">No team assigned</span>
+                                    ) : null}
+                                    {showDualHandlerToggle ? (
+                                        <div className="flex w-fit shrink-0 items-center justify-center">
+                                            <div className="inline-flex h-10 min-w-[8.25rem] items-stretch gap-0.5 rounded-full border border-base-300/50 bg-base-200/90 p-1 shadow-inner">
                                                 <button
                                                     type="button"
-                                                    className={TEAM_PANEL_MORE_BTN}
-                                                    onClick={() => setAssignedTeamPanelOpen(true)}
-                                                    aria-expanded={false}
+                                                    aria-label="Case handler active on this file"
+                                                    onClick={() => void updateActiveHandlerType(2)}
+                                                    title="Case handler drives this file (Active Cases)"
+                                                    className={`relative flex h-8 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                        activeHandlerTypeForLead === 2
+                                                            ? 'bg-emerald-50 shadow-sm ring-1 ring-emerald-200 dark:bg-emerald-900/30 dark:ring-emerald-900/40'
+                                                            : 'bg-transparent hover:bg-base-100/70'
+                                                    }`}
                                                 >
-                                                    +{hiddenTeamCount} more
-                                                </button>
-                                            ) : null}
-                                        </div>
-                                        {assignedTeamPanelOpen && showDualHandlerToggle ? (
-                                            <div className="flex w-fit shrink-0 items-center justify-center">
-                                                <div className="inline-flex h-10 min-w-[8.25rem] items-stretch gap-0.5 rounded-full border border-base-300/50 bg-base-200/90 p-1 shadow-inner">
-                                                    <button
-                                                        type="button"
-                                                        aria-label="Case handler active on this file"
-                                                        onClick={() => void updateActiveHandlerType(2)}
-                                                        title="Case handler drives this file (Active Cases)"
-                                                        className={`relative flex h-8 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                    <UserIcon
+                                                        className={`h-4 w-4 shrink-0 ${
                                                             activeHandlerTypeForLead === 2
-                                                                ? 'bg-emerald-50 shadow-sm ring-1 ring-emerald-200 dark:bg-emerald-900/30 dark:ring-emerald-900/40'
-                                                                : 'bg-transparent hover:bg-base-100/70'
+                                                                ? 'text-emerald-800 dark:text-emerald-100'
+                                                                : 'text-base-content/45'
                                                         }`}
-                                                    >
-                                                        <UserIcon
-                                                            className={`h-4 w-4 shrink-0 ${
-                                                                activeHandlerTypeForLead === 2
-                                                                    ? 'text-emerald-800 dark:text-emerald-100'
-                                                                    : 'text-base-content/45'
-                                                            }`}
-                                                            aria-hidden
-                                                        />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        aria-label="Retention handler active on this file"
-                                                        onClick={() => void updateActiveHandlerType(1)}
-                                                        title="Retention handler active (Non-Active Cases)"
-                                                        className={`relative flex h-8 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                        aria-hidden
+                                                    />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    aria-label="Retention handler active on this file"
+                                                    onClick={() => void updateActiveHandlerType(1)}
+                                                    title="Retention handler active (Non-Active Cases)"
+                                                    className={`relative flex h-8 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                        activeHandlerTypeForLead === 1
+                                                            ? 'bg-sky-50 shadow-sm ring-1 ring-sky-200 dark:bg-sky-900/25 dark:ring-sky-900/40'
+                                                            : 'bg-transparent hover:bg-base-100/70'
+                                                    }`}
+                                                >
+                                                    <RectangleStackIcon
+                                                        className={`h-4 w-4 shrink-0 ${
                                                             activeHandlerTypeForLead === 1
-                                                                ? 'bg-sky-50 shadow-sm ring-1 ring-sky-200 dark:bg-sky-900/25 dark:ring-sky-900/40'
-                                                                : 'bg-transparent hover:bg-base-100/70'
+                                                                ? 'text-sky-800 dark:text-sky-100'
+                                                                : 'text-base-content/45'
                                                         }`}
-                                                    >
-                                                        <RectangleStackIcon
-                                                            className={`h-4 w-4 shrink-0 ${
-                                                                activeHandlerTypeForLead === 1
-                                                                    ? 'text-sky-800 dark:text-sky-100'
-                                                                    : 'text-base-content/45'
-                                                            }`}
-                                                            aria-hidden
-                                                        />
-                                                    </button>
-                                                </div>
+                                                        aria-hidden
+                                                    />
+                                                </button>
                                             </div>
-                                        ) : null}
-                                        {assignedTeamPanelOpen && hiddenTeamCount > 0 ? (
-                                            <button
-                                                type="button"
-                                                className={TEAM_PANEL_MORE_BTN}
-                                                onClick={() => setAssignedTeamPanelOpen(false)}
-                                                aria-expanded
-                                            >
-                                                Show less
-                                            </button>
-                                        ) : null}
-                                    </>
-                                )}
+                                        </div>
+                                    ) : null}
+                                </div>
                             </div>
                         );
                     })()}
                     </div>
-                            </div>
+                    </div>
                         </div>
                     </div>
                         {connectToAppHeader ? (
@@ -5415,29 +5306,48 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             : (selectedClient?.status === 'inactive');
 
                         const activeHandlerTypeForLead = Number((selectedClient as any).active_handler_type) === 1 ? 1 : 2;
-                        const hasHandlerRole = !isRoleEmpty(handlerId, handlerDisplay);
-                        const hasRetentionRole = !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
+                        const hasHandlerRole = showHandlerRolesInHeader && !isRoleEmpty(handlerId, handlerDisplay);
+                        const hasRetentionRole = showHandlerRolesInHeader && !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
                         const showDualHandlerToggle = hasHandlerRole && hasRetentionRole && !isUnactivated;
 
                         const roleGroups = new Map<string, { id: string | number | null; roles: string[]; display: string }>();
-                        if (!isRoleEmpty(closerId, closerDisplay)) {
-                            const key = closerId ? closerId.toString() : closerDisplay;
-                            if (!roleGroups.has(key)) roleGroups.set(key, { id: closerId, roles: [], display: closerDisplay });
-                            roleGroups.get(key)!.roles.push('Closer');
-                        }
-                        if (!isRoleEmpty(expertId, expertDisplay)) {
-                            const key = expertId ? expertId.toString() : expertDisplay;
-                            if (!roleGroups.has(key)) roleGroups.set(key, { id: expertId, roles: [], display: expertDisplay });
-                            roleGroups.get(key)!.roles.push('Expert');
-                        }
-                        if (!isRoleEmpty(schedulerId, schedulerDisplay)) {
-                            const key = schedulerId ? schedulerId.toString() : schedulerDisplay;
-                            if (!roleGroups.has(key)) roleGroups.set(key, { id: schedulerId, roles: [], display: schedulerDisplay });
-                            roleGroups.get(key)!.roles.push('Scheduler');
+                        if (!showLeadCostUi) {
+                            if (!isRoleEmpty(closerId, closerDisplay)) {
+                                const key = closerId ? closerId.toString() : closerDisplay;
+                                if (!roleGroups.has(key)) roleGroups.set(key, { id: closerId, roles: [], display: closerDisplay });
+                                roleGroups.get(key)!.roles.push('Closer');
+                            }
+                            if (!isRoleEmpty(expertId, expertDisplay)) {
+                                const key = expertId ? expertId.toString() : expertDisplay;
+                                if (!roleGroups.has(key)) roleGroups.set(key, { id: expertId, roles: [], display: expertDisplay });
+                                roleGroups.get(key)!.roles.push('Expert');
+                            }
+                            if (!isRoleEmpty(schedulerId, schedulerDisplay)) {
+                                const key = schedulerId ? schedulerId.toString() : schedulerDisplay;
+                                if (!roleGroups.has(key)) roleGroups.set(key, { id: schedulerId, roles: [], display: schedulerDisplay });
+                                roleGroups.get(key)!.roles.push('Scheduler');
+                            }
                         }
 
                         return (
                             <div className="flex w-full flex-col gap-2">
+                                {showLeadCostUi ? (
+                                    <LeadRemainingTimeBar
+                                        summary={leadEmployeeCostSummary}
+                                        loading={leadEmployeeCostLoading}
+                                        align="start"
+                                        className="w-full max-w-md self-stretch"
+                                        leadingAccessory={
+                                            <LeadEmployeeCostBadges
+                                                summary={leadEmployeeCostSummary}
+                                                loading={leadEmployeeCostLoading}
+                                                onOpenOverview={() => openLeadEmployeeCostModal('overview')}
+                                                onOpenWarning={() => openLeadEmployeeCostModal('warning')}
+                                                isSuperuser={isSuperuser}
+                                            />
+                                        }
+                                    />
+                                ) : null}
                                 {Array.from(roleGroups.values()).map((group, index) => (
                                     <div
                                         key={index}
@@ -5875,7 +5785,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>,
                         document.body
                     )}
-            {selectedClient && (
+            {selectedClient && showLeadCostUi && (
                 <LeadEmployeeCostModal
                     open={leadEmployeeCostModalOpen}
                     onClose={() => setLeadEmployeeCostModalOpen(false)}
@@ -5885,7 +5795,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     isSuperuser={isSuperuser}
                 />
             )}
-            {selectedClient && (
+            {selectedClient && showLeadCostUi && (
                 <LeadOverBudgetGateModal
                     open={overBudgetGateOpen && !budgetExtensionRequestOpen}
                     summary={leadEmployeeCostSummary}
@@ -5894,7 +5804,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onSkip={handleSkipOverBudgetGate}
                 />
             )}
-            {selectedClient && (
+            {selectedClient && showLeadCostUi && (
                 <LeadBudgetExtensionRequestModal
                     open={budgetExtensionRequestOpen}
                     summary={leadEmployeeCostSummary}
@@ -5910,6 +5820,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onClose={() => setEditLeadDrawerOpenState(false)}
                     lead={selectedClient}
                     onSave={() => refreshClientData(selectedClient.id)}
+                    totalLocked={hasPaymentPlan === true}
                 />
             )}
             {selectedClient && (

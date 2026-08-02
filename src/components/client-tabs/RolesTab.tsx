@@ -6,7 +6,16 @@ import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
+import {
+  clientsTabCacheLeadKey,
+  readClientsTabCache,
+  writeClientsTabCache,
+} from '../../lib/clientsTabCache';
 
+/** Cached light slice for Roles — avoids re-flashing permission gate on remount. */
+type RolesTabCacheSlice = {
+  isSuperuser?: boolean;
+};
 /** Main sections + role card order in the Roles tab */
 const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
   { title: 'Sales', roleIds: ['scheduler', 'manager', 'helper', 'expert', 'closer'] },
@@ -407,7 +416,9 @@ const RolesTab: React.FC<ClientTabProps> = ({
   const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
   const [originalRoles, setOriginalRoles] = useState<Role[]>(computedRoles);
   const [isRolesLocked, setIsRolesLocked] = useState<boolean>(false);
-  const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
+  const rolesLeadKey = clientsTabCacheLeadKey(client);
+  const cachedRolesTabData = readClientsTabCache<RolesTabCacheSlice>(rolesLeadKey, 'roles');
+  const [isSuperuser, setIsSuperuser] = useState<boolean>(() => cachedRolesTabData?.isSuperuser ?? false);
 
   // Update roles state when computed roles change
   useEffect(() => {
@@ -501,8 +512,10 @@ const RolesTab: React.FC<ClientTabProps> = ({
             userData.is_superuser === 'true' ||
             userData.is_superuser === 1;
           setIsSuperuser(superuserStatus);
+          writeClientsTabCache(rolesLeadKey, 'roles', { isSuperuser: superuserStatus });
         } else {
           setIsSuperuser(false);
+          writeClientsTabCache(rolesLeadKey, 'roles', { isSuperuser: false });
         }
       } catch (error) {
         console.error('Error fetching superuser status:', error);
@@ -511,7 +524,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
     };
 
     fetchSuperuserStatus();
-  }, []);
+  }, [rolesLeadKey]);
 
   const handleRoleChange = (roleId: string, newAssignee: string) => {
     setRoles(roles.map(role =>

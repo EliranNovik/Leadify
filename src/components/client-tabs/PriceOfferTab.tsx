@@ -4,6 +4,11 @@ import { CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
+import {
+  clientsTabCacheLeadKey,
+  readClientsTabCache,
+  writeClientsTabCache,
+} from '../../lib/clientsTabCache';
 
 interface PriceOfferHistoryEntry {
   id: string;
@@ -15,6 +20,13 @@ interface PriceOfferHistoryEntry {
   isFallback: boolean;
 }
 
+/** Cached bundle for the 'price' slice — everything this tab's fetch effects reload. */
+type PriceOfferTabCacheSlice = {
+  history?: PriceOfferHistoryEntry[];
+  closerDisplayName?: string;
+  legacyTotal?: number | null;
+};
+
 const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Use values from client, fallback to defaults if missing
   const proposalTotal = client?.proposal_total;
@@ -22,12 +34,19 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
   const closer = client?.closer || '---';
   const proposal = client?.proposal_text ?? '';
 
-  const [historyLoading, setHistoryLoading] = useState(false);
+  // Cache-first: paint this lead's last-known offer history immediately (no spinner), then
+  // silently refresh from the network below.
+  const priceLeadKey = clientsTabCacheLeadKey(client);
+  const cachedPriceTabData = readClientsTabCache<PriceOfferTabCacheSlice>(priceLeadKey, 'price');
+
+  const [historyLoading, setHistoryLoading] = useState(() => !cachedPriceTabData);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [history, setHistory] = useState<PriceOfferHistoryEntry[]>([]);
+  const [history, setHistory] = useState<PriceOfferHistoryEntry[]>(() => cachedPriceTabData?.history ?? []);
   const [activeOfferId, setActiveOfferId] = useState<string | null>(null);
-  const [closerDisplayName, setCloserDisplayName] = useState<string>('---');
-  const [legacyTotal, setLegacyTotal] = useState<number | null>(null);
+  const [closerDisplayName, setCloserDisplayName] = useState<string>(
+    () => cachedPriceTabData?.closerDisplayName ?? '---'
+  );
+  const [legacyTotal, setLegacyTotal] = useState<number | null>(() => cachedPriceTabData?.legacyTotal ?? null);
 
   const isLegacyLead = useMemo(
     () => typeof client?.id === 'string' && client.id.startsWith('legacy_'),
@@ -100,16 +119,17 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
           }
 
           // Set total if available
+          let nextLegacyTotal: number | null = null;
           if (leadData?.total !== null && leadData?.total !== undefined) {
             const totalNum = typeof leadData.total === 'string' 
               ? parseFloat(leadData.total) 
               : Number(leadData.total);
-            setLegacyTotal(!isNaN(totalNum) ? totalNum : null);
-          } else {
-            setLegacyTotal(null);
+            nextLegacyTotal = !isNaN(totalNum) ? totalNum : null;
           }
+          setLegacyTotal(nextLegacyTotal);
 
           // Fetch display_name from tenants_employee if closer_id exists
+          let nextCloserDisplayName = '---';
           if (leadData?.closer_id) {
             const { data: employeeData, error: employeeError } = await supabase
               .from('tenants_employee')
@@ -118,13 +138,18 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
               .maybeSingle();
 
             if (!employeeError && employeeData?.display_name) {
-              setCloserDisplayName(employeeData.display_name);
-            } else {
-              setCloserDisplayName('---');
+              nextCloserDisplayName = employeeData.display_name;
             }
-          } else {
-            setCloserDisplayName('---');
           }
+          setCloserDisplayName(nextCloserDisplayName);
+
+          const leadKey = clientsTabCacheLeadKey(client);
+          const prevCache = readClientsTabCache<PriceOfferTabCacheSlice>(leadKey, 'price') ?? {};
+          writeClientsTabCache(leadKey, 'price', {
+            ...prevCache,
+            closerDisplayName: nextCloserDisplayName,
+            legacyTotal: nextLegacyTotal,
+          });
         } catch (error) {
           console.error('Error fetching legacy data:', error);
           setCloserDisplayName('---');
@@ -159,7 +184,11 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
         return;
       }
 
-      setHistoryLoading(true);
+      // Cache-first / silent-refresh: only show the loading state when there's nothing on
+      // screen yet. Cache hits and realtime-triggered refetches update history in place.
+      if (!cachedPriceTabData && history.length === 0) {
+        setHistoryLoading(true);
+      }
       setHistoryError(null);
 
       try {
@@ -235,6 +264,9 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
         } else {
           setActiveOfferId(null);
         }
+        const leadKey = clientsTabCacheLeadKey(client);
+        const prevCache = readClientsTabCache<PriceOfferTabCacheSlice>(leadKey, 'price') ?? {};
+        writeClientsTabCache(leadKey, 'price', { ...prevCache, history: entries });
       } catch (error: any) {
         console.error('Failed to fetch price offer history:', error);
         setHistoryError('Failed to load previous offers.');

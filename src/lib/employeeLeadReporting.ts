@@ -1043,21 +1043,32 @@ export function workedMsToCostNis(
   return Math.round(hourRate * billableHours * 100) / 100;
 }
 
-/** Standard workdays used to derive salary → hourly rate (avg monthly salary ÷ monthly hours). */
+/** Fixed monthly hours used to derive salary → hourly rate (avg monthly salary ÷ this). */
+export const SALARY_COST_HOURS_PER_MONTH = 127;
+
+/**
+ * @deprecated Hourly rate now uses {@link SALARY_COST_HOURS_PER_MONTH} (127), not min_hours × days.
+ * Kept for any legacy imports.
+ */
 export const SALARY_COST_WORKING_DAYS_PER_MONTH = 22;
 
-/** Hourly rate from average monthly salary: salary ÷ (min hours × workdays/month). */
+/**
+ * Hourly rate from average monthly salary: salary ÷ {@link SALARY_COST_HOURS_PER_MONTH}.
+ * `minHours` is ignored (kept for call-site compatibility with older min_hours-based formula).
+ */
 export function salaryToHourlyRateNis(
   avgMonthlySalaryNis: number | null | undefined,
-  minHours: number,
-  workingDaysPerMonth: number = SALARY_COST_WORKING_DAYS_PER_MONTH,
+  _minHours?: number,
+  hoursPerMonth: number = SALARY_COST_HOURS_PER_MONTH,
 ): number | null {
   if (avgMonthlySalaryNis == null || !Number.isFinite(avgMonthlySalaryNis) || avgMonthlySalaryNis <= 0) {
     return null;
   }
-  const hoursPerMonth = normalizeEmployeeMinHours(minHours) * workingDaysPerMonth;
-  if (hoursPerMonth <= 0) return null;
-  return Math.round((avgMonthlySalaryNis / hoursPerMonth) * 100) / 100;
+  const monthlyHours =
+    Number.isFinite(hoursPerMonth) && hoursPerMonth > 0
+      ? hoursPerMonth
+      : SALARY_COST_HOURS_PER_MONTH;
+  return Math.round((avgMonthlySalaryNis / monthlyHours) * 100) / 100;
 }
 
 /** Lead/row cost as a percent of average monthly salary (total cost = salary). */

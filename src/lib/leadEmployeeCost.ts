@@ -7,6 +7,7 @@ import {
   getJerusalemTodayIsoDate,
   normalizeEmployeeMinHours,
   salaryToHourlyRateNis,
+  SALARY_COST_HOURS_PER_MONTH,
   workedMsAtHourlyRateToCostNis,
 } from './employeeLeadReporting';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
@@ -98,7 +99,39 @@ export type LeadEmployeeCostSummary = {
   leadTotalValueNis: number;
   exceedsCap: boolean;
   utilizationPercent: number;
+  /**
+   * True when there is no allocation report data and rates come from assigned
+   * Handler / R-Handler salaries ÷ {@link SALARY_COST_HOURS_PER_MONTH}.
+   */
+  usedRoleHourlyFallback?: boolean;
 };
+
+/** @deprecated Use {@link SALARY_COST_HOURS_PER_MONTH} from employeeLeadReporting. */
+export const LEAD_COST_FALLBACK_HOURS_PER_MONTH = SALARY_COST_HOURS_PER_MONTH;
+
+/** Case handler + retention handler employee ids from a lead row. */
+export function resolveAssignedHandlerEmployeeIds(client: any): number[] {
+  if (!client) return [];
+  const ids = new Set<number>();
+  const add = (raw: unknown) => {
+    if (raw == null || raw === '' || raw === '---' || raw === '--') return;
+    const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
+    if (Number.isFinite(n) && n > 0) ids.add(n);
+  };
+
+  add(client.case_handler_id);
+  add(client.retainer_handler_id);
+
+  // Legacy / alternate fields when case_handler_id is empty
+  if (client.case_handler_id == null || String(client.case_handler_id).trim() === '') {
+    const handler = client.handler;
+    if (typeof handler === 'number' || (typeof handler === 'string' && /^\d+$/.test(handler.trim()))) {
+      add(handler);
+    }
+  }
+
+  return Array.from(ids);
+}
 
 type AllocationItemJoin = {
   id: number;
@@ -198,8 +231,103 @@ export function resolveLeadIdentityForCost(client: any): LeadIdentityForCost | n
 }
 
 /**
+ * Fallback only: used when the lead has no allocation-report rows yet.
+ * Once real allocated hours exist in the report, {@link fetchLeadEmployeeCostSummary}
+ * uses those rows exclusively and never merges this estimate.
+ */
+async function buildHandlerRoleHourlyFallbackSummary(params: {
+  client: any;
+  base: LeadEmployeeCostSummary;
+}): Promise<LeadEmployeeCostSummary> {
+  const employeeIds = resolveAssignedHandlerEmployeeIds(params.client);
+  if (employeeIds.length === 0) {
+    return { ...params.base, usedRoleHourlyFallback: false };
+  }
+
+  const [{ data: empRows, error: empError }, salaryMap] = await Promise.all([
+    supabase
+      .from('tenants_employee')
+      .select(
+        `
+        id,
+        display_name,
+        photo_url,
+        photo,
+        department_id,
+        tenant_departement!department_id ( id, name )
+      `,
+      )
+      .in('id', employeeIds),
+    fetchAverageGrossSalaryLastMonths(employeeIds, 6),
+  ]);
+
+  if (empError) {
+    console.error('[leadEmployeeCost] handler fallback employee fetch failed:', empError);
+    throw empError;
+  }
+
+  type EmpRow = {
+    id: number;
+    display_name: string | null;
+    photo_url: string | null;
+    photo: string | null;
+    tenant_departement:
+      | { id: number; name: string | null }
+      | { id: number; name: string | null }[]
+      | null;
+  };
+
+  const byId = new Map<number, EmpRow>();
+  for (const row of (empRows || []) as EmpRow[]) {
+    if (row?.id != null) byId.set(Number(row.id), row);
+  }
+
+  const employees: LeadEmployeeCostRow[] = employeeIds
+    .map((employeeId) => {
+      const emp = byId.get(employeeId);
+      const deptRaw = emp?.tenant_departement;
+      const dept = Array.isArray(deptRaw) ? deptRaw[0] : deptRaw;
+      const avgSalary = salaryMap.get(employeeId) ?? 0;
+      const hourRateNis = salaryToHourlyRateNis(avgSalary > 0 ? avgSalary : null);
+      return {
+        employeeId,
+        employeeName: emp?.display_name?.trim() || `Employee #${employeeId}`,
+        photoUrl:
+          (typeof emp?.photo_url === 'string' && emp.photo_url.trim()) ||
+          (typeof emp?.photo === 'string' && emp.photo.trim()) ||
+          null,
+        departmentName: dept?.name?.trim() || null,
+        workedMs: 0,
+        costNis: 0,
+        hourRateNis,
+      };
+    })
+    .filter((row) => row.hourRateNis != null && row.hourRateNis > 0)
+    .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+
+  if (employees.length === 0) {
+    return { ...params.base, usedRoleHourlyFallback: false };
+  }
+
+  return {
+    ...params.base,
+    employees,
+    totalWorkedMs: 0,
+    totalCostNis: 0,
+    exceedsCap: false,
+    utilizationPercent: 0,
+    usedRoleHourlyFallback: true,
+  };
+}
+
+/**
  * Loads all time-allocation rows for a lead, applies salary-derived hourly rates,
  * and aggregates cost / worked time per employee.
+ *
+ * Fallback (Handler / R-Handler salary ÷ 127h) runs only when there is no real
+ * allocation-report data. As soon as report rows exist, they replace the fallback
+ * entirely — no mixing of estimated and reported hours.
+ * Hourly rates always use {@link SALARY_COST_HOURS_PER_MONTH} (127), not employee min_hours.
  */
 export async function fetchLeadEmployeeCostSummary(params: {
   client: any;
@@ -241,6 +369,7 @@ export async function fetchLeadEmployeeCostSummary(params: {
     leadTotalValueNis,
     exceedsCap: false,
     utilizationPercent: 0,
+    usedRoleHourlyFallback: false,
   };
 
   if (!identity) return empty;
@@ -286,7 +415,19 @@ export async function fetchLeadEmployeeCostSummary(params: {
   }
 
   const items = (data || []) as AllocationItemJoin[];
-  if (items.length === 0) return empty;
+  // Fallback is ONLY when this lead has no real allocation-report rows.
+  // Any saved allocation item with percent > 0 fully replaces the Handler/R-Handler 127h estimate.
+  const hasRealAllocationReportData = items.some(
+    (item) =>
+      item.employee_daily_lead_allocations != null &&
+      Number(item.percent) > 0,
+  );
+  if (!hasRealAllocationReportData) {
+    return buildHandlerRoleHourlyFallbackSummary({
+      client: params.client,
+      base: empty,
+    });
+  }
 
   const employeeIds = new Set<number>();
   let minDate = items[0]?.employee_daily_lead_allocations?.work_date || '';
@@ -398,6 +539,7 @@ export async function fetchLeadEmployeeCostSummary(params: {
     leadTotalValueNis,
     exceedsCap,
     utilizationPercent,
+    usedRoleHourlyFallback: false,
   };
 }
 

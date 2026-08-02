@@ -57,7 +57,7 @@ type EmployeeAllocationGroup = {
   minHours: number;
   /** Average monthly gross salary (last 6 months). Total cost = this salary. */
   avgMonthlySalaryNis: number | null;
-  /** Salary ÷ (min hours × 22 workdays). */
+  /** Salary ÷ 127 monthly hours. */
   salaryHourRateNis: number | null;
   totalWorkedMs: number;
   rows: AllocationReportRow[];

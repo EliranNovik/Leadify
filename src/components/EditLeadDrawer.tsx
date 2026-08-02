@@ -49,11 +49,13 @@ interface EditLeadDrawerProps {
     source_id?: string | null;
   } | null;
   onSave?: () => void | Promise<void>;
+  /** When true, Total/Balance cannot be changed (payment plan exists). */
+  totalLocked?: boolean;
 }
 
 type FirmOption = { id: string; name: string };
 
-const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, onSave }) => {
+const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, onSave, totalLocked = false }) => {
   const [editLeadData, setEditLeadData] = useState({
     tags: '',
     /** Display name for source datalist */
@@ -707,12 +709,17 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             updateData.no_of_applicants = applicantsValue;
           }
           // Legacy leads don't have potential_applicants_meeting field, so skip it
-          if (editLeadData.balance !== (currentData.total || '')) {
+          if (!totalLocked && editLeadData.balance !== (currentData.total || '')) {
             const balanceValue = editLeadData.balance === '' || editLeadData.balance === null ? null : String(editLeadData.balance);
             updateData.total = balanceValue;
+            // NIS legacy totals live in total_base
+            const currencyId = Number(currentData.currency_id) || currencyNameToId(editLeadData.balance_currency) || 1;
+            if (currencyId === 1 && balanceValue != null) {
+              updateData.total_base = balanceValue;
+            }
           }
           // Follow-up is now handled separately in follow_ups table, not in updateData
-          if (editLeadData.balance_currency !== getCurrencySymbol(currentData.currency_id)) {
+          if (!totalLocked && editLeadData.balance_currency !== getCurrencySymbol(currentData.currency_id)) {
             updateData.currency_id = currencyNameToId(editLeadData.balance_currency);
           }
           if (editLeadData.category !== lead.category) {
@@ -866,16 +873,17 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             }
             updateData.potential_applicants_meeting = potentialValue;
           }
-          if (editLeadData.balance !== (currentData.balance || '')) {
+          if (!totalLocked && editLeadData.balance !== (currentData.balance || '')) {
             let balanceValue = null;
             if (editLeadData.balance !== '' && editLeadData.balance !== null) {
               const parsed = Number(editLeadData.balance);
               balanceValue = isNaN(parsed) ? null : parsed;
             }
             updateData.balance = balanceValue;
+            updateData.proposal_total = balanceValue;
           }
           // Follow-up is now handled separately in follow_ups table, not in updateData
-          if (editLeadData.balance_currency !== currentData.balance_currency) {
+          if (!totalLocked && editLeadData.balance_currency !== currentData.balance_currency) {
             updateData.balance_currency = editLeadData.balance_currency;
           }
           if (editLeadData.eligible !== currentData.eligible) {
@@ -1200,8 +1208,21 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.potential_applicants_meeting} onChange={e => handleEditLeadChange('potential_applicants_meeting', e.target.value)} />
           </div>
           <div>
-            <label className="block font-semibold mb-1">Balance (Amount)</label>
-            <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.balance} onChange={e => handleEditLeadChange('balance', e.target.value)} />
+            <label className="block font-semibold mb-1">
+              Balance (Amount)
+              {totalLocked ? (
+                <span className="ml-2 text-xs font-normal text-base-content/50">(locked by payment plan)</span>
+              ) : null}
+            </label>
+            <input
+              type="number"
+              min="0"
+              className="input input-bordered w-full"
+              value={editLeadData.balance}
+              onChange={e => handleEditLeadChange('balance', e.target.value)}
+              disabled={totalLocked}
+              readOnly={totalLocked}
+            />
           </div>
           <div>
             <label className="block font-semibold mb-1">Subcontractor fee</label>
@@ -1243,14 +1264,20 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             <input type="date" className="input input-bordered w-full" value={editLeadData.next_followup} onChange={e => handleEditLeadChange('next_followup', e.target.value)} />
           </div>
           <div>
-            <label className="block font-semibold mb-1">Balance Currency</label>
-            <div className="dropdown w-full">
-              <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between">
+            <label className="block font-semibold mb-1">
+              Balance Currency
+              {totalLocked ? (
+                <span className="ml-2 text-xs font-normal text-base-content/50">(locked by payment plan)</span>
+              ) : null}
+            </label>
+            <div className={`dropdown w-full ${totalLocked ? 'pointer-events-none opacity-60' : ''}`}>
+              <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between" aria-disabled={totalLocked}>
                 {editLeadData.balance_currency || 'Select Currency'}
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                 </svg>
               </div>
+              {!totalLocked ? (
               <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-full max-h-60 overflow-y-auto">
                 {currencies.length > 0 ? (
                   <>
@@ -1281,6 +1308,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
                   <li><a>Loading currencies...</a></li>
                 )}
               </ul>
+              ) : null}
             </div>
           </div>
           <div>

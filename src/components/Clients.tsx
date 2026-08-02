@@ -153,6 +153,13 @@ import {
   getScheduleMeetingPath,
   isMobileMeetingScheduleUi,
 } from '../lib/meetingScheduleNavigation';
+import {
+  ACTIVE_MEETING_STATUS_FILTER,
+  cancelMeetingById,
+  findMeetingToCancelOnReschedule,
+  localTodayYmd,
+  parseLegacyLeadId,
+} from '../lib/meetingRescheduleCancel';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
@@ -1169,7 +1176,10 @@ const Clients: React.FC<ClientsProps> = ({
   // Persist UI state so it's restored when navigating back (same as LeadSearchPage.tsx)
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
     storage: 'sessionStorage',
+    retainOnPageRefresh: true,
   });
+  // Keep visited tabs mounted (hidden) so switching tabs does not remount and flash loading states.
+  const [visitedTabs, setVisitedTabs] = useState<string[]>(() => [typeof activeTab === 'string' && activeTab ? activeTab : 'info']);
   const prefetchTabChunk = useCallback((tabId: string) => {
     const load = TAB_LOADERS[tabId];
     if (load) {
@@ -1178,6 +1188,19 @@ const Clients: React.FC<ClientsProps> = ({
       });
     }
   }, []);
+
+  // Reset keep-alive when switching leads
+  useEffect(() => {
+    const seed = typeof activeTab === 'string' && activeTab ? activeTab : 'info';
+    setVisitedTabs([seed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset on lead change
+  }, [selectedClient?.id]);
+
+  // Remember every tab the user opens for this lead
+  useEffect(() => {
+    if (!activeTab) return;
+    setVisitedTabs((prev) => (prev.includes(activeTab) ? prev : [...prev, activeTab]));
+  }, [activeTab]);
   // Check if floating nav bar should always be open
   const floatingNavBarAlwaysOpen = localStorage.getItem('floatingNavBarAlwaysOpen') === 'true';
   const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(!floatingNavBarAlwaysOpen);
@@ -1201,9 +1224,11 @@ const Clients: React.FC<ClientsProps> = ({
   // Default to collapsed on mobile, expanded on desktop
   const [isClientInfoCollapsed, setIsClientInfoCollapsed] = usePersistedState('clientsPage_isClientInfoCollapsed', false, {
     storage: 'sessionStorage',
+    retainOnPageRefresh: true,
   });
   const [isProgressCollapsed, setIsProgressCollapsed] = usePersistedState('clientsPage_isProgressCollapsed', false, {
     storage: 'sessionStorage',
+    retainOnPageRefresh: true,
   });
   const tabContentRef = useRef<HTMLDivElement>(null);
 
@@ -1725,8 +1750,9 @@ const Clients: React.FC<ClientsProps> = ({
   // another tab, an automation, etc.) we silently re-sync just this client's data instead of
   // forcing a full page reload. Cached data keeps rendering; only the changed fields update.
   // We subscribe table-wide and match the row client-side (server-side filters on postgres_changes
-  // are unreliable here due to UUID/RLS/replication — same approach as ClientHeader/CalendarPage).
-  // syncClientFromServer is in-flight guarded, so this coalesces with ClientHeader's own listener.
+  // are unreliable here due to UUID/RLS/replication). Clients owns this channel; ClientHeader
+  // only renders selectedClient props (no duplicate RT/poll).
+  // syncClientFromServer is in-flight guarded so rapid events coalesce.
   const selectedLeadRealtime = useMemo<{ channelName: string; tables: RealtimeTableSubscription[] }>(() => {
     const id = selectedClient?.id;
     if (!id) return { channelName: '', tables: [] };
@@ -1801,7 +1827,7 @@ const Clients: React.FC<ClientsProps> = ({
     custom_link: '',
     custom_address: '',
   });
-  const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
+  const [meetingsToCancel, setMeetingsToCancel] = useState<number[]>([]);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   // Toggle for notifying client via email when rescheduling a meeting
   const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(false);
@@ -2528,11 +2554,13 @@ const Clients: React.FC<ClientsProps> = ({
           currency_id: cid,
           vat_value: vatValComputed,
         };
-        if (cid === 1) {
-          updateData.total_base = net;
-        } else {
-          updateData.total = net;
-          updateData.total_base = convertToNIS(net, cid);
+        if (hasPaymentPlan !== true) {
+          if (cid === 1) {
+            updateData.total_base = net;
+          } else {
+            updateData.total = net;
+            updateData.total_base = convertToNIS(net, cid);
+          }
         }
 
         const { error } = await supabase
@@ -2587,13 +2615,15 @@ const Clients: React.FC<ClientsProps> = ({
           proposal_currency: successForm.currency,
           balance_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants,
-          proposal_total: net,
           potential_value: potentialValue,
-          balance: net,
           vat_value: vatValComputed,
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
+        if (hasPaymentPlan !== true) {
+          updateData.proposal_total = net;
+          updateData.balance = net;
+        }
 
         if (handlerName) {
           updateData.handler = handlerName;
@@ -2695,28 +2725,34 @@ const Clients: React.FC<ClientsProps> = ({
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
 
-      // Get today's date in YYYY-MM-DD format for filtering
-      const today = new Date().toISOString().split('T')[0];
+      // Get today's date in YYYY-MM-DD format for filtering (local calendar day)
+      const today = localTodayYmd();
 
       let query = supabase
         .from('meetings')
         .select('*')
-        .neq('status', 'canceled') // Only fetch non-canceled meetings
+        .or(ACTIVE_MEETING_STATUS_FILTER)
         .gte('meeting_date', today); // Only fetch upcoming meetings (today and future)
 
       if (isLegacyLead) {
-        const legacyIdStr = selectedClient.id.toString().replace('legacy_', '');
-        // Convert to number for legacy_lead_id (it's a bigint in the database)
-        const numericLegacyId = /^\d+$/.test(legacyIdStr) ? parseInt(legacyIdStr, 10) : legacyIdStr;
-        query = query.eq('legacy_lead_id', numericLegacyId);
+        query = query.eq('legacy_lead_id', parseLegacyLeadId(selectedClient.id));
       } else {
         query = query.eq('client_id', selectedClient.id);
       }
 
       const { data, error } = await query.order('meeting_date', { ascending: true });
 
-      if (!error && data) setRescheduleMeetings(data);
-      else setRescheduleMeetings([]);
+      if (!error && data) {
+        setRescheduleMeetings(data);
+        setMeetingsToCancel(
+          data
+            .map((m: any) => Number(m.id))
+            .filter((id: number) => Number.isFinite(id)),
+        );
+      } else {
+        setRescheduleMeetings([]);
+        setMeetingsToCancel([]);
+      }
     };
     fetchMeetings();
   }, [selectedClient, showRescheduleDrawer]);
@@ -2891,6 +2927,7 @@ const Clients: React.FC<ClientsProps> = ({
             total,
             total_base,
             subcontractor_fee,
+            client_paid,
             external_firm_id,
             currency_id,
             closer_id,
@@ -3023,6 +3060,7 @@ const Clients: React.FC<ClientsProps> = ({
             total: data.total || null, // Include total for balance badge logic
             total_base: data.total_base || null, // Include total_base for balance badge logic (when currency_id is 1)
             subcontractor_fee: data.subcontractor_fee ?? null, // Denormalized SUM(lead_subcontractor_fees.amount)
+            client_paid: data.client_paid !== false,
             external_firm_id: data.external_firm_id || null,
             balance_currency: (() => {
               // Use accounting_currencies name if available, otherwise fallback
@@ -3098,7 +3136,13 @@ const Clients: React.FC<ClientsProps> = ({
             // Note: language_id is excluded as we use language (name) instead
           };
           const normalizedTransformedData = normalizeClientStage(transformedData);
-          setSelectedClient(normalizedTransformedData);
+          setSelectedClient((prev: any) => {
+            // Silent sync: merge onto the same lead identity so keep-alive tabs / header don't remount.
+            if (prev && String(prev.id) === String(normalizedTransformedData.id)) {
+              return { ...prev, ...normalizedTransformedData, id: prev.id, lead_type: prev.lead_type ?? normalizedTransformedData.lead_type };
+            }
+            return normalizedTransformedData;
+          });
           persistClientData(normalizedTransformedData);
         }
       } else {
@@ -3203,6 +3247,7 @@ const Clients: React.FC<ClientsProps> = ({
             balance: data.balance,
             proposal_total: data.proposal_total,
             subcontractor_fee: data.subcontractor_fee,
+            client_paid: data.client_paid !== false,
             potential_total: data.potential_total,
             vat: data.vat,
             vat_value: data.vat_value,
@@ -3212,7 +3257,13 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Setting new lead data - currency resolved from currency_id -> accounting_currencies.name
           const normalizedTransformedData = normalizeClientStage(transformedData);
-          setSelectedClient(normalizedTransformedData);
+          setSelectedClient((prev: any) => {
+            // Silent sync: merge onto the same lead identity so keep-alive tabs / header don't remount.
+            if (prev && String(prev.id) === String(normalizedTransformedData.id)) {
+              return { ...prev, ...normalizedTransformedData, id: prev.id, lead_type: prev.lead_type ?? normalizedTransformedData.lead_type };
+            }
+            return normalizedTransformedData;
+          });
           persistClientData(normalizedTransformedData);
         }
       }
@@ -3901,6 +3952,7 @@ const Clients: React.FC<ClientsProps> = ({
                   })(),
                   lead_type: 'legacy',
                   client_country: null,
+                  client_paid: (legacyLead as any).client_paid !== false,
                   emails: [],
                   closer: closerDisplayName,
                   closer_id: legacyLead.closer_id || null, // Include closer_id for RolesTab
@@ -5304,11 +5356,10 @@ const Clients: React.FC<ClientsProps> = ({
           onClick={handleStageClick}
         >
           <span
-            className="inline-flex items-center justify-center px-3 py-1 rounded-lg text-sm font-semibold shadow-sm transition-opacity w-48"
+            className="inline-flex items-center justify-center px-3 py-1 rounded-lg text-sm font-semibold transition-opacity w-48"
             style={{
               backgroundColor: stageColour,
               color: badgeTextColour,
-              boxShadow: '0 4px 10px rgba(17,24,39,0.12)',
             }}
           >
             {stageOption.name}
@@ -5328,12 +5379,11 @@ const Clients: React.FC<ClientsProps> = ({
         <button
           type="button"
           disabled
-          className="w-full text-left px-4 py-3 rounded-xl border shadow-lg flex items-center justify-between cursor-default"
+          className="w-full text-left px-4 py-3 rounded-xl border flex items-center justify-between cursor-default"
           style={{
             backgroundColor: resolvedFallbackStageColour,
             borderColor: resolvedFallbackStageColour,
             color: badgeTextColour,
-            boxShadow: '0 10px 24px rgba(17,24,39,0.12)'
           }}
         >
           <div className="flex flex-col">
@@ -5384,7 +5434,7 @@ const Clients: React.FC<ClientsProps> = ({
       <div className="relative" ref={dropdownRef}>
         <button
           type="button"
-          className={`stage-badge ${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
+          className={`stage-badge shadow-none ${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' || anchor === 'desktop' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
             ? 'cursor-pointer hover:scale-[1.02]'
             : 'cursor-default'
             }`}
@@ -5394,9 +5444,9 @@ const Clients: React.FC<ClientsProps> = ({
             fontSize: anchor === 'mobile' ? '1rem' : '0.95rem',
             fontWeight: 600,
             borderRadius: '9999px',
-            minHeight: anchor === 'mobile' ? '2.25rem' : '2rem',
+            minHeight: anchor === 'mobile' || anchor === 'desktop' ? '2.25rem' : '2rem',
             border: `2px solid ${fallbackStageColour}`,
-            boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
+            boxShadow: 'none',
           }}
           onClick={(e) => {
             e.preventDefault();
@@ -5450,7 +5500,7 @@ const Clients: React.FC<ClientsProps> = ({
     authRedirectParamsRef.current = null;
     setShowRescheduleDrawer(false);
     setNotifyClientOnReschedule(false);
-    setMeetingToDelete(null);
+    setMeetingsToCancel([]);
     setRescheduleFormData({
       date: getTomorrowDate(),
       time: '09:00',
@@ -7273,12 +7323,14 @@ const Clients: React.FC<ClientsProps> = ({
           meeting_brief: meetingEndedData.meetingBrief,
           no_of_applicants: meetingEndedData.numberOfApplicants ? Number(meetingEndedData.numberOfApplicants) : null,
           potential_total: proposalTotal ? String(proposalTotal) : null,
-          total: proposalTotal ? String(proposalTotal) : null, // Sync total to proposal_total
           currency_id: currencyNameToId(meetingEndedData.proposalCurrency),
           stage: waitingStageId,
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
+        if (hasPaymentPlan !== true) {
+          updateData.total = proposalTotal ? String(proposalTotal) : null;
+        }
 
         const { error } = await supabase
           .from('leads_lead')
@@ -7292,14 +7344,16 @@ const Clients: React.FC<ClientsProps> = ({
           meeting_brief: meetingEndedData.meetingBrief,
           number_of_applicants_meeting: meetingEndedData.numberOfApplicants,
           potential_applicants_meeting: meetingEndedData.potentialApplicants,
-          proposal_total: proposalTotal,
           proposal_currency: meetingEndedData.proposalCurrency,
-          balance: proposalTotal, // Sync balance to proposal_total
           balance_currency: meetingEndedData.proposalCurrency,
           stage: waitingStageId,
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
+        if (hasPaymentPlan !== true) {
+          updateData.proposal_total = proposalTotal;
+          updateData.balance = proposalTotal;
+        }
 
         const { error } = await supabase
           .from('leads')
@@ -8144,29 +8198,30 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Handler for canceling meeting only
   const handleCancelMeeting = async () => {
-    if (!selectedClient || !meetingToDelete) return;
+    if (!selectedClient || meetingsToCancel.length === 0) return;
     try {
       const account = instance.getAllAccounts()[0];
 
-      // 1. Cancel the meeting (set status to 'canceled')
+      // 1. Cancel all selected meetings
       const { data: { user } } = await supabase.auth.getUser();
       const editor = user?.email || account?.name || 'system';
-      const { error: cancelError } = await supabase
-        .from('meetings')
-        .update({
-          status: 'canceled',
-          last_edited_timestamp: new Date().toISOString(),
-          last_edited_by: editor
-        })
-        .eq('id', meetingToDelete);
+      const idsToCancel = [...meetingsToCancel];
+      for (const meetingId of idsToCancel) {
+        const canceled = await cancelMeetingById({
+          supabase,
+          meetingId,
+          editorDisplayName: editor,
+        });
+        if (!canceled) {
+          throw new Error(`Failed to cancel meeting #${meetingId}`);
+        }
+      }
 
-      if (cancelError) throw cancelError;
-
-      // 2. Get meeting details for email
+      // 2. Get first selected meeting details for email
       const { data: canceledMeeting, error: fetchError } = await supabase
         .from('meetings')
         .select('*')
-        .eq('id', meetingToDelete)
+        .eq('id', idsToCancel[0])
         .single();
 
       if (fetchError) throw fetchError;
@@ -8372,10 +8427,14 @@ const Clients: React.FC<ClientsProps> = ({
       }
 
       // 5. Show toast and close drawer
-      toast.success(notifyClientOnReschedule ? 'Meeting canceled and client notified.' : 'Meeting canceled.');
+      toast.success(
+        notifyClientOnReschedule
+          ? `${idsToCancel.length > 1 ? 'Meetings' : 'Meeting'} canceled and client notified.`
+          : `${idsToCancel.length > 1 ? 'Meetings' : 'Meeting'} canceled.`,
+      );
       setShowRescheduleDrawer(false);
       setNotifyClientOnReschedule(false); // Reset to default
-      setMeetingToDelete(null);
+      setMeetingsToCancel([]);
       setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', duration: DEFAULT_MEETING_DURATION_MINUTES, location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
@@ -8391,72 +8450,35 @@ const Clients: React.FC<ClientsProps> = ({
 
     setIsReschedulingMeeting(true);
 
-    // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
-    // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
-    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-    const legacyIdStr = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
-    // Convert to number for legacy_lead_id (it's a bigint in the database)
-    const legacyId = legacyIdStr && /^\d+$/.test(legacyIdStr) ? parseInt(legacyIdStr, 10) : legacyIdStr;
-
-    // Query for the oldest upcoming meeting to cancel
-    let query = supabase
-      .from('meetings')
-      .select('id, meeting_date, meeting_time, meeting_location')
-      .neq('status', 'canceled')
-      .gte('meeting_date', new Date().toISOString().split('T')[0])
-      .order('meeting_date', { ascending: true })
-      .order('meeting_time', { ascending: true })
-      .limit(1);
-
-    if (isLegacyLead && legacyId !== null) {
-      query = query.eq('legacy_lead_id', legacyId);
-    } else if (!isLegacyLead) {
-      query = query.eq('client_id', selectedClient.id);
-    }
-
-    const { data: upcomingMeetingsToCancel, error: queryError } = await query;
-
-    let canceledMeeting = null;
-    let meetingIdToCancel: number | null = null;
-
-    if (queryError) {
-      console.error('❌ Error querying for meetings to cancel:', queryError);
-    } else if (upcomingMeetingsToCancel && upcomingMeetingsToCancel.length > 0) {
-      meetingIdToCancel = upcomingMeetingsToCancel[0].id;
-      console.log('🔄 Automatically canceling oldest upcoming meeting before rescheduling:', meetingIdToCancel);
-
-      try {
-        const account = instance.getAllAccounts()[0];
-        const { data: { user } } = await supabase.auth.getUser();
-        const editor = user?.email || account?.name || 'system';
-        const { error: cancelError } = await supabase
-          .from('meetings')
-          .update({
-            status: 'canceled',
-            last_edited_timestamp: new Date().toISOString(),
-            last_edited_by: editor
-          })
-          .eq('id', meetingIdToCancel);
-
-        if (cancelError) {
-          console.error('❌ Failed to cancel old meeting:', cancelError);
-          throw new Error(`Failed to cancel old meeting: ${cancelError.message}`);
+    // Resolve previous meeting now; cancel only after the replacement is created.
+    const isLegacyLeadForCancel =
+      selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+    let canceledMeeting: any = null;
+    let meetingIdsToCancel: number[] = [];
+    try {
+      if (meetingsToCancel.length > 0) {
+        meetingIdsToCancel = [...meetingsToCancel];
+        canceledMeeting =
+          rescheduleMeetings.find((m) => Number(m.id) === Number(meetingIdsToCancel[0])) || null;
+        console.log('🔄 Will cancel selected meetings after new meeting is created:', meetingIdsToCancel);
+      } else {
+        const priorMeeting = await findMeetingToCancelOnReschedule({
+          supabase,
+          clientId: selectedClient.id,
+          isLegacyLead: isLegacyLeadForCancel,
+          preferredMeetingId: null,
+          select: 'id, meeting_date, meeting_time, meeting_location, meeting_location_old, scheduler, status',
+        });
+        if (priorMeeting?.id != null) {
+          meetingIdsToCancel = [Number(priorMeeting.id)];
+          canceledMeeting = priorMeeting;
+          console.log('🔄 Will cancel previous meeting after new meeting is created:', meetingIdsToCancel);
+        } else {
+          console.log('ℹ️ No previous meeting found to cancel (this is a new meeting, not a reschedule)');
         }
-
-        const { data: canceledMeetingData } = await supabase
-          .from('meetings')
-          .select('*')
-          .eq('id', meetingIdToCancel)
-          .single();
-
-        canceledMeeting = canceledMeetingData;
-        console.log('✅ Old meeting canceled successfully:', meetingIdToCancel);
-      } catch (error) {
-        console.error('❌ Error canceling meeting:', error);
-        throw error;
       }
-    } else {
-      console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
+    } catch (lookupError) {
+      console.error('❌ Error querying for meetings to cancel:', lookupError);
     }
 
     try {
@@ -8612,8 +8634,8 @@ const Clients: React.FC<ClientsProps> = ({
         } else if (allMeetingsForDate && allMeetingsForDate.length > 0) {
           // Filter meetings to check if any are in the same hour (excluding the meeting being rescheduled)
           const conflictingMeetings = allMeetingsForDate.filter((meeting: any) => {
-            // Exclude the meeting we're rescheduling (if it exists)
-            if (meetingIdToCancel && meeting.id === meetingIdToCancel) return false;
+            // Exclude meetings we're canceling as part of this reschedule
+            if (meetingIdsToCancel.includes(Number(meeting.id))) return false;
             if (!meeting.meeting_time) return false;
             const meetingHour = meeting.meeting_time.split(':')[0];
             return meetingHour === selectedTimeHour;
@@ -8771,6 +8793,7 @@ const Clients: React.FC<ClientsProps> = ({
         calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
         custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
         custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
+        status: 'scheduled',
       };
 
       const { data: insertedData, error: meetingError } = await supabase
@@ -8781,6 +8804,38 @@ const Clients: React.FC<ClientsProps> = ({
       if (meetingError) {
         console.error('Meeting creation error:', meetingError);
         throw meetingError;
+      }
+
+      // Cancel selected previous meetings only after the replacement was created successfully.
+      if (meetingIdsToCancel.length > 0) {
+        try {
+          const newMeetingId = insertedData?.[0]?.id != null ? Number(insertedData[0].id) : null;
+          let lastCanceled: any = null;
+          let failedCount = 0;
+          for (const meetingId of meetingIdsToCancel) {
+            const canceledMeetingData = await cancelMeetingById({
+              supabase,
+              meetingId,
+              editorDisplayName: currentUserFullName || account?.name || 'system',
+              excludeMeetingId: newMeetingId,
+            });
+            if (!canceledMeetingData) {
+              failedCount += 1;
+            } else {
+              lastCanceled = canceledMeetingData;
+            }
+          }
+          if (failedCount > 0) {
+            console.error('❌ Failed to cancel some old meetings after reschedule insert');
+            toast.error('New meeting was created, but canceling one or more previous meetings failed. Please cancel them manually.');
+          } else {
+            canceledMeeting = lastCanceled || canceledMeeting;
+            console.log('✅ Old meetings canceled after successful reschedule:', meetingIdsToCancel);
+          }
+        } catch (cancelError) {
+          console.error('❌ Failed to cancel old meeting after reschedule insert:', cancelError);
+          toast.error('New meeting was created, but canceling the previous meeting failed. Please cancel it manually.');
+        }
       }
 
       // Update lead stage and roles
@@ -9613,7 +9668,7 @@ const Clients: React.FC<ClientsProps> = ({
       toast.success(notifyClientOnReschedule ? 'Meeting rescheduled and client notified.' : 'Meeting rescheduled.');
       setShowRescheduleDrawer(false);
       setNotifyClientOnReschedule(false); // Reset to default
-      setMeetingToDelete(null);
+      setMeetingsToCancel([]);
       setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', duration: DEFAULT_MEETING_DURATION_MINUTES, location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
@@ -10045,9 +10100,11 @@ const Clients: React.FC<ClientsProps> = ({
           grossNis += convertToNIS(rowGross, rowCurrencyId);
         }
 
-        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.order));
+        const hasContractPayments = rows.some((r: any) => !isExpenseNoVatPayment(r?.order));
+        // Any active plan rows (including expenses) lock Total editing.
+        const hasPlan = rows.length > 0;
         const planCurrencyId =
-          hasPlan && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : leadCurrencyId;
+          hasContractPayments && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : leadCurrencyId;
         const baseTotal = baseByCurrencyId.get(leadCurrencyId) ?? Array.from(baseByCurrencyId.values()).reduce((a, b) => a + b, 0);
         const vatTotal = vatByCurrencyId.get(leadCurrencyId) ?? Array.from(vatByCurrencyId.values()).reduce((a, b) => a + b, 0);
         const expenseTotal =
@@ -10058,30 +10115,48 @@ const Clients: React.FC<ClientsProps> = ({
           legacyId,
           leadCurrencyId,
           baseByCurrencyId: Array.from(baseByCurrencyId.entries()),
-          vatByCurrencyId: Array.from(vatByCurrencyId.entries()),
+          vatByCurrencyId: Array.from(vatByCurrencyId.values()),
           baseTotal,
           vatTotal,
           grossTotal,
           grossNis,
           hasPlan,
+          hasContractPayments,
         });
         applyTotals({
           hasPlan,
-          base: hasPlan ? baseTotal : null,
-          vat: hasPlan ? vatTotal : null,
-          gross: hasPlan ? grossTotal : null,
+          // Only override displayed Total from plan when contract (non-expense) payments exist.
+          base: hasContractPayments ? baseTotal : null,
+          vat: hasContractPayments ? vatTotal : null,
+          gross: hasContractPayments ? grossTotal : null,
           expenseNoVat: expenseTotal > 0 ? expenseTotal : null,
-          currencyId: hasPlan ? planCurrencyId : null,
+          currencyId: hasContractPayments ? planCurrencyId : null,
         });
-        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: hasPlan ? grossNis : null, currencyId: hasPlan ? planCurrencyId : null, expenseNoVat: expenseTotal > 0 ? expenseTotal : null };
+        return {
+          hasPlan,
+          base: hasContractPayments ? baseTotal : null,
+          vat: hasContractPayments ? vatTotal : null,
+          gross: hasContractPayments ? grossTotal : null,
+          grossNis: hasContractPayments ? grossNis : null,
+          currencyId: hasContractPayments ? planCurrencyId : null,
+          expenseNoVat: expenseTotal > 0 ? expenseTotal : null,
+        };
       } else {
+        // Match next-due fetch: some plan rows are keyed on lead_ids instead of lead_id.
         const { data, error } = await supabase
           .from('payment_plans')
-          .select('value, value_vat, currency, payment_order, expense_paid_by')
-          .eq('lead_id', clientId)
+          .select('id, value, value_vat, currency, payment_order, expense_paid_by, lead_id, lead_ids')
+          .or(`lead_id.eq.${clientId},lead_ids.eq.${clientId}`)
           .is('cancel_date', null);
         if (error) throw error;
-        const rows = data || [];
+        // Dedupe if a row matches both filters
+        const seen = new Set<string>();
+        const rows = ((data || []) as any[]).filter((r) => {
+          const key = r?.id != null ? String(r.id) : JSON.stringify(r);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
         const baseTotal = rows.reduce((sum, r: any) => {
           if (isExpenseNoVatPayment(r?.payment_order)) return sum;
           const base = Number(r?.value ?? 0);
@@ -10102,7 +10177,9 @@ const Clients: React.FC<ClientsProps> = ({
           return sum + gross;
         }, 0);
         const grossTotal = baseTotal + vatTotal;
-        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.payment_order));
+        const hasContractPayments = rows.some((r: any) => !isExpenseNoVatPayment(r?.payment_order));
+        // Any active plan rows (including expenses) lock Total editing.
+        const hasPlan = rows.length > 0;
         const currencyIdsSeen = new Set<number>();
         for (const r of rows as any[]) {
           if (isExpenseNoVatPayment(r?.payment_order)) continue;
@@ -10127,27 +10204,28 @@ const Clients: React.FC<ClientsProps> = ({
           }
           currencyIdsSeen.add(id);
         }
-        const planCurrencyId = hasPlan && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : ((selectedClient as any)?.currency_id ?? 1);
+        const planCurrencyId = hasContractPayments && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : ((selectedClient as any)?.currency_id ?? 1);
         applyTotals({
           hasPlan,
-          base: hasPlan ? baseTotal : null,
-          vat: hasPlan ? vatTotal : null,
-          gross: hasPlan ? grossTotal : null,
+          base: hasContractPayments ? baseTotal : null,
+          vat: hasContractPayments ? vatTotal : null,
+          gross: hasContractPayments ? grossTotal : null,
           expenseNoVat: expenseTotal > 0 ? expenseTotal : null,
-          currencyId: hasPlan ? Number(planCurrencyId) : null,
+          currencyId: hasContractPayments ? Number(planCurrencyId) : null,
         });
-        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: null, currencyId: hasPlan ? Number(planCurrencyId) : null, expenseNoVat: expenseTotal > 0 ? expenseTotal : null };
+        return {
+          hasPlan,
+          base: hasContractPayments ? baseTotal : null,
+          vat: hasContractPayments ? vatTotal : null,
+          gross: hasContractPayments ? grossTotal : null,
+          grossNis: null,
+          currencyId: hasContractPayments ? Number(planCurrencyId) : null,
+          expenseNoVat: expenseTotal > 0 ? expenseTotal : null,
+        };
       }
     } catch (e) {
       console.error('Error fetching payment plan total:', e);
-      if (isActiveClient()) {
-        setHasPaymentPlan(null);
-        setPaymentPlanBaseTotal(null);
-        setPaymentPlanVatTotal(null);
-        setPaymentPlanExpenseNoVatTotal(null);
-        setPaymentPlanGrossTotal(null);
-        setPaymentPlanCurrencyId(null);
-      }
+      // Do not clear an existing lock on transient fetch errors (null unlocks Total editing).
       return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null, currencyId: null };
     }
   }, [selectedClient]);
@@ -11732,6 +11810,55 @@ const Clients: React.FC<ClientsProps> = ({
               });
             }
           }
+        } else if (isLegacyLead && selectedClient?.id) {
+          // Legacy masters: contracts live on lead_leadcontact (HTML), not contracts table
+          const legacyId = selectedClient.id.toString().replace('legacy_', '');
+          const { data: leadContacts, error: legacyContactsError } = await supabase
+            .from('lead_leadcontact')
+            .select(`
+              id,
+              contact_id,
+              contract_html,
+              signed_contract_html,
+              leads_contact (
+                id,
+                name,
+                email,
+                phone,
+                mobile,
+                country_id
+              )
+            `)
+            .eq('lead_id', legacyId);
+
+          if (legacyContactsError) {
+            console.error('Error fetching legacy contracts for sub-lead drawer:', legacyContactsError);
+          } else if (leadContacts) {
+            leadContacts.forEach((lc: any) => {
+              const hasContractHtml = lc.contract_html && String(lc.contract_html).trim() !== '';
+              const hasSigned =
+                lc.signed_contract_html &&
+                String(lc.signed_contract_html).trim() !== '' &&
+                lc.signed_contract_html !== '\\N';
+              if (!hasContractHtml && !hasSigned) return;
+
+              const contactId = lc.contact_id;
+              if (!contactId) return;
+
+              const raw = lc.leads_contact;
+              const contactRecord = Array.isArray(raw) ? raw[0] : raw;
+              contactsMap[contactId] = {
+                contactId,
+                contactName: contactRecord?.name || 'Unknown Contact',
+                contractId: `legacy_${lc.id}`,
+                contractName: 'Legacy Contract',
+                contactEmail: contactRecord?.email || null,
+                contactPhone: contactRecord?.phone || null,
+                contactMobile: contactRecord?.mobile || null,
+                contactCountryId: contactRecord?.country_id ?? null,
+              };
+            });
+          }
         }
 
         const contactsList = Object.values(contactsMap);
@@ -11973,11 +12100,7 @@ const Clients: React.FC<ClientsProps> = ({
       ? interactionsCache
       : null;
 
-  const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component;
-  const financeProps =
-    activeTab === 'finances'
-      ? { onCreateFinancePlan: () => setShowPaymentsPlanDrawer(true) }
-      : {};
+  const visitedTabDefs = tabs.filter((tab) => visitedTabs.includes(tab.id));
   const showTabPaymentBanner =
     Boolean(selectedClient) &&
     (areStagesEquivalent(currentStageName, 'Handler Set') ||
@@ -13295,7 +13418,69 @@ const Clients: React.FC<ClientsProps> = ({
         // The trigger automatically creates a contact when a new lead is inserted
         let finalRelationshipId: number | null = null;
 
-        if (existingContactId) {
+        // Same Contract: reuse the existing contact that already owns the contract,
+        // then link it to the new sub-lead and copy the contract onto that link.
+        if (subLeadStep === 'sameContract' && selectedContractContactId) {
+          console.log('🔍 Same Contract: reusing existing contact', selectedContractContactId);
+          finalContactId = selectedContractContactId;
+
+          let existingRel: any = null;
+          if (!isLegacyParent) {
+            const { data: relData } = await supabase
+              .from('lead_leadcontact')
+              .select('id')
+              .eq('newlead_id', insertedLeadId)
+              .eq('contact_id', finalContactId)
+              .maybeSingle();
+            existingRel = relData;
+          } else {
+            const { data: relData } = await supabase
+              .from('lead_leadcontact')
+              .select('id')
+              .eq('lead_id', insertedLeadId)
+              .eq('contact_id', finalContactId)
+              .maybeSingle();
+            existingRel = relData;
+          }
+
+          if (existingRel) {
+            finalRelationshipId = existingRel.id;
+            await supabase
+              .from('lead_leadcontact')
+              .update({ main: 'true' })
+              .eq('id', existingRel.id);
+          } else {
+            const relationshipData: Record<string, any> = {
+              contact_id: finalContactId,
+              main: true,
+            };
+            if (isLegacyParent) {
+              relationshipData.lead_id = insertedLeadId;
+            } else {
+              relationshipData.newlead_id = insertedLeadId;
+            }
+
+            const { data: insertedRelationship, error: relationshipError } = await supabase
+              .from('lead_leadcontact')
+              .insert([relationshipData])
+              .select('id')
+              .single();
+
+            if (relationshipError) {
+              console.error('Error linking same-contract contact to sub-lead:', relationshipError);
+            } else if (insertedRelationship) {
+              finalRelationshipId = insertedRelationship.id;
+            }
+          }
+
+          // If a trigger also created a different contact for this lead, demote it
+          if (existingContactId && existingContactId !== finalContactId && existingRelationshipId) {
+            await supabase
+              .from('lead_leadcontact')
+              .update({ main: 'false' })
+              .eq('id', existingRelationshipId);
+          }
+        } else if (existingContactId) {
           // Update the existing contact created by the trigger with complete information
           console.log('🔍 Updating existing trigger-created contact with complete data:', existingContactId);
           finalContactId = existingContactId;
@@ -13537,16 +13722,19 @@ const Clients: React.FC<ClientsProps> = ({
                 console.error('Error fetching legacy contract:', legacyError);
                 toast.error('Failed to copy contract. Please try again.');
               } else if (legacyContract) {
-                // Copy the contract HTML to the new contact's lead_leadcontact record
-                // Find the relationship record we just created
-                const { data: relationshipRecord } = await supabase
-                  .from('lead_leadcontact')
-                  .select('id')
-                  .eq('contact_id', finalContactId)
-                  .eq(isLegacyParent ? 'lead_id' : 'newlead_id', insertedLeadId)
-                  .single();
+                // Prefer the relationship id we just created/found — avoid a fragile re-query
+                let targetRelationshipId = finalRelationshipId;
+                if (!targetRelationshipId) {
+                  const { data: relationshipRecord } = await supabase
+                    .from('lead_leadcontact')
+                    .select('id')
+                    .eq('contact_id', finalContactId)
+                    .eq(isLegacyParent ? 'lead_id' : 'newlead_id', insertedLeadId)
+                    .maybeSingle();
+                  targetRelationshipId = relationshipRecord?.id ?? null;
+                }
 
-                if (relationshipRecord) {
+                if (targetRelationshipId) {
                   const { error: updateError } = await supabase
                     .from('lead_leadcontact')
                     .update({
@@ -13554,7 +13742,7 @@ const Clients: React.FC<ClientsProps> = ({
                       signed_contract_html: legacyContract.signed_contract_html,
                       public_token: legacyContract.public_token
                     })
-                    .eq('id', relationshipRecord.id);
+                    .eq('id', targetRelationshipId);
 
                   if (updateError) {
                     console.error('Error copying legacy contract:', updateError);
@@ -13562,6 +13750,9 @@ const Clients: React.FC<ClientsProps> = ({
                   } else {
                     console.log('✅ Legacy contract copied successfully');
                   }
+                } else {
+                  console.error('Error copying legacy contract: no lead_leadcontact row for sub-lead');
+                  toast.error('Failed to copy contract. Please try again.');
                 }
               }
             } else {
@@ -13646,6 +13837,20 @@ const Clients: React.FC<ClientsProps> = ({
         proposal: '',
         potentialValue: '',
       });
+
+      // Clear any stale persisted Contact Info contract cache for the new sub-lead
+      // so ContactInfoTab does not skip-fetch on a map of nulls from a racey first paint.
+      try {
+        const newClientKey = isLegacyParent
+          ? `legacy_${insertedLead?.id}`
+          : String(insertedLead?.id ?? '');
+        if (newClientKey) {
+          sessionStorage.removeItem(`persisted_state_contactContracts_${newClientKey}`);
+          sessionStorage.removeItem(`contactInfoTab_contacts_${newClientKey}`);
+        }
+      } catch {
+        // ignore storage errors
+      }
 
       // Navigate to the newly created sub-lead's page
       // For legacy leads, use the inserted ID (which is the lead number), for new leads use manual_id
@@ -14954,7 +15159,7 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           </div>
 
-          {/* Tab Content */}
+          {/* Tab Content — visited tabs stay mounted (hidden) so state/cache survives switches */}
           <div
             ref={tabContentRef}
             className={`w-full min-h-[50vh] bg-gray-100 dark:bg-base-300 ${
@@ -14962,39 +15167,52 @@ const Clients: React.FC<ClientsProps> = ({
             }`}
           >
             <div
-              key={`${activeTab}-${interactionCount}`}
               className={
                 activeTab === 'finances'
                   ? 'px-0 sm:px-1 md:px-1 pt-3 sm:pt-4 md:pt-4 pb-8 md:pb-10 mb-4 md:mb-0 space-y-4 md:space-y-5'
                   : 'pl-2 pr-2 sm:pl-3 sm:pr-3 md:pr-3 lg:pr-4 pt-4 sm:pt-5 md:pt-5 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6'
               }
             >
-              {ActiveComponent && selectedClient && (
+              {selectedClient && (
                 <div className="md:pb-0 pb-32">
-                  <Suspense
-                    fallback={
-                      <div className="py-16 flex items-center justify-center">
-                        <div className="loading loading-spinner loading-lg text-primary" />
-                      </div>
-                    }
-                  >
-                    <ClientTabPageHeaderExtrasProvider value={tabPageHeaderExtra}>
-                      <ActiveComponent
-                        key={`${activeTab}-${selectedClient.id}`}
-                        client={selectedClient}
-                        onClientUpdate={onClientUpdate}
-                        interactionsCache={interactionsCacheForLead}
-                        onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
-                        onInteractionCountUpdate={handleInteractionCountUpdate}
-                        onFlaggedConversationCountUpdate={setHeaderFlaggedConversationCount}
-                        onSwitchClientTab={setActiveTabWithUrl}
-                        onProbabilityConversationPending={handleProbabilityConversationPending}
-                        flaggedConversationCount={headerFlaggedConversationCount}
-                        allEmployees={allEmployees}
-                        {...financeProps}
-                      />
-                    </ClientTabPageHeaderExtrasProvider>
-                  </Suspense>
+                  <ClientTabPageHeaderExtrasProvider value={tabPageHeaderExtra}>
+                    {visitedTabDefs.map((tab) => {
+                      const TabComponent = tab.component;
+                      const isActive = tab.id === activeTab;
+                      return (
+                        <div
+                          key={`${tab.id}-${selectedClient.id}`}
+                          hidden={!isActive}
+                          aria-hidden={!isActive}
+                          className={isActive ? undefined : 'hidden'}
+                        >
+                          <Suspense
+                            fallback={
+                              <div className="py-16 flex items-center justify-center">
+                                <div className="loading loading-spinner loading-lg text-primary" />
+                              </div>
+                            }
+                          >
+                            <TabComponent
+                              client={selectedClient}
+                              onClientUpdate={onClientUpdate}
+                              interactionsCache={interactionsCacheForLead}
+                              onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
+                              onInteractionCountUpdate={handleInteractionCountUpdate}
+                              onFlaggedConversationCountUpdate={setHeaderFlaggedConversationCount}
+                              onSwitchClientTab={setActiveTabWithUrl}
+                              onProbabilityConversationPending={handleProbabilityConversationPending}
+                              flaggedConversationCount={headerFlaggedConversationCount}
+                              allEmployees={allEmployees}
+                              {...(tab.id === 'finances'
+                                ? { onCreateFinancePlan: () => setShowPaymentsPlanDrawer(true) }
+                                : {})}
+                            />
+                          </Suspense>
+                        </div>
+                      );
+                    })}
+                  </ClientTabPageHeaderExtrasProvider>
                 </div>
               )}
 
@@ -16826,7 +17044,7 @@ const Clients: React.FC<ClientsProps> = ({
                   <MeetingFormDrawerActionButton
                     className="btn-primary !rounded-full"
                     onClick={handleCancelMeeting}
-                    disabled={!meetingToDelete}
+                    disabled={meetingsToCancel.length === 0}
                   >
                     Cancel Meeting
                   </MeetingFormDrawerActionButton>
@@ -16881,7 +17099,7 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
 
                   <div className="flex flex-col gap-4">
-                    {/* Select Meeting - Optional for stage 21 */}
+                    {/* Select meeting(s) to cancel - Optional for stage 21 reschedule */}
                     {(() => {
                       const currentStage = typeof selectedClient?.stage === 'number' ? selectedClient.stage :
                         (selectedClient?.stage ? parseInt(String(selectedClient.stage), 10) : null);
@@ -16892,47 +17110,101 @@ const Clients: React.FC<ClientsProps> = ({
 
                       return (
                         <div>
-                          <label className="block font-semibold mb-1">
-                            Select Meeting {isStage21 && rescheduleOption === 'reschedule' ? '(Optional)' : ''}
+                          <label className="mb-1 block font-semibold">
+                            Select meeting{rescheduleMeetings.length > 1 ? 's' : ''} to cancel
+                            {isStage21 && rescheduleOption === 'reschedule' ? ' (optional)' : ''}
                           </label>
-                          <select
-                            className="select select-bordered w-full"
-                            value={meetingToDelete || ''}
-                            onChange={(e) => {
-                              const meetingId = e.target.value ? parseInt(e.target.value) : null;
-                              setMeetingToDelete(meetingId);
-                              // Pre-fill form with selected meeting data
-                              const selectedMeeting = rescheduleMeetings.find(m => m.id === meetingId);
-                              if (selectedMeeting) {
-                                setRescheduleFormData({
-                                  date: selectedMeeting.meeting_date || getTomorrowDate(),
-                                  time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
-                                  duration: normalizeMeetingDurationMinutes(selectedMeeting.duration),
-                                  location: selectedMeeting.meeting_location || 'Teams',
-                                  calendar: selectedMeeting.calendar_type === 'active_client' ? 'active_client' : 'current',
-                                  manager: selectedMeeting.meeting_manager || '',
-                                  helper: selectedMeeting.helper || '',
-                                  amount: selectedMeeting.meeting_amount?.toString() || '',
-                                  currency: selectedMeeting.meeting_currency || 'NIS',
-                                  attendance_probability: selectedMeeting.attendance_probability || 'Medium',
-                                  complexity: selectedMeeting.complexity || 'Simple',
-                                  car_number: selectedMeeting.car_number || '',
-                                  custom_link: selectedMeeting.custom_link || '',
-                                  custom_address: selectedMeeting.custom_address || '',
-                                });
-                              }
-                            }}
-                            required={rescheduleOption === 'cancel' || (rescheduleOption === 'reschedule' && !isStage21)}
-                          >
-                            <option value="">Select a meeting...</option>
-                            {rescheduleMeetings.map((meeting) => (
-                              <option key={meeting.id} value={meeting.id}>
-                                {meeting.meeting_date} {meeting.meeting_time ? meeting.meeting_time.substring(0, 5) : ''} - {meeting.meeting_location || 'Teams'}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="overflow-hidden rounded-xl border border-base-300 bg-base-100">
+                            {rescheduleMeetings.length > 1 && (
+                              <div className="flex items-center justify-between gap-2 border-b border-base-200 px-3 py-2">
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs"
+                                  onClick={() =>
+                                    setMeetingsToCancel(
+                                      rescheduleMeetings
+                                        .map((m) => Number(m.id))
+                                        .filter((id) => Number.isFinite(id)),
+                                    )
+                                  }
+                                >
+                                  Select all
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs"
+                                  onClick={() => setMeetingsToCancel([])}
+                                >
+                                  Clear
+                                </button>
+                              </div>
+                            )}
+                            <ul className="max-h-56 divide-y divide-base-200 overflow-y-auto">
+                              {rescheduleMeetings.map((meeting) => {
+                                const meetingId = Number(meeting.id);
+                                const checked = meetingsToCancel.includes(meetingId);
+                                const timeLabel = meeting.meeting_time
+                                  ? String(meeting.meeting_time).substring(0, 5)
+                                  : '';
+                                return (
+                                  <li key={meeting.id}>
+                                    <label className="flex cursor-pointer items-start gap-3 px-3 py-3 hover:bg-base-200/50">
+                                      <input
+                                        type="checkbox"
+                                        className="checkbox checkbox-primary checkbox-sm mt-0.5"
+                                        checked={checked}
+                                        onChange={() => {
+                                          setMeetingsToCancel((prev) => {
+                                            if (prev.includes(meetingId)) {
+                                              return prev.filter((id) => id !== meetingId);
+                                            }
+                                            return [...prev, meetingId];
+                                          });
+                                          if (!checked) {
+                                            setRescheduleFormData({
+                                              date: meeting.meeting_date || getTomorrowDate(),
+                                              time: timeLabel || '09:00',
+                                              duration: normalizeMeetingDurationMinutes(meeting.duration),
+                                              location: meeting.meeting_location || 'Teams',
+                                              calendar: meeting.calendar_type === 'active_client' ? 'active_client' : 'current',
+                                              manager: meeting.meeting_manager || '',
+                                              helper: meeting.helper || '',
+                                              amount: meeting.meeting_amount?.toString() || '',
+                                              currency: meeting.meeting_currency || 'NIS',
+                                              attendance_probability: meeting.attendance_probability || 'Medium',
+                                              complexity: meeting.complexity || 'Simple',
+                                              car_number: meeting.car_number || '',
+                                              custom_link: meeting.custom_link || '',
+                                              custom_address: meeting.custom_address || '',
+                                            });
+                                          }
+                                        }}
+                                      />
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block text-sm font-medium text-base-content">
+                                          {meeting.meeting_date}
+                                          {timeLabel ? ` · ${timeLabel}` : ''}
+                                        </span>
+                                        <span className="block truncate text-xs text-base-content/55">
+                                          {meeting.meeting_location || 'Teams'}
+                                          {meeting.meeting_manager ? ` · ${meeting.meeting_manager}` : ''}
+                                        </span>
+                                      </span>
+                                    </label>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                          {rescheduleOption === 'cancel' && meetingsToCancel.length === 0 ? (
+                            <p className="mt-1 text-xs text-error">Select at least one meeting to cancel.</p>
+                          ) : meetingsToCancel.length > 0 ? (
+                            <p className="mt-1 text-xs text-base-content/55">
+                              {meetingsToCancel.length} meeting{meetingsToCancel.length === 1 ? '' : 's'} selected
+                            </p>
+                          ) : null}
                           {isStage21 && rescheduleOption === 'reschedule' && (
-                            <p className="text-sm text-gray-500 mt-1">
+                            <p className="mt-1 text-sm text-gray-500">
                               In stage 21, you can reschedule without canceling an existing meeting.
                             </p>
                           )}

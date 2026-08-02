@@ -2,6 +2,8 @@ import { Lead } from '../lib/supabase';
 import type { ProbabilitySlidersValues } from '../components/client-tabs/ProbabilitySlidersModal';
 
 export interface Client extends Lead {
+  /** Finances: true = Client pays expenses, false = Office pays. */
+  client_paid?: boolean;
   category?: string;
   mobile?: string;
   location?: string;

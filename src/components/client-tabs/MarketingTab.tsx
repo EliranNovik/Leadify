@@ -3,6 +3,11 @@ import { ClientTabProps } from '../../types/client';
 import { MegaphoneIcon, PencilSquareIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
+import {
+  clientsTabCacheLeadKey,
+  readClientsTabCache,
+  writeClientsTabCache,
+} from '../../lib/clientsTabCache';
 
 interface PotentialMetric {
   label: string;
@@ -18,6 +23,11 @@ const defaultPotentialMetrics: PotentialMetric[] = [
   { label: 'Financial ability', value: 'Medium', progress: 60, color: 'warning' },
 ];
 
+/** Cached bundle for the 'marketing' slice. */
+type MarketingTabCacheSlice = {
+  utmParams?: Record<string, unknown> | null;
+};
+
 const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Potential
   const [isEditingPotential, setIsEditingPotential] = useState(false);
@@ -30,8 +40,15 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     [client.id, client.lead_type]
   );
 
-  const [utmParams, setUtmParams] = useState<Record<string, unknown> | null>(null);
-  const [isLoadingUtm, setIsLoadingUtm] = useState(false);
+  // Cache-first: paint this lead's last-known utm params immediately (no spinner), then
+  // silently refresh from the network below.
+  const marketingLeadKey = clientsTabCacheLeadKey(client);
+  const cachedMarketingTabData = readClientsTabCache<MarketingTabCacheSlice>(marketingLeadKey, 'marketing');
+
+  const [utmParams, setUtmParams] = useState<Record<string, unknown> | null>(
+    () => cachedMarketingTabData?.utmParams ?? null
+  );
+  const [isLoadingUtm, setIsLoadingUtm] = useState(() => !cachedMarketingTabData);
 
   // Source
   const [isEditingSource, setIsEditingSource] = useState(false);
@@ -59,7 +76,11 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      setIsLoadingUtm(true);
+      // Cache-first / silent-refresh: only show the loading state when there's nothing cached
+      // to paint yet.
+      if (!cachedMarketingTabData) {
+        setIsLoadingUtm(true);
+      }
       try {
         // Note: legacy table `leads_lead` does not have `utm_params`.
         // We only fetch from `leads` (new leads). Legacy leads will show "Not specified".
@@ -74,7 +95,12 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .eq('id', client.id)
           .maybeSingle();
         if (error) throw error;
-        if (!cancelled) setUtmParams((data?.utm_params as Record<string, unknown> | null) ?? null);
+        if (!cancelled) {
+          const nextUtmParams = (data?.utm_params as Record<string, unknown> | null) ?? null;
+          setUtmParams(nextUtmParams);
+          const leadKey = clientsTabCacheLeadKey(client);
+          writeClientsTabCache(leadKey, 'marketing', { utmParams: nextUtmParams });
+        }
       } catch (e) {
         console.error('Error loading utm_params:', e);
         if (!cancelled) setUtmParams(null);

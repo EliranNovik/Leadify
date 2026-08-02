@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon, ReceiptPercentIcon } from '@heroicons/react/24/outline';
+import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon, ReceiptPercentIcon, BuildingOffice2Icon } from '@heroicons/react/24/outline';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
 import FinancesExpensesFeesPage from './FinancesExpensesFeesPage';
 import {
@@ -38,7 +38,7 @@ import {
   type PaymentPlanSummaryFilter,
 } from './paymentPlanUi';
 
-// Portal dropdown — avoids overflow:hidden / table clipping on DaisyUI dropdowns
+// Portal dropdown � avoids overflow:hidden / table clipping on DaisyUI dropdowns
 const AnchorDropdownPortal: React.FC<{
   anchorId: string | number | null;
   buttonRefs: React.MutableRefObject<Record<string | number, HTMLButtonElement | null>>;
@@ -205,7 +205,7 @@ type FinancesTabCachedState = {
   nisDisplays?: FinancesTabNisDisplays;
 };
 
-/** Stable signature of the payment rows that affect NIS totals — used to skip needless recomputes. */
+/** Stable signature of the payment rows that affect NIS totals � used to skip needless recomputes. */
 function financesNisSignature(payments?: PaymentPlan[]): string {
   return JSON.stringify(
     (payments ?? []).map((p) => [p.id, p.client, p.value, p.valueVat, p.paid, p.currency ?? '']),
@@ -298,7 +298,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     primary: string;
     secondary?: string;
     loading: boolean;
-  }>({ primary: '—', loading: true });
+  }>({ primary: '�', loading: true });
   const [expenseNoVatNisDisplay, setExpenseNoVatNisDisplay] = useState<{
     primary?: string;
     loading: boolean;
@@ -306,13 +306,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [outstandingNisDisplay, setOutstandingNisDisplay] = useState<{
     primary: string;
     loading: boolean;
-  }>({ primary: '—', loading: true });
+  }>({ primary: '�', loading: true });
   const [contactTotalNisByName, setContactTotalNisByName] = useState<
     Record<string, { primary: string; loading: boolean }>
   >({});
   // Signature of the payments the NIS displays were last computed for. Lets us skip recomputing
   // (and the loading flash) when financePlan changes reference but the underlying values are the
-  // same — e.g. a silent background sync, a focus refetch, or restoring from cache.
+  // same � e.g. a silent background sync, a focus refetch, or restoring from cache.
   const lastNisSigRef = useRef<string | null>(null);
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
@@ -330,6 +330,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
     return 'payment-plan';
   });
+  /** true = Client, false = Office. Default Client when unset. */
+  const [clientPaid, setClientPaid] = useState<boolean>(
+    () => client?.client_paid !== false,
+  );
+  const [savingClientPaid, setSavingClientPaid] = useState(false);
+
+  useEffect(() => {
+    setClientPaid(client?.client_paid !== false);
+  }, [client?.client_paid, client?.id]);
+
   const [openAddExpenseRequest, setOpenAddExpenseRequest] = useState<{
     token: number;
     contactId?: number | null;
@@ -381,7 +391,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Live updates: when this lead's payment plans / rows / proformas change in the database
   // (another user, an automation, the public payment link, etc.) refresh the finances data in
-  // place. Cached finances render instantly; only the changed rows update — no full page reload.
+  // place. Cached finances render instantly; only the changed rows update � no full page reload.
   useRealtimeRefresh({
     channelName: `finances-tab-${client?.id ?? 'none'}`,
     enabled: !!client?.id,
@@ -390,7 +400,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       const leadIdStripped = leadIdRaw.replace(/^legacy_/, '').toLowerCase();
       const matchLead = (payload: RealtimeChangePayload) => {
         const row = payload?.new ?? payload?.old;
-        if (!row) return true; // unknown row → refetch to be safe
+        if (!row) return true; // unknown row ? refetch to be safe
         const lid = (row as Record<string, unknown>).lead_id;
         if (lid == null) return true;
         const s = String(lid).toLowerCase();
@@ -444,14 +454,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     if (!financePlan?.payments?.length) {
       lastNisSigRef.current = signature;
-      setContractTotalNisDisplay({ primary: '—', loading: false });
+      setContractTotalNisDisplay({ primary: '�', loading: false });
       setExpenseNoVatNisDisplay({ loading: false });
-      setOutstandingNisDisplay({ primary: '—', loading: false });
+      setOutstandingNisDisplay({ primary: '�', loading: false });
       setContactTotalNisByName({});
       return;
     }
 
-    // Same payments as last computed (reference changed but values didn't) → keep the existing
+    // Same payments as last computed (reference changed but values didn't) ? keep the existing
     // displays so the summary cards don't flash back to a loading state on re-entry / silent sync.
     if (lastNisSigRef.current === signature) {
       return;
@@ -466,7 +476,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setContactTotalNisByName(
       contactNames.reduce(
         (acc, name) => {
-          acc[name] = { primary: '…', loading: true };
+          acc[name] = { primary: '�', loading: true };
           return acc;
         },
         {} as Record<string, { primary: string; loading: boolean }>,
@@ -511,9 +521,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } catch (err) {
         console.error('[FinancesTab] NIS summary totals:', err);
         if (!cancelled) {
-          setContractTotalNisDisplay({ primary: '—', loading: false });
+          setContractTotalNisDisplay({ primary: '�', loading: false });
           setExpenseNoVatNisDisplay({ loading: false });
-          setOutstandingNisDisplay({ primary: '—', loading: false });
+          setOutstandingNisDisplay({ primary: '�', loading: false });
           setContactTotalNisByName({});
         }
       }
@@ -553,15 +563,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [isEditingSubtotal, setIsEditingSubtotal] = useState(false);
   const [editableSubtotal, setEditableSubtotal] = useState('');
 
-  // Helper: map lead currency codes/names to the symbols used in the auto‑plan selector
+  // Helper: map lead currency codes/names to the symbols used in the auto?plan selector
   const mapLeadCurrencyToSymbol = (code?: string | null): string => {
-    if (!code) return '₪';
+    if (!code) return '?';
     const normalized = String(code).trim().toUpperCase();
-    if (normalized === '₪' || normalized === 'NIS' || normalized === 'ILS') return '₪';
+    if (normalized === '?' || normalized === 'NIS' || normalized === 'ILS') return '?';
     if (normalized === '$' || normalized === 'USD') return '$';
-    if (normalized === '€' || normalized === 'EUR') return '€';
-    if (normalized === '£' || normalized === 'GBP') return '£';
-    return '₪';
+    if (normalized === '�' || normalized === 'EUR') return '�';
+    if (normalized === '�' || normalized === 'GBP') return '�';
+    return '?';
   };
 
   // Helper to convert numeric order back to descriptive text (used for both legacy and new leads)
@@ -619,13 +629,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Add state for stages dropdown and drawer
   const [showStagesDrawer, setShowStagesDrawer] = useState(false);
-  /** Payment history modal — shows all paid payments across every contact for this lead. */
+  /** Payment history modal � shows all paid payments across every contact for this lead. */
   const [showPaymentHistoryModal, setShowPaymentHistoryModal] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
     totalAmount: '',
-    currency: '₪',
+    currency: '?',
     numberOfPayments: 3,
-    // Per‑payment percentages, must always sum to 100
+    // Per?payment percentages, must always sum to 100
     paymentPercents: [50, 25, 25],
     // Payment amounts - can be edited freely
     paymentAmounts: [] as number[],
@@ -783,18 +793,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Helper function to get currency name from accounting_currencies table (similar to ClientHeader)
   const getCurrencyName = (currencyId: string | number | null | undefined): string => {
     if (!currencyId || currencyId === null || currencyId === undefined) {
-      return '₪'; // Default fallback
+      return '?'; // Default fallback
     }
 
     // If currencies haven't loaded yet, return default
     if (!availableCurrencies || availableCurrencies.length === 0) {
-      return '₪'; // Default fallback until currencies load
+      return '?'; // Default fallback until currencies load
     }
 
     // Convert currencyId to number for comparison (handle bigint)
     const currencyIdNum = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
     if (isNaN(currencyIdNum)) {
-      return '₪'; // Default fallback
+      return '?'; // Default fallback
     }
 
     // Find currency in loaded currencies - compare as numbers
@@ -810,14 +820,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     // Fallback to default if currency not found
-    return '₪';
+    return '?';
   };
 
   // Update autoPlanData currency and contact when client changes
   useEffect(() => {
     if (client) {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      let currency = '₪'; // Default
+      let currency = '?'; // Default
       let suggestedTotal = 0;
 
       if (isLegacyLead) {
@@ -828,7 +838,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Priority 1: Try currency_id (most reliable)
         if ((client as any)?.currency_id) {
           const currencyFromId = getCurrencyName((client as any).currency_id);
-          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '?') {
             resolvedCurrency = currencyFromId;
           }
         }
@@ -836,7 +846,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Priority 2: For legacy leads, also check currency_id from legacy field
         if (!resolvedCurrency && (client as any)?.currency_id) {
           const currencyFromId = getCurrencyName((client as any).currency_id);
-          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '?') {
             resolvedCurrency = currencyFromId;
           }
         }
@@ -856,7 +866,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           });
           resolvedCurrency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
             ? defaultCurrency.name.trim()
-            : '₪'; // Ultimate fallback if currency_id 1 not found
+            : '?'; // Ultimate fallback if currency_id 1 not found
         }
 
         currency = resolvedCurrency;
@@ -988,7 +998,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         amount: payment.value,
         vatAmount: payment.valueVat,
         totalAmount: payment.value + payment.valueVat,
-        currency: payment.currency || '₪',
+        currency: payment.currency || '?',
         description: `${payment.order} - ${client?.name} (#${client?.lead_number})`,
         expiresAt: expiresAt.toISOString(),
       });
@@ -1004,7 +1014,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         );
       } else if (code === '22003') {
         toast.error(
-          'Payment row id is too large for payment_links.payment_plan_id — run the BIGINT line in sql/2026-05-20_payment_links_legacy.sql.',
+          'Payment row id is too large for payment_links.payment_plan_id � run the BIGINT line in sql/2026-05-20_payment_links_legacy.sql.',
         );
       } else if (code === '42501') {
         toast.error(
@@ -1691,7 +1701,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           });
 
           setContacts(contactsWithData);
-          console.log('✅ fetchContacts: Loaded contacts', contactsWithData.map(c => ({ id: c.id, name: c.name })));
+          console.log('? fetchContacts: Loaded contacts', contactsWithData.map(c => ({ id: c.id, name: c.name })));
           return contactsWithData;
         } else {
           setContacts([]);
@@ -1706,7 +1716,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     // For new leads, fetch contacts from lead_leadcontact and leads_contact tables using newlead_id
     try {
-      console.log('🔍 fetchContacts: Fetching contacts for new lead with leadId:', client.id);
+      console.log('?? fetchContacts: Fetching contacts for new lead with leadId:', client.id);
 
       const { data: leadContacts, error: leadContactsError } = await supabase
         .from('lead_leadcontact')
@@ -1726,7 +1736,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         `)
         .eq('newlead_id', client.id);
 
-      console.log('🔍 leadContacts query result:', { leadContacts, leadContactsError, leadId: client.id });
+      console.log('?? leadContacts query result:', { leadContacts, leadContactsError, leadId: client.id });
 
       if (leadContactsError) {
         console.error('Error fetching new lead contacts:', leadContactsError);
@@ -1752,12 +1762,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           };
         });
 
-        console.log('✅ Processed contacts:', contactsWithData);
-        console.log('✅ Setting contacts state with', contactsWithData.length, 'contacts');
+        console.log('? Processed contacts:', contactsWithData);
+        console.log('? Setting contacts state with', contactsWithData.length, 'contacts');
         setContacts(contactsWithData);
         return contactsWithData;
       } else {
-        console.warn('⚠️ No contacts found for new lead, leadId:', client.id);
+        console.warn('?? No contacts found for new lead, leadId:', client.id);
         setContacts([]);
         return [];
       }
@@ -1897,7 +1907,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Contacts are now guaranteed to be loaded before this function runs (via await fetchContacts())
           const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
 
-          console.log('🔍 fetchPaymentPlans (legacy): Starting fetch', {
+          console.log('?? fetchPaymentPlans (legacy): Starting fetch', {
             legacyId,
             clientId: client.id,
             contactsCount: currentContacts.length,
@@ -1928,7 +1938,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // No fallback by client_id - we must match by lead_id only
           // Multiple leads can share the same contact, so matching by client_id would include payments from other leads
 
-          console.log('🔍 fetchPaymentPlans (legacy): Query result', {
+          console.log('?? fetchPaymentPlans (legacy): Query result', {
             legacyId,
             dataCount: legacyData?.length || 0,
             error: legacyError,
@@ -1945,7 +1955,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               .order('date', { ascending: true })
               .limit(10);
 
-            console.log('🔍 DIAGNOSTIC: All payment plans for lead_id (including canceled):', {
+            console.log('?? DIAGNOSTIC: All payment plans for lead_id (including canceled):', {
               legacyId,
               contactIds,
               diagnosticCount: diagnosticData?.length || 0,
@@ -1969,7 +1979,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 .order('date', { ascending: true })
                 .limit(20);
 
-              console.log('🔍 DIAGNOSTIC: Payment plans by client_id (contact_id):', {
+              console.log('?? DIAGNOSTIC: Payment plans by client_id (contact_id):', {
                 legacyId,
                 contactIds,
                 diagnosticByClientIdCount: diagnosticByClientId?.length || 0,
@@ -1990,7 +2000,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Multiple leads can share the same contact (client_id), so we must match by lead_id first
           // Grouping by client_id is done later for display purposes only
           if (legacyData && !legacyError) {
-            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments by lead_id only', {
+            console.log('?? fetchPaymentPlans (legacy): Filtering payments by lead_id only', {
               legacyId,
               totalPayments: legacyData.length,
               payments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
@@ -2001,11 +2011,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
               // Match by lead_id only - don't filter by client_id
               if (planLeadId !== legacyId) {
-                console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
+                console.warn('?? Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
                 return false;
               }
 
-              console.log('✅ Including payment for lead (matched by lead_id):', {
+              console.log('? Including payment for lead (matched by lead_id):', {
                 planId: plan.id,
                 planLeadId,
                 planClientId: plan.client_id,
@@ -2015,7 +2025,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               return true;
             });
 
-            console.log('✅ fetchPaymentPlans (legacy): Filtered payments (matched by lead_id only)', {
+            console.log('? fetchPaymentPlans (legacy): Filtered payments (matched by lead_id only)', {
               legacyId,
               filteredCount: legacyData.length,
               filteredPayments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
@@ -2050,7 +2060,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Multiple leads can share the same contact (client_id), so we must match by lead_id first
           // Grouping by client_id is done later for display purposes only
           if (regularData && !regularError) {
-            console.log('🔍 fetchPaymentPlans (new): Filtering payments by lead_id only', {
+            console.log('?? fetchPaymentPlans (new): Filtering payments by lead_id only', {
               leadId: client.id,
               totalPayments: regularData.length,
               payments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
@@ -2061,11 +2071,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
               // Match by lead_id only - don't filter by client_id
               if (planLeadId !== String(client.id)) {
-                console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: client.id, planId: plan.id });
+                console.warn('?? Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: client.id, planId: plan.id });
                 return false;
               }
 
-              console.log('✅ Including payment for lead (matched by lead_id):', {
+              console.log('? Including payment for lead (matched by lead_id):', {
                 planId: plan.id,
                 planLeadId,
                 planClientId: plan.client_id,
@@ -2075,7 +2085,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               return true;
             });
 
-            console.log('✅ fetchPaymentPlans (new): Filtered payments (matched by lead_id only)', {
+            console.log('? fetchPaymentPlans (new): Filtered payments (matched by lead_id only)', {
               leadId: client.id,
               filteredCount: regularData.length,
               filteredPayments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
@@ -2127,7 +2137,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const value = Number(plan.value || 0);
 
               // Get currency from the joined accounting_currencies table
-              let currency = '₪'; // Default fallback
+              let currency = '?'; // Default fallback
               let currencyId = plan.currency_id;
 
               if (plan.accounting_currencies && plan.accounting_currencies.name) {
@@ -2136,11 +2146,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               } else if (plan.currency_id) {
                 // If we have currency_id but no joined data, use a simple mapping
                 switch (plan.currency_id) {
-                  case 1: currency = '₪'; break; // NIS
-                  case 2: currency = '€'; break; // EUR
+                  case 1: currency = '?'; break; // NIS
+                  case 2: currency = '�'; break; // EUR
                   case 3: currency = '$'; break; // USD
-                  case 4: currency = '£'; break; // GBP
-                  default: currency = '₪'; break;
+                  case 4: currency = '�'; break; // GBP
+                  default: currency = '?'; break;
                 }
               }
 
@@ -2220,7 +2230,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
               // Debug: Log employee data if available
               if (plan.ready_to_pay && plan.ready_to_pay_by) {
-                console.log('🔍 Payment ready_to_pay debug:', {
+                console.log('?? Payment ready_to_pay debug:', {
                   paymentId: plan.id,
                   ready_to_pay_by: plan.ready_to_pay_by,
                   tenants_employee: plan.tenants_employee,
@@ -2283,7 +2293,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const processedPayments = data.map(plan => {
               const value = Number(plan.value);
               const valueVat = readPaymentPlanVatFromRow(plan, false);
-              const currency = mapPaymentCurrencyToSymbol(plan.currency || '₪');
+              const currency = mapPaymentCurrencyToSymbol(plan.currency || '?');
 
               const paymentTotal = value + valueVat;
 
@@ -2562,30 +2572,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           console.error('Error fetching currencies:', error);
           // Set fallback currencies
           setAvailableCurrencies([
-            { id: 1, name: '₪', iso_code: 'ILS' },
-            { id: 2, name: '€', iso_code: 'EUR' },
+            { id: 1, name: '?', iso_code: 'ILS' },
+            { id: 2, name: '�', iso_code: 'EUR' },
             { id: 3, name: '$', iso_code: 'USD' },
-            { id: 4, name: '£', iso_code: 'GBP' },
+            { id: 4, name: '�', iso_code: 'GBP' },
           ]);
         } else if (data && data.length > 0) {
           setAvailableCurrencies(data);
         } else {
           // Set fallback currencies if no data
           setAvailableCurrencies([
-            { id: 1, name: '₪', iso_code: 'ILS' },
-            { id: 2, name: '€', iso_code: 'EUR' },
+            { id: 1, name: '?', iso_code: 'ILS' },
+            { id: 2, name: '�', iso_code: 'EUR' },
             { id: 3, name: '$', iso_code: 'USD' },
-            { id: 4, name: '£', iso_code: 'GBP' },
+            { id: 4, name: '�', iso_code: 'GBP' },
           ]);
         }
       } catch (error) {
         console.error('Error fetching currencies:', error);
         // Set fallback currencies
         setAvailableCurrencies([
-          { id: 1, name: '₪', iso_code: 'ILS' },
-          { id: 2, name: '€', iso_code: 'EUR' },
+          { id: 1, name: '?', iso_code: 'ILS' },
+          { id: 2, name: '�', iso_code: 'EUR' },
           { id: 3, name: '$', iso_code: 'USD' },
-          { id: 4, name: '£', iso_code: 'GBP' },
+          { id: 4, name: '�', iso_code: 'GBP' },
         ]);
       }
     };
@@ -2749,7 +2759,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const value = Number(plan.value || 0);
 
             // Get currency from the joined accounting_currencies table
-            let currency = '₪'; // Default fallback
+            let currency = '?'; // Default fallback
             let currencyId = plan.currency_id;
 
             if (plan.accounting_currencies && plan.accounting_currencies.name) {
@@ -2757,11 +2767,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               currencyId = plan.accounting_currencies.id;
             } else if (plan.currency_id) {
               switch (plan.currency_id) {
-                case 1: currency = '₪'; break;
-                case 2: currency = '€'; break;
+                case 1: currency = '?'; break;
+                case 2: currency = '�'; break;
                 case 3: currency = '$'; break;
-                case 4: currency = '£'; break;
-                default: currency = '₪'; break;
+                case 4: currency = '�'; break;
+                default: currency = '?'; break;
               }
             }
 
@@ -2886,7 +2896,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const processedPayments = data.map(plan => {
             const value = Number(plan.value);
             const valueVat = readPaymentPlanVatFromRow(plan, false);
-            const currency = mapPaymentCurrencyToSymbol(plan.currency || '₪');
+            const currency = mapPaymentCurrencyToSymbol(plan.currency || '?');
 
             const paymentTotal = value + valueVat;
 
@@ -3029,7 +3039,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (!client?.id) return;
     try {
       // Get the currency from the first payment in the finance plan
-      const currency = financePlan?.payments?.[0]?.currency || '₪';
+      const currency = financePlan?.payments?.[0]?.currency || '?';
 
       // Check if this is a legacy lead
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -3210,14 +3220,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     // Get the currency from the finance plan or client data
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    let currency = '₪'; // Default
+    let currency = '?'; // Default
     if (isLegacyLead) {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
     } else {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
     }
 
-    // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($)
+    // Only apply VAT for Israeli Shekels (?), not for other currencies like USD ($)
     const shouldApplyVat = isNisCurrency({ currency });
 
     const vatRate = getVatRateForLegacyLead(newPaymentData?.dueDate);
@@ -3249,14 +3259,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     // Get the currency from the finance plan or client data
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    let currency = '₪'; // Default
+    let currency = '?'; // Default
     if (isLegacyLead) {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
     } else {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
     }
 
-    // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($); 17% before 2025-01-01, 18% on or after
+    // Only apply VAT for Israeli Shekels (?), not for other currencies like USD ($); 17% before 2025-01-01, 18% on or after
     const shouldApplyVat = isNisCurrency({ currency });
     const vatRate = getVatRateForLegacyLead(newPaymentData?.dueDate);
 
@@ -3392,7 +3402,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const allContacts: Array<{ name: string; isMain: boolean; id?: number }> = [];
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
 
-    console.log('🔍 getAllAvailableContacts called:', {
+    console.log('?? getAllAvailableContacts called:', {
       contactsLength: contacts?.length || 0,
       contacts: contacts,
       currentClientName: client?.name,
@@ -3413,11 +3423,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (client?.name) {
         if (numericLegacyId && !isNaN(numericLegacyId)) {
           allContacts.push({ name: client.name, isMain: true, id: numericLegacyId });
-          console.log('✅ getAllAvailableContacts: Added main legacy contact', { name: client.name, id: numericLegacyId });
+          console.log('? getAllAvailableContacts: Added main legacy contact', { name: client.name, id: numericLegacyId });
         } else {
           // Fallback: if we can't parse the ID, still add the contact but without ID
           allContacts.push({ name: client.name, isMain: true });
-          console.warn('⚠️ getAllAvailableContacts: Could not parse legacy ID, added contact without ID', {
+          console.warn('?? getAllAvailableContacts: Could not parse legacy ID, added contact without ID', {
             clientId: client.id,
             legacyId,
             name: client.name
@@ -3432,7 +3442,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             allContacts.push({ name: contact.name, isMain: contact.isMain || false, id: contact.id });
           }
         });
-        console.log('✅ getAllAvailableContacts: Added', contacts.length, 'additional contacts');
+        console.log('? getAllAvailableContacts: Added', contacts.length, 'additional contacts');
       }
     } else {
       // For new leads, use contacts from the contacts state (which are fetched from lead_leadcontact and leads_contact tables)
@@ -3447,7 +3457,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             });
           }
         });
-        console.log('✅ getAllAvailableContacts: Returning', allContacts.length, 'contacts from state');
+        console.log('? getAllAvailableContacts: Returning', allContacts.length, 'contacts from state');
       } else if (client?.name) {
         // Fallback: if no contacts found in database, at least include the main client name
         // Note: client.id is a string (UUID) for new leads, but id in contacts should be number
@@ -3456,9 +3466,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           name: client.name,
           isMain: true
         });
-        console.log('⚠️ getAllAvailableContacts: No contacts in state, using fallback:', client.name);
+        console.log('?? getAllAvailableContacts: No contacts in state, using fallback:', client.name);
       } else {
-        console.warn('⚠️ getAllAvailableContacts: No contacts and no currentClient name');
+        console.warn('?? getAllAvailableContacts: No contacts and no currentClient name');
       }
     }
 
@@ -3470,7 +3480,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
 
     if (!contactName) {
-      console.warn('🔍 getClientIdForContact: contactName is empty or undefined');
+      console.warn('?? getClientIdForContact: contactName is empty or undefined');
       return null;
     }
 
@@ -3480,7 +3490,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const contact = contacts.find(c => c.name && c.name.trim() === normalizedContactName);
 
     if (contact?.id) {
-      console.log('🔍 getClientIdForContact: Contact found in contacts array', {
+      console.log('?? getClientIdForContact: Contact found in contacts array', {
         contactName: normalizedContactName,
         contactId: contact.id,
         isMain: contact.isMain,
@@ -3496,7 +3506,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (normalizedContactName === normalizedClientName) {
         const legacyId = client?.id?.toString().replace('legacy_', '');
         const numericLegacyId = legacyId ? parseInt(legacyId, 10) : null;
-        console.warn('⚠️ getClientIdForContact: Main contact not found in contacts array, using lead_id as fallback', {
+        console.warn('?? getClientIdForContact: Main contact not found in contacts array, using lead_id as fallback', {
           contactName: normalizedContactName,
           clientId: numericLegacyId,
           availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
@@ -3505,7 +3515,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     }
 
-    console.warn('🔍 getClientIdForContact: Contact not found', {
+    console.warn('?? getClientIdForContact: Contact not found', {
       contactName: normalizedContactName,
       clientName: client?.name,
       availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
@@ -3543,12 +3553,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     });
 
     if (contact?.name) {
-      console.log('✅ getContactNameFromClientId: Found contact', { clientId, contactId: contact.id, contactName: contact.name });
+      console.log('? getContactNameFromClientId: Found contact', { clientId, contactId: contact.id, contactName: contact.name });
       return contact.name;
     }
 
     // Debug: Log when contact is not found
-    console.warn('⚠️ getContactNameFromClientId: Contact not found', {
+    console.warn('?? getContactNameFromClientId: Contact not found', {
       clientId,
       normalizedClientId,
       contactsCount: contactsToUse.length,
@@ -3629,7 +3639,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         isLegacy: editingPaymentInModal.isLegacy, // Ensure isLegacy is always from original
       };
 
-      console.log('💾 Saving payment:', {
+      console.log('?? Saving payment:', {
         originalId: editingPaymentInModal.id,
         originalIsLegacy: editingPaymentInModal.isLegacy,
         paymentToSave: paymentToSave,
@@ -3881,11 +3891,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (originalCurrencyId !== editCurrencyId) {
           const getCurrencyName = (currencyId: number): string => {
             switch (currencyId) {
-              case 1: return '₪';
-              case 2: return '€';
+              case 1: return '?';
+              case 2: return '�';
               case 3: return '$';
-              case 4: return '£';
-              default: return '₪';
+              case 4: return '�';
+              default: return '?';
             }
           };
           changes.push({
@@ -3899,7 +3909,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
       } else {
         // For new payments, compare currency string
-        const originalCurrency = mapPaymentCurrencyToSymbol(originalPayment.currency || '₪');
+        const originalCurrency = mapPaymentCurrencyToSymbol(originalPayment.currency || '?');
         const editCurrency = displaySymbolForPaymentSave(paymentDataToUse, availableCurrencies);
         if (originalCurrency !== editCurrency) {
           changes.push({
@@ -3977,7 +3987,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           paymentDataToUse.dueDate,
         );
 
-        console.log('💾 Saving payment - VAT calculation:', {
+        console.log('?? Saving payment - VAT calculation:', {
           includeVatToUse,
           checkboxChecked: includeVatToUse,
           paymentDataToUseValue: paymentDataToUse.value,
@@ -4145,7 +4155,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const hasClientPaidViaLink = contactPayments.some((p) => isPaidViaPaymentLink(p));
     if (hasClientPaidViaLink) {
       toast.error(
-        'Cannot delete this payment plan — the client has completed payment via a payment link.',
+        'Cannot delete this payment plan � the client has completed payment via a payment link.',
       );
       return;
     }
@@ -4328,7 +4338,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         { description: payment.order, qty: 1, rate: payment.value, total: payment.value },
       ],
       addVat: true,
-      currency: '₪',
+      currency: '?',
       bankAccount: '',
       notes: '',
     });
@@ -4446,8 +4456,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const initNewPaymentData = (contactName: string) => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     const rawCurrency = isLegacyLead
-      ? (client?.balance_currency || '₪')
-      : (client?.proposal_currency || '₪');
+      ? (client?.balance_currency || '?')
+      : (client?.proposal_currency || '?');
     const currencyMatch = findAccountingCurrency(
       rawCurrency,
       (client as any)?.currency_id,
@@ -4497,9 +4507,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const getDefaultCurrency = (): string => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     if (isLegacyLead) {
-      return client?.balance_currency || '₪';
+      return client?.balance_currency || '?';
     } else {
-      return client?.proposal_currency || '₪';
+      return client?.proposal_currency || '?';
     }
   };
 
@@ -4733,7 +4743,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Show warning but allow creation if amounts don't match
     if (!amountsMatch) {
       const difference = Math.abs(sumOfAmounts - totalAmount);
-      const confirmMessage = `The sum of payment amounts (${sumOfAmounts.toFixed(2)} ${autoPlanData.currency || '₪'}) doesn't match the total amount (${totalAmount.toFixed(2)} ${autoPlanData.currency || '₪'}). Difference: ${difference.toFixed(2)} ${autoPlanData.currency || '₪'}. Do you want to proceed anyway?`;
+      const confirmMessage = `The sum of payment amounts (${sumOfAmounts.toFixed(2)} ${autoPlanData.currency || '?'}) doesn't match the total amount (${totalAmount.toFixed(2)} ${autoPlanData.currency || '?'}). Difference: ${difference.toFixed(2)} ${autoPlanData.currency || '?'}. Do you want to proceed anyway?`;
       if (!window.confirm(confirmMessage)) {
         return;
       }
@@ -4744,7 +4754,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // CRITICAL: Ensure contacts are loaded before getting client_id
       // This prevents using stale or empty contacts array
       const currentContacts = await fetchContacts();
-      console.log('🔍 handleCreateAutoPlan: Loaded contacts', {
+      console.log('?? handleCreateAutoPlan: Loaded contacts', {
         contactsCount: currentContacts.length,
         contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
       });
@@ -4792,7 +4802,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         // Get client_id for the selected contact (outside the loop since it's the same for all payments)
         const selectedContactName = autoPlanData.contact || client?.name || '';
-        console.log('🔍 handleCreateAutoPlan: Getting client_id for contact', {
+        console.log('?? handleCreateAutoPlan: Getting client_id for contact', {
           selectedContactName,
           autoPlanDataContact: autoPlanData.contact,
           clientName: client?.name,
@@ -4808,7 +4818,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // If not found in currentContacts, try getAllAvailableContacts (which includes main client for legacy leads)
         if (clientIdForContact === null) {
           const availableContacts = getAllAvailableContacts();
-          console.log('🔍 handleCreateAutoPlan: Contact not in currentContacts, checking getAllAvailableContacts', {
+          console.log('?? handleCreateAutoPlan: Contact not in currentContacts, checking getAllAvailableContacts', {
             availableContactsCount: availableContacts.length,
             availableContacts: availableContacts.map(c => ({ name: c.name, id: c.id }))
           });
@@ -4816,7 +4826,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const availableContact = availableContacts.find(c => c.name && c.name.trim() === normalizedContactName);
           if (availableContact?.id) {
             clientIdForContact = Number(availableContact.id);
-            console.log('✅ handleCreateAutoPlan: Found contact in getAllAvailableContacts', {
+            console.log('? handleCreateAutoPlan: Found contact in getAllAvailableContacts', {
               name: availableContact.name,
               id: clientIdForContact
             });
@@ -4831,7 +4841,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
             if (legacyId && !isNaN(legacyId)) {
               clientIdForContact = legacyId;
-              console.log('✅ handleCreateAutoPlan: Using legacy ID as fallback', {
+              console.log('? handleCreateAutoPlan: Using legacy ID as fallback', {
                 name: normalizedClientName,
                 id: clientIdForContact
               });
@@ -4839,7 +4849,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
         }
 
-        console.log('🔍 handleCreateAutoPlan: client_id result', {
+        console.log('?? handleCreateAutoPlan: client_id result', {
           clientIdForContact,
           selectedContactName,
           contactId: contact?.id,
@@ -4847,7 +4857,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         });
 
         if (clientIdForContact === null) {
-          console.error('⚠️ handleCreateAutoPlan: Failed to get client_id (contact_id) for contact', {
+          console.error('?? handleCreateAutoPlan: Failed to get client_id (contact_id) for contact', {
             selectedContactName,
             currentContacts: currentContacts.map(c => ({ name: c.name, id: c.id })),
             availableContacts: getAllAvailableContacts().map(c => ({ name: c.name, id: c.id })),
@@ -4899,7 +4909,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             client_id: clientIdForContact, // Set client_id to separate payments by contact
           };
 
-          console.log('🔍 handleCreateAutoPlan: Adding payment row', {
+          console.log('?? handleCreateAutoPlan: Adding payment row', {
             paymentIndex: i,
             client_id: paymentRow.client_id,
             contactName: selectedContactName,
@@ -4909,7 +4919,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           legacyPayments.push(paymentRow);
         }
 
-        console.log('🔍 handleCreateAutoPlan: Inserting payments', {
+        console.log('?? handleCreateAutoPlan: Inserting payments', {
           count: legacyPayments.length,
           samplePayment: legacyPayments[0],
           allClientIds: legacyPayments.map(p => p.client_id)
@@ -4921,11 +4931,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .select('id, client_id');
 
         if (legacyPaymentInsertError) {
-          console.error('❌ handleCreateAutoPlan: Error inserting payments', legacyPaymentInsertError);
+          console.error('? handleCreateAutoPlan: Error inserting payments', legacyPaymentInsertError);
           throw legacyPaymentInsertError;
         }
 
-        console.log('✅ handleCreateAutoPlan: Payments inserted successfully', {
+        console.log('? handleCreateAutoPlan: Payments inserted successfully', {
           inserted: insertedLegacyPayments,
           insertedClientIds: insertedLegacyPayments?.map(p => p.client_id)
         });
@@ -4937,7 +4947,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Get client_id for the selected contact (for new leads)
         // Use currentContacts array (from fetchContacts) instead of state to ensure we have the latest data
         const selectedContactName = autoPlanData.contact || client?.name || '';
-        console.log('🔍 handleCreateAutoPlan (new leads): Getting client_id for contact', {
+        console.log('?? handleCreateAutoPlan (new leads): Getting client_id for contact', {
           selectedContactName,
           contactsCount: currentContacts.length,
           contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
@@ -4948,7 +4958,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const contact = currentContacts.find(c => c.name && c.name.trim() === normalizedContactName);
         const clientIdForContact = contact?.id ? Number(contact.id) : null;
 
-        console.log('🔍 handleCreateAutoPlan (new leads): client_id result', {
+        console.log('?? handleCreateAutoPlan (new leads): client_id result', {
           clientIdForContact,
           selectedContactName,
           contactId: contact?.id,
@@ -4957,7 +4967,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         });
 
         if (clientIdForContact === null || !Number.isInteger(clientIdForContact)) {
-          console.error('⚠️ handleCreateAutoPlan (new leads): Failed to get client_id (contact_id) for contact', {
+          console.error('?? handleCreateAutoPlan (new leads): Failed to get client_id (contact_id) for contact', {
             selectedContactName,
             clientIdForContact,
             availableContacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
@@ -5074,7 +5084,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       setShowStagesDrawer(false);
       setAutoPlanData({
         totalAmount: '',
-        currency: '₪',
+        currency: '?',
         numberOfPayments: 3,
         paymentPercents: [50, 25, 25],
         paymentAmounts: [],
@@ -5105,7 +5115,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setShowStagesDrawer(false);
     setAutoPlanData({
       totalAmount: '',
-      currency: '₪',
+      currency: '?',
       numberOfPayments: 3,
       paymentPercents: [50, 25, 25],
       paymentAmounts: [],
@@ -5257,6 +5267,80 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return financePlan.payments.filter((p) => keys.has(paymentPlanSelectionKey(p)));
   }, [financePlan, selectedSendInvoicePaymentKeys]);
 
+  const handleClientPaidToggle = async (nextClientPaid: boolean) => {
+    if (savingClientPaid || nextClientPaid === clientPaid) return;
+    const previous = clientPaid;
+    setClientPaid(nextClientPaid);
+    setSavingClientPaid(true);
+    try {
+      const isLegacyLead =
+        client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+      if (isLegacyLead) {
+        const legacyId = Number(String(client.id).replace('legacy_', ''));
+        if (!Number.isFinite(legacyId)) throw new Error('Invalid legacy lead id');
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ client_paid: nextClientPaid })
+          .eq('id', legacyId);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('leads')
+          .update({ client_paid: nextClientPaid })
+          .eq('id', client.id);
+        if (error) throw error;
+      }
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Failed to update client_paid:', error);
+      setClientPaid(previous);
+      toast.error('Failed to update Client / Office setting');
+    } finally {
+      setSavingClientPaid(false);
+    }
+  };
+
+  const clientOfficeToggle = (
+    <div
+      className="relative inline-grid grid-cols-2 rounded-full bg-slate-200/80 p-1"
+      role="tablist"
+      aria-label="Expense payer"
+    >
+      <span
+        aria-hidden
+        className={`pointer-events-none absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-white shadow-sm transition-transform duration-200 ease-out ${
+          clientPaid ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      />
+      <button
+        type="button"
+        role="tab"
+        aria-selected={clientPaid}
+        disabled={savingClientPaid}
+        className={`relative z-[1] inline-flex h-8 items-center justify-center gap-1.5 rounded-full border-0 bg-transparent px-3 text-xs font-semibold normal-case transition-colors disabled:opacity-60 ${
+          clientPaid ? 'text-slate-900' : 'text-slate-500 hover:text-slate-700'
+        }`}
+        onClick={() => void handleClientPaidToggle(true)}
+      >
+        <UserIcon className="h-4 w-4 shrink-0" />
+        <span className="whitespace-nowrap">Client</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={!clientPaid}
+        disabled={savingClientPaid}
+        className={`relative z-[1] inline-flex h-8 items-center justify-center gap-1.5 rounded-full border-0 bg-transparent px-3 text-xs font-semibold normal-case transition-colors disabled:opacity-60 ${
+          !clientPaid ? 'text-slate-900' : 'text-slate-500 hover:text-slate-700'
+        }`}
+        onClick={() => void handleClientPaidToggle(false)}
+      >
+        <BuildingOffice2Icon className="h-4 w-4 shrink-0" />
+        <span className="whitespace-nowrap">Office</span>
+      </button>
+    </div>
+  );
+
   const financesSubTabSwitcher = (
     <div
       className="relative inline-grid grid-cols-2 rounded-full bg-slate-200/80 p-1"
@@ -5296,6 +5380,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     </div>
   );
 
+  const financesHeaderExtras = (
+    <div className="flex flex-wrap items-center gap-2">
+      {financesSubTabSwitcher}
+      {clientOfficeToggle}
+    </div>
+  );
+
   if (isLoadingFinancePlan) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center">
@@ -5317,7 +5408,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 ? 'Fees and expenses'
                 : 'Payment plans and collections'
             }
-            titleExtra={financesSubTabSwitcher}
+            titleExtra={financesHeaderExtras}
           />
           {financesSubTab === 'expenses-fees' ? (
             <FinancesExpensesFeesPage
@@ -5448,10 +5539,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         >
                           {availableCurrencies.length === 0 ? (
                             <>
-                              <option value="₪">₪ (ILS)</option>
-                              <option value="€">€ (EUR)</option>
+                              <option value="?">? (ILS)</option>
+                              <option value="�">� (EUR)</option>
                               <option value="$">$ (USD)</option>
-                              <option value="£">£ (GBP)</option>
+                              <option value="�">� (GBP)</option>
                             </>
                           ) : (
                             availableCurrencies.map((curr) => (
@@ -5748,7 +5839,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   }}
                                   placeholder="0"
                                 />
-                                <span className="text-sm">{autoPlanData.currency || '₪'}</span>
+                                <span className="text-sm">{autoPlanData.currency || '?'}</span>
                               </div>
                             )
                           })}
@@ -5770,9 +5861,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   <div className="flex items-center gap-2 text-xs text-orange-600 bg-orange-50 p-2 rounded border border-orange-200">
                                     <ExclamationTriangleIcon className="w-4 h-4" />
                                     <span>
-                                      <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '₪'})
-                                      doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '₪'}).
-                                      Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '₪'}
+                                      <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '?'})
+                                      doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '?'}).
+                                      Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '?'}
                                     </span>
                                   </div>
                                 )}
@@ -5824,12 +5915,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Group payments by currency for overall total
   const paymentsByCurrency = financePlan.payments.reduce((acc: { [currency: string]: number }, p: PaymentPlan) => {
-    const currency = p.currency || '₪';
+    const currency = p.currency || '?';
     acc[currency] = (acc[currency] || 0) + Number(p.value) + Number(p.valueVat);
     return acc;
   }, {});
 
-  // Unpaid base + VAT per currency (excludes paid rows — same rules as ClientHeader Outstanding)
+  // Unpaid base + VAT per currency (excludes paid rows � same rules as ClientHeader Outstanding)
   const unpaidByCurrency = sumUnpaidBaseAndVatByCurrencyFromPayments(
     financePlan.payments.map((p) => ({
       value: Number(p.value),
@@ -6127,7 +6218,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
       toast.success(
         count === 1
-          ? 'Invoice automation enabled — will send on due date'
+          ? 'Invoice automation enabled � will send on due date'
           : `Invoice automation enabled for ${count} payments`,
       );
       const automationAt = new Date().toISOString();
@@ -6203,7 +6294,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const sent = Boolean(payment.invoice_send_automation_sent_at);
     const title = sent
       ? `Invoice sent automatically on ${formatDateDDMMYYYY(payment.invoice_send_automation_sent_at)}`
-      : `Scheduled invoice send on ${formatDateDDMMYYYY(payment.dueDate)} (${payment.invoice_send_automation_language === 'he' ? 'Hebrew' : 'English'}) — click to remove`;
+      : `Scheduled invoice send on ${formatDateDDMMYYYY(payment.dueDate)} (${payment.invoice_send_automation_language === 'he' ? 'Hebrew' : 'English'}) � click to remove`;
     return (
       <button
         type="button"
@@ -6288,7 +6379,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (result.confirmation_email_sent) {
         parts.push('confirmation email sent');
       }
-      toast.success(parts.length ? parts.join(' · ') : 'Retry completed');
+      toast.success(parts.length ? parts.join(' � ') : 'Retry completed');
     } catch (err) {
       console.error('handleRetryTaxReceipt:', err);
       toast.error(err instanceof Error ? err.message : 'Tax receipt retry failed');
@@ -6349,7 +6440,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     if (!paidViaLink && !info?.payper_invoice_status) {
-      return <span className="text-slate-400">—</span>;
+      return <span className="text-slate-400">�</span>;
     }
 
     const status = info?.payper_invoice_status;
@@ -6392,7 +6483,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       );
     }
 
-    return <span className="text-slate-400">—</span>;
+    return <span className="text-slate-400">�</span>;
   };
 
   const renderPaymentPickCell = (payment: PaymentPlan) => {
@@ -6428,7 +6519,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     ).length ?? 0;
 
   const renderPaymentRowActions = (p: PaymentPlan, isPaid: boolean) => {
-    if (!p.id) return <span className="text-slate-400">—</span>;
+    if (!p.id) return <span className="text-slate-400">�</span>;
 
     const renderAdminMenuItems = () => {
       if (!showPaymentAdminMenu(p, isPaid)) return null;
@@ -6644,7 +6735,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               ? 'Fees and expenses'
               : 'Payment plans and collections'
           }
-          titleExtra={financesSubTabSwitcher}
+          titleExtra={financesHeaderExtras}
         />
         {financesSubTab === 'expenses-fees' ? (
           <FinancesExpensesFeesPage
@@ -6803,7 +6894,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 <p className="text-gray-500 mb-4">This client doesn't have any contracts yet.</p>
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-md mx-auto">
                   <p className="text-sm text-blue-800">
-                    💡 <strong>Tip:</strong> Create a contract in the Contact Info tab to see it displayed here.
+                    ?? <strong>Tip:</strong> Create a contract in the Contact Info tab to see it displayed here.
                   </p>
                 </div>
               </div>
@@ -7023,7 +7114,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   {paymentHistory[contactName].map((tx, idx) => (
                                     <tr key={tx.id || idx}>
                                       <td>{tx.created_at ? new Date(tx.created_at).toLocaleString() : ''}</td>
-                                      <td>{tx.amount ? `₪${tx.amount.toLocaleString()}` : ''}</td>
+                                      <td>{tx.amount ? `?${tx.amount.toLocaleString()}` : ''}</td>
                                       <td>{tx.payment_method || ''}</td>
                                       <td>{tx.status || ''}</td>
                                     </tr>
@@ -7037,7 +7128,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         )}
                       </div>
 
-                      {/* Table or Box view for this contact — same white card */}
+                      {/* Table or Box view for this contact � same white card */}
                       {!collapsedContacts[contactName] && (
                         <div className="px-4 pb-4 pt-2 md:px-6 md:pb-5">
                           {viewMode === 'table' ? (
@@ -7090,7 +7181,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           {isPaid ? (
                                             <span className="text-sm font-semibold text-slate-900">
-                                              {formatDateDDMMYYYY(p.dueDate) || '—'}
+                                              {formatDateDDMMYYYY(p.dueDate) || '�'}
                                             </span>
                                           ) : (
                                             <DueDateBadge
@@ -7245,7 +7336,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <input type="number" className="input input-bordered input-sm w-28 text-right no-arrows" value={newPaymentData.value} onChange={e => {
                                             const value = e.target.value;
                                             let vat = 0;
-                                            const currency = newPaymentData.currency || '₪';
+                                            const currency = newPaymentData.currency || '?';
                                             const includeVat = newPaymentData.includeVat !== false;
                                             if (isNisCurrency({ currency, currencyId: newPaymentData.currencyId }) && includeVat) {
                                               const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
@@ -7260,10 +7351,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <input type="number" className="input input-bordered input-sm w-24 cursor-not-allowed bg-slate-50 text-right text-slate-500 no-arrows" value={newPaymentData.valueVat || 0} readOnly />
                                         </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap text-right font-bold text-slate-900">
-                                          {getCurrencySymbol(newPaymentData.currency || '₪')}
+                                          {getCurrencySymbol(newPaymentData.currency || '?')}
                                           {(Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">—</td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">�</td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           <select
                                             className="select select-bordered select-sm w-full max-w-[180px]"
@@ -7286,14 +7377,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <option value="Expense">Expense</option>
                                           </select>
                                         </td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">—</td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">—</td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">�</td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">�</td>
                                         <td className="px-4 py-4 align-middle">
                                           <input className="input input-bordered input-sm mb-2 w-full max-w-[180px]" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
                                           <div className="flex flex-wrap items-center gap-2">
                                             <select
                                               className="select select-bordered select-xs w-20"
-                                              value={newPaymentData.currency || '₪'}
+                                              value={newPaymentData.currency || '?'}
                                               onChange={e => {
                                                 const selectedCurrency = e.target.value;
                                                 const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
@@ -7319,10 +7410,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             >
                                               {availableCurrencies.length === 0 ? (
                                                 <>
-                                                  <option value="₪">₪</option>
-                                                  <option value="€">€</option>
+                                                  <option value="?">?</option>
+                                                  <option value="�">�</option>
                                                   <option value="$">$</option>
-                                                  <option value="£">£</option>
+                                                  <option value="�">�</option>
                                                 </>
                                               ) : (
                                                 availableCurrencies.map((curr) => (
@@ -7405,7 +7496,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <input type="number" className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows" value={newPaymentData.value} onChange={e => {
                                               const value = e.target.value;
                                               let vat = 0;
-                                              const currency = newPaymentData.currency || '₪';
+                                              const currency = newPaymentData.currency || '?';
                                               const includeVat = newPaymentData.includeVat !== false;
                                               if (isNisCurrency({ currency, currencyId: newPaymentData.currencyId }) && includeVat) {
                                                 const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
@@ -7424,7 +7515,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Currency</span>
                                             <select
                                               className="select select-bordered w-full"
-                                              value={newPaymentData.currency || '₪'}
+                                              value={newPaymentData.currency || '?'}
                                               onChange={e => {
                                                 const selectedCurrency = e.target.value;
                                                 const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
@@ -7450,10 +7541,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             >
                                               {availableCurrencies.length === 0 ? (
                                                 <>
-                                                  <option value="₪">₪ (ILS)</option>
-                                                  <option value="€">€ (EUR)</option>
+                                                  <option value="?">? (ILS)</option>
+                                                  <option value="�">� (EUR)</option>
                                                   <option value="$">$ (USD)</option>
-                                                  <option value="£">£ (GBP)</option>
+                                                  <option value="�">� (GBP)</option>
                                                 </>
                                               ) : (
                                                 availableCurrencies.map((curr) => (
@@ -7571,7 +7662,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       <div className="flex flex-col items-center">
                                         <span className="text-base font-medium text-gray-600">Total Amount</span>
                                         <span className="text-2xl font-bold text-purple-600">
-                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getTotalAmount().toLocaleString()}
+                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}{getTotalAmount().toLocaleString()}
                                         </span>
                                       </div>
                                       <button
@@ -7595,7 +7686,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       <div className="flex flex-col items-center">
                                         <span className="text-base font-medium text-gray-600">Left to Plan</span>
                                         <span className="text-2xl font-bold text-green-600">
-                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined).toLocaleString()}
+                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}{getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined).toLocaleString()}
                                         </span>
                                       </div>
                                       <button
@@ -7668,7 +7759,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
                                             {isPaid ? (
                                             <span className="text-sm font-semibold text-slate-900">
-                                              {formatDateDDMMYYYY(p.dueDate) || '—'}
+                                              {formatDateDDMMYYYY(p.dueDate) || '�'}
                                             </span>
                                           ) : (
                                             <DueDateBadge
@@ -7924,8 +8015,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     {(() => {
                                       const isLegacyPayment = p.accounting_currencies;
                                       const currency = isLegacyPayment
-                                        ? p.accounting_currencies?.iso_code || '₪'
-                                        : p.currency || '₪';
+                                        ? p.accounting_currencies?.iso_code || '?'
+                                        : p.currency || '?';
                                       const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
 
                                       return (
@@ -7944,8 +8035,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     {(() => {
                                       const isLegacyPayment = p.accounting_currencies;
                                       const currency = isLegacyPayment
-                                        ? p.accounting_currencies?.iso_code || '₪'
-                                        : p.currency || '₪';
+                                        ? p.accounting_currencies?.iso_code || '?'
+                                        : p.currency || '?';
                                       const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
 
                                       return (
@@ -8293,7 +8384,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         Create Proforma
                       </button>
                       <div className="text-xs text-gray-500 text-center bg-yellow-50 p-3 rounded-lg border border-yellow-200">
-                        ⚠️ Once created, changes cannot be made!
+                        ?? Once created, changes cannot be made!
                       </div>
                     </>
                   )}
@@ -8413,10 +8504,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       >
                         {availableCurrencies.length === 0 ? (
                           <>
-                            <option value="₪">₪ (ILS)</option>
-                            <option value="€">€ (EUR)</option>
+                            <option value="?">? (ILS)</option>
+                            <option value="�">� (EUR)</option>
                             <option value="$">$ (USD)</option>
-                            <option value="£">£ (GBP)</option>
+                            <option value="�">� (GBP)</option>
                           </>
                         ) : (
                           availableCurrencies.map((curr) => (
@@ -8713,7 +8804,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 }}
                                 placeholder="0"
                               />
-                              <span className="text-sm">{autoPlanData.currency || '₪'}</span>
+                              <span className="text-sm">{autoPlanData.currency || '?'}</span>
                             </div>
                           )
                         })}
@@ -8735,9 +8826,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 <div className="flex items-center gap-2 text-xs text-orange-600 bg-orange-50 p-2 rounded border border-orange-200">
                                   <ExclamationTriangleIcon className="w-4 h-4" />
                                   <span>
-                                    <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '₪'})
-                                    doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '₪'}).
-                                    Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '₪'}
+                                    <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '?'})
+                                    doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '?'}).
+                                    Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '?'}
                                   </span>
                                 </div>
                               )}
@@ -8838,12 +8929,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               {/* Base Amount Info */}
               <div className="bg-blue-50 rounded-lg p-3">
                 <div className="text-sm text-gray-600">
-                  <span className="font-medium">Base amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}
+                  <span className="font-medium">Base amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}
                   <span className="font-bold text-lg">{(percentageType === 'total' ? getTotalAmount() : getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined)).toLocaleString()}</span>
                 </div>
                 {percentageValue > 0 && (
                   <div className="text-sm text-gray-600 mt-1">
-                    <span className="font-medium">Calculated amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}
+                    <span className="font-medium">Calculated amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}
                     <span className="font-bold text-lg text-green-600">
                       {Math.round(((percentageType === 'total' ? getTotalAmount() : getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined)) * percentageValue) / 100).toLocaleString()}
                     </span>
@@ -8945,7 +9036,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         paymentId={selectedPaymentForNotes?.id}
       />
 
-      {/* Payment History Modal — all paid payments across every contact for this lead */}
+      {/* Payment History Modal � all paid payments across every contact for this lead */}
       {sendInvoiceSelectMode && selectedSendInvoicePayments.length > 0 && ReactDOM.createPortal(
         <div className="fixed bottom-6 left-1/2 z-[35] flex w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3 shadow-xl lg:bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))]">
           <span className="text-sm font-medium text-slate-700">
@@ -9104,9 +9195,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             const total = baseAmt + vatAmt;
                             return (
                               <tr key={String(p.id)} className="hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-700">{p.order || '—'}</td>
-                                <td className="px-3 py-2 font-medium text-slate-900">{p.client || '—'}</td>
-                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || '—'}</td>
+                                <td className="px-3 py-2 text-slate-700">{p.order || '�'}</td>
+                                <td className="px-3 py-2 font-medium text-slate-900">{p.client || '�'}</td>
+                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || '�'}</td>
                                 <td className="px-3 py-2">
                                   <PaidPaymentDateBadge date={p.paid_at} />
                                 </td>
@@ -9114,14 +9205,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   {sym}{baseAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                 </td>
                                 <td className="px-3 py-2 text-right tabular-nums text-slate-600">
-                                  {vatAmt > 0 ? `${sym}${vatAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
+                                  {vatAmt > 0 ? `${sym}${vatAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '�'}
                                 </td>
                                 <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900">
                                   {sym}{total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                 </td>
-                                <td className="px-3 py-2 text-slate-700">{p.paid_by || '—'}</td>
+                                <td className="px-3 py-2 text-slate-700">{p.paid_by || '�'}</td>
                                 <td className="max-w-[16rem] truncate px-3 py-2 text-slate-600" title={p.notes || ''}>
-                                  {p.notes || '—'}
+                                  {p.notes || '�'}
                                 </td>
                               </tr>
                             );

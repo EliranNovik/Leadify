@@ -147,7 +147,7 @@ export default function LeadEmployeeCostModal({
         </div>
 
         <div className="space-y-4 overflow-y-auto px-6 py-4">
-          {loading ? (
+          {loading && !summary ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-gray-500">
               <span className="loading loading-spinner loading-md text-primary" />
               Loading…

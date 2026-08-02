@@ -252,7 +252,7 @@ const TEAM_ROW_CLASS =
 
 const ROLE_META = [
   { key: 'handler' as const, label: 'Case Handler' },
-  { key: 'retainer_handler' as const, label: 'Retention handler' },
+  { key: 'retainer_handler' as const, label: 'Legal Assistant' },
   { key: 'department_manager' as const, label: 'Department manager' },
 ];
 
@@ -340,7 +340,10 @@ const PortalDashboardTab: React.FC<Props> = ({
       contact: summary.department_manager_contact,
       department: summary.department_manager_department || summary.main_category_name,
     },
-  ];
+  ].filter((role) => {
+    const displayName = role.name?.trim() || '';
+    return Boolean(displayName) && displayName !== '—' && displayName !== 'Not assigned';
+  });
 
   const rolePhotoByName = new Map<string, string>();
   for (const role of roles) {
@@ -474,6 +477,7 @@ const PortalDashboardTab: React.FC<Props> = ({
           </div>
       </section>
 
+      {roles.length > 0 ? (
       <div className={`flex flex-col gap-5 md:gap-6 ${PORTAL_DASHBOARD_CONTAINER}`}>
         <div className="flex flex-col gap-1">
           <h3 className="text-lg font-bold tracking-tight text-[#16161d]">Your legal team</h3>
@@ -481,54 +485,42 @@ const PortalDashboardTab: React.FC<Props> = ({
         </div>
         <div className={TEAM_ROW_CLASS}>
             {roles.map((role) => {
-              const displayName = role.name?.trim() || 'Not assigned';
-              const assigned = displayName !== 'Not assigned' && displayName !== '—';
+              const displayName = role.name!.trim();
               const photoUrl =
                 role.photo?.trim() ||
-                (assigned ? rolePhotoByName.get(displayName.toLowerCase()) : undefined);
+                rolePhotoByName.get(displayName.toLowerCase());
               const avatarStableKey = `role::${role.key}::${displayName}`;
               return (
                 <div key={role.key} className={`${MOBILE_CAROUSEL_ITEM_CLASS} md:min-w-0`}>
                   <div
-                    className={`${PORTAL_TEAM_CARD_CLASS} ${TEAM_CARD_CLASS} w-full ${
-                      assigned
-                        ? 'cursor-pointer transition-shadow hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)]'
-                        : ''
-                    }`}
-                    role={assigned ? 'button' : undefined}
-                    tabIndex={assigned ? 0 : undefined}
-                    title={assigned ? `View ${displayName}'s business card` : undefined}
-                    onClick={
-                      assigned
-                        ? () =>
-                            void openTeamBusinessCard(
-                              displayName,
-                              photoUrl,
-                              role.contact,
-                              role.department,
-                            )
-                        : undefined
+                    className={`${PORTAL_TEAM_CARD_CLASS} ${TEAM_CARD_CLASS} w-full cursor-pointer transition-shadow hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)]`}
+                    role="button"
+                    tabIndex={0}
+                    title={`View ${displayName}'s business card`}
+                    onClick={() =>
+                      void openTeamBusinessCard(
+                        displayName,
+                        photoUrl,
+                        role.contact,
+                        role.department,
+                      )
                     }
-                    onKeyDown={
-                      assigned
-                        ? (e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              void openTeamBusinessCard(
-                                displayName,
-                                photoUrl,
-                                role.contact,
-                                role.department,
-                              );
-                            }
-                          }
-                        : undefined
-                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        void openTeamBusinessCard(
+                          displayName,
+                          photoUrl,
+                          role.contact,
+                          role.department,
+                        );
+                      }
+                    }}
                   >
                     <div className="flex min-h-0 flex-1 flex-col gap-4">
                       <div className="flex items-start gap-3.5">
                         <EntityAvatar
-                          name={assigned ? displayName : role.label}
+                          name={displayName}
                           imageUrl={photoUrl}
                           stableKey={avatarStableKey}
                           className="h-[68px] w-[68px] shrink-0 text-base"
@@ -538,36 +530,34 @@ const PortalDashboardTab: React.FC<Props> = ({
                             <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#747684]">
                               {role.label}
                             </p>
-                            {assigned && role.key === 'handler' ? (
+                            {role.key === 'handler' ? (
                               <span className="inline-flex rounded-full bg-blue-50 px-1.5 py-0.5 text-[9px] font-medium text-blue-700">
                                 Main contact
                               </span>
                             ) : null}
                           </div>
                           <p className="mt-0.5 text-base font-semibold leading-snug text-[#16161d] lg:text-lg">
-                            {assigned ? displayName : '—'}
+                            {displayName}
                           </p>
-                          {!assigned ? (
-                            <p className="mt-1 text-xs text-[#747684]">Not assigned yet</p>
-                          ) : null}
                         </div>
                       </div>
-                      {assigned ? (
-                        <div
-                          className="team-actions mt-auto flex justify-start border-t border-[rgba(15,23,42,0.06)] pt-3.5"
-                          onClick={(e) => e.stopPropagation()}
-                          onKeyDown={(e) => e.stopPropagation()}
-                        >
-                          <PortalTeamContactButtons contact={role.contact} />
-                        </div>
-                      ) : null}
+                      <div
+                        className="team-actions mt-auto flex justify-start border-t border-[rgba(15,23,42,0.06)] pt-3.5"
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
+                        <PortalTeamContactButtons contact={role.contact} />
+                      </div>
                     </div>
                   </div>
                 </div>
               );
             })}
         </div>
+      </div>
+      ) : null}
 
+      <div className={`${PORTAL_DASHBOARD_CONTAINER}`}>
         <div className={`${PORTAL_TEAM_CARD_CLASS} p-5 md:p-6`}>
           <h4 className="text-sm font-bold tracking-tight text-[#16161d]">Recent activity</h4>
           {recentActivity.length > 0 ? (

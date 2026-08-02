@@ -579,7 +579,7 @@ export function ContactPlanHeader({
           <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
             <button
               type="button"
-              className="truncate text-left text-lg font-bold leading-tight text-slate-900 hover:text-slate-700"
+              className="truncate text-left text-lg font-bold leading-tight text-slate-500 hover:text-slate-600"
               onClick={onToggle}
             >
               {contactName}

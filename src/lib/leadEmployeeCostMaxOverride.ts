@@ -1,7 +1,6 @@
 import { supabase } from './supabase';
 import type { LeadReportingType } from './employeeLeadReporting';
 import { applyBudgetExtensions, type LeadBudgetExtensionLeadRef } from './leadBudgetExtensionRequests';
-import { isExpenseNoVatPayment } from './proformaVat';
 
 export type LeadCostMaxOverrideLeadRef = LeadBudgetExtensionLeadRef;
 
@@ -201,29 +200,30 @@ export async function leadHasPaymentPlan(params: {
   if (params.leadType === 'legacy' && params.legacyLeadId != null) {
     const { data, error } = await supabase
       .from('finances_paymentplanrow')
-      .select('id, order')
+      .select('id')
       .eq('lead_id', params.legacyLeadId)
       .is('cancel_date', null)
-      .limit(50);
+      .limit(1);
     if (error) {
       console.error('[leadHasPaymentPlan] legacy failed:', error);
       throw error;
     }
-    return (data || []).some((row) => !isExpenseNoVatPayment(row.order));
+    // Any active plan row (including expenses) locks Total.
+    return (data || []).length > 0;
   }
 
   if (params.newLeadId) {
     const { data, error } = await supabase
       .from('payment_plans')
-      .select('id, payment_order')
-      .eq('lead_id', params.newLeadId)
+      .select('id')
+      .or(`lead_id.eq.${params.newLeadId},lead_ids.eq.${params.newLeadId}`)
       .is('cancel_date', null)
-      .limit(50);
+      .limit(1);
     if (error) {
       console.error('[leadHasPaymentPlan] new failed:', error);
       throw error;
     }
-    return (data || []).some((row) => !isExpenseNoVatPayment(row.payment_order));
+    return (data || []).length > 0;
   }
 
   return false;

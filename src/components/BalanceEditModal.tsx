@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { convertToNIS } from '../lib/currencyConversion';
 import { getVatRateForLegacyLead } from '../lib/financeUnpaidTotal';
 import MobileBottomSheet from './MobileBottomSheet';
+import { leadHasPaymentPlan } from '../lib/leadEmployeeCostMaxOverride';
 
 type FirmOption = { id: string; name: string };
 
@@ -485,6 +486,24 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
     setLoading(true);
     try {
       const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
+      // Hard guard: never overwrite Total when a payment plan exists (even if UI lock state was stale/null).
+      let effectiveLocked = isLocked === true;
+      try {
+        const legacyIdRaw = String(selectedClient.id ?? '').replace(/^legacy_/i, '');
+        const legacyLeadId = isLegacyLead ? Number(legacyIdRaw) : null;
+        const planExists = await leadHasPaymentPlan({
+          leadType: isLegacyLead ? 'legacy' : (selectedClient.lead_type === 'legacy' ? 'legacy' : 'new'),
+          newLeadId: isLegacyLead ? null : String(selectedClient.id),
+          legacyLeadId:
+            legacyLeadId != null && Number.isFinite(legacyLeadId) && legacyLeadId > 0
+              ? legacyLeadId
+              : null,
+        });
+        if (planExists) effectiveLocked = true;
+      } catch (planCheckError) {
+        console.warn('[BalanceEditModal] payment plan lock check failed; keeping prop lock state', planCheckError);
+      }
+
       const { net: netAmount, vat: persistedVat } = getPersistedNetAndVat();
 
       if (isLegacyLead) {
@@ -512,13 +531,15 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         // Save logic for legacy leads (NET ex-VAT in total/total_base; VAT in vat_value):
         // If currency_id is 1 (NIS): Save only to total_base
         // If currency_id is other than 1: Save to total, and calculate NIS equivalent and save to total_base
-        if (!isLocked) {
+        if (!effectiveLocked) {
           if (currencyId === 1) {
             updateData.total_base = netAmount;
           } else {
             updateData.total = netAmount;
             updateData.total_base = convertToNIS(netAmount, currencyId);
           }
+        } else if (!isLocked) {
+          toast.error('Total is locked because this lead has a payment plan');
         }
         
         console.log('💾 Saving legacy lead balance update:', {
@@ -594,9 +615,11 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           updateData.potential_applicants_meeting = Number(formData.potential_applicants_meeting) || 0;
         }
 
-        if (!isLocked) {
+        if (!effectiveLocked) {
           updateData.balance = netAmount;
           updateData.proposal_total = netAmount;
+        } else if (!isLocked) {
+          toast.error('Total is locked because this lead has a payment plan');
         }
         
         console.log('📤 Update payload being sent to database:', updateData);

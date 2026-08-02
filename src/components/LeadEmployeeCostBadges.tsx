@@ -50,7 +50,7 @@ export default function LeadEmployeeCostBadges({
         'inline-flex items-center justify-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-wide transition-colors disabled:opacity-50',
         exceeds
           ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-900/35 dark:text-amber-200'
-          : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-900/35 dark:text-emerald-200',
+          : 'bg-gray-100 text-gray-500 hover:bg-gray-200/80 dark:bg-base-200 dark:text-gray-400 dark:hover:bg-base-300',
         className,
       ]
         .filter(Boolean)

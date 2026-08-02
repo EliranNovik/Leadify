@@ -42,6 +42,17 @@ import { toast } from 'react-hot-toast';
 import { buildCaseDocumentStoragePath, CASE_DOCUMENTS_STORAGE_BUCKET, resolveCaseDocumentUploadContentType } from '../../lib/caseDocumentsStorage';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
 import { resolveLeadSubEffortIdentityFromRefs } from '../../lib/leadSubEfforts';
+import {
+  clientsTabCacheLeadKey,
+  readClientsTabCache,
+  writeClientsTabCache,
+} from '../../lib/clientsTabCache';
+
+/** Cached bundle for the 'expert' slice — light metadata that reloads on every mount. */
+type ExpertTabCacheSlice = {
+  documentCount?: number;
+  oneDriveDocumentCount?: number;
+};
 
 /** Same parsing as `DocumentModal` for `lead_sub_efforts.document_url` — used only for total count. */
 function normalizeSubEffortDocumentItems(raw: unknown): unknown[] {
@@ -1359,9 +1370,14 @@ ${combinedText}`;
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
 
+  // Cache-first: paint this lead's last-known doc counts immediately (no spinner/flicker),
+  // then silently refresh from the network below.
+  const expertLeadKey = clientsTabCacheLeadKey(client);
+  const cachedExpertTabData = readClientsTabCache<ExpertTabCacheSlice>(expertLeadKey, 'expert');
+
   // Document Modal State
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
-  const [documentCount, setDocumentCount] = useState<number>(0);
+  const [documentCount, setDocumentCount] = useState<number>(() => cachedExpertTabData?.documentCount ?? 0);
 
   // Get docs_url for legacy leads (used for OneDrive folder resolution)
   const [docsUrl, setDocsUrl] = useState<string>('');
@@ -1373,18 +1389,10 @@ ${combinedText}`;
   const [isLoadingOneDriveFiles, setIsLoadingOneDriveFiles] = useState(false);
   const [oneDriveFilesError, setOneDriveFilesError] = useState<string | null>(null);
   const [oneDriveQuery, setOneDriveQuery] = useState('');
-  const [oneDriveDocumentCount, setOneDriveDocumentCount] = useState<number>(0);
-
-  // Keep OneDrive count stable across tab switches (component remounts).
-  useEffect(() => {
-    if (!client?.lead_number) return;
-    const key = `onedrive_doc_count:${client.lead_number}`;
-    const cached = sessionStorage.getItem(key);
-    if (cached != null) {
-      const parsed = Number(cached);
-      if (Number.isFinite(parsed)) setOneDriveDocumentCount(parsed);
-    }
-  }, [client?.lead_number]);
+  // Keep OneDrive count stable across tab switches (component remounts) — hydrated from cache.
+  const [oneDriveDocumentCount, setOneDriveDocumentCount] = useState<number>(
+    () => cachedExpertTabData?.oneDriveDocumentCount ?? 0
+  );
 
   // Case-documents "Expert" classification id (for uploads from this tab)
   const [expertCaseDocClassificationId, setExpertCaseDocClassificationId] = useState<string | null>(null);
@@ -1411,6 +1419,15 @@ ${combinedText}`;
     };
   }, []);
 
+  // Persists the OneDrive doc count to the 'expert' cache slice so it survives tab remounts
+  // (replaces the old ad-hoc `onedrive_doc_count:*` sessionStorage key).
+  const persistOneDriveDocumentCount = useCallback((count: number) => {
+    setOneDriveDocumentCount(count);
+    const leadKey = clientsTabCacheLeadKey(client);
+    const prevCache = readClientsTabCache<ExpertTabCacheSlice>(leadKey, 'expert') ?? {};
+    writeClientsTabCache(leadKey, 'expert', { ...prevCache, oneDriveDocumentCount: count });
+  }, [client]);
+
   const fetchOneDriveFiles = useCallback(async (folderUrlHint?: string) => {
     if (!client?.lead_number) return;
     setIsLoadingOneDriveFiles(true);
@@ -1425,12 +1442,7 @@ ${combinedText}`;
       if (data && data.success) {
         const files = (data.files || []) as OneDriveFileItem[];
         setOneDriveFiles(files);
-        setOneDriveDocumentCount(files.length);
-        try {
-          sessionStorage.setItem(`onedrive_doc_count:${client.lead_number}`, String(files.length));
-        } catch {
-          // ignore
-        }
+        persistOneDriveDocumentCount(files.length);
       } else {
         if (data?.retryable) {
           // quick retry for transient OneDrive/Graph issues
@@ -1441,12 +1453,7 @@ ${combinedText}`;
           if (!error2 && data2 && data2.success) {
             const files2 = (data2.files || []) as OneDriveFileItem[];
             setOneDriveFiles(files2);
-            setOneDriveDocumentCount(files2.length);
-            try {
-              sessionStorage.setItem(`onedrive_doc_count:${client.lead_number}`, String(files2.length));
-            } catch {
-              // ignore
-            }
+            persistOneDriveDocumentCount(files2.length);
             return;
           }
         }
@@ -1458,7 +1465,7 @@ ${combinedText}`;
     } finally {
       setIsLoadingOneDriveFiles(false);
     }
-  }, [client?.lead_number, (client as any).onedrive_folder_link]);
+  }, [client?.lead_number, (client as any).onedrive_folder_link, persistOneDriveDocumentCount]);
 
   const openOneDriveDrawer = useCallback(async () => {
     setIsOneDriveDrawerOpen(true);
@@ -1479,17 +1486,12 @@ ${combinedText}`;
       if (error) return; // keep previous count on transient errors
       if (data && data.success) {
         const files = (data.files || []) as OneDriveFileItem[];
-        setOneDriveDocumentCount(files.length);
-        try {
-          sessionStorage.setItem(`onedrive_doc_count:${client.lead_number}`, String(files.length));
-        } catch {
-          // ignore
-        }
+        persistOneDriveDocumentCount(files.length);
       } // else keep previous count (avoid flicker)
     } catch {
       // keep previous count (avoid flicker)
     }
-  }, [client?.lead_number, (client as any).onedrive_folder_link]);
+  }, [client?.lead_number, (client as any).onedrive_folder_link, persistOneDriveDocumentCount]);
 
   useEffect(() => {
     void fetchOneDriveDocumentCount();
@@ -1552,7 +1554,11 @@ ${combinedText}`;
         }
       }
 
-      setDocumentCount((caseRowCount ?? 0) + subItemCount);
+      const nextDocumentCount = (caseRowCount ?? 0) + subItemCount;
+      setDocumentCount(nextDocumentCount);
+      const leadKey = clientsTabCacheLeadKey(client);
+      const prevCache = readClientsTabCache<ExpertTabCacheSlice>(leadKey, 'expert') ?? {};
+      writeClientsTabCache(leadKey, 'expert', { ...prevCache, documentCount: nextDocumentCount });
     } catch (e) {
       console.error('Error fetching document count:', e);
     }

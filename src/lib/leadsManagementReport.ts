@@ -39,7 +39,7 @@ export type LeadManagementEmployeeSlice = {
   departmentName: string | null;
   workedMs: number;
   costNis: number;
-  /** Derived from avg salary ÷ (min hours × working days). */
+  /** Derived from avg salary ÷ 127 monthly hours. */
   hourRateNis: number | null;
 };
 

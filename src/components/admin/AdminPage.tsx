@@ -43,6 +43,7 @@ import MainCategoriesManager from './MainCategoriesManager';
 import SubCategoriesManager from './SubCategoriesManager';
 import SubEffortsManager from './SubEffortsManager';
 import CaseDocumentCategoriesManager from './CaseDocumentCategoriesManager';
+import HrDocumentTypesManager from './HrDocumentTypesManager';
 import WhatsAppNumbersManager from './WhatsAppNumbersManager';
 import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import EmailTemplatesManager from './EmailTemplatesManager';
@@ -146,6 +147,7 @@ const ADMIN_TABS: AdminTab[] = [
       'Departements',
       'Employees',
       'Employee Field Assignments',
+      'HR document types',
       'Firm types',
       'Firms',
       'Firm contacts',
@@ -1632,6 +1634,9 @@ const AdminPage: React.FC = () => {
                 ) : selectedTab?.label === 'Tenants' &&
                   selectedTab?.subcategories[selected.sub] === 'Employee Field Assignments' ? (
                   <div className="w-full"><EmployeeFieldAssignmentsManager /></div>
+                ) : selectedTab?.label === 'Tenants' &&
+                  selectedTab?.subcategories[selected.sub] === 'HR document types' ? (
+                  <div className="w-full"><HrDocumentTypesManager /></div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Lead Sources' ? (
                   <div className="w-full"><SourcesManager /></div>

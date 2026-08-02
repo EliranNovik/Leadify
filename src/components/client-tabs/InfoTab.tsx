@@ -42,8 +42,23 @@ import ProbabilitySlidersModal, {
   splitProbabilityEvenly,
   type ProbabilitySlidersValues,
 } from './ProbabilitySlidersModal';
+import {
+  clientsTabCacheLeadKey,
+  readClientsTabCache,
+  writeClientsTabCache,
+} from '../../lib/clientsTabCache';
 
 const INFOTAB_DEBUG = typeof window !== 'undefined' && (window as any).__INFOTAB_DEBUG__ === true;
+
+type InfoTabCacheSlice = {
+  legal: number;
+  seriousness: number;
+  financial: number;
+  probability: number;
+  followupDate: string | null;
+  followupId: number | null;
+  followupNotes: string | null;
+};
 
 /** Full-screen bottom sheet on small screens only — used for editing Info tab fields on mobile */
 function MobileEditModal({
@@ -515,7 +530,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
   useEffect(() => {
     setCurrentUserFollowupNotes((getFieldValue(client, 'followup_log') as string) || null);
-  }, [client]);
+  }, [client?.id, client?.followup_log]);
 
   const getEligibilityStatus = () => {
     // For legacy leads, use state (fetched from database)
@@ -538,12 +553,17 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
   // State for current user's follow-up
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [currentUserFollowup, setCurrentUserFollowup] = useState<string | null>(null);
-  const [currentUserFollowupNotes, setCurrentUserFollowupNotes] = useState<string | null>(
-    (getFieldValue(client, 'followup_log') as string) || null
+  const infoLeadKey = clientsTabCacheLeadKey(client);
+  const cachedInfo = readClientsTabCache<InfoTabCacheSlice>(infoLeadKey, 'info');
+
+  const [currentUserFollowup, setCurrentUserFollowup] = useState<string | null>(
+    () => cachedInfo?.followupDate ?? null
   );
-  const [followupId, setFollowupId] = useState<number | null>(null);
-  const [isFollowupLoading, setIsFollowupLoading] = useState(false);
+  const [currentUserFollowupNotes, setCurrentUserFollowupNotes] = useState<string | null>(
+    () => cachedInfo?.followupNotes ?? ((getFieldValue(client, 'followup_log') as string) || null)
+  );
+  const [followupId, setFollowupId] = useState<number | null>(() => cachedInfo?.followupId ?? null);
+  const [isFollowupLoading, setIsFollowupLoading] = useState(() => !cachedInfo);
   const cachedUserIdRef = useRef<string | null>(null);
 
   const getNextFollowup = () => {
@@ -551,11 +571,15 @@ const InfoTab: React.FC<ClientTabProps> = ({
     return currentUserFollowup;
   };
 
-  const [probability, setProbability] = useState(getProbability());
-  const [probFactorLegal, setProbFactorLegal] = useState(0);
-  const [probFactorSeriousness, setProbFactorSeriousness] = useState(0);
-  const [probFactorFinancial, setProbFactorFinancial] = useState(0);
-  const [probFactorsLoaded, setProbFactorsLoaded] = useState(false);
+  const [probability, setProbability] = useState(
+    () => cachedInfo?.probability ?? getProbability()
+  );
+  const [probFactorLegal, setProbFactorLegal] = useState(() => cachedInfo?.legal ?? 0);
+  const [probFactorSeriousness, setProbFactorSeriousness] = useState(
+    () => cachedInfo?.seriousness ?? 0
+  );
+  const [probFactorFinancial, setProbFactorFinancial] = useState(() => cachedInfo?.financial ?? 0);
+  const [probFactorsLoaded, setProbFactorsLoaded] = useState(() => !!cachedInfo);
   const [probabilityModalOpen, setProbabilityModalOpen] = useState(false);
   const [probabilitySaving, setProbabilitySaving] = useState(false);
   const [isEditingSpecialNotes, setIsEditingSpecialNotes] = useState(false);
@@ -629,7 +653,6 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
     const loadFactors = async () => {
       if (!client?.id) return;
-      setProbFactorsLoaded(false);
 
       const tableName = isLegacy ? 'leads_lead' : 'leads';
       const rowId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
@@ -646,6 +669,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
           if (INFOTAB_DEBUG) console.warn('InfoTab probability factors fetch:', error);
         }
 
+        let nextLegal = 0;
+        let nextSeriousness = 0;
+        let nextFinancial = 0;
+        let nextProbability = getProbability();
+
         const L = data ? parseLegalPotential(data.legal_potential) : null;
         const S = data ? parseBigFactor(data.seriousness) : null;
         const F = data ? parseBigFactor(data.financial_ability) : null;
@@ -655,19 +683,31 @@ const InfoTab: React.FC<ClientTabProps> = ({
           const targetCaseProb =
             fromDb != null ? clampProbabilityPart(fromDb) : clampProbabilityPart(getProbability());
           const split = splitProbabilityEvenly(targetCaseProb);
-          setProbFactorLegal(split.legal);
-          setProbFactorSeriousness(split.seriousness);
-          setProbFactorFinancial(split.financial);
-          setProbability(caseProbabilityFromFactors(split.legal, split.seriousness, split.financial));
+          nextLegal = split.legal;
+          nextSeriousness = split.seriousness;
+          nextFinancial = split.financial;
+          nextProbability = caseProbabilityFromFactors(split.legal, split.seriousness, split.financial);
         } else {
-          const l = L ?? 0;
-          const s = S ?? 0;
-          const f = F ?? 0;
-          setProbFactorLegal(l);
-          setProbFactorSeriousness(s);
-          setProbFactorFinancial(f);
-          setProbability(caseProbabilityFromFactors(l, s, f));
+          nextLegal = L ?? 0;
+          nextSeriousness = S ?? 0;
+          nextFinancial = F ?? 0;
+          nextProbability = caseProbabilityFromFactors(nextLegal, nextSeriousness, nextFinancial);
         }
+
+        setProbFactorLegal(nextLegal);
+        setProbFactorSeriousness(nextSeriousness);
+        setProbFactorFinancial(nextFinancial);
+        setProbability(nextProbability);
+
+        writeClientsTabCache(infoLeadKey, 'info', {
+          legal: nextLegal,
+          seriousness: nextSeriousness,
+          financial: nextFinancial,
+          probability: nextProbability,
+          followupDate: currentUserFollowup,
+          followupId,
+          followupNotes: currentUserFollowupNotes,
+        });
       } catch (e) {
         if (!cancelled && INFOTAB_DEBUG) console.warn('InfoTab loadFactors', e);
         if (!cancelled) {
@@ -770,7 +810,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
     }
 
     let cancelled = false;
-    setIsFollowupLoading(true);
+    // Silent refresh when we already have data (cache or prior fetch / realtime)
+    const silent = Boolean(cachedInfo) || currentUserFollowup != null || followupId != null || realtimeNonce > 0;
+    if (!silent) {
+      setIsFollowupLoading(true);
+    }
 
     const fetchUserFollowup = async () => {
       const setFollowup = (id: number | null, dateStr: string | null) => {
@@ -851,8 +895,26 @@ const InfoTab: React.FC<ClientTabProps> = ({
         if (data) {
           const dateStr = data.date ? new Date(data.date).toISOString().split('T')[0] : null;
           setFollowup(data.id, dateStr);
+          writeClientsTabCache(infoLeadKey, 'info', {
+            legal: probFactorLegal,
+            seriousness: probFactorSeriousness,
+            financial: probFactorFinancial,
+            probability,
+            followupDate: dateStr,
+            followupId: data.id,
+            followupNotes: currentUserFollowupNotes,
+          });
         } else {
           setFollowup(null, null);
+          writeClientsTabCache(infoLeadKey, 'info', {
+            legal: probFactorLegal,
+            seriousness: probFactorSeriousness,
+            financial: probFactorFinancial,
+            probability,
+            followupDate: null,
+            followupId: null,
+            followupNotes: currentUserFollowupNotes,
+          });
         }
       } catch (err) {
         if (!cancelled && INFOTAB_DEBUG) console.warn('Error fetching user follow-up:', err);
