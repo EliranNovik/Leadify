@@ -69,7 +69,11 @@ export default function LeadAllocationBudgetAssistModal({
                 {v.maxAllocatedMs > 0
                   ? ` (${formatBudgetAllocationDuration(v.maxAllocatedMs)})`
                   : ''}{' '}
-                fits this lead&apos;s remaining budget.
+                fits this lead&apos;s remaining budget
+                {v.remainingCostNis > 0
+                  ? ` (${formatAllocationCostNis(v.remainingCostNis)} left)`
+                  : ''}
+                .
               </p>
               <p className="mt-1 text-xs text-gray-500">
                 Remaining {formatAllocationCostNis(v.remainingCostNis)} of max{' '}

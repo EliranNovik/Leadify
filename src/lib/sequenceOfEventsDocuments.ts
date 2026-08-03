@@ -17,6 +17,7 @@ import {
   mergeLegalClaimsClassifications,
   mergeSequenceOfEventsClassifications,
 } from './staffMeetingDocuments';
+import { normalizeStorageKey, normalizeSubEffortDocItems } from './subEffortDocumentAttach';
 import { supabase } from './supabase';
 import { resolveUploaderDisplayByKey } from './uploaderDisplay';
 
@@ -28,8 +29,12 @@ export type CaseCategoryDocument = {
   lastModified: string;
   storagePath: string | null;
   uploadedByName: string | null;
+  /** Staff photo when uploader resolved to an employee; null for clients / unknown. */
+  uploadedByPhotoUrl: string | null;
   /** True when uploaded via client portal (contact name), not staff. */
   isClientPortalUpload: boolean;
+  /** Document type id from lead_case_documents (portal / assigned type). */
+  documentTypeId: string | null;
   /** Document type the client selected when uploading via portal. */
   documentTypeName: string | null;
 };
@@ -67,6 +72,10 @@ export const CASE_DOCUMENT_CATEGORY_META: Record<
 
 type ClassificationRow = { id: string; slug: string; label: string; sort_order?: number };
 
+/** Short-lived cache so opening SOE / Legal / Expert / Contract doesn't re-fetch classifications each time. */
+let classificationRowsCache: { at: number; rows: ClassificationRow[] } | null = null;
+const CLASSIFICATION_ROWS_CACHE_MS = 60_000;
+
 type CaseDocRow = {
   id: string;
   storage_path: string;
@@ -102,12 +111,23 @@ async function fetchCategoryClassificationMeta(category: CaseDocumentCategoryKey
   canonicalIdByAlias: Map<string, string>;
 }> {
   const { isMatch, merge } = categoryMatchers(category);
-  const { data, error } = await supabase
-    .from('case_document_classifications')
-    .select('id, slug, label, sort_order');
-  if (error) throw error;
+  const now = Date.now();
+  let rowsAll: ClassificationRow[];
+  if (
+    classificationRowsCache &&
+    now - classificationRowsCache.at < CLASSIFICATION_ROWS_CACHE_MS
+  ) {
+    rowsAll = classificationRowsCache.rows;
+  } else {
+    const { data, error } = await supabase
+      .from('case_document_classifications')
+      .select('id, slug, label, sort_order');
+    if (error) throw error;
+    rowsAll = (data ?? []) as ClassificationRow[];
+    classificationRowsCache = { at: now, rows: rowsAll };
+  }
 
-  const rows = ((data ?? []) as ClassificationRow[]).filter((r) => isMatch(r));
+  const rows = rowsAll.filter((r) => isMatch(r));
   const merged = merge(rows);
   const classificationIds = [...new Set(rows.map((r) => r.id))];
   return { classificationIds, canonicalIdByAlias: merged.canonicalIdByAlias };
@@ -148,6 +168,44 @@ function isInternalFolder(onedriveSubfolder: string | null | undefined): boolean
   return Boolean(sub && sub.toLowerCase().includes('internal'));
 }
 
+/** Batch-sign storage paths (much faster than N individual createSignedUrl calls). */
+async function createSignedUrlMap(paths: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(paths.map((p) => String(p ?? '').trim()).filter(Boolean))];
+  const out = new Map<string, string>();
+  if (!unique.length) return out;
+
+  const storageBucket: any = supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET) as any;
+  const CHUNK = 80;
+
+  if (typeof storageBucket.createSignedUrls === 'function') {
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const chunk = unique.slice(i, i + CHUNK);
+      const { data, error } = await storageBucket.createSignedUrls(
+        chunk,
+        CASE_DOCUMENTS_SIGNED_URL_SECONDS,
+      );
+      if (error) throw error;
+      for (const item of data ?? []) {
+        const path = typeof item?.path === 'string' ? item.path.trim() : '';
+        const url = typeof item?.signedUrl === 'string' ? item.signedUrl.trim() : '';
+        if (path && url) out.set(path, url);
+      }
+    }
+    return out;
+  }
+
+  const results = await Promise.all(
+    unique.map(async (p) => {
+      const { data } = await storageBucket.createSignedUrl(p, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
+      return [p, data?.signedUrl?.trim() || ''] as const;
+    }),
+  );
+  for (const [p, url] of results) {
+    if (url) out.set(p, url);
+  }
+  return out;
+}
+
 async function fetchCaseCategoryRows(leadNumber: string, classificationIds: string[]): Promise<CaseDocRow[]> {
   const { data: rows, error } = await supabase
     .from('lead_case_documents')
@@ -167,6 +225,8 @@ async function fetchCaseCategoryRows(leadNumber: string, classificationIds: stri
 }
 
 async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryDocument[]> {
+  if (!list.length) return [];
+
   const contactIds = [
     ...new Set(
       list
@@ -206,37 +266,39 @@ async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryD
   }
 
   const uploaderKeys = [...new Set(list.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
-  const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
+  const [uploaderMap, signedByPath] = await Promise.all([
+    resolveUploaderDisplayByKey(uploaderKeys),
+    createSignedUrlMap(list.map((r) => r.storage_path)),
+  ]);
 
-  return Promise.all(
-    list.map(async (r) => {
-      const { data: signed } = await supabase.storage
-        .from(CASE_DOCUMENTS_STORAGE_BUCKET)
-        .createSignedUrl(r.storage_path, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
-      const url = signed?.signedUrl?.trim() || '';
-      const rawUploader = r.uploaded_by?.trim() || null;
-      const fromContact =
-        r.contact_id != null ? contactNameById.get(Number(r.contact_id)) ?? null : null;
-      const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
-      const staffMatched = Boolean(resolved?.matched);
-      const isClientPortalUpload = Boolean(fromContact) || Boolean(rawUploader && !staffMatched);
-      const uploadedByName = fromContact || resolved?.name || rawUploader || null;
-      const typeId = typeof r.document_type_id === 'string' ? r.document_type_id.trim() : '';
-      const documentTypeName = typeId ? documentTypeNameById.get(typeId) ?? null : null;
+  return list.map((r) => {
+    const url = signedByPath.get(r.storage_path.trim()) || '';
+    const rawUploader = r.uploaded_by?.trim() || null;
+    const fromContact =
+      r.contact_id != null ? contactNameById.get(Number(r.contact_id)) ?? null : null;
+    const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
+    const staffMatched = Boolean(resolved?.matched);
+    const isClientPortalUpload = Boolean(fromContact) || Boolean(rawUploader && !staffMatched);
+    const uploadedByName = fromContact || resolved?.name || rawUploader || null;
+    const uploadedByPhotoUrl =
+      !isClientPortalUpload && resolved?.photoUrl ? resolved.photoUrl : null;
+    const typeId = typeof r.document_type_id === 'string' ? r.document_type_id.trim() : '';
+    const documentTypeName = typeId ? documentTypeNameById.get(typeId) ?? null : null;
 
-      return {
-        id: r.id,
-        name: r.file_name,
-        url,
-        fileType: inferMime(r.file_name, r.mime_type),
-        lastModified: r.created_at || new Date().toISOString(),
-        storagePath: r.storage_path,
-        uploadedByName,
-        isClientPortalUpload,
-        documentTypeName,
-      };
-    }),
-  );
+    return {
+      id: r.id,
+      name: r.file_name,
+      url,
+      fileType: inferMime(r.file_name, r.mime_type),
+      lastModified: r.created_at || new Date().toISOString(),
+      storagePath: r.storage_path,
+      uploadedByName,
+      uploadedByPhotoUrl,
+      isClientPortalUpload,
+      documentTypeId: typeId || null,
+      documentTypeName,
+    };
+  });
 }
 
 async function collectSubEffortCategoryItems(params: {
@@ -253,6 +315,7 @@ async function collectSubEffortCategoryItems(params: {
     mimeType: string | null;
     lastModified: string;
     uploadedByName: string | null;
+    uploadedByPhotoUrl: string | null;
   }[]
 > {
   const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
@@ -295,6 +358,7 @@ async function collectSubEffortCategoryItems(params: {
     mimeType: string | null;
     lastModified: string;
     uploadedByName: string | null;
+    uploadedByPhotoUrl: string | null;
   }[] = [];
 
   for (const r of (seRows || []) as any[]) {
@@ -308,6 +372,8 @@ async function collectSubEffortCategoryItems(params: {
     const whoRaw = leadSubEffortSavedUpdatedBy(r) || String(r?.created_by ?? '').trim() || null;
     const resolvedWho = whoRaw ? seUploaderMap.get(whoRaw) : undefined;
     const who = resolvedWho?.name ?? whoRaw;
+    const photoUrl =
+      resolvedWho?.matched && resolvedWho.photoUrl ? resolvedWho.photoUrl : null;
     const createdAt =
       leadSubEffortSavedUpdatedAt(r) || r?.created_at || new Date().toISOString();
     const items = normalizeDocItems(r?.document_url);
@@ -329,6 +395,7 @@ async function collectSubEffortCategoryItems(params: {
         mimeType: ((it as any)?.mimeType as string | null | undefined) ?? null,
         lastModified: createdAt,
         uploadedByName: who ? String(who) : null,
+        uploadedByPhotoUrl: photoUrl,
       });
     }
   }
@@ -347,15 +414,17 @@ export async function fetchCaseCategoryDocumentCount(
   const { classificationIds, canonicalIdByAlias } = await fetchCategoryClassificationMeta(category);
   if (classificationIds.length === 0) return 0;
 
-  const caseRows = await fetchCaseCategoryRows(lead, classificationIds);
+  const [caseRows, subItems] = await Promise.all([
+    fetchCaseCategoryRows(lead, classificationIds),
+    collectSubEffortCategoryItems({
+      classificationIds: new Set(classificationIds),
+      canonicalIdByAlias,
+      clientId,
+      leadNumber: lead,
+    }),
+  ]);
   const casePaths = new Set(caseRows.map((r) => r.storage_path.trim()).filter(Boolean));
 
-  const subItems = await collectSubEffortCategoryItems({
-    classificationIds: new Set(classificationIds),
-    canonicalIdByAlias,
-    clientId,
-    leadNumber: lead,
-  });
   const uniqueSub = subItems.filter((d) => {
     const p = d.path?.trim();
     if (p && casePaths.has(p)) return false;
@@ -376,37 +445,50 @@ export async function fetchCaseCategoryDocuments(
   const { classificationIds, canonicalIdByAlias } = await fetchCategoryClassificationMeta(category);
   if (classificationIds.length === 0) return [];
 
-  const caseRows = await fetchCaseCategoryRows(lead, classificationIds);
-  const caseDocs = await mapCaseRowsToDocuments(caseRows);
-
-  const subItems = await collectSubEffortCategoryItems({
-    classificationIds: new Set(classificationIds),
-    canonicalIdByAlias,
-    clientId,
-    leadNumber: lead,
-  });
+  const classificationIdSet = new Set(classificationIds);
+  const [caseRows, subItems] = await Promise.all([
+    fetchCaseCategoryRows(lead, classificationIds),
+    collectSubEffortCategoryItems({
+      classificationIds: classificationIdSet,
+      canonicalIdByAlias,
+      clientId,
+      leadNumber: lead,
+    }),
+  ]);
 
   const casePaths = new Set(
-    caseDocs.map((d) => d.storagePath?.trim()).filter(Boolean) as string[],
+    caseRows.map((r) => r.storage_path?.trim()).filter(Boolean) as string[],
   );
 
-  const subEffortDocs: CaseCategoryDocument[] = [];
-  for (const it of subItems) {
+  const pendingSubItems = subItems.filter((it) => {
     const p = it.path?.trim();
-    if (p && casePaths.has(p)) continue;
+    if (p && casePaths.has(p)) return false;
+    return Boolean(p || it.url);
+  });
 
+  const subPaths = pendingSubItems
+    .map((it) => it.path?.trim())
+    .filter((p): p is string => Boolean(p));
+
+  const [caseDocs, signedByPath, portalMetaByPath] = await Promise.all([
+    mapCaseRowsToDocuments(caseRows),
+    createSignedUrlMap(subPaths),
+    subPaths.length > 0
+      ? fetchCaseDocPortalMetaByPaths(lead, subPaths)
+      : Promise.resolve(
+          new Map() as Awaited<ReturnType<typeof fetchCaseDocPortalMetaByPaths>>,
+        ),
+  ]);
+
+  const subEffortDocs: CaseCategoryDocument[] = [];
+  for (const it of pendingSubItems) {
+    const p = it.path?.trim() || '';
     let signedUrl = '';
-    if (p) {
-      const { data: signed } = await supabase.storage
-        .from(CASE_DOCUMENTS_STORAGE_BUCKET)
-        .createSignedUrl(p, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
-      signedUrl = signed?.signedUrl?.trim() || '';
-    } else if (it.url) {
-      signedUrl = it.url.trim();
-    }
+    if (p) signedUrl = signedByPath.get(p) || '';
+    else if (it.url) signedUrl = it.url.trim();
     if (!signedUrl) continue;
 
-    subEffortDocs.push({
+    const doc: CaseCategoryDocument = {
       id: it.id,
       name: it.name,
       url: signedUrl,
@@ -414,14 +496,153 @@ export async function fetchCaseCategoryDocuments(
       lastModified: it.lastModified,
       storagePath: p || null,
       uploadedByName: it.uploadedByName,
+      uploadedByPhotoUrl: it.uploadedByPhotoUrl,
       isClientPortalUpload: false,
+      documentTypeId: null,
       documentTypeName: null,
-    });
+    };
+
+    if (p) {
+      const meta = portalMetaByPath.get(normalizeStorageKey(p));
+      if (meta) {
+        if (meta.documentTypeId) doc.documentTypeId = meta.documentTypeId;
+        if (meta.documentTypeName) doc.documentTypeName = meta.documentTypeName;
+        if (meta.isClientPortalUpload) {
+          doc.isClientPortalUpload = true;
+          if (meta.uploadedByName) doc.uploadedByName = meta.uploadedByName;
+          doc.uploadedByPhotoUrl = null;
+        }
+      }
+    }
+
+    subEffortDocs.push(doc);
   }
 
   return [...caseDocs, ...subEffortDocs].sort(
     (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
   );
+}
+
+/** Look up portal / case-doc metadata for storage paths (document type, client upload). */
+async function fetchCaseDocPortalMetaByPaths(
+  leadNumber: string,
+  paths: string[],
+): Promise<
+  Map<
+    string,
+    {
+      documentTypeId: string | null;
+      documentTypeName: string | null;
+      isClientPortalUpload: boolean;
+      uploadedByName: string | null;
+    }
+  >
+> {
+  const unique = [...new Set(paths.map((p) => normalizeStorageKey(p)).filter(Boolean))];
+  const out = new Map<
+    string,
+    {
+      documentTypeId: string | null;
+      documentTypeName: string | null;
+      isClientPortalUpload: boolean;
+      uploadedByName: string | null;
+    }
+  >();
+  if (!unique.length) return out;
+
+  const { data: rows, error } = await supabase
+    .from('lead_case_documents')
+    .select('storage_path, contact_id, document_type_id, uploaded_by')
+    .eq('lead_number', leadNumber)
+    .in('storage_path', unique);
+  if (error || !rows?.length) return out;
+
+  const typed = rows as {
+    storage_path: string;
+    contact_id: number | null;
+    document_type_id: string | null;
+    uploaded_by: string | null;
+  }[];
+
+  const documentTypeIds = [
+    ...new Set(
+      typed
+        .map((r) => (typeof r.document_type_id === 'string' ? r.document_type_id.trim() : ''))
+        .filter(Boolean),
+    ),
+  ];
+  const documentTypeNameById = new Map<string, string>();
+  if (documentTypeIds.length > 0) {
+    const { data: types } = await supabase
+      .from('lead_case_document_types')
+      .select('id, name')
+      .in('id', documentTypeIds);
+    for (const t of (types ?? []) as { id: string; name: string | null }[]) {
+      const n = t.name?.trim();
+      if (n) documentTypeNameById.set(String(t.id), n);
+    }
+  }
+
+  const contactIds = [
+    ...new Set(
+      typed
+        .map((r) => r.contact_id)
+        .filter((id): id is number => id != null && Number.isFinite(Number(id))),
+    ),
+  ];
+  const contactNameById = new Map<number, string>();
+  if (contactIds.length > 0) {
+    const { data: contacts } = await supabase
+      .from('leads_contact')
+      .select('id, name')
+      .in('id', contactIds);
+    for (const c of (contacts ?? []) as { id: number; name: string | null }[]) {
+      const n = c.name?.trim();
+      if (n) contactNameById.set(Number(c.id), n);
+    }
+  }
+
+  for (const r of typed) {
+    const key = normalizeStorageKey(r.storage_path);
+    if (!key) continue;
+    const typeId = typeof r.document_type_id === 'string' ? r.document_type_id.trim() : '';
+    const fromContact =
+      r.contact_id != null ? contactNameById.get(Number(r.contact_id)) ?? null : null;
+    out.set(key, {
+      documentTypeId: typeId || null,
+      documentTypeName: typeId ? documentTypeNameById.get(typeId) ?? null : null,
+      isClientPortalUpload: r.contact_id != null,
+      uploadedByName: fromContact,
+    });
+  }
+  return out;
+}
+
+async function fetchAttachedStoragePathSet(
+  leadNumber: string,
+  clientId?: string | null,
+): Promise<Set<string>> {
+  const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
+    clientId,
+    leadNumber,
+  });
+  if (!newLeadId && !legacyLeadId) return new Set();
+
+  let q = supabase.from('lead_sub_efforts').select('document_url').limit(500);
+  if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+  else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+
+  const { data: seRows, error } = await q;
+  if (error || !seRows) return new Set();
+
+  const attached = new Set<string>();
+  for (const row of seRows as { document_url?: unknown }[]) {
+    for (const it of normalizeSubEffortDocItems(row.document_url)) {
+      const path = normalizeStorageKey(it.path);
+      if (path) attached.add(path);
+    }
+  }
+  return attached;
 }
 
 async function fetchClientPortalCaseRows(leadNumber: string): Promise<CaseDocRow[]> {
@@ -440,11 +661,20 @@ async function fetchClientPortalCaseRows(leadNumber: string): Promise<CaseDocRow
   return ((rows ?? []) as CaseDocRow[]).filter((r) => !isInternalFolder(r.onedrive_subfolder));
 }
 
-export async function fetchClientPortalUploadCount(leadNumber: string): Promise<number> {
+export async function fetchClientPortalUploadCount(
+  leadNumber: string,
+  clientId?: string | null,
+): Promise<number> {
   const lead = leadNumber.trim();
   if (!lead) return 0;
   const rows = await fetchClientPortalCaseRows(lead);
-  return rows.length;
+  if (rows.length === 0) return 0;
+  const attached = await fetchAttachedStoragePathSet(lead, clientId);
+  return rows.filter((r) => {
+    const path = normalizeStorageKey(r.storage_path);
+    if (!path) return true;
+    return !attached.has(path);
+  }).length;
 }
 
 export async function fetchClientPortalUploadDocuments(
@@ -457,6 +687,62 @@ export async function fetchClientPortalUploadDocuments(
   return docs.sort(
     (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
   );
+}
+
+/** Delete a case / portal / sub-effort document: storage + DB row + strip from all sub efforts. */
+export async function deleteCaseCategoryDocument(params: {
+  leadNumber: string;
+  clientId?: string | null;
+  storagePath: string | null | undefined;
+  documentId?: string | null;
+}): Promise<void> {
+  const lead = params.leadNumber.trim();
+  const path = normalizeStorageKey(params.storagePath);
+  if (!lead) throw new Error('Missing lead number');
+  if (!path) throw new Error('Missing storage path for this document');
+
+  const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
+  if (rmErr) throw rmErr;
+
+  const id = params.documentId?.trim();
+  if (id && !id.startsWith('subeffort:')) {
+    const { error: delById } = await supabase.from('lead_case_documents').delete().eq('id', id);
+    if (delById) throw delById;
+  } else {
+    const { error: delByPath } = await supabase
+      .from('lead_case_documents')
+      .delete()
+      .eq('lead_number', lead)
+      .eq('storage_path', path);
+    if (delByPath) throw delByPath;
+  }
+
+  const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
+    clientId: params.clientId,
+    leadNumber: lead,
+  });
+  if (!newLeadId && !legacyLeadId) return;
+
+  let q = supabase.from('lead_sub_efforts').select('id, document_url');
+  if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+  else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+
+  const { data: seRows, error: seErr } = await q;
+  if (seErr) {
+    console.warn('lead_sub_efforts strip on delete:', seErr.message);
+    return;
+  }
+
+  for (const row of (seRows || []) as { id: number; document_url: unknown }[]) {
+    const items = normalizeSubEffortDocItems(row.document_url);
+    if (!items.some((it) => normalizeStorageKey(it.path) === path)) continue;
+    const next = items.filter((it) => normalizeStorageKey(it.path) !== path);
+    const { error: seUpdErr } = await supabase
+      .from('lead_sub_efforts')
+      .update({ document_url: next })
+      .eq('id', row.id);
+    if (seUpdErr) throw seUpdErr;
+  }
 }
 
 export async function fetchSequenceOfEventsDocumentCount(

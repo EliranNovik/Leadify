@@ -135,30 +135,58 @@ const REQUEST_SELECT = `
   )
 `;
 
+function postgrestOrEq(column: string, value: string | number): string {
+  if (typeof value === 'number') return `${column}.eq.${value}`;
+  const escaped = String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `${column}.eq."${escaped}"`;
+}
+
+function leadNumberLookupCandidates(leadNumber: string | null | undefined): string[] {
+  const raw = String(leadNumber || '').trim();
+  if (!raw) return [];
+  const base = raw.replace(/\/\d+$/, '');
+  return base && base !== raw ? [raw, base] : [raw];
+}
+
 /**
  * Sum of approved extra cost for a lead (added on top of value-based max).
+ * Matches by UUID / legacy id / lead_number (including base number without /N suffix).
  */
 export async function fetchApprovedBudgetExtensionNis(
   lead: LeadBudgetExtensionLeadRef,
 ): Promise<number> {
-  let query = supabase
+  const orParts: string[] = [];
+  if (lead.newLeadId) orParts.push(postgrestOrEq('new_lead_id', lead.newLeadId));
+  if (lead.legacyLeadId != null && Number.isFinite(Number(lead.legacyLeadId))) {
+    orParts.push(postgrestOrEq('legacy_lead_id', Number(lead.legacyLeadId)));
+  }
+  for (const num of leadNumberLookupCandidates(lead.leadNumber)) {
+    orParts.push(postgrestOrEq('lead_number', num));
+  }
+
+  if (orParts.length === 0) return 0;
+
+  const { data, error } = await supabase
     .from('lead_employee_budget_extension_requests')
-    .select('approved_extra_cost_nis')
-    .eq('status', 'approved');
+    .select('id, approved_extra_cost_nis')
+    .eq('status', 'approved')
+    .or(orParts.join(','));
 
-  query = leadMatchFilter(query, lead);
-  if (!query) return 0;
-
-  const { data, error } = await query;
   if (error) {
     console.error('[leadBudgetExtension] approved sum failed:', error);
     return 0;
   }
 
-  const sum = (data || []).reduce(
-    (acc, row) => acc + (Number(row.approved_extra_cost_nis) || 0),
-    0,
-  );
+  const seen = new Set<number>();
+  let sum = 0;
+  for (const row of data || []) {
+    const id = Number(row.id);
+    if (Number.isFinite(id)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    sum += Number(row.approved_extra_cost_nis) || 0;
+  }
   return Math.round(sum * 100) / 100;
 }
 

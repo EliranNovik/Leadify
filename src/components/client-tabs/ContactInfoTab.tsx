@@ -3760,12 +3760,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 <div
                   key={contact.id}
                   className={[
-                    'h-full bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-visible flex flex-col',
+                    'h-full min-w-0 bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-visible flex flex-col',
                     cardMenuOpen ? 'relative z-40' : 'relative z-0',
                   ].join(' ')}
                 >
                   {/* Compact contact header */}
-                  <div className="px-5 pt-[18px] pb-4 shrink-0">
+                  <div className="min-w-0 px-5 pt-[18px] pb-4 shrink-0">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-start gap-3 min-w-0 flex-1">
                         <ContactProfileAvatar
@@ -3894,16 +3894,16 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
                     {/* View / edit details */}
                     {editing ? (
-                      <div className="mt-4 space-y-0">
+                      <div className="mt-4 min-w-0 space-y-0">
                       {/* Name */}
-                      <div className="flex items-start justify-between gap-3 py-2.5">
-                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Name</label>
-                        <div className="flex-1 ml-4">
+                      <div className="flex min-w-0 items-start justify-between gap-2 py-2.5 sm:gap-3">
+                        <label className="w-16 shrink-0 pt-2.5 text-sm font-medium text-gray-400 sm:w-28">Name</label>
+                        <div className="min-w-0 flex-1">
                           {contact.isMain && isEditingMainContact ? (
                             <input
                               type="text"
                               placeholder="Enter name"
-                              className="input input-bordered w-full"
+                              className="input input-bordered w-full min-w-0"
                               value={editedMainContact.name}
                               onChange={(e) => setEditedMainContact({ ...editedMainContact, name: e.target.value })}
                             />
@@ -3911,7 +3911,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             <input
                               type="text"
                               placeholder="Enter name"
-                              className="input input-bordered w-full"
+                              className="input input-bordered w-full min-w-0"
                               value={contact.name}
                               onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, name: e.target.value } : c))}
                             />
@@ -3922,15 +3922,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Mobile */}
-                      <div className="flex items-start justify-between gap-3 py-2.5">
-                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Mobile</label>
-                        <div className="flex-1 ml-4 flex justify-end">
+                      <div className="flex min-w-0 items-start justify-between gap-2 py-2.5 sm:gap-3">
+                        <label className="w-16 shrink-0 pt-2.5 text-sm font-medium text-gray-400 sm:w-28">Mobile</label>
+                        <div className="flex min-w-0 flex-1 justify-end">
                           {contact.isMain && isEditingMainContact ? (
-                            <div className="flex gap-2">
-                              <div className="relative w-40" ref={mainContactMobileCodeInputRef}>
+                            <div className="flex w-full min-w-0 gap-1.5 sm:gap-2">
+                              <div className="relative w-[4.5rem] shrink-0 sm:w-20" ref={mainContactMobileCodeInputRef}>
                                 <input
                                   type="text"
-                                  className="input input-bordered w-full"
+                                  className="input input-bordered w-full px-2 text-sm"
                                   value={mainContactMobileCodeSearchTerm}
                                   onChange={(e) => {
                                     setMainContactMobileCodeSearchTerm(e.target.value);
@@ -3943,7 +3943,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   placeholder={selectedMainContactMobileCode || '+972'}
                                 />
                                 {showMainContactMobileCodeDropdown && getFilteredCountryCodeOptions(mainContactMobileCodeSearchTerm).length > 0 && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 max-h-60 w-max min-w-[14rem] overflow-y-auto rounded-lg border border-base-300 bg-base-100 shadow-lg">
                                     {getFilteredCountryCodeOptions(mainContactMobileCodeSearchTerm).map(country => (
                                       <button
                                         key={`${country.phone_code}-${country.id}`}
@@ -3967,7 +3967,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   </div>
                                 )}
                                 {showMainContactMobileCodeDropdown && getFilteredCountryCodeOptions(mainContactMobileCodeSearchTerm).length === 0 && mainContactMobileCodeSearchTerm && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 w-max min-w-[14rem] rounded-lg border border-base-300 bg-base-100 p-4 text-center text-base-content/60 shadow-lg">
                                     No country codes found
                                   </div>
                                 )}
@@ -3975,7 +3975,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               <input
                                 type="tel"
                                 placeholder="Enter mobile"
-                                className="input input-bordered flex-1"
+                                className="input input-bordered min-w-0 flex-1"
                                 value={parsePhoneNumber(editedMainContact.mobile).number}
                                 onChange={(e) => {
                                   const { countryCode } = parsePhoneNumber(editedMainContact.mobile);
@@ -3987,9 +3987,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               />
                             </div>
                           ) : contact.isEditing ? (
-                            <div className="flex gap-2">
+                            <div className="flex w-full min-w-0 gap-1.5 sm:gap-2">
                               <div
-                                className="relative w-40"
+                                className="relative w-[4.5rem] shrink-0 sm:w-20"
                                 ref={(el) => {
                                   if (el) {
                                     contactMobileCodeInputRefs.current[contact.id] = el;
@@ -4000,7 +4000,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               >
                                 <input
                                   type="text"
-                                  className="input input-bordered w-full"
+                                  className="input input-bordered w-full px-2 text-sm"
                                   value={contactMobileCodeSearchTerms[contact.id] || ''}
                                   onChange={(e) => {
                                     setContactMobileCodeSearchTerms({ ...contactMobileCodeSearchTerms, [contact.id]: e.target.value });
@@ -4013,7 +4013,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   placeholder={selectedContactMobileCodes[contact.id] || parsePhoneNumber(contact.mobile).countryCode || '+972'}
                                 />
                                 {showContactMobileCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactMobileCodeSearchTerms[contact.id] || '').length > 0 && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 max-h-60 w-max min-w-[14rem] overflow-y-auto rounded-lg border border-base-300 bg-base-100 shadow-lg">
                                     {getFilteredCountryCodeOptions(contactMobileCodeSearchTerms[contact.id] || '').map(country => (
                                       <button
                                         key={`${country.phone_code}-${country.id}`}
@@ -4037,7 +4037,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   </div>
                                 )}
                                 {showContactMobileCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactMobileCodeSearchTerms[contact.id] || '').length === 0 && contactMobileCodeSearchTerms[contact.id] && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 w-max min-w-[14rem] rounded-lg border border-base-300 bg-base-100 p-4 text-center text-base-content/60 shadow-lg">
                                     No country codes found
                                   </div>
                                 )}
@@ -4045,7 +4045,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               <input
                                 type="tel"
                                 placeholder="Enter mobile"
-                                className="input input-bordered flex-1"
+                                className="input input-bordered min-w-0 flex-1"
                                 value={parsePhoneNumber(contact.mobile).number}
                                 onChange={(e) => {
                                   const { countryCode } = parsePhoneNumber(contact.mobile);
@@ -4092,15 +4092,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Phone */}
-                      <div className="flex items-start justify-between gap-3 py-2.5">
-                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Phone</label>
-                        <div className="flex-1 ml-4 flex justify-end">
+                      <div className="flex min-w-0 items-start justify-between gap-2 py-2.5 sm:gap-3">
+                        <label className="w-16 shrink-0 pt-2.5 text-sm font-medium text-gray-400 sm:w-28">Phone</label>
+                        <div className="flex min-w-0 flex-1 justify-end">
                           {contact.isMain && isEditingMainContact ? (
-                            <div className="flex gap-2">
-                              <div className="relative w-40" ref={mainContactPhoneCodeInputRef}>
+                            <div className="flex w-full min-w-0 gap-1.5 sm:gap-2">
+                              <div className="relative w-[4.5rem] shrink-0 sm:w-20" ref={mainContactPhoneCodeInputRef}>
                                 <input
                                   type="text"
-                                  className="input input-bordered w-full"
+                                  className="input input-bordered w-full px-2 text-sm"
                                   value={mainContactPhoneCodeSearchTerm}
                                   onChange={(e) => {
                                     setMainContactPhoneCodeSearchTerm(e.target.value);
@@ -4113,7 +4113,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   placeholder={selectedMainContactPhoneCode || '+972'}
                                 />
                                 {showMainContactPhoneCodeDropdown && getFilteredCountryCodeOptions(mainContactPhoneCodeSearchTerm).length > 0 && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 max-h-60 w-max min-w-[14rem] overflow-y-auto rounded-lg border border-base-300 bg-base-100 shadow-lg">
                                     {getFilteredCountryCodeOptions(mainContactPhoneCodeSearchTerm).map(country => (
                                       <button
                                         key={`${country.phone_code}-${country.id}`}
@@ -4137,7 +4137,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   </div>
                                 )}
                                 {showMainContactPhoneCodeDropdown && getFilteredCountryCodeOptions(mainContactPhoneCodeSearchTerm).length === 0 && mainContactPhoneCodeSearchTerm && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 w-max min-w-[14rem] rounded-lg border border-base-300 bg-base-100 p-4 text-center text-base-content/60 shadow-lg">
                                     No country codes found
                                   </div>
                                 )}
@@ -4145,7 +4145,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               <input
                                 type="tel"
                                 placeholder="Enter phone"
-                                className="input input-bordered flex-1"
+                                className="input input-bordered min-w-0 flex-1"
                                 value={parsePhoneNumber(editedMainContact.phone).number}
                                 onChange={(e) => {
                                   const { countryCode } = parsePhoneNumber(editedMainContact.phone);
@@ -4157,9 +4157,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               />
                             </div>
                           ) : contact.isEditing ? (
-                            <div className="flex gap-2">
+                            <div className="flex w-full min-w-0 gap-1.5 sm:gap-2">
                               <div
-                                className="relative w-40"
+                                className="relative w-[4.5rem] shrink-0 sm:w-20"
                                 ref={(el) => {
                                   if (el) {
                                     contactPhoneCodeInputRefs.current[contact.id] = el;
@@ -4170,7 +4170,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               >
                                 <input
                                   type="text"
-                                  className="input input-bordered w-full"
+                                  className="input input-bordered w-full px-2 text-sm"
                                   value={contactPhoneCodeSearchTerms[contact.id] || ''}
                                   onChange={(e) => {
                                     setContactPhoneCodeSearchTerms({ ...contactPhoneCodeSearchTerms, [contact.id]: e.target.value });
@@ -4183,7 +4183,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   placeholder={selectedContactPhoneCodes[contact.id] || parsePhoneNumber(contact.phone).countryCode || '+972'}
                                 />
                                 {showContactPhoneCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactPhoneCodeSearchTerms[contact.id] || '').length > 0 && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 max-h-60 w-max min-w-[14rem] overflow-y-auto rounded-lg border border-base-300 bg-base-100 shadow-lg">
                                     {getFilteredCountryCodeOptions(contactPhoneCodeSearchTerms[contact.id] || '').map(country => (
                                       <button
                                         key={`${country.phone_code}-${country.id}`}
@@ -4207,7 +4207,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   </div>
                                 )}
                                 {showContactPhoneCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactPhoneCodeSearchTerms[contact.id] || '').length === 0 && contactPhoneCodeSearchTerms[contact.id] && (
-                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                  <div className="absolute bottom-full left-0 z-[9999] mb-1 w-max min-w-[14rem] rounded-lg border border-base-300 bg-base-100 p-4 text-center text-base-content/60 shadow-lg">
                                     No country codes found
                                   </div>
                                 )}
@@ -4215,7 +4215,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               <input
                                 type="tel"
                                 placeholder="Enter phone"
-                                className="input input-bordered flex-1"
+                                className="input input-bordered min-w-0 flex-1"
                                 value={parsePhoneNumber(contact.phone).number}
                                 onChange={(e) => {
                                   const { countryCode } = parsePhoneNumber(contact.phone);
@@ -4262,14 +4262,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Email */}
-                      <div className="flex items-start justify-between gap-3 py-2.5">
-                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Email</label>
-                        <div className="flex-1 ml-4">
+                      <div className="flex min-w-0 items-start justify-between gap-2 py-2.5 sm:gap-3">
+                        <label className="w-16 shrink-0 pt-2.5 text-sm font-medium text-gray-400 sm:w-28">Email</label>
+                        <div className="min-w-0 flex-1">
                           {contact.isMain && isEditingMainContact ? (
                             <input
                               type="email"
                               placeholder="Enter email"
-                              className="input input-bordered w-full"
+                              className="input input-bordered w-full min-w-0"
                               value={editedMainContact.email}
                               onChange={(e) => setEditedMainContact({ ...editedMainContact, email: e.target.value })}
                             />
@@ -4277,7 +4277,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             <input
                               type="email"
                               placeholder="Enter email"
-                              className="input input-bordered w-full"
+                              className="input input-bordered w-full min-w-0"
                               value={contact.email}
                               onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, email: e.target.value } : c))}
                             />
@@ -4297,14 +4297,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* ID / Passport */}
-                      <div className="flex items-start justify-between gap-3 py-2.5">
-                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">ID / Passport</label>
-                        <div className="flex-1 ml-4">
+                      <div className="flex min-w-0 items-start justify-between gap-2 py-2.5 sm:gap-3">
+                        <label className="w-16 shrink-0 pt-2.5 text-sm font-medium text-gray-400 sm:w-28">ID / Passport</label>
+                        <div className="min-w-0 flex-1">
                           {contact.isMain && isEditingMainContact ? (
                             <input
                               type="text"
                               placeholder="Enter ID or passport number"
-                              className="input input-bordered w-full"
+                              className="input input-bordered w-full min-w-0"
                               value={editedMainContact.id_passport}
                               onChange={(e) => setEditedMainContact({ ...editedMainContact, id_passport: e.target.value })}
                             />
@@ -4312,7 +4312,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             <input
                               type="text"
                               placeholder="Enter ID or passport number"
-                              className="input input-bordered w-full"
+                              className="input input-bordered w-full min-w-0"
                               value={contact.id_passport && contact.id_passport !== '---' ? contact.id_passport : ''}
                               onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, id_passport: e.target.value } : c))}
                             />
@@ -4325,14 +4325,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
 
                       {/* Country */}
-                      <div className="flex items-start justify-between gap-3 py-2.5">
-                        <label className="text-sm font-medium text-gray-400 w-28 shrink-0 pt-2.5">Country</label>
-                        <div className="flex-1 ml-4">
+                      <div className="flex min-w-0 items-start justify-between gap-2 py-2.5 sm:gap-3">
+                        <label className="w-16 shrink-0 pt-2.5 text-sm font-medium text-gray-400 sm:w-28">Country</label>
+                        <div className="min-w-0 flex-1">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="relative" ref={mainContactCountryInputRef}>
                               <input
                                 type="text"
-                                className="input input-bordered w-full"
+                                className="input input-bordered w-full min-w-0"
                                 value={mainContactCountrySearchTerm}
                                 onChange={(e) => {
                                   setMainContactCountrySearchTerm(e.target.value);
@@ -4377,7 +4377,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             >
                               <input
                                 type="text"
-                                className="input input-bordered w-full"
+                                className="input input-bordered w-full min-w-0"
                                 value={contactCountrySearchTerms[contact.id] || ''}
                                 onChange={(e) => {
                                   setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contact.id]: e.target.value });

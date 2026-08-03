@@ -4709,8 +4709,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <div
                             className={
                                 connectToAppHeader
-                                    ? `mt-2 w-full ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
-                                    : 'mt-2 w-full'
+                                    ? `mt-5 w-full ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                                    : 'mt-5 w-full'
                             }
                         >
                         <div className="w-full rounded-[18px] bg-red-50 px-4 py-3 text-red-800 shadow-sm dark:bg-red-900/20 dark:text-red-200">

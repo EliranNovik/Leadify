@@ -35,6 +35,12 @@ import {
   fetchClientPortalUploadCount,
   type CaseDocumentCategoryKey,
 } from '../lib/sequenceOfEventsDocuments';
+import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
+import { createPortal } from 'react-dom';
+import { normalizeStorageKey } from '../lib/subEffortDocumentAttach';
+import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
+import { resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
+import { DocumentUploaderCell } from './caseDocumentsModalUi';
 
 type LeadSubEffortRow = any;
 
@@ -72,6 +78,10 @@ type ResolvedDoc = {
   isPdf: boolean;
   path?: string;
   folder_id?: string | null;
+  documentTypeName?: string | null;
+  uploadedByName?: string | null;
+  uploadedByPhotoUrl?: string | null;
+  isClientPortalUpload?: boolean;
 };
 
 function formatDateTime(value: any): string {
@@ -225,21 +235,6 @@ function guessPathList(documentUrl: any): string[] {
     .filter(Boolean);
 }
 
-function formatFileTypeLabel(mimeType?: string, name?: string): string {
-  const mime = String(mimeType || '').toLowerCase();
-  if (mime.includes('pdf')) return 'PDF document';
-  if (mime.startsWith('image/')) {
-    const sub = mime.split('/')[1]?.toUpperCase();
-    return sub ? `${sub} image` : 'Image';
-  }
-  const ext = (name?.split('.').pop() || '').toLowerCase();
-  if (ext === 'pdf') return 'PDF document';
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return `${ext.toUpperCase()} image`;
-  if (ext === 'docx' || ext === 'doc') return 'Word document';
-  if (ext) return ext.toUpperCase();
-  return 'Document';
-}
-
 function containsHebrew(text: string): boolean {
   return /[\u0590-\u05FF]/.test(text);
 }
@@ -280,6 +275,67 @@ function readSubEffortName(row: any): string {
 function readSubEffortDescription(row: any): string | null {
   const description = readSubEffortJoin(row)?.description?.trim();
   return description || null;
+}
+
+/** Professional stock heroes — stable pick per sub-effort id (not random each render). */
+const SUB_EFFORT_HERO_IMAGES = [
+  'https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1568992687947-868a62a9f521?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1556761175-5973dc0f32e7?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1497215728101-856f4ea42174?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1431540015161-0bf868a2d407?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1600880292203-757bb62b4baf?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?auto=format&fit=crop&w=1600&q=80',
+] as const;
+
+/** Documents / authority filing — used for Submission and similar sub efforts. */
+const SUB_EFFORT_SUBMISSION_HERO_IMAGE =
+  'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=1600&q=80';
+
+const SUBMISSION_HERO_KEYWORDS = [
+  'submission',
+  'submit',
+  'filing',
+  'authority',
+  'authorities',
+  'completion of documents',
+  'document completion',
+] as const;
+
+function isSubmissionHeroTopic(...parts: Array<string | null | undefined>): boolean {
+  const haystack = parts
+    .map((p) => String(p ?? '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+  if (!haystack) return false;
+  return SUBMISSION_HERO_KEYWORDS.some((kw) => haystack.includes(kw));
+}
+
+function subEffortHeroImageUrl(params: {
+  rowId?: string | number | null;
+  name?: string | null;
+  subtitle?: string | null;
+}): string {
+  if (isSubmissionHeroTopic(params.name, params.subtitle)) {
+    return SUB_EFFORT_SUBMISSION_HERO_IMAGE;
+  }
+
+  const key = String(params.rowId ?? '0');
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  return SUB_EFFORT_HERO_IMAGES[hash % SUB_EFFORT_HERO_IMAGES.length];
+}
+
+function truncateToMaxWords(text: string, maxWords = 16): string {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return words.join(' ');
+  return `${words.slice(0, maxWords).join(' ')}…`;
 }
 
 type SubCategoryEffortItem = {
@@ -586,90 +642,133 @@ function TimelineStepButton({
           ) : null}
         </div>
 
-        <div className="group mb-1 flex min-w-0 flex-1 items-start gap-1">
+        <div className="group mb-1 min-w-0 flex-1">
           <div
-            role="button"
-            tabIndex={0}
-            onPointerDown={onPointerDown}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerCancel}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onSelect();
-              }
-            }}
             className={[
-              'min-w-0 flex-1 rounded-2xl text-left transition-all duration-200 select-none touch-none',
-              isDragging ? 'cursor-grabbing scale-[0.98] shadow-md' : 'cursor-pointer',
-              isHolding ? 'ring-2 ring-primary/25' : '',
+              'flex min-w-0 items-start gap-1 rounded-2xl transition-all duration-200',
+              isDragging ? 'scale-[0.98] shadow-md' : '',
+              isHolding ? 'ring-2 ring-gray-400/40' : '',
               isSelected
-                ? "relative border border-blue-100 bg-blue-50/70 px-3 py-2.5 shadow-sm before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-1 before:rounded-full before:bg-blue-600"
-                : isPending
-                  ? 'px-3 py-2.5 opacity-80 hover:bg-gray-50/80'
-                  : 'px-3 py-2.5 hover:bg-gray-50/80',
+                ? 'border-0 bg-primary/10 px-2 py-2 shadow-sm ring-1 ring-primary/15 sm:px-3 sm:py-2.5'
+                : progress === 'completed'
+                  ? 'border-0 bg-emerald-50/35 px-2 py-2 sm:px-3 sm:py-2.5'
+                  : isPending
+                    ? 'px-2 py-2 opacity-80 hover:bg-gray-50/80 sm:px-3 sm:py-2.5'
+                    : 'px-2 py-2 hover:bg-gray-50/80 sm:px-3 sm:py-2.5',
             ].join(' ')}
           >
-            <div className="min-w-0">
-              <div className="flex items-start justify-between gap-2">
-                <div
-                  className={[
-                    'min-w-0 flex-1 font-semibold leading-snug text-gray-900 line-clamp-2 break-words [overflow-wrap:anywhere]',
-                    isSelected ? 'text-[15px]' : isPending ? 'text-[14px] text-gray-600' : 'text-[15px]',
-                  ].join(' ')}
-                  title={name}
-                >
-                  {name}
+            <div
+              role="button"
+              tabIndex={0}
+              onPointerDown={onPointerDown}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerCancel}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect();
+                }
+              }}
+              className={[
+                'min-w-0 flex-1 rounded-xl text-left select-none touch-none',
+                isDragging ? 'cursor-grabbing' : 'cursor-pointer',
+              ].join(' ')}
+            >
+              <div className="min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                  <div
+                    className={[
+                      'min-w-0 flex-1 font-semibold leading-snug line-clamp-2 break-words [overflow-wrap:anywhere]',
+                      isSelected
+                        ? 'text-[15px] text-primary'
+                        : isPending
+                          ? 'text-[14px] text-gray-600'
+                          : progress === 'completed'
+                            ? 'text-[15px] text-gray-800'
+                            : 'text-[15px] text-gray-900',
+                    ].join(' ')}
+                    title={name}
+                  >
+                    {name}
+                  </div>
+                  <ChevronRightIcon
+                    className={`h-4 w-4 shrink-0 transition md:hidden ${
+                      isSelected
+                        ? 'text-primary/45 group-hover:text-primary/65'
+                        : 'text-gray-300 group-hover:text-gray-400'
+                    }`}
+                    aria-hidden
+                  />
                 </div>
-                <ChevronRightIcon
-                  className="h-4 w-4 shrink-0 text-gray-300 transition group-hover:text-gray-400 md:hidden"
-                  aria-hidden
-                />
-              </div>
-              <div className="mt-1.5 flex items-center gap-1.5 text-[12px] text-gray-500 truncate">
-                {who !== '—' || when !== '—' ? (
-                  <>
-                    {!isSelected && who !== '—' ? (
-                      <EmployeeAvatar
-                        name={who}
-                        photoUrl={resolveUpdaterPhoto(row, photoByUpdaterName)}
-                        size="sm"
-                      />
-                    ) : null}
-                    <span className="truncate">
-                      {who !== '—' ? (
-                        <>
-                          <span className="font-medium text-gray-600">{who}</span>
-                          <span className="mx-1 text-gray-300">·</span>
-                        </>
+                <div
+                  className={`mt-1.5 flex items-center gap-1.5 text-[12px] truncate ${
+                    isSelected
+                      ? 'text-primary/65'
+                      : progress === 'completed'
+                        ? 'text-gray-500'
+                        : 'text-gray-500'
+                  }`}
+                >
+                  {who !== '—' || when !== '—' ? (
+                    <>
+                      {!isSelected && who !== '—' ? (
+                        <EmployeeAvatar
+                          name={who}
+                          photoUrl={resolveUpdaterPhoto(row, photoByUpdaterName)}
+                          size="sm"
+                        />
                       ) : null}
-                      {when !== '—' ? <span className="tabular-nums">{when}</span> : null}
-                    </span>
-                  </>
-                ) : null}
-              </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                <ProgressBadge progress={progress} compact />
-                <VisibilityPill internal={row?.internal === true} size="compact" />
+                      <span className="truncate">
+                        {who !== '—' ? (
+                          <>
+                            <span
+                              className={`font-medium ${
+                                isSelected ? 'text-primary' : 'text-gray-600'
+                              }`}
+                            >
+                              {who}
+                            </span>
+                            <span
+                              className={`mx-1 ${isSelected ? 'text-primary/35' : 'text-gray-300'}`}
+                            >
+                              ·
+                            </span>
+                          </>
+                        ) : null}
+                        {when !== '—' ? <span className="tabular-nums">{when}</span> : null}
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <ProgressBadge progress={progress} compact />
+                  <VisibilityPill internal={row?.internal === true} size="compact" />
+                </div>
               </div>
             </div>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenDescription();
+              }}
+              className={`btn btn-ghost btn-xs btn-square mt-0.5 h-8 w-8 shrink-0 rounded-full ${
+                hasDescription
+                  ? isSelected
+                    ? 'text-primary/70 hover:bg-primary/10 hover:text-primary'
+                    : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+                  : isSelected
+                    ? 'text-primary/30'
+                    : 'text-gray-300'
+              }`}
+              title={hasDescription ? 'What is this sub effort?' : 'No description available'}
+              aria-label={hasDescription ? `About ${name}` : `No description for ${name}`}
+            >
+              <QuestionMarkCircleIcon className="h-5 w-5" />
+            </button>
           </div>
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerUp={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenDescription();
-            }}
-            className={`btn btn-ghost btn-xs btn-square mt-2 h-8 w-8 shrink-0 rounded-full ${
-              hasDescription ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-700' : 'text-gray-300'
-            }`}
-            title={hasDescription ? 'What is this sub effort?' : 'No description available'}
-            aria-label={hasDescription ? `About ${name}` : `No description for ${name}`}
-          >
-            <QuestionMarkCircleIcon className="h-5 w-5" />
-          </button>
         </div>
       </div>
     </div>
@@ -776,6 +875,7 @@ export function SubEffortsLogModal({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<DocumentPreviewItem[]>([]);
   const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
+  const [previewFromCaseDocs, setPreviewFromCaseDocs] = useState(false);
   const [renamingDocKey, setRenamingDocKey] = useState<string | null>(null);
   const [renameDocValue, setRenameDocValue] = useState('');
   const [renameDocSaving, setRenameDocSaving] = useState(false);
@@ -791,6 +891,23 @@ export function SubEffortsLogModal({
   const [dragDocKey, setDragDocKey] = useState<string | null>(null);
   const [dropTargetFolderId, setDropTargetFolderId] = useState<string | null | undefined>(undefined);
   const [moveMenuDocKey, setMoveMenuDocKey] = useState<string | null>(null);
+  const [moveMenuPos, setMoveMenuPos] = useState<{
+    top?: number;
+    bottom?: number;
+    right: number;
+    maxHeight: number;
+  } | null>(null);
+  const [docMetaByPath, setDocMetaByPath] = useState<
+    Map<
+      string,
+      {
+        documentTypeName: string | null;
+        uploadedByName: string | null;
+        uploadedByPhotoUrl: string | null;
+        isClientPortalUpload: boolean;
+      }
+    >
+  >(() => new Map());
   const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
   const [descriptionRow, setDescriptionRow] = useState<any | null>(null);
   const [categoryModalOpen, setCategoryModalOpen] = useState<CaseDocumentCategoryKey | null>(null);
@@ -798,6 +915,7 @@ export function SubEffortsLogModal({
   const [categoryCounts, setCategoryCounts] = useState(emptyCategoryCounts);
   const [clientUploadsCount, setClientUploadsCount] = useState(0);
   const [categoryCountsLoading, setCategoryCountsLoading] = useState(false);
+  const [docCategoryBoxesOpen, setDocCategoryBoxesOpen] = useState(false);
   const [orderedTimelineRows, setOrderedTimelineRows] = useState<LeadSubEffortRow[]>([]);
   const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
   const [dragOverRowId, setDragOverRowId] = useState<string | null>(null);
@@ -829,20 +947,57 @@ export function SubEffortsLogModal({
       const target = e.target as HTMLElement | null;
       if (!target) return;
       if (target.closest('[data-sub-effort-menu]')) return;
+      if (target.closest('[data-sub-effort-doc-menu]')) return;
       setMoveMenuDocKey(null);
+      setMoveMenuPos(null);
       setFolderMenuId(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setMoveMenuDocKey(null);
+        setMoveMenuPos(null);
         setFolderMenuId(null);
+      }
+    };
+    const onReposition = () => {
+      if (!moveMenuDocKey) return;
+      const btn = document.querySelector(
+        `[data-sub-effort-doc-trigger="${CSS.escape(moveMenuDocKey)}"]`,
+      ) as HTMLElement | null;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      const gap = 4;
+      const margin = 8;
+      const estimated = 320;
+      const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+      const spaceAbove = rect.top - gap - margin;
+      const openUp = spaceBelow < Math.min(estimated, 240) && spaceAbove > spaceBelow;
+      const available = Math.max(140, openUp ? spaceAbove : spaceBelow);
+      const maxHeight = Math.min(320, available);
+      const right = Math.max(8, window.innerWidth - rect.right);
+      if (openUp) {
+        setMoveMenuPos({
+          bottom: Math.max(margin, window.innerHeight - rect.top + gap),
+          right,
+          maxHeight,
+        });
+      } else {
+        setMoveMenuPos({
+          top: rect.bottom + gap,
+          right,
+          maxHeight,
+        });
       }
     };
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
     return () => {
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
     };
   }, [moveMenuDocKey, folderMenuId]);
 
@@ -865,7 +1020,7 @@ export function SubEffortsLogModal({
               return [key, count] as const;
             }),
           ),
-          fetchClientPortalUploadCount(lead),
+          fetchClientPortalUploadCount(lead, clientId),
         ]);
         if (!cancelled) {
           const next = emptyCategoryCounts();
@@ -1107,12 +1262,149 @@ export function SubEffortsLogModal({
     [selectedRow, signedUrls],
   );
 
+  const resolvedDocsWithMeta = useMemo(() => {
+    if (docMetaByPath.size === 0) return resolvedDocs;
+    return resolvedDocs.map((d) => {
+      const key = normalizeStorageKey(d.path);
+      if (!key) return d;
+      const meta = docMetaByPath.get(key);
+      if (!meta) return d;
+      return {
+        ...d,
+        documentTypeName: meta.documentTypeName ?? d.documentTypeName ?? null,
+        uploadedByName: meta.uploadedByName ?? d.uploadedByName ?? null,
+        uploadedByPhotoUrl: meta.uploadedByPhotoUrl ?? d.uploadedByPhotoUrl ?? null,
+        isClientPortalUpload: meta.isClientPortalUpload,
+      };
+    });
+  }, [resolvedDocs, docMetaByPath]);
+
+  React.useEffect(() => {
+    if (!open) {
+      setDocMetaByPath(new Map());
+      return;
+    }
+    const lead = leadNumber?.trim();
+    const paths = [
+      ...new Set(
+        resolvedDocs
+          .map((d) => normalizeStorageKey(d.path))
+          .filter(Boolean),
+      ),
+    ];
+    if (!lead || paths.length === 0) {
+      setDocMetaByPath(new Map());
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data: rows, error } = await supabase
+          .from('lead_case_documents')
+          .select('storage_path, document_type_id, contact_id, uploaded_by')
+          .eq('lead_number', lead)
+          .in('storage_path', paths);
+        if (error || cancelled) return;
+        const typed = (rows ?? []) as {
+          storage_path: string;
+          document_type_id: string | null;
+          contact_id: number | null;
+          uploaded_by: string | null;
+        }[];
+
+        const typeIds = [
+          ...new Set(
+            typed
+              .map((r) => (typeof r.document_type_id === 'string' ? r.document_type_id.trim() : ''))
+              .filter(Boolean),
+          ),
+        ];
+        const nameById = new Map<string, string>();
+        if (typeIds.length > 0) {
+          const { data: types } = await supabase
+            .from('lead_case_document_types')
+            .select('id, name')
+            .in('id', typeIds);
+          for (const t of (types ?? []) as { id: string; name: string | null }[]) {
+            const n = t.name?.trim();
+            if (n) nameById.set(String(t.id), n);
+          }
+        }
+
+        const contactIds = [
+          ...new Set(
+            typed
+              .map((r) => r.contact_id)
+              .filter((id): id is number => id != null && Number.isFinite(Number(id))),
+          ),
+        ];
+        const contactNameById = new Map<number, string>();
+        if (contactIds.length > 0) {
+          const { data: contacts } = await supabase
+            .from('leads_contact')
+            .select('id, name')
+            .in('id', contactIds);
+          for (const c of (contacts ?? []) as { id: number; name: string | null }[]) {
+            const n = c.name?.trim();
+            if (n) contactNameById.set(Number(c.id), n);
+          }
+        }
+
+        const uploaderKeys = [
+          ...new Set(
+            typed
+              .filter((r) => r.contact_id == null)
+              .map((r) => r.uploaded_by?.trim())
+              .filter(Boolean) as string[],
+          ),
+        ];
+        const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
+        if (cancelled) return;
+
+        const next = new Map<
+          string,
+          {
+            documentTypeName: string | null;
+            uploadedByName: string | null;
+            uploadedByPhotoUrl: string | null;
+            isClientPortalUpload: boolean;
+          }
+        >();
+        for (const r of typed) {
+          const key = normalizeStorageKey(r.storage_path);
+          if (!key) continue;
+          const typeId = typeof r.document_type_id === 'string' ? r.document_type_id.trim() : '';
+          const fromContact =
+            r.contact_id != null ? contactNameById.get(Number(r.contact_id)) ?? null : null;
+          const rawUploader = r.uploaded_by?.trim() || null;
+          const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
+          const isClientPortalUpload =
+            Boolean(fromContact) || Boolean(rawUploader && !resolved?.matched);
+          next.set(key, {
+            documentTypeName: typeId ? nameById.get(typeId) ?? null : null,
+            uploadedByName: fromContact || resolved?.name || rawUploader || null,
+            uploadedByPhotoUrl:
+              !isClientPortalUpload && resolved?.photoUrl ? resolved.photoUrl : null,
+            isClientPortalUpload,
+          });
+        }
+        setDocMetaByPath(next);
+      } catch (e) {
+        console.warn('sub-effort document meta lookup:', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, leadNumber, resolvedDocs]);
+
   React.useEffect(() => {
     setRenamingDocKey(null);
     setRenameDocValue('');
     setRenameDocSaving(false);
     setActiveFolderId(null);
     setMoveMenuDocKey(null);
+    setMoveMenuPos(null);
     setFolderMenuId(null);
     setDragDocKey(null);
     setDropTargetFolderId(undefined);
@@ -1158,65 +1450,56 @@ export function SubEffortsLogModal({
 
   const visibleDocs = useMemo(() => {
     if (activeFolderId) {
-      return resolvedDocs.filter((d) => d.folder_id === activeFolderId);
+      return resolvedDocsWithMeta.filter((d) => d.folder_id === activeFolderId);
     }
-    return resolvedDocs.filter((d) => !d.folder_id);
-  }, [resolvedDocs, activeFolderId]);
+    return resolvedDocsWithMeta.filter((d) => !d.folder_id);
+  }, [resolvedDocsWithMeta, activeFolderId]);
 
   const downloadAllDocuments = useCallback(async () => {
     if (isDownloadingAll) return;
-    const scope = activeFolderId ? visibleDocs : resolvedDocs;
-    const ready = scope.filter((d) => !!(d.url || d.raw));
+    // Always zip every document on this sub effort (not only the active folder).
+    const ready = resolvedDocs.filter((d) => !!(d.url || d.raw));
     if (!ready.length) {
       toast.error('No documents to download');
       return;
     }
 
     setIsDownloadingAll(true);
-    toast.loading(`Downloading ${ready.length} document${ready.length === 1 ? '' : 's'}…`, {
-      id: 'se-download-all',
+    const toastId = 'se-download-all';
+    toast.loading(`Preparing zip (${ready.length} file${ready.length === 1 ? '' : 's'})…`, {
+      id: toastId,
     });
 
-    let successCount = 0;
-    let errorCount = 0;
     try {
-      for (const doc of ready) {
-        try {
-          const href = doc.url || doc.raw;
-          if (!href) {
-            errorCount++;
-            continue;
-          }
-          const link = document.createElement('a');
-          link.href = href;
-          link.download = doc.name || 'document';
-          link.target = '_blank';
-          link.rel = 'noreferrer';
-          link.style.display = 'none';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          successCount++;
-          await new Promise((r) => setTimeout(r, 250));
-        } catch (err) {
-          console.error('downloadAllDocuments item:', err);
-          errorCount++;
-        }
-      }
+      const effortName = readSubEffortName(selectedRow).trim() || 'documents';
+      const leadPart = leadNumber?.trim() ? `${leadNumber.trim()} ` : '';
+      const { successCount, errorCount } = await downloadFilesAsZip({
+        files: ready.map((doc) => ({
+          url: String(doc.url || doc.raw),
+          name: doc.name || 'document',
+        })),
+        zipFileName: `${leadPart}${effortName}`,
+        onProgress: (done, total) => {
+          toast.loading(`Zipping ${done}/${total}…`, { id: toastId });
+        },
+      });
 
       if (successCount > 0 && errorCount === 0) {
-        toast.success(`Downloaded ${successCount} document${successCount === 1 ? '' : 's'}`, {
-          id: 'se-download-all',
+        toast.success(`Downloaded zip with ${successCount} document${successCount === 1 ? '' : 's'}`, {
+          id: toastId,
         });
       } else if (successCount > 0) {
-        toast.success(`Downloaded ${successCount}, ${errorCount} failed`, { id: 'se-download-all' });
+        toast.success(`Zip ready (${successCount} files, ${errorCount} failed)`, { id: toastId });
       } else {
-        toast.error('Failed to download documents', { id: 'se-download-all' });
+        toast.error('Failed to download documents', { id: toastId });
       }
+    } catch (err) {
+      console.error('downloadAllDocuments zip:', err);
+      toast.error('Failed to create zip', { id: toastId });
     } finally {
       setIsDownloadingAll(false);
     }
-  }, [activeFolderId, isDownloadingAll, resolvedDocs, visibleDocs]);
+  }, [isDownloadingAll, leadNumber, resolvedDocs, selectedRow]);
 
   const openDocPreview = useCallback(
     (doc: ResolvedDoc) => {
@@ -1226,10 +1509,34 @@ export function SubEffortsLogModal({
       const idx = items.findIndex((item) => item.id === docId);
       setPreviewItems(items);
       setPreviewInitialIndex(idx >= 0 ? idx : 0);
+      setPreviewFromCaseDocs(false);
       setPreviewOpen(true);
     },
     [visibleDocs],
   );
+
+  const openCaseDocPreview = useCallback((doc: CaseDocPick) => {
+    const url = String(doc.signedUrl || '').trim();
+    if (!url) {
+      toast.error('No preview link is available for this file yet.');
+      return;
+    }
+    const items: DocumentPreviewItem[] = caseDocs
+      .filter((d) => Boolean(String(d.signedUrl || '').trim()))
+      .map((d) => ({
+        id: d.id,
+        name: d.file_name || 'Document',
+        downloadUrl: String(d.signedUrl),
+        fileType: d.mime_type || inferMimeFromName(d.file_name),
+        lastModified: d.created_at,
+        storagePath: d.storage_path || null,
+      }));
+    const idx = items.findIndex((item) => item.id === doc.id);
+    setPreviewItems(items);
+    setPreviewInitialIndex(idx >= 0 ? idx : 0);
+    setPreviewFromCaseDocs(true);
+    setPreviewOpen(true);
+  }, [caseDocs]);
 
   const renameSubEffortDocument = useCallback(
     async (docKey: string, newName: string) => {
@@ -1258,6 +1565,45 @@ export function SubEffortsLogModal({
 
       setPreviewItems((prev) => prev.map((p) => (p.id === docKey ? { ...p, name: trimmed } : p)));
       onRefresh?.();
+    },
+    [selectedRow, onRefresh],
+  );
+
+  const deleteSubEffortDocument = useCallback(
+    async (doc: ResolvedDoc) => {
+      if (!selectedRow?.id) {
+        toast.error('No sub-effort selected');
+        return;
+      }
+      const docKey = String(doc.path || doc.raw || '').trim();
+      if (!docKey) {
+        toast.error('Missing document path');
+        return;
+      }
+      if (!window.confirm(`Remove “${doc.name}” from this sub effort?`)) return;
+
+      try {
+        const existingItems = normalizeDocItems(selectedRow.document_url);
+        const next = existingItems.filter((it) => {
+          const key = String(it.path || it.url || '').trim();
+          return key !== docKey;
+        });
+        if (next.length === existingItems.length) {
+          toast.error('Document not found');
+          return;
+        }
+        const actor = await fetchStageActorInfo();
+        const { error } = await supabase
+          .from('lead_sub_efforts')
+          .update({ document_url: next, ...leadSubEffortActorFields(actor) })
+          .eq('id', selectedRow.id);
+        if (error) throw error;
+        toast.success('Document removed');
+        onRefresh?.();
+      } catch (e: unknown) {
+        console.error('deleteSubEffortDocument:', e);
+        toast.error(e instanceof Error ? e.message : 'Failed to delete document');
+      }
     },
     [selectedRow, onRefresh],
   );
@@ -1439,6 +1785,7 @@ export function SubEffortsLogModal({
     if (!justOpened) return;
 
     setMobileStep('list');
+    setDocCategoryBoxesOpen(false);
     if (initialSelectedRowId != null) {
       setSelectedId(initialSelectedRowId);
     }
@@ -1774,18 +2121,20 @@ export function SubEffortsLogModal({
       open={open}
       onClose={onClose}
       hideDefaultHeader
+      hideDragHandle
+      mobileFullPage
       mobileFullHeight
       desktopFullScreen
       zIndex={50}
       contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
     >
         <div className="flex flex-col min-h-0 h-full flex-1 overflow-hidden bg-[#f5f5f5]">
-        <div className="flex shrink-0 items-center justify-between px-4 py-3 md:px-6 md:py-4">
-          <div className="min-w-0 flex items-center gap-3">
+        <div className="flex shrink-0 items-start justify-between gap-3 px-4 py-3 md:px-6 md:py-4">
+          <div className="min-w-0 flex-1 flex items-start gap-3">
             {mobileStep === 'details' ? (
               <button
                 type="button"
-                className="btn btn-ghost btn-sm btn-square md:hidden"
+                className="btn btn-ghost btn-sm btn-square mt-0.5 md:hidden"
                 onClick={() => setMobileStep('list')}
                 aria-label="Back to list"
                 title="Back"
@@ -1793,48 +2142,72 @@ export function SubEffortsLogModal({
                 <ChevronLeftIcon className="w-5 h-5" />
               </button>
             ) : null}
-            <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
-                <div className="text-xl font-bold tracking-tight text-base-content/95">Sub efforts</div>
-                {SUB_EFFORT_DOC_CATEGORIES.map((key) => {
-                  const meta = CASE_DOCUMENT_CATEGORY_META[key];
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => setCategoryModalOpen(key)}
-                      disabled={!leadNumber?.trim()}
-                      className="inline-flex h-auto min-h-0 shrink-0 touch-manipulation select-none items-center gap-2 whitespace-nowrap rounded-lg border-0 bg-gray-700 px-3 py-2 text-sm font-bold text-white shadow-none transition-colors hover:bg-gray-800 disabled:opacity-50"
-                      title={`${meta.title} documents`}
-                    >
-                      <span className="max-w-[10rem] truncate sm:max-w-[14rem]">{meta.title}</span>
-                      <span className="ml-0 inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-gray-700">
-                        {categoryCountsLoading ? '…' : categoryCounts[key]}
-                      </span>
-                    </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() => setClientUploadsOpen(true)}
-                  disabled={!leadNumber?.trim()}
-                  className="inline-flex h-auto min-h-0 shrink-0 touch-manipulation select-none items-center gap-2 whitespace-nowrap rounded-lg border-0 bg-gray-700 px-3 py-2 text-sm font-bold text-white shadow-none transition-colors hover:bg-gray-800 disabled:opacity-50"
-                  title="Client portal uploads"
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <div className="text-xl font-bold tracking-tight text-base-content/95">Sub efforts</div>
+                  <button
+                    type="button"
+                    className="inline-flex h-8 items-center gap-1 rounded-full bg-white px-2.5 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:bg-gray-50 md:hidden"
+                    onClick={() => setDocCategoryBoxesOpen((v) => !v)}
+                    aria-expanded={docCategoryBoxesOpen}
+                    aria-controls="sub-effort-doc-category-boxes"
+                    title={docCategoryBoxesOpen ? 'Hide document boxes' : 'Show document boxes'}
+                  >
+                    {docCategoryBoxesOpen ? (
+                      <ChevronDownIcon className="h-4 w-4" />
+                    ) : (
+                      <ChevronRightIcon className="h-4 w-4" />
+                    )}
+                    <span>{docCategoryBoxesOpen ? 'Hide docs' : 'Docs'}</span>
+                  </button>
+                </div>
+                <div
+                  id="sub-effort-doc-category-boxes"
+                  className={`w-full min-w-0 flex-col gap-2 md:flex md:w-auto md:flex-1 md:flex-row md:flex-wrap md:items-center md:gap-2 ${
+                    docCategoryBoxesOpen ? 'flex' : 'hidden'
+                  }`}
                 >
-                  <span className="max-w-[10rem] truncate sm:max-w-[14rem]">Client uploads</span>
-                  <span className="ml-0 inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-gray-700">
-                    {categoryCountsLoading ? '…' : clientUploadsCount}
-                  </span>
-                </button>
+                  {SUB_EFFORT_DOC_CATEGORIES.map((key) => {
+                    const meta = CASE_DOCUMENT_CATEGORY_META[key];
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setCategoryModalOpen(key)}
+                        disabled={!leadNumber?.trim()}
+                        className="inline-flex h-auto min-h-0 w-full touch-manipulation select-none items-center justify-between gap-2 whitespace-nowrap rounded-lg border-0 bg-gray-100 px-3 py-2.5 text-sm font-bold text-gray-700 shadow-none transition-colors hover:bg-gray-200 disabled:opacity-50 md:h-8 md:w-auto md:justify-start md:py-1.5 md:px-2.5 md:text-xs"
+                        title={`${meta.title} documents`}
+                      >
+                        <span className="min-w-0 truncate">{meta.title}</span>
+                        <span className="inline-flex min-w-[22px] shrink-0 items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-gray-600">
+                          {categoryCountsLoading ? '…' : categoryCounts[key]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => setClientUploadsOpen(true)}
+                    disabled={!leadNumber?.trim()}
+                    className="inline-flex h-auto min-h-0 w-full touch-manipulation select-none items-center justify-between gap-2 whitespace-nowrap rounded-lg border-0 bg-gray-100 px-3 py-2.5 text-sm font-bold text-gray-700 shadow-none transition-colors hover:bg-gray-200 disabled:opacity-50 md:h-8 md:w-auto md:justify-start md:py-1.5 md:px-2.5 md:text-xs"
+                    title="Client portal uploads"
+                  >
+                    <span className="min-w-0 truncate">Client uploads</span>
+                    <span className="inline-flex min-w-[22px] shrink-0 items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-gray-600">
+                      {categoryCountsLoading ? '…' : clientUploadsCount}
+                    </span>
+                  </button>
+                </div>
               </div>
-              <div className="text-xs text-base-content/50 truncate">
+              <div className="mt-0.5 text-xs text-base-content/50 truncate">
                 {rows?.length ? `${rows.length} step${rows.length === 1 ? '' : 's'} in this case` : 'No steps yet'}
               </div>
             </div>
           </div>
           <button
             type="button"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
             onClick={onClose}
             aria-label="Close"
           >
@@ -1987,63 +2360,117 @@ export function SubEffortsLogModal({
             >
               <div className="flex min-h-full flex-col space-y-4">                {selectedRow ? (
                   <>
-                    <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
-                            <h2
-                              className="min-w-0 max-w-full text-2xl font-bold leading-tight tracking-tight text-base-content/95 line-clamp-2 break-words [overflow-wrap:anywhere] md:text-[28px]"
-                              title={readSubEffortName(selectedRow)}
-                            >
-                              {readSubEffortName(selectedRow)}
-                            </h2>
+                    <div className="overflow-hidden rounded-[18px] bg-white shadow-sm">
+                      <div className="relative min-h-[168px] overflow-hidden sm:min-h-[190px]">
+                        {(() => {
+                          const heroName = readSubEffortName(selectedRow);
+                          const heroSubtitle =
+                            selectedSubCategoryEfforts.length > 0
+                              ? selectedSubCategoryEfforts.map((item) => item.name).join(' · ')
+                              : readSubEffortDescription(selectedRow);
+                          const heroUrl = subEffortHeroImageUrl({
+                            rowId: selectedRow?.id,
+                            name: heroName,
+                            subtitle: heroSubtitle,
+                          });
+                          return (
+                            <img
+                              key={heroUrl}
+                              src={heroUrl}
+                              alt=""
+                              className="absolute inset-0 h-full w-full object-cover"
+                              loading="eager"
+                              decoding="async"
+                            />
+                          );
+                        })()}
+                        <div
+                          className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/40 to-black/25"
+                          aria-hidden
+                        />
+                        <div className="relative z-10 flex h-full min-h-[168px] flex-col justify-between gap-4 p-5 sm:min-h-[190px] sm:p-6">
+                          <div className="flex items-start justify-end gap-2">
                             <button
                               type="button"
-                              onClick={() => setDescriptionRow(selectedRow)}
-                              className="btn btn-ghost btn-xs btn-square h-9 w-9 shrink-0 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-                              title="What is this sub effort?"
-                              aria-label={`About ${readSubEffortName(selectedRow)}`}
-                            >
-                              <QuestionMarkCircleIcon className="h-5 w-5" />
-                            </button>
-                          </div>
-                          {selectedSubCategoryEfforts.length > 0 ? (
-                            <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
-                              {selectedSubCategoryEfforts.map((item) => item.name).join(' · ')}
-                            </p>
-                          ) : null}
-                        </div>
-                        <div className="flex shrink-0 flex-col items-end gap-2">
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm btn-square h-9 w-9 rounded-full bg-gray-50"
+                              className={`inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-semibold shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
+                                selectedRow?.internal === true
+                                  ? 'bg-amber-50/95 text-amber-900 hover:bg-amber-100'
+                                  : 'bg-white/90 text-blue-900 hover:bg-white'
+                              }`}
                               onClick={() => void toggleInternal()}
                               disabled={isTogglingInternal}
-                              title="Toggle client visibility"
-                              aria-label="Toggle client visibility"
+                              title={
+                                selectedRow?.internal === true
+                                  ? 'Internal — click to make visible to client'
+                                  : 'Client can see — click to make internal'
+                              }
+                              aria-label={
+                                selectedRow?.internal === true
+                                  ? 'Internal. Click to show to client'
+                                  : 'Client can see. Click to mark internal'
+                              }
                             >
                               {isTogglingInternal ? (
                                 <span className="loading loading-spinner loading-xs" />
+                              ) : selectedRow?.internal === true ? (
+                                <LockClosedIcon className="h-4 w-4 shrink-0" />
                               ) : (
-                                <EyeIcon className="w-4 h-4" />
+                                <EyeIcon className="h-4 w-4 shrink-0" />
                               )}
+                              <span>
+                                {selectedRow?.internal === true ? 'Internal' : 'Client'}
+                              </span>
                             </button>
+                            {isLeadVisibilityOverridden(selectedRow) ? (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs h-9 rounded-full border-0 bg-white/20 px-2.5 text-white hover:bg-white/30"
+                                onClick={() => void resetVisibilityToDefault()}
+                                disabled={isTogglingInternal}
+                              >
+                                Use template default
+                              </button>
+                            ) : null}
                           </div>
-                          {isLeadVisibilityOverridden(selectedRow) ? (
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-xs h-7 rounded-full px-2.5 text-gray-600"
-                              onClick={() => void resetVisibilityToDefault()}
-                              disabled={isTogglingInternal}
-                            >
-                              Use template default
-                            </button>
-                          ) : null}
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+                              <h2
+                                className="min-w-0 max-w-full text-2xl font-bold leading-tight tracking-tight text-white line-clamp-2 break-words [overflow-wrap:anywhere] drop-shadow-sm md:text-[28px]"
+                                title={readSubEffortName(selectedRow)}
+                              >
+                                {readSubEffortName(selectedRow)}
+                              </h2>
+                              <button
+                                type="button"
+                                onClick={() => setDescriptionRow(selectedRow)}
+                                className="btn btn-ghost btn-xs btn-square h-9 w-9 shrink-0 rounded-full text-white/80 hover:bg-white/15 hover:text-white"
+                                title="What is this sub effort?"
+                                aria-label={`About ${readSubEffortName(selectedRow)}`}
+                              >
+                                <QuestionMarkCircleIcon className="h-5 w-5" />
+                              </button>
+                            </div>
+                            {(() => {
+                              const subtitleFull =
+                                selectedSubCategoryEfforts.length > 0
+                                  ? selectedSubCategoryEfforts.map((item) => item.name).join(' · ')
+                                  : readSubEffortDescription(selectedRow);
+                              if (!subtitleFull?.trim()) return null;
+                              const subtitleShort = truncateToMaxWords(subtitleFull, 16);
+                              return (
+                                <p
+                                  className="mt-2 inline-block max-w-full truncate rounded-full bg-white/15 px-3 py-1 text-sm leading-snug text-white shadow-sm ring-1 ring-white/20 backdrop-blur-md"
+                                  title={subtitleFull}
+                                >
+                                  {subtitleShort}
+                                </p>
+                              );
+                            })()}
+                          </div>
                         </div>
                       </div>
 
-                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2 px-5 py-4">
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm h-10 gap-2 rounded-full border-none px-4 text-sm font-medium text-gray-700 shadow-none hover:bg-gray-100"
@@ -2214,15 +2641,8 @@ export function SubEffortsLogModal({
                             type="button"
                             className="btn btn-ghost btn-sm h-10 gap-1.5 rounded-full px-3.5 text-sm font-medium text-base-content/70 hover:bg-white hover:shadow-sm"
                             onClick={() => void downloadAllDocuments()}
-                            disabled={
-                              isDownloadingAll ||
-                              !(activeFolderId ? visibleDocs.length : resolvedDocs.length)
-                            }
-                            title={
-                              activeFolderId
-                                ? 'Download all documents in this folder'
-                                : 'Download all documents'
-                            }
+                            disabled={isDownloadingAll || resolvedDocs.length === 0}
+                            title="Download all sub-effort documents as a zip"
                           >
                             {isDownloadingAll ? (
                               <span className="loading loading-spinner loading-sm" />
@@ -2236,9 +2656,14 @@ export function SubEffortsLogModal({
                       <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
                     {(() => {
                       const savedUpdate = hasLeadSubEffortSavedUpdate(selectedRow);
-                      const uploader = savedUpdate ? updaterDisplayName(selectedRow) : null;
                       const uploadedAt = savedUpdate
                         ? formatDateTime(leadSubEffortSavedUpdatedAt(selectedRow))
+                        : null;
+                      const fallbackUploaderName = savedUpdate
+                        ? updaterDisplayName(selectedRow)
+                        : null;
+                      const fallbackUploaderPhoto = savedUpdate
+                        ? resolveUpdaterPhoto(selectedRow, photoByUpdaterName)
                         : null;
                       const hasVisibleDocs = visibleDocs.length > 0;
                       const hasReadyVisible = visibleDocs.some((d) => d.url);
@@ -2250,13 +2675,13 @@ export function SubEffortsLogModal({
                       const renderDocRow = (doc: ResolvedDoc, idx: number) => {
                         const href = doc.url || doc.raw;
                         const canPreview = !!doc.url;
-                        const typeLabel = formatFileTypeLabel(doc.mimeType, doc.name);
                         const docKey = String(doc.path || doc.raw || '').trim();
                         const moveOpen = moveMenuDocKey === docKey;
+                        const canMove = Boolean(docKey && (folders.length > 0 || activeFolderId));
                         return (
-                          <div
+                          <tr
                             key={`${doc.raw}-${idx}`}
-                            className={`flex flex-col gap-3 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center ${
+                            className={`${
                               dragDocKey === docKey ? 'opacity-60' : ''
                             }`}
                             draggable={!!docKey}
@@ -2266,147 +2691,239 @@ export function SubEffortsLogModal({
                               e.dataTransfer.effectAllowed = 'move';
                               setDragDocKey(docKey);
                               setMoveMenuDocKey(null);
+                              setMoveMenuPos(null);
                             }}
                             onDragEnd={() => {
                               setDragDocKey(null);
                               setDropTargetFolderId(undefined);
                             }}
                           >
-                            <div className="flex min-w-0 flex-1 items-center gap-3">
+                            <td className="px-3 py-3 align-middle">
                               <button
                                 type="button"
                                 disabled={!canPreview}
                                 onClick={() => openDocPreview(doc)}
-                                className={`flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gray-100 ${
-                                  canPreview ? 'cursor-pointer hover:ring-2 hover:ring-primary/20' : 'cursor-default'
+                                className={`inline-flex min-w-0 max-w-full items-center gap-2.5 text-left ${
+                                  canPreview ? 'hover:opacity-80' : 'cursor-default'
                                 }`}
-                                aria-label={canPreview ? `Preview ${doc.name}` : undefined}
                               >
-                                {doc.isImage && canPreview ? (
-                                  <img
-                                    src={doc.url}
-                                    alt=""
-                                    className="h-full w-full object-cover"
-                                    loading="lazy"
-                                  />
-                                ) : doc.isPdf ? (
-                                  <DocumentIcon className="h-6 w-6 text-red-500/80" />
-                                ) : (
-                                  <DocumentIcon className="h-6 w-6 text-slate-400" />
-                                )}
+                                <span className="relative inline-flex h-12 w-10 shrink-0 overflow-hidden rounded-md bg-transparent">
+                                  {doc.isImage && canPreview ? (
+                                    <img
+                                      src={doc.url}
+                                      alt=""
+                                      className="h-full w-full object-cover"
+                                      loading="lazy"
+                                    />
+                                  ) : (
+                                    <span className="flex h-full w-full items-center justify-center">
+                                      <DocumentFileGlyph
+                                        fileType={doc.mimeType}
+                                        fileName={doc.name}
+                                        className="h-10 w-10 shrink-0"
+                                      />
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="min-w-0 truncate text-sm font-semibold text-base-content">
+                                  {doc.name}
+                                </span>
                               </button>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex min-w-0 items-center gap-1">
-                                  <div className="truncate text-base font-semibold text-base-content/85">
-                                    {doc.name}
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="btn btn-ghost btn-circle btn-sm shrink-0"
-                                    onClick={() => startInlineRename(doc)}
-                                    aria-label={`Rename ${doc.name}`}
-                                    title="Rename"
-                                  >
-                                    <PencilSquareIcon className="h-5 w-5" />
-                                  </button>
-                                </div>
-                                <div className="mt-0.5 text-xs text-base-content/45">
-                                  {typeLabel}
-                                  {uploadedAt ? (
-                                    <>
-                                      <span className="mx-1.5 text-base-content/20">·</span>
-                                      {uploadedAt}
-                                    </>
-                                  ) : null}
-                                  {uploader ? (
-                                    <>
-                                      <span className="mx-1.5 text-base-content/20">·</span>
-                                      {uploader}
-                                    </>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="relative flex shrink-0 items-center gap-1.5 sm:pl-2">
-                              {canPreview ? (
+                            </td>
+                            <td className="px-3 py-3 text-center align-middle">
+                              {doc.documentTypeName ? (
+                                <span
+                                  className="inline-block max-w-[14rem] truncate text-sm text-base-content/80"
+                                  title={doc.documentTypeName}
+                                >
+                                  {doc.documentTypeName}
+                                </span>
+                              ) : (
+                                <span className="text-sm text-gray-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-3 text-center align-middle text-sm">
+                              <DocumentUploaderCell
+                                name={doc.uploadedByName || fallbackUploaderName}
+                                photoUrl={
+                                  doc.isClientPortalUpload
+                                    ? null
+                                    : doc.uploadedByPhotoUrl || fallbackUploaderPhoto
+                                }
+                                isClientPortalUpload={Boolean(doc.isClientPortalUpload)}
+                              />
+                            </td>
+                            <td className="px-3 py-3 text-center align-middle whitespace-nowrap text-sm tabular-nums text-gray-500">
+                              {uploadedAt || '—'}
+                            </td>
+                            <td className="px-2 py-3 text-center align-middle">
+                              <div className="inline-flex justify-end" data-sub-effort-menu>
                                 <button
                                   type="button"
-                                  onClick={() => openDocPreview(doc)}
-                                  className="btn btn-ghost btn-sm h-10 rounded-full px-4 text-sm font-medium"
+                                  data-sub-effort-doc-trigger={docKey || undefined}
+                                  className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+                                    moveOpen
+                                      ? 'bg-gray-900 text-white shadow-sm'
+                                      : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'
+                                  }`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setFolderMenuId(null);
+                                    if (moveOpen) {
+                                      setMoveMenuDocKey(null);
+                                      setMoveMenuPos(null);
+                                      return;
+                                    }
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    const gap = 4;
+                                    const margin = 8;
+                                    const estimated = 320;
+                                    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+                                    const spaceAbove = rect.top - gap - margin;
+                                    const openUp =
+                                      spaceBelow < Math.min(estimated, 240) && spaceAbove > spaceBelow;
+                                    const available = Math.max(140, openUp ? spaceAbove : spaceBelow);
+                                    const maxHeight = Math.min(320, available);
+                                    const right = Math.max(8, window.innerWidth - rect.right);
+                                    setMoveMenuPos(
+                                      openUp
+                                        ? {
+                                            bottom: Math.max(margin, window.innerHeight - rect.top + gap),
+                                            right,
+                                            maxHeight,
+                                          }
+                                        : {
+                                            top: rect.bottom + gap,
+                                            right,
+                                            maxHeight,
+                                          },
+                                    );
+                                    setMoveMenuDocKey(docKey || `row-${idx}`);
+                                  }}
+                                  aria-label="Document options"
+                                  aria-expanded={moveOpen}
+                                  aria-haspopup="menu"
+                                  title="More options"
                                 >
-                                  Preview
+                                  <EllipsisVerticalIcon className="h-5 w-5" />
                                 </button>
-                              ) : null}
-                              <a
-                                href={href}
-                                target="_blank"
-                                rel="noreferrer"
-                                download={doc.name}
-                                className="btn btn-ghost btn-sm h-10 gap-1.5 rounded-full px-4 text-sm font-medium"
-                              >
-                                <ArrowDownTrayIcon className="h-5 w-5" />
-                                Download
-                              </a>
-                              {docKey && (folders.length > 0 || activeFolderId) ? (
-                                <div className="relative" data-sub-effort-menu>
-                                  <button
-                                    type="button"
-                                    className={`inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
-                                      moveOpen
-                                        ? 'bg-gray-900 text-white shadow-sm'
-                                        : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'
-                                    }`}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setFolderMenuId(null);
-                                      setMoveMenuDocKey((prev) => (prev === docKey ? null : docKey));
-                                    }}
-                                    aria-label="Document options"
-                                    aria-expanded={moveOpen}
-                                    aria-haspopup="menu"
-                                    title="More options"
-                                  >
-                                    <EllipsisVerticalIcon className="h-5 w-5" />
-                                  </button>
-                                  {moveOpen ? (
-                                    <div
-                                      role="menu"
-                                      className="absolute right-0 z-30 mt-2 w-56 overflow-hidden rounded-2xl border border-gray-200/80 bg-white/95 p-1.5 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/5 backdrop-blur-sm"
-                                    >
-                                      <div className="px-2.5 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-400">
-                                        Move to
-                                      </div>
-                                      {activeFolderId ? (
+                                {moveOpen && moveMenuPos
+                                  ? createPortal(
+                                      <div
+                                        data-sub-effort-doc-menu
+                                        role="menu"
+                                        className="fixed z-[80] w-56 overflow-y-auto overscroll-contain rounded-xl border border-base-200 bg-white py-1 shadow-lg"
+                                        style={{
+                                          top: moveMenuPos.top,
+                                          bottom: moveMenuPos.bottom,
+                                          right: moveMenuPos.right,
+                                          maxHeight: moveMenuPos.maxHeight,
+                                        }}
+                                      >
+                                        {canPreview ? (
+                                          <button
+                                            type="button"
+                                            role="menuitem"
+                                            className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
+                                            onClick={() => {
+                                              setMoveMenuDocKey(null);
+                                              setMoveMenuPos(null);
+                                              openDocPreview(doc);
+                                            }}
+                                          >
+                                            <EyeIcon className="h-4 w-4 opacity-70" />
+                                            Preview
+                                          </button>
+                                        ) : null}
+                                        <a
+                                          href={href}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          download={doc.name}
+                                          role="menuitem"
+                                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
+                                          onClick={() => {
+                                            setMoveMenuDocKey(null);
+                                            setMoveMenuPos(null);
+                                          }}
+                                        >
+                                          <ArrowDownTrayIcon className="h-4 w-4 opacity-70" />
+                                          Download
+                                        </a>
                                         <button
                                           type="button"
                                           role="menuitem"
-                                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
-                                          onClick={() => void moveDocToFolder(docKey, null)}
+                                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
+                                          onClick={() => {
+                                            setMoveMenuDocKey(null);
+                                            setMoveMenuPos(null);
+                                            startInlineRename(doc);
+                                          }}
                                         >
-                                          <DocumentIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                                          Unfiled
+                                          <PencilSquareIcon className="h-4 w-4 opacity-70" />
+                                          Edit file name
                                         </button>
-                                      ) : null}
-                                      {folders
-                                        .filter((f) => f.id !== (doc.folder_id ?? null))
-                                        .map((f) => (
-                                          <button
-                                            key={f.id}
-                                            type="button"
-                                            role="menuitem"
-                                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
-                                            onClick={() => void moveDocToFolder(docKey, f.id)}
-                                          >
-                                            <FolderIcon className="h-4 w-4 shrink-0 text-amber-500" />
-                                            <span className="min-w-0 truncate">{f.title}</span>
-                                          </button>
-                                        ))}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
+                                        <button
+                                          type="button"
+                                          role="menuitem"
+                                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-red-600 hover:bg-red-50"
+                                          onClick={() => {
+                                            setMoveMenuDocKey(null);
+                                            setMoveMenuPos(null);
+                                            void deleteSubEffortDocument(doc);
+                                          }}
+                                        >
+                                          <TrashIcon className="h-4 w-4" />
+                                          Delete
+                                        </button>
+                                        {canMove ? (
+                                          <>
+                                            <div className="my-1 border-t border-gray-100" />
+                                            <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
+                                              Move to
+                                            </div>
+                                            {activeFolderId ? (
+                                              <button
+                                                type="button"
+                                                role="menuitem"
+                                                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
+                                                onClick={() => {
+                                                  setMoveMenuDocKey(null);
+                                                  setMoveMenuPos(null);
+                                                  void moveDocToFolder(docKey, null);
+                                                }}
+                                              >
+                                                <DocumentIcon className="h-4 w-4 shrink-0 text-gray-400" />
+                                                Unfiled
+                                              </button>
+                                            ) : null}
+                                            {folders
+                                              .filter((f) => f.id !== (doc.folder_id ?? null))
+                                              .map((f) => (
+                                                <button
+                                                  key={f.id}
+                                                  type="button"
+                                                  role="menuitem"
+                                                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
+                                                  onClick={() => {
+                                                    setMoveMenuDocKey(null);
+                                                    setMoveMenuPos(null);
+                                                    void moveDocToFolder(docKey, f.id);
+                                                  }}
+                                                >
+                                                  <FolderIcon className="h-4 w-4 shrink-0 text-amber-500" />
+                                                  <span className="min-w-0 truncate">{f.title}</span>
+                                                </button>
+                                              ))}
+                                          </>
+                                        ) : null}
+                                      </div>,
+                                      document.body,
+                                    )
+                                  : null}
+                              </div>
+                            </td>
+                          </tr>
                         );
                       };
 
@@ -2493,10 +3010,10 @@ export function SubEffortsLogModal({
                                 return (
                                   <div
                                     key={folder.id}
-                                    className={`group relative flex items-center gap-3 rounded-xl border px-3 py-2.5 transition ${
+                                    className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 transition ${
                                       isDropTarget
-                                        ? 'border-primary/50 bg-primary/5'
-                                        : 'border-gray-100 bg-gray-50/60 hover:border-gray-200 hover:bg-gray-50'
+                                        ? 'bg-primary/5 ring-1 ring-primary/30'
+                                        : 'bg-gray-50/60 hover:bg-gray-50'
                                     }`}
                                     onDragEnter={(e) => {
                                       e.preventDefault();
@@ -2648,8 +3165,51 @@ export function SubEffortsLogModal({
                               This folder is empty
                             </div>
                           ) : hasVisibleDocs ? (
-                            <div className="divide-y divide-gray-100">
-                              {visibleDocs.map((doc, idx) => renderDocRow(doc, idx))}
+                            <div className="min-w-0 overflow-x-auto">
+                              <div className="min-w-[780px]">
+                                <table className="mb-2 w-full table-fixed border-collapse">
+                                  <colgroup>
+                                    <col />
+                                    <col className="w-[20%]" />
+                                    <col className="w-[22%]" />
+                                    <col className="w-36" />
+                                    <col className="w-12" />
+                                  </colgroup>
+                                  <thead>
+                                    <tr className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                      <th className="bg-transparent px-3 py-2 text-left font-semibold">
+                                        Document name
+                                      </th>
+                                      <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                                        Document type
+                                      </th>
+                                      <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                                        Uploaded by
+                                      </th>
+                                      <th className="bg-transparent px-3 py-2 text-center font-semibold whitespace-nowrap">
+                                        Uploaded at
+                                      </th>
+                                      <th className="bg-transparent px-3 py-2 text-center font-semibold">
+                                        <span className="sr-only">Actions</span>
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                </table>
+                                <div className="overflow-x-auto rounded-2xl bg-white">
+                                  <table className="w-full table-fixed border-collapse">
+                                    <colgroup>
+                                      <col />
+                                      <col className="w-[20%]" />
+                                      <col className="w-[22%]" />
+                                      <col className="w-36" />
+                                      <col className="w-12" />
+                                    </colgroup>
+                                    <tbody>
+                                      {visibleDocs.map((doc, idx) => renderDocRow(doc, idx))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
                             </div>
                           ) : showFolders && hasFolders ? (
                             <div className="py-1 text-center text-xs text-base-content/40">
@@ -2943,38 +3503,34 @@ export function SubEffortsLogModal({
                       >
                         <div className="flex items-start gap-3">
                           <div
-                            className="h-14 w-14 shrink-0 rounded-lg bg-base-200 overflow-hidden flex items-center justify-center cursor-pointer"
-                            title="Open file"
+                            className="h-14 w-14 shrink-0 rounded-lg bg-base-200 overflow-hidden flex items-center justify-center cursor-pointer hover:ring-2 hover:ring-primary/20"
+                            title="Preview file"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              const url = String(d.signedUrl || '').trim();
-                              if (!url) {
-                                toast.error('No preview link is available for this file yet.');
-                                return;
-                              }
-                              window.open(url, '_blank', 'noopener,noreferrer');
+                              openCaseDocPreview(d);
                             }}
                           >
                             {isImg && d.signedUrl ? (
                               <img src={d.signedUrl} alt="" className="h-full w-full object-cover" />
                             ) : (
-                              <span className="text-[10px] opacity-70">{isImg ? 'IMG' : 'DOC'}</span>
+                              <span className="flex h-full w-full items-center justify-center">
+                                <DocumentFileGlyph
+                                  fileType={mime}
+                                  fileName={d.file_name}
+                                  className="h-8 w-8 shrink-0"
+                                />
+                              </span>
                             )}
                           </div>
                           <div className="min-w-0 flex-1">
                             <div
-                              className="text-sm font-semibold truncate hover:underline"
-                              title="Open file"
+                              className="text-sm font-semibold truncate hover:underline cursor-pointer"
+                              title="Preview file"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                const url = String(d.signedUrl || '').trim();
-                                if (!url) {
-                                  toast.error('No preview link is available for this file yet.');
-                                  return;
-                                }
-                                window.open(url, '_blank', 'noopener,noreferrer');
+                                openCaseDocPreview(d);
                               }}
                             >
                               {d.file_name}
@@ -3018,12 +3574,17 @@ export function SubEffortsLogModal({
         onClose={() => {
           setPreviewOpen(false);
           setPreviewItems([]);
+          setPreviewFromCaseDocs(false);
         }}
         documents={previewItems}
         initialIndex={previewInitialIndex}
-        onRename={async (item, newName) => {
-          await renameSubEffortDocument(item.id, newName);
-        }}
+        onRename={
+          previewFromCaseDocs
+            ? undefined
+            : async (item, newName) => {
+                await renameSubEffortDocument(item.id, newName);
+              }
+        }
       />
 
       {descriptionRow ? (
@@ -3081,6 +3642,7 @@ export function SubEffortsLogModal({
         open={clientUploadsOpen}
         onClose={() => setClientUploadsOpen(false)}
         leadNumber={leadNumber}
+        clientId={clientId}
         subEffortRows={timelineRows}
         targetSubEffortId={selectedRow?.id ?? null}
         activeFolderId={activeFolderId}

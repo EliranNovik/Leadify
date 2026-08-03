@@ -13,7 +13,7 @@ import {
   type LeadSourceOption,
 } from '../lib/leadSourceId';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
-import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, shouldPreserveLeadStageOnMeeting } from '../lib/stageUtils';
+import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import {
@@ -13902,408 +13902,286 @@ const Clients: React.FC<ClientsProps> = ({
   // This takes priority over loading state to prevent flickering
   if (selectedClient && isUnactivated && !userManuallyExpanded) {
     console.log('🔍 RENDERING UNACTIVATED VIEW (TOP PRIORITY) for client:', selectedClient.id);
+    const inactiveIsLegacy =
+      selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    let inactiveReason = selectedClient.unactivation_reason;
+    if (inactiveIsLegacy && !inactiveReason) {
+      const reasonId = (selectedClient as any).reason_id;
+      if (reasonId) {
+        inactiveReason = getUnactivationReasonFromId(reasonId) || inactiveReason;
+      }
+    }
+    const showInactiveDetails = !inactiveIsLegacy && selectedClient.status === 'inactive';
+    const deactivateNotes = (selectedClient as any).deactivate_notes as string | undefined;
+
+    const inactiveStageBadge = (() => {
+      if (selectedClient.stage === null || selectedClient.stage === undefined || selectedClient.stage === '') {
+        return (
+          <span className="badge stage-badge shrink-0 rounded-full border-0 bg-gray-100 px-2.5 py-0.5 text-xs text-gray-600">
+            No Stage
+          </span>
+        );
+      }
+      const stageStr = String(selectedClient.stage);
+      const stageName = getStageName(stageStr);
+      const softBadgeStyle = getSoftStageBadgeStyle(getStageColour(stageStr), stageStr);
+      return (
+        <span
+          className="badge stage-badge max-w-full shrink-0 rounded-full border-0 px-2.5 py-0.5 text-xs"
+          style={{
+            backgroundColor: softBadgeStyle.backgroundColor,
+            color: softBadgeStyle.color,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            display: 'inline-block',
+          }}
+          title={stageName}
+        >
+          {stageName}
+        </span>
+      );
+    })();
+
+    const inactiveValueBadge = (() => {
+      let balanceValue: any;
+      if (inactiveIsLegacy) {
+        const currencyId = (selectedClient as any).currency_id;
+        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+          numericCurrencyId = 1;
+        }
+        balanceValue =
+          numericCurrencyId === 1
+            ? ((selectedClient as any).total_base ?? null)
+            : ((selectedClient as any).total ?? null);
+      } else {
+        balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
+      }
+
+      if (hasPaymentPlan === true && paymentPlanGrossTotal !== null) {
+        balanceValue = paymentPlanGrossTotal;
+      }
+
+      let balanceCurrency: string | null = null;
+      const accountingCurrencies = (selectedClient as any).accounting_currencies;
+      if (accountingCurrencies) {
+        const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+        if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+          balanceCurrency = currencyRecord.name.trim();
+        }
+      }
+
+      if (!inactiveIsLegacy) {
+        const currencyId = (selectedClient as any)?.currency_id ?? 1;
+        const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+          balanceCurrency = getCurrencyName(numericCurrencyId, accountingCurrencies);
+          if (!balanceCurrency || balanceCurrency.trim() === '') {
+            balanceCurrency = getCurrencyName(1);
+          }
+        } else {
+          balanceCurrency = getCurrencyName(1);
+        }
+      } else {
+        if (!balanceCurrency || balanceCurrency.trim() === '') {
+          balanceCurrency = selectedClient.balance_currency || null;
+        }
+        if ((!balanceCurrency || balanceCurrency.trim() === '') && (selectedClient as any).currency_id) {
+          const currencyId = (selectedClient as any).currency_id;
+          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+          if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+            balanceCurrency = getCurrencyName(numericCurrencyId, accountingCurrencies);
+            if (!balanceCurrency || balanceCurrency.trim() === '') {
+              balanceCurrency = getCurrencyName(1);
+            }
+          }
+        }
+      }
+
+      if (!balanceCurrency || balanceCurrency.trim() === '') {
+        balanceCurrency = getCurrencyName(1);
+      }
+
+      if (!(balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0'))) {
+        return null;
+      }
+
+      const formattedValue =
+        typeof balanceValue === 'number'
+          ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+          : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
+      return (
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-800">
+          {balanceCurrency}
+          {formattedValue}
+          {hasPaymentPlan === true && (
+            <LockClosedIcon className="h-3.5 w-3.5 text-emerald-700/70" title="Locked by payment plan" />
+          )}
+        </span>
+      );
+    })();
+
     return (
-      <div className="min-h-screen bg-gray-100 p-4 dark:bg-base-300">
-        <div className="max-w-2xl mx-auto">
-          {/* Unactivated Lead Compact Card */}
+      <div className="min-h-screen bg-gray-100 px-4 pb-4 pt-[calc(env(safe-area-inset-top,0px)+4.75rem)] dark:bg-base-300 md:pt-20">
+        <div className="mx-auto max-w-xl">
           <div
-            className="bg-base-100 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 cursor-pointer transform hover:scale-105 border border-base-300 overflow-hidden"
+            className="group cursor-pointer rounded-2xl border border-gray-100 bg-white shadow-[0_2px_10px_rgba(0,0,0,0.06)] transition-all duration-300 ease-out hover:shadow-[0_4px_16px_rgba(0,0,0,0.1)] md:hover:-translate-y-0.5"
             onClick={(e) => {
-              // Don't navigate if clicking on a button inside
               if ((e.target as HTMLElement).closest('button')) {
                 return;
               }
-              // First, expand the view
               setUserManuallyExpanded(true);
               setIsUnactivatedView(false);
-              // Then navigate to ensure we're on the correct route
-              // Use buildClientRoute to properly handle sub-leads
               const manualId = selectedClient.manual_id ? String(selectedClient.manual_id) : null;
               const leadNumber = selectedClient.lead_number ? String(selectedClient.lead_number) : null;
               const isSubLead = leadNumber && leadNumber.includes('/');
 
-              // For new leads with sub-leads, use manual_id in path and lead_number in query
               if (isSubLead && manualId && selectedClient.lead_type !== 'legacy') {
-                const route = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
-                navigate(route, { replace: false });
+                navigate(`/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`, {
+                  replace: false,
+                });
               } else if (leadNumber) {
-                // Use buildClientRoute for other cases
-                const route = buildClientRoute(manualId, leadNumber);
-                navigate(route, { replace: false });
+                navigate(buildClientRoute(manualId, leadNumber), { replace: false });
               } else if (selectedClient.id) {
-                // Fallback to id if lead_number is not available
                 const leadId = selectedClient.id.toString().replace('legacy_', '');
                 navigate(`/clients/${leadId}`, { replace: false });
               }
             }}
           >
-            {/* Header with Unactivated Badge */}
-            <div className="bg-gradient-to-r from-red-500 to-red-600 p-4 relative">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
-                    <UserIcon className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-white">{selectedClient.name}</h2>
-                    <p className="text-red-100 text-sm">Lead #{selectedClient.lead_number}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {/* Stage Badge */}
-                  {(() => {
-                    const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
-                    const stageName = getStageName(stageStr);
-                    const stageColor = getStageColour(stageStr);
-                    const textColor = getContrastingTextColor(stageColor);
-                    const backgroundColor = stageColor || '#3b28c7';
-
-                    return (
-                      <span
-                        className="badge text-xs px-2 py-1 shadow-lg"
-                        style={{
-                          backgroundColor: backgroundColor,
-                          color: textColor,
-                          borderColor: backgroundColor,
+            <div className="p-5 md:p-6">
+              {/* Title row */}
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-gray-200/80 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-gray-600">
+                      <NoSymbolIcon className="h-5 w-5" aria-hidden />
+                      Inactive
+                    </span>
+                    {hasScheduledMeetings && nextMeetingDate && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTabWithUrl('meeting');
                         }}
+                        className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-100"
                       >
-                        {stageName}
+                        Meeting{' '}
+                        {new Date(nextMeetingDate).toLocaleDateString('en-GB', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                        })}
+                      </button>
+                    )}
+                  </div>
+                  <h2 className="text-lg font-bold leading-snug text-gray-900 transition-colors group-hover:text-[#6d28d9]">
+                    {selectedClient.name}
+                  </h2>
+                  <p className="mt-0.5 font-mono text-sm font-medium text-gray-500">
+                    #{selectedClient.lead_number}
+                  </p>
+                </div>
+                <div className="shrink-0">{inactiveStageBadge}</div>
+              </div>
+
+              {selectedClient.topic && (
+                <div className="mb-4 flex min-w-0 items-center gap-2">
+                  <DocumentTextIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                  <span className="truncate text-sm font-medium text-gray-700">{selectedClient.topic}</span>
+                </div>
+              )}
+
+              {/* Contact / roles grid */}
+              <div className="relative mb-4 rounded-xl bg-gray-50 px-3.5 py-3">
+                <div
+                  className="pointer-events-none absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-gray-200"
+                  aria-hidden
+                />
+                <div className="grid grid-cols-2 gap-x-5 gap-y-3 text-sm text-gray-700">
+                  <div className="flex min-w-0 items-center gap-2" title="Email">
+                    <EnvelopeIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                    <span className="truncate">{selectedClient.email || '—'}</span>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-2" title="Phone">
+                    <PhoneIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                    <span className="truncate">{selectedClient.phone || '—'}</span>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-2" title="Category">
+                    <TagIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                    <span className="truncate">{selectedClient.category || '—'}</span>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-2" title="Created">
+                    <CalendarIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                    <span className="truncate">
+                      {selectedClient.created_at
+                        ? new Date(selectedClient.created_at).toLocaleDateString()
+                        : '—'}
+                    </span>
+                  </div>
+                  {selectedClient.scheduler && (
+                    <div className="flex min-w-0 items-center gap-2 col-span-2 sm:col-span-1" title="Scheduler">
+                      <UserIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                      <span className="truncate">
+                        <span className="text-gray-500">Scheduler:</span> {selectedClient.scheduler}
                       </span>
-                    );
-                  })()}
-                  {/* Meeting Scheduled Badge */}
-                  {hasScheduledMeetings && nextMeetingDate && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActiveTabWithUrl('meeting');
-                      }}
-                      className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
+                    </div>
+                  )}
+                  {selectedClient.closer && (
+                    <div className="flex min-w-0 items-center gap-2" title="Closer">
+                      <UserIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                      <span className="truncate">
+                        <span className="text-gray-500">Closer:</span> {selectedClient.closer}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Inactive summary */}
+              {showInactiveDetails && (
+                <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50/80 px-3.5 py-3">
+                  <p className="text-sm font-medium text-gray-800">
+                    {inactiveReason || 'No reason added'}
+                  </p>
+                  {deactivateNotes && (
+                    <p
+                      className="mt-1.5 text-sm leading-relaxed text-gray-600"
+                      dir={/[\u0590-\u05FF]/.test(deactivateNotes) ? 'rtl' : 'ltr'}
                       style={{
-                        background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-                        color: 'white',
-                        borderColor: '#10b981',
-                        padding: '0.5rem 1rem',
-                        minHeight: '3.5rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: '0.875rem',
-                        lineHeight: '1.25rem',
+                        textAlign: /[\u0590-\u05FF]/.test(deactivateNotes) ? 'right' : 'left',
+                        whiteSpace: 'pre-wrap',
                       }}
                     >
-                      <span className="flex flex-col items-center gap-0.5">
-                        <span className="font-semibold">Meeting Scheduled</span>
-                        <span className="text-xs font-medium opacity-90">
-                          {(() => {
-                            const date = new Date(nextMeetingDate);
-                            return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-                          })()}
-                        </span>
-                      </span>
-                    </button>
+                      {deactivateNotes}
+                    </p>
                   )}
-                  <div className="bg-red-700 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide shadow-lg">
-                    Unactivated
-                  </div>
+                  {(selectedClient.unactivated_by || selectedClient.unactivated_at) && (
+                    <p className="mt-2 text-xs text-gray-500">
+                      {[
+                        selectedClient.unactivated_by,
+                        selectedClient.unactivated_at
+                          ? new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                            })
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  )}
                 </div>
-              </div>
-            </div>
+              )}
 
-            {/* Content */}
-            <div className="p-6 space-y-4">
-              {/* Two Row Grid Layout */}
-              <div className="grid grid-cols-2 gap-4">
-                {/* Row 1 */}
-                <div className="space-y-3">
-                  {/* Topic */}
-                  {selectedClient.topic && (
-                    <div className="flex items-center gap-2">
-                      <DocumentTextIcon className="w-4 h-4 text-base-content/60" />
-                      <span className="text-sm text-base-content/80 font-medium">{selectedClient.topic}</span>
-                    </div>
-                  )}
-
-                  {/* Email */}
-                  <div className="flex items-center gap-2">
-                    <EnvelopeIcon className="w-4 h-4 text-base-content/60" />
-                    <span className="text-sm text-base-content/80">{selectedClient.email || 'No email'}</span>
-                  </div>
-
-                  {/* Category */}
-                  <div className="flex items-center gap-2">
-                    <TagIcon className="w-4 h-4 text-base-content/60" />
-                    <span className="text-sm text-base-content/80">{selectedClient.category || 'Not specified'}</span>
-                  </div>
-                </div>
-
-                {/* Row 2 */}
-                <div className="space-y-3">
-                  {/* Scheduler */}
-                  {selectedClient.scheduler && (
-                    <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-base-content/60" />
-                      <span className="text-sm text-base-content/80">Scheduler: {selectedClient.scheduler}</span>
-                    </div>
-                  )}
-
-                  {/* Handler */}
-                  {selectedClient.handler && selectedClient.handler !== 'Not assigned' && (
-                    <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-base-content/60" />
-                      <span className="text-sm text-base-content/80">Handler: {selectedClient.handler}</span>
-                    </div>
-                  )}
-
-                  {/* Closer */}
-                  {selectedClient.closer && (
-                    <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-base-content/60" />
-                      <span className="text-sm text-base-content/80">Closer: {selectedClient.closer}</span>
-                    </div>
-                  )}
-
-                  {/* Phone */}
-                  <div className="flex items-center gap-2">
-                    <PhoneIcon className="w-4 h-4 text-base-content/60" />
-                    <span className="text-sm text-base-content/80">{selectedClient.phone || 'No phone'}</span>
-                  </div>
-
-                  {/* Created Date */}
-                  <div className="flex items-center gap-2">
-                    <CalendarIcon className="w-4 h-4 text-base-content/60" />
-                    <span className="text-sm text-base-content/70">
-                      Created: {selectedClient.created_at ? new Date(selectedClient.created_at).toLocaleDateString() : 'Unknown'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Case unactivated Badge - Above Balance Badge */}
-              {(() => {
-                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                // Only show unactivated badge for new leads (not legacy leads)
-                const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
-                if (!isUnactivated) return null;
-
-                // Get unactivation reason
-                let unactivationReason = selectedClient.unactivation_reason;
-                if (isLegacy && !unactivationReason) {
-                  const reasonId = (selectedClient as any).reason_id;
-                  if (reasonId) {
-                    const reasonFromId = getUnactivationReasonFromId(reasonId);
-                    if (reasonFromId) {
-                      unactivationReason = reasonFromId;
-                    }
-                  }
-                }
-
-                return (
-                  <div className="flex items-center justify-center pt-2 pb-2">
-                    <span className="badge badge-lg px-4 py-2 bg-red-100 text-red-800 border border-red-300 font-semibold">
-                      Case unactivated
-                      {unactivationReason && (
-                        <span className="ml-2 text-xs font-normal">
-                          ({unactivationReason})
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                );
-              })()}
-
-              {/* Unactivation Details - Only for new leads (not legacy) - Above Balance Badge */}
-              {(() => {
-                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                // Only show unactivated box for new leads (not legacy leads)
-                const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
-                return isUnactivated;
-              })() && (
-                  <div className="pt-3 pb-2 border-t border-base-300 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <NoSymbolIcon className="w-4 h-4 text-error" />
-                      <span className="text-sm text-error font-medium">
-                        {(() => {
-                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                          // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
-                          let unactivationReason = selectedClient.unactivation_reason;
-
-                          // For legacy leads, if no unactivation_reason, try to get it from reason_id
-                          if (isLegacy && !unactivationReason) {
-                            const reasonId = (selectedClient as any).reason_id;
-                            if (reasonId) {
-                              const reasonFromId = getUnactivationReasonFromId(reasonId);
-                              if (reasonFromId) {
-                                unactivationReason = reasonFromId;
-                              }
-                            }
-                          }
-
-                          // Return the reason exactly as stored in the database or from reason_id mapping
-                          return unactivationReason ? (
-                            `Reason: ${unactivationReason}`
-                          ) : (
-                            'No reason added'
-                          );
-                        })()}
-                      </span>
-                    </div>
-                    {/* Show deactivate_notes for new leads */}
-                    {(selectedClient as any).deactivate_notes && (
-                      <div className="flex items-start gap-2">
-                        <DocumentTextIcon className="w-4 h-4 text-base-content/60 mt-0.5 flex-shrink-0" />
-                        <span
-                          className="text-sm text-base-content/80 flex-1"
-                          dir={/[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'rtl' : 'ltr'}
-                          style={{
-                            textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left',
-                            whiteSpace: 'pre-wrap'
-                          }}
-                        >
-                          {(selectedClient as any).deactivate_notes}
-                        </span>
-                      </div>
-                    )}
-                    {(selectedClient.unactivated_by || selectedClient.unactivated_at) && (
-                      <div className="flex items-center gap-4 flex-wrap">
-                        {selectedClient.unactivated_by && (
-                          <div className="flex items-center gap-2">
-                            <UserIcon className="w-4 h-4 text-base-content/60" />
-                            <span className="text-sm text-base-content/80">
-                              Unactivated by: {selectedClient.unactivated_by}
-                            </span>
-                          </div>
-                        )}
-                        {selectedClient.unactivated_at && (
-                          <div className="flex items-center gap-2">
-                            <CalendarIcon className="w-4 h-4 text-base-content/60" />
-                            <span className="text-sm text-base-content/80">
-                              Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
-                                year: 'numeric',
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-              {/* Value (Balance) Badge */}
-              {(() => {
-                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                let balanceValue: any;
-                if (isLegacy) {
-                  // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                  const currencyId = (selectedClient as any).currency_id;
-                  // Convert to number for comparison (handle both string and number types)
-                  // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
-                  let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                  if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                    numericCurrencyId = 1; // Default to NIS
-                  }
-                  if (numericCurrencyId === 1) {
-                    // For currency_id 1, show total_base (only, no fallback)
-                    balanceValue = (selectedClient as any).total_base ?? null;
-                  } else {
-                    // For other currencies, show total column (only, no fallback)
-                    balanceValue = (selectedClient as any).total ?? null;
-                  }
-                } else {
-                  balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
-                }
-
-                // If a payment plan exists, the badge must reflect the sum of the plan (legacy + new leads)
-                if (hasPaymentPlan === true && paymentPlanGrossTotal !== null) {
-                  balanceValue = paymentPlanGrossTotal;
-                }
-
-                // Get currency name from accounting_currencies table
-                // For new leads: Always use currency_id -> accounting_currencies.name (never balance_currency)
-                // For legacy leads: Use balance_currency as fallback
-                let balanceCurrency: string | null = null;
-
-                // First, try to get from accounting_currencies join data (most reliable)
-                const accountingCurrencies = (selectedClient as any).accounting_currencies;
-                if (accountingCurrencies) {
-                  const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-                  if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-                    balanceCurrency = currencyRecord.name.trim();
-                  }
-                }
-
-                // For new leads: Always use currency_id -> accounting_currencies.name (default to 1)
-                if (!isLegacy) {
-                  const currencyId = (selectedClient as any)?.currency_id ?? 1;
-                  const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                  if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                    // Use getCurrencyName to get name from accounting_currencies (never hardcoded)
-                    balanceCurrency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-                    // Fallback to currency_id 1 if empty
-                    if (!balanceCurrency || balanceCurrency.trim() === '') {
-                      balanceCurrency = getCurrencyName(1);
-                    }
-                  } else {
-                    // If currency_id is invalid, default to currency_id 1
-                    balanceCurrency = getCurrencyName(1);
-                  }
-                } else {
-                  // For legacy leads: use balance_currency as fallback
-                  if (!balanceCurrency || balanceCurrency.trim() === '') {
-                    balanceCurrency = selectedClient.balance_currency || null;
-                  }
-
-                  // Final fallback for legacy: map currency_id to accounting_currencies table values
-                  if ((!balanceCurrency || balanceCurrency.trim() === '') && (selectedClient as any).currency_id) {
-                    const currencyId = (selectedClient as any).currency_id;
-                    const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                    if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                      // Use getCurrencyName to get name from accounting_currencies (never hardcoded)
-                      balanceCurrency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-                      // Fallback to currency_id 1 if empty
-                      if (!balanceCurrency || balanceCurrency.trim() === '') {
-                        balanceCurrency = getCurrencyName(1);
-                      }
-                    }
-                  }
-                }
-
-                // Ensure we have a currency (default to currency_id 1 if all else fails)
-                if (!balanceCurrency || balanceCurrency.trim() === '') {
-                  balanceCurrency = getCurrencyName(1);
-                }
-
-                if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
-                  const formattedValue = typeof balanceValue === 'number'
-                    ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
-                    : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-
-                  return (
-                    <div className="flex items-center justify-center pt-2">
-                      <span className="badge badge-lg px-4 py-2 bg-green-100 text-green-800 border border-green-300 font-semibold">
-                        <span className="inline-flex items-center gap-2">
-                          <span>Value: {balanceCurrency}{formattedValue}</span>
-                          {hasPaymentPlan === true && (
-                            <LockClosedIcon className="w-4 h-4 text-green-800/80" title="Locked by payment plan" />
-                          )}
-                        </span>
-                      </span>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-
-              {/* Click to Expand Hint */}
-              <div className="p-3">
-                <div className="flex items-center gap-2">
-                  <InformationCircleIcon className="w-4 h-4 text-base-content/70" />
-                  <span className="text-sm text-base-content font-medium">Click to view full details</span>
-                </div>
+              <div className="flex items-center justify-between gap-3">
+                <div>{inactiveValueBadge}</div>
+                <span className="text-xs text-gray-400 transition-colors group-hover:text-gray-500">
+                  Open details →
+                </span>
               </div>
             </div>
           </div>

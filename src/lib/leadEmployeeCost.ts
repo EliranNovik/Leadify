@@ -204,6 +204,13 @@ export type LeadIdentityForCost = {
   leadNumber: string | null;
 };
 
+function isUuidLeadId(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value.trim(),
+  );
+}
+
 export function resolveLeadIdentityForCost(client: any): LeadIdentityForCost | null {
   if (!client) return null;
   const isLegacy =
@@ -222,9 +229,14 @@ export function resolveLeadIdentityForCost(client: any): LeadIdentityForCost | n
     };
   }
 
+  const idStr = client.id != null ? String(client.id).trim() : '';
+  // Never treat a lead_number (e.g. "L209994/3") as new_lead_id — that skips real
+  // allocation rows and triggers the Handler salary fallback (false over-budget).
+  const newLeadId = isUuidLeadId(idStr) ? idStr : null;
+
   return {
     isLegacy: false,
-    newLeadId: client.id != null ? String(client.id) : null,
+    newLeadId,
     legacyLeadId: null,
     leadNumber,
   };
@@ -408,13 +420,52 @@ export async function fetchLeadEmployeeCostSummary(params: {
     return empty;
   }
 
-  const { data, error } = await query;
+  let { data, error } = await query;
   if (error) {
     console.error('[leadEmployeeCost] allocation fetch failed:', error);
     throw error;
   }
 
-  const items = (data || []) as AllocationItemJoin[];
+  let items = (data || []) as AllocationItemJoin[];
+  // If UUID match returned nothing, retry by lead_number (older rows may lack new_lead_id).
+  if (
+    items.length === 0 &&
+    !identity.isLegacy &&
+    identity.newLeadId &&
+    identity.leadNumber
+  ) {
+    const retry = await supabase
+      .from('employee_daily_lead_allocation_items')
+      .select(
+        `
+      id,
+      percent,
+      lead_number,
+      lead_type,
+      new_lead_id,
+      legacy_lead_id,
+      employee_daily_lead_allocations!inner (
+        employee_id,
+        work_date,
+        tenants_employee!employee_id (
+          id,
+          display_name,
+          photo_url,
+          photo,
+          min_hours,
+          department_id,
+          tenant_departement!department_id ( id, name )
+        )
+      )
+    `,
+      )
+      .eq('lead_number', identity.leadNumber);
+    if (retry.error) {
+      console.error('[leadEmployeeCost] allocation lead_number retry failed:', retry.error);
+      throw retry.error;
+    }
+    items = (retry.data || []) as AllocationItemJoin[];
+  }
   // Fallback is ONLY when this lead has no real allocation-report rows.
   // Any saved allocation item with percent > 0 fully replaces the Handler/R-Handler 127h estimate.
   const hasRealAllocationReportData = items.some(
@@ -540,6 +591,59 @@ export async function fetchLeadEmployeeCostSummary(params: {
     exceedsCap,
     utilizationPercent,
     usedRoleHourlyFallback: false,
+  };
+}
+
+/**
+ * Spent / left / max time from a cost summary — same math as Clients `LeadRemainingTimeBar`.
+ */
+export function remainingTimeFromLeadCostSummary(summary: LeadEmployeeCostSummary): {
+  remainingCostNis: number;
+  remainingWorkedMs: number | null;
+  spentWorkedMs: number;
+  totalBudgetWorkedMs: number | null;
+  utilizationPercent: number;
+  exceeds: boolean;
+} {
+  const exceeds = summary.exceedsCap === true;
+  const spentWorkedMs = Math.max(0, Number(summary.totalWorkedMs) || 0);
+  const remainingCostNis = Math.max(
+    0,
+    Math.round((summary.maxAllowedCostNis - summary.totalCostNis) * 100) / 100,
+  );
+  const hoursWorked = spentWorkedMs > 0 ? spentWorkedMs / (60 * 60 * 1000) : 0;
+  let hourRateNis: number | null = null;
+  if (hoursWorked > 0.001 && summary.totalCostNis > 0) {
+    hourRateNis = summary.totalCostNis / hoursWorked;
+  } else {
+    const rates = summary.employees
+      .map((e) => e.hourRateNis)
+      .filter((r): r is number => r != null && r > 0);
+    if (rates.length > 0) {
+      hourRateNis = rates.reduce((sum, r) => sum + r, 0) / rates.length;
+    }
+  }
+  const remainingWorkedMs =
+    !exceeds && hourRateNis != null && hourRateNis > 0
+      ? Math.round((remainingCostNis / hourRateNis) * 60 * 60 * 1000)
+      : exceeds
+        ? 0
+        : null;
+
+  const totalBudgetWorkedMs =
+    remainingWorkedMs != null
+      ? spentWorkedMs + remainingWorkedMs
+      : hourRateNis != null && hourRateNis > 0 && summary.maxAllowedCostNis > 0
+        ? Math.round((summary.maxAllowedCostNis / hourRateNis) * 60 * 60 * 1000)
+        : null;
+
+  return {
+    remainingCostNis,
+    remainingWorkedMs,
+    spentWorkedMs,
+    totalBudgetWorkedMs,
+    utilizationPercent: summary.utilizationPercent,
+    exceeds,
   };
 }
 

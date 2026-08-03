@@ -44,6 +44,7 @@
     "framer-motion": "^12.23.25",
     "html2pdf.js": "^0.10.3",
     "jspdf": "^3.0.1",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.516.0",
     "luxon": "^3.6.1",
     "node-fetch": "^2.7.0",
@@ -79,6 +80,7 @@
   },
   "devDependencies": {
     "@types/jspdf": "^2.0.0",
+    "@types/jszip": "^3.4.1",
     "@types/luxon": "^3.6.2",
     "@types/react": "^18.2.41",
     "@types/react-big-calendar": "^1.16.2",

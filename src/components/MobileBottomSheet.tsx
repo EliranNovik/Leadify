@@ -81,6 +81,10 @@ export type MobileBottomSheetProps = {
   zIndex?: number;
   /** Nearly full viewport height on mobile */
   mobileFullHeight?: boolean;
+  /** Mobile open snap: 0 peek · 1 mid · 2 expanded (default mid). */
+  mobileInitialSnapIndex?: SnapIndex;
+  /** Mobile: true full-page panel (no bottom-sheet snaps / rounded top). */
+  mobileFullPage?: boolean;
   /** Skip built-in header (use custom header inside children) */
   hideDefaultHeader?: boolean;
   /** Skip drag handle on mobile */
@@ -118,6 +122,8 @@ export default function MobileBottomSheet({
   children,
   zIndex = 100,
   mobileFullHeight = false,
+  mobileInitialSnapIndex = DEFAULT_SNAP_INDEX,
+  mobileFullPage = false,
   hideDefaultHeader = false,
   hideDragHandle = false,
   ariaLabelledBy,
@@ -139,12 +145,17 @@ export default function MobileBottomSheet({
   const sheetRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
 
+  const initialSnap: SnapIndex =
+    mobileInitialSnapIndex === 0 || mobileInitialSnapIndex === 1 || mobileInitialSnapIndex === 2
+      ? mobileInitialSnapIndex
+      : DEFAULT_SNAP_INDEX;
+
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' ? isNarrowViewport() : false,
   );
   const [entered, setEntered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [snapIndex, setSnapIndex] = useState<SnapIndex>(DEFAULT_SNAP_INDEX);
+  const [snapIndex, setSnapIndex] = useState<SnapIndex>(initialSnap);
   const [heights, setHeights] = useState<[number, number, number]>(() =>
     typeof window !== 'undefined'
       ? snapHeightsForViewport(window.innerHeight, mobileFullHeight)
@@ -152,10 +163,10 @@ export default function MobileBottomSheet({
   );
 
   /** Visible sheet height (footer stays inside this box at every snap). */
-  const heightRef = useRef(heights[DEFAULT_SNAP_INDEX]);
+  const heightRef = useRef(heights[initialSnap]);
   /** Extra downward slide used only while dismissing past peek. */
   const dismissYRef = useRef(0);
-  const snapIndexRef = useRef<SnapIndex>(DEFAULT_SNAP_INDEX);
+  const snapIndexRef = useRef<SnapIndex>(initialSnap);
   const heightsRef = useRef(heights);
   const dragActiveRef = useRef(false);
   const dragStartYRef = useRef(0);
@@ -228,8 +239,8 @@ export default function MobileBottomSheet({
     if (!open) {
       setEntered(false);
       setIsDragging(false);
-      setSnapIndex(DEFAULT_SNAP_INDEX);
-      snapIndexRef.current = DEFAULT_SNAP_INDEX;
+      setSnapIndex(initialSnap);
+      snapIndexRef.current = initialSnap;
       closingRef.current = false;
       dragActiveRef.current = false;
       heightRef.current = 0;
@@ -248,9 +259,9 @@ export default function MobileBottomSheet({
         document.body.style.overflow = prevOverflow;
       }
     };
-  }, [open, scrollLock]);
+  }, [open, scrollLock, initialSnap]);
 
-  // Mobile enter: grow from 0 to default (mid) snap
+  // Mobile enter: grow from 0 to configured initial snap (or full-page fade/slide)
   useLayoutEffect(() => {
     if (!open) return;
     if (!isMobile) {
@@ -259,9 +270,20 @@ export default function MobileBottomSheet({
     }
 
     closingRef.current = false;
-    const target = heightsRef.current[DEFAULT_SNAP_INDEX];
-    setSnapIndex(DEFAULT_SNAP_INDEX);
-    snapIndexRef.current = DEFAULT_SNAP_INDEX;
+    if (mobileFullPage) {
+      setSnapIndex(2);
+      snapIndexRef.current = 2;
+      const full = Math.round(window.innerHeight);
+      heightRef.current = full;
+      applyVisual(full, 0, false);
+      setEntered(false);
+      const raf = requestAnimationFrame(() => setEntered(true));
+      return () => cancelAnimationFrame(raf);
+    }
+
+    const target = heightsRef.current[initialSnap];
+    setSnapIndex(initialSnap);
+    snapIndexRef.current = initialSnap;
     applyVisual(0, 0, false);
     setEntered(false);
 
@@ -271,12 +293,12 @@ export default function MobileBottomSheet({
     });
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, isMobile, applyVisual]);
+  }, [open, isMobile, applyVisual, initialSnap, mobileFullPage]);
 
   useEffect(() => {
-    if (!open || !isMobile || dragActiveRef.current || closingRef.current) return;
+    if (!open || !isMobile || mobileFullPage || dragActiveRef.current || closingRef.current) return;
     applyVisual(heights[snapIndexRef.current], 0, true, SNAP_MS);
-  }, [heights, open, isMobile, applyVisual]);
+  }, [heights, open, isMobile, applyVisual, mobileFullPage]);
 
   const animateToSnap = useCallback((snap: SnapIndex) => {
     setSnapIndex(snap);
@@ -313,6 +335,7 @@ export default function MobileBottomSheet({
   }, [closeRequestKey, open, animateClose]);
 
   const canStartDrag = useCallback((target: EventTarget | null) => {
+    if (mobileFullPage) return false;
     if (!isNarrowViewport()) return false;
     if (closingRef.current) return false;
     const el = target as HTMLElement | null;
@@ -321,7 +344,7 @@ export default function MobileBottomSheet({
     if (el.closest('button, a, input, textarea, select, [role="button"]')) return false;
     if (el.closest('[data-sheet-handle]')) return true;
     return (contentRef.current?.scrollTop ?? 0) <= 0;
-  }, []);
+  }, [mobileFullPage]);
 
   const onTouchStart = useCallback((e: React.TouchEvent) => {
     if (!canStartDrag(e.target)) return;
@@ -358,7 +381,7 @@ export default function MobileBottomSheet({
 
   useEffect(() => {
     const sheet = sheetRef.current;
-    if (!open || !isMobile || !sheet) return;
+    if (!open || !isMobile || mobileFullPage || !sheet) return;
 
     const onMove = (e: TouchEvent) => {
       if (!dragActiveRef.current) return;
@@ -391,11 +414,11 @@ export default function MobileBottomSheet({
 
     sheet.addEventListener('touchmove', onMove, { passive: false });
     return () => sheet.removeEventListener('touchmove', onMove);
-  }, [open, isMobile, applyVisual]);
+  }, [open, isMobile, mobileFullPage, applyVisual]);
 
   const handleOverlayClick = () => {
     if (!closeOnOverlayClick || closingRef.current) return;
-    if (isMobile) {
+    if (isMobile && !mobileFullPage) {
       onOverlayClick?.();
       animateClose();
       return;
@@ -407,33 +430,49 @@ export default function MobileBottomSheet({
 
   const showHeader = !hideDefaultHeader && (title || subtitle || headerRight);
   const isDrawerRight = desktopLayout === 'drawer-right';
-  const outerPositionClass = desktopFullScreen
-    ? 'max-md:items-end md:items-stretch md:justify-stretch md:p-0'
+  const useMobileFullPage = isMobile && mobileFullPage;
+  const outerPositionClass = useMobileFullPage || desktopFullScreen
+    ? useMobileFullPage
+      ? 'items-stretch justify-stretch p-0'
+      : 'max-md:items-end md:items-stretch md:justify-stretch md:p-0'
     : isDrawerRight
       ? 'max-md:items-end md:items-stretch md:justify-end'
       : 'max-md:items-end md:items-center md:justify-center md:p-4';
-  const sheetLayoutClass = desktopFullScreen
-    ? 'md:rounded-none md:border-0 md:max-w-none md:w-full md:h-full md:max-h-full'
-    : isDrawerRight
-      ? 'md:ml-auto md:h-full md:max-h-full md:max-w-md md:w-full md:rounded-none md:border-l md:border-t-0'
-      : 'md:rounded-2xl md:border md:border-base-200/80 md:max-w-3xl md:max-h-[90vh] md:transition-all md:duration-200 md:ease-out';
+  const sheetLayoutClass = useMobileFullPage
+    ? 'rounded-none border-0 max-w-none w-full h-full max-h-full max-md:rounded-none max-md:border-0'
+    : desktopFullScreen
+      ? 'md:rounded-none md:border-0 md:max-w-none md:w-full md:h-full md:max-h-full'
+      : isDrawerRight
+        ? 'md:ml-auto md:h-full md:max-h-full md:max-w-md md:w-full md:rounded-none md:border-l md:border-t-0'
+        : 'md:rounded-2xl md:border md:border-base-200/80 md:max-w-3xl md:max-h-[90vh] md:transition-all md:duration-200 md:ease-out';
   const desktopCenterMotion = !isDrawerRight && !isMobile
     ? entered
       ? 'md:scale-100 md:opacity-100'
       : 'md:scale-[0.97] md:opacity-0'
     : '';
+  const mobileFullPageMotion = useMobileFullPage
+    ? entered
+      ? 'translate-y-0 opacity-100'
+      : 'translate-y-3 opacity-0'
+    : '';
 
-  const mobileSheetStyle: React.CSSProperties | undefined = isMobile
+  const mobileSheetStyle: React.CSSProperties | undefined = useMobileFullPage
     ? {
-        height: heightRef.current || heights[DEFAULT_SNAP_INDEX],
-        maxHeight: heightRef.current || heights[DEFAULT_SNAP_INDEX],
-        transform: `translate3d(0, ${dismissYRef.current}px, 0)`,
-        transition: isDragging
-          ? 'none'
-          : `height ${SNAP_MS}ms ${SHEET_EASING}, transform ${SNAP_MS}ms ${SHEET_EASING}`,
-        willChange: 'height, transform',
+        height: '100%',
+        maxHeight: '100%',
+        transition: `transform ${SNAP_MS}ms ${SHEET_EASING}, opacity ${SNAP_MS}ms ${SHEET_EASING}`,
       }
-    : undefined;
+    : isMobile
+      ? {
+          height: heightRef.current || heights[initialSnap],
+          maxHeight: heightRef.current || heights[initialSnap],
+          transform: `translate3d(0, ${dismissYRef.current}px, 0)`,
+          transition: isDragging
+            ? 'none'
+            : `height ${SNAP_MS}ms ${SHEET_EASING}, transform ${SNAP_MS}ms ${SHEET_EASING}`,
+          willChange: 'height, transform',
+        }
+      : undefined;
 
   return createPortal(
     <div
@@ -443,25 +482,27 @@ export default function MobileBottomSheet({
     >
       <div
         ref={overlayRef}
-        className={`absolute inset-0 bg-black/50 ${overlayClassName}`}
-        style={isMobile ? { opacity: 0.55 } : undefined}
+        className={`absolute inset-0 bg-black/50 ${overlayClassName} ${
+          useMobileFullPage ? 'opacity-0 pointer-events-none' : ''
+        }`}
+        style={isMobile && !useMobileFullPage ? { opacity: 0.55 } : undefined}
         onClick={handleOverlayClick}
         aria-hidden="true"
       />
       <div className={`fixed inset-0 flex pointer-events-none ${outerPositionClass}`}>
         <div
           ref={sheetRef}
-          className={`pointer-events-auto flex w-full flex-col overflow-hidden bg-base-100 shadow-2xl border-base-200 max-md:rounded-t-3xl max-md:border-t max-md:max-h-none ${sheetLayoutClass} ${desktopCenterMotion} ${sheetClassName}`}
+          className={`pointer-events-auto flex w-full flex-col overflow-hidden bg-base-100 shadow-2xl border-base-200 max-md:rounded-t-3xl max-md:border-t max-md:max-h-none transition-[transform,opacity] duration-300 ease-out ${sheetLayoutClass} ${desktopCenterMotion} ${mobileFullPageMotion} ${sheetClassName}`}
           style={mobileSheetStyle}
           onClick={(e) => e.stopPropagation()}
           role="dialog"
           aria-modal="true"
           aria-labelledby={titleId}
-          onTouchStart={onTouchStart}
-          onTouchEnd={onTouchEnd}
-          onTouchCancel={onTouchEnd}
+          onTouchStart={useMobileFullPage ? undefined : onTouchStart}
+          onTouchEnd={useMobileFullPage ? undefined : onTouchEnd}
+          onTouchCancel={useMobileFullPage ? undefined : onTouchEnd}
         >
-          {!hideDragHandle && (
+          {!hideDragHandle && !useMobileFullPage && (
             <div
               data-sheet-handle
               className="md:hidden flex shrink-0 justify-center pt-3 pb-1 touch-none cursor-grab active:cursor-grabbing"

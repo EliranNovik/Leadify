@@ -30,9 +30,11 @@ import {
   buildSubEffortAttachmentsByPath,
   listSubEffortAttachOptions,
   normalizeStorageKey,
+  removeStoragePathsFromSubEffort,
   type SubEffortAttachOption,
   type SubEffortAttachmentRef,
 } from '../lib/subEffortDocumentAttach';
+import { SubEffortAttachBadge } from './caseDocumentsModalUi';
 import {
   DocumentAnnotatableView,
   parseRegionHighlight,
@@ -85,6 +87,8 @@ interface DocumentViewerModalProps {
   activeFolderId?: string | null;
   /** Called after a successful attach with storage paths that were added. */
   onAttached?: (attachedPaths: string[], target?: { id: string; name: string }) => void;
+  /** Called after removing selected files from a sub effort. */
+  onDetached?: (detachedPaths: string[], target?: { id: string; name: string }) => void;
 }
 
 function inferFileType(name: string, fileType?: string): string {
@@ -257,6 +261,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   targetDocumentUrl = null,
   activeFolderId = null,
   onAttached,
+  onDetached,
 }) => {
   const galleryItems = useMemo<DocumentViewerItem[]>(() => {
     if (documentsProp && documentsProp.length > 0) return documentsProp;
@@ -306,9 +311,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const [focusedCommentId, setFocusedCommentId] = useState<string | null>(null);
   const [selectedAttachIds, setSelectedAttachIds] = useState<Set<string>>(() => new Set());
   const [isAttaching, setIsAttaching] = useState(false);
+  const [isRemoving, setIsRemoving] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [removeMenuOpen, setRemoveMenuOpen] = useState(false);
   const attachMenuRef = useRef<HTMLDivElement | null>(null);
+  const removeMenuRef = useRef<HTMLDivElement | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<Map<string, SubEffortAttachmentRef[]>>(
+    () => new Map(),
+  );
+  const [suppressedAttachments, setSuppressedAttachments] = useState<Map<string, Set<string>>>(
     () => new Map(),
   );
   const commentsEndRef = useRef<HTMLDivElement | null>(null);
@@ -322,7 +333,6 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
   const attachmentsByPath = useMemo(() => {
     const fromRows = buildSubEffortAttachmentsByPath(subEffortRows);
-    if (pendingAttachments.size === 0) return fromRows;
     const merged = new Map(fromRows);
     for (const [path, refs] of pendingAttachments) {
       const list = [...(merged.get(path) ?? [])];
@@ -331,8 +341,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       }
       merged.set(path, list);
     }
-    return merged;
-  }, [subEffortRows, pendingAttachments]);
+    if (suppressedAttachments.size === 0) return merged;
+    const filtered = new Map<string, SubEffortAttachmentRef[]>();
+    for (const [path, refs] of merged) {
+      const suppressed = suppressedAttachments.get(path);
+      const nextRefs = suppressed ? refs.filter((r) => !suppressed.has(r.id)) : refs;
+      if (nextRefs.length > 0) filtered.set(path, nextRefs);
+    }
+    return filtered;
+  }, [subEffortRows, pendingAttachments, suppressedAttachments]);
 
   useEffect(() => {
     setPendingAttachments((prev) => {
@@ -353,24 +370,50 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       }
       return changed ? next : prev;
     });
+    setSuppressedAttachments((prev) => {
+      if (prev.size === 0) return prev;
+      const fromRows = buildSubEffortAttachmentsByPath(subEffortRows);
+      let changed = false;
+      const next = new Map(prev);
+      for (const [path, ids] of prev) {
+        const rowRefs = fromRows.get(path) ?? [];
+        const still = new Set([...ids].filter((id) => rowRefs.some((r) => r.id === id)));
+        if (still.size === 0) {
+          next.delete(path);
+          changed = true;
+        } else if (still.size !== ids.size) {
+          next.set(path, still);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, [subEffortRows]);
 
   useEffect(() => {
     if (!isOpen) {
       setSelectedAttachIds(new Set());
       setPendingAttachments(new Map());
+      setSuppressedAttachments(new Map());
       setAttachMenuOpen(false);
+      setRemoveMenuOpen(false);
     }
   }, [isOpen]);
 
   useEffect(() => {
-    if (!attachMenuOpen) return;
+    if (!attachMenuOpen && !removeMenuOpen) return;
     const onPointerDown = (e: PointerEvent) => {
-      const el = attachMenuRef.current;
-      if (el && !el.contains(e.target as Node)) setAttachMenuOpen(false);
+      const target = e.target as Node;
+      if (attachMenuRef.current?.contains(target)) return;
+      if (removeMenuRef.current?.contains(target)) return;
+      setAttachMenuOpen(false);
+      setRemoveMenuOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setAttachMenuOpen(false);
+      if (e.key === 'Escape') {
+        setAttachMenuOpen(false);
+        setRemoveMenuOpen(false);
+      }
     };
     window.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKey);
@@ -378,7 +421,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       window.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKey);
     };
-  }, [attachMenuOpen]);
+  }, [attachMenuOpen, removeMenuOpen]);
 
   const toggleAttachSelected = useCallback((id: string) => {
     setSelectedAttachIds((prev) => {
@@ -389,9 +432,28 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     });
   }, []);
 
+  const selectedAttachDocs = useMemo(
+    () => galleryItems.filter((d) => selectedAttachIds.has(d.id)),
+    [galleryItems, selectedAttachIds],
+  );
+
+  const removeOptions = useMemo(() => {
+    const byId = new Map<string, SubEffortAttachmentRef>();
+    for (const doc of selectedAttachDocs) {
+      const pathKey = normalizeStorageKey(doc.storagePath);
+      if (!pathKey) continue;
+      for (const ref of attachmentsByPath.get(pathKey) ?? []) {
+        byId.set(ref.id, ref);
+      }
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [selectedAttachDocs, attachmentsByPath]);
+
+  const attachBusy = isAttaching || isRemoving;
+
   const attachSelectedTo = useCallback(
     async (option: SubEffortAttachOption) => {
-      if (isAttaching) return;
+      if (isAttaching || isRemoving) return;
       const picked = galleryItems.filter(
         (d) => selectedAttachIds.has(d.id) && d.storagePath?.trim(),
       );
@@ -400,6 +462,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
         return;
       }
       setAttachMenuOpen(false);
+      setRemoveMenuOpen(false);
       setIsAttaching(true);
       try {
         const { addedCount } = await attachStoragePathsToSubEffort({
@@ -435,6 +498,21 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           }
           return next;
         });
+        setSuppressedAttachments((prev) => {
+          if (prev.size === 0) return prev;
+          const next = new Map(prev);
+          for (const raw of paths) {
+            const path = normalizeStorageKey(raw);
+            if (!path) continue;
+            const set = next.get(path);
+            if (!set?.has(option.id)) continue;
+            const updated = new Set(set);
+            updated.delete(option.id);
+            if (updated.size === 0) next.delete(path);
+            else next.set(path, updated);
+          }
+          return next;
+        });
         setSelectedAttachIds(new Set());
         onAttached?.(paths, { id: option.id, name: option.name });
       } catch (e: unknown) {
@@ -444,7 +522,84 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
         setIsAttaching(false);
       }
     },
-    [activeFolderId, galleryItems, isAttaching, onAttached, selectedAttachIds],
+    [activeFolderId, galleryItems, isAttaching, isRemoving, onAttached, selectedAttachIds],
+  );
+
+  const removeSelectedFrom = useCallback(
+    async (ref: SubEffortAttachmentRef) => {
+      if (isAttaching || isRemoving) return;
+      const option = attachOptions.find((o) => o.id === ref.id);
+      if (!option) {
+        toast.error('Sub effort not found.');
+        return;
+      }
+      const paths = selectedAttachDocs
+        .map((d) => normalizeStorageKey(d.storagePath))
+        .filter((path) => {
+          if (!path) return false;
+          return (attachmentsByPath.get(path) ?? []).some((a) => a.id === ref.id);
+        });
+      if (!paths.length) {
+        toast.error('Selected files are not attached to this sub effort.');
+        return;
+      }
+      setRemoveMenuOpen(false);
+      setAttachMenuOpen(false);
+      setIsRemoving(true);
+      try {
+        const { removedCount } = await removeStoragePathsFromSubEffort({
+          targetSubEffortId: option.id,
+          targetDocumentUrl: option.documentUrl,
+          paths,
+        });
+        if (removedCount === 0) {
+          toast.error('Nothing to remove from this sub effort.');
+          return;
+        }
+        toast.success(
+          removedCount === 1
+            ? `Removed from ${option.name}`
+            : `Removed ${removedCount} files from ${option.name}`,
+        );
+        setPendingAttachments((prev) => {
+          const next = new Map(prev);
+          for (const path of paths) {
+            const key = normalizeStorageKey(path);
+            if (!key) continue;
+            const list = (next.get(key) ?? []).filter((x) => x.id !== option.id);
+            if (list.length === 0) next.delete(key);
+            else next.set(key, list);
+          }
+          return next;
+        });
+        setSuppressedAttachments((prev) => {
+          const next = new Map(prev);
+          for (const path of paths) {
+            const key = normalizeStorageKey(path);
+            if (!key) continue;
+            const set = new Set(next.get(key) ?? []);
+            set.add(option.id);
+            next.set(key, set);
+          }
+          return next;
+        });
+        setSelectedAttachIds(new Set());
+        onDetached?.(paths, { id: option.id, name: option.name });
+      } catch (e: unknown) {
+        console.error('remove from document viewer:', e);
+        toast.error(e instanceof Error ? e.message : 'Failed to remove');
+      } finally {
+        setIsRemoving(false);
+      }
+    },
+    [
+      attachOptions,
+      attachmentsByPath,
+      isAttaching,
+      isRemoving,
+      onDetached,
+      selectedAttachDocs,
+    ],
   );
 
   useEffect(() => {
@@ -1081,67 +1236,128 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           {showAttachUi ? (
-            <div className="relative" ref={attachMenuRef}>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm h-9 gap-1.5 rounded-full px-3"
-                onClick={() => {
-                  if (!railOpen) setRailOpen(true);
-                  if (selectedAttachIds.size === 0) {
-                    toast.error('Select at least one file in the Files panel to attach.');
-                    return;
+            <>
+              <div className="relative" ref={attachMenuRef}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm h-9 gap-1.5 rounded-full px-3"
+                  onClick={() => {
+                    if (!railOpen) setRailOpen(true);
+                    if (selectedAttachIds.size === 0) {
+                      toast.error('Select at least one file in the Files panel to attach.');
+                      return;
+                    }
+                    if (attachOptions.length === 0) {
+                      toast.error('No sub efforts available to attach to.');
+                      return;
+                    }
+                    setRemoveMenuOpen(false);
+                    setAttachMenuOpen((v) => !v);
+                  }}
+                  disabled={attachBusy || selectedAttachIds.size === 0}
+                  aria-expanded={attachMenuOpen}
+                  aria-haspopup="menu"
+                  title={
+                    selectedAttachIds.size === 0
+                      ? 'Select documents in the Files panel'
+                      : 'Choose a sub effort to attach to'
                   }
-                  if (attachOptions.length === 0) {
-                    toast.error('No sub efforts available to attach to.');
-                    return;
-                  }
-                  setAttachMenuOpen((v) => !v);
-                }}
-                disabled={isAttaching || selectedAttachIds.size === 0}
-                aria-expanded={attachMenuOpen}
-                aria-haspopup="menu"
-                title={
-                  selectedAttachIds.size === 0
-                    ? 'Select documents in the Files panel'
-                    : 'Choose a sub effort to attach to'
-                }
-              >
-                {isAttaching ? (
-                  <span className="loading loading-spinner loading-xs" />
-                ) : (
-                  <PaperClipIcon className="h-4 w-4" />
-                )}
-                <span className="hidden text-sm font-medium sm:inline">
-                  Attach{selectedAttachIds.size ? ` (${selectedAttachIds.size})` : ''}
-                </span>
-                <ChevronDownIcon className="h-4 w-4 opacity-80" />
-              </button>
-              {attachMenuOpen && selectedAttachIds.size > 0 && attachOptions.length > 0 ? (
-                <div
-                  role="menu"
-                  className="absolute right-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-base-200 bg-white py-1 shadow-lg"
                 >
-                  <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
-                    Attach to sub effort
+                  {isAttaching ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <PaperClipIcon className="h-4 w-4" />
+                  )}
+                  <span className="hidden text-sm font-medium sm:inline">
+                    Attach{selectedAttachIds.size ? ` (${selectedAttachIds.size})` : ''}
+                  </span>
+                  <ChevronDownIcon className="h-4 w-4 opacity-80" />
+                </button>
+                {attachMenuOpen && selectedAttachIds.size > 0 && attachOptions.length > 0 ? (
+                  <div
+                    role="menu"
+                    className="absolute right-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-base-200 bg-white py-1 shadow-lg"
+                  >
+                    <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
+                      Attach to sub effort
+                    </div>
+                    {attachOptions.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="menuitem"
+                        className={`flex w-full items-center px-3 py-2.5 text-left text-sm hover:bg-base-200/70 ${
+                          String(opt.id) === String(targetSubEffortId ?? '')
+                            ? 'font-semibold text-primary'
+                            : 'text-base-content'
+                        }`}
+                        onClick={() => void attachSelectedTo(opt)}
+                      >
+                        <span className="min-w-0 truncate">{opt.name}</span>
+                      </button>
+                    ))}
                   </div>
-                  {attachOptions.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      role="menuitem"
-                      className={`flex w-full items-center px-3 py-2.5 text-left text-sm hover:bg-base-200/70 ${
-                        String(opt.id) === String(targetSubEffortId ?? '')
-                          ? 'font-semibold text-primary'
-                          : 'text-base-content'
-                      }`}
-                      onClick={() => void attachSelectedTo(opt)}
-                    >
-                      <span className="min-w-0 truncate">{opt.name}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+                ) : null}
+              </div>
+              <div className="relative" ref={removeMenuRef}>
+                <button
+                  type="button"
+                  className="btn btn-sm h-9 gap-1.5 rounded-full border border-red-200 bg-white px-3 font-medium text-red-600 hover:bg-red-50"
+                  onClick={() => {
+                    if (!railOpen) setRailOpen(true);
+                    if (selectedAttachIds.size === 0) {
+                      toast.error('Select at least one file in the Files panel to remove.');
+                      return;
+                    }
+                    if (removeOptions.length === 0) {
+                      toast.error('Selected files are not attached to any sub effort.');
+                      return;
+                    }
+                    setAttachMenuOpen(false);
+                    setRemoveMenuOpen((v) => !v);
+                  }}
+                  disabled={attachBusy || selectedAttachIds.size === 0}
+                  aria-expanded={removeMenuOpen}
+                  aria-haspopup="menu"
+                  title={
+                    selectedAttachIds.size === 0
+                      ? 'Select documents in the Files panel'
+                      : removeOptions.length === 0
+                        ? 'Selected files are not attached to any sub effort'
+                        : 'Choose a sub effort to remove from'
+                  }
+                >
+                  {isRemoving ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <TrashIcon className="h-4 w-4" />
+                  )}
+                  <span className="hidden text-sm font-medium sm:inline">Remove</span>
+                  <ChevronDownIcon className="h-4 w-4 opacity-80" />
+                </button>
+                {removeMenuOpen && selectedAttachIds.size > 0 && removeOptions.length > 0 ? (
+                  <div
+                    role="menu"
+                    className="absolute right-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-base-200 bg-white py-1 shadow-lg"
+                  >
+                    <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
+                      Remove from sub effort
+                    </div>
+                    {removeOptions.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center px-3 py-2.5 text-left text-sm text-red-700 hover:bg-red-50"
+                        onClick={() => void removeSelectedFrom(opt)}
+                      >
+                        <span className="min-w-0 truncate">{opt.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </>
           ) : null}
           {showRail ? (
             <button
@@ -1275,9 +1491,6 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 const checked = selectedAttachIds.has(d.id);
                 const pathKey = normalizeStorageKey(d.storagePath);
                 const attachedTo = pathKey ? attachmentsByPath.get(pathKey) ?? [] : [];
-                const attachedToCurrent =
-                  targetSubEffortId != null &&
-                  attachedTo.some((a) => String(a.id) === String(targetSubEffortId));
                 return (
                   <div
                     key={d.id}
@@ -1368,25 +1581,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                       <span className="w-full px-0.5 text-center text-[11px] font-medium leading-snug text-base-content/85 line-clamp-2 break-words md:text-xs">
                         {shortName}
                       </span>
-                      {showAttachUi && (attachedToCurrent || attachedTo.length > 0) ? (
-                        <div className="flex w-full flex-wrap items-center justify-center gap-1 px-0.5">
-                          {attachedToCurrent ? (
-                            <span className="inline-flex items-center rounded bg-emerald-600/10 px-1 py-0.5 text-[9px] font-semibold text-emerald-800">
-                              Attached
-                            </span>
-                          ) : null}
+                      {showAttachUi && attachedTo.length > 0 ? (
+                        <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-1 px-0.5">
                           {attachedTo.map((a) => (
-                            <span
+                            <SubEffortAttachBadge
                               key={a.id}
-                              className={`inline-flex max-w-full truncate rounded px-1 py-0.5 text-[9px] font-medium ${
-                                String(a.id) === String(targetSubEffortId ?? '')
-                                  ? 'bg-emerald-600 text-white'
-                                  : 'bg-emerald-100 text-emerald-900'
-                              }`}
-                              title={`Attached to ${a.name}`}
-                            >
-                              {a.name}
-                            </span>
+                              name={a.name}
+                              highlight={String(a.id) === String(targetSubEffortId ?? '')}
+                              className="text-[11px] px-2 py-0.5"
+                            />
                           ))}
                         </div>
                       ) : null}

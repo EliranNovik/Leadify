@@ -1,6 +1,9 @@
 import React, { useMemo } from 'react';
 import type { LeadEmployeeCostSummary } from '../lib/leadEmployeeCost';
-import { formatAllocationWorkedDuration } from '../lib/leadEmployeeCost';
+import {
+  formatAllocationWorkedDuration,
+  remainingTimeFromLeadCostSummary,
+} from '../lib/leadEmployeeCost';
 
 type LeadRemainingTimeBarProps = {
   summary: LeadEmployeeCostSummary | null;
@@ -10,57 +13,9 @@ type LeadRemainingTimeBarProps = {
   align?: 'start' | 'end';
   /** Shown left of the progress bar (vertically centered with the bar, not the labels). */
   leadingAccessory?: React.ReactNode;
+  /** Stretch bar to container width (leads management detail, etc.) */
+  fullWidth?: boolean;
 };
-
-function remainingFromSummary(summary: LeadEmployeeCostSummary): {
-  remainingCostNis: number;
-  remainingWorkedMs: number | null;
-  spentWorkedMs: number;
-  totalBudgetWorkedMs: number | null;
-  utilizationPercent: number;
-  exceeds: boolean;
-} {
-  const exceeds = summary.exceedsCap === true;
-  const spentWorkedMs = Math.max(0, Number(summary.totalWorkedMs) || 0);
-  const remainingCostNis = Math.max(
-    0,
-    Math.round((summary.maxAllowedCostNis - summary.totalCostNis) * 100) / 100,
-  );
-  const hoursWorked = spentWorkedMs > 0 ? spentWorkedMs / (60 * 60 * 1000) : 0;
-  let hourRateNis: number | null = null;
-  if (hoursWorked > 0.001 && summary.totalCostNis > 0) {
-    hourRateNis = summary.totalCostNis / hoursWorked;
-  } else {
-    const rates = summary.employees
-      .map((e) => e.hourRateNis)
-      .filter((r): r is number => r != null && r > 0);
-    if (rates.length > 0) {
-      hourRateNis = rates.reduce((sum, r) => sum + r, 0) / rates.length;
-    }
-  }
-  const remainingWorkedMs =
-    !exceeds && hourRateNis != null && hourRateNis > 0
-      ? Math.round((remainingCostNis / hourRateNis) * 60 * 60 * 1000)
-      : exceeds
-        ? 0
-        : null;
-
-  const totalBudgetWorkedMs =
-    remainingWorkedMs != null
-      ? spentWorkedMs + remainingWorkedMs
-      : hourRateNis != null && hourRateNis > 0 && summary.maxAllowedCostNis > 0
-        ? Math.round((summary.maxAllowedCostNis / hourRateNis) * 60 * 60 * 1000)
-        : null;
-
-  return {
-    remainingCostNis,
-    remainingWorkedMs,
-    spentWorkedMs,
-    totalBudgetWorkedMs,
-    utilizationPercent: summary.utilizationPercent,
-    exceeds,
-  };
-}
 
 function MetricCell({
   label,
@@ -104,13 +59,15 @@ export default function LeadRemainingTimeBar({
   className = '',
   align = 'end',
   leadingAccessory,
+  fullWidth = false,
 }: LeadRemainingTimeBarProps) {
   const remaining = useMemo(
-    () => (summary ? remainingFromSummary(summary) : null),
+    () => (summary ? remainingTimeFromLeadCostSummary(summary) : null),
     [summary],
   );
 
   const rootAlign = align === 'end' ? 'self-end' : 'self-start';
+  const barWidthClass = fullWidth ? 'w-full min-w-0' : 'w-[15.5rem] min-w-0 sm:w-[18rem]';
 
   if (loading && !summary) {
     return (
@@ -128,7 +85,7 @@ export default function LeadRemainingTimeBar({
             </div>
           </div>
         ) : (
-          <div className="w-[15.5rem] sm:w-[18rem]">
+          <div className={barWidthClass}>
             <div className="h-3 overflow-hidden rounded-full bg-base-200/70">
               <div className="h-full w-2/5 animate-pulse rounded-full bg-base-300/80" />
             </div>
@@ -229,7 +186,7 @@ export default function LeadRemainingTimeBar({
         dotClass={leftDot}
       />
       <MetricCell
-        label="Budget"
+        label="Max total"
         value={totalLabel}
         align="end"
         tone="text-base-content/80"
@@ -241,16 +198,22 @@ export default function LeadRemainingTimeBar({
   return (
     <div
       className={[rootAlign, className].filter(Boolean).join(' ')}
-      title={`Spent ${spentLabel} · Left ${leftLabel} · Budget ${totalLabel}`}
+      title={`Spent ${spentLabel} · Left ${leftLabel} · Max total ${totalLabel}`}
     >
       {leadingAccessory ? (
-        <div className="grid w-fit grid-cols-[auto_minmax(15.5rem,18rem)] items-center gap-x-2.5">
+        <div
+          className={`grid w-fit items-center gap-x-2.5 ${
+            fullWidth
+              ? 'w-full grid-cols-[auto_minmax(0,1fr)]'
+              : 'grid-cols-[auto_minmax(15.5rem,18rem)]'
+          }`}
+        >
           <div className="shrink-0 self-center">{leadingAccessory}</div>
           {bar}
           <div className="col-start-2">{metrics}</div>
         </div>
       ) : (
-        <div className="w-[15.5rem] min-w-0 sm:w-[18rem]">
+        <div className={barWidthClass}>
           {bar}
           {metrics}
         </div>

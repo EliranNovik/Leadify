@@ -35,6 +35,7 @@ import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerModal';
+import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
 
 type CaseDocumentAiSummaryStatus = 'pending' | 'ready' | 'failed' | 'skipped';
 
@@ -1406,19 +1407,42 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   const handleDownloadAll = async () => {
     const toDownload = requireCaseDocumentClassification ? documentsInActiveCategory : documents;
-    if (toDownload.length === 0) return;
+    if (toDownload.length === 0 || downloading.includes('all')) return;
 
-    setDownloading(prev => [...prev, 'all']);
+    setDownloading((prev) => [...prev, 'all']);
+    const toastId = 'document-modal-download-all';
+    toast.loading(`Preparing zip (${toDownload.length} file${toDownload.length === 1 ? '' : 's'})…`, {
+      id: toastId,
+    });
+
     try {
-      for (const doc of toDownload) {
-        await handleDownload(doc);
-        // Small delay between downloads to avoid overwhelming the browser
-        await new Promise(resolve => setTimeout(resolve, 500));
+      const leadPart = leadNumber?.trim() ? `${leadNumber.trim()} ` : '';
+      const titlePart = (modalTitle ?? 'Documents').trim() || 'Documents';
+      const { successCount, errorCount } = await downloadFilesAsZip({
+        files: toDownload.map((doc) => ({
+          url: doc.downloadUrl,
+          name: doc.name || 'document',
+        })),
+        zipFileName: `${leadPart}${titlePart}`,
+        onProgress: (done, total) => {
+          toast.loading(`Zipping ${done}/${total}…`, { id: toastId });
+        },
+      });
+
+      if (successCount > 0 && errorCount === 0) {
+        toast.success(`Downloaded zip with ${successCount} document${successCount === 1 ? '' : 's'}`, {
+          id: toastId,
+        });
+      } else if (successCount > 0) {
+        toast.success(`Zip ready (${successCount} files, ${errorCount} failed)`, { id: toastId });
+      } else {
+        toast.error('Failed to download documents', { id: toastId });
       }
     } catch (err) {
-      console.error('Bulk download error:', err);
+      console.error('Bulk download zip error:', err);
+      toast.error('Failed to create zip', { id: toastId });
     } finally {
-      setDownloading(prev => prev.filter(id => id !== 'all'));
+      setDownloading((prev) => prev.filter((id) => id !== 'all'));
     }
   };
 
@@ -1844,8 +1868,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     ? documentsInActiveCategory.length === 0
                     : documents.length === 0)
                 }
-                title="Download all"
-                aria-label="Download all"
+                title="Download all as zip"
+                aria-label="Download all as zip"
               >
                 <ArrowDownTrayIcon className="h-5 w-5 shrink-0" aria-hidden />
                 <span className="md:hidden">All</span>

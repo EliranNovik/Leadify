@@ -32,6 +32,8 @@ import {
   LeadValuePaymentPlanBlockedModal,
   SummaryEditButton,
 } from '../components/LeadManagementBudgetEditModals';
+import LeadRemainingTimeBar from '../components/LeadRemainingTimeBar';
+import type { LeadEmployeeCostSummary } from '../lib/leadEmployeeCost';
 import {
   getSalaryEmployeeInitials,
   salaryAvatarGradientStyle,
@@ -39,18 +41,15 @@ import {
 import type { LeadReportingType } from '../lib/employeeLeadReporting';
 import { supabase } from '../lib/supabase';
 
-function BudgetBar({
-  utilizationPercent,
-  exceedsCap,
+function AllTimeBudgetPanel({
+  summary,
   remainingCostNis,
-  remainingWorkedMs,
 }: {
-  utilizationPercent: number;
-  exceedsCap: boolean;
+  summary: LeadEmployeeCostSummary;
   remainingCostNis: number;
-  remainingWorkedMs: number | null;
 }) {
-  const width = Math.min(100, Math.max(0, utilizationPercent));
+  const exceedsCap = summary.exceedsCap;
+  const utilizationPercent = summary.utilizationPercent;
   return (
     <div className="w-full max-w-md">
       <div className="mb-1.5 flex items-center justify-between gap-2 text-sm">
@@ -61,41 +60,21 @@ function BudgetBar({
           <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
             Over budget
           </span>
-        ) : null}
-      </div>
-      <div className="h-3 overflow-hidden rounded-full bg-gray-100">
-        <div
-          className={`h-full rounded-full transition-all ${
-            exceedsCap ? 'bg-amber-500' : width >= 85 ? 'bg-amber-400' : 'bg-emerald-500'
-          }`}
-          style={{ width: `${width}%` }}
-        />
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
-        {exceedsCap ? (
-          <span className="font-medium text-amber-700">No remaining budget</span>
         ) : (
-          <>
-            <span>
-              <span className="font-medium text-gray-800">
-                {formatAllocationCostNis(remainingCostNis)}
-              </span>{' '}
-              left to spend
-            </span>
-            {remainingWorkedMs != null ? (
-              <span className="text-gray-400">·</span>
-            ) : null}
-            {remainingWorkedMs != null ? (
-              <span>
-                <span className="font-medium text-gray-800">
-                  {formatAllocationWorkedDuration(remainingWorkedMs)}
-                </span>{' '}
-                more time
-              </span>
-            ) : null}
-          </>
+          <span className="text-xs text-gray-500">
+            <span className="font-medium text-gray-800">
+              {formatAllocationCostNis(remainingCostNis)}
+            </span>{' '}
+            left to spend
+          </span>
         )}
       </div>
+      <LeadRemainingTimeBar
+        summary={summary}
+        align="start"
+        fullWidth
+        className="!self-stretch"
+      />
     </div>
   );
 }
@@ -386,6 +365,31 @@ const LeadManagementDetailPage: React.FC = () => {
     return { remainingCostNis, remainingWorkedMs };
   }, [detail]);
 
+  const leadCostSummary = useMemo((): LeadEmployeeCostSummary | null => {
+    if (!detail) return null;
+    return {
+      employees: detail.lead.employees.map((e) => ({
+        employeeId: e.employeeId,
+        employeeName: e.employeeName,
+        photoUrl: e.photoUrl,
+        departmentName: e.departmentName,
+        workedMs: e.workedMs,
+        costNis: e.costNis,
+        hourRateNis: e.hourRateNis,
+      })),
+      totalWorkedMs: detail.lead.workedMs,
+      totalCostNis: detail.lead.costNis,
+      baseMaxAllowedCostNis: detail.lead.baseMaxAllowedCostNis,
+      approvedExtensionCostNis: detail.lead.approvedExtensionCostNis,
+      maxOverrideNis: detail.lead.maxOverrideNis,
+      maxAllowedCostNis: detail.lead.maxAllowedCostNis,
+      leadTotalValueNis: detail.lead.leadTotalValueNis,
+      exceedsCap: detail.lead.exceedsCap,
+      utilizationPercent: detail.lead.utilizationPercent,
+      usedRoleHourlyFallback: false,
+    };
+  }, [detail]);
+
   if (!permissionsLoaded || !isSuperUser) {
     return (
       <div className="flex min-h-[calc(100dvh-3.5rem)] items-center justify-center bg-[#ececec]">
@@ -437,12 +441,12 @@ const LeadManagementDetailPage: React.FC = () => {
                     </Link>
                   ) : null}
                 </div>
-                <BudgetBar
-                  utilizationPercent={detail.lead.utilizationPercent}
-                  exceedsCap={detail.lead.exceedsCap}
-                  remainingCostNis={remainingBudget.remainingCostNis}
-                  remainingWorkedMs={remainingBudget.remainingWorkedMs}
-                />
+                {leadCostSummary ? (
+                  <AllTimeBudgetPanel
+                    summary={leadCostSummary}
+                    remainingCostNis={remainingBudget.remainingCostNis}
+                  />
+                ) : null}
               </div>
 
               <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">

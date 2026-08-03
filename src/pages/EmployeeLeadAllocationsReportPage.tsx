@@ -41,12 +41,64 @@ import {
   getSalaryEmployeeInitials,
   salaryAvatarGradientStyle,
 } from '../lib/employeeSalaries';
+import {
+  allocationLeadBudgetKey,
+  fetchAllocationLeadBudgetStatuses,
+  type AllocationLeadBudgetStatus,
+} from '../lib/leadAllocationBudget';
+import {
+  confirmBudgetRequestReview,
+  LeadBudgetRequestReviewModal,
+  LeadBudgetRequestsHistoryModal,
+  type LeadBudgetRequestReviewResult,
+} from '../components/LeadBudgetRequestsHistoryModal';
+import LeadRemainingTimeBar from '../components/LeadRemainingTimeBar';
+import type { LeadBudgetExtensionRequest } from '../lib/leadBudgetExtensionRequests';
 
 function formatSubmittedAt(iso: string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'short',
     timeStyle: 'short',
   }).format(new Date(iso));
+}
+
+function LeadBudgetBar({
+  status,
+  onOpenRequests,
+}: {
+  status: AllocationLeadBudgetStatus;
+  onOpenRequests: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="min-w-[11rem] max-w-[16rem] text-left"
+      onClick={onOpenRequests}
+      title="View budget requests"
+    >
+      <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+        <span className={status.exceedsCap ? 'font-semibold text-amber-700' : 'text-gray-500'}>
+          {status.utilizationPercent.toFixed(status.utilizationPercent % 1 === 0 ? 0 : 1)}% of max
+        </span>
+        {status.requestCount > 0 ? (
+          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold leading-none text-white">
+            {status.requestCount}
+          </span>
+        ) : null}
+      </div>
+      <LeadRemainingTimeBar
+        summary={status.costSummary}
+        align="start"
+        fullWidth
+        className="!self-stretch pointer-events-none"
+      />
+      {status.approvedExtensionCostNis > 0 ? (
+        <p className="mt-0.5 text-[10px] text-emerald-600">
+          +{formatAllocationCostNis(status.approvedExtensionCostNis)} ext
+        </p>
+      ) : null}
+    </button>
+  );
 }
 
 type EmployeeAllocationGroup = {
@@ -203,21 +255,26 @@ type ReportGrandTotals = {
   missingReportingCount: number;
   totalWorkedMs: number;
   totalCostNis: number | null;
+  overBudgetLeadCount: number;
 };
 
 function ReportTotalsBar({
   totals,
   onMissingReportingClick,
+  overBudgetOnly,
+  onToggleOverBudget,
 }: {
   totals: ReportGrandTotals;
   onMissingReportingClick: () => void;
+  overBudgetOnly: boolean;
+  onToggleOverBudget: () => void;
 }) {
   return (
     <section>
       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
         All employees total
       </p>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:gap-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-5 lg:gap-4">
         <StatTile
           label="Employees"
           value={String(totals.employeeCount)}
@@ -244,6 +301,14 @@ function ReportTotalsBar({
           value={formatAllocationCostNis(totals.totalCostNis)}
           variant="card"
           icon={BanknotesIcon}
+        />
+        <StatTile
+          label={overBudgetOnly ? 'Over budget · on' : 'Over budget'}
+          value={String(totals.overBudgetLeadCount)}
+          tone={totals.overBudgetLeadCount > 0 ? 'danger' : 'success'}
+          variant="card"
+          icon={ExclamationTriangleIcon}
+          onClick={onToggleOverBudget}
         />
       </div>
     </section>
@@ -537,18 +602,26 @@ type AllocationReportRowCardProps = {
   row: AllocationReportRow;
   totalWorkedMs: number;
   salaryHourRateNis: number | null;
+  budgetStatus: AllocationLeadBudgetStatus | null;
+  onOpenBudgetHistory: (status: AllocationLeadBudgetStatus, row: AllocationReportRow) => void;
+  onReviewRequest: (request: LeadBudgetExtensionRequest) => void;
 };
 
 function AllocationReportTableRow({
   row,
   totalWorkedMs,
   salaryHourRateNis,
+  budgetStatus,
+  onOpenBudgetHistory,
+  onReviewRequest,
 }: AllocationReportRowCardProps) {
   const workedMs = allocationPercentToWorkedMs(totalWorkedMs, row.percent);
   const rowCostNis = workedMsAtHourlyRateToCostNis(workedMs, salaryHourRateNis);
+  const pending = budgetStatus?.budgetRequests.filter((r) => r.status === 'pending') ?? [];
+  const overBudget = Boolean(budgetStatus?.exceedsCap);
 
   return (
-    <tr className="hover:bg-gray-50/90">
+    <tr className={overBudget ? 'bg-amber-50/40 hover:bg-amber-50/70' : 'hover:bg-gray-50/90'}>
       <td>
         {row.is_other_work ? (
           <span className="text-sm text-gray-400">—</span>
@@ -561,7 +634,17 @@ function AllocationReportTableRow({
           </Link>
         )}
       </td>
-      <td className="text-sm text-gray-800">{row.client_name}</td>
+      <td className="text-sm text-gray-800">
+        <div className="flex flex-wrap items-center gap-2">
+          <span>{row.client_name}</span>
+          {overBudget ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+              <ExclamationTriangleIcon className="h-3 w-3" />
+              Over budget
+            </span>
+          ) : null}
+        </div>
+      </td>
       <td className="text-right">
         <span className="inline-flex min-w-[3rem] justify-center rounded-md bg-primary/8 px-2 py-0.5 text-sm font-semibold text-primary">
           {formatAllocationPercent(row.percent)}%
@@ -573,6 +656,31 @@ function AllocationReportTableRow({
       <td className="text-right text-sm font-semibold text-gray-900">
         {formatAllocationCostNis(rowCostNis)}
       </td>
+      <td>
+        {budgetStatus ? (
+          <LeadBudgetBar
+            status={budgetStatus}
+            onOpenRequests={() => onOpenBudgetHistory(budgetStatus, row)}
+          />
+        ) : row.is_other_work ? (
+          <span className="text-sm text-gray-400">—</span>
+        ) : (
+          <span className="loading loading-spinner loading-xs text-gray-300" />
+        )}
+      </td>
+      <td className="text-right">
+        {pending.length > 0 ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 rounded-full bg-red-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-red-600"
+            onClick={() => onReviewRequest(pending[0])}
+          >
+            {pending.length === 1 ? 'Accept request' : `${pending.length} requests`}
+          </button>
+        ) : (
+          <span className="text-sm text-gray-400">—</span>
+        )}
+      </td>
       <td className="text-right text-sm text-gray-500">{formatSubmittedAt(row.submitted_at)}</td>
     </tr>
   );
@@ -580,9 +688,17 @@ function AllocationReportTableRow({
 
 type EmployeeAllocationSectionProps = {
   group: EmployeeAllocationGroup;
+  budgetByLeadKey: Map<string, AllocationLeadBudgetStatus>;
+  onOpenBudgetHistory: (status: AllocationLeadBudgetStatus, row: AllocationReportRow) => void;
+  onReviewRequest: (request: LeadBudgetExtensionRequest) => void;
 };
 
-function EmployeeAllocationSection({ group }: EmployeeAllocationSectionProps) {
+function EmployeeAllocationSection({
+  group,
+  budgetByLeadKey,
+  onOpenBudgetHistory,
+  onReviewRequest,
+}: EmployeeAllocationSectionProps) {
   return (
     <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
       <EmployeeAllocationHeader group={group} embedded />
@@ -596,18 +712,26 @@ function EmployeeAllocationSection({ group }: EmployeeAllocationSectionProps) {
               <th className="text-right">%</th>
               <th className="text-right">Time</th>
               <th className="text-right">Cost</th>
+              <th>Budget</th>
+              <th className="text-right">Action</th>
               <th className="text-right">Submitted</th>
             </tr>
           </thead>
           <tbody>
-            {group.rows.map((row) => (
-              <AllocationReportTableRow
-                key={allocationRowKey(row)}
-                row={row}
-                totalWorkedMs={group.totalWorkedMs}
-                salaryHourRateNis={group.salaryHourRateNis}
-              />
-            ))}
+            {group.rows.map((row) => {
+              const key = allocationLeadBudgetKey(row);
+              return (
+                <AllocationReportTableRow
+                  key={allocationRowKey(row)}
+                  row={row}
+                  totalWorkedMs={group.totalWorkedMs}
+                  salaryHourRateNis={group.salaryHourRateNis}
+                  budgetStatus={key ? budgetByLeadKey.get(key) ?? null : null}
+                  onOpenBudgetHistory={onOpenBudgetHistory}
+                  onReviewRequest={onReviewRequest}
+                />
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -636,6 +760,16 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   );
   const [missingReportingModalOpen, setMissingReportingModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [budgetByLeadKey, setBudgetByLeadKey] = useState<Map<string, AllocationLeadBudgetStatus>>(
+    () => new Map(),
+  );
+  const [overBudgetOnly, setOverBudgetOnly] = useState(false);
+  const [historyLead, setHistoryLead] = useState<{
+    label: string;
+    status: AllocationLeadBudgetStatus;
+  } | null>(null);
+  const [reviewRequest, setReviewRequest] = useState<LeadBudgetExtensionRequest | null>(null);
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -735,6 +869,15 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       setClockedOutEmployees(clockedOut);
       setReportedEmployeeIds(submittedEmployeeIds);
       setAvgMonthlySalaryByEmployee(salaryMap);
+
+      void fetchAllocationLeadBudgetStatuses(data)
+        .then((statuses) => {
+          setBudgetByLeadKey(statuses);
+        })
+        .catch((budgetError) => {
+          console.error('[EmployeeLeadAllocationsReport] budget status failed:', budgetError);
+          setBudgetByLeadKey(new Map());
+        });
     } catch (error) {
       console.error('[EmployeeLeadAllocationsReport] load failed:', error);
       toast.error('Failed to load allocation report.');
@@ -743,10 +886,46 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       setClockedOutEmployees(new Map());
       setReportedEmployeeIds(new Set());
       setAvgMonthlySalaryByEmployee(new Map());
+      setBudgetByLeadKey(new Map());
     } finally {
       setLoading(false);
     }
   }, [isSuperUser, workDate, departmentId, employeeSearch]);
+
+  const reloadBudgetStatuses = useCallback(async () => {
+    if (rows.length === 0) {
+      setBudgetByLeadKey(new Map());
+      return;
+    }
+    try {
+      const statuses = await fetchAllocationLeadBudgetStatuses(rows);
+      setBudgetByLeadKey(statuses);
+    } catch (error) {
+      console.error('[EmployeeLeadAllocationsReport] budget reload failed:', error);
+    }
+  }, [rows]);
+
+  const handleReviewConfirm = useCallback(
+    async (result: LeadBudgetRequestReviewResult) => {
+      if (!reviewRequest) return;
+      setReviewSubmitting(true);
+      try {
+        await confirmBudgetRequestReview({
+          requestId: reviewRequest.id,
+          decision: result.decision,
+          reviewNote: result.reviewNote,
+          approvedExtraCostNis: result.approvedExtraCostNis,
+        });
+        setReviewRequest(null);
+        await reloadBudgetStatuses();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Failed to review request');
+      } finally {
+        setReviewSubmitting(false);
+      }
+    },
+    [reviewRequest, reloadBudgetStatuses],
+  );
 
   useEffect(() => {
     if (!permissionsLoaded || !isSuperUser) return;
@@ -757,6 +936,20 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     () => groupRowsByEmployee(rows, clockInMsByEmployee, avgMonthlySalaryByEmployee),
     [rows, clockInMsByEmployee, avgMonthlySalaryByEmployee],
   );
+
+  const visibleEmployeeGroups = useMemo(() => {
+    if (!overBudgetOnly) return employeeGroups;
+    return employeeGroups
+      .map((group) => ({
+        ...group,
+        rows: group.rows.filter((row) => {
+          const key = allocationLeadBudgetKey(row);
+          if (!key) return false;
+          return budgetByLeadKey.get(key)?.exceedsCap === true;
+        }),
+      }))
+      .filter((group) => group.rows.length > 0);
+  }, [employeeGroups, overBudgetOnly, budgetByLeadKey]);
 
   const missingReportingEmployees = useMemo(
     () =>
@@ -792,13 +985,18 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       }
     }
 
+    const overBudgetLeadCount = Array.from(budgetByLeadKey.values()).filter(
+      (status) => status.exceedsCap,
+    ).length;
+
     return {
       employeeCount: employeeGroups.length,
       missingReportingCount: missingReportingEmployees.length,
       totalWorkedMs,
       totalCostNis: hasAnyCost ? Math.round(totalCostNis * 100) / 100 : null,
+      overBudgetLeadCount,
     };
-  }, [employeeGroups, missingReportingEmployees.length]);
+  }, [employeeGroups, missingReportingEmployees.length, budgetByLeadKey]);
 
   if (!permissionsLoaded || !isSuperUser) {
     return (
@@ -893,6 +1091,8 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
             <ReportTotalsBar
               totals={reportTotals}
               onMissingReportingClick={() => setMissingReportingModalOpen(true)}
+              overBudgetOnly={overBudgetOnly}
+              onToggleOverBudget={() => setOverBudgetOnly((prev) => !prev)}
             />
           )}
 
@@ -911,15 +1111,44 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
             <div className="rounded-2xl bg-white px-6 py-16 text-center text-sm text-gray-500 shadow-sm ring-1 ring-gray-100">
               No allocations found for these filters.
             </div>
+          ) : visibleEmployeeGroups.length === 0 ? (
+            <div className="rounded-2xl bg-white px-6 py-16 text-center text-sm text-gray-500 shadow-sm ring-1 ring-gray-100">
+              No over-budget leads for these filters.
+            </div>
           ) : (
             <div className="space-y-5">
-              {employeeGroups.map((group) => (
-                <EmployeeAllocationSection key={group.employeeId} group={group} />
+              {visibleEmployeeGroups.map((group) => (
+                <EmployeeAllocationSection
+                  key={group.employeeId}
+                  group={group}
+                  budgetByLeadKey={budgetByLeadKey}
+                  onOpenBudgetHistory={(status, row) =>
+                    setHistoryLead({
+                      label: `${row.client_name} · #${row.lead_number}`,
+                      status,
+                    })
+                  }
+                  onReviewRequest={setReviewRequest}
+                />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      <LeadBudgetRequestsHistoryModal
+        open={Boolean(historyLead)}
+        leadLabel={historyLead?.label || ''}
+        requests={historyLead?.status.budgetRequests || []}
+        onClose={() => setHistoryLead(null)}
+      />
+      <LeadBudgetRequestReviewModal
+        open={Boolean(reviewRequest)}
+        request={reviewRequest}
+        submitting={reviewSubmitting}
+        onClose={() => setReviewRequest(null)}
+        onConfirm={handleReviewConfirm}
+      />
     </div>
   );
 };

@@ -70,6 +70,90 @@ export async function fetchLeadCaseDocumentTypes(
   }));
 }
 
+/** Assign / clear document type on a case document (by id or storage path).
+ * Creates a `lead_case_documents` row when the file only exists on a sub-effort. */
+export async function updateCaseDocumentType(params: {
+  leadNumber: string;
+  documentId?: string | null;
+  storagePath?: string | null;
+  documentTypeId: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
+  client?: SupabaseClient;
+}): Promise<void> {
+  const db = params.client ?? supabase;
+  const lead = params.leadNumber.trim();
+  if (!lead) throw new Error('Missing lead number');
+  const typeId = params.documentTypeId?.trim() || null;
+  const id = params.documentId?.trim();
+  const path = String(params.storagePath ?? '')
+    .trim()
+    .replace(/^\/+/, '');
+
+  const applyUpdate = async (filter: {
+    byId?: string;
+    byLeadAndPath?: boolean;
+    byPathOnly?: boolean;
+  }): Promise<boolean> => {
+    let q = db.from('lead_case_documents').update({ document_type_id: typeId });
+    if (filter.byId) q = q.eq('id', filter.byId);
+    else if (filter.byLeadAndPath) {
+      if (!path) return false;
+      q = q.eq('lead_number', lead).eq('storage_path', path);
+    } else if (filter.byPathOnly) {
+      if (!path) return false;
+      q = q.eq('storage_path', path);
+    } else {
+      return false;
+    }
+    const { data, error } = await q.select('id');
+    if (error) throw error;
+    return Boolean(data?.length);
+  };
+
+  if (id && !id.startsWith('subeffort:')) {
+    if (await applyUpdate({ byId: id })) return;
+  }
+
+  if (path) {
+    if (await applyUpdate({ byLeadAndPath: true })) return;
+    if (await applyUpdate({ byPathOnly: true })) return;
+  }
+
+  // Nothing to clear if there is no case row yet.
+  if (!typeId) return;
+
+  if (!path) throw new Error('Missing storage path for this document');
+
+  const fileName =
+    params.fileName?.trim() ||
+    path.split('/').pop()?.trim() ||
+    'Document';
+  const actor = await fetchStageActorInfo();
+  const { error: insErr } = await db.from('lead_case_documents').insert({
+    lead_number: lead,
+    onedrive_subfolder: null,
+    onedrive_item_id: null,
+    storage_path: path,
+    file_name: fileName,
+    file_size: null,
+    mime_type: params.mimeType?.trim() || null,
+    classification_id: null,
+    uploaded_by: actor.fullName ?? null,
+    ai_summary_status: 'skipped',
+    contact_id: null,
+    document_type_id: typeId,
+  });
+  if (insErr) {
+    // Race: another request inserted the same path — retry update by path.
+    if (String(insErr.code ?? '') === '23505' || /duplicate|unique/i.test(insErr.message || '')) {
+      if (await applyUpdate({ byLeadAndPath: true })) return;
+      if (await applyUpdate({ byPathOnly: true })) return;
+    }
+    throw insErr;
+  }
+}
+
 export async function fetchLeadContactsForDocuments(client: {
   id?: unknown;
   lead_type?: string | null;

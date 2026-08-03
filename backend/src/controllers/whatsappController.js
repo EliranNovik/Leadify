@@ -605,7 +605,10 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       location,
       contacts,
       button,
-      interactive
+      interactive,
+      sticker,
+      reaction,
+      errors,
     } = message;
 
     // Check for duplicate messages early to avoid unnecessary processing
@@ -1170,8 +1173,90 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
             optionId: interactive.list_reply.id,
             phoneNumber
           });
+        } else {
+          baseMessageData.message =
+            baseMessageData.message ||
+            `[Interactive WhatsApp message: ${interactive?.type || 'unknown'}]`;
+          baseMessageData.message_type = 'text';
         }
         break;
+
+      case 'sticker': {
+        // Stickers aren't a first-class DB type — store as image when media id exists.
+        const stickerId = sticker?.id;
+        if (stickerId) {
+          baseMessageData.message = 'Sticker';
+          baseMessageData.message_type = 'image';
+          baseMessageData.media_id = stickerId;
+          baseMessageData.media_url = stickerId;
+          baseMessageData.media_mime_type = sticker?.mime_type || null;
+          const storedFileName = await downloadAndStoreMedia(stickerId, 'image', mediaOwnerIdentifier);
+          if (storedFileName) baseMessageData.media_url = storedFileName;
+        } else {
+          baseMessageData.message = 'Sticker';
+          baseMessageData.message_type = 'text';
+        }
+        break;
+      }
+
+      case 'reaction':
+        baseMessageData.message = reaction?.emoji
+          ? `Reacted ${reaction.emoji}`
+          : 'Reaction';
+        baseMessageData.message_type = 'text';
+        break;
+
+      case 'unsupported':
+        // Meta sends this when the Cloud API cannot expose the real payload
+        // (e.g. some channel/product messages). Persist as text so the chat still shows.
+        baseMessageData.message =
+          errors?.[0]?.message ||
+          'Unsupported WhatsApp message (type not available via API)';
+        baseMessageData.message_type = 'text';
+        console.warn('⚠️ Unsupported WhatsApp inbound message type from Meta', {
+          phoneNumber,
+          whatsappMessageId,
+          errors: errors || null,
+        });
+        break;
+
+      default:
+        baseMessageData.message =
+          baseMessageData.message ||
+          (typeof text?.body === 'string' && text.body.trim()
+            ? text.body
+            : `[WhatsApp message type: ${type || 'unknown'}]`);
+        baseMessageData.message_type = 'text';
+        console.warn('⚠️ Unhandled WhatsApp inbound message type; storing as text', {
+          type,
+          phoneNumber,
+          whatsappMessageId,
+        });
+        break;
+    }
+
+    // DB check: whatsapp_messages_message_type_check — never insert unknown types.
+    const ALLOWED_WHATSAPP_MESSAGE_TYPES = new Set([
+      'text',
+      'image',
+      'document',
+      'audio',
+      'video',
+      'location',
+      'contact',
+      'button_response',
+      'list_response',
+    ]);
+    if (!ALLOWED_WHATSAPP_MESSAGE_TYPES.has(String(baseMessageData.message_type || ''))) {
+      console.warn('⚠️ Coercing invalid message_type to text', {
+        originalType: baseMessageData.message_type,
+        webhookType: type,
+        phoneNumber,
+      });
+      if (!baseMessageData.message) {
+        baseMessageData.message = `[WhatsApp message type: ${baseMessageData.message_type || type || 'unknown'}]`;
+      }
+      baseMessageData.message_type = 'text';
     }
 
     // Create message records for all matching leads and contacts

@@ -1,10 +1,9 @@
 import { supabase } from './supabase';
-import { filterCountedClockInRecords } from './employeeClockInApproval';
 import {
   allocationPercentToWorkedMs,
+  fetchDailyAllocation,
   formatAllocationCostNis,
   formatAllocationWorkedDuration,
-  getJerusalemTodayIsoDate,
   normalizeEmployeeMinHours,
   salaryToHourlyRateNis,
   workedMsAtHourlyRateToCostNis,
@@ -16,24 +15,23 @@ import {
   LEAD_VALUE_OPERATING_SHARE,
   maxLeadEmployeeCostNis,
   resolveLeadTotalValueNis,
+  fetchLeadEmployeeCostSummary,
+  remainingTimeFromLeadCostSummary,
+  type LeadEmployeeCostSummary,
 } from './leadEmployeeCost';
 import {
   fetchFirmPaidExpenseReductionTotal,
   resolveLeadFeeIdentity,
 } from './leadExpenses';
 import {
-  fetchApprovedBudgetExtensionNis,
+  fetchBudgetExtensionRequestsForLeads,
+  type LeadBudgetExtensionRequest,
 } from './leadBudgetExtensionRequests';
-import {
-  fetchLeadCostMaxOverrideNis,
-  resolveEffectiveMaxAllowedCostNis,
-} from './leadEmployeeCostMaxOverride';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
-import { fetchClockInRecordsInRangeForReport } from './workingHoursExport';
 
 export type AllocationBudgetLeadRef = {
   key: string;
-  lead_type: LeadReportingType;
+  lead_type: LeadReportingType | null;
   new_lead_id: string | null;
   legacy_lead_id: number | null;
   lead_number: string;
@@ -61,83 +59,87 @@ export type LeadAllocationBudgetHint = {
   maxAllowedPercent: number;
   maxAllocatedMs: number;
   remainingCostNis: number;
+  /** Remaining time on the lead (same basis as Clients bar “Left”). */
+  remainingWorkedMs: number | null;
+  /** All-time spent on the lead (same as Clients “Spent”). */
+  leadWorkedMs: number;
   maxAllowedCostNis: number;
   otherCostOnLeadNis: number;
   proposedCostNis: number;
   overBudget: boolean;
 };
 
-type AllocationItemJoin = {
-  id: number;
-  percent: number;
-  lead_number: string | null;
-  lead_type: string | null;
-  new_lead_id: string | null;
-  legacy_lead_id: number | null;
-  employee_daily_lead_allocations: {
-    employee_id: number;
-    work_date: string;
-    tenants_employee:
-      | {
-          id: number;
-          min_hours: number | null;
-        }
-      | {
-          id: number;
-          min_hours: number | null;
-        }[]
-      | null;
-  } | null;
-};
 
-function employeeDateKey(employeeId: number, workDate: string): string {
-  return `${employeeId}|${workDate}`;
+function isUuidLeadId(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value.trim(),
+  );
 }
 
-function buildClockInMsByEmployeeDate(
-  records: { employee_id?: number | null; clock_in_time: string; clock_out_time: string | null }[],
-): Map<string, number> {
-  const counted = filterCountedClockInRecords(records as any);
-  const totals = new Map<string, number>();
-  const now = Date.now();
+function leadNumberCandidates(leadNumber: string | null | undefined): string[] {
+  const raw = String(leadNumber || '').trim();
+  if (!raw || raw === '—') return [];
+  const base = raw.replace(/\/\d+$/, '');
+  return base && base !== raw ? [raw, base] : [raw];
+}
 
-  for (const record of counted) {
-    const employeeId = record.employee_id;
-    if (employeeId == null) continue;
-    const dateKey = getJerusalemTodayIsoDate(new Date(record.clock_in_time));
-    const start = new Date(record.clock_in_time).getTime();
-    const end = record.clock_out_time ? new Date(record.clock_out_time).getTime() : now;
-    const durationMs = Math.max(0, end - start);
-    const key = employeeDateKey(employeeId, dateKey);
-    totals.set(key, (totals.get(key) ?? 0) + durationMs);
+async function resolveNewLeadIdFromLeadNumber(
+  leadNumber: string | null | undefined,
+): Promise<string | null> {
+  for (const candidate of leadNumberCandidates(leadNumber)) {
+    const { data } = await supabase
+      .from('leads')
+      .select('id')
+      .eq('lead_number', candidate)
+      .maybeSingle();
+    if (data?.id) return String(data.id);
   }
-
-  return totals;
+  return null;
 }
 
-async function fetchNewLeadPaymentPlanBaseTotal(leadId: string): Promise<number | null> {
+/**
+ * Same rules as Clients `fetchPaymentPlanTotal`:
+ * - any active rows (including expenses) mean hasPlan
+ * - base total only counts non-expense contract rows
+ * - expense-only plans → hasPlan true, base null → fall back to lead balance
+ */
+async function fetchNewLeadPaymentPlanTotals(leadId: string): Promise<{
+  hasPlan: boolean;
+  base: number | null;
+}> {
   const { data, error } = await supabase
     .from('payment_plans')
-    .select('value, payment_order')
-    .eq('lead_id', leadId)
+    .select('id, value, payment_order, lead_id, lead_ids')
+    .or(`lead_id.eq.${leadId},lead_ids.eq.${leadId}`)
     .is('cancel_date', null);
   if (error) {
     console.warn('[leadAllocationBudget] payment plan fetch failed:', error);
-    return null;
+    return { hasPlan: false, base: null };
   }
-  const rows = data || [];
-  if (rows.length === 0) return null;
+  const seen = new Set<string>();
+  const rows = ((data || []) as Array<{ id?: unknown; value?: unknown; payment_order?: unknown }>).filter(
+    (r) => {
+      const key = r?.id != null ? String(r.id) : JSON.stringify(r);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    },
+  );
+  if (rows.length === 0) return { hasPlan: false, base: null };
 
   let baseTotal = 0;
-  let hasPlan = false;
-  for (const row of rows as Array<{ value?: unknown; payment_order?: unknown }>) {
-    const order = row.payment_order;
-    if (isExpenseNoVatPayment(order)) continue;
-    hasPlan = true;
+  let hasContractPayments = false;
+  for (const row of rows) {
+    if (isExpenseNoVatPayment(row.payment_order as string | number | null | undefined)) continue;
+    hasContractPayments = true;
     const base = Number(row.value ?? 0);
     if (Number.isFinite(base)) baseTotal += base;
   }
-  return hasPlan ? baseTotal : null;
+  return {
+    hasPlan: true,
+    base: hasContractPayments ? baseTotal : null,
+  };
 }
 
 async function fetchLegacyLeadPaymentPlanBaseTotal(legacyId: number): Promise<number | null> {
@@ -156,7 +158,7 @@ async function fetchLegacyLeadPaymentPlanBaseTotal(legacyId: number): Promise<nu
   let baseTotal = 0;
   let hasPlan = false;
   for (const row of rows as Array<{ value?: unknown; order?: unknown }>) {
-    const order = row.order;
+    const order = row.order as string | number | null | undefined;
     if (isExpenseNoVatPayment(order)) continue;
     hasPlan = true;
     const base = Number(row.value ?? 0);
@@ -196,14 +198,9 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
     );
   }
 
-  let newLeadId = lead.new_lead_id;
-  if (!newLeadId && lead.lead_number) {
-    const { data: byNumber } = await supabase
-      .from('leads')
-      .select('id')
-      .eq('lead_number', lead.lead_number)
-      .maybeSingle();
-    if (byNumber?.id) newLeadId = String(byNumber.id);
+  let newLeadId = lead.new_lead_id && isUuidLeadId(lead.new_lead_id) ? lead.new_lead_id : null;
+  if (!newLeadId) {
+    newLeadId = await resolveNewLeadIdFromLeadNumber(lead.lead_number);
   }
 
   if (newLeadId) {
@@ -212,23 +209,32 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
       lead_type: 'new',
       lead_number: lead.lead_number,
     });
-    const [{ data, error }, planBase, firmPaidExpenseTotal] = await Promise.all([
+    // `leads` has no lead_type column — selecting it fails the whole value fetch
+    // and zeros the budget max (false "0m left / max 0%" on daily allocation).
+    const [{ data, error }, planTotals, firmPaidExpenseTotal] = await Promise.all([
       supabase
         .from('leads')
-        .select('id, balance, proposal_total, lead_type, subcontractor_fee')
+        .select(
+          'id, balance, proposal_total, subcontractor_fee, case_handler_id, retainer_handler_id, lead_number',
+        )
         .eq('id', newLeadId)
         .maybeSingle(),
-      fetchNewLeadPaymentPlanBaseTotal(newLeadId),
+      fetchNewLeadPaymentPlanTotals(newLeadId),
       identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
     ]);
     if (error) {
       console.warn('[leadAllocationBudget] lead value fetch failed:', error);
     }
-    return resolveLeadTotalValueNis(data ?? { id: newLeadId }, {
-      hasPaymentPlan: planBase != null,
-      paymentPlanBaseTotal: planBase,
-      firmPaidExpenseTotal,
-    });
+    return resolveLeadTotalValueNis(
+      data
+        ? { ...data, lead_type: 'new', id: newLeadId }
+        : { id: newLeadId, lead_type: 'new', lead_number: lead.lead_number },
+      {
+        hasPaymentPlan: planTotals.hasPlan,
+        paymentPlanBaseTotal: planTotals.base,
+        firmPaidExpenseTotal,
+      },
+    );
   }
 
   return 0;
@@ -254,101 +260,103 @@ async function fetchEmployeeHourRateNis(employeeId: number): Promise<{
 }
 
 /**
- * Existing employee cost on a lead, excluding one employee's work on a given date
- * (so we can evaluate a proposed replacement allocation for that day).
+ * Cost already booked for this employee+date on the lead (saved allocation),
+ * so we can treat a new daily % as a replacement for that day.
+ * Uses the same fetch path as the reporting page (allocation header + items).
  */
-async function fetchOtherCostOnLeadNis(params: {
+async function fetchEmployeeDayCostOnLeadNis(params: {
   lead: AllocationBudgetLeadRef;
-  excludeEmployeeId: number;
-  excludeWorkDate: string;
+  employeeId: number;
+  workDate: string;
+  dayWorkedMs: number;
+  hourRateNis: number;
 }): Promise<number> {
-  let query = supabase.from('employee_daily_lead_allocation_items').select(
-    `
-      id,
-      percent,
-      lead_number,
-      lead_type,
-      new_lead_id,
-      legacy_lead_id,
-      employee_daily_lead_allocations!inner (
-        employee_id,
-        work_date,
-        tenants_employee!employee_id (
-          id,
-          min_hours
-        )
+  const allocation = await fetchDailyAllocation(params.employeeId, params.workDate);
+  if (!allocation?.items?.length) return 0;
+
+  const lead = params.lead;
+  const item = allocation.items.find((row) => {
+    if (
+      lead.new_lead_id &&
+      row.new_lead_id &&
+      String(row.new_lead_id) === String(lead.new_lead_id)
+    ) {
+      return true;
+    }
+    if (
+      lead.legacy_lead_id != null &&
+      row.legacy_lead_id != null &&
+      Number(row.legacy_lead_id) === Number(lead.legacy_lead_id)
+    ) {
+      return true;
+    }
+    if (lead.lead_number && row.lead_number && String(row.lead_number) === String(lead.lead_number)) {
+      return true;
+    }
+    return false;
+  });
+  if (!item) return 0;
+
+  const workedMs = allocationPercentToWorkedMs(params.dayWorkedMs, Number(item.percent) || 0);
+  return workedMsAtHourlyRateToCostNis(workedMs, params.hourRateNis) ?? 0;
+}
+
+async function resolveBudgetLeadClient(lead: AllocationBudgetLeadRef): Promise<{
+  client: Record<string, unknown>;
+  leadTotalValueNis: number;
+  resolved: AllocationBudgetLeadRef;
+}> {
+  const isLegacy = lead.lead_type === 'legacy' || lead.legacy_lead_id != null;
+  let newLeadId =
+    !isLegacy && lead.new_lead_id && isUuidLeadId(lead.new_lead_id) ? lead.new_lead_id : null;
+  if (!isLegacy && !newLeadId) {
+    newLeadId = await resolveNewLeadIdFromLeadNumber(lead.lead_number);
+  }
+
+  const resolved: AllocationBudgetLeadRef = {
+    ...lead,
+    lead_type: isLegacy ? 'legacy' : 'new',
+    new_lead_id: isLegacy ? null : newLeadId,
+    legacy_lead_id: isLegacy ? lead.legacy_lead_id : null,
+  };
+
+  const leadTotalValueNis = await fetchLeadTotalValueNisForRef(resolved);
+
+  // Prefer a full lead row (handlers + balance) so cost summary matches Clients.
+  if (!isLegacy && newLeadId) {
+    const { data } = await supabase
+      .from('leads')
+      .select(
+        'id, balance, proposal_total, subcontractor_fee, case_handler_id, retainer_handler_id, lead_number',
       )
-    `,
-  );
-
-  if (params.lead.lead_type === 'legacy' && params.lead.legacy_lead_id != null) {
-    query = query.eq('legacy_lead_id', params.lead.legacy_lead_id);
-  } else if (params.lead.new_lead_id) {
-    query = query.eq('new_lead_id', params.lead.new_lead_id);
-  } else if (params.lead.lead_number) {
-    query = query.eq('lead_number', params.lead.lead_number);
-  } else {
-    return 0;
-  }
-
-  const { data, error } = await query;
-  if (error) {
-    console.error('[leadAllocationBudget] allocation cost fetch failed:', error);
-    throw error;
-  }
-
-  const items = (data || []) as AllocationItemJoin[];
-  if (items.length === 0) return 0;
-
-  const employeeIds = new Set<number>();
-  let minDate = '';
-  let maxDate = '';
-
-  for (const item of items) {
-    const alloc = item.employee_daily_lead_allocations;
-    if (!alloc) continue;
-    if (
-      alloc.employee_id === params.excludeEmployeeId &&
-      alloc.work_date === params.excludeWorkDate
-    ) {
-      continue;
+      .eq('id', newLeadId)
+      .maybeSingle();
+    if (data) {
+      return {
+        client: {
+          ...data,
+          lead_type: 'new',
+          lead_number: data.lead_number || lead.lead_number,
+        },
+        leadTotalValueNis,
+        resolved,
+      };
     }
-    employeeIds.add(alloc.employee_id);
-    if (!minDate || alloc.work_date < minDate) minDate = alloc.work_date;
-    if (!maxDate || alloc.work_date > maxDate) maxDate = alloc.work_date;
   }
 
-  if (employeeIds.size === 0 || !minDate || !maxDate) return 0;
+  const client = isLegacy
+    ? {
+        id: `legacy_${lead.legacy_lead_id}`,
+        lead_type: 'legacy' as const,
+        lead_number: lead.lead_number,
+      }
+    : {
+        id: newLeadId || null,
+        lead_type: 'new' as const,
+        lead_number: lead.lead_number,
+      };
 
-  const [salaryMap, clockRecords] = await Promise.all([
-    fetchAverageGrossSalaryLastMonths(Array.from(employeeIds), 6),
-    fetchClockInRecordsInRangeForReport(minDate, maxDate),
-  ]);
-  const clockMsByEmpDate = buildClockInMsByEmployeeDate(clockRecords);
-
-  let totalCost = 0;
-  for (const item of items) {
-    const alloc = item.employee_daily_lead_allocations;
-    if (!alloc) continue;
-    if (
-      alloc.employee_id === params.excludeEmployeeId &&
-      alloc.work_date === params.excludeWorkDate
-    ) {
-      continue;
-    }
-
-    const empRaw = alloc.tenants_employee;
-    const emp = Array.isArray(empRaw) ? empRaw[0] : empRaw;
-    const minHours = normalizeEmployeeMinHours(emp?.min_hours);
-    const avgSalary = salaryMap.get(alloc.employee_id) ?? 0;
-    const hourRateNis = salaryToHourlyRateNis(avgSalary > 0 ? avgSalary : null, minHours);
-    const dayWorkedMs =
-      clockMsByEmpDate.get(employeeDateKey(alloc.employee_id, alloc.work_date)) ?? 0;
-    const workedMs = allocationPercentToWorkedMs(dayWorkedMs, Number(item.percent) || 0);
-    totalCost += workedMsAtHourlyRateToCostNis(workedMs, hourRateNis) ?? 0;
-  }
-
-  return Math.round(totalCost * 100) / 100;
+  return { client, leadTotalValueNis, resolved };
 }
 
 function maxPercentFromRemainingBudget(params: {
@@ -364,14 +372,11 @@ function maxPercentFromRemainingBudget(params: {
     return { maxAllowedPercent: 100, maxAllocatedMs: dayWorkedMs };
   }
 
-  // Derive max time from remaining ₪ first (minute-level), then convert to %.
-  // Flooring % first (e.g. 0.4% → 0) incorrectly blocked leftover minutes.
+  // Same remaining-time basis as Clients (round to ms), then clamp to the day.
+  const rawMs = (remainingCostNis / hourRateNis) * 60 * 60 * 1000;
   const maxAllocatedMs = Math.max(
     0,
-    Math.min(
-      dayWorkedMs,
-      Math.floor((remainingCostNis / hourRateNis) * 60 * 60 * 1000),
-    ),
+    Math.min(dayWorkedMs, Math.max(0, Math.round(rawMs))),
   );
   const maxAllowedPercent =
     dayWorkedMs > 0
@@ -382,8 +387,8 @@ function maxPercentFromRemainingBudget(params: {
 }
 
 /**
- * Evaluates proposed daily allocations against the lead employee-cost cap
- * (14% of 87% of lead value). Returns violations and per-lead budget hints.
+ * Evaluates proposed daily allocations against the lead employee-cost cap.
+ * Uses {@link fetchLeadEmployeeCostSummary} — same max / spent / left as Clients.
  */
 export async function evaluateDailyLeadAllocationBudgets(params: {
   employeeId: number;
@@ -407,68 +412,99 @@ export async function evaluateDailyLeadAllocationBudgets(params: {
 
   const results = await Promise.all(
     included.map(async (lead) => {
-      const [leadTotalValueNis, otherCostOnLeadNis, approvedExtra, maxOverrideNis] =
-        await Promise.all([
-          fetchLeadTotalValueNisForRef(lead),
-          fetchOtherCostOnLeadNis({
-            lead,
-            excludeEmployeeId: params.employeeId,
-            excludeWorkDate: params.workDate,
-          }),
-          fetchApprovedBudgetExtensionNis({
-            leadType: lead.lead_type,
-            newLeadId: lead.new_lead_id,
-            legacyLeadId: lead.legacy_lead_id,
-            leadNumber: lead.lead_number,
-          }),
-          fetchLeadCostMaxOverrideNis({
-            leadType: lead.lead_type,
-            newLeadId: lead.new_lead_id,
-            legacyLeadId: lead.legacy_lead_id,
-            leadNumber: lead.lead_number,
-          }),
-        ]);
+      const { client, leadTotalValueNis, resolved } = await resolveBudgetLeadClient(lead);
 
-      const baseMax = maxLeadEmployeeCostNis(leadTotalValueNis);
-      const maxAllowedCostNis = resolveEffectiveMaxAllowedCostNis({
-        baseMaxAllowedCostNis: baseMax,
-        approvedExtensionCostNis: approvedExtra,
-        maxOverrideNis,
-      });
-      // Without a reliable lead value / max (and no extension), do not block the worker.
-      if (!(maxAllowedCostNis > 0) && !(leadTotalValueNis > 0)) {
-        return {
-          hint: {
-            key: lead.key,
-            maxAllowedPercent: 100,
-            maxAllocatedMs: params.dayWorkedMs,
-            remainingCostNis: 0,
-            maxAllowedCostNis: 0,
-            otherCostOnLeadNis,
-            proposedCostNis: 0,
-            overBudget: false,
-          } satisfies LeadAllocationBudgetHint,
-          violation: null,
-        };
-      }
+      const [summary, todayCostOnLeadNis] = await Promise.all([
+        fetchLeadEmployeeCostSummary({
+          client,
+          leadTotalValueNis,
+        }),
+        fetchEmployeeDayCostOnLeadNis({
+          lead: resolved,
+          employeeId: params.employeeId,
+          workDate: params.workDate,
+          dayWorkedMs: params.dayWorkedMs,
+          hourRateNis,
+        }),
+      ]);
 
+      const maxAllowedCostNis = summary.maxAllowedCostNis;
+      // Exact Clients bar leftover (Spent / Left / Max total).
+      const clientsRemaining = remainingTimeFromLeadCostSummary(summary);
+      // Today's proposal replaces any saved % for this date — add that day back so
+      // leftover on the Clients bar stays allocatable today.
+      const remainingCostNis =
+        Math.round((clientsRemaining.remainingCostNis + todayCostOnLeadNis) * 100) / 100;
+      const otherCostOnLeadNis = Math.max(
+        0,
+        Math.round((summary.totalCostNis - todayCostOnLeadNis) * 100) / 100,
+      );
+
+      // Without a reliable lead value / max, only block when Clients would also
+      // treat spent time on a 0-max lead as over budget.
       if (!(maxAllowedCostNis > 0)) {
+        const spentWithNoMax =
+          summary.totalCostNis > 0.005 || summary.totalWorkedMs > 0;
+        if (!spentWithNoMax) {
+          return {
+            hint: {
+              key: lead.key,
+              maxAllowedPercent: 100,
+              maxAllocatedMs: params.dayWorkedMs,
+              remainingCostNis: 0,
+              remainingWorkedMs: null,
+              leadWorkedMs: summary.totalWorkedMs,
+              maxAllowedCostNis: 0,
+              otherCostOnLeadNis,
+              proposedCostNis: 0,
+              overBudget: false,
+            } satisfies LeadAllocationBudgetHint,
+            violation: null,
+          };
+        }
+        // Max is 0 but time was already spent — same as Clients exceedsCap.
+        const proposedWorkedMs = allocationPercentToWorkedMs(
+          params.dayWorkedMs,
+          Number(lead.percent) || 0,
+        );
+        const proposedCostNis =
+          workedMsAtHourlyRateToCostNis(proposedWorkedMs, hourRateNis) ?? 0;
+        const overBudget = proposedCostNis > 0.005;
+        const hint: LeadAllocationBudgetHint = {
+          key: lead.key,
+          maxAllowedPercent: 0,
+          maxAllocatedMs: 0,
+          remainingCostNis: 0,
+          remainingWorkedMs: 0,
+          leadWorkedMs: summary.totalWorkedMs,
+          maxAllowedCostNis: 0,
+          otherCostOnLeadNis,
+          proposedCostNis: Math.round(proposedCostNis * 100) / 100,
+          overBudget,
+        };
         return {
-          hint: {
-            key: lead.key,
-            maxAllowedPercent: 100,
-            maxAllocatedMs: params.dayWorkedMs,
-            remainingCostNis: 0,
-            maxAllowedCostNis: 0,
-            otherCostOnLeadNis,
-            proposedCostNis: 0,
-            overBudget: false,
-          } satisfies LeadAllocationBudgetHint,
-          violation: null,
+          hint,
+          violation: overBudget
+            ? {
+                key: lead.key,
+                lead_number: lead.lead_number,
+                client_name: lead.client_name,
+                requestedPercent: Math.round(Number(lead.percent) || 0),
+                requestedAllocatedMs: proposedWorkedMs,
+                maxAllowedPercent: 0,
+                maxAllocatedMs: 0,
+                remainingCostNis: 0,
+                maxAllowedCostNis: 0,
+                otherCostOnLeadNis,
+                proposedCostNis: hint.proposedCostNis,
+                leadTotalValueNis,
+              }
+            : null,
         };
       }
 
-      const remainingCostNis = Math.max(0, maxAllowedCostNis - otherCostOnLeadNis);
+      // "Left on lead" must match Clients exactly (not today's adjusted budget).
+      const remainingWorkedMs = clientsRemaining.remainingWorkedMs;
       const proposedWorkedMs = allocationPercentToWorkedMs(
         params.dayWorkedMs,
         Number(lead.percent) || 0,
@@ -488,6 +524,8 @@ export async function evaluateDailyLeadAllocationBudgets(params: {
         maxAllowedPercent,
         maxAllocatedMs,
         remainingCostNis: Math.round(remainingCostNis * 100) / 100,
+        remainingWorkedMs,
+        leadWorkedMs: summary.totalWorkedMs,
         maxAllowedCostNis,
         otherCostOnLeadNis,
         proposedCostNis: Math.round(proposedCostNis * 100) / 100,
@@ -526,6 +564,162 @@ export async function evaluateDailyLeadAllocationBudgets(params: {
 
 export function formatAllocationBudgetCapRule(): string {
   return `${Math.round(LEAD_EMPLOYEE_COST_OF_OPERATING_SHARE * 100)}% of ${Math.round(LEAD_VALUE_OPERATING_SHARE * 100)}% of lead value`;
+}
+
+export type AllocationLeadBudgetStatus = {
+  key: string;
+  costNis: number;
+  workedMs: number;
+  maxAllowedCostNis: number;
+  baseMaxAllowedCostNis: number;
+  approvedExtensionCostNis: number;
+  utilizationPercent: number;
+  exceedsCap: boolean;
+  /** Same summary shape as Clients / ClientHeader budget bar */
+  costSummary: LeadEmployeeCostSummary;
+  budgetRequests: LeadBudgetExtensionRequest[];
+  pendingRequestCount: number;
+  requestCount: number;
+};
+
+export function allocationLeadBudgetKey(lead: {
+  is_other_work?: boolean;
+  lead_type: LeadReportingType | null;
+  new_lead_id: string | null;
+  legacy_lead_id: number | null;
+  lead_number: string;
+}): string | null {
+  if (lead.is_other_work) return null;
+  if (lead.lead_type === 'legacy' && lead.legacy_lead_id != null) {
+    return `legacy:${lead.legacy_lead_id}`;
+  }
+  if (lead.new_lead_id) return `new:${lead.new_lead_id}`;
+  if (lead.lead_number && lead.lead_number !== '—') return `number:${lead.lead_number}`;
+  return null;
+}
+
+/**
+ * All-time lead budget status for allocation-report rows — same max as clients
+ * (formula + approved extensions / override) and leads management.
+ */
+export async function fetchAllocationLeadBudgetStatuses(
+  leads: Array<{
+    is_other_work?: boolean;
+    lead_type: LeadReportingType | null;
+    new_lead_id: string | null;
+    legacy_lead_id: number | null;
+    lead_number: string;
+    client_name?: string;
+  }>,
+): Promise<Map<string, AllocationLeadBudgetStatus>> {
+  const byKey = new Map<string, AllocationLeadBudgetStatus>();
+  const unique = new Map<
+    string,
+    {
+      lead_type: LeadReportingType | null;
+      new_lead_id: string | null;
+      legacy_lead_id: number | null;
+      lead_number: string;
+      client_name: string;
+    }
+  >();
+
+  for (const lead of leads) {
+    const key = allocationLeadBudgetKey(lead);
+    if (!key || unique.has(key)) continue;
+    unique.set(key, {
+      lead_type: lead.lead_type,
+      new_lead_id: lead.new_lead_id,
+      legacy_lead_id: lead.legacy_lead_id,
+      lead_number: lead.lead_number,
+      client_name: lead.client_name || '',
+    });
+  }
+
+  if (unique.size === 0) return byKey;
+
+  const refs = Array.from(unique.entries()).map(([key, lead]) => ({
+    key,
+    leadType: lead.lead_type,
+    newLeadId: lead.new_lead_id,
+    legacyLeadId: lead.legacy_lead_id,
+    leadNumber: lead.lead_number,
+  }));
+
+  const requestsByKey = await fetchBudgetExtensionRequestsForLeads(refs);
+
+  const results = await Promise.all(
+    Array.from(unique.entries()).map(async ([key, lead]) => {
+      const isLegacy = lead.lead_type === 'legacy' || lead.legacy_lead_id != null;
+      let newLeadId = lead.new_lead_id;
+      if (!isLegacy && !newLeadId && lead.lead_number && lead.lead_number !== '—') {
+        const { data: byNumber } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('lead_number', lead.lead_number)
+          .maybeSingle();
+        if (byNumber?.id) newLeadId = String(byNumber.id);
+      }
+
+      const budgetRef: AllocationBudgetLeadRef = {
+        key,
+        lead_type: isLegacy ? 'legacy' : 'new',
+        new_lead_id: isLegacy ? null : newLeadId,
+        legacy_lead_id: isLegacy ? lead.legacy_lead_id : null,
+        lead_number: lead.lead_number,
+        client_name: lead.client_name,
+        percent: 0,
+      };
+
+      const leadTotalValueNis = await fetchLeadTotalValueNisForRef(budgetRef);
+      const client = isLegacy
+        ? {
+            id: `legacy_${lead.legacy_lead_id}`,
+            lead_type: 'legacy' as const,
+            lead_number: lead.lead_number,
+          }
+        : {
+            id: newLeadId || null,
+            lead_type: 'new' as const,
+            lead_number: lead.lead_number,
+          };
+
+      const summary = await fetchLeadEmployeeCostSummary({
+        client,
+        leadTotalValueNis,
+      });
+
+      const budgetRequests =
+        requestsByKey.get(key) ||
+        (newLeadId ? requestsByKey.get(`new:${newLeadId}`) : undefined) ||
+        (lead.legacy_lead_id != null
+          ? requestsByKey.get(`legacy:${lead.legacy_lead_id}`)
+          : undefined) ||
+        requestsByKey.get(`number:${lead.lead_number}`) ||
+        [];
+
+      const status: AllocationLeadBudgetStatus = {
+        key,
+        costNis: summary.totalCostNis,
+        workedMs: summary.totalWorkedMs,
+        maxAllowedCostNis: summary.maxAllowedCostNis,
+        baseMaxAllowedCostNis: summary.baseMaxAllowedCostNis,
+        approvedExtensionCostNis: summary.approvedExtensionCostNis,
+        utilizationPercent: summary.utilizationPercent,
+        exceedsCap: summary.exceedsCap,
+        costSummary: summary,
+        budgetRequests,
+        pendingRequestCount: budgetRequests.filter((r) => r.status === 'pending').length,
+        requestCount: budgetRequests.length,
+      };
+      return status;
+    }),
+  );
+
+  for (const status of results) {
+    byKey.set(status.key, status);
+  }
+  return byKey;
 }
 
 /** Duration label that still shows leftover time under one minute. */

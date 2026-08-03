@@ -347,7 +347,19 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                       )}
                       {overBudget && budgetHint ? (
                         <span className="mt-1.5 block text-xs font-medium text-amber-700">
-                          Over budget — max{' '}
+                          Over budget
+                          {budgetHint.remainingWorkedMs != null ? (
+                            <>
+                              {' '}
+                              —{' '}
+                              <span className="font-semibold">
+                                {formatAllocationWorkedDuration(budgetHint.remainingWorkedMs)}
+                              </span>{' '}
+                              left on lead
+                            </>
+                          ) : null}
+                          {' · '}
+                          max{' '}
                           {budgetHint.maxAllowedPercent > 0 &&
                           budgetHint.maxAllowedPercent < 1
                             ? budgetHint.maxAllowedPercent.toFixed(2)
@@ -355,7 +367,8 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                           %
                           {budgetHint.maxAllocatedMs > 0
                             ? ` (${formatBudgetAllocationDuration(budgetHint.maxAllocatedMs)})`
-                            : ' (0m)'}
+                            : ' (0m)'}{' '}
+                          today
                           {!readOnly && onApplyLeadMaxBudget ? (
                             <>
                               {' · '}
@@ -370,6 +383,24 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                               >
                                 Set to max
                               </button>
+                            </>
+                          ) : null}
+                        </span>
+                      ) : budgetHint &&
+                        row.included &&
+                        row.percent > 0 &&
+                        budgetHint.remainingWorkedMs != null &&
+                        !budgetHint.overBudget ? (
+                        <span className="mt-1.5 block text-xs text-gray-500">
+                          <span className="font-medium text-gray-700">
+                            {formatAllocationWorkedDuration(budgetHint.remainingWorkedMs)}
+                          </span>{' '}
+                          left on lead
+                          {budgetHint.leadWorkedMs > 0 ? (
+                            <>
+                              {' '}
+                              · spent{' '}
+                              {formatAllocationWorkedDuration(budgetHint.leadWorkedMs)}
                             </>
                           ) : null}
                         </span>

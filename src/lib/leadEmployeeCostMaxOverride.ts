@@ -41,22 +41,47 @@ export function resolveEffectiveMaxAllowedCostNis(params: {
 export async function fetchLeadCostMaxOverrideNis(
   lead: LeadCostMaxOverrideLeadRef,
 ): Promise<number | null> {
-  let query = supabase
-    .from('lead_employee_cost_max_overrides')
-    .select('max_allowed_cost_nis')
-    .limit(1);
+  const tryFetch = async (matcher: LeadCostMaxOverrideLeadRef): Promise<number | null> => {
+    let query = supabase
+      .from('lead_employee_cost_max_overrides')
+      .select('max_allowed_cost_nis')
+      .limit(1);
+    query = leadMatchFilter(query, matcher);
+    if (!query) return null;
+    const { data, error } = await query.maybeSingle();
+    if (error) {
+      console.error('[leadCostMaxOverride] fetch failed:', error);
+      return null;
+    }
+    if (data?.max_allowed_cost_nis == null) return null;
+    const n = Number(data.max_allowed_cost_nis);
+    return Number.isFinite(n) ? Math.round(Math.max(0, n) * 100) / 100 : null;
+  };
 
-  query = leadMatchFilter(query, lead);
-  if (!query) return null;
-
-  const { data, error } = await query.maybeSingle();
-  if (error) {
-    console.error('[leadCostMaxOverride] fetch failed:', error);
-    return null;
+  // Prefer UUID / legacy id, then exact lead_number, then base number (strip /N).
+  if (lead.newLeadId || (lead.leadType === 'legacy' && lead.legacyLeadId != null)) {
+    const primary = await tryFetch(lead);
+    if (primary != null) return primary;
   }
-  if (data?.max_allowed_cost_nis == null) return null;
-  const n = Number(data.max_allowed_cost_nis);
-  return Number.isFinite(n) ? Math.round(Math.max(0, n) * 100) / 100 : null;
+
+  for (const num of [
+    lead.leadNumber,
+    lead.leadNumber ? String(lead.leadNumber).replace(/\/\d+$/, '') : null,
+  ]) {
+    if (!num || !String(num).trim()) continue;
+    if (num === lead.leadNumber && (lead.newLeadId || lead.legacyLeadId != null)) {
+      // already tried via primary when only leadNumber — still try number-only
+    }
+    const viaNumber = await tryFetch({
+      leadType: null,
+      newLeadId: null,
+      legacyLeadId: null,
+      leadNumber: num,
+    });
+    if (viaNumber != null) return viaNumber;
+  }
+
+  return null;
 }
 
 export async function fetchLeadCostMaxOverridesForLeads(
