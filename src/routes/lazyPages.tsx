@@ -16,6 +16,7 @@ export const LazyNewCasesPage = lazy(() => import('../pages/NewCasesPage'));
 export const LazyNewHandlerCasesPage = lazy(() => import('../pages/NewHandlerCasesPage'));
 export const LazyHandlerManagementPage = lazy(() => import('../pages/HandlerManagementPage'));
 export const LazyMyCasesPage = lazy(() => import('../pages/MyCasesPage'));
+export const LazyCasePipelinePage = lazy(() => import('../pages/CasePipelinePage'));
 export const LazyRetainerHandlerCasesPage = lazy(() => import('../pages/RetainerHandlerCasesPage'));
 export const LazyCaseManagerPageNew = lazy(() => import('../components/CaseManagerPageNew'));
 export const LazyCaseDetailsPage = lazy(() => import('../pages/CaseDetailsPage'));

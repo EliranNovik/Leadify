@@ -72,6 +72,37 @@ function getDashboardScoreboardCacheTtlMs(): number {
   return getMobileAwareCacheTtlMs(10 * 60 * 1000, 2 * 60 * 1000);
 }
 
+/**
+ * Deal lists behind the scoreboard count badges are far too large for sessionStorage, so they are
+ * kept in memory for the tab's lifetime, keyed by the selected period. Without them the dashboard
+ * had to re-run the whole Agreement signed / Invoiced query on every return just to refill the
+ * badges, even when the cached totals were still fresh.
+ */
+type ScoreboardDealsSnapshot = {
+  agreement: Map<string, DashboardScoreboardDeal[]> | null;
+  invoiced: Map<string, DashboardScoreboardDeal[]> | null;
+};
+
+const scoreboardDealsCache = new Map<string, ScoreboardDealsSnapshot>();
+const SCOREBOARD_DEALS_CACHE_MAX_PERIODS = 3;
+
+function rememberScoreboardDeals(periodKey: string, patch: Partial<ScoreboardDealsSnapshot>): void {
+  const current = scoreboardDealsCache.get(periodKey) || { agreement: null, invoiced: null };
+  scoreboardDealsCache.delete(periodKey);
+  scoreboardDealsCache.set(periodKey, { ...current, ...patch });
+  while (scoreboardDealsCache.size > SCOREBOARD_DEALS_CACHE_MAX_PERIODS) {
+    const oldest = scoreboardDealsCache.keys().next().value;
+    if (oldest === undefined) break;
+    scoreboardDealsCache.delete(oldest);
+  }
+}
+
+function getCachedScoreboardDeals(periodKey: string): Required<ScoreboardDealsSnapshot> | null {
+  const entry = scoreboardDealsCache.get(periodKey);
+  if (!entry?.agreement || !entry.invoiced) return null;
+  return { agreement: entry.agreement, invoiced: entry.invoiced };
+}
+
 function getDashboardTeamAvailabilityCacheTtlMs(): number {
   return getMobileAwareCacheTtlMs(5 * 60 * 1000, 90_000);
 }
@@ -598,6 +629,11 @@ const Dashboard: React.FC = () => {
   const location = useLocation();
   const dashboardPathname = location.pathname || '/';
   const realtimeRefreshTimerRef = useRef<number | null>(null);
+  const teamAvailabilityRefreshTimerRef = useRef<number | null>(null);
+  /** Realtime change that arrived while the tab was hidden, applied on the next visible. */
+  const pendingScoreboardRefreshRef = useRef(false);
+  /** Set by realtime only: those refreshes must ignore cache freshness, focus refreshes must not. */
+  const scoreboardForceRefreshRef = useRef(false);
   const [scoreboardRefreshToken, setScoreboardRefreshToken] = useState(0);
   const [teamAvailabilityRefreshToken, setTeamAvailabilityRefreshToken] = useState(0);
   const dashboardLastResumeRef = useRef(0);
@@ -4148,6 +4184,7 @@ const Dashboard: React.FC = () => {
       await enrichScoreboardDealRolePhotos(agreementDealsStore);
       setAgreementScoreboardDeals(agreementDealsStore);
       setAgreementScoreboardDealsReady(true);
+      rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { agreement: agreementDealsStore });
 
       // Fetch daily chart data for the last 30 days
       const chartData = await fetchDepartmentChartData(departmentIds, departmentTargets, last30dStartDate, todayStr);
@@ -5191,6 +5228,7 @@ const Dashboard: React.FC = () => {
       await enrichScoreboardDealRolePhotos(invoicedDealsStore);
       setInvoicedScoreboardDeals(invoicedDealsStore);
       setInvoicedScoreboardDealsReady(true);
+      rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { invoiced: invoicedDealsStore });
       return newInvoicedData;
 
     } catch (error: any) {
@@ -5302,13 +5340,23 @@ const Dashboard: React.FC = () => {
   }, []);
 
   const loadScoreboardData = useCallback(
-    async (opts?: { background?: boolean }) => {
+    /**
+     * `force` bypasses the freshness check — realtime uses it so a database change is reflected
+     * right away instead of waiting for the cache to expire.
+     */
+    async (opts?: { background?: boolean; force?: boolean }) => {
       const periodKey = `${selectedYear}-${selectedMonth}`;
       const cacheKey = `dashboard-scoreboard:v21:${periodKey}`;
       const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
+      const cachedDeals = getCachedScoreboardDeals(periodKey);
 
-      // Deal lists are not cached; mark not-ready until fresh fetch fills them (incl. period changes).
-      if (!opts?.background) {
+      if (cachedDeals) {
+        setAgreementScoreboardDeals(cachedDeals.agreement);
+        setInvoicedScoreboardDeals(cachedDeals.invoiced);
+        setAgreementScoreboardDealsReady(true);
+        setInvoicedScoreboardDealsReady(true);
+      } else if (!opts?.background) {
+        // No deal lists for this period yet: mark not-ready until the fetch fills them.
         setAgreementScoreboardDealsReady(false);
         setInvoicedScoreboardDealsReady(false);
       }
@@ -5321,11 +5369,11 @@ const Dashboard: React.FC = () => {
         setDepartmentPerformanceLoading(false);
         setInvoicedDataLoading(false);
         const age = Date.now() - (cached.fetchedAt ?? 0);
-        if (age < getDashboardScoreboardCacheTtlMs() && !opts?.background) {
-          // Keep cached totals visible, but refresh in background so count-badge deal lists populate.
+        if (age < getDashboardScoreboardCacheTtlMs() && !opts?.force) {
+          // Totals and badge deal lists are both warm: returning to the dashboard costs no queries.
+          if (cachedDeals) return;
+          // Totals are fresh but the badges have nothing to open yet, so refill them quietly.
           opts = { background: true };
-        } else if (age < getDashboardScoreboardCacheTtlMs()) {
-          return;
         }
       }
 
@@ -5397,7 +5445,9 @@ const Dashboard: React.FC = () => {
   // Live refresh: background refetch (no full-page spinner) when realtime bumps the token.
   useEffect(() => {
     if (scoreboardRefreshToken === 0) return;
-    void loadScoreboardData({ background: true });
+    const force = scoreboardForceRefreshRef.current;
+    scoreboardForceRefreshRef.current = false;
+    void loadScoreboardData({ background: true, force });
   }, [scoreboardRefreshToken, loadScoreboardData]);
 
   // Team availability: cache-first load; refetch on date change.
@@ -5410,22 +5460,43 @@ const Dashboard: React.FC = () => {
     void loadTeamAvailability(teamAvailabilityDate, { background: true });
   }, [teamAvailabilityRefreshToken, teamAvailabilityDate, loadTeamAvailability]);
 
+  // A change that lands while the tab is hidden is applied as soon as the user comes back.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!pendingScoreboardRefreshRef.current) return;
+      pendingScoreboardRefreshRef.current = false;
+      scoreboardForceRefreshRef.current = true;
+      setScoreboardRefreshToken((t) => t + 1);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
   // Live updates (same pattern as CalendarPage): debounced refresh without resetting the whole dashboard.
   useEffect(() => {
+    // Separate timers so a scoreboard event and an availability event cannot cancel each other.
     const scheduleScoreboardRefresh = (ms = 500) => {
       if (typeof window === 'undefined') return;
+      if (document.visibilityState !== 'visible') {
+        pendingScoreboardRefreshRef.current = true;
+        return;
+      }
       if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
       realtimeRefreshTimerRef.current = window.setTimeout(() => {
         realtimeRefreshTimerRef.current = null;
+        scoreboardForceRefreshRef.current = true;
         setScoreboardRefreshToken((t) => t + 1);
       }, ms);
     };
 
     const scheduleTeamAvailabilityRefresh = () => {
       if (typeof window === 'undefined') return;
-      if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
-      realtimeRefreshTimerRef.current = window.setTimeout(() => {
-        realtimeRefreshTimerRef.current = null;
+      if (teamAvailabilityRefreshTimerRef.current) {
+        window.clearTimeout(teamAvailabilityRefreshTimerRef.current);
+      }
+      teamAvailabilityRefreshTimerRef.current = window.setTimeout(() => {
+        teamAvailabilityRefreshTimerRef.current = null;
         setTeamAvailabilityRefreshToken((t) => t + 1);
       }, 250);
     };
@@ -5463,8 +5534,11 @@ const Dashboard: React.FC = () => {
       });
 
     return () => {
-      if (realtimeRefreshTimerRef.current && typeof window !== 'undefined') {
-        window.clearTimeout(realtimeRefreshTimerRef.current);
+      if (typeof window !== 'undefined') {
+        if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
+        if (teamAvailabilityRefreshTimerRef.current) {
+          window.clearTimeout(teamAvailabilityRefreshTimerRef.current);
+        }
       }
       void supabase.removeChannel(channel);
     };

@@ -91,6 +91,7 @@ import {
   LazyMasterLeadPage,
   LazyMeetingSummaryTestPage,
   LazyMyCasesPage,
+  LazyCasePipelinePage,
   LazyMyPerformancePage,
   LazyMyProfilePage,
   LazyNewCasesPage,
@@ -1069,6 +1070,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/new-handler-cases" element={<RouteSuspense><LazyNewHandlerCasesPage /></RouteSuspense>} />
                     <Route path="/handler-management" element={<RouteSuspense><LazyHandlerManagementPage /></RouteSuspense>} />
                     <Route path="/my-cases" element={<RouteSuspense><LazyMyCasesPage /></RouteSuspense>} />
+                    <Route path="/case-pipeline" element={<RouteSuspense><LazyCasePipelinePage /></RouteSuspense>} />
                     <Route path="/retainer-handler-cases" element={<RouteSuspense><LazyRetainerHandlerCasesPage /></RouteSuspense>} />
                     <Route path="/case-manager" element={<RouteSuspense><LazyCaseManagerPageNew /></RouteSuspense>} />
                     <Route path="/case-manager/:caseId" element={<RouteSuspense><LazyCaseDetailsPage /></RouteSuspense>} />

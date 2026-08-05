@@ -80,6 +80,7 @@ const desktopSidebarItems: SidebarItem[] = [
     subItems: [
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
+      { icon: ChartBarIcon, label: 'Case Pipeline', path: '/case-pipeline' },
       { icon: BriefcaseIcon, label: 'Retention Cases', path: '/retainer-handler-cases' },
       { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
     ],
@@ -122,6 +123,7 @@ const mobileSidebarItems: SidebarItem[] = [
     subItems: [
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
+      { icon: ChartBarIcon, label: 'Case Pipeline', path: '/case-pipeline' },
       { icon: BriefcaseIcon, label: 'Retention Cases', path: '/retainer-handler-cases' },
       { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
     ],

@@ -15,7 +15,12 @@ import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { InteractionRequiredAuthError, IPublicClientApplication, AccountInfo } from '@azure/msal-browser';
 import { toast } from 'react-hot-toast';
-import { getStageName, initializeStageNames } from '../lib/stageUtils';
+import {
+  getSoftStageBadgeStyle,
+  getStageColour,
+  getStageName,
+  initializeStageNames,
+} from '../lib/stageUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import { convertToNIS } from '../lib/currencyConversion';
@@ -23,6 +28,22 @@ import CallOptionsModal from './CallOptionsModal';
 import EditLeadDrawer from './EditLeadDrawer';
 import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
+import CasePipelineView, { type CasePipelineRoleTab } from './CasePipelineView';
+import {
+  createSnapshotStore,
+  useDebouncedCallback,
+  useRealtimeTables,
+  useScrollRestoration,
+} from '../lib/pipelineLiveCache';
+import PipelineSummaryCards from './PipelineSummaryCards';
+import { openLeadFromRowClick } from '../lib/leadNavigation';
+import {
+  matchesQuickFilter,
+  summarizePipelineRows,
+  type PipelineQuickFilter,
+  type PipelineSummaryRow,
+} from '../lib/pipelineSummary';
+import { fetchPipelineLeadMetrics, type PipelineLeadMetrics } from '../lib/pipelineLeadMetrics';
 
 interface LeadForPipeline {
   id: number | string;
@@ -337,7 +358,7 @@ const getExpertStatusIcon = (lead: LeadForPipeline) => {
 const ExpertAvatarWithOpinionBadge: React.FC<{ lead: LeadForPipeline; allEmployees: any[] }> = ({ lead, allEmployees }) => (
   <div className="relative inline-flex h-10 w-10 shrink-0 align-middle">
     <ExpertPipelineAvatar lead={lead} allEmployees={allEmployees} />
-    <div className="pointer-events-auto absolute -right-3 -top-3 z-10 origin-top-right scale-[0.92] drop-shadow-md [&>span]:ring-2 [&>span]:ring-base-100 dark:[&>span]:ring-base-200">
+    <div className="pointer-events-auto absolute -right-3 -top-3 z-10 origin-top-right scale-[0.92] drop-shadow-md">
       {getExpertStatusIcon(lead)}
     </div>
   </div>
@@ -345,11 +366,101 @@ const ExpertAvatarWithOpinionBadge: React.FC<{ lead: LeadForPipeline; allEmploye
 
 // Removed LABEL_OPTIONS - now fetched from misc_leadtag table
 
+/** Closer and Scheduler show this page's own pipeline; Manager and Helper show the case pipeline. */
+type PipelineTab = 'closer' | 'scheduler' | CasePipelineRoleTab;
+
+/**
+ * Same in-memory snapshot the case pipeline uses: navigating away and back repaints the last
+ * rows immediately while a silent refetch runs behind them. sessionStorage still backs full
+ * page reloads; this only covers moving around inside the app.
+ */
+type PipelineLeadsSnapshot = { mode: 'closer' | 'scheduler'; leads: LeadForPipeline[] };
+const PIPELINE_LEADS_CACHE_VERSION = 1;
+const PIPELINE_LEADS_STALE_MS = 3 * 60 * 1000;
+/** One snapshot per mode, so switching Closer/Scheduler repaints instead of refetching. */
+const pipelineLeadsStores: Record<
+  'closer' | 'scheduler',
+  ReturnType<typeof createSnapshotStore<PipelineLeadsSnapshot>>
+> = {
+  closer: createSnapshotStore<PipelineLeadsSnapshot>(PIPELINE_LEADS_CACHE_VERSION),
+  scheduler: createSnapshotStore<PipelineLeadsSnapshot>(PIPELINE_LEADS_CACHE_VERSION),
+};
+
+/**
+ * Interaction/meeting metrics keyed by the row ids they were fetched for, so returning to a
+ * mode reuses them instead of re-running the interaction queries.
+ */
+const pipelineMetricsCache: Record<
+  'closer' | 'scheduler',
+  { key: string; metrics: Map<string, PipelineLeadMetrics> } | null
+> = { closer: null, scheduler: null };
+
+/** Scroll position is per page, not per mode, so it lives outside the data snapshots. */
+const pipelineScrollStore = (() => {
+  let scrollTop = 0;
+  return {
+    getScrollTop: () => scrollTop,
+    setScrollTop: (value: number) => {
+      scrollTop = value;
+    },
+  };
+})();
+
+const PIPELINE_TAB_LABELS: Record<PipelineTab, string> = {
+  closer: 'Closer',
+  scheduler: 'Scheduler',
+  manager: 'Manager',
+  helper: 'Helper',
+};
+
+/** Lead counts per mode, kept across tab switches so both tabs can show a number. */
+const pipelineModeCounts: Record<'closer' | 'scheduler', number | null> = {
+  closer: null,
+  scheduler: null,
+};
+
 const PipelinePage: React.FC = () => {
   // Persist pipelineMode so it's restored when navigating back
   const [pipelineMode, setPipelineMode] = usePersistedState<'closer' | 'scheduler'>('pipelinePage_mode', 'closer', {
     storage: 'sessionStorage',
   });
+
+  /**
+   * The Manager and Helper tabs render the case pipeline instead of this page's own table.
+   * `pipelineMode` stays on the last closer/scheduler choice so switching back does not refetch.
+   */
+  const [activeTab, setActiveTab] = usePersistedState<PipelineTab>('pipelinePage_tab', 'closer', {
+    storage: 'sessionStorage',
+  });
+  const [caseRoleCounts, setCaseRoleCounts] = useState({ manager: 0, helper: 0 });
+  const [modeCounts, setModeCounts] = useState(() => ({ ...pipelineModeCounts }));
+  const isCaseTab = activeTab === 'manager' || activeTab === 'helper';
+
+  /** Summary box selection, shared with the case pipeline's boxes. */
+  const [quickFilter, setQuickFilter] = usePersistedState<PipelineQuickFilter>(
+    'pipelinePage_quickFilter',
+    null,
+    { storage: 'sessionStorage' },
+  );
+  // Tagged with the row-id list they belong to, so a mode switch does not briefly show the
+  // previous tab's interaction dates.
+  const [metricsState, setMetricsState] = useState<{
+    key: string;
+    metrics: Map<string, PipelineLeadMetrics>;
+  }>(() => ({ key: '', metrics: new Map() }));
+
+  /** Follow-up editor (writes the logged-in user's own row in `follow_ups`). */
+  const [editingFollowUpLead, setEditingFollowUpLead] = useState<LeadForPipeline | null>(null);
+  const [followUpDraft, setFollowUpDraft] = useState('');
+  const [savingFollowUp, setSavingFollowUp] = useState(false);
+
+  const selectTab = useCallback(
+    (tab: PipelineTab) => {
+      setActiveTab(tab);
+      if (tab === 'closer' || tab === 'scheduler') setPipelineMode(tab);
+    },
+    [setActiveTab, setPipelineMode],
+  );
   
   // Helper to load persisted state for a key based on pipelineMode (needs mode as param for initial load)
   const loadPersistedStateForMode = <T,>(mode: string, baseKey: string, defaultValue: T): T => {
@@ -383,12 +494,18 @@ const PipelinePage: React.FC = () => {
   // Use regular useState for leads and manually sync with mode-specific persisted state
   // Initialize with persisted state for the current pipelineMode
   const [leads, setLeadsInternal] = useState<LeadForPipeline[]>(() => {
-    // On initial mount, try to load from current pipelineMode
+    // Prefer the in-memory snapshot (survives navigation within the app), then sessionStorage.
+    const snapshot = pipelineLeadsStores[pipelineMode].get();
+    if (snapshot && snapshot.leads.length > 0) {
+      return snapshot.leads;
+    }
     return loadPersistedStateForMode(pipelineMode, 'leads', []);
   });
   
   // Initialize loading to false if we have persisted state (for faster initial render)
   const [isLoading, setIsLoading] = useState(() => {
+    const snapshot = pipelineLeadsStores[pipelineMode].get();
+    if (snapshot && snapshot.leads.length > 0) return false;
     // Check if we have persisted state on initial mount (check both modes)
     try {
       const persistedLeadsCloser = sessionStorage.getItem('persisted_state_filters_pipelinePage_closer_leads');
@@ -417,6 +534,8 @@ const PipelinePage: React.FC = () => {
       } catch (e) {
         // Ignore errors
       }
+      // Keep the in-memory snapshot in step so it never drifts from what is rendered.
+      pipelineLeadsStores[pipelineMode].set({ mode: pipelineMode, leads: newLeads });
       return newLeads;
     });
   }, [pipelineMode]);
@@ -863,13 +982,9 @@ const PipelinePage: React.FC = () => {
   const [labelSubmitting, setLabelSubmitting] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string | number>>(new Set());
-  const [viewMode, setViewMode] = useState<'cards' | 'list'>(() => {
-    // Default to list view on desktop, cards on mobile
-    if (typeof window !== 'undefined') {
-      return window.innerWidth >= 768 ? 'list' : 'cards';
-    }
-    return 'list';
-  });
+  // Card ("box") view is switched off for now: the toggle is commented out below and the table
+  // is the only view. The card markup is kept so it can be turned back on.
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
   const [showSignedAgreements, setShowSignedAgreements] = useState(false);
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
@@ -1179,7 +1294,12 @@ const PipelinePage: React.FC = () => {
   };
 
   // Define fetchLeads function outside useEffect so it can be reused
-  const fetchLeads = async () => {
+  /**
+   * `silent` keeps the current rows on screen while refreshing behind them — used by realtime
+   * and background revalidation so live updates never flash a spinner over the table.
+   */
+  const fetchLeads = async (options: { silent?: boolean } = {}) => {
+    const { silent = false } = options;
     // New `leads` rows filter by scheduler/closer display name — never query with an empty string.
     if (!currentUserFullName?.trim()) {
       console.warn('Pipeline: fetchLeads skipped until display name is loaded');
@@ -1187,7 +1307,7 @@ const PipelinePage: React.FC = () => {
       return;
     }
 
-    setIsLoading(true);
+    if (!silent) setIsLoading(true);
     
     // Add timeout to prevent hanging
     const timeoutPromise = new Promise((_, reject) => {
@@ -1932,7 +2052,8 @@ const PipelinePage: React.FC = () => {
       ]);
     } catch (error) {
       console.error('Error fetching leads for pipeline page:', error);
-      setLeads([]);
+      // Keep the rows already on screen rather than emptying the table behind the user's back.
+      if (!silent) setLeads([]);
     }
     setIsLoading(false);
     pipelineLastFetchedAtRef.current = Date.now();
@@ -2010,6 +2131,24 @@ const PipelinePage: React.FC = () => {
     };
   }, [openContactDropdown]);
 
+  // Replay the panel's enter animation on tab change (restarting it needs a reflow).
+  const tabPanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const panel = tabPanelRef.current;
+    if (!panel) return;
+    panel.classList.remove('pipeline-tab-panel');
+    void panel.offsetWidth;
+    panel.classList.add('pipeline-tab-panel');
+  }, [activeTab]);
+
+  // A row selected in the closer/scheduler table must not keep its overlay open over the case pipeline.
+  useEffect(() => {
+    if (!isCaseTab) return;
+    setSelectedRowId(null);
+    setShowActionMenu(false);
+    setOpenContactDropdown(null);
+  }, [isCaseTab]);
+
   // Track if we've loaded from persisted state to avoid double-fetching (per mode)
   const hasLoadedFromStorageRef = useRef<{ [mode: string]: boolean }>({});
   const previousModeRef = useRef<string>('');
@@ -2017,91 +2156,273 @@ const PipelinePage: React.FC = () => {
   // Load leads: use saved state per tab so switching Closer/Scheduler does not reload content.
   // Requires display name + employee id: fetchLeads filters `leads` by scheduler/closer string and legacy by id.
   useEffect(() => {
+    // The case pipeline tabs load their own rows; don't pull this page's data behind them.
+    if (isCaseTab) return;
     if (!currentUserEmployeeId || !currentUserFullName?.trim()) {
       return;
     }
 
     const persistedLeadsKey = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
-    const modeChanged = previousModeRef.current !== pipelineMode && previousModeRef.current !== '';
     previousModeRef.current = pipelineMode;
 
-    // Always refetch when switching tabs — session cache must not show the other role's rows.
-    if (modeChanged) {
-      hasLoadedFromStorageRef.current[pipelineMode] = false;
-      fetchLeads();
-      return;
-    }
-
-    // Same mode (e.g. first mount after navigation): restore only if we have a non-empty cache.
-    // Empty array `[]` was previously treated as "restored" and skipped the network — scheduler/closer stayed empty.
+    // Each mode keeps its own snapshot, so switching tabs repaints its rows straight away and
+    // only hits the network when that mode's cache is empty or has aged out.
     let restored = false;
-    try {
-      const raw = sessionStorage.getItem(persistedLeadsKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          setLeadsInternal(parsed);
-          hasLoadedFromStorageRef.current[pipelineMode] = true;
-          setIsLoading(false);
-          restored = true;
+    const store = pipelineLeadsStores[pipelineMode];
+    const snapshot = store.get();
+    if (snapshot && snapshot.leads.length > 0) {
+      setLeadsInternal(snapshot.leads);
+      hasLoadedFromStorageRef.current[pipelineMode] = true;
+      setIsLoading(false);
+      restored = true;
+    } else {
+      try {
+        const raw = sessionStorage.getItem(persistedLeadsKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+            setLeadsInternal(parsed);
+            hasLoadedFromStorageRef.current[pipelineMode] = true;
+            setIsLoading(false);
+            restored = true;
+          }
         }
+      } catch (e) {
+        // Ignore
       }
-    } catch (e) {
-      // Ignore
     }
 
     if (!restored) {
       hasLoadedFromStorageRef.current[pipelineMode] = false;
       fetchLeads();
+      return;
+    }
+
+    // Painted from cache: refresh behind it so edits made elsewhere show up without a spinner.
+    if (store.isStale(PIPELINE_LEADS_STALE_MS)) {
+      void fetchLeads({ silent: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipelineMode, currentUserEmployeeId, currentUserFullName]);
+  }, [pipelineMode, currentUserEmployeeId, currentUserFullName, isCaseTab]);
 
-  // Live refresh (no hard refresh needed): when pipeline-related tables change, refetch leads + stats for the active tab.
-  // Debounced to collapse bursts (bulk updates, multi-row writes).
-  const realtimeDebounceRef = useRef<{ t: number | null }>({ t: null });
-  useEffect(() => {
-    if (!pipelineIdentityReady || !currentUserEmployeeId || !currentUserFullName?.trim()) return;
+  // Returning to this page should land exactly where the user left it.
+  useScrollRestoration(pipelineScrollStore, isLoading, !isCaseTab);
 
-    const scheduleRefresh = () => {
-      if (typeof window === 'undefined') return;
-      if (realtimeDebounceRef.current.t != null) window.clearTimeout(realtimeDebounceRef.current.t);
-      realtimeDebounceRef.current.t = window.setTimeout(() => {
-        realtimeDebounceRef.current.t = null;
-        void fetchLeadsRef.current();
-        void fetchRealSummaryStatsRef.current();
-        if (showMyStatsModal) void fetchMyStats();
-      }, 650);
-    };
+  // Live refresh (no hard refresh needed): when pipeline-related tables change, refresh leads +
+  // stats for the active tab. Debounced to collapse bursts (bulk updates, multi-row writes) and
+  // silent so rows update underneath the user instead of flashing the loading state.
+  const scheduleRealtimeRefresh = useDebouncedCallback(() => {
+    void fetchLeadsRef.current({ silent: true });
+    void fetchRealSummaryStatsRef.current();
+    if (showMyStatsModal) void fetchMyStats();
+  }, 650);
 
-    const channel = supabase
-      .channel('pipeline-page:realtime')
+  useRealtimeTables(
+    'pipeline-page:realtime',
+    [
       // Main lead sources (new + legacy)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_lead' }, scheduleRefresh)
+      { table: 'leads', handler: scheduleRealtimeRefresh },
+      { table: 'leads_lead', handler: scheduleRealtimeRefresh },
       // Follow ups displayed in columns
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'follow_ups' }, scheduleRefresh)
+      { table: 'follow_ups', handler: scheduleRealtimeRefresh },
       // Stats depend on stage change log
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_leadstage' }, scheduleRefresh)
+      { table: 'leads_leadstage', handler: scheduleRealtimeRefresh },
       // Lists/columns depend on related meetings for some rows
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, scheduleRefresh)
+      { table: 'meetings', handler: scheduleRealtimeRefresh },
       // Avatars/names/roles can change
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tenants_employee' }, scheduleRefresh)
-      .subscribe();
-
-    return () => {
-      if (realtimeDebounceRef.current.t != null && typeof window !== 'undefined') {
-        window.clearTimeout(realtimeDebounceRef.current.t);
-      }
-      void supabase.removeChannel(channel);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipelineIdentityReady, currentUserEmployeeId, currentUserFullName, pipelineMode, showMyStatsModal]);
+      { table: 'tenants_employee', handler: scheduleRealtimeRefresh },
+    ],
+    {
+      enabled:
+        !isCaseTab &&
+        pipelineIdentityReady &&
+        !!currentUserEmployeeId &&
+        !!currentUserFullName?.trim(),
+      resubscribeKey: pipelineMode,
+    },
+  );
 
   // Get signed agreement leads
   const signedAgreementLeads = useMemo(() => {
     return leads.filter(isSignedAgreementLead);
   }, [leads]);
+
+  /**
+   * Interaction + meeting metrics behind the Last interaction column and the summary boxes.
+   * Derived from the interaction tables (the denormalised lead columns are unreliable), so it
+   * loads after the rows are already on screen.
+   */
+  const metricsKey = useMemo(() => leads.map((lead) => lead.id).join(','), [leads]);
+
+  useEffect(() => {
+    if (isCaseTab || leads.length === 0) return;
+
+    const cached = pipelineMetricsCache[pipelineMode];
+    if (cached && cached.key === metricsKey) {
+      setMetricsState(cached);
+      return;
+    }
+
+    const newIds: string[] = [];
+    const legacyIds: string[] = [];
+    leads.forEach((lead) => {
+      const id = String(lead.id);
+      if (lead.lead_type === 'legacy' || id.startsWith('legacy_')) {
+        legacyIds.push(id.replace(/^legacy_/, ''));
+      } else {
+        newIds.push(id);
+      }
+    });
+
+    let cancelled = false;
+    void fetchPipelineLeadMetrics(newIds, legacyIds)
+      .then((metrics) => {
+        pipelineMetricsCache[pipelineMode] = { key: metricsKey, metrics };
+        if (!cancelled) setMetricsState({ key: metricsKey, metrics });
+      })
+      .catch((error) => console.warn('Pipeline: lead metrics failed', error));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metricsKey, isCaseTab, pipelineMode]);
+
+  /** True once the metrics for exactly these rows have arrived. */
+  const metricsLoaded = metricsState.key === metricsKey;
+
+  /** Each lead reduced to the shape the shared summary boxes count and filter on. */
+  const summaryRowById = useMemo(() => {
+    const map = new Map<string, PipelineSummaryRow>();
+    const leadMetrics = metricsLoaded ? metricsState.metrics : null;
+    leads.forEach((lead) => {
+      const rowId = String(lead.id);
+      const metrics = leadMetrics?.get(rowId);
+      const rawValue = lead.balance ?? lead.total ?? 0;
+      map.set(rowId, {
+        follow_up: lead.next_followup ?? null,
+        value_nis: convertToNIS(Number(rawValue) || 0, lead.balance_currency),
+        last_interaction: metrics?.last_interaction ?? lead.latest_interaction ?? null,
+        awaiting_reply: metrics?.awaiting_reply ?? false,
+        next_meeting: metrics?.next_meeting ?? null,
+        // The pipeline query already excludes inactive leads.
+        is_inactive: false,
+        created_at: lead.created_at ?? null,
+      });
+    });
+    return map;
+  }, [leads, metricsLoaded, metricsState]);
+
+  const pipelineSummary = useMemo(
+    () => summarizePipelineRows(Array.from(summaryRowById.values())),
+    [summaryRowById],
+  );
+
+  // Remember how many leads each mode holds so both role tabs can show a count.
+  useEffect(() => {
+    if (isCaseTab || isLoading) return;
+    if (pipelineModeCounts[pipelineMode] === leads.length) return;
+    pipelineModeCounts[pipelineMode] = leads.length;
+    setModeCounts({ ...pipelineModeCounts });
+  }, [leads.length, pipelineMode, isCaseTab, isLoading]);
+
+  const openFollowUpModal = (lead: LeadForPipeline, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingFollowUpLead(lead);
+    setFollowUpDraft(lead.next_followup ? lead.next_followup.slice(0, 10) : '');
+  };
+
+  const closeFollowUpModal = () => {
+    if (savingFollowUp) return;
+    setEditingFollowUpLead(null);
+    setFollowUpDraft('');
+  };
+
+  const saveFollowUpDate = async () => {
+    if (!editingFollowUpLead) return;
+    const followUpUserId = currentUserId || userId;
+    if (!followUpUserId) {
+      toast.error('User not authenticated');
+      return;
+    }
+
+    setSavingFollowUp(true);
+    try {
+      const leadId = String(editingFollowUpLead.id);
+      const isLegacy = editingFollowUpLead.lead_type === 'legacy' || leadId.startsWith('legacy_');
+      const actualLeadId = leadId.replace(/^legacy_/, '');
+      const hasDate = Boolean(followUpDraft.trim());
+      const dateValue = hasDate ? `${followUpDraft}T00:00:00Z` : null;
+
+      const existingQuery = isLegacy
+        ? supabase
+            .from('follow_ups')
+            .select('id')
+            .eq('user_id', followUpUserId)
+            .eq('lead_id', Number(actualLeadId))
+            .is('new_lead_id', null)
+            .order('date', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+        : supabase
+            .from('follow_ups')
+            .select('id')
+            .eq('user_id', followUpUserId)
+            .eq('new_lead_id', actualLeadId)
+            .is('lead_id', null)
+            .order('date', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+      const { data: existingFollowUp, error: existingError } = await existingQuery;
+      if (existingError) throw existingError;
+
+      if (hasDate) {
+        if (existingFollowUp?.id) {
+          const { error } = await supabase
+            .from('follow_ups')
+            .update({ date: dateValue })
+            .eq('id', existingFollowUp.id);
+          if (error) throw error;
+          toast.success('Follow-up date updated');
+        } else {
+          const insertData: Record<string, unknown> = {
+            user_id: followUpUserId,
+            date: dateValue,
+            created_at: new Date().toISOString(),
+          };
+          if (isLegacy) {
+            insertData.lead_id = Number(actualLeadId);
+            insertData.new_lead_id = null;
+          } else {
+            insertData.new_lead_id = actualLeadId;
+            insertData.lead_id = null;
+          }
+          const { error } = await supabase.from('follow_ups').insert(insertData);
+          if (error) throw error;
+          toast.success('Follow-up date saved');
+        }
+      } else if (existingFollowUp?.id) {
+        const { error } = await supabase.from('follow_ups').delete().eq('id', existingFollowUp.id);
+        if (error) throw error;
+        toast.success('Follow-up date cleared');
+      }
+
+      setLeads(prev =>
+        prev.map(lead =>
+          String(lead.id) === leadId
+            ? { ...lead, next_followup: hasDate ? followUpDraft : null }
+            : lead,
+        ),
+      );
+      setEditingFollowUpLead(null);
+      setFollowUpDraft('');
+    } catch (error) {
+      console.error('Failed to save follow-up date:', error);
+      toast.error('Failed to save follow-up date');
+    } finally {
+      setSavingFollowUp(false);
+    }
+  };
 
   const filteredLeads = useMemo(() => {
 
@@ -2112,7 +2433,15 @@ const PipelinePage: React.FC = () => {
     
     // Start with all leads, excluding signed agreements
     let filtered = leads.filter(lead => !isSignedAgreementLead(lead));
-    
+
+    // Summary box selection (missed follow up, high value, ...)
+    if (quickFilter) {
+      filtered = filtered.filter(lead => {
+        const row = summaryRowById.get(String(lead.id));
+        return row ? matchesQuickFilter(row, quickFilter) : false;
+      });
+    }
+
     // Apply search filter
     if (searchQuery) {
       filtered = filtered.filter(lead => {
@@ -2212,7 +2541,7 @@ const PipelinePage: React.FC = () => {
     }
     
     return filtered;
-  }, [leads, showSignedAgreements, searchQuery, filterCreatedDateFrom, filterCreatedDateTo, filterBy, labelFilter, showUnassignedOnly, showLostInteractionsOnly, filterCountry, filterLanguage, allCountries, allLanguages]);
+  }, [leads, showSignedAgreements, searchQuery, filterCreatedDateFrom, filterCreatedDateTo, filterBy, labelFilter, showUnassignedOnly, showLostInteractionsOnly, filterCountry, filterLanguage, allCountries, allLanguages, quickFilter, summaryRowById]);
 
   // Extract unique values from leads for filter dropdowns
     const availableCountries = useMemo(() => {
@@ -2290,6 +2619,13 @@ const PipelinePage: React.FC = () => {
             aValue = a.next_followup ? new Date(a.next_followup).getTime() : 0;
             bValue = b.next_followup ? new Date(b.next_followup).getTime() : 0;
             break;
+          case 'last_interaction': {
+            const aLast = summaryRowById.get(String(a.id))?.last_interaction;
+            const bLast = summaryRowById.get(String(b.id))?.last_interaction;
+            aValue = aLast ? new Date(aLast).getTime() : 0;
+            bValue = bLast ? new Date(bLast).getTime() : 0;
+            break;
+          }
           default:
             aValue = '';
             bValue = '';
@@ -2310,7 +2646,7 @@ const PipelinePage: React.FC = () => {
       });
     }
     return leadsToSort;
-  }, [filteredLeads, sortColumn, sortDirection]);
+  }, [filteredLeads, sortColumn, sortDirection, summaryRowById]);
 
   // Calculate summary statistics (using real data from database)
   const summaryStats = useMemo(() => {
@@ -2345,21 +2681,14 @@ const PipelinePage: React.FC = () => {
     };
   }, [sortedLeads, pipelineMode, realSummaryStats]);
 
+  /**
+   * Clicking a row goes straight to the lead, same as the case pipeline.
+   * Cmd/Ctrl (or middle) click opens it in a new tab instead.
+   */
   const handleRowSelect = (leadId: string | number, event?: React.MouseEvent) => {
-    const isNewTab = event?.metaKey || event?.ctrlKey;
-    
-    // If Cmd/Ctrl is pressed, find the lead and open in new tab
-    if (isNewTab) {
-      const lead = leads.find(l => String(l.id) === String(leadId));
-      if (lead) {
-        window.open(`/clients/${lead.lead_number}`, '_blank');
-        return;
-      }
-    }
-    
-    // Normal behavior: select row
-    setSelectedRowId(leadId);
-    setShowActionMenu(true);
+    const lead = leads.find(l => String(l.id) === String(leadId));
+    if (!lead) return;
+    openLeadFromRowClick(event, lead.lead_number || lead.id, navigate);
   };
 
   const handleRowClick = (lead: LeadForPipeline, event?: React.MouseEvent) => {
@@ -3615,11 +3944,12 @@ const PipelinePage: React.FC = () => {
   }, [fetchRealSummaryStats]);
 
   useRefetchOnVisible({
-    enabled: pipelineIdentityReady && !!currentUserEmployeeId && !!currentUserFullName?.trim(),
-    staleMs: getMobileAwareCacheTtlMs(3 * 60 * 1000, 45_000),
+    enabled:
+      !isCaseTab && pipelineIdentityReady && !!currentUserEmployeeId && !!currentUserFullName?.trim(),
+    staleMs: getMobileAwareCacheTtlMs(PIPELINE_LEADS_STALE_MS, 45_000),
     lastFetchedAtRef: pipelineLastFetchedAtRef,
     onRefetch: () => {
-      void fetchLeadsRef.current();
+      void fetchLeadsRef.current({ silent: true });
       void fetchRealSummaryStatsRef.current();
     },
   });
@@ -4592,59 +4922,60 @@ const PipelinePage: React.FC = () => {
   };
 
   return (
-    <div className="p-4 md:p-6 lg:p-8">
+    <div className="min-h-full w-full bg-[#f3f4f6] px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
         <div className="flex items-center gap-4">
           <h1 className="text-3xl font-bold flex items-center gap-3">
             <ChartBarIcon className="w-8 h-8 text-primary" />
-            {showSignedAgreements
-              ? 'Signed Agreements'
-              : pipelineMode === 'scheduler'
-                ? 'Scheduler Pipeline'
-                : 'Closer Pipeline'}
+            {isCaseTab
+              ? 'Case Pipeline'
+              : showSignedAgreements
+                ? 'Signed Agreements'
+                : pipelineMode === 'scheduler'
+                  ? 'Scheduler Pipeline'
+                  : 'Closer Pipeline'}
           </h1>
           
-          {/* Pipeline Mode Switch — sliding pill + smooth color cross-fade */}
+          {/* Role tabs: Closer/Scheduler use this page's pipeline, Manager/Helper the case pipeline */}
           <div
-            className="relative inline-flex min-w-[17.5rem] items-stretch gap-1 rounded-xl border border-gray-200 bg-gray-100 p-1 shadow-inner"
+            className="inline-flex items-center gap-1 rounded-full bg-gray-200/70 p-1"
             role="tablist"
             aria-label="Pipeline role"
           >
-            <span
-              aria-hidden
-              className="pointer-events-none absolute top-1 bottom-1 left-1 z-0 w-[calc(50%-0.125rem)] rounded-lg bg-gradient-to-r from-primary via-primary to-primary/95 shadow-md transition-transform duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] will-change-transform"
-              style={{
-                transform:
-                  pipelineMode === 'scheduler' ? 'translateX(calc(100% + 0.25rem))' : 'translateX(0)',
-              }}
-            />
-            <button
-              type="button"
-              role="tab"
-              aria-selected={pipelineMode === 'closer'}
-              className={`relative z-10 flex-1 rounded-lg px-6 py-2.5 text-sm font-semibold tracking-wide transition-colors duration-300 ease-out ${
-                pipelineMode === 'closer' ? 'text-white' : 'text-gray-600 hover:text-gray-900'
-              } ${isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-              onClick={() => !isLoading && setPipelineMode('closer')}
-              disabled={isLoading}
-            >
-              Closer
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={pipelineMode === 'scheduler'}
-              className={`relative z-10 flex-1 rounded-lg px-6 py-2.5 text-sm font-semibold tracking-wide transition-colors duration-300 ease-out ${
-                pipelineMode === 'scheduler' ? 'text-white' : 'text-gray-600 hover:text-gray-900'
-              } ${isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-              onClick={() => !isLoading && setPipelineMode('scheduler')}
-              disabled={isLoading}
-            >
-              Scheduler
-            </button>
+            {(['closer', 'scheduler', 'manager', 'helper'] as PipelineTab[]).map((tab) => {
+              const active = activeTab === tab;
+              const count =
+                tab === 'manager'
+                  ? caseRoleCounts.manager
+                  : tab === 'helper'
+                    ? caseRoleCounts.helper
+                    : modeCounts[tab];
+              // Switching between Closer and Scheduler refetches, so block it mid-load only there.
+              const blocked = isLoading && !isCaseTab && (tab === 'closer' || tab === 'scheduler');
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
+                    active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
+                  } ${blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                  onClick={() => !blocked && selectTab(tab)}
+                  disabled={blocked}
+                >
+                  {PIPELINE_TAB_LABELS[tab]}
+                  {count != null ? (
+                    <span className="ml-1.5 text-xs font-medium text-gray-400">{count}</span>
+                  ) : null}
+                </button>
+              );
+            })}
           </div>
         </div>
         
+        {/* These actions all operate on the closer/scheduler pipeline below */}
+        {isCaseTab ? null : (
         <div className="flex items-center gap-2">
           {/* My Stats Button */}
           <button
@@ -4655,7 +4986,8 @@ const PipelinePage: React.FC = () => {
             My Stats
           </button>
           
-          {/* View Toggle Button (Icon Only) */}
+          {/* View Toggle Button (Icon Only) — hidden for now, the table is the only view in use */}
+          {/*
           <button
             className="btn btn-outline btn-primary btn-sm"
             onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
@@ -4667,8 +4999,10 @@ const PipelinePage: React.FC = () => {
               <Squares2X2Icon className="w-5 h-5" />
             )}
           </button>
-          
-          {/* Assignment Button - Only visible for superusers */}
+          */}
+
+          {/* Assignment Button - Only visible for superusers — hidden for now */}
+          {/*
           {isSuperUser && (
             <button
               onClick={() => {
@@ -4681,67 +5015,29 @@ const PipelinePage: React.FC = () => {
               Assign Leads
             </button>
           )}
+          */}
         </div>
+        )}
       </div>
-      {/* Summary Statistics Cards */}
-      <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Contracts Signed / Meetings Created */}
-        <div 
-          className="bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 cursor-pointer"
-          onClick={() => {
-            setShowSignedAgreements(!showSignedAgreements);
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white/90 text-sm font-medium">
-                {pipelineMode === 'closer' ? 'Contracts Signed' : 'Meetings Created'}
-              </p>
-              <p className="text-3xl font-bold">{summaryStats.contractsSigned}</p>
-              <p className="text-white/90 text-xs mt-1">
-                {pipelineMode === 'closer' ? 'Last 30 days' : 'Last 30 days'}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 bg-white/20 rounded-full p-3">
-              <FileText className="w-7 h-7 text-white/90" />
-              <PencilLine className="w-6 h-6 text-white/80 -ml-2" />
-            </div>
-          </div>
-        </div>
 
-        {/* Top Worker */}
-        <div className="bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white/90 text-sm font-medium">Top {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}</p>
-              <p className="text-xl font-bold truncate">{summaryStats.topWorker}</p>
-              <p className="text-white/90 text-xs mt-1">
-                {pipelineMode === 'closer' 
-                  ? `${summaryStats.topWorkerCount} contract${summaryStats.topWorkerCount === 1 ? '' : 's'} signed (last 30 days)`
-                  : `${summaryStats.topWorkerCount} meeting${summaryStats.topWorkerCount === 1 ? '' : 's'} created (last 30 days)`
-                }
-              </p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <UserIcon className="w-8 h-8" />
-            </div>
-          </div>
-        </div>
-
-        {/* Total Leads */}
-        <div className="bg-gradient-to-b from-teal-600 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white/90 text-sm font-medium">Total Leads</p>
-              <p className="text-3xl font-bold">{summaryStats.totalLeads}</p>
-              <p className="text-white/90 text-xs mt-1">In pipeline</p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <ChartBarIcon className="w-8 h-8" />
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* Animated on tab change without a key, so the case pipeline is not remounted */}
+      <div ref={tabPanelRef} className="pipeline-tab-panel">
+      {isCaseTab ? (
+        <CasePipelineView
+          roleTab={activeTab as CasePipelineRoleTab}
+          showHeader={false}
+          withPageChrome={false}
+          onCountsChange={setCaseRoleCounts}
+        />
+      ) : (
+      <>
+      {/* Summary boxes — same five metrics and styling as the case pipeline */}
+      <PipelineSummaryCards
+        className="mb-8"
+        counts={pipelineSummary}
+        quickFilter={quickFilter}
+        onToggle={setQuickFilter}
+      />
 
       {/* Filters and Search */}
       <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
@@ -5031,8 +5327,12 @@ const PipelinePage: React.FC = () => {
         </div>
       ) : (
         <div className="overflow-x-auto w-full mt-6" style={{ overflowY: 'visible' }}>
-          <table className="table-auto divide-y divide-base-200 text-base w-full" style={{ position: 'relative' }}>
-            <thead className="sticky top-0 z-10 bg-white font-semibold text-base-content shadow-sm">
+          {/* Rows sit as separate white cards on the grey page, matching the case pipeline */}
+          <table
+            className="table-auto border-separate border-spacing-y-2 text-base w-full"
+            style={{ position: 'relative' }}
+          >
+            <thead className="sticky top-0 z-10 bg-[#f3f4f6] text-sm uppercase tracking-wide text-gray-500">
               <tr>
                 <th className="py-3 px-2 text-center w-10"></th>
                 <th className="py-3 px-2 text-left">Lead</th>
@@ -5049,11 +5349,17 @@ const PipelinePage: React.FC = () => {
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('probability')}>
                   Probability {sortColumn === 'probability' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
+                <th
+                  className="cursor-pointer select-none py-3 px-2 text-center w-[120px] min-w-[120px]"
+                  onClick={() => handleSort('last_interaction')}
+                >
+                  L. Interaction {sortColumn === 'last_interaction' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
+                </th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('total_applicants')}>
-                  Total Applicants {sortColumn === 'total_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  Total App. {sortColumn === 'total_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('potential_applicants')}>
-                  Potential Applicants {sortColumn === 'potential_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  P. App. {sortColumn === 'potential_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
                 <th className="py-3 px-2 text-center">Expert</th>
                 <th className="py-3 px-2 text-center">Country</th>
@@ -5064,7 +5370,7 @@ const PipelinePage: React.FC = () => {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={14} className="text-center py-12">
+                  <td colSpan={15} className="text-center py-12">
                     <div className="flex flex-col items-center justify-center gap-4">
                       <div className="loading loading-spinner loading-lg text-primary"></div>
                       <p className="text-base font-medium text-base-content/70">
@@ -5074,15 +5380,18 @@ const PipelinePage: React.FC = () => {
                   </td>
                 </tr>
               ) : sortedLeads.length === 0 ? (
-                <tr><td colSpan={14} className="text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={15} className="text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => {
                   const isExpanded = expandedRows.has(lead.id);
                   return (
                     <React.Fragment key={lead.id}>
                       <tr
-                    className={`transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+                    className="group relative cursor-pointer transition hover:-translate-y-[1px] [&>td]:border-y [&>td]:border-gray-100 [&>td]:bg-white [&>td]:shadow-sm [&>td:first-child]:rounded-l-xl [&>td:first-child]:border-l [&>td:last-child]:rounded-r-xl [&>td:last-child]:border-r"
                     onClick={(e) => handleRowSelect(lead.id, e)}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) handleRowSelect(lead.id, e);
+                    }}
                     style={{ overflow: 'visible' }}
                   >
                         {/* Expand/Collapse Arrow */}
@@ -5116,19 +5425,41 @@ const PipelinePage: React.FC = () => {
                         <span className="font-semibold text-base-content truncate">{lead.name}</span>
                       </div>
                     </td>
-                    {/* Follow Up */}
+                    {/* Follow Up — click to set or change your own follow-up date */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
-                      {lead.next_followup ? (
-                        <span className={`px-2 py-1 rounded font-semibold ${getFollowUpColor(lead.next_followup)}`}>
-                          {format(parseISO(lead.next_followup), 'dd/MM/yyyy')}
-                        </span>
-                      ) : '--'}
+                      <button
+                        type="button"
+                        title="Edit your follow-up date"
+                        onClick={(e) => openFollowUpModal(lead, e)}
+                        className={`inline-flex items-center gap-1 rounded px-2 py-1 font-semibold transition hover:brightness-95 ${
+                          lead.next_followup
+                            ? getFollowUpColor(lead.next_followup)
+                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                        }`}
+                      >
+                        <CalendarIcon className="w-4 h-4 shrink-0 opacity-80" />
+                        {lead.next_followup
+                          ? format(parseISO(lead.next_followup), 'dd/MM/yyyy')
+                          : 'Set date'}
+                      </button>
                     </td>
-                    {/* Stage */}
+                    {/* Stage — soft coloured badge, same as the case pipeline */}
                     <td className="px-2 py-3 md:py-4 text-center">
-                      <span className="text-xs sm:text-sm text-gray-700 max-w-[120px] whitespace-normal break-words leading-tight inline-block">
-                        {lead.stage ? getStageName(lead.stage) : 'N/A'}
-                      </span>
+                      {lead.stage ? (() => {
+                        const soft = getSoftStageBadgeStyle(getStageColour(lead.stage), lead.stage);
+                        const stageName = getStageName(lead.stage);
+                        return (
+                          <span
+                            className="inline-flex max-w-[11rem] truncate rounded-full px-2.5 py-1 text-xs font-semibold"
+                            style={{ backgroundColor: soft.backgroundColor, color: soft.color }}
+                            title={stageName}
+                          >
+                            {stageName}
+                          </span>
+                        );
+                      })() : (
+                        <span className="text-sm text-gray-400">—</span>
+                      )}
                     </td>
                     {/* Category */}
                     <td className="px-2 py-3 md:py-4 text-center">
@@ -5157,6 +5488,36 @@ const PipelinePage: React.FC = () => {
                     {/* Probability */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <span className={`font-bold ${(lead.probability ?? 0) >= 80 ? 'text-green-600' : (lead.probability ?? 0) >= 60 ? 'text-yellow-600' : (lead.probability ?? 0) >= 40 ? 'text-orange-600' : 'text-red-600'}`}>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</span>
+                    </td>
+                    {/* Last interaction (WhatsApp, email or call, whichever is newest).
+                        Fixed height and width: the values arrive after the rows, and the column
+                        must not resize or reflow the table when they land. */}
+                    <td className="px-2 py-3 md:py-4 text-center w-[120px] min-w-[120px]">
+                      <div className="flex h-9 flex-col items-center justify-center leading-tight">
+                        {(() => {
+                          const lastInteraction = summaryRowById.get(String(lead.id))?.last_interaction;
+                          if (!lastInteraction) {
+                            return metricsLoaded ? (
+                              <span className="text-xs text-gray-400">No contact</span>
+                            ) : (
+                              <span className="h-3 w-14 animate-pulse rounded bg-gray-100" />
+                            );
+                          }
+                          const days = Math.floor(
+                            (Date.now() - new Date(lastInteraction).getTime()) / 86400000,
+                          );
+                          return (
+                            <>
+                              <span className="text-xs sm:text-sm text-gray-700">
+                                {format(new Date(lastInteraction), 'dd/MM/yyyy')}
+                              </span>
+                              <span className="text-[11px] text-gray-400">
+                                {days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days}d ago`}
+                              </span>
+                            </>
+                          );
+                        })()}
+                      </div>
                     </td>
                     {/* Total Applicants */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? '--'}</td>
@@ -5235,7 +5596,10 @@ const PipelinePage: React.FC = () => {
                   {/* Collapsible Content Row */}
                   {isExpanded && (
                     <tr>
-                      <td colSpan={14} className="px-4 py-4 bg-white border-b-2 border-gray-200">
+                      <td
+                        colSpan={15}
+                        className="rounded-xl border border-gray-100 bg-white px-4 py-4 shadow-sm"
+                      >
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                           {/* Comments */}
                           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
@@ -5555,6 +5919,9 @@ const PipelinePage: React.FC = () => {
           </table>
         </div>
       )}
+      </>
+      )}
+      </div>
 
       {/* Floating Action Buttons - Fixed position on right side */}
       {selectedRowId && (() => {
@@ -6917,6 +7284,71 @@ const PipelinePage: React.FC = () => {
             )}
           </div>
           <div className="modal-backdrop" onClick={() => setShowMyStatsModal(false)}></div>
+        </div>
+      )}
+
+      {/* Follow-up date editor */}
+      {editingFollowUpLead && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+          onClick={closeFollowUpModal}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Follow-up date</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  {editingFollowUpLead.lead_number} · {editingFollowUpLead.name}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={closeFollowUpModal}
+                disabled={savingFollowUp}
+                aria-label="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <label className="mt-5 block text-sm font-medium text-gray-700" htmlFor="pipeline-follow-up-date">
+              Your follow-up date
+            </label>
+            <input
+              id="pipeline-follow-up-date"
+              type="date"
+              className="input input-bordered mt-2 w-full"
+              value={followUpDraft}
+              onChange={(e) => setFollowUpDraft(e.target.value)}
+              disabled={savingFollowUp}
+            />
+            <p className="mt-2 text-xs text-gray-400">
+              Leave empty and save to clear the date. Only you see this follow-up.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                className="btn btn-ghost rounded-full"
+                onClick={closeFollowUpModal}
+                disabled={savingFollowUp}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary rounded-full"
+                onClick={() => void saveFollowUpDate()}
+                disabled={savingFollowUp}
+              >
+                {savingFollowUp ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

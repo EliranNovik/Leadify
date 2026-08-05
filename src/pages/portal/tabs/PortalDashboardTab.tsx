@@ -256,6 +256,13 @@ const ROLE_META = [
   { key: 'department_manager' as const, label: 'Department manager' },
 ];
 
+/** Lower number wins when the same person is assigned to more than one role. */
+const ROLE_PRIORITY: Record<(typeof ROLE_META)[number]['key'], number> = {
+  handler: 0,
+  department_manager: 1,
+  retainer_handler: 2,
+};
+
 function buildPortalTeamEmployeeFallback(
   displayName: string,
   photoUrl: string | null | undefined,
@@ -318,7 +325,7 @@ const PortalDashboardTab: React.FC<Props> = ({
 
   const lead = summary.lead;
   const coverKey = `case::${lead.lead_number}::${lead.display_name}`;
-  const roles = [
+  const rolesWithPeople = [
     {
       ...ROLE_META[0],
       name: summary.handler_name,
@@ -344,6 +351,19 @@ const PortalDashboardTab: React.FC<Props> = ({
     const displayName = role.name?.trim() || '';
     return Boolean(displayName) && displayName !== '—' && displayName !== 'Not assigned';
   });
+
+  // Same employee in multiple roles → show once, preferring Case Handler over Legal Assistant.
+  const preferredRoleByName = new Map<string, (typeof rolesWithPeople)[number]>();
+  for (const role of rolesWithPeople) {
+    const nameKey = role.name!.trim().toLowerCase();
+    const existing = preferredRoleByName.get(nameKey);
+    if (!existing || ROLE_PRIORITY[role.key] < ROLE_PRIORITY[existing.key]) {
+      preferredRoleByName.set(nameKey, role);
+    }
+  }
+  const roles = rolesWithPeople.filter(
+    (role) => preferredRoleByName.get(role.name!.trim().toLowerCase()) === role,
+  );
 
   const rolePhotoByName = new Map<string, string>();
   for (const role of roles) {
