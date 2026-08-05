@@ -92,7 +92,7 @@ function MeetingStatusBadge({ status }: { status: string }) {
     return <ColoredBadge className="bg-emerald-500/15 text-emerald-800">Completed</ColoredBadge>;
   }
   if (normalized === 'canceled' || normalized === 'cancelled') {
-    return <ColoredBadge className="bg-neutral-500/15 text-neutral-700">Cancelled</ColoredBadge>;
+    return <ColoredBadge className="bg-red-500/10 text-red-500/90">Cancelled</ColoredBadge>;
   }
   return <ColoredBadge className="bg-primary/15 text-primary">Scheduled</ColoredBadge>;
 }
@@ -126,42 +126,49 @@ function PortalMeetingCard({
       }`}
     >
       <div className="flex flex-1 flex-col p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-1 gap-3">
-            <div
-              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${
-                muted ? 'bg-neutral-100 text-neutral-500' : 'bg-primary/10 text-primary'
+        <div className="flex items-center gap-3">
+          {meeting.join_url ? (
+            <a
+              href={meeting.join_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`inline-flex h-9 min-h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full px-4 text-sm font-semibold shadow-sm transition-colors ${
+                isTeams
+                  ? 'bg-primary text-primary-content hover:bg-primary/90'
+                  : 'border border-gray-200 bg-white text-gray-800 hover:border-gray-300 hover:bg-gray-50'
               }`}
             >
-              <CalendarDaysIcon className="h-5 w-5" aria-hidden />
-            </div>
-            <div className="min-w-0 flex-1">
-              <h3 className="text-base font-bold leading-snug tracking-tight text-gray-900 md:text-[1.05rem]">
-                {title}
-              </h3>
-              <PortalMeetingLocationLines
-                location={meeting.meeting_location}
-                isPhysicalMeeting={meeting.is_physical_meeting}
-                meetingAddress={meeting.meeting_address}
-              />
-            </div>
-          </div>
-          <MeetingStatusBadge status={meeting.status || 'scheduled'} />
+              <VideoCameraIcon className="h-5 w-5 shrink-0" />
+              Join meeting
+            </a>
+          ) : null}
+          <span className="ml-auto shrink-0">
+            <MeetingStatusBadge status={meeting.status || 'scheduled'} />
+          </span>
         </div>
 
-        {meeting.join_url ? (
-          <a
-            href={meeting.join_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`btn btn-sm mt-5 w-full gap-2 rounded-lg border-0 font-semibold shadow-sm ${
-              isTeams ? 'btn-primary' : 'btn-outline'
+        <div className="mt-2 flex items-center gap-3">
+          <div
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${
+              muted ? 'bg-neutral-100 text-neutral-500' : 'bg-primary/10 text-primary'
             }`}
           >
-            <VideoCameraIcon className="h-4 w-4" />
-            Join meeting
-          </a>
-        ) : null}
+            <CalendarDaysIcon className="h-5 w-5" aria-hidden />
+          </div>
+          <h3
+            className="min-w-0 flex-1 truncate text-base font-bold leading-snug tracking-tight text-gray-900 md:text-[1.05rem]"
+            title={title}
+          >
+            {title}
+          </h3>
+        </div>
+
+        <PortalMeetingLocationLines
+          className="mt-3 space-y-1"
+          location={meeting.meeting_location}
+          isPhysicalMeeting={meeting.is_physical_meeting}
+          meetingAddress={meeting.meeting_address}
+        />
 
         <MeetingCardActions meeting={meeting} title={title} />
       </div>
@@ -235,22 +242,18 @@ const PortalMeetingsTab: React.FC<Props> = ({
   const pastMeetingsSection =
     past.length > 0 ? (
       <section className="mt-10 space-y-5">
-        <PortalCard padding="p-0" className="overflow-hidden">
-          <details className="group">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 md:px-6 [&::-webkit-details-marker]:hidden">
-              <PortalSectionLabel>Past</PortalSectionLabel>
-              <span className="flex items-center gap-2 text-sm font-medium text-base-content/45">
-                {past.length}
-                <ChevronDownIcon className="h-5 w-5 transition-transform group-open:rotate-180" />
-              </span>
-            </summary>
-            <div className="border-t border-gray-100 px-4 pb-4 pt-2 md:px-6 md:pb-6">
-              <HorizontalCardCarousel>
-                {past.map((m) => renderMeetingCard(m, true))}
-              </HorizontalCardCarousel>
-            </div>
-          </details>
-        </PortalCard>
+        <details className="group">
+          <summary className="inline-flex w-fit cursor-pointer list-none items-center gap-2.5 rounded-full bg-white px-4 py-2 shadow-[0_2px_10px_rgba(15,23,42,0.06)] transition-shadow hover:shadow-[0_4px_14px_rgba(15,23,42,0.1)] [&::-webkit-details-marker]:hidden">
+            <PortalSectionLabel>Past meetings</PortalSectionLabel>
+            <span className="text-sm font-medium text-base-content/45">{past.length}</span>
+            <ChevronDownIcon className="h-4 w-4 text-base-content/45 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="pt-3">
+            <HorizontalCardCarousel>
+              {past.map((m) => renderMeetingCard(m, true))}
+            </HorizontalCardCarousel>
+          </div>
+        </details>
       </section>
     ) : null;
 

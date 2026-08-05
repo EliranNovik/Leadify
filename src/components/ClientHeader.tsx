@@ -5841,6 +5841,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         onClose={() => setIsSubEffortsModalOpen(false)}
                         rows={leadSubEfforts}
                         leadNumber={headerDocsLeadNumber || selectedClient?.lead_number || null}
+                        clientName={selectedClient?.name || null}
+                        leadStage={(selectedClient as any)?.stage ?? null}
                         clientId={(selectedClient as any)?.id ?? null}
                         initialSelectedRowId={subEffortsModalRowId}
                         onRefresh={() => void fetchLeadSubEfforts()}

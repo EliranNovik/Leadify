@@ -41,22 +41,6 @@ function metaFor(type: PortalNotificationType): IconMeta {
   return TYPE_META[type] || { icon: BellIcon, chip: 'bg-gray-100 text-gray-500' };
 }
 
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const diff = Date.now() - then;
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return 'Just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  const wk = Math.floor(day / 7);
-  if (wk < 5) return `${wk}w ago`;
-  return new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' });
-}
-
 const PortalNotifications: React.FC<Props> = ({
   onNavigate,
   storageKey,
@@ -252,9 +236,6 @@ const PortalNotifications: React.FC<Props> = ({
                               {n.subtitle}
                             </span>
                           ) : null}
-                          <span className="mt-0.5 block text-[11px] font-medium text-gray-400">
-                            {relativeTime(n.ts)}
-                          </span>
                         </span>
                       </button>
                     </li>

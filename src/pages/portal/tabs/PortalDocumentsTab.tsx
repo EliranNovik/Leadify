@@ -288,7 +288,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
     (files: File[]) => {
       if (!files.length || isUploading) return;
       if (!documentTypes.length) {
-        toast.error('No document types are set up for your case yet. Please contact your case manager.');
+        toast.error('No document types are available yet. Please contact support.');
         return;
       }
       setPendingFiles(files);
@@ -561,13 +561,13 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
       <p className="text-xs text-base-content/65">
         {documentTypes.length > 0
           ? 'Select files to upload. You will choose the contact and document type before each upload.'
-          : 'Your case manager has not added any document types for upload yet. You can still view shared documents below.'}
+          : 'Document types are not available yet. You can still view shared documents below.'}
       </p>
 
       {documentTypes.length === 0 ? (
         <PortalCard>
           <p className="text-sm text-base-content/60">
-            Upload is not available until your case team adds the required document types in the CRM.
+            Upload is not available until document types are configured. Please contact support.
           </p>
         </PortalCard>
       ) : null}
@@ -596,7 +596,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
             ? 'Processing files...'
             : canSelectFiles
               ? 'Drag and drop files here, or click to select files'
-              : 'Upload unavailable — no document types configured for this case'}
+              : 'Upload unavailable — no document types configured'}
         </div>
         <button
           type="button"
@@ -934,7 +934,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                   disabled={isUploading || documentTypes.length === 0}
                 >
                   <option value="">
-                    {documentTypes.length === 0 ? 'No types configured for this case' : 'Select type…'}
+                    {documentTypes.length === 0 ? 'No document types available' : 'Select type…'}
                   </option>
                   {documentTypes.map((t) => (
                     <option key={t.id} value={t.id}>

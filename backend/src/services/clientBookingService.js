@@ -525,29 +525,110 @@ function slotOverlaps(startMin, duration, buffer, busyRanges) {
   return false;
 }
 
-function isBookingTimeAvailable(settings, dateStr, timeStr, busyRanges) {
-  const normalized = String(timeStr || '').substring(0, 5);
-  if (!/^\d{2}:\d{2}$/.test(normalized)) return false;
+/**
+ * The min-notice cutoff slides forward in real time, so the earliest slot offered when the
+ * times were listed is already stale by the time the client finishes picking a contact.
+ * Booking allows this much slack so an offered slot stays bookable through the flow.
+ */
+const MIN_NOTICE_BOOKING_GRACE_MINUTES = 20;
 
-  if (isJerusalemDateUnavailable(settings, dateStr)) return false;
+function minNoticeCutoff(settings, graceMinutes = 0) {
+  const minNoticeHours = settings.min_notice_hours || 24;
+  return DateTime.now()
+    .setZone(BUSINESS_TZ)
+    .plus({ hours: minNoticeHours })
+    .minus({ minutes: Math.max(0, graceMinutes) });
+}
+
+function isJerusalemDayAllowed(settings, dateStr) {
+  const jsDow = getJerusalemJsDayOfWeek(dateStr);
+  return Boolean(settings.days_of_week?.includes(jsDow));
+}
+
+function isWithinMaxDaysAhead(settings, dateStr) {
+  const maxDays = settings.max_days_ahead || 60;
+  const maxDate = DateTime.now().setZone(BUSINESS_TZ).plus({ days: maxDays }).endOf('day');
+  const selected = DateTime.fromISO(`${dateStr}T00:00:00`, { zone: BUSINESS_TZ });
+  return selected.isValid && selected <= maxDate;
+}
+
+/**
+ * Min notice is counted in whole days rather than rolling hours, so a date either offers
+ * its whole configured window or is not offered at all. 24 hours therefore means "from
+ * tomorrow onwards" instead of "22 hours from now", which would drop tomorrow entirely
+ * and leave clients with no times on the next open day.
+ */
+function noticeDaysRequired(settings) {
+  const minNoticeHours = settings.min_notice_hours ?? 24;
+  return Math.ceil(Math.max(0, minNoticeHours) / 24);
+}
+
+function isNoticeSatisfiedForWholeDay(settings, dateStr, graceMinutes = 0) {
+  const selected = DateTime.fromISO(`${dateStr}T00:00:00`, { zone: BUSINESS_TZ });
+  if (!selected.isValid) return false;
+  const earliest = DateTime.now()
+    .setZone(BUSINESS_TZ)
+    .minus({ minutes: Math.max(0, graceMinutes) })
+    .startOf('day')
+    .plus({ days: noticeDaysRequired(settings) });
+  return selected.startOf('day') >= earliest;
+}
+
+/**
+ * Single source of truth for "can this Jerusalem wall time be booked", shared by slot
+ * generation and booking validation so the two can't drift apart.
+ * Returns null when bookable, otherwise a client-facing reason.
+ */
+function bookingTimeUnavailableReason(settings, dateStr, timeStr, busyRanges, options = {}) {
+  const { graceMinutes = 0, enforceDayRules = false, dayLevelNotice = false } = options;
+
+  const normalized = String(timeStr || '').substring(0, 5);
+  if (!/^\d{2}:\d{2}$/.test(normalized)) return 'Invalid time';
+
+  if (isJerusalemDateUnavailable(settings, dateStr)) {
+    return 'That date is not available for booking';
+  }
+  if (enforceDayRules && !isJerusalemDayAllowed(settings, dateStr)) {
+    return 'That day of the week is not available for booking';
+  }
+  if (enforceDayRules && !isWithinMaxDaysAhead(settings, dateStr)) {
+    return 'That date is too far ahead to book';
+  }
 
   const window = resolveBookingWindow(settings);
   const t = parseTimeToMinutes(normalized);
   const startMin = parseTimeToMinutes(window.start);
   const lastStartMin = parseTimeToMinutes(window.lastStart);
+  if (t < startMin || t > lastStartMin) {
+    return `Please choose a time between ${window.start} and ${window.lastStart} (Israel time)`;
+  }
+
   const duration = settings.duration_minutes || 30;
   const buffer = settings.buffer_minutes || 0;
-  const minNoticeHours = settings.min_notice_hours || 24;
-
-  if (t < startMin || t > lastStartMin) return false;
-  if (slotOverlaps(t, duration, buffer, busyRanges)) return false;
+  if (slotOverlaps(t, duration, buffer, busyRanges)) {
+    return 'That time was just taken. Please choose another time.';
+  }
 
   const slotDt = jerusalemDateTimeFromWall(dateStr, normalized);
-  if (!slotDt) return false;
-  const minNotice = DateTime.now().setZone(BUSINESS_TZ).plus({ hours: minNoticeHours });
-  if (slotDt < minNotice) return false;
+  if (!slotDt) return 'Invalid date or time';
 
-  return true;
+  if (dayLevelNotice) {
+    if (!isNoticeSatisfiedForWholeDay(settings, dateStr, graceMinutes)) {
+      return 'That date is too soon to book. Please choose a later date.';
+    }
+    // Day-level notice can allow today when notice is under a day, so past times still
+    // have to be rejected explicitly.
+    if (slotDt < DateTime.now().setZone(BUSINESS_TZ).minus({ minutes: graceMinutes })) {
+      return 'That time has already passed. Please choose a later time.';
+    }
+    return null;
+  }
+
+  if (slotDt < minNoticeCutoff(settings, graceMinutes)) {
+    return 'That time is too soon to book. Please choose a later time.';
+  }
+
+  return null;
 }
 
 function getJerusalemJsDayOfWeek(dateStr) {
@@ -558,14 +639,9 @@ function getJerusalemJsDayOfWeek(dateStr) {
 
 async function generateJerusalemSlotsForDate(settings, jerusalemDateStr) {
   if (isJerusalemDateUnavailable(settings, jerusalemDateStr)) return [];
-
-  const jsDow = getJerusalemJsDayOfWeek(jerusalemDateStr);
-  if (!settings.days_of_week?.includes(jsDow)) return [];
-
-  const maxDays = settings.max_days_ahead || 60;
-  const maxDate = DateTime.now().setZone(BUSINESS_TZ).plus({ days: maxDays }).endOf('day');
-  const selected = DateTime.fromISO(`${jerusalemDateStr}T00:00:00`, { zone: BUSINESS_TZ });
-  if (!selected.isValid || selected > maxDate) return [];
+  if (!isJerusalemDayAllowed(settings, jerusalemDateStr)) return [];
+  if (!isWithinMaxDaysAhead(settings, jerusalemDateStr)) return [];
+  if (!isNoticeSatisfiedForWholeDay(settings, jerusalemDateStr)) return [];
 
   const busyRanges = await fetchBusyRanges(settings, jerusalemDateStr);
   const window = resolveBookingWindow(settings);
@@ -573,7 +649,6 @@ async function generateJerusalemSlotsForDate(settings, jerusalemDateStr) {
   const lastStartMin = parseTimeToMinutes(window.lastStart);
   const duration = settings.duration_minutes || 30;
   const buffer = settings.buffer_minutes || 0;
-  const minNoticeHours = settings.min_notice_hours || 24;
   const slots = [];
 
   const rule = settings.active_category_rule;
@@ -585,8 +660,12 @@ async function generateJerusalemSlotsForDate(settings, jerusalemDateStr) {
     );
   }
 
+  const nowJerusalem = DateTime.now().setZone(BUSINESS_TZ);
+  const isToday = nowJerusalem.toFormat('yyyy-MM-dd') === jerusalemDateStr;
+
   for (let t = startMin; t <= lastStartMin; t += 1) {
     if (slotOverlaps(t, duration, buffer, busyRanges)) continue;
+    if (isToday && t <= nowJerusalem.hour * 60 + nowJerusalem.minute) continue;
     const timeStr = minutesToTime(t);
     if (
       categoryHourCounts &&
@@ -594,10 +673,6 @@ async function generateJerusalemSlotsForDate(settings, jerusalemDateStr) {
     ) {
       continue;
     }
-    const slotDt = jerusalemDateTimeFromWall(jerusalemDateStr, timeStr);
-    if (!slotDt) continue;
-    const minNotice = DateTime.now().setZone(BUSINESS_TZ).plus({ hours: minNoticeHours });
-    if (slotDt < minNotice) continue;
     slots.push({ date: jerusalemDateStr, time: timeStr });
   }
 
@@ -1134,8 +1209,19 @@ async function bookMeeting(token, payload) {
 
   const busyRanges = await fetchBusyRanges(settings, jerusalemDate);
   await assertCategoryHourlyCapacity(settings, jerusalemDate, jerusalemTime);
-  if (!isBookingTimeAvailable(settings, jerusalemDate, jerusalemTime, busyRanges)) {
-    throw new Error('Selected time is no longer available');
+  const unavailableReason = bookingTimeUnavailableReason(
+    settings,
+    jerusalemDate,
+    jerusalemTime,
+    busyRanges,
+    {
+      graceMinutes: MIN_NOTICE_BOOKING_GRACE_MINUTES,
+      enforceDayRules: true,
+      dayLevelNotice: true,
+    },
+  );
+  if (unavailableReason) {
+    throw new Error(unavailableReason);
   }
 
   const config = await getPublicConfig(token);
@@ -1654,8 +1740,15 @@ async function createPartnerMeeting(payload) {
   if (!skipAvailabilityCheck) {
     const busyRanges = await fetchBusyRanges(settings, jerusalemDate);
     await assertCategoryHourlyCapacity(settings, jerusalemDate, jerusalemTime);
-    if (!isBookingTimeAvailable(settings, jerusalemDate, jerusalemTime, busyRanges)) {
-      throw new Error('Selected time is not available');
+    const partnerUnavailableReason = bookingTimeUnavailableReason(
+      settings,
+      jerusalemDate,
+      jerusalemTime,
+      busyRanges,
+      { graceMinutes: MIN_NOTICE_BOOKING_GRACE_MINUTES },
+    );
+    if (partnerUnavailableReason) {
+      throw new Error(partnerUnavailableReason);
     }
   }
 

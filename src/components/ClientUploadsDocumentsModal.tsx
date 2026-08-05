@@ -36,8 +36,11 @@ import {
   EMPTY_CASE_DOCS_FILTERS,
   filterCaseCategoryDocuments,
   TableSelectAllHeader,
+  useEdgeAwareMenuAlign,
   type CaseDocsFilterState,
 } from './caseDocumentsModalUi';
+
+const SUB_EFFORT_MENU_WIDTH = 384;
 
 function formatDocDate(dateString: string): string {
   const d = new Date(dateString);
@@ -447,6 +450,7 @@ export function ClientUploadsDocumentsModal({
 
   const busy = isAttaching;
   const canOpenAttachMenu = selectedIds.size > 0 && !busy && attachOptions.length > 0;
+  const attachMenuAlign = useEdgeAwareMenuAlign(attachMenuOpen, attachMenuRef, SUB_EFFORT_MENU_WIDTH);
 
   return (
     <>
@@ -490,12 +494,21 @@ export function ClientUploadsDocumentsModal({
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            {visibleDocs.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-2">
+          </div>
+
+          <CaseDocumentsModalFilterBar
+            filters={filters}
+            onChange={setFilters}
+            attachOptions={attachOptions}
+            documentTypes={documentTypes}
+            showSubEffortFilter
+            showDocumentTypeFilter
+            trailingActions={
+              visibleDocs.length > 0 ? (
                 <div className="relative" ref={attachMenuRef}>
                   <button
                     type="button"
-                    className="btn btn-primary btn-sm h-9 gap-1.5 rounded-full px-3.5"
+                    className="btn btn-primary btn-sm h-8 min-h-8 gap-1.5 rounded-full px-3.5"
                     onClick={() => {
                       if (selectedIds.size === 0) {
                         toast.error('Select at least one file to attach.');
@@ -522,7 +535,9 @@ export function ClientUploadsDocumentsModal({
                   {attachMenuOpen && canOpenAttachMenu ? (
                     <div
                       role="menu"
-                      className="absolute left-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-base-200 bg-white py-1 shadow-lg md:left-auto md:right-0"
+                      className={`absolute z-50 mt-1.5 max-h-72 w-96 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-base-200 bg-white py-1 shadow-lg ${
+                        attachMenuAlign === 'right' ? 'right-0' : 'left-0'
+                      }`}
                     >
                       <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
                         Attach to sub effort
@@ -545,17 +560,8 @@ export function ClientUploadsDocumentsModal({
                     </div>
                   ) : null}
                 </div>
-              </div>
-            ) : null}
-          </div>
-
-          <CaseDocumentsModalFilterBar
-            filters={filters}
-            onChange={setFilters}
-            attachOptions={attachOptions}
-            documentTypes={documentTypes}
-            showSubEffortFilter
-            showDocumentTypeFilter
+              ) : null
+            }
           />
 
           <div className="min-h-0 flex-1 overflow-auto px-4 pb-6 md:px-6">

@@ -25,6 +25,7 @@ import { supabase } from '../lib/supabase';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import { resolveCaseDocumentUploadContentType } from '../lib/caseDocumentsStorage';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
+import { getSoftStageBadgeStyle, getStageColour, getStageName } from '../lib/stageUtils';
 import { compareSubEffortDisplayOrder, dedupeLeadSubEffortRows, defaultClientVisibleFromTemplate, hasLeadSubEffortSavedUpdate, leadSubEffortInternalFromTemplate, leadSubEffortSavedUpdatedAt, leadSubEffortSavedUpdatedBy } from '../lib/leadSubEfforts';
 import { DocumentPreviewModal, type DocumentPreviewItem } from './DocumentModal';
 import { SequenceOfEventsDocumentsModal } from './SequenceOfEventsDocumentsModal';
@@ -275,6 +276,19 @@ function readSubEffortName(row: any): string {
 function readSubEffortDescription(row: any): string | null {
   const description = readSubEffortJoin(row)?.description?.trim();
   return description || null;
+}
+
+/**
+ * Soft stage tints assume a white page. Flatten them over white so the badge keeps the
+ * Lead Search look while staying legible on the dark hero image.
+ */
+function flattenSoftStageBackground(rgba: string): string {
+  const match = rgba.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?\s*\)/i);
+  if (!match) return rgba;
+  const [r, g, b] = [match[1], match[2], match[3]].map(Number);
+  const alpha = match[4] == null ? 1 : Number(match[4]);
+  const blend = (channel: number) => Math.round(255 + (channel - 255) * alpha);
+  return `rgb(${blend(r)}, ${blend(g)}, ${blend(b)})`;
 }
 
 /** Professional stock heroes — stable pick per sub-effort id (not random each render). */
@@ -822,6 +836,8 @@ export function SubEffortsLogModal({
   onClose,
   rows,
   leadNumber,
+  clientName = null,
+  leadStage = null,
   clientId = null,
   caseDocumentsSubfolder = CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
   initialSelectedRowId,
@@ -839,6 +855,8 @@ export function SubEffortsLogModal({
   onClose: () => void;
   rows: LeadSubEffortRow[];
   leadNumber?: string | null;
+  clientName?: string | null;
+  leadStage?: string | number | null;
   /** Stable client id for resolving sub-effort Sequence of Events attachments. */
   clientId?: string | null;
   caseDocumentsSubfolder?: string | null;
@@ -2389,7 +2407,62 @@ export function SubEffortsLogModal({
                           aria-hidden
                         />
                         <div className="relative z-10 flex h-full min-h-[168px] flex-col justify-between gap-4 p-5 sm:min-h-[190px] sm:p-6">
-                          <div className="flex items-start justify-end gap-2">
+                          <div className="flex items-start justify-between gap-2">
+                            {leadNumber?.trim() || clientName?.trim() || leadStage != null ? (
+                              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                {leadNumber?.trim() || clientName?.trim() ? (
+                                  <span
+                                    className="inline-flex min-w-0 max-w-[16rem] items-center gap-1.5 rounded-full bg-black/45 px-3 py-1.5 text-sm font-semibold text-white shadow-sm backdrop-blur-md sm:max-w-[22rem]"
+                                    title={[leadNumber?.trim(), clientName?.trim()]
+                                      .filter(Boolean)
+                                      .join(' · ')}
+                                  >
+                                    {leadNumber?.trim() ? (
+                                      <span className="shrink-0 text-white/85">
+                                        #{leadNumber.trim()}
+                                      </span>
+                                    ) : null}
+                                    {leadNumber?.trim() && clientName?.trim() ? (
+                                      <span className="shrink-0 text-white/40" aria-hidden>
+                                        ·
+                                      </span>
+                                    ) : null}
+                                    {clientName?.trim() ? (
+                                      <span className="min-w-0 truncate">{clientName.trim()}</span>
+                                    ) : null}
+                                  </span>
+                                ) : null}
+                                {(() => {
+                                  if (leadStage == null || String(leadStage).trim() === '') return null;
+                                  const stageStr = String(leadStage).trim();
+                                  const stageName = /^\d+$/.test(stageStr)
+                                    ? getStageName(stageStr)
+                                    : stageStr;
+                                  if (!stageName) return null;
+                                  const soft = getSoftStageBadgeStyle(
+                                    /^\d+$/.test(stageStr) ? getStageColour(stageStr) : '',
+                                    stageStr,
+                                  );
+                                  return (
+                                    <span
+                                      className="inline-flex min-w-0 max-w-[16rem] items-center rounded-full px-3 py-1.5 text-sm font-semibold shadow-sm"
+                                      style={{
+                                        backgroundColor: flattenSoftStageBackground(
+                                          soft.backgroundColor,
+                                        ),
+                                        color: soft.color,
+                                      }}
+                                      title={stageName}
+                                    >
+                                      <span className="truncate">{stageName}</span>
+                                    </span>
+                                  );
+                                })()}
+                              </div>
+                            ) : (
+                              <span />
+                            )}
+                            <div className="flex min-w-0 flex-wrap items-start justify-end gap-2">
                             <button
                               type="button"
                               className={`inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-semibold shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
@@ -2431,6 +2504,7 @@ export function SubEffortsLogModal({
                                 Use template default
                               </button>
                             ) : null}
+                            </div>
                           </div>
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-start gap-x-2 gap-y-1">

@@ -14,7 +14,7 @@ import {
 import { BUSINESS_TZ } from '../../lib/bookingTimezone';
 
 const MEETING_ACTION_BTN_CLASS =
-  'inline-flex h-10 min-h-10 flex-1 items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-800 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50';
+  'inline-flex h-10 min-h-10 min-w-fit grow basis-[calc(50%-0.25rem)] items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-800 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50';
 
 export type BookingMeetingCardActionsProps = {
   title: string;

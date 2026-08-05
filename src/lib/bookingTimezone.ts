@@ -240,6 +240,26 @@ export function resolveCategoryAvailabilityForLead(
   };
 }
 
+/**
+ * Min notice is counted in whole days, so 24 hours means "from tomorrow onwards" and a
+ * bookable date always offers its full configured window. Mirrors
+ * `isNoticeSatisfiedForWholeDay` on the backend so the calendar doesn't offer dates that
+ * would come back with no times.
+ */
+export function isBookingDateWithinNoticeWindow(
+  jerusalemDate: string,
+  minNoticeHours: number,
+): boolean {
+  const selected = DateTime.fromISO(`${jerusalemDate}T00:00:00`, { zone: BUSINESS_TZ });
+  if (!selected.isValid) return false;
+  const hours = Number.isFinite(minNoticeHours) ? Math.max(0, minNoticeHours) : 24;
+  const earliest = DateTime.now()
+    .setZone(BUSINESS_TZ)
+    .startOf('day')
+    .plus({ days: Math.ceil(hours / 24) });
+  return selected.startOf('day') < earliest;
+}
+
 /** True when a client-local calendar day maps to a Jerusalem closed date. */
 export function isClientBookingDateBlocked(
   clientDate: string,

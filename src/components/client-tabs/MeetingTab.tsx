@@ -6500,7 +6500,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       typeof meeting.id === 'number' ? meetingParticipantsById[Number(meeting.id)] : undefined;
 
     return (
-      <div key={meeting.id} className="bg-white border border-gray-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 relative flex max-w-full">
+      <div
+        key={meeting.id}
+        className={
+          past
+            ? 'relative flex max-w-full rounded-xl border border-gray-300/80 bg-transparent'
+            : 'relative flex max-w-full rounded-xl border border-gray-200 bg-white shadow-lg transition-all duration-200 hover:shadow-xl'
+        }
+      >
         {/* Canceled watermark */}
         {meeting.status === 'canceled' && (
           <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
@@ -7599,7 +7606,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
         {/* Expander Toggle */}
         <div
-          className="cursor-pointer transition-all p-2 text-center bg-white"
+          className={`cursor-pointer p-2 text-center transition-all ${past ? 'bg-transparent' : 'bg-white'}`}
           onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
         >
           <div className="flex items-center justify-center gap-2 text-xs font-medium" style={{ color: 'rgb(40, 75, 50)' }}>
@@ -7610,7 +7617,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         </div>
         {/* Right-side vertical action column */}
         {hasAnyActionButton && (
-          <div className="flex flex-col items-center justify-start gap-2 sm:gap-3 p-2 sm:p-3 border-l border-gray-200 bg-gray-50/60 rounded-r-xl shrink-0 sticky top-20 self-start z-10">
+          <div
+            className={`flex shrink-0 sticky top-20 z-10 flex-col items-center justify-start gap-2 self-start rounded-r-xl border-l border-gray-200 p-2 sm:gap-3 sm:p-3 ${
+              past ? 'bg-transparent' : 'bg-gray-50/60'
+            }`}
+          >
             {sideActionButtons}
           </div>
         )}
@@ -7837,8 +7848,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             onClick={() => setShowPastMeetingsPanel(false)}
             aria-hidden="true"
           />
-          <div className="fixed top-0 right-0 bottom-0 w-full max-w-2xl bg-white shadow-xl z-[260] flex flex-col border-l border-gray-200">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="fixed top-0 right-0 bottom-0 z-[260] flex w-full max-w-2xl flex-col border-l border-gray-200 bg-[#f5f5f5] shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-200/80 bg-[#f5f5f5] px-6 py-4">
               <h4 className="text-base font-semibold text-gray-900">Past Meetings</h4>
               <button
                 type="button"
@@ -7854,8 +7865,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                 {pastMeetings.length > 0 ? (
                   pastMeetings.map(renderMeetingCard)
                 ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                  <div className="py-8 text-center text-gray-500">
+                    <ClockIcon className="mx-auto mb-3 h-12 w-12 text-gray-300" />
                     <p className="font-medium">No past meetings</p>
                     <p className="text-sm">Completed meetings will appear here</p>
                   </div>

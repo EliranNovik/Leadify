@@ -31,6 +31,7 @@ import {
   formatMeetingForClientDisplay,
   formatTimezoneLabel,
   getStoredClientTimezone,
+  isBookingDateWithinNoticeWindow,
   isClientBookingDateBlocked,
   persistClientTimezone,
   resolveCategoryAvailabilityForLead,
@@ -73,6 +74,28 @@ export function portalMeetingsUrl(leadRef?: string | null): string | null {
   return `/portal/${encodeURIComponent(leadRef.trim())}/case?tab=meetings`;
 }
 
+function BookingStatusBadge({ status }: { status?: string | null }) {
+  const normalized = (status || 'scheduled').toLowerCase();
+  const tone =
+    normalized === 'canceled' || normalized === 'cancelled'
+      ? 'bg-red-500/10 text-red-500/90'
+      : normalized === 'completed'
+        ? 'bg-emerald-500/15 text-emerald-800'
+        : 'bg-primary/10 text-primary';
+  const label =
+    normalized === 'canceled' || normalized === 'cancelled'
+      ? 'Cancelled'
+      : normalized === 'completed'
+        ? 'Completed'
+        : 'Scheduled';
+
+  return (
+    <span className={`inline-flex shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${tone}`}>
+      {label}
+    </span>
+  );
+}
+
 export function ScheduledMeetingsSection({
   meetings,
   clientTimezone,
@@ -106,44 +129,47 @@ export function ScheduledMeetingsSection({
             return (
               <PortalCard key={m.id} className="flex h-full flex-col">
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-semibold text-gray-900">{cardTitle}</p>
-                      <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
-                        <CalendarDaysIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                        {displayDate ? formatBookingShortDate(displayDate) : ''}
-                        {timeWithZone ? ` · ${timeWithZone}` : ''}
-                      </p>
-                      {display?.israelTimeWithZone && tz !== BUSINESS_TZ ? (
-                        <p className="mt-1 text-xs text-base-content/45">
-                          Israel office: {display.israelTimeWithZone}
-                        </p>
-                      ) : null}
-                      {m.meeting_location ? (
-                        <PortalMeetingLocationLines
-                          location={m.meeting_location}
-                          isPhysicalMeeting={m.is_physical_meeting}
-                          meetingAddress={m.meeting_address}
-                          className="mt-1 space-y-1"
-                          locationClassName="flex items-center gap-2 text-sm text-gray-600"
-                          addressClassName="pl-6 text-sm leading-snug text-gray-500 whitespace-pre-wrap"
-                        />
-                      ) : null}
-                    </div>
-                    <span className="inline-flex shrink-0 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                      Scheduled
+                  <div className="flex items-center gap-3">
+                    {m.join_url ? (
+                      <a
+                        href={m.join_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-9 min-h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full bg-primary px-4 text-sm font-semibold text-primary-content shadow-sm transition-colors hover:bg-primary/90"
+                      >
+                        <VideoCameraIcon className="h-5 w-5 shrink-0" />
+                        Join meeting
+                      </a>
+                    ) : null}
+                    <span className="ml-auto shrink-0">
+                      <BookingStatusBadge status={m.status} />
                     </span>
                   </div>
-                  {m.join_url ? (
-                    <a
-                      href={m.join_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn btn-primary btn-sm mt-4 w-full gap-1.5 rounded-lg"
-                    >
-                      <VideoCameraIcon className="h-4 w-4" />
-                      Join meeting
-                    </a>
+                  <p className="mt-2 truncate font-semibold text-gray-900" title={cardTitle}>
+                    {cardTitle}
+                  </p>
+                  <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                    <CalendarDaysIcon className="h-4 w-4 shrink-0 text-gray-400" />
+                    <span className="truncate">
+                      {displayDate ? formatBookingShortDate(displayDate) : ''}
+                      {timeWithZone ? ` · ${timeWithZone}` : ''}
+                    </span>
+                  </p>
+                  {display?.israelTimeWithZone && tz !== BUSINESS_TZ ? (
+                    <p className="mt-1 text-xs text-base-content/45">
+                      Israel office: {display.israelTimeWithZone}
+                    </p>
+                  ) : null}
+                  {m.meeting_location ? (
+                    <PortalMeetingLocationLines
+                      location={m.meeting_location}
+                      isPhysicalMeeting={m.is_physical_meeting}
+                      meetingAddress={m.meeting_address}
+                      className="mt-2 space-y-1"
+                      locationClassName="flex items-center gap-2 text-sm text-gray-600"
+                      addressClassName="pl-6 text-sm leading-relaxed text-gray-500 whitespace-pre-line break-words [overflow-wrap:anywhere]"
+                      mapActionsClassName="flex flex-wrap gap-2 pl-6 pt-1"
+                    />
                   ) : null}
                   <BookingMeetingCardActions
                     title={cardTitle}
@@ -236,7 +262,8 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   const flowActive = bookingOpen && step !== 'done';
   const useMobileBookingSheet = isMobile && usePublicExperience && flowActive;
   const showBrowseChrome = browsingMeetings || useMobileBookingSheet;
-  const showScheduledMeetings = !hideScheduledMeetings && showBrowseChrome;
+  /** While the booking is being submitted the flow collapses to a single processing card. */
+  const showScheduledMeetings = !hideScheduledMeetings && showBrowseChrome && !submitting;
 
   useEffect(() => {
     onBookingFlowChange?.(!browsingMeetings);
@@ -354,10 +381,14 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       const inRange = cellDate >= today && cellDate <= maxDate;
       const allowedDay = allowedDays.includes(dow);
       const blockedDate = isClientBookingDateBlocked(dateKey, unavailableDates, clientTimezone);
+      const withinNotice = isBookingDateWithinNoticeWindow(
+        dateKey,
+        config.settings.min_notice_hours,
+      );
       cells.push({
         date: dateKey,
         day,
-        isSelectable: inRange && allowedDay && !blockedDate,
+        isSelectable: inRange && allowedDay && !blockedDate && !withinNotice,
         isToday: cellDate.getTime() === today.getTime(),
         isSelected: selectedDate === dateKey,
       });
@@ -780,6 +811,31 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     </PortalCard>
   );
 
+  const processingCard = (
+    <PortalCard className={`w-full ${useMobileBookingSheet ? '' : 'mx-auto max-w-lg'}`}>
+      <div
+        className="flex flex-col items-center px-2 py-10 text-center"
+        role="status"
+        aria-live="polite"
+      >
+        <span className="relative flex h-20 w-20 items-center justify-center">
+          <span className="absolute inset-0 animate-ping rounded-full bg-primary/10" />
+          <span className="absolute inset-1.5 rounded-full bg-primary/10" />
+          <span className="loading loading-spinner loading-lg relative text-primary" />
+        </span>
+        <h3 className="mt-6 text-2xl font-bold leading-snug text-gray-900">
+          Processing your request
+        </h3>
+        {selectedDate && selectedTime ? (
+          <p className="mt-3 text-lg font-medium text-base-content/60">
+            {formatBookingDisplayDate(selectedDate)} at{' '}
+            {formatBookingTimeWithZone(selectedTime, clientTimezone, selectedDate)}
+          </p>
+        ) : null}
+      </div>
+    </PortalCard>
+  );
+
   const bookingProgress = (
     <nav
       className="rounded-2xl border border-gray-100 bg-white/90 px-3 py-3 shadow-[0_2px_14px_rgba(15,23,42,0.04)] sm:px-4"
@@ -836,15 +892,26 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
 
   const bookingStepsBody = (
     <div className={`space-y-5 ${useMobileBookingSheet ? 'px-4 pb-6 pt-2' : 'mx-auto w-full max-w-lg'}`}>
-      {step !== 'done' ? bookingProgress : null}
-      {step === 'date' ? dateStepCard : null}
-      {step === 'time' ? timeStepCard : null}
-      {step === 'contact' ? contactStepCard : null}
+      {submitting ? (
+        processingCard
+      ) : (
+        <>
+          {step !== 'done' ? bookingProgress : null}
+          {step === 'date' ? dateStepCard : null}
+          {step === 'time' ? timeStepCard : null}
+          {step === 'contact' ? contactStepCard : null}
+        </>
+      )}
     </div>
   );
 
-  const sheetStepTitle =
-    step === 'date' ? 'Select a date' : step === 'time' ? 'Select a time' : 'Confirm details';
+  const sheetStepTitle = submitting
+    ? 'Scheduling your meeting'
+    : step === 'date'
+      ? 'Select a date'
+      : step === 'time'
+        ? 'Select a time'
+        : 'Confirm details';
 
   const bookingFlow = (
     <section className={`space-y-4 ${!bookingOpen && step === 'date' && usePublicExperience ? 'pb-4' : ''}`}>
@@ -876,9 +943,13 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       {usePublicExperience ? (
         <MobileBottomSheet
           open={useMobileBookingSheet}
-          onClose={exitToMeetingsHome}
+          onClose={submitting ? () => {} : exitToMeetingsHome}
           title={sheetStepTitle}
-          subtitle={`Times shown in your local time (${formatTimezoneLabel(clientTimezone)}).`}
+          subtitle={
+            submitting
+              ? 'Hang tight while we confirm your slot.'
+              : `Times shown in your local time (${formatTimezoneLabel(clientTimezone)}).`
+          }
           mobileFullHeight
           zIndex={120}
           contentClassName="!p-0"

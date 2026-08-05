@@ -203,6 +203,35 @@ export function filterCaseCategoryDocuments(
   });
 }
 
+/**
+ * Anchored dropdowns sit in a wrapping toolbar, so the trigger can end up on either
+ * side of the screen. Flip the menu's alignment when it would spill past the edge.
+ */
+export function useEdgeAwareMenuAlign(
+  open: boolean,
+  anchorRef: React.RefObject<HTMLElement | null>,
+  menuWidth: number,
+): 'left' | 'right' {
+  const [align, setAlign] = useState<'left' | 'right'>('left');
+
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const rect = anchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const margin = 16;
+      const overflowsRight = rect.left + menuWidth + margin > window.innerWidth;
+      const fitsWhenRightAligned = rect.right - menuWidth >= margin;
+      setAlign(overflowsRight && fitsWhenRightAligned ? 'right' : 'left');
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [open, anchorRef, menuWidth]);
+
+  return align;
+}
+
 export function CaseDocumentsModalFilterBar({
   filters,
   onChange,
@@ -210,6 +239,7 @@ export function CaseDocumentsModalFilterBar({
   documentTypes = [],
   showSubEffortFilter = true,
   showDocumentTypeFilter = true,
+  trailingActions = null,
 }: {
   filters: CaseDocsFilterState;
   onChange: (next: CaseDocsFilterState) => void;
@@ -217,6 +247,8 @@ export function CaseDocumentsModalFilterBar({
   documentTypes?: LeadCaseDocumentType[];
   showSubEffortFilter?: boolean;
   showDocumentTypeFilter?: boolean;
+  /** Rendered after the last filter control (e.g. Attach / Remove). */
+  trailingActions?: React.ReactNode;
 }) {
   const set = <K extends keyof CaseDocsFilterState>(key: K, value: CaseDocsFilterState[K]) => {
     onChange({ ...filters, [key]: value });
@@ -299,6 +331,9 @@ export function CaseDocumentsModalFilterBar({
             </option>
           ))}
         </select>
+      ) : null}
+      {trailingActions ? (
+        <div className="flex flex-wrap items-center gap-2">{trailingActions}</div>
       ) : null}
     </div>
   );
