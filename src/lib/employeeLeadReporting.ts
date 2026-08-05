@@ -4,6 +4,9 @@ import type { CombinedLead } from './legacyLeadsApi';
 import { filterCountedClockInRecords } from './employeeClockInApproval';
 import { formatDurationMs } from './employeeClockInOvertime';
 import { fetchClockInRecordsInRange, type ClockInWithEmployee } from './workingHoursExport';
+import { LEAD_ALLOCATION_HOURS_NOTE } from './employeeClockInManual';
+
+export { LEAD_ALLOCATION_HOURS_NOTE };
 
 export type LeadReportingType = 'new' | 'legacy';
 
@@ -73,7 +76,14 @@ export type CurrentEmployeeContext = {
   userId: string;
   employeeId: number;
   employeeName: string;
+  minHours: number;
+  worksFromHome: boolean;
+  bonusesRole: string | null;
+  isSuperUser: boolean;
 };
+
+export const OTHER_WORK_PERCENT_CAP_BASE = 30;
+export const OTHER_WORK_PERCENT_CAP_OVERTIME = 10;
 
 const JERUSALEM_TZ = 'Asia/Jerusalem';
 const PERCENT_TOLERANCE = 0.01;
@@ -85,6 +95,135 @@ export function getJerusalemTodayIsoDate(date = new Date()): string {
     month: '2-digit',
     day: '2-digit',
   }).format(date);
+}
+
+export function isHandlerBonusesRole(role: string | null | undefined): boolean {
+  return String(role || '').trim().toLowerCase() === 'h';
+}
+
+export function canAccessLeadTimeReport(params: {
+  isSuperUser?: boolean | null;
+  bonusesRole?: string | null;
+}): boolean {
+  if (params.isSuperUser === true) return true;
+  return isHandlerBonusesRole(params.bonusesRole);
+}
+
+/**
+ * Other work max share of the day:
+ * - at or below base hours → 30%
+ * - above base (overtime) → 10%
+ */
+export function otherWorkPercentCap(
+  dayWorkedMs: number,
+  minHours: number,
+): number {
+  if (!(dayWorkedMs > 0)) return OTHER_WORK_PERCENT_CAP_BASE;
+  const minMs = minHoursToMs(minHours);
+  return dayWorkedMs > minMs
+    ? OTHER_WORK_PERCENT_CAP_OVERTIME
+    : OTHER_WORK_PERCENT_CAP_BASE;
+}
+
+export function isLeadAllocationHoursNote(notes: string | null | undefined): boolean {
+  const text = notes?.trim() ?? '';
+  if (!text) return false;
+  return text.includes(LEAD_ALLOCATION_HOURS_NOTE);
+}
+
+function clockRecordDurationMs(
+  record: { clock_in_time: string; clock_out_time: string | null },
+  now = Date.now(),
+): number {
+  const start = new Date(record.clock_in_time).getTime();
+  const end = record.clock_out_time ? new Date(record.clock_out_time).getTime() : now;
+  return Math.max(0, end - start);
+}
+
+/**
+ * Effective worked ms for daily lead allocation.
+ * Prefer pending (or any) “Lead allocation hours” replacement session(s) for the day;
+ * otherwise fall back to approved/counted clock totals.
+ */
+export function buildAllocationDayWorkedMs(
+  records: Array<{
+    employee_id?: number | null;
+    clock_in_time: string;
+    clock_out_time: string | null;
+    notes?: string | null;
+    manually?: boolean;
+    approved?: boolean;
+    declined?: boolean;
+  }>,
+  employeeId?: number | null,
+): number {
+  const scoped =
+    employeeId == null
+      ? records
+      : records.filter((row) => row.employee_id === employeeId);
+
+  const allocationSessions = scoped.filter(
+    (row) =>
+      row.manually === true &&
+      row.declined !== true &&
+      isLeadAllocationHoursNote(row.notes),
+  );
+
+  if (allocationSessions.length > 0) {
+    return allocationSessions.reduce(
+      (sum, row) => sum + clockRecordDurationMs(row),
+      0,
+    );
+  }
+
+  return filterCountedClockInRecords(scoped).reduce(
+    (sum, row) => sum + clockRecordDurationMs(row),
+    0,
+  );
+}
+
+/** Per-employee allocation day totals (includes pending lead-allocation replacements). */
+export function buildAllocationClockInMsByEmployee(
+  records: Array<{
+    employee_id?: number | null;
+    clock_in_time: string;
+    clock_out_time: string | null;
+    notes?: string | null;
+    manually?: boolean;
+    approved?: boolean;
+    declined?: boolean;
+  }>,
+): Map<number, number> {
+  const byEmployee = new Map<number, typeof records>();
+  for (const record of records) {
+    const employeeId = record.employee_id;
+    if (employeeId == null) continue;
+    const list = byEmployee.get(employeeId);
+    if (list) list.push(record);
+    else byEmployee.set(employeeId, [record]);
+  }
+
+  const totals = new Map<number, number>();
+  for (const [employeeId, empRecords] of byEmployee) {
+    totals.set(employeeId, buildAllocationDayWorkedMs(empRecords, employeeId));
+  }
+  return totals;
+}
+
+export function combineWorkDateAndTime(date: string, time: string): Date {
+  return new Date(`${date}T${time}`);
+}
+
+export function workIntervalDurationMs(
+  workDate: string,
+  fromTime: string,
+  toTime: string,
+): number {
+  if (!workDate || !fromTime || !toTime) return 0;
+  const start = combineWorkDateAndTime(workDate, fromTime).getTime();
+  const end = combineWorkDateAndTime(workDate, toTime).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  return end - start;
 }
 
 export function leadActivityKey(identity: LeadViewIdentity): string {
@@ -235,7 +374,12 @@ export async function fetchCurrentEmployeeContext(): Promise<CurrentEmployeeCont
 
   const { data, error } = await supabase
     .from('users')
-    .select('employee_id, tenants_employee!employee_id(display_name)')
+    .select(
+      `employee_id, is_superuser,
+       tenants_employee!employee_id(
+         display_name, min_hours, works_from_home, bonuses_role
+       )`,
+    )
     .eq('auth_id', user.id)
     .maybeSingle();
 
@@ -246,10 +390,24 @@ export async function fetchCurrentEmployeeContext(): Promise<CurrentEmployeeCont
     ? data.tenants_employee[0]
     : data.tenants_employee;
 
+  const isSuper =
+    data.is_superuser === true ||
+    data.is_superuser === 'true' ||
+    data.is_superuser === 1;
+
   return {
     userId: user.id,
     employeeId: Number(data.employee_id),
     employeeName: emp?.display_name?.trim() || `Employee #${data.employee_id}`,
+    minHours: normalizeEmployeeMinHours(emp?.min_hours),
+    worksFromHome:
+      emp?.works_from_home === true ||
+      emp?.works_from_home === 't' ||
+      emp?.works_from_home === 'true' ||
+      emp?.works_from_home === 1,
+    bonusesRole:
+      typeof emp?.bonuses_role === 'string' ? emp.bonuses_role.trim() : null,
+    isSuperUser: Boolean(isSuper),
   };
 }
 
@@ -442,9 +600,51 @@ function scaleLeadPercents(
   return scaled;
 }
 
+function normalizeOtherWorkCap(maxOtherWorkPercent: number | undefined): number {
+  return Math.max(0, Math.min(100, Math.round(Number(maxOtherWorkPercent ?? 100) || 0)));
+}
+
+/**
+ * Other work may never exceed its cap, so any excess is absorbed by the included leads.
+ * With no included leads there is nothing to absorb it; the page blocks saving instead.
+ */
+function capOtherWorkIntoLeads(
+  state: LeadAllocationBucketsState,
+  maxOtherWorkPercent: number,
+): LeadAllocationBucketsState {
+  const cap = normalizeOtherWorkCap(maxOtherWorkPercent);
+  if (state.otherWorkPercent <= cap) return state;
+  const hasIncluded = state.rows.some((row) => row.included);
+  if (!hasIncluded) return state;
+
+  const rows = scaleLeadPercents(state.rows, (row) => row.included, 100 - cap);
+  return { otherWorkPercent: cap, rows };
+}
+
+/** Smallest total the included leads must hold so other work stays within its cap. */
+export function minIncludedLeadTotalPercent(maxOtherWorkPercent: number): number {
+  return 100 - normalizeOtherWorkCap(maxOtherWorkPercent);
+}
+
+/** Lowest value one lead slider may take before other work would breach its cap. */
+export function minLeadAllocationPercent(
+  rows: LeadAllocationRowState[],
+  leadKey: string,
+  maxOtherWorkPercent: number = 100,
+): number {
+  const hasIncluded = rows.some((row) => row.included);
+  if (!hasIncluded) return 0;
+  const otherIncludedSum = rows
+    .filter((row) => row.included && row.key !== leadKey)
+    .reduce((sum, row) => sum + row.percent, 0);
+  const floor = minIncludedLeadTotalPercent(maxOtherWorkPercent) - otherIncludedSum;
+  return Math.max(0, Math.min(100, Math.round(floor)));
+}
+
 /** Split flex space equally between other work and unpinned included leads. */
 function rebalanceUnpinnedAndOtherWork(
   rows: LeadAllocationRowState[],
+  maxOtherWorkPercent: number = 100,
 ): LeadAllocationBucketsState {
   const pinnedLeadSum = rows
     .filter((row) => row.included && row.pinned)
@@ -453,10 +653,13 @@ function rebalanceUnpinnedAndOtherWork(
   const flexTotal = normalizeAllocationPercent(100 - pinnedLeadSum);
 
   if (unpinnedIncluded.length === 0) {
-    return {
-      otherWorkPercent: flexTotal,
-      rows: rows.map((row) => (!row.included ? { ...row, percent: 0 } : row)),
-    };
+    return capOtherWorkIntoLeads(
+      {
+        otherWorkPercent: flexTotal,
+        rows: rows.map((row) => (!row.included ? { ...row, percent: 0 } : row)),
+      },
+      maxOtherWorkPercent,
+    );
   }
 
   const split = distributeAllocationTotal(flexTotal, 1 + unpinnedIncluded.length);
@@ -469,14 +672,20 @@ function rebalanceUnpinnedAndOtherWork(
     return { ...row, percent };
   });
 
-  return {
-    otherWorkPercent: split[0] ?? 0,
-    rows: nextRows,
-  };
+  return capOtherWorkIntoLeads(
+    {
+      otherWorkPercent: split[0] ?? 0,
+      rows: nextRows,
+    },
+    maxOtherWorkPercent,
+  );
 }
 
 /** Keep pinned lead values; flex other work to reach 100%. Shrink unpinned leads if needed. */
-export function syncAllocationTo100(rows: LeadAllocationRowState[]): LeadAllocationBucketsState {
+export function syncAllocationTo100(
+  rows: LeadAllocationRowState[],
+  maxOtherWorkPercent: number = 100,
+): LeadAllocationBucketsState {
   const included = rows.filter((row) => row.included);
   if (included.length === 0) {
     return {
@@ -490,7 +699,10 @@ export function syncAllocationTo100(rows: LeadAllocationRowState[]): LeadAllocat
   let otherWork = normalizeAllocationPercent(100 - leadSum);
 
   if (otherWork >= 0) {
-    return { otherWorkPercent: otherWork, rows: nextRows };
+    return capOtherWorkIntoLeads(
+      { otherWorkPercent: otherWork, rows: nextRows },
+      maxOtherWorkPercent,
+    );
   }
 
   otherWork = 0;
@@ -514,40 +726,71 @@ export function syncAllocationTo100(rows: LeadAllocationRowState[]): LeadAllocat
     otherWork = 0;
   }
 
-  return { otherWorkPercent: otherWork, rows: nextRows };
+  return capOtherWorkIntoLeads(
+    { otherWorkPercent: otherWork, rows: nextRows },
+    maxOtherWorkPercent,
+  );
 }
 
-/** Pin a lead percent; other work flexes to keep the total at 100%. */
+/** Highest value one lead slider may take: everything left once other work drops to 0. */
+export function maxLeadAllocationPercent(
+  rows: LeadAllocationRowState[],
+  leadKey: string,
+): number {
+  const otherIncludedSum = rows
+    .filter((row) => row.included && row.key !== leadKey)
+    .reduce((sum, row) => sum + row.percent, 0);
+  return Math.max(0, Math.min(100, Math.round(100 - otherIncludedSum)));
+}
+
+/**
+ * Pin a lead percent; only other work absorbs the difference.
+ * The value is clamped to the room left between other work's 0 and its cap, so dragging one
+ * lead never drags the other lead rows along with it.
+ */
 export function setLeadAllocationPercent(
   rows: LeadAllocationRowState[],
   leadKey: string,
   nextValue: number,
+  maxOtherWorkPercent: number = 100,
 ): LeadAllocationBucketsState {
+  const target = rows.find((row) => row.key === leadKey);
+  if (!target?.included) return syncAllocationTo100(rows, maxOtherWorkPercent);
+
   // Allow hundredths so budget "max minutes" can land between whole percents.
   const value =
     Math.round(clampAllocationPercent(nextValue) * 100) / 100;
   const otherIncludedSum = rows
     .filter((row) => row.included && row.key !== leadKey)
     .reduce((sum, row) => sum + row.percent, 0);
-  const clampedValue = Math.min(
-    value,
-    Math.round(clampAllocationPercent(100 - otherIncludedSum) * 100) / 100,
-  );
+  const ceiling = Math.round(clampAllocationPercent(100 - otherIncludedSum) * 100) / 100;
+  const floor = minLeadAllocationPercent(rows, leadKey, maxOtherWorkPercent);
+  const clampedValue = Math.min(Math.max(value, Math.min(floor, ceiling)), ceiling);
 
-  const nextRows = rows.map((row) =>
-    row.key === leadKey && row.included
-      ? { ...row, percent: clampedValue, pinned: true }
-      : row,
+  const nextRows = rows.map((row) => {
+    if (!row.included) return row.percent === 0 ? row : { ...row, percent: 0 };
+    if (row.key !== leadKey) return row;
+    return { ...row, percent: clampedValue, pinned: true };
+  });
+
+  const otherWorkPercent = Math.min(
+    normalizeOtherWorkCap(maxOtherWorkPercent),
+    Math.max(0, normalizeAllocationPercent(100 - otherIncludedSum - clampedValue)),
   );
-  return syncAllocationTo100(nextRows);
+  return { otherWorkPercent, rows: nextRows };
 }
 
 /** Set other work; unpinned leads share the remaining percent. Pinned leads stay fixed. */
 export function setOtherWorkAllocationPercent(
   rows: LeadAllocationRowState[],
   nextValue: number,
+  maxOtherWorkPercent: number = 100,
 ): LeadAllocationBucketsState {
-  const other = normalizeAllocationPercent(nextValue);
+  const cappedMax = Math.max(
+    0,
+    Math.min(100, Math.round(Number(maxOtherWorkPercent) || 100)),
+  );
+  const other = Math.min(normalizeAllocationPercent(nextValue), cappedMax);
   const pinnedLeadSum = rows
     .filter((row) => row.included && row.pinned)
     .reduce((sum, row) => sum + row.percent, 0);
@@ -555,7 +798,10 @@ export function setOtherWorkAllocationPercent(
 
   if (unpinnedIncluded.length === 0) {
     return {
-      otherWorkPercent: normalizeAllocationPercent(100 - pinnedLeadSum),
+      otherWorkPercent: Math.min(
+        normalizeAllocationPercent(100 - pinnedLeadSum),
+        cappedMax,
+      ),
       rows,
     };
   }
@@ -580,6 +826,7 @@ export function toggleLeadAllocationIncluded(
   rows: LeadAllocationRowState[],
   leadKey: string,
   included: boolean,
+  maxOtherWorkPercent: number = 100,
 ): LeadAllocationBucketsState {
   let nextRows = rows.map((row) =>
     row.key === leadKey
@@ -593,24 +840,25 @@ export function toggleLeadAllocationIncluded(
   );
 
   if (!included) {
-    return syncAllocationTo100(nextRows);
+    return syncAllocationTo100(nextRows, maxOtherWorkPercent);
   }
 
   nextRows = nextRows.map((row) =>
     row.key === leadKey ? { ...row, pinned: false, percent: 0 } : row,
   );
-  return rebalanceUnpinnedAndOtherWork(nextRows);
+  return rebalanceUnpinnedAndOtherWork(nextRows, maxOtherWorkPercent);
 }
 
 export function addLeadToAllocationBuckets(
   rows: LeadAllocationRowState[],
   newRow: LeadAllocationRowState,
+  maxOtherWorkPercent: number = 100,
 ): LeadAllocationBucketsState {
   const nextRows: LeadAllocationRowState[] = [
     ...rows,
     { ...newRow, included: true, pinned: false, percent: 0 },
   ];
-  return rebalanceUnpinnedAndOtherWork(nextRows);
+  return rebalanceUnpinnedAndOtherWork(nextRows, maxOtherWorkPercent);
 }
 
 /** @deprecated Use rebalanceUnpinnedAndOtherWork via toggle/add flows. */
@@ -618,8 +866,9 @@ export function rebalanceFlexAllocationBuckets(
   _otherWorkPercent: number,
   _otherWorkPinned: boolean,
   rows: LeadAllocationRowState[],
+  maxOtherWorkPercent: number = 100,
 ): LeadAllocationBucketsState {
-  return rebalanceUnpinnedAndOtherWork(rows);
+  return rebalanceUnpinnedAndOtherWork(rows, maxOtherWorkPercent);
 }
 
 export function isAllocationPercentValid(items: { percent: number }[]): boolean {
@@ -631,8 +880,11 @@ export function isAllocationPercentValid(items: { percent: number }[]): boolean 
 export function isDailyAllocationValid(
   leadItems: { percent: number }[],
   otherWorkPercent: number,
+  maxOtherWorkPercent: number = 100,
 ): boolean {
   const other = Number(otherWorkPercent || 0);
+  const cappedMax = Math.max(0, Math.min(100, Number(maxOtherWorkPercent) || 100));
+  if (other > cappedMax + PERCENT_TOLERANCE) return false;
   const leadTotal = allocationPercentTotal(leadItems);
   const grand = leadTotal + other;
   if (Math.abs(grand - 100) > PERCENT_TOLERANCE) return false;
@@ -1270,4 +1522,12 @@ export async function fetchDailyClockInMsByEmployee(
 ): Promise<Map<number, number>> {
   const records = await fetchClockInRecordsInRange(workDate, workDate);
   return buildDailyClockInMsByEmployee(records);
+}
+
+/** Allocation-aware day totals (pending lead-allocation replacements count). */
+export async function fetchAllocationClockInMsByEmployee(
+  workDate: string,
+): Promise<Map<number, number>> {
+  const records = await fetchClockInRecordsInRange(workDate, workDate);
+  return buildAllocationClockInMsByEmployee(records);
 }

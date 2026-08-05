@@ -27,6 +27,15 @@ import {
   type ClockInGateContextValue,
 } from './clockInGateContextValue';
 
+/**
+ * OPTIONAL CLOCK-IN: never block Supabase REST when the user is not clocked in.
+ * Forced gate used to call setClockInGateBlocksDataAccess(true) while blocked —
+ * restore those call sites from git history / ClockInGate.forced.bak.tsx if needed.
+ */
+function setGateDataAccessBlocked(_blocked: boolean): void {
+  setClockInGateBlocksDataAccess(false);
+}
+
 function readCachedGateState(userId: string | undefined) {
   if (!userId) {
     return { status: 'loading' as ClockInGateStatus, employeeId: null };
@@ -60,12 +69,12 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
 
   useLayoutEffect(() => {
     if (!userId) {
-      setClockInGateBlocksDataAccess(false);
+      setGateDataAccessBlocked(false);
       return;
     }
     const cached = readClockInGateCache(userId);
     if (cached && cached.status !== 'no_employee') {
-      setClockInGateBlocksDataAccess(
+      setGateDataAccessBlocked(
         cached.status === 'blocked',
       );
     }
@@ -76,7 +85,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
       setStatus('loading');
       setEmployeeId(null);
       setAdminBypassActive(false);
-      setClockInGateBlocksDataAccess(false);
+      setGateDataAccessBlocked(false);
       return;
     }
 
@@ -119,7 +128,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
           setEmployeeId(effectiveEmployeeId);
           setAdminBypassActive(true);
           setStatus('allowed');
-          setClockInGateBlocksDataAccess(false);
+          setGateDataAccessBlocked(false);
           writeClockInGateCache(user.id, 'allowed', effectiveEmployeeId);
           return;
         }
@@ -129,7 +138,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         if (profile.isExternalUser && userRowFound) {
           setEmployeeId(profile.employeeId);
           setStatus('exempt');
-          setClockInGateBlocksDataAccess(false);
+          setGateDataAccessBlocked(false);
           writeClockInGateCache(user.id, 'exempt', profile.employeeId);
           return;
         }
@@ -147,14 +156,14 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
             const stillIn = await fetchIsEmployeeClockedIn(priorEmployeeId);
             const nextStatus: ClockInGateStatus = stillIn ? 'allowed' : 'blocked';
             setStatus(nextStatus);
-            setClockInGateBlocksDataAccess(nextStatus === 'blocked');
+            setGateDataAccessBlocked(nextStatus === 'blocked');
             writeClockInGateCache(user.id, nextStatus, priorEmployeeId);
             return;
           }
 
           setEmployeeId(null);
           setStatus('no_employee');
-          setClockInGateBlocksDataAccess(true);
+          setGateDataAccessBlocked(true);
           writeClockInGateCache(user.id, 'no_employee', null);
           return;
         }
@@ -162,7 +171,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         if (profile.employeeId == null) {
           setEmployeeId(null);
           setStatus('no_employee');
-          setClockInGateBlocksDataAccess(true);
+          setGateDataAccessBlocked(true);
           writeClockInGateCache(user.id, 'no_employee', null);
           return;
         }
@@ -171,7 +180,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         const isClockedIn = await fetchIsEmployeeClockedIn(profile.employeeId);
         const nextStatus = resolveClockInGateStatus(profile, isClockedIn);
         setStatus(nextStatus);
-        setClockInGateBlocksDataAccess(nextStatus === 'blocked');
+        setGateDataAccessBlocked(nextStatus === 'blocked');
         writeClockInGateCache(user.id, nextStatus, profile.employeeId);
       } catch (error) {
         console.error('Clock-in gate refresh failed:', error);
@@ -236,7 +245,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
 
   useEffect(() => {
     if (!user?.id) {
-      setClockInGateBlocksDataAccess(false);
+      setGateDataAccessBlocked(false);
       setAdminBypassActive(false);
       clearClockInGateCache();
     }

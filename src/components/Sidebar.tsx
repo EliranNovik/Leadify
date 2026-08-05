@@ -208,6 +208,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
             userOfficialName: data.userOfficialName || '',
             userRoleFromDB: data.userRoleFromDB || 'User',
             userDepartment: data.userDepartment || '',
+            bonusesRole: typeof data.bonusesRole === 'string' ? data.bonusesRole : '',
             isSuperUser: data.isSuperUser || false,
             cachedUserId: cachedUserId
           };
@@ -220,6 +221,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
       userOfficialName: userFullName || userName || authUser?.email || '',
       userRoleFromDB: 'User',
       userDepartment: '',
+      bonusesRole: '',
       isSuperUser: false,
       cachedUserId: null
     };
@@ -229,6 +231,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
   // Initialize state with cached values - these will display immediately
   const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>(initialUserInfo.userRoleFromDB);
   const [userDepartment, setUserDepartment] = React.useState<string>(initialUserInfo.userDepartment);
+  const [bonusesRole, setBonusesRole] = React.useState<string>(initialUserInfo.bonusesRole || '');
   // Use cached name, then AuthContext, then prop, then email
   const initialName = initialUserInfo.userOfficialName || userFullName || userName || authUser?.email || 'User';
   const [userOfficialName, setUserOfficialName] = React.useState<string>(initialName);
@@ -345,6 +348,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 setUserOfficialName(data.userOfficialName || '');
                 setUserRoleFromDB(data.userRoleFromDB || 'User');
                 setUserDepartment(data.userDepartment || 'General');
+                setBonusesRole(typeof data.bonusesRole === 'string' ? data.bonusesRole : '');
                 return; // Skip fetch - use cache
               } else {
                 // Cache expired - clear it
@@ -437,6 +441,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
             let officialName = '';
             let roleDisplay = 'User';
             let deptName = 'General';
+            let rawBonusesRole = '';
 
             if (userData.tenants_employee) {
               // Handle both array and single object responses
@@ -448,8 +453,10 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 setUserOfficialName(officialName);
 
                 // Set role with proper mapping
-                roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
+                rawBonusesRole = String(empData.bonuses_role || '').trim();
+                roleDisplay = getRoleDisplayName(rawBonusesRole);
                 setUserRoleFromDB(roleDisplay);
+                setBonusesRole(rawBonusesRole);
 
                 // Set department
                 const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
@@ -460,6 +467,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 officialName = userData.full_name || user.email || '';
                 setUserOfficialName(officialName);
                 setUserRoleFromDB('User');
+                setBonusesRole('');
                 setUserDepartment(''); // Clear department if no employee data
               }
             } else {
@@ -467,6 +475,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
               officialName = userData.full_name || user.email || '';
               setUserOfficialName(officialName);
               setUserRoleFromDB('User');
+              setBonusesRole('');
               setUserDepartment(''); // Clear department if no employee relationship
             }
 
@@ -476,6 +485,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 userOfficialName: officialName,
                 userRoleFromDB: roleDisplay,
                 userDepartment: deptName,
+                bonusesRole: rawBonusesRole,
               };
               sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
               sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
@@ -490,6 +500,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
             const officialName = user.email || '';
             setUserOfficialName(officialName);
             setUserRoleFromDB('User');
+            setBonusesRole('');
             setUserDepartment(''); // Clear department if user not found
 
             // Cache basic data with user ID
@@ -498,6 +509,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 userOfficialName: officialName,
                 userRoleFromDB: 'User',
                 userDepartment: 'General',
+                bonusesRole: '',
               };
               sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
               sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
@@ -577,10 +589,18 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
     setIsSidebarHovered(false);
   };
 
-  // Filter sidebar items based on superuser status
+  // Filter sidebar items based on superuser status and bonuses_role
+  const canSeeLeadTimeReport =
+    isSuperUser || String(bonusesRole || '').trim().toLowerCase() === 'h';
+
   const filteredDesktopItems = React.useMemo(() => {
-    if (isSuperUser) return desktopSidebarItems;
-    return desktopSidebarItems
+    const hideLeadTime = (items: SidebarItem[]) =>
+      canSeeLeadTimeReport
+        ? items
+        : items.filter((item) => item.path !== '/lead-time-report');
+
+    if (isSuperUser) return hideLeadTime(desktopSidebarItems);
+    return hideLeadTime(desktopSidebarItems)
       .filter(item =>
         item.label !== 'WhatsApp Leads' &&
         item.label !== 'Email Leads' &&
@@ -599,11 +619,16 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         }
         return item;
       });
-  }, [isSuperUser]);
+  }, [isSuperUser, canSeeLeadTimeReport]);
 
   const filteredMobileItems = React.useMemo(() => {
-    if (isSuperUser) return mobileSidebarItems;
-    return mobileSidebarItems
+    const hideLeadTime = (items: SidebarItem[]) =>
+      canSeeLeadTimeReport
+        ? items
+        : items.filter((item) => item.path !== '/lead-time-report');
+
+    if (isSuperUser) return hideLeadTime(mobileSidebarItems);
+    return hideLeadTime(mobileSidebarItems)
       .filter(item =>
         item.label !== 'WhatsApp Leads' &&
         item.label !== 'Email Leads' &&
@@ -622,7 +647,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         }
         return item;
       });
-  }, [isSuperUser]);
+  }, [isSuperUser, canSeeLeadTimeReport]);
 
   // Hide internal sidebar for externals, and while external-vs-internal is resolving on `/`
   // (otherwise staff nav flashes on refresh before `useExternalUser` finishes).

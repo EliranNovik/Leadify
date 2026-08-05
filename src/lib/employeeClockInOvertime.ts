@@ -132,8 +132,8 @@ export function formatCountdownSeconds(totalSeconds: number): string {
 }
 
 /**
- * Clock out and clear the gate cache. Keeps the Supabase session signed in
- * so the user lands on the clock-in gate (QR / manual) without re-authenticating.
+ * Clock out and refresh local clock-in cache. Keeps the Supabase session signed in.
+ * OPTIONAL CLOCK-IN: does not force the user out of the CRM or onto a gate screen.
  */
 export async function clockOutKeepSession(employeeId: number): Promise<void> {
   const record = await fetchActiveClockInRecord(employeeId);

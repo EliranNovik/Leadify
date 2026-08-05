@@ -10,7 +10,9 @@
  * absences (see SESSION_EXPIRATION_SETUP.md).
  */
 
-import { supabase } from './supabase';
+import type { Session } from '@supabase/supabase-js';
+import { isExpectedNoSessionError, isNetworkError, supabase } from './supabase';
+import { hasAnySupabaseAuthKey } from './authBootstrap';
 
 /** Treat the user as "actively using the app" within this window. */
 const RECENT_ACTIVITY_MS = 20 * 60 * 1000; // 20 minutes
@@ -146,4 +148,52 @@ export async function refreshSessionIfNeeded(options?: {
   })();
 
   return refreshInFlight;
+}
+
+/**
+ * Resolve a usable session on cold resume paths (QR landing, deep links, bfcache restore).
+ *
+ * A single `getSession()` is not enough on phones: the tab is usually reopened with an
+ * expired access token while the network is still switching (cellular → office Wi-Fi), so
+ * the very first refresh can fail even though the stored refresh token is fine. Retry with
+ * backoff and only report "signed out" when storage has no auth keys or Supabase says the
+ * refresh token itself is invalid/expired.
+ */
+export async function resolveSessionWithRecovery(options?: {
+  attempts?: number;
+  baseDelayMs?: number;
+}): Promise<Session | null> {
+  const attempts = Math.max(1, options?.attempts ?? 3);
+  const baseDelayMs = options?.baseDelayMs ?? 350;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const { data: { session }, error } = await supabase.auth.getSession();
+    if (session?.user) return session;
+
+    // Nothing stored at all → the user really is signed out on this device/browser.
+    if (!error && !hasAnySupabaseAuthKey()) return null;
+
+    try {
+      const { data: { session: refreshed }, error: refreshError } =
+        await supabase.auth.refreshSession();
+      if (refreshed?.user) {
+        lastSuccessfulRefreshAt = Date.now();
+        markAuthActivity();
+        return refreshed;
+      }
+      // Definitive rejection of the stored refresh token — retrying cannot help.
+      if (refreshError && !isNetworkError(refreshError) && isExpectedNoSessionError(refreshError)) {
+        return null;
+      }
+    } catch (e) {
+      if (!isNetworkError(e) && isExpectedNoSessionError(e)) return null;
+    }
+
+    if (attempt < attempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+    }
+  }
+
+  const { data: { session: last } } = await supabase.auth.getSession();
+  return last?.user ? last : null;
 }

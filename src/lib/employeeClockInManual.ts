@@ -1,11 +1,14 @@
 import { supabase } from './supabase';
-import { toDateInputValue } from './employeeClockInFormat';
+import { dateRangeToIsoBounds, toDateInputValue } from './employeeClockInFormat';
 import {
   assertDateEditableForEmployee,
   yearMonthFromDateKey,
   assertWorkingHoursMonthEditable,
 } from './employeeWorkingHoursSubmissions';
 import { insertClockInRevision } from './employeeClockInRevisions';
+
+/** Notes tag for pending sessions created from the daily lead allocation page. */
+export const LEAD_ALLOCATION_HOURS_NOTE = 'Lead allocation hours';
 
 export type ManualClockInPayload = {
   employeeId: number;
@@ -281,4 +284,87 @@ export async function deleteClockInSessions(ids: number[]): Promise<void> {
 
   const { error } = await supabase.from('employee_clock_in').delete().in('id', ids);
   if (error) throw error;
+}
+
+const REPLACE_DAY_SELECT = `
+  id, employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined,
+  approved_by, approved_at, clock_in_location_id, clock_out_location_id,
+  location_latitude, location_longitude, location_address, location_city, location_country, location_source,
+  clock_out_location_latitude, clock_out_location_longitude,
+  clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source
+`;
+
+/**
+ * Replace all clock-in sessions on a calendar day with one pending manual session.
+ * Existing rows are archived to revisions then deleted so approval cannot double-count.
+ */
+export async function replaceDayWithPendingManualSession(params: {
+  employeeId: number;
+  userId: string;
+  date: string;
+  clockInTime: string;
+  clockOutTime: string;
+  locationId: number;
+  notes?: string | null;
+}): Promise<void> {
+  const clockIn = combineDateAndTime(params.date, params.clockInTime);
+  const clockOut = combineDateAndTime(params.date, params.clockOutTime);
+  if (clockOut.getTime() <= clockIn.getTime()) {
+    throw new Error('Clock out must be after clock in');
+  }
+  if (!params.locationId) {
+    throw new Error('Select a workplace');
+  }
+
+  await assertDateEditableForEmployee(params.employeeId, params.date);
+
+  const { start, end } = dateRangeToIsoBounds(params.date, params.date);
+  const { data: existingRows, error: fetchError } = await supabase
+    .from('employee_clock_in')
+    .select(REPLACE_DAY_SELECT)
+    .eq('employee_id', params.employeeId)
+    .gte('clock_in_time', start)
+    .lte('clock_in_time', end);
+
+  if (fetchError) throw fetchError;
+
+  const sameDayRows = (existingRows || []).filter(
+    (row) => toDateInputValue(new Date(row.clock_in_time)) === params.date,
+  );
+
+  for (const row of sameDayRows) {
+    await insertClockInRevision(
+      row.id,
+      row,
+      row.manually === true ? 'manual' : 'automatic',
+    );
+  }
+
+  if (sameDayRows.length > 0) {
+    const { error: deleteError } = await supabase
+      .from('employee_clock_in')
+      .delete()
+      .in(
+        'id',
+        sameDayRows.map((row) => row.id),
+      );
+    if (deleteError) throw deleteError;
+  }
+
+  const noteText = (params.notes?.trim() || LEAD_ALLOCATION_HOURS_NOTE).includes(
+    LEAD_ALLOCATION_HOURS_NOTE,
+  )
+    ? params.notes?.trim() || LEAD_ALLOCATION_HOURS_NOTE
+    : `${LEAD_ALLOCATION_HOURS_NOTE}${params.notes?.trim() ? ` — ${params.notes.trim()}` : ''}`;
+
+  await insertManualClockInRecord({
+    employeeId: params.employeeId,
+    userId: params.userId,
+    date: params.date,
+    clockInTime: params.clockInTime,
+    clockOutTime: params.clockOutTime,
+    notes: noteText,
+    clockInLocationId: params.locationId,
+    clockOutLocationId: params.locationId,
+  });
 }

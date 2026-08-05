@@ -18,7 +18,7 @@ import {
   allocationPercentToWorkedMs,
   buildClientRouteFromAllocationRow,
   compareWorkedHoursToMin,
-  buildDailyClockInMsByEmployee,
+  buildAllocationClockInMsByEmployee,
   collectClockedOutEmployeesForDay,
   listMissingLeadReportingEmployees,
   fetchAllocationReport,
@@ -854,7 +854,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         fetchClockInRecordsInRange(workDate, workDate),
         fetchSubmittedAllocationEmployeeIds(workDate),
       ]);
-      const clockInMs = buildDailyClockInMsByEmployee(clockRecords);
+      const clockInMs = buildAllocationClockInMsByEmployee(clockRecords);
       const clockedOut = collectClockedOutEmployeesForDay(clockRecords);
       const employeeIds = Array.from(
         new Set([

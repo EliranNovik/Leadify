@@ -542,7 +542,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
-    const handleVisibilityChange = () => {
+    const scheduleRefresh = () => {
       if (document.visibilityState !== 'visible') return;
       if (visibilityDebounceRef.current) clearTimeout(visibilityDebounceRef.current);
       visibilityDebounceRef.current = setTimeout(() => {
@@ -551,9 +551,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }, VISIBILITY_DEBOUNCE_MS);
     };
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    // Mobile browsers restore a suspended tab from the back/forward cache and can come back
+    // online without ever firing `visibilitychange`, which used to leave the tab running on a
+    // dead access token until the first 401 forced a sign-out.
+    const handlePageShow = () => scheduleRefresh();
+    const handleOnline = () => scheduleRefresh();
+
+    document.addEventListener('visibilitychange', scheduleRefresh);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('online', handleOnline);
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', scheduleRefresh);
+      window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('online', handleOnline);
       if (visibilityDebounceRef.current) clearTimeout(visibilityDebounceRef.current);
     };
   }, [authState.user, updateAuthState, fetchUserDetails]);
@@ -727,12 +737,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    // Same reasoning as the keep-alive effect: cover bfcache restores and network changes.
+    window.addEventListener('pageshow', handleVisibilityChange);
+    window.addEventListener('online', handleVisibilityChange);
 
     return () => {
       isMounted = false;
       clearInterval(interval);
       if (visibilityDebounce) clearTimeout(visibilityDebounce);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pageshow', handleVisibilityChange);
+      window.removeEventListener('online', handleVisibilityChange);
     };
   }, [authState.user, updateAuthState]);
 

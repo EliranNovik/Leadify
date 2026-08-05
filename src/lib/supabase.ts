@@ -550,7 +550,7 @@ export async function authRetryQueryOnce<T>(
 }
 
 // Helper to check if error is a network/transient error (not a real auth failure)
-const isNetworkError = (error: any): boolean => {
+export const isNetworkError = (error: any): boolean => {
   if (!error) return false;
   const errorMsg = String(error.message || error).toLowerCase();
   return (

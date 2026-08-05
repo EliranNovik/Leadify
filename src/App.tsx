@@ -699,6 +699,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/poa/:token" element={<RouteSuspense><LazyPoaPage /></RouteSuspense>} />
       <Route path="/book/:token" element={<RouteSuspense><LazyPublicBookingPage /></RouteSuspense>} />
       <Route path="/entry-kiosk" element={<RouteSuspense><LazyEntryKioskPage /></RouteSuspense>} />
+      {/* Phone QR scan handler — clocks in/out at the office kiosk (optional; not the forced CRM gate). */}
       <Route path="/clock-in/entry" element={<RouteSuspense><LazyClockInEntryPage /></RouteSuspense>} />
       <Route path="/portal/:leadRef/case" element={<RouteSuspense><LazyPortalCasePage /></RouteSuspense>} />
       <Route path="/portal/:leadRef/about" element={<RouteSuspense><LazyPortalAboutPage /></RouteSuspense>} />

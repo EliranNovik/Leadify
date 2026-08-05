@@ -24,6 +24,7 @@ import {
   fetchStage60RecordsInRange,
   getJerusalemScoreboardDates,
   resolveStage60SignTimestamp,
+  stageRecordMatchesSignDateRange,
   toSignCalendarDateKey,
 } from '../lib/stage60SignDate';
 import {
@@ -353,6 +354,49 @@ function scoreboardThreeMonthAverage(totalAmount: number): number {
 function getLast3MonthsStartDate(todayStr: string): string {
   return DateTime.fromISO(todayStr, { zone: 'utc' }).minus({ months: 3 }).toISODate() || todayStr;
 }
+
+function minIsoDate(a: string, b: string): string {
+  return a <= b ? a : b;
+}
+
+function maxIsoDate(a: string, b: string): string {
+  return a >= b ? a : b;
+}
+
+/** Fetch rows in id-chunks so PostgREST `.in()` never blows past URL/body limits. */
+async function fetchByIdChunks<T>(
+  ids: Array<string | number>,
+  chunkSize: number,
+  fetchChunk: (chunk: Array<string | number>) => PromiseLike<{ data: T[] | null; error: any }>,
+): Promise<T[]> {
+  if (ids.length === 0) return [];
+  const out: T[] = [];
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const { data, error } = await fetchChunk(chunk);
+    if (error) throw error;
+    if (data?.length) out.push(...data);
+  }
+  return out;
+}
+
+type SharedBoiConverter = Awaited<ReturnType<typeof createBoiDateRateConverter>>;
+
+/** Departments + categories change rarely — keep a short in-memory cache across dashboard mounts. */
+let departmentsCategoriesCache: {
+  data: {
+    departmentTargets: any[];
+    departmentIds: number[];
+    allCategoriesData: any[] | null;
+    categoryNameToDataMap: Map<string, any>;
+    targetMap: { [key: number]: number };
+    otherExpected: number;
+    selectedMonthName: string;
+  };
+  periodKey: string;
+  fetchedAt: number;
+} | null = null;
+const DEPARTMENTS_CATEGORIES_CACHE_TTL_MS = 10 * 60 * 1000;
 
 /** Today / Week / Last 30d row index (index 0 = General). */
 function getScoreboardPeriodDeptIndex(
@@ -3319,6 +3363,15 @@ const Dashboard: React.FC = () => {
     otherExpected: number;
     selectedMonthName: string;
   }> => {
+    const periodKey = `${selectedYear}-${selectedMonth}`;
+    if (
+      departmentsCategoriesCache &&
+      departmentsCategoriesCache.periodKey === periodKey &&
+      Date.now() - departmentsCategoriesCache.fetchedAt < DEPARTMENTS_CATEGORIES_CACHE_TTL_MS
+    ) {
+      return departmentsCategoriesCache.data;
+    }
+
     const mergedTargetDeptIds = [2, 4, 5, 6];
     const salesDeptIdsToExclude = [12, 14, 15];
     const selectedMonthIndex = months.indexOf(selectedMonth);
@@ -3389,7 +3442,7 @@ const Dashboard: React.FC = () => {
       targetMap[dept.id] = departmentScoreboardExpected(dept);
     });
 
-    return {
+    const result = {
       departmentTargets,
       departmentIds,
       allCategoriesData: allCategoriesData || null,
@@ -3398,12 +3451,14 @@ const Dashboard: React.FC = () => {
       otherExpected,
       selectedMonthName,
     };
+    departmentsCategoriesCache = { data: result, periodKey, fetchedAt: Date.now() };
+    return result;
   };
 
   // Fetch department performance data
   const fetchDepartmentPerformance = async (
     shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>,
-    opts?: { background?: boolean },
+    opts?: { background?: boolean; boiConverter?: SharedBoiConverter },
   ) => {
     if (!opts?.background) setDepartmentPerformanceLoading(true);
     try {
@@ -3570,34 +3625,12 @@ const Dashboard: React.FC = () => {
       const endOfMonth = new Date(selectedYear, selectedMonthIndex + 1, 0);
       const endOfMonthStr = endOfMonth.toISOString().split('T')[0];
 
-      // Fetch stage 60 (agreement signed) — same widened SQL + Jerusalem calendar filter as SignedSalesReportPage
-      let allStage60InWindow: any[] = [];
-      let stageFetchError: any = null;
-      try {
-        allStage60InWindow = await fetchStage60RecordsInRange(last3mStartDate, effectiveLast30dEnd);
-      } catch (err: any) {
-        stageFetchError = err;
-      }
-      if (stageFetchError) {
-        // Don't throw, continue without stage records
-      }
+      // One stage-60 pull covering both the rolling 3-month window and the selected month,
+      // then split client-side. Avoids a second identical round-trip when the month overlaps.
+      const stageFrom = minIsoDate(startOfMonthStr, last3mStartDate);
+      const stageTo = maxIsoDate(endOfMonthStr, effectiveLast30dEnd);
 
-      const stageRecords = allStage60InWindow.filter((r) => r.lead_id != null);
-      const newLeadStageRecords = allStage60InWindow.filter((r) => r.newlead_id != null);
-
-      // Combine all new lead IDs (only from leads_leadstage for stage 60)
-      const newLeadIdsSet = new Set<string>();
-      (newLeadStageRecords || []).forEach(record => {
-        if (record.newlead_id) newLeadIdsSet.add(String(record.newlead_id));
-      });
-
-      const newLeadIds = Array.from(newLeadIdsSet);
-      // Fetch new leads data
-      let newLeadsData: any[] = [];
-      if (newLeadIds.length > 0) {
-        const { data: newLeads, error: newLeadsError } = await supabase
-          .from('leads')
-          .select(`
+      const AGREEMENT_NEW_LEAD_SELECT = `
               id, lead_number, name, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category, category_id, closer, handler,
               misc_category!category_id(
                 id, name, parent_id,
@@ -3606,25 +3639,8 @@ const Dashboard: React.FC = () => {
                   tenant_departement!fk_misc_maincategory_department_id(id, name)
                 )
               )
-            `)
-          .in('id', newLeadIds);
-
-        if (newLeadsError) {
-          // Don't throw, continue without new leads
-        } else {
-          newLeadsData = newLeads || [];
-        }
-      }
-
-      // Fetch leads data separately if we have stage records
-      let agreementRecords: any[] = [];
-
-      // Process legacy leads
-      if (stageRecords && stageRecords.length > 0) {
-        const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
-        const { data: leadsData, error: leadsError } = await supabase
-          .from('leads_lead')
-          .select(`
+            `;
+      const AGREEMENT_LEGACY_LEAD_SELECT = `
               id, lead_number, name, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id, closer_id, case_handler_id,
               accounting_currencies!leads_lead_currency_id_fkey(
                 id,
@@ -3640,93 +3656,156 @@ const Dashboard: React.FC = () => {
               ),
               closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name, photo_url, photo),
               handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name, photo_url, photo)
-            `)
-          .in('id', leadIds);
+            `;
 
-        if (leadsError) {
-          throw leadsError;
-        }
-        // Deduplicate stage records: keep only the latest date for each lead_id
-        const leadRecordsMap = new Map<number, any>();
-        stageRecords.forEach(stageRecord => {
+      let allStage60Union: any[] = [];
+      try {
+        allStage60Union = await fetchStage60RecordsInRange(stageFrom, stageTo);
+      } catch (err: any) {
+        console.error('[Dashboard Agreement Signed] stage-60 fetch failed:', err);
+      }
+
+      const allStage60InWindow = allStage60Union.filter((r) =>
+        stageRecordMatchesSignDateRange(r, last3mStartDate, effectiveLast30dEnd),
+      );
+      const monthStage60Records = allStage60Union.filter((r) =>
+        stageRecordMatchesSignDateRange(r, startOfMonthStr, endOfMonthStr),
+      );
+
+      const stageRecords = allStage60InWindow.filter((r) => r.lead_id != null);
+      const newLeadStageRecords = allStage60InWindow.filter((r) => r.newlead_id != null);
+      const monthStageRecords = monthStage60Records.filter((r) => r.lead_id != null);
+      const monthNewLeadStageRecords = monthStage60Records.filter((r) => r.newlead_id != null);
+
+      const newLeadIdsSet = new Set<string>();
+      [...newLeadStageRecords, ...monthNewLeadStageRecords].forEach((record) => {
+        if (record.newlead_id) newLeadIdsSet.add(String(record.newlead_id));
+      });
+      const legacyLeadIdsSet = new Set<number>();
+      [...stageRecords, ...monthStageRecords].forEach((record) => {
+        if (record.lead_id != null) legacyLeadIdsSet.add(Number(record.lead_id));
+      });
+
+      const newLeadIds = Array.from(newLeadIdsSet);
+      const legacyLeadIds = Array.from(legacyLeadIdsSet);
+
+      // Kick off BOI while lead metadata loads — both are independent.
+      const boiPromise = opts?.boiConverter
+        ? Promise.resolve(opts.boiConverter)
+        : createBoiDateRateConverter();
+
+      let newLeadsData: any[] = [];
+      let leadsData: any[] = [];
+      try {
+        const [newRows, legacyRows] = await Promise.all([
+          fetchByIdChunks(newLeadIds, 500, (chunk) =>
+            supabase.from('leads').select(AGREEMENT_NEW_LEAD_SELECT).in('id', chunk as string[]),
+          ),
+          fetchByIdChunks(legacyLeadIds, 500, (chunk) =>
+            supabase
+              .from('leads_lead')
+              .select(AGREEMENT_LEGACY_LEAD_SELECT)
+              .in('id', chunk as number[]),
+          ),
+        ]);
+        newLeadsData = newRows;
+        leadsData = legacyRows;
+      } catch (leadErr) {
+        console.error('[Dashboard Agreement Signed] lead metadata fetch failed:', leadErr);
+      }
+
+      const dedupeStageByLeadId = (records: any[]) => {
+        const map = new Map<number, any>();
+        records.forEach((stageRecord) => {
           if (!stageRecord.lead_id) return;
           const leadId = stageRecord.lead_id;
           const recordDate = stageRecord.date || stageRecord.cdate;
           if (!recordDate) return;
-
-          const existingRecord = leadRecordsMap.get(leadId);
-          if (!existingRecord) {
-            leadRecordsMap.set(leadId, stageRecord);
-          } else {
-            const existingDate = existingRecord.date || existingRecord.cdate;
-            if (existingDate && new Date(recordDate) > new Date(existingDate)) {
-              // This record has a later date, replace the existing one
-              leadRecordsMap.set(leadId, stageRecord);
-            }
+          const existing = map.get(leadId);
+          if (!existing) {
+            map.set(leadId, stageRecord);
+            return;
+          }
+          const existingDate = existing.date || existing.cdate;
+          if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+            map.set(leadId, stageRecord);
           }
         });
+        return Array.from(map.values());
+      };
 
-        // Convert map back to array
-        const deduplicatedStageRecords = Array.from(leadRecordsMap.values());
-
-        // Join the legacy data
-        const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
-        const legacyRecords = deduplicatedStageRecords.map(stageRecord => {
-          const lead = leadsMap.get(stageRecord.lead_id);
-          // Use date as the sign date (preferred) or cdate as fallback
-          const recordDate = stageRecord.date || stageRecord.cdate;
-          return {
-            ...stageRecord,
-            date: recordDate,
-            leads_lead: lead || null,
-            isNewLead: false
-          };
-        }).filter(record => record.leads_lead !== null);
-
-        agreementRecords.push(...legacyRecords);
-      }
-
-      // Process new leads - create records ONLY from stage records (leads_leadstage for stage 60)
-      // Do NOT include contracts - match SignedSalesReportPage behavior
-      // Deduplicate new lead stage records: keep only the latest date for each newlead_id
-      const newLeadRecordsMap = new Map<string, any>();
-      (newLeadStageRecords || []).forEach(record => {
-        if (!record.newlead_id) return;
-        const newLeadId = String(record.newlead_id);
-        const recordDate = record.date || record.cdate;
-        if (!recordDate) return;
-
-        const existingRecord = newLeadRecordsMap.get(newLeadId);
-        if (!existingRecord) {
-          newLeadRecordsMap.set(newLeadId, record);
-        } else {
-          const existingDate = existingRecord.date || existingRecord.cdate;
-          if (existingDate && new Date(recordDate) > new Date(existingDate)) {
-            // This record has a later date, replace the existing one
-            newLeadRecordsMap.set(newLeadId, record);
+      const dedupeStageByNewLeadId = (records: any[]) => {
+        const map = new Map<string, any>();
+        records.forEach((record) => {
+          if (!record.newlead_id) return;
+          const newLeadId = String(record.newlead_id);
+          const recordDate = record.date || record.cdate;
+          if (!recordDate) return;
+          const existing = map.get(newLeadId);
+          if (!existing) {
+            map.set(newLeadId, record);
+            return;
           }
-        }
+          const existingDate = existing.date || existing.cdate;
+          if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+            map.set(newLeadId, record);
+          }
+        });
+        return Array.from(map.values());
+      };
+
+      const leadsMap = new Map(leadsData.map((lead) => [lead.id, lead]));
+      const newLeadsMap = new Map(newLeadsData.map((lead) => [String(lead.id), lead]));
+
+      const agreementRecords: any[] = [];
+      dedupeStageByLeadId(stageRecords).forEach((stageRecord) => {
+        const lead = leadsMap.get(stageRecord.lead_id);
+        if (!lead) return;
+        const recordDate = stageRecord.date || stageRecord.cdate;
+        agreementRecords.push({
+          ...stageRecord,
+          date: recordDate,
+          leads_lead: lead,
+          isNewLead: false,
+        });
       });
-
-      // Convert map back to array
-      const deduplicatedNewLeadStageRecords = Array.from(newLeadRecordsMap.values());
-
-      const newLeadsMap = new Map(newLeadsData.map(lead => [String(lead.id), lead]));
-
-      // Create records from deduplicated new lead stage records (only source - no contracts)
-      deduplicatedNewLeadStageRecords.forEach(record => {
-        if (!record.newlead_id) return;
+      dedupeStageByNewLeadId(newLeadStageRecords).forEach((record) => {
         const lead = newLeadsMap.get(String(record.newlead_id));
         if (!lead) return;
-        const recordDate = resolveStage60SignTimestamp(record);
         agreementRecords.push({
           id: `newstage-${record.id}`,
-          date: recordDate,
+          date: resolveStage60SignTimestamp(record),
           cdate: record.date || record.cdate,
           lead_id: null,
           newlead_id: String(record.newlead_id),
           leads_lead: lead,
-          isNewLead: true
+          isNewLead: true,
+        });
+      });
+
+      const monthAgreementRecords: any[] = [];
+      dedupeStageByLeadId(monthStageRecords).forEach((stageRecord) => {
+        const lead = leadsMap.get(stageRecord.lead_id);
+        if (!lead) return;
+        const recordDate = (stageRecord.date || stageRecord.cdate || '').split('T')[0];
+        monthAgreementRecords.push({
+          ...stageRecord,
+          date: recordDate,
+          leads_lead: lead,
+          isNewLead: false,
+        });
+      });
+      dedupeStageByNewLeadId(monthNewLeadStageRecords).forEach((record) => {
+        const lead = newLeadsMap.get(String(record.newlead_id));
+        if (!lead) return;
+        monthAgreementRecords.push({
+          id: `month-newstage-${record.id}`,
+          date: resolveStage60SignTimestamp(record),
+          cdate: record.date || record.cdate,
+          lead_id: null,
+          newlead_id: String(record.newlead_id),
+          leads_lead: lead,
+          isNewLead: true,
         });
       });
 
@@ -3739,163 +3818,8 @@ const Dashboard: React.FC = () => {
           categoryNameToDataMap,
         );
 
-      // Fetch data for selected month (Jerusalem calendar filter — same as SignedSalesReportPage)
-      let monthStage60Records: any[] = [];
-      try {
-        monthStage60Records = await fetchStage60RecordsInRange(startOfMonthStr, endOfMonthStr);
-      } catch (monthStageError) {
-        throw monthStageError;
-      }
-      const monthStageRecords = monthStage60Records.filter((r) => r.lead_id != null);
-      const monthNewLeadStageRecords = monthStage60Records.filter((r) => r.newlead_id != null);
-      // Combine all new lead IDs for month (only from leads_leadstage for stage 60)
-      const monthNewLeadIdsSet = new Set<string>();
-      (monthNewLeadStageRecords || []).forEach(record => {
-        if (record.newlead_id) monthNewLeadIdsSet.add(String(record.newlead_id));
-      });
-
-      const monthNewLeadIds = Array.from(monthNewLeadIdsSet);
-      // Fetch month new leads data
-      let monthNewLeadsData: any[] = [];
-      if (monthNewLeadIds.length > 0) {
-        const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
-          .from('leads')
-          .select(`
-              id, lead_number, name, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category, category_id, closer, handler,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement!fk_misc_maincategory_department_id(id, name)
-                )
-              )
-            `)
-          .in('id', monthNewLeadIds);
-
-        if (monthNewLeadsError) {
-        } else {
-          monthNewLeadsData = monthNewLeads || [];
-        }
-      }
-
-      // Fetch leads data separately for month if we have stage records
-      let monthAgreementRecords: any[] = [];
-
-      // Process legacy leads for month
-      if (monthStageRecords && monthStageRecords.length > 0) {
-        const monthLeadIds = [...new Set(monthStageRecords.map(record => record.lead_id).filter(id => id !== null))];
-        const { data: monthLeadsData, error: monthLeadsError } = await supabase
-          .from('leads_lead')
-          .select(`
-              id, lead_number, name, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id, closer_id, case_handler_id,
-              accounting_currencies!leads_lead_currency_id_fkey(
-                id,
-                iso_code,
-                name
-              ),
-              misc_category(
-                id, name, parent_id,
-                misc_maincategory(
-                  id, name, department_id,
-                  tenant_departement!fk_misc_maincategory_department_id(id, name)
-                )
-              ),
-              closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name, photo_url, photo),
-              handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name, photo_url, photo)
-            `)
-          .in('id', monthLeadIds);
-
-        if (monthLeadsError) {
-          throw monthLeadsError;
-        }
-        // Deduplicate month stage records: keep only the latest date for each lead_id
-        const monthLeadRecordsMap = new Map<number, any>();
-        monthStageRecords.forEach(stageRecord => {
-          if (!stageRecord.lead_id) return;
-          const leadId = stageRecord.lead_id;
-          const recordDate = stageRecord.date || stageRecord.cdate;
-          if (!recordDate) return;
-
-          const existingRecord = monthLeadRecordsMap.get(leadId);
-          if (!existingRecord) {
-            monthLeadRecordsMap.set(leadId, stageRecord);
-          } else {
-            const existingDate = existingRecord.date || existingRecord.cdate;
-            if (existingDate && new Date(recordDate) > new Date(existingDate)) {
-              // This record has a later date, replace the existing one
-              monthLeadRecordsMap.set(leadId, stageRecord);
-            }
-          }
-        });
-
-        // Convert map back to array
-        const deduplicatedMonthStageRecords = Array.from(monthLeadRecordsMap.values());
-
-        // Join the legacy data
-        const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
-        const monthLegacyRecords = deduplicatedMonthStageRecords.map(stageRecord => {
-          const lead = monthLeadsMap.get(stageRecord.lead_id);
-          // Use date as the sign date (preferred) or cdate as fallback
-          const recordDate = (stageRecord.date || stageRecord.cdate || '').split('T')[0];
-          return {
-            ...stageRecord,
-            date: recordDate,
-            leads_lead: lead || null,
-            isNewLead: false
-          };
-        }).filter(record => record.leads_lead !== null);
-
-        monthAgreementRecords.push(...monthLegacyRecords);
-      }
-
-      // Process new leads for month (only from leads_leadstage - no contracts)
-      // Deduplicate month new lead stage records: keep only the latest date for each newlead_id
-      const monthNewLeadRecordsMap = new Map<string, any>();
-      (monthNewLeadStageRecords || []).forEach(record => {
-        if (!record.newlead_id) return;
-        const newLeadId = String(record.newlead_id);
-        const recordDate = record.date || record.cdate;
-        if (!recordDate) return;
-
-        const existingRecord = monthNewLeadRecordsMap.get(newLeadId);
-        if (!existingRecord) {
-          monthNewLeadRecordsMap.set(newLeadId, record);
-        } else {
-          const existingDate = existingRecord.date || existingRecord.cdate;
-          if (existingDate && new Date(recordDate) > new Date(existingDate)) {
-            // This record has a later date, replace the existing one
-            monthNewLeadRecordsMap.set(newLeadId, record);
-          }
-        }
-      });
-
-      // Convert map back to array
-      const deduplicatedMonthNewLeadStageRecords = Array.from(monthNewLeadRecordsMap.values());
-
-      const monthNewLeadsMap = new Map(monthNewLeadsData.map(lead => [String(lead.id), lead]));
-
-      deduplicatedMonthNewLeadStageRecords.forEach(record => {
-        if (!record.newlead_id) return;
-        const lead = monthNewLeadsMap.get(String(record.newlead_id));
-        if (!lead) return;
-        const recordDate = resolveStage60SignTimestamp(record);
-        monthAgreementRecords.push({
-          id: `month-newstage-${record.id}`,
-          date: recordDate,
-          cdate: record.date || record.cdate,
-          lead_id: null,
-          newlead_id: String(record.newlead_id),
-          leads_lead: lead,
-          isNewLead: true
-        });
-      });
-
-      // Only use leads_leadstage for stage 60 - no date_signed from leads table
-      if (monthAgreementRecords && monthAgreementRecords.length > 0) {
-      }
-
       // BOI as-of conversion for Agreement Signed (rate available on sign date)
-      const boiConverter = await createBoiDateRateConverter();
+      const boiConverter = await boiPromise;
       const toNis = async (amount: number, currency: string | number, signDateOnly: string | null) => {
         return boiConverter.toNis(amount, currency, signDateOnly);
       };
@@ -4181,18 +4105,24 @@ const Dashboard: React.FC = () => {
       };
 
       setAgreementData(newAgreementData);
-      await enrichScoreboardDealRolePhotos(agreementDealsStore);
+      // Show totals immediately; photos and the sparkline chart fill in afterward.
       setAgreementScoreboardDeals(agreementDealsStore);
       setAgreementScoreboardDealsReady(true);
       rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { agreement: agreementDealsStore });
-
-      // Fetch daily chart data for the last 30 days
-      const chartData = await fetchDepartmentChartData(departmentIds, departmentTargets, last30dStartDate, todayStr);
+      void enrichScoreboardDealRolePhotos(agreementDealsStore).then(() => {
+        setAgreementScoreboardDeals(new Map(agreementDealsStore));
+        rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { agreement: agreementDealsStore });
+      });
+      void fetchDepartmentChartData(departmentIds, departmentTargets, last30dStartDate, todayStr).then(
+        (chartData) => {
+          if (chartData) setDepartmentChartData(chartData);
+        },
+      );
 
       return {
         agreementData: newAgreementData,
         departmentNames: names,
-        departmentChartData: chartData ?? {},
+        departmentChartData: {},
       };
     } catch (error) {
       console.error('[Dashboard Agreement Signed] fetchDepartmentPerformance failed:', error);
@@ -4333,7 +4263,7 @@ const Dashboard: React.FC = () => {
   // Group by department instead of employee
   const fetchInvoicedData = async (
     shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>,
-    opts?: { background?: boolean },
+    opts?: { background?: boolean; boiConverter?: SharedBoiConverter },
   ) => {
     if (!opts?.background) setInvoicedDataLoading(true);
     try {
@@ -4412,8 +4342,11 @@ const Dashboard: React.FC = () => {
         });
       }
 
-      // BOI as-of conversion for invoiced totals (paid → payment time; unpaid → due date)
-      const boiConverter = await createBoiDateRateConverter();
+      // BOI as-of conversion for invoiced totals (paid → payment time; unpaid → due date).
+      // Start loading rates in parallel with the payment queries below.
+      const boiPromise = opts?.boiConverter
+        ? Promise.resolve(opts.boiConverter)
+        : createBoiDateRateConverter();
 
       // Create target map (department ID -> employee cost target)
       const targetMap: { [key: number]: number } = {};
@@ -4441,6 +4374,10 @@ const Dashboard: React.FC = () => {
       const oneWeekAgo = new Date(today);
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
       const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
+
+      // Only pull installments that can land in Today / Week / 30d / 3m / selected month.
+      const invoicedDueFrom = minIsoDate(last3mStartDate, startOfMonthStr);
+      const invoicedDueTo = maxIsoDate(todayStr, endOfMonthStr);
 
       // Initialize invoiced data structure
       const newInvoicedData = {
@@ -4482,95 +4419,86 @@ const Dashboard: React.FC = () => {
         appendScoreboardDeal(invoicedDealsStore, selectedMonthName, 'Total', { ...row, id: `${row.id}::total` });
       };
 
-      // Fetch new payment plans - show all payments with due_date (both paid and unpaid)
-      // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
-      // We'll filter by date in the processing step
-      let newPaymentsQuery = supabase
-        .from('payment_plans')
-        .select(`
-          id,
-          lead_id,
-          value,
-          value_vat,
-          currency,
-          due_date,
-          due_percent,
-          cancel_date,
-          ready_to_pay,
-          paid,
-          paid_at
-        `)
-        .eq('ready_to_pay', true)
-        .not('due_date', 'is', null)
-        .is('cancel_date', null);
+      // Fetch new + legacy payment plans in the scoreboard window only (parallel).
+      const fetchLegacyInvoicedPayments = async () => {
+        let allLegacyPayments: any[] = [];
+        const batchSize = 1000;
+        let offset = 0;
+        let hasMore = true;
 
-      const { data: newPayments, error: newError } = await newPaymentsQuery;
+        while (hasMore) {
+          const { data: batch, error: batchError } = await supabase
+            .from('finances_paymentplanrow')
+            .select(`
+              id,
+              lead_id,
+              client_id,
+              value,
+              value_base,
+              vat_value,
+              currency_id,
+              due_date,
+              due_percent,
+              date,
+              cancel_date,
+              ready_to_pay,
+              actual_date,
+              accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
+            `)
+            .not('due_date', 'is', null)
+            .is('cancel_date', null)
+            .gte('due_date', invoicedDueFrom)
+            .lte('due_date', invoicedDueTo)
+            .order('id', { ascending: true })
+            .range(offset, offset + batchSize - 1);
+
+          if (batchError) {
+            console.error('❌ Invoiced Data - Error fetching legacy payments batch:', batchError);
+            throw batchError;
+          }
+
+          if (batch && batch.length > 0) {
+            allLegacyPayments = [...allLegacyPayments, ...batch];
+            if (batch.length < batchSize) hasMore = false;
+            else offset += batchSize;
+          } else {
+            hasMore = false;
+          }
+        }
+        return allLegacyPayments;
+      };
+
+      const [{ data: newPayments, error: newError }, allLegacyPayments] = await Promise.all([
+        supabase
+          .from('payment_plans')
+          .select(`
+            id,
+            lead_id,
+            value,
+            value_vat,
+            currency,
+            due_date,
+            due_percent,
+            cancel_date,
+            ready_to_pay,
+            paid,
+            paid_at
+          `)
+          .eq('ready_to_pay', true)
+          .not('due_date', 'is', null)
+          .is('cancel_date', null)
+          .gte('due_date', invoicedDueFrom)
+          .lte('due_date', invoicedDueTo),
+        fetchLegacyInvoicedPayments(),
+      ]);
+
       if (newError) {
         console.error('❌ Invoiced Data - Error fetching new payments:', newError);
         throw newError;
       }
 
-      // Filter out any payments with cancel_date (safety check)
-      const filteredNewPayments = dedupeRowsById((newPayments || []).filter(p => !p.cancel_date));
-
-      // Fetch legacy payment plans from finances_paymentplanrow
-      // IMPORTANT: Match Collection Due Report - NO ready_to_pay filter, only filter by due_date IS NOT NULL
-      // Use pagination to fetch ALL records (Supabase limit is 1000 per query)
-      // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
-      // We'll filter by date in the processing step
-
-      let allLegacyPayments: any[] = [];
-      const batchSize = 1000; // Supabase limit
-      let offset = 0;
-      let hasMore = true;
-      let batchNumber = 0;
-
-      while (hasMore) {
-        batchNumber++;
-        const { data: batch, error: batchError } = await supabase
-          .from('finances_paymentplanrow')
-          .select(`
-            id,
-            lead_id,
-            client_id,
-            value,
-            value_base,
-            vat_value,
-            currency_id,
-            due_date,
-            due_percent,
-            date,
-            cancel_date,
-            ready_to_pay,
-            actual_date,
-            accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
-          `)
-          .not('due_date', 'is', null) // ONLY filter by due_date - fetch all payments with due_date set (regardless of ready_to_pay flag)
-          .is('cancel_date', null) // Exclude cancelled payments only - show both paid and unpaid payments
-          .order('id', { ascending: true }) // Order by id for consistent pagination
-          .range(offset, offset + batchSize - 1);
-
-        if (batchError) {
-          console.error('❌ Invoiced Data - Error fetching legacy payments batch:', batchError);
-          throw batchError;
-        }
-
-        if (batch && batch.length > 0) {
-          allLegacyPayments = [...allLegacyPayments, ...batch];
-
-          // If we got fewer than batchSize, we've reached the end
-          if (batch.length < batchSize) {
-            hasMore = false;
-          } else {
-            offset += batchSize;
-          }
-        } else {
-          hasMore = false;
-        }
-      }
-
-      // Filter out any payments with cancel_date (safety check)
-      const filteredLegacyPayments = dedupeRowsById(allLegacyPayments.filter(p => !p.cancel_date));
+      const filteredNewPayments = dedupeRowsById((newPayments || []).filter((p) => !p.cancel_date));
+      const filteredLegacyPayments = dedupeRowsById(allLegacyPayments.filter((p) => !p.cancel_date));
 
       // Get unique lead IDs
       const newLeadIds = Array.from(new Set(filteredNewPayments.map(p => p.lead_id).filter(Boolean)));
@@ -4961,6 +4889,8 @@ const Dashboard: React.FC = () => {
       const leadPlanTotalNis = new Map<string, number>();
       const leadFeeNis = new Map<string, number>();
 
+      const boiConverter = await boiPromise;
+
       // --- Prepare new payments ---
       for (const payment of filteredNewPayments) {
         const lead = newLeadsMap.get(payment.lead_id);
@@ -5225,10 +5155,14 @@ const Dashboard: React.FC = () => {
       newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
 
       setInvoicedData(newInvoicedData);
-      await enrichScoreboardDealRolePhotos(invoicedDealsStore);
+      // Paint totals first; employee photos fill in afterward without holding the spinner.
       setInvoicedScoreboardDeals(invoicedDealsStore);
       setInvoicedScoreboardDealsReady(true);
       rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { invoiced: invoicedDealsStore });
+      void enrichScoreboardDealRolePhotos(invoicedDealsStore).then(() => {
+        setInvoicedScoreboardDeals(new Map(invoicedDealsStore));
+        rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { invoiced: invoicedDealsStore });
+      });
       return newInvoicedData;
 
     } catch (error: any) {
@@ -5346,7 +5280,7 @@ const Dashboard: React.FC = () => {
      */
     async (opts?: { background?: boolean; force?: boolean }) => {
       const periodKey = `${selectedYear}-${selectedMonth}`;
-      const cacheKey = `dashboard-scoreboard:v21:${periodKey}`;
+      const cacheKey = `dashboard-scoreboard:v22:${periodKey}`;
       const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
       const cachedDeals = getCachedScoreboardDeals(periodKey);
 
@@ -5383,14 +5317,25 @@ const Dashboard: React.FC = () => {
       }
 
       try {
-        const shared = await fetchDepartmentsAndCategories();
+        // Departments + BOI rates are shared by both boxes — load once, then fan out.
+        const [shared, boiConverter] = await Promise.all([
+          fetchDepartmentsAndCategories(),
+          createBoiDateRateConverter(),
+        ]);
+        const fetchOpts = { ...opts, boiConverter };
         const [agreementResult, invoicedResult] = await Promise.all([
-          fetchDepartmentPerformance(shared, opts),
-          fetchInvoicedData(shared, opts),
+          fetchDepartmentPerformance(shared, fetchOpts),
+          fetchInvoicedData(shared, fetchOpts),
         ]);
         if (agreementResult && invoicedResult) {
           setDepartmentNames(agreementResult.departmentNames);
-          setDepartmentChartData(agreementResult.departmentChartData);
+          // Chart is filled asynchronously after the agreement table paints; keep prior chart if empty.
+          if (
+            agreementResult.departmentChartData &&
+            Object.keys(agreementResult.departmentChartData).length > 0
+          ) {
+            setDepartmentChartData(agreementResult.departmentChartData);
+          }
           setCachedData(dashboardPathname, cacheKey, {
             agreementData: agreementResult.agreementData,
             invoicedData: invoicedResult,

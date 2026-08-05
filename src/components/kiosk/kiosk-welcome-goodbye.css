@@ -58,6 +58,43 @@
   overflow: hidden;
 }
 
+/* Phone QR result: photo + Welcome/Goodbye + name + clock time only. */
+.kiosk-success-card--compact {
+  width: min(360px, 88vw);
+  border-radius: 28px;
+  padding: 2.25rem 1.5rem 2.25rem;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
+}
+
+.kiosk-success-card--compact .kiosk-success-photo-wrap,
+.kiosk-success-card--compact .kiosk-success-photo,
+.kiosk-success-card--compact .kiosk-success-photo-fallback {
+  width: 112px;
+  height: 112px;
+}
+
+.kiosk-success-card--compact .kiosk-success-photo-wrap {
+  margin-bottom: 1rem;
+}
+
+.kiosk-success-card--compact .kiosk-success-photo-fallback {
+  font-size: 2.1rem;
+}
+
+.kiosk-success-card--compact .kiosk-success-welcome {
+  font-size: 1.35rem;
+}
+
+.kiosk-success-card--compact .kiosk-success-name {
+  margin-top: 0.3rem;
+  font-size: 1.6rem;
+}
+
+.kiosk-success-card--compact .kiosk-success-clocked {
+  margin-top: 0.6rem;
+  font-size: 0.95rem;
+}
+
 .kiosk-success-close {
   position: absolute;
   top: max(0.85rem, env(safe-area-inset-top, 0px));

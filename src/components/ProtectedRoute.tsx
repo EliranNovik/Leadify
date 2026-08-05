@@ -7,7 +7,9 @@ import ClockInGate from './ClockInGate';
 /**
  * ProtectedRoute — uses AuthContext only (no extra auth round-trips).
  * With sync session hydrate, returning users see the app on first paint.
- * Staff with an employee profile must be clocked in before any protected route renders.
+ *
+ * OPTIONAL CLOCK-IN: ClockInGate is a pass-through (forced gate disabled).
+ * Staff may use the system without clocking in; Dashboard ClockInBox remains available.
  */
 const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ children }) => {
   const { user, sessionCheckComplete, supabaseSessionReady } = useAuthContext();

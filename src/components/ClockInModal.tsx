@@ -27,8 +27,9 @@ import {
   fetchPendingHomeWfhApproval,
 } from '../lib/employeeClockInApproval';
 import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
-import { clearClockInGateCache } from '../lib/clockInGateCache';
-import { setClockInGateBlocksDataAccess } from '../lib/clockInGateFetchPolicy';
+// OPTIONAL CLOCK-IN: gate cache / data-block helpers no longer used on clock-out.
+// import { clearClockInGateCache } from '../lib/clockInGateCache';
+// import { setClockInGateBlocksDataAccess } from '../lib/clockInGateFetchPolicy';
 import {
   type HomeWfhApprovalSnapshot,
   useHomeWfhApprovalAutoClockIn,
@@ -562,13 +563,12 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
         persistLastSelectedWorkplaceId(clockOutLocationId);
       }
 
-      // Immediately flip to the clock-in gate (keep session). Don't wait for modal auto-close.
-      clearClockInGateCache();
-      setClockInGateBlocksDataAccess(true);
+      // OPTIONAL CLOCK-IN: stay in the app after clock-out. Do not reopen the gate
+      // or block data access. (Previously: clearClockInGateCache + setBlocks(true).)
       try {
         await refreshClockInGate?.();
       } catch (gateError) {
-        console.error('Clock-in gate refresh after clock-out failed:', gateError);
+        console.error('Clock-in status refresh after clock-out failed:', gateError);
       }
 
       if (needsManualApproval) {

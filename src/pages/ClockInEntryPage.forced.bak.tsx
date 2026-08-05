@@ -1,11 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-/**
- * Office entry-kiosk QR handler (`/clock-in/entry?token=…`).
- * Independent of the forced CRM clock-in gate (which is currently optional/disabled).
- * Scanning still clocks the employee in or out via the backend kiosk APIs.
- */
 import {
   ENTRY_KIOSK_DEFAULT_LOCATION_ID,
   announceClockInKioskSuccess,
@@ -22,10 +17,9 @@ import {
   fetchActiveClockInRecord,
 } from '../lib/employeeClockOut';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
-import { refreshSessionIfNeeded, resolveSessionWithRecovery } from '../lib/authSessionKeepAlive';
 import KioskWelcomeGoodbyeModal, {
-  PHONE_WELCOME_DURATION_MS,
-  PHONE_WELCOME_DURATION_SEC,
+  KIOSK_WELCOME_DURATION_MS,
+  KIOSK_WELCOME_DURATION_SEC,
 } from '../components/kiosk/KioskWelcomeGoodbyeModal';
 
 type EntryStatus =
@@ -41,16 +35,10 @@ type EntryStatus =
 /** Prevent Strict Mode / remount double clock-in → immediate clock-out races. */
 const inFlightEntryTokens = new Set<string>();
 
-/**
- * Resolve the signed-in session for a scan.
- * Phones reopen this page after hours in the background, so the stored access token is
- * normally expired and the network may still be switching; recover the session with retries
- * instead of bouncing to /login. When the URL carries auth params we also wait for the
- * PKCE / magic-link exchange to land.
- */
+/** Wait for PKCE / magic-link session exchange when the URL still carries auth params. */
 async function resolveSessionForEntryPage() {
-  const recovered = await resolveSessionWithRecovery();
-  if (recovered?.user) return recovered;
+  const first = await supabase.auth.getSession();
+  if (first.data.session?.user) return first.data.session;
 
   if (typeof window === 'undefined') return null;
   const search = window.location.search || '';
@@ -124,7 +112,7 @@ const ClockInEntryPage: React.FC = () => {
   const [action, setAction] = useState<ClockInKioskFlashAction>('in');
   const [remark, setRemark] = useState<string | null>(null);
   const [welcomeMeetings, setWelcomeMeetings] = useState<ClockInKioskWelcomeMeeting[]>([]);
-  const [secondsLeft, setSecondsLeft] = useState(PHONE_WELCOME_DURATION_SEC);
+  const [secondsLeft, setSecondsLeft] = useState(KIOSK_WELCOME_DURATION_SEC);
   const [now, setNow] = useState(() => new Date());
   const welcomeTickRef = useRef<number | null>(null);
   const welcomeCloseRef = useRef<number | null>(null);
@@ -178,7 +166,7 @@ const ClockInEntryPage: React.FC = () => {
       setWelcomeMeetings(nextMeetings || []);
       setStatus('success');
       setMessage(nextAction === 'out' ? 'You are clocked out' : 'You are clocked in');
-      setSecondsLeft(PHONE_WELCOME_DURATION_SEC);
+      setSecondsLeft(KIOSK_WELCOME_DURATION_SEC);
       clearClockInGateCache();
 
       void announceClockInKioskSuccess(
@@ -199,7 +187,7 @@ const ClockInEntryPage: React.FC = () => {
       welcomeCloseRef.current = window.setTimeout(() => {
         clearWelcomeTimers();
         if (!cancelled) navigate('/', { replace: true });
-      }, PHONE_WELCOME_DURATION_MS);
+      }, KIOSK_WELCOME_DURATION_MS);
     };
 
     const run = async () => {
@@ -247,10 +235,6 @@ const ClockInEntryPage: React.FC = () => {
         return;
       }
 
-      // A phone often only opens the CRM to scan this QR, so each scan is the one chance to
-      // rotate the refresh token and push the "stay signed in" window forward another cycle.
-      void refreshSessionIfNeeded();
-
       const profileResult = await fetchClockInGateProfile(session.user.id, {
         email: session.user.email,
       });
@@ -291,17 +275,26 @@ const ClockInEntryPage: React.FC = () => {
         setMessage('Clocking you out…');
         setAction('out');
 
-        // Meeting-time check and DB write in parallel — phone confirms sooner.
         let outAt = nowIso;
         let outRemark: string | null = null;
-        const adjustmentPromise = fetchMeetingClockAdjustment(
-          employeeId,
-          'out',
-          activeRecord.clock_in_time,
-        ).catch((adjErr) => {
+        try {
+          const adjustment = await fetchMeetingClockAdjustment(
+            employeeId,
+            'out',
+            activeRecord.clock_in_time,
+          );
+          if (adjustment.success) {
+            if (adjustment.remark) outRemark = adjustment.remark;
+            // End-time override only for internal/external (backend sets adjusted=true).
+            if (adjustment.adjusted && adjustment.adjustedAt) {
+              outAt = adjustment.adjustedAt;
+            }
+          }
+        } catch (adjErr) {
           console.warn('Meeting clock-out adjustment skipped:', adjErr);
-          return { success: false as const, adjusted: false as const };
-        });
+        }
+
+        if (cancelled) return;
 
         try {
           await clockOutEmployeeRecord(
@@ -309,7 +302,7 @@ const ClockInEntryPage: React.FC = () => {
               ...activeRecord,
               clock_in_location_id: activeRecord.clock_in_location_id || resolvedLocationId,
             },
-            { skipGeolocation: true, clockOutTime: nowIso },
+            { skipGeolocation: true, clockOutTime: outAt },
           );
         } catch (err) {
           console.error('Entry kiosk clock-out failed:', err);
@@ -325,23 +318,6 @@ const ClockInEntryPage: React.FC = () => {
         }
 
         if (cancelled) return;
-
-        const adjustment = await adjustmentPromise;
-        if (adjustment.success) {
-          if (adjustment.remark) outRemark = adjustment.remark;
-          if (adjustment.adjusted && adjustment.adjustedAt) {
-            outAt = adjustment.adjustedAt;
-            const patch = await supabase
-              .from('employee_clock_in')
-              .update({ clock_out_time: outAt })
-              .eq('id', activeRecord.id);
-            if (patch.error) {
-              console.warn('Meeting-adjusted clock-out time patch failed:', patch.error);
-              outAt = nowIso;
-            }
-          }
-        }
-
         finishSuccess(
           'out',
           name,
@@ -358,18 +334,26 @@ const ClockInEntryPage: React.FC = () => {
       setMessage('Clocking you in…');
       setAction('in');
 
-      // Meeting-time check and DB insert in parallel — phone confirms sooner.
       let inAt = nowIso;
       let inRemark: string | null = null;
-      const adjustmentPromise = fetchMeetingClockAdjustment(employeeId, 'in').catch((adjErr) => {
+      try {
+        const adjustment = await fetchMeetingClockAdjustment(employeeId, 'in');
+        if (adjustment.success) {
+          if (adjustment.remark) inRemark = adjustment.remark;
+          if (adjustment.adjusted && adjustment.adjustedAt) {
+            inAt = adjustment.adjustedAt;
+          }
+        }
+      } catch (adjErr) {
         console.warn('Meeting clock-in adjustment skipped:', adjErr);
-        return { success: false as const, adjusted: false as const };
-      });
+      }
+
+      if (cancelled) return;
 
       const payload = {
         employee_id: employeeId,
         user_id: session.user.id,
-        clock_in_time: nowIso,
+        clock_in_time: inAt,
         clock_in_location_id: resolvedLocationId,
         notes: 'Entry kiosk QR',
         is_active: true,
@@ -378,21 +362,11 @@ const ClockInEntryPage: React.FC = () => {
         declined: false,
       };
 
-      let insertedId: number | null = null;
-      let { data: inserted, error } = await supabase
-        .from('employee_clock_in')
-        .insert(payload)
-        .select('id')
-        .single();
+      let { error } = await supabase.from('employee_clock_in').insert(payload).select('id').single();
       if (error) {
         const { clock_in_location_id: _drop, ...withoutPreset } = payload;
-        const retry = await supabase
-          .from('employee_clock_in')
-          .insert(withoutPreset)
-          .select('id')
-          .single();
+        const retry = await supabase.from('employee_clock_in').insert(withoutPreset).select('id').single();
         error = retry.error;
-        inserted = retry.data;
       }
       if (cancelled) return;
 
@@ -401,23 +375,6 @@ const ClockInEntryPage: React.FC = () => {
         setStatus('error');
         setMessage(error.message || 'Failed to clock in. Please try again from the CRM.');
         return;
-      }
-      insertedId = inserted?.id != null ? Number(inserted.id) : null;
-
-      const adjustment = await adjustmentPromise;
-      if (adjustment.success) {
-        if (adjustment.remark) inRemark = adjustment.remark;
-        if (adjustment.adjusted && adjustment.adjustedAt && insertedId != null) {
-          inAt = adjustment.adjustedAt;
-          const patch = await supabase
-            .from('employee_clock_in')
-            .update({ clock_in_time: inAt })
-            .eq('id', insertedId);
-          if (patch.error) {
-            console.warn('Meeting-adjusted clock-in time patch failed:', patch.error);
-            inAt = nowIso;
-          }
-        }
       }
 
       finishSuccess(
@@ -451,11 +408,12 @@ const ClockInEntryPage: React.FC = () => {
         employeeName={displayName}
         photoUrl={photoUrl}
         clockedAt={clockedAt}
+        meetings={welcomeMeetings}
+        remark={remark}
         secondsLeft={secondsLeft}
-        totalSeconds={PHONE_WELCOME_DURATION_SEC}
+        totalSeconds={KIOSK_WELCOME_DURATION_SEC}
         now={now}
         variant="page"
-        compact
         onClose={dismissWelcome}
       />
     );

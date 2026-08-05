@@ -25,6 +25,27 @@ This does **not** remove auth expiry. It only keeps the session healthy while so
 
 Idle / closed tabs still expire when the Supabase **refresh token** lifetime ends.
 
+## Mobile (phone / QR clock-in)
+
+Phones are the hardest case: the CRM tab is opened once a day (often only to scan the entry
+QR), then the browser suspends or discards it, so `autoRefreshToken` gets almost no chance to
+run. Two things keep the session alive there:
+
+1. **Resume events** — the app refreshes on `visibilitychange`, `pageshow` (back/forward-cache
+   restore) and `online`. Mobile Safari/Chrome often restore a tab without a visibility change,
+   which previously left the tab running on a dead access token until a 401 forced a logout.
+2. **Recovery instead of logout** — `resolveSessionWithRecovery()` (`authSessionKeepAlive.ts`)
+   retries `getSession` / `refreshSession` with backoff and only reports "signed out" when
+   localStorage has no auth keys or Supabase rejects the refresh token itself. The QR entry page
+   (`/clock-in/entry`) uses it, so a slow cellular → office Wi-Fi handover no longer sends the
+   employee to `/login`. Each scan also rotates the refresh token, pushing the stay-signed-in
+   window forward for another day.
+
+If phones still log out roughly every 24 hours, the cause is server-side: check
+**Authentication → Sessions** in the Supabase dashboard for a **refresh token expiry of 24h**,
+an **inactivity timeout**, or **time-boxed sessions**. With a 24h refresh-token lifetime a device
+that is only used once a day sits right on the edge and will drop.
+
 ## Changes in code
 
 ### Supabase client (`src/lib/supabase.ts`)

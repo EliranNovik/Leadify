@@ -126,8 +126,11 @@ export function useNineHourOvertimeAutomation({
         return;
       }
       await clockOutKeepSession(employeeId);
-      // Stay signed in — clock-in gate will block until they clock in again.
-      window.location.href = '/';
+      // OPTIONAL CLOCK-IN: stay signed in and stay on the current page after auto clock-out.
+      // (Previously: window.location.href = '/' to return to the forced gate.)
+      toast.success('Clocked out');
+      autoLogoutInFlightRef.current = false;
+      setPhase('idle');
     } catch (error) {
       console.error('Nine-hour overtime auto logout failed:', error);
       const message = error instanceof Error ? error.message : 'Failed to clock out';

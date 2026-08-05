@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BriefcaseIcon, PlusIcon } from '@heroicons/react/24/outline';
 import {
@@ -7,6 +7,8 @@ import {
   formatAllocationPercent,
   formatAllocationWorkedDuration,
   allocationPercentToWorkedMs,
+  maxLeadAllocationPercent,
+  minLeadAllocationPercent,
   setLeadAllocationPercent,
   setOtherWorkAllocationPercent,
   toggleLeadAllocationIncluded,
@@ -30,6 +32,8 @@ type LeadAllocationSlidersProps = {
   readOnly?: boolean;
   /** Total clocked-in ms for the work day; used to show allocated time next to %. */
   dayWorkedMs?: number;
+  /** Cap for Other Work slider (30% at/below base, 10% with overtime). */
+  otherWorkMaxPercent?: number;
   /** Per-lead cost-budget hints (14% of 87% of lead value). */
   budgetHintsByKey?: Record<string, LeadAllocationBudgetHint>;
   onApplyLeadMaxBudget?: (leadKey: string, maxAllowedPercent: number) => void;
@@ -38,90 +42,214 @@ type LeadAllocationSlidersProps = {
 const ALLOCATION_RANGE_CLASS =
   'allocation-range range flex-1 cursor-grab active:cursor-grabbing';
 
-type AllocationPercentInputProps = {
+const TIME_BADGE_CLASS =
+  'inline-flex items-center rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 px-2.5 py-0.5 text-base font-semibold tabular-nums text-white shadow-sm';
+
+function msToHoursMinutes(ms: number): { hours: number; minutes: number } {
+  const totalMinutes = Math.max(0, Math.round(ms / 60_000));
+  return {
+    hours: Math.floor(totalMinutes / 60),
+    minutes: totalMinutes % 60,
+  };
+}
+
+function hoursMinutesToMs(hours: number, minutes: number): number {
+  return Math.max(0, hours) * 3_600_000 + Math.max(0, minutes) * 60_000;
+}
+
+function workedMsToAllocationPercent(totalWorkedMs: number, workedMs: number): number {
+  if (!(totalWorkedMs > 0)) return 0;
+  return Math.round((Math.max(0, workedMs) / totalWorkedMs) * 100);
+}
+
+type AllocationPercentDisplayProps = {
   value: number;
   onChange: (percent: number) => void;
   readOnly?: boolean;
-  allocatedLabel?: string | null;
+  dayWorkedMs?: number;
+  maxPercent?: number;
+  minPercent?: number;
 };
 
-function AllocationPercentInput({
+function AllocationPercentDisplay({
   value,
   onChange,
   readOnly = false,
-  allocatedLabel = null,
-}: AllocationPercentInputProps) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
+  dayWorkedMs = 0,
+  maxPercent = 100,
+  minPercent = 0,
+}: AllocationPercentDisplayProps) {
+  const [editingTime, setEditingTime] = useState(false);
+  const [placeAbove, setPlaceAbove] = useState(false);
+  const [hoursDraft, setHoursDraft] = useState('0');
+  const [minutesDraft, setMinutesDraft] = useState('0');
+  const badgeRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const minutesRef = useRef<HTMLInputElement | null>(null);
   const displayed = formatAllocationPercent(value);
+  const clampedMax = Math.max(0, Math.min(100, Math.round(maxPercent)));
+  const clampedMin = Math.max(0, Math.min(clampedMax, Math.round(minPercent)));
+  const allocatedMs =
+    dayWorkedMs > 0 ? allocationPercentToWorkedMs(dayWorkedMs, value) : 0;
+  const allocatedLabel =
+    dayWorkedMs > 0 ? formatAllocationWorkedDuration(allocatedMs) : null;
+  const maxAllowedMs = allocationPercentToWorkedMs(dayWorkedMs, clampedMax);
+  const minAllowedMs = allocationPercentToWorkedMs(dayWorkedMs, clampedMin);
+  const maxHours = Math.floor(maxAllowedMs / 3_600_000);
+  const canEdit = !readOnly && dayWorkedMs > 0;
 
   useEffect(() => {
-    if (!editing) setDraft(displayed);
-  }, [displayed, editing]);
+    if (editingTime) return;
+    const parts = msToHoursMinutes(allocatedMs);
+    setHoursDraft(String(parts.hours));
+    setMinutesDraft(String(parts.minutes));
+  }, [allocatedMs, editingTime]);
 
-  const commit = (raw: string) => {
-    const parsed = Math.round(Number(raw));
-    if (Number.isFinite(parsed)) {
-      onChange(Math.max(0, Math.min(100, parsed)));
-    }
-    setEditing(false);
+  useEffect(() => {
+    if (!editingTime) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (popoverRef.current?.contains(target)) return;
+      if (badgeRef.current?.contains(target)) return;
+      setEditingTime(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, [editingTime]);
+
+  const startEditTime = () => {
+    if (!canEdit) return;
+    const parts = msToHoursMinutes(allocatedMs);
+    setHoursDraft(String(parts.hours));
+    setMinutesDraft(String(parts.minutes));
+    // Flip above the badge when the row sits low on screen, so the popover stays reachable.
+    const rect = badgeRef.current?.getBoundingClientRect();
+    setPlaceAbove(Boolean(rect && window.innerHeight - rect.bottom < 190));
+    setEditingTime(true);
   };
 
-  const timeBeside = allocatedLabel ? (
-    <span className="text-[11px] font-medium tabular-nums text-gray-500">· {allocatedLabel}</span>
-  ) : null;
+  const commitTime = () => {
+    const hours = Math.max(0, Math.round(Number(hoursDraft)) || 0);
+    const minutes = Math.max(0, Math.min(59, Math.round(Number(minutesDraft)) || 0));
+    const nextMs = hoursMinutesToMs(hours, minutes);
+    const nextPercent = workedMsToAllocationPercent(dayWorkedMs, nextMs);
+    onChange(Math.max(clampedMin, Math.min(clampedMax, nextPercent)));
+    setEditingTime(false);
+  };
 
-  if (readOnly) {
-    return (
-      <span className="min-w-[5.5rem] shrink-0 whitespace-nowrap text-right text-sm font-semibold text-gray-800">
-        {displayed}%{timeBeside}
-      </span>
-    );
-  }
+  const handleHoursChange = (raw: string) => {
+    const digits = raw.replace(/[^\d]/g, '');
+    setHoursDraft(digits);
+    // Once no further digit could fit under the day's max, jump straight to minutes.
+    const typed = Number(digits || '0');
+    if (digits.length > 0 && (digits.length >= 2 || typed * 10 > maxHours)) {
+      minutesRef.current?.focus();
+      minutesRef.current?.select();
+    }
+  };
 
-  if (editing) {
-    return (
-      <div className="flex min-w-[5.5rem] shrink-0 flex-col items-end gap-0.5">
-        <div className="flex items-center justify-end gap-0.5">
-          <input
-            type="number"
-            min={0}
-            max={100}
-            step={1}
-            autoFocus
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => commit(draft)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                commit(draft);
-              }
-              if (e.key === 'Escape') setEditing(false);
-            }}
-            className="input input-bordered input-sm h-8 w-12 min-h-8 px-1 text-right text-sm font-semibold text-gray-800"
-          />
-          <span className="text-sm font-semibold text-gray-500">%</span>
-        </div>
-        {allocatedLabel ? (
-          <span className="text-[11px] font-medium tabular-nums text-gray-500">{allocatedLabel}</span>
-        ) : null}
-      </div>
-    );
-  }
+  const timeKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitTime();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setEditingTime(false);
+    }
+  };
+
+  const timeInputClass =
+    'input input-bordered h-11 w-full min-h-11 rounded-[12px] px-2 text-center text-lg font-semibold tabular-nums text-gray-800';
 
   return (
-    <button
-      type="button"
-      onClick={() => {
-        setDraft(displayed);
-        setEditing(true);
-      }}
-      className="min-w-[5.5rem] shrink-0 whitespace-nowrap rounded-md px-1 py-0.5 text-right text-sm font-semibold text-gray-800 transition-colors hover:bg-gray-100 hover:text-primary"
-      title="Click to edit percentage"
-    >
-      {displayed}%{timeBeside}
-    </button>
+    <span className="relative inline-flex min-w-[5.5rem] shrink-0 items-center justify-end whitespace-nowrap text-sm font-semibold text-gray-800">
+      {displayed}%
+      {allocatedLabel == null ? null : (
+        <button
+          ref={badgeRef}
+          type="button"
+          disabled={!canEdit}
+          onClick={startEditTime}
+          className={`${TIME_BADGE_CLASS} ml-2 ${
+            canEdit
+              ? 'cursor-pointer transition hover:brightness-105 active:scale-[0.98]'
+              : 'cursor-default'
+          }`}
+          title={canEdit ? 'Click to edit allocated time' : undefined}
+        >
+          {allocatedLabel}
+        </button>
+      )}
+
+      {editingTime && canEdit ? (
+        <div
+          ref={popoverRef}
+          className={`absolute right-0 z-30 w-56 rounded-[16px] bg-white p-3.5 text-left shadow-xl ring-1 ring-black/5 ${
+            placeAbove ? 'bottom-full mb-2' : 'top-full mt-2'
+          }`}
+        >
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+            Allocated time
+          </p>
+          <div className="flex items-end gap-2">
+            <label className="flex-1">
+              <span className="mb-1 block text-[11px] font-medium text-gray-500">Hours</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoFocus
+                value={hoursDraft}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => handleHoursChange(e.target.value)}
+                onKeyDown={timeKeyDown}
+                className={timeInputClass}
+              />
+            </label>
+            <span className="pb-3 text-lg font-semibold text-gray-400">:</span>
+            <label className="flex-1">
+              <span className="mb-1 block text-[11px] font-medium text-gray-500">Minutes</span>
+              <input
+                ref={minutesRef}
+                type="text"
+                inputMode="numeric"
+                value={minutesDraft}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => setMinutesDraft(e.target.value.replace(/[^\d]/g, ''))}
+                onKeyDown={timeKeyDown}
+                className={timeInputClass}
+              />
+            </label>
+          </div>
+          <p className="mt-2 text-[11px] text-gray-500">
+            {minAllowedMs > 0
+              ? `${formatAllocationWorkedDuration(minAllowedMs)} – ${formatAllocationWorkedDuration(maxAllowedMs)} available`
+              : `Up to ${formatAllocationWorkedDuration(maxAllowedMs)} available`}
+          </p>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm rounded-full px-3"
+              onClick={() => setEditingTime(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm rounded-full px-4"
+              onClick={commitTime}
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </span>
   );
 }
 
@@ -130,7 +258,14 @@ type AllocationPercentSliderProps = {
   onChange: (percent: number) => void;
   variant?: 'primary' | 'neutral';
   readOnly?: boolean;
-  allocatedLabel?: string | null;
+  dayWorkedMs?: number;
+  maxPercent?: number;
+  minPercent?: number;
+  /**
+   * Lead limits shift while dragging, so their tracks stay on a plain 0–100 scale and the thumb
+   * simply stops at the limit instead of rescaling the bar under the user's finger.
+   */
+  fullRangeTrack?: boolean;
 };
 
 function AllocationPercentSlider({
@@ -138,16 +273,21 @@ function AllocationPercentSlider({
   onChange,
   variant = 'primary',
   readOnly = false,
-  allocatedLabel = null,
+  dayWorkedMs = 0,
+  maxPercent = 100,
+  minPercent = 0,
+  fullRangeTrack = false,
 }: AllocationPercentSliderProps) {
-  const roundedValue = Math.round(value);
+  const clampedMax = Math.max(0, Math.min(100, Math.round(maxPercent)));
+  const clampedMin = Math.max(0, Math.min(clampedMax, Math.round(minPercent)));
+  const roundedValue = Math.min(Math.max(Math.round(value), clampedMin), clampedMax);
 
   return (
     <div className="flex min-w-[240px] flex-1 max-w-lg items-center gap-4 py-1">
       <input
         type="range"
-        min={0}
-        max={100}
+        min={fullRangeTrack ? 0 : clampedMin}
+        max={fullRangeTrack ? 100 : clampedMax}
         step={1}
         value={roundedValue}
         disabled={readOnly}
@@ -156,11 +296,13 @@ function AllocationPercentSlider({
           readOnly ? 'pointer-events-none opacity-60' : ''
         }`}
       />
-      <AllocationPercentInput
+      <AllocationPercentDisplay
         value={roundedValue}
         onChange={onChange}
         readOnly={readOnly}
-        allocatedLabel={allocatedLabel}
+        dayWorkedMs={dayWorkedMs}
+        maxPercent={clampedMax}
+        minPercent={clampedMin}
       />
     </div>
   );
@@ -185,36 +327,29 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
   onAddLead,
   readOnly = false,
   dayWorkedMs = 0,
+  otherWorkMaxPercent = 100,
   budgetHintsByKey = {},
   onApplyLeadMaxBudget,
 }) => {
   const includedRows = rows.filter((row) => row.included);
   const grandTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
   const isTotalValid = Math.abs(grandTotal - 100) <= 0.01;
-
-  const allocatedTimeLabel = (percent: number) => {
-    if (!(dayWorkedMs > 0) || !(percent > 0)) {
-      return dayWorkedMs > 0 ? '0m' : null;
-    }
-    return formatAllocationWorkedDuration(
-      allocationPercentToWorkedMs(dayWorkedMs, percent),
-    );
-  };
+  const otherWorkCap = Math.max(0, Math.min(100, Math.round(otherWorkMaxPercent)));
 
   const applyChange = (next: LeadAllocationChangeState) => {
     onChange(next);
   };
 
   const setOtherWork = (percent: number) => {
-    applyChange(setOtherWorkAllocationPercent(rows, percent));
+    applyChange(setOtherWorkAllocationPercent(rows, percent, otherWorkCap));
   };
 
   const setIncluded = (key: string, included: boolean) => {
-    applyChange(toggleLeadAllocationIncluded(rows, key, included));
+    applyChange(toggleLeadAllocationIncluded(rows, key, included, otherWorkCap));
   };
 
   const setLeadPercent = (key: string, percent: number) => {
-    applyChange(setLeadAllocationPercent(rows, key, percent));
+    applyChange(setLeadAllocationPercent(rows, key, percent, otherWorkCap));
   };
 
   return (
@@ -259,6 +394,14 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
               <span className="font-semibold text-gray-900">Other work</span>
               <span className="block text-xs text-gray-500 mt-1">
                 Tasks not tied to a specific lead
+                {otherWorkCap < 100 ? (
+                  <>
+                    {' '}
+                    · Max {otherWorkCap}% when{' '}
+                    {otherWorkCap <= 10 ? 'over base hours' : 'at or below base hours'}, so leads
+                    must cover at least {100 - otherWorkCap}%
+                  </>
+                ) : null}
               </span>
             </span>
           </div>
@@ -267,7 +410,8 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
             onChange={setOtherWork}
             variant="neutral"
             readOnly={readOnly}
-            allocatedLabel={allocatedTimeLabel(otherWorkPercent)}
+            dayWorkedMs={dayWorkedMs}
+            maxPercent={otherWorkCap}
           />
         </div>
       </div>
@@ -413,7 +557,10 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                       value={row.percent}
                       onChange={(percent) => setLeadPercent(row.key, percent)}
                       readOnly={readOnly}
-                      allocatedLabel={allocatedTimeLabel(row.percent)}
+                      dayWorkedMs={dayWorkedMs}
+                      minPercent={minLeadAllocationPercent(rows, row.key, otherWorkCap)}
+                      maxPercent={maxLeadAllocationPercent(rows, row.key)}
+                      fullRangeTrack
                     />
                   )}
                 </div>

@@ -6,6 +6,10 @@ import './kiosk-welcome-goodbye.css';
 export const KIOSK_WELCOME_DURATION_MS = 6_000;
 export const KIOSK_WELCOME_DURATION_SEC = 6;
 
+/** Phone QR result closes quickly — it only confirms the clock in/out. */
+export const PHONE_WELCOME_DURATION_MS = 3_000;
+export const PHONE_WELCOME_DURATION_SEC = 3;
+
 const MEETING_DOT_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fb923c'];
 
 function formatClock(value: Date) {
@@ -42,6 +46,8 @@ export type KioskWelcomeGoodbyeModalProps = {
   now?: Date;
   /** `overlay` = fixed over kiosk; `page` = fills phone QR result screen. */
   variant?: 'overlay' | 'page';
+  /** Phone: photo + Welcome/Goodbye + name + clock time only (no meetings, remark or timer). */
+  compact?: boolean;
   /** Optional early dismiss (X). When set, shown so the employee can close before the timer. */
   onClose?: () => void;
 };
@@ -60,6 +66,7 @@ export default function KioskWelcomeGoodbyeModal({
   totalSeconds = KIOSK_WELCOME_DURATION_SEC,
   now = new Date(),
   variant = 'overlay',
+  compact = false,
   onClose,
 }: KioskWelcomeGoodbyeModalProps) {
   const isOut = action === 'out';
@@ -79,7 +86,7 @@ export default function KioskWelcomeGoodbyeModal({
       aria-live="polite"
       aria-label={isOut ? 'Employee clocked out' : 'Employee clocked in'}
     >
-      <div className="kiosk-success-card">
+      <div className={compact ? 'kiosk-success-card kiosk-success-card--compact' : 'kiosk-success-card'}>
         {onClose ? (
           <button
             type="button"
@@ -91,6 +98,7 @@ export default function KioskWelcomeGoodbyeModal({
           </button>
         ) : null}
 
+        {compact ? null : (
         <div className="kiosk-success-waves" aria-hidden>
           <svg className="kiosk-wave kiosk-wave-1" viewBox="0 0 1440 200" preserveAspectRatio="none">
             <path
@@ -111,13 +119,18 @@ export default function KioskWelcomeGoodbyeModal({
             />
           </svg>
         </div>
+        )}
 
         <div className="kiosk-success-card-body">
           <div className="kiosk-success-photo-wrap">
-            <span className="kiosk-success-dot" style={{ top: '8%', left: '4%', background: '#fb923c' }} />
-            <span className="kiosk-success-dot" style={{ top: '2%', right: '18%', background: '#34d399' }} />
-            <span className="kiosk-success-dot" style={{ bottom: '14%', left: '0%', background: '#60a5fa' }} />
-            <span className="kiosk-success-dot" style={{ bottom: '6%', right: '6%', background: '#a78bfa' }} />
+            {compact ? null : (
+              <>
+                <span className="kiosk-success-dot" style={{ top: '8%', left: '4%', background: '#fb923c' }} />
+                <span className="kiosk-success-dot" style={{ top: '2%', right: '18%', background: '#34d399' }} />
+                <span className="kiosk-success-dot" style={{ bottom: '14%', left: '0%', background: '#60a5fa' }} />
+                <span className="kiosk-success-dot" style={{ bottom: '6%', right: '6%', background: '#a78bfa' }} />
+              </>
+            )}
             {photoUrl ? (
               <img
                 src={photoUrl}
@@ -153,13 +166,13 @@ export default function KioskWelcomeGoodbyeModal({
             </span>
           </p>
 
-          {remark ? (
+          {remark && !compact ? (
             <p className="kiosk-success-remark" role="status">
               {remark}
             </p>
           ) : null}
 
-          {isOut ? (
+          {compact ? null : isOut ? (
             <>
               <hr className="kiosk-success-divider" />
               <p className="kiosk-success-footer-msg" style={{ marginTop: '0.35rem' }}>
@@ -195,6 +208,7 @@ export default function KioskWelcomeGoodbyeModal({
             </>
           )}
 
+          {compact ? null : (
           <div className="kiosk-success-timer" aria-label={`${secondsLeft} seconds remaining`}>
             <div className="kiosk-success-timer-ring">
               <svg className="absolute inset-0 -rotate-90" viewBox="0 0 64 64" aria-hidden>
@@ -223,8 +237,9 @@ export default function KioskWelcomeGoodbyeModal({
             </div>
             <span className="kiosk-success-timer-label">Closing</span>
           </div>
+          )}
 
-          <p className="kiosk-success-now">{formatClock(now)}</p>
+          {compact ? null : <p className="kiosk-success-now">{formatClock(now)}</p>}
         </div>
       </div>
     </div>
