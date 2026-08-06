@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import {
-  CalendarDaysIcon,
-  ClockIcon,
   ClipboardDocumentListIcon,
+  ClockIcon,
   MapPinIcon,
 } from '@heroicons/react/24/outline';
 import LeadAllocationSliders, {
@@ -13,24 +12,33 @@ import LeadAllocationSliders, {
 } from '../components/employeeLeadReporting/LeadAllocationSliders';
 import AddLeadToAllocationModal from '../components/employeeLeadReporting/AddLeadToAllocationModal';
 import LeadAllocationBudgetAssistModal from '../components/employeeLeadReporting/LeadAllocationBudgetAssistModal';
+import LeadAllocationSavedModal from '../components/employeeLeadReporting/LeadAllocationSavedModal';
 import {
   addLeadToAllocationBuckets,
   allocationRowFromCombinedLead,
   buildAllocationDayWorkedMs,
   canAccessLeadTimeReport,
   dailyAllocationGrandTotal,
+  deleteDailyAllocation,
   fetchCurrentEmployeeContext,
   fetchDailyActivity,
   fetchDailyAllocation,
+  fetchMissingLeadAllocationDates,
+  filterIdentitiesByMinAllocationStage,
+  enrichAllocationLeadDisplayMeta,
   formatAllocationPercent,
   formatAllocationWorkedDuration,
+  formatLeadAllocationMissingDayLabel,
   getJerusalemTodayIsoDate,
   isDailyAllocationValid,
+  isLeadAllocationEligibleStage,
   isLeadAllocationHoursNote,
   leadActivityKey,
   minHoursToMs,
+  notifyLeadAllocationSaved,
   otherWorkPercentCap,
   rebalanceFlexAllocationBuckets,
+  resolveLegacyLeadDisplayNumbers,
   saveDailyAllocation,
   setLeadAllocationPercent,
   setOtherWorkAllocationPercent,
@@ -59,45 +67,69 @@ function activityToRow(
   included: boolean,
   percent: number,
   pinned = false,
+  extras?: {
+    lead_number?: string;
+    stage_id?: string | null;
+    active_sub_effort_title?: string | null;
+    category_main?: string | null;
+    category_sub?: string | null;
+  },
 ): LeadAllocationRow {
   return {
     key: leadActivityKey({
       lead_type: activity.lead_type,
       new_lead_id: activity.new_lead_id,
       legacy_lead_id: activity.legacy_lead_id,
-      lead_number: activity.lead_number,
+      lead_number: extras?.lead_number || activity.lead_number,
       client_name: activity.client_name,
     }),
     lead_type: activity.lead_type,
     new_lead_id: activity.new_lead_id,
     legacy_lead_id: activity.legacy_lead_id,
-    lead_number: activity.lead_number,
+    lead_number: extras?.lead_number || activity.lead_number,
     client_name: activity.client_name,
     percent,
     included,
     pinned,
     view_count: activity.view_count,
     last_viewed_at: activity.last_viewed_at,
+    stage_id: extras?.stage_id ?? null,
+    active_sub_effort_title: extras?.active_sub_effort_title ?? null,
+    category_main: extras?.category_main ?? null,
+    category_sub: extras?.category_sub ?? null,
   };
 }
 
-function allocationItemToRow(item: AllocationItemInput): LeadAllocationRow {
+function allocationItemToRow(
+  item: AllocationItemInput,
+  extras?: {
+    lead_number?: string;
+    stage_id?: string | null;
+    active_sub_effort_title?: string | null;
+    category_main?: string | null;
+    category_sub?: string | null;
+  },
+): LeadAllocationRow {
   return {
     key: leadActivityKey({
       lead_type: item.lead_type,
       new_lead_id: item.new_lead_id,
       legacy_lead_id: item.legacy_lead_id,
-      lead_number: item.lead_number,
+      lead_number: extras?.lead_number || item.lead_number,
       client_name: item.client_name,
     }),
     lead_type: item.lead_type,
     new_lead_id: item.new_lead_id,
     legacy_lead_id: item.legacy_lead_id,
-    lead_number: item.lead_number,
+    lead_number: extras?.lead_number || item.lead_number,
     client_name: item.client_name,
     percent: item.percent,
     included: true,
     pinned: true,
+    stage_id: extras?.stage_id ?? null,
+    active_sub_effort_title: extras?.active_sub_effort_title ?? null,
+    category_main: extras?.category_main ?? null,
+    category_sub: extras?.category_sub ?? null,
   };
 }
 
@@ -106,6 +138,21 @@ function isoToTimeInput(iso: string | null | undefined): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+const DEFAULT_BASE_HOURS_FROM = '09:00';
+
+/** Build a same-day HH:MM end time `hours` after `fromTime`. */
+function timeInputPlusHours(fromTime: string, hours: number): string {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(fromTime.trim());
+  if (!match) return '';
+  const startMinutes = Number(match[1]) * 60 + Number(match[2]);
+  if (!Number.isFinite(startMinutes)) return '';
+  const addMinutes = Math.max(0, Math.round(hours * 60));
+  const endMinutes = Math.min(23 * 60 + 59, startMinutes + addMinutes);
+  const hh = String(Math.floor(endMinutes / 60)).padStart(2, '0');
+  const mm = String(endMinutes % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 type HoursEditSnapshot = {
@@ -164,9 +211,20 @@ function deriveHoursFormDefaults(
 
 const EmployeeLeadReportingPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const dateFromUrl = searchParams.get('date');
+  const initialWorkDate = (() => {
+    const today = getJerusalemTodayIsoDate();
+    if (dateFromUrl && /^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl) && dateFromUrl <= today) {
+      return dateFromUrl;
+    }
+    return today;
+  })();
+
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   const [hasAccess, setHasAccess] = useState(false);
-  const [workDate, setWorkDate] = useState(() => getJerusalemTodayIsoDate());
+  const [workDate, setWorkDate] = useState(initialWorkDate);
+  const [missingDates, setMissingDates] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [employeeContext, setEmployeeContext] = useState<
@@ -178,6 +236,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editSnapshot, setEditSnapshot] = useState<AllocationEditSnapshot | null>(null);
   const [addLeadModalOpen, setAddLeadModalOpen] = useState(false);
+  const [savedThanksOpen, setSavedThanksOpen] = useState(false);
   const [recordedDayWorkedMs, setRecordedDayWorkedMs] = useState(0);
   const [budgetHints, setBudgetHints] = useState<LeadAllocationBudgetHint[]>([]);
   const [budgetViolations, setBudgetViolations] = useState<LeadAllocationBudgetViolation[]>([]);
@@ -202,7 +261,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         setHasAccess(allowed);
         setPermissionsLoaded(true);
         if (!allowed) {
-          toast.error('Access denied. Daily lead allocation is only available to handlers and superusers.');
+          toast.error('Access denied. Daily lead allocation is only available to handlers, department managers, and superusers.');
           navigate('/');
         }
       } catch (error) {
@@ -210,7 +269,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         if (!cancelled) {
           setHasAccess(false);
           setPermissionsLoaded(true);
-          toast.error('Access denied. Daily lead allocation is only available to handlers and superusers.');
+          toast.error('Access denied. Daily lead allocation is only available to handlers, department managers, and superusers.');
           navigate('/');
         }
       }
@@ -219,6 +278,42 @@ const EmployeeLeadReportingPage: React.FC = () => {
       cancelled = true;
     };
   }, [navigate]);
+
+  const selectWorkDate = useCallback(
+    (nextDate: string) => {
+      const today = getJerusalemTodayIsoDate();
+      const safe = nextDate && nextDate <= today ? nextDate : today;
+      setWorkDate(safe);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (safe === today) next.delete('date');
+          else next.set('date', safe);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // Keep local date in sync when arriving via header badge / shared link.
+  useEffect(() => {
+    const today = getJerusalemTodayIsoDate();
+    const fromUrl = searchParams.get('date');
+    if (fromUrl && /^\d{4}-\d{2}-\d{2}$/.test(fromUrl) && fromUrl <= today && fromUrl !== workDate) {
+      setWorkDate(fromUrl);
+    }
+  }, [searchParams, workDate]);
+
+  const refreshMissingDates = useCallback(async (employeeId: number) => {
+    try {
+      const missing = await fetchMissingLeadAllocationDates(employeeId);
+      setMissingDates(missing);
+    } catch (error) {
+      console.error('[EmployeeLeadReportingPage] missing dates failed:', error);
+    }
+  }, []);
 
   const loadData = useCallback(async () => {
     if (!hasAccess) return;
@@ -247,16 +342,22 @@ const EmployeeLeadReportingPage: React.FC = () => {
         })
       ) {
         setHasAccess(false);
-        toast.error('Access denied. Daily lead allocation is only available to handlers and superusers.');
+        toast.error('Access denied. Daily lead allocation is only available to handlers, department managers, and superusers.');
         navigate('/');
         return;
       }
 
-      const [activity, allocation, clockRecords, locationOptions] = await Promise.all([
+      const [activityRaw, allocation, clockRecords, locationOptions] = await Promise.all([
         fetchDailyActivity(ctx.employeeId, workDate),
         fetchDailyAllocation(ctx.employeeId, workDate),
         fetchClockInRecordsInRange(workDate, workDate),
         fetchActiveClockInLocations(),
+      ]);
+
+      // Only Handler Nominated (105) and later stages appear on the allocation list.
+      const [activity, eligibleSavedItems] = await Promise.all([
+        filterIdentitiesByMinAllocationStage(activityRaw),
+        filterIdentitiesByMinAllocationStage(allocation?.items || []),
       ]);
 
       const employeeRecords = clockRecords.filter(
@@ -300,7 +401,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
       }
 
       const savedByKey = new Map<string, AllocationItemInput>();
-      for (const item of allocation?.items || []) {
+      for (const item of eligibleSavedItems) {
         savedByKey.set(
           leadActivityKey({
             lead_type: item.lead_type,
@@ -313,6 +414,11 @@ const EmployeeLeadReportingPage: React.FC = () => {
         );
       }
 
+      const displayMeta = await enrichAllocationLeadDisplayMeta([
+        ...activity,
+        ...eligibleSavedItems,
+      ]);
+
       const mergedRows: LeadAllocationRow[] = activity.map((act) => {
         const key = leadActivityKey({
           lead_type: act.lead_type,
@@ -321,16 +427,40 @@ const EmployeeLeadReportingPage: React.FC = () => {
           lead_number: act.lead_number,
           client_name: act.client_name,
         });
+        const meta = displayMeta.get(key);
+        const extras = {
+          lead_number: meta?.lead_number || act.lead_number,
+          stage_id: meta?.stageId ?? null,
+          active_sub_effort_title: meta?.active_sub_effort_title ?? null,
+          category_main: meta?.category_main ?? null,
+          category_sub: meta?.category_sub ?? null,
+        };
         const saved = savedByKey.get(key);
         if (saved) {
           savedByKey.delete(key);
-          return activityToRow(act, true, saved.percent, true);
+          return activityToRow(act, true, saved.percent, true, extras);
         }
-        return activityToRow(act, false, 0, false);
+        return activityToRow(act, false, 0, false, extras);
       });
 
       for (const saved of savedByKey.values()) {
-        mergedRows.push(allocationItemToRow(saved));
+        const key = leadActivityKey({
+          lead_type: saved.lead_type,
+          new_lead_id: saved.new_lead_id,
+          legacy_lead_id: saved.legacy_lead_id,
+          lead_number: saved.lead_number,
+          client_name: saved.client_name,
+        });
+        const meta = displayMeta.get(key);
+        mergedRows.push(
+          allocationItemToRow(saved, {
+            lead_number: meta?.lead_number || saved.lead_number,
+            stage_id: meta?.stageId ?? null,
+            active_sub_effort_title: meta?.active_sub_effort_title ?? null,
+            category_main: meta?.category_main ?? null,
+            category_sub: meta?.category_sub ?? null,
+          }),
+        );
       }
 
       const hasSavedAllocation = Boolean(allocation);
@@ -350,13 +480,14 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setLastSavedAt(allocation?.updated_at || allocation?.submitted_at || null);
       setIsEditing(!hasSavedAllocation);
       setEditSnapshot(null);
+      void refreshMissingDates(ctx.employeeId);
     } catch (error) {
       console.error('[EmployeeLeadReportingPage] load failed:', error);
       toast.error('Failed to load lead activity.');
     } finally {
       setLoading(false);
     }
-  }, [hasAccess, workDate, navigate]);
+  }, [hasAccess, workDate, navigate, refreshMissingDates]);
 
   useEffect(() => {
     if (!permissionsLoaded || !hasAccess) return;
@@ -423,8 +554,12 @@ const EmployeeLeadReportingPage: React.FC = () => {
     setOtherWorkPercent(state.otherWorkPercent);
   };
 
-  const handleAddLead = (lead: CombinedLead) => {
+  const handleAddLead = async (lead: CombinedLead) => {
     if (isAllocationLocked) return;
+    if (!isLeadAllocationEligibleStage(lead.stage)) {
+      toast.error('Only leads from Handler Nominated (stage 105) and up can be added.');
+      return;
+    }
     const newRow = allocationRowFromCombinedLead(lead);
     if (!newRow) {
       toast.error('Could not add this lead.');
@@ -433,6 +568,32 @@ const EmployeeLeadReportingPage: React.FC = () => {
     if (existingLeadKeys.has(newRow.key)) {
       toast.error('This lead is already in the list.');
       return;
+    }
+
+    if (
+      newRow.lead_type === 'legacy' &&
+      newRow.legacy_lead_id != null &&
+      (!newRow.lead_number.includes('/') || newRow.lead_number.includes('/?'))
+    ) {
+      try {
+        const resolved = await resolveLegacyLeadDisplayNumbers([newRow.legacy_lead_id]);
+        const nextNumber = resolved.get(newRow.legacy_lead_id);
+        if (nextNumber) newRow.lead_number = nextNumber;
+      } catch (error) {
+        console.warn('[EmployeeLeadReportingPage] resolve add-lead number failed:', error);
+      }
+    }
+
+    try {
+      const meta = await enrichAllocationLeadDisplayMeta([newRow]);
+      const display = meta.get(newRow.key);
+      if (display?.lead_number) newRow.lead_number = display.lead_number;
+      if (display?.stageId) newRow.stage_id = display.stageId;
+      newRow.active_sub_effort_title = display?.active_sub_effort_title ?? null;
+      newRow.category_main = display?.category_main ?? null;
+      newRow.category_sub = display?.category_sub ?? null;
+    } catch (error) {
+      console.warn('[EmployeeLeadReportingPage] enrich add-lead meta failed:', error);
     }
 
     const rebalanced = addLeadToAllocationBuckets(rows, newRow, otherWorkMax);
@@ -578,16 +739,54 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setEditSnapshot(null);
       setBudgetViolations([]);
       setBudgetAssistOpen(false);
-      toast.success(
-        showHoursForm
-          ? 'Daily allocation saved. Working hours are waiting for approval.'
-          : 'Daily allocation saved.',
-      );
+      void refreshMissingDates(employeeContext.employeeId);
+      notifyLeadAllocationSaved(workDate);
+      setSavedThanksOpen(true);
     } catch (error) {
       console.error('[EmployeeLeadReportingPage] save failed:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to save allocation.');
     } finally {
       setCheckingBudget(false);
+      setSaving(false);
+    }
+  };
+
+  const handleResetAllocation = async () => {
+    if (!employeeContext) return;
+    const confirmed = window.confirm(
+      'Reset this day’s allocation to the default (unsaved) state? Your saved report for this date will be cleared.',
+    );
+    if (!confirmed) return;
+
+    setSaving(true);
+    try {
+      if (lastSavedAt) {
+        await deleteDailyAllocation(employeeContext.employeeId, workDate);
+      }
+
+      const clearedRows = rows.map((row) => ({
+        ...row,
+        included: false,
+        percent: 0,
+        pinned: false,
+      }));
+      const resetState = rebalanceFlexAllocationBuckets(0, false, clearedRows, otherWorkMax);
+
+      setRows(resetState.rows);
+      setOtherWorkPercent(resetState.otherWorkPercent);
+      setLastSavedAt(null);
+      setIsEditing(true);
+      setEditSnapshot(null);
+      setBudgetHints([]);
+      setBudgetViolations([]);
+      setBudgetAssistOpen(false);
+      void refreshMissingDates(employeeContext.employeeId);
+      notifyLeadAllocationSaved(workDate);
+      toast.success('Allocation reset.');
+    } catch (error) {
+      console.error('[EmployeeLeadReportingPage] reset failed:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to reset allocation.');
+    } finally {
       setSaving(false);
     }
   };
@@ -631,7 +830,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
   if (!employeeContext) {
     return (
       <div className="lead-allocation-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] px-4 py-10 md:px-10">
-        <div className="mx-auto max-w-4xl rounded-[18px] bg-white px-5 py-6 shadow-sm">
+        <div className="w-full rounded-[18px] bg-white px-5 py-6 shadow-sm">
           <div className="alert alert-warning border-0 bg-amber-50 text-amber-900">
             <span>Your user account is not linked to an employee profile. Contact an administrator.</span>
           </div>
@@ -642,65 +841,95 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
   return (
     <div className="lead-allocation-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec]">
-      <div className="mx-auto flex min-w-0 max-w-4xl flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-6 md:pb-12 md:pt-4">
+      <div className="flex min-w-0 w-full flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-6 md:pb-12 md:pt-4">
         <div className="space-y-5">
+          <div className="mx-auto w-full max-w-6xl space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="mb-1 flex items-center gap-2 text-primary">
-                <ClipboardDocumentListIcon className="h-6 w-6" />
-                <span className="text-sm font-semibold uppercase tracking-wide">Lead time report</span>
+            <div className="min-w-0">
+              <p className="mb-1.5 text-lg font-medium text-gray-700">
+                Welcome, {employeeContext.employeeName}
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 className="flex items-center gap-2.5 text-2xl font-bold text-gray-900">
+                  <ClipboardDocumentListIcon className="h-7 w-7 shrink-0 text-primary" aria-hidden />
+                  Daily lead allocation
+                </h1>
+                <label className="inline-flex items-center gap-2">
+                  <span className="sr-only">Work date</span>
+                  <input
+                    type="date"
+                    className="input h-10 min-h-10 w-auto min-w-[10.5rem] rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                    value={workDate}
+                    max={getJerusalemTodayIsoDate()}
+                    onChange={(e) => selectWorkDate(e.target.value)}
+                    title="Work date"
+                  />
+                </label>
               </div>
-              <h1 className="text-2xl font-bold text-gray-900">Daily lead allocation</h1>
             </div>
 
-            <label className="w-full max-w-xs shrink-0">
-              <span className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-gray-600">
-                <CalendarDaysIcon className="h-4 w-4" />
-                Work date
-              </span>
-              <input
-                type="date"
-                className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                value={workDate}
-                max={getJerusalemTodayIsoDate()}
-                onChange={(e) => setWorkDate(e.target.value)}
-              />
-            </label>
+            {missingDates.length > 0 ? (
+              <div className="w-full max-w-xl sm:w-auto sm:min-w-[16rem]">
+                <div className="mb-1.5 flex items-center justify-between gap-2 sm:justify-end">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                    Missing reports
+                  </span>
+                  <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold tabular-nums text-white">
+                    {missingDates.length}
+                  </span>
+                </div>
+                <div className="flex flex-wrap justify-start gap-1.5 sm:justify-end">
+                  {missingDates.map((day) => {
+                    const active = day === workDate;
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => selectWorkDate(day)}
+                        className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                          active
+                            ? 'bg-amber-500 text-white shadow-sm'
+                            : 'bg-white text-amber-800 ring-1 ring-amber-200 hover:bg-amber-50'
+                        }`}
+                        title={`Open allocation for ${day}`}
+                      >
+                        {formatLeadAllocationMissingDayLabel(day)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {showHoursForm ? (
             <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-              <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-900">Worked hours</h2>
-                  <p className="mt-0.5 text-xs text-gray-500">
-                    {isEditingSavedAllocation && recordedDayWorkedMs >= minMs ? (
-                      <>
-                        Adjust from/to or workplace for this day. Saving replaces the day&apos;s
-                        working hours with a pending approval entry
-                        {recordedDayWorkedMs > 0
-                          ? ` (currently ${formatAllocationWorkedDuration(recordedDayWorkedMs)})`
-                          : ''}
-                        .
-                      </>
-                    ) : (
-                      <>
-                        Recorded time is below your base {minHours}h
-                        {recordedDayWorkedMs > 0
-                          ? ` (${formatAllocationWorkedDuration(recordedDayWorkedMs)} so far)`
-                          : ''}
-                        . Enter from/to so allocation uses your actual day — this is saved to Working
-                        Hours awaiting approval.
-                      </>
-                    )}
-                  </p>
-                </div>
+              <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
                 {manualIntervalMs > 0 ? (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                    <ClockIcon className="h-3.5 w-3.5" />
+                    <ClockIcon className="h-5 w-5" />
                     {formatAllocationWorkedDuration(manualIntervalMs)}
                   </span>
                 ) : null}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm h-8 min-h-8 rounded-full px-3 text-primary"
+                  disabled={isAllocationLocked}
+                  title={`Fill From/To with your ${minHours}h base day`}
+                  onClick={() => {
+                    const start = fromTime || DEFAULT_BASE_HOURS_FROM;
+                    const end = timeInputPlusHours(start, minHours);
+                    if (!end) {
+                      toast.error('Could not fill base hours.');
+                      return;
+                    }
+                    setFromTime(start);
+                    setToTime(end);
+                    toast.success(`Filled ${minHours}h base hours (${start}–${end}).`);
+                  }}
+                >
+                  Base hours
+                </button>
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -750,6 +979,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
               </div>
             </div>
           ) : null}
+          </div>
 
           <LeadAllocationSliders
             rows={rows}
@@ -786,6 +1016,12 @@ const EmployeeLeadReportingPage: React.FC = () => {
             onAdd={handleAddLead}
           />
 
+          <LeadAllocationSavedModal
+            open={savedThanksOpen}
+            employeeName={employeeContext.employeeName}
+            onClose={() => setSavedThanksOpen(false)}
+          />
+
           <LeadAllocationBudgetAssistModal
             open={budgetAssistOpen}
             violations={budgetViolations}
@@ -804,7 +1040,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
             </div>
           )}
 
-          <div className="sticky bottom-[max(0.75rem,env(safe-area-inset-bottom,0px))] z-20 flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-white/95 px-5 py-4 shadow-lg ring-1 ring-black/5 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+          <div className="sticky bottom-[max(0.75rem,env(safe-area-inset-bottom,0px))] z-20 mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 rounded-[18px] bg-white/95 px-5 py-4 shadow-lg ring-1 ring-black/5 backdrop-blur supports-[backdrop-filter]:bg-white/80">
             <div className="text-sm text-gray-500">
               {lastSavedAt
                 ? `Last saved: ${new Intl.DateTimeFormat(undefined, {
@@ -829,6 +1065,16 @@ const EmployeeLeadReportingPage: React.FC = () => {
                   Cancel
                 </button>
               )}
+              <button
+                type="button"
+                className="btn btn-ghost rounded-full px-6 shadow-sm"
+                disabled={saving || checkingBudget}
+                onClick={() => {
+                  void handleResetAllocation();
+                }}
+              >
+                Reset
+              </button>
               <button
                 type="button"
                 className="btn btn-primary rounded-full px-6 shadow-sm"

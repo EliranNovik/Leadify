@@ -4,7 +4,10 @@ import { toast } from 'react-hot-toast';
 import LeadContactSearchResults from '../search/LeadContactSearchResults';
 import { useLeadContactSearch } from '../../hooks/useLeadContactSearch';
 import type { CombinedLead } from '../../lib/legacyLeadsApi';
-import { allocationRowFromCombinedLead } from '../../lib/employeeLeadReporting';
+import {
+  allocationRowFromCombinedLead,
+  isLeadAllocationEligibleStage,
+} from '../../lib/employeeLeadReporting';
 
 type AddLeadToAllocationModalProps = {
   open: boolean;
@@ -33,6 +36,7 @@ const AddLeadToAllocationModal: React.FC<AddLeadToAllocationModalProps> = ({
 
   const displayResults = useMemo(() => {
     return results.filter((lead) => {
+      if (!isLeadAllocationEligibleStage(lead.stage)) return false;
       const row = allocationRowFromCombinedLead(lead);
       if (!row) return false;
       return !existingKeys.has(row.key);
@@ -42,6 +46,10 @@ const AddLeadToAllocationModal: React.FC<AddLeadToAllocationModalProps> = ({
   if (!open) return null;
 
   const handleSelect = (lead: CombinedLead) => {
+    if (!isLeadAllocationEligibleStage(lead.stage)) {
+      toast.error('Only leads from Handler Nominated (stage 105) and up can be added.');
+      return;
+    }
     const row = allocationRowFromCombinedLead(lead);
     if (!row) {
       toast.error('Could not add this lead.');
@@ -64,9 +72,6 @@ const AddLeadToAllocationModal: React.FC<AddLeadToAllocationModalProps> = ({
               <PlusIcon className="h-6 w-6 text-primary shrink-0" />
               Add lead
             </h3>
-            <p className="text-sm text-base-content/70 mt-1">
-              Search by lead number, name, phone, email, or contact. Click a result to add it.
-            </p>
           </div>
           <button
             type="button"
@@ -80,10 +85,10 @@ const AddLeadToAllocationModal: React.FC<AddLeadToAllocationModalProps> = ({
 
         <div className="p-4 space-y-3 overflow-y-auto flex-1 min-h-0">
           <div className="relative">
-            <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/40" />
+            <MagnifyingGlassIcon className="pointer-events-none absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-base-content/45" />
             <input
               type="search"
-              className="input input-bordered w-full pl-10"
+              className="input input-bordered h-11 w-full rounded-full border-base-300 bg-base-100 pl-11 pr-4 focus:outline-none focus:ring-2 focus:ring-primary/20"
               placeholder="Lead #, name, phone, email, contact…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -103,16 +108,10 @@ const AddLeadToAllocationModal: React.FC<AddLeadToAllocationModalProps> = ({
               onSelect={handleSelect}
               minLength={2}
               showTypeFilter
-              emptyMessage="No addable leads or contacts found for this search."
+              emptyMessage="No leads found"
               className="rounded-lg border border-base-300"
             />
           )}
-        </div>
-
-        <div className="p-4 border-t border-base-300 flex justify-end">
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
-            Cancel
-          </button>
         </div>
       </div>
     </div>

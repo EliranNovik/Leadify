@@ -2,6 +2,7 @@ import React from 'react';
 import ClockInPresenceHeartbeat from './ClockInPresenceHeartbeat';
 import NineHourOvertimeMonitor from './NineHourOvertimeMonitor';
 import WorkdayEndMonitor from './WorkdayEndMonitor';
+import LeadAllocationReminderMonitor from './LeadAllocationReminderMonitor';
 
 /*
  * ---------------------------------------------------------------------------
@@ -30,6 +31,7 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => (
     <ClockInPresenceHeartbeat />
     <NineHourOvertimeMonitor />
     <WorkdayEndMonitor />
+    <LeadAllocationReminderMonitor />
   </>
 );
 

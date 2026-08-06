@@ -35,6 +35,7 @@ import {
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
+import { canAccessLeadTimeReport } from '../lib/employeeLeadReporting';
 
 interface SidebarProps {
   userName?: string;
@@ -590,8 +591,10 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
   };
 
   // Filter sidebar items based on superuser status and bonuses_role
-  const canSeeLeadTimeReport =
-    isSuperUser || String(bonusesRole || '').trim().toLowerCase() === 'h';
+  const canSeeLeadTimeReport = canAccessLeadTimeReport({
+    isSuperUser,
+    bonusesRole,
+  });
 
   const filteredDesktopItems = React.useMemo(() => {
     const hideLeadTime = (items: SidebarItem[]) =>

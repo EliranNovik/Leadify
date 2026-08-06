@@ -578,3 +578,89 @@ export async function removeLeadSubEffortRow(
   const { error } = await supabase.from('lead_sub_efforts').delete().eq('id', id);
   if (error) throw error;
 }
+
+function leadSubEffortOwnerKey(row: {
+  legacy_lead_id?: unknown;
+  new_lead_id?: unknown;
+}): string | null {
+  const legacyRaw = Number(row.legacy_lead_id);
+  if (Number.isFinite(legacyRaw) && legacyRaw > 0) return `legacy:${legacyRaw}`;
+  const newId = typeof row.new_lead_id === 'string' ? row.new_lead_id.trim() : '';
+  if (newId) return `new:${newId}`;
+  return null;
+}
+
+function readLeadSubEffortTemplateName(row: {
+  sub_efforts?:
+    | { name?: unknown }
+    | Array<{ name?: unknown }>
+    | null;
+}): string | null {
+  const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
+  const name = typeof se?.name === 'string' ? se.name.trim() : '';
+  return name || null;
+}
+
+/**
+ * Active sub-effort title per lead — same rule as SubEffortsLogModal / portal:
+ * first timeline row (display order) where `active !== false`.
+ * Map keys: `new:<uuid>` / `legacy:<id>`.
+ */
+export async function fetchActiveSubEffortTitlesByLeadIdentity(
+  supabase: SupabaseClient,
+  identities: Array<{
+    lead_type?: string;
+    new_lead_id?: string | null;
+    legacy_lead_id?: number | null;
+  }>,
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const legacyIds = [
+    ...new Set(
+      identities
+        .map((row) => Number(row.legacy_lead_id))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ];
+  const newLeadIds = [
+    ...new Set(
+      identities
+        .map((row) => (typeof row.new_lead_id === 'string' ? row.new_lead_id.trim() : ''))
+        .filter(Boolean),
+    ),
+  ];
+  if (legacyIds.length === 0 && newLeadIds.length === 0) return result;
+
+  const selectCols =
+    'id, legacy_lead_id, new_lead_id, active, sort_order, created_at, sub_effort_id, sub_efforts ( id, name, sort_order )';
+
+  const [legacyRes, newRes] = await Promise.all([
+    legacyIds.length > 0
+      ? supabase.from('lead_sub_efforts').select(selectCols).in('legacy_lead_id', legacyIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    newLeadIds.length > 0
+      ? supabase.from('lead_sub_efforts').select(selectCols).in('new_lead_id', newLeadIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+  ]);
+
+  if (legacyRes.error) throw legacyRes.error;
+  if (newRes.error) throw newRes.error;
+
+  const byOwner = new Map<string, any[]>();
+  for (const row of [...(legacyRes.data || []), ...(newRes.data || [])]) {
+    const key = leadSubEffortOwnerKey(row);
+    if (!key) continue;
+    const list = byOwner.get(key) || [];
+    list.push(row);
+    byOwner.set(key, list);
+  }
+
+  for (const [key, rows] of byOwner) {
+    const timeline = dedupeLeadSubEffortRows(rows);
+    const current = timeline.find((row) => row?.active !== false);
+    const title = current ? readLeadSubEffortTemplateName(current) : null;
+    if (title) result.set(key, title);
+  }
+
+  return result;
+}

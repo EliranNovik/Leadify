@@ -3,8 +3,11 @@ import type { RecentLead } from './recentSearchStorage';
 import type { CombinedLead } from './legacyLeadsApi';
 import { filterCountedClockInRecords } from './employeeClockInApproval';
 import { formatDurationMs } from './employeeClockInOvertime';
+import { eachDayInRange } from './employeeClockInFormat';
+import { isIsraeliWeekendIso } from './employeeExtraHours';
 import { fetchClockInRecordsInRange, type ClockInWithEmployee } from './workingHoursExport';
 import { LEAD_ALLOCATION_HOURS_NOTE } from './employeeClockInManual';
+import { fetchActiveSubEffortTitlesByLeadIdentity } from './leadSubEfforts';
 
 export { LEAD_ALLOCATION_HOURS_NOTE };
 
@@ -97,8 +100,19 @@ export function getJerusalemTodayIsoDate(date = new Date()): string {
   }).format(date);
 }
 
+/** First calendar day lead allocation reporting is required (inclusive). */
+export const LEAD_ALLOCATION_REPORTING_START_DATE = '2026-08-06';
+
+export const LEAD_ALLOCATION_SAVED_EVENT = 'lead-allocation-saved';
+
 export function isHandlerBonusesRole(role: string | null | undefined): boolean {
   return String(role || '').trim().toLowerCase() === 'h';
+}
+
+export function isDepartmentManagerBonusesRole(
+  role: string | null | undefined,
+): boolean {
+  return String(role || '').trim().toLowerCase() === 'dm';
 }
 
 export function canAccessLeadTimeReport(params: {
@@ -106,7 +120,38 @@ export function canAccessLeadTimeReport(params: {
   bonusesRole?: string | null;
 }): boolean {
   if (params.isSuperUser === true) return true;
-  return isHandlerBonusesRole(params.bonusesRole);
+  return (
+    isHandlerBonusesRole(params.bonusesRole) ||
+    isDepartmentManagerBonusesRole(params.bonusesRole)
+  );
+}
+
+export function leadTimeReportPathForDate(workDate: string): string {
+  return `/lead-time-report?date=${encodeURIComponent(workDate)}`;
+}
+
+export function notifyLeadAllocationSaved(workDate?: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent(LEAD_ALLOCATION_SAVED_EVENT, {
+      detail: { workDate: workDate || null },
+    }),
+  );
+}
+
+/** Short label for missing-day chips, e.g. "Wed 6 Aug". */
+export function formatLeadAllocationMissingDayLabel(isoDate: string): string {
+  try {
+    const [y, m, d] = isoDate.split('-').map(Number);
+    const date = new Date(y, (m || 1) - 1, d || 1);
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+    }).format(date);
+  } catch {
+    return isoDate;
+  }
 }
 
 /**
@@ -346,6 +391,10 @@ export type ManualLeadAllocationRow = {
   client_name: string;
   percent: number;
   included: boolean;
+  stage_id?: string | null;
+  active_sub_effort_title?: string | null;
+  category_main?: string | null;
+  category_sub?: string | null;
 };
 
 export function allocationRowFromCombinedLead(lead: CombinedLead): ManualLeadAllocationRow | null {
@@ -363,6 +412,7 @@ export function allocationRowFromCombinedLead(lead: CombinedLead): ManualLeadAll
     client_name: identity.client_name,
     percent: 0,
     included: true,
+    stage_id: lead.stage != null && String(lead.stage).trim() !== '' ? String(lead.stage) : null,
   };
 }
 
@@ -418,12 +468,28 @@ export async function recordEmployeeLeadView(
   if (identity.lead_type === 'new' && !identity.new_lead_id) return;
   if (identity.lead_type === 'legacy' && !identity.legacy_lead_id) return;
 
+  let leadNumber = identity.lead_number;
+  // Clients may briefly set "master/?" before the sublead suffix is calculated.
+  // Resolve the real display number (same sibling order as Clients.tsx) before storing.
+  if (
+    identity.lead_type === 'legacy' &&
+    identity.legacy_lead_id != null &&
+    (!leadNumber || leadNumber.includes('/?') || leadNumber.endsWith('/'))
+  ) {
+    try {
+      const resolved = await resolveLegacyLeadDisplayNumbers([identity.legacy_lead_id]);
+      leadNumber = resolved.get(identity.legacy_lead_id) || leadNumber;
+    } catch (error) {
+      console.warn('[employeeLeadReporting] resolve legacy lead number failed:', error);
+    }
+  }
+
   const { error } = await supabase.rpc('upsert_employee_lead_daily_activity', {
     p_activity_date: activityDate,
     p_lead_type: identity.lead_type,
     p_new_lead_id: identity.new_lead_id,
     p_legacy_lead_id: identity.legacy_lead_id,
-    p_lead_number: identity.lead_number,
+    p_lead_number: leadNumber,
     p_client_name: identity.client_name,
   });
 
@@ -447,6 +513,316 @@ export async function fetchDailyActivity(
 
   if (error) throw error;
   return (data as EmployeeLeadActivityRow[]) ?? [];
+}
+
+/** Handler Nominated / Handler Set and above — only these leads appear on daily allocation. */
+export const LEAD_ALLOCATION_MIN_STAGE_ID = 105;
+
+export function isLeadAllocationEligibleStage(stage: unknown): boolean {
+  const n = Number(stage);
+  return Number.isFinite(n) && n >= LEAD_ALLOCATION_MIN_STAGE_ID;
+}
+
+type LeadStageLookupIdentity = {
+  lead_type: LeadReportingType;
+  new_lead_id?: string | null;
+  legacy_lead_id?: number | null;
+};
+
+/**
+ * Resolve current stage ids for new + legacy leads in one batch.
+ * Keys use the same shape as leadActivityKey identities where possible.
+ */
+export async function fetchLeadStagesByIdentity(
+  identities: LeadStageLookupIdentity[],
+): Promise<Map<string, number>> {
+  const stageByKey = new Map<string, number>();
+  if (identities.length === 0) return stageByKey;
+
+  const newIds = [
+    ...new Set(
+      identities
+        .filter((row) => row.lead_type === 'new' && row.new_lead_id)
+        .map((row) => String(row.new_lead_id)),
+    ),
+  ];
+  const legacyIds = [
+    ...new Set(
+      identities
+        .filter((row) => row.lead_type === 'legacy' && row.legacy_lead_id != null)
+        .map((row) => Number(row.legacy_lead_id))
+        .filter((id) => Number.isFinite(id)),
+    ),
+  ];
+
+  const [newResult, legacyResult] = await Promise.all([
+    newIds.length > 0
+      ? supabase.from('leads').select('id, stage').in('id', newIds)
+      : Promise.resolve({ data: [] as { id: string; stage: unknown }[], error: null }),
+    legacyIds.length > 0
+      ? supabase.from('leads_lead').select('id, stage').in('id', legacyIds)
+      : Promise.resolve({ data: [] as { id: number; stage: unknown }[], error: null }),
+  ]);
+
+  if (newResult.error) throw newResult.error;
+  if (legacyResult.error) throw legacyResult.error;
+
+  for (const row of newResult.data || []) {
+    const stage = Number(row.stage);
+    if (Number.isFinite(stage)) {
+      stageByKey.set(`new:${row.id}`, stage);
+    }
+  }
+  for (const row of legacyResult.data || []) {
+    const stage = Number(row.stage);
+    if (Number.isFinite(stage)) {
+      stageByKey.set(`legacy:${row.id}`, stage);
+    }
+  }
+
+  return stageByKey;
+}
+
+export type LeadCategoryDisplay = {
+  main: string | null;
+  sub: string | null;
+};
+
+function parseCategoryJoin(row: {
+  misc_category?:
+    | {
+        name?: unknown;
+        misc_maincategory?:
+          | { name?: unknown }
+          | Array<{ name?: unknown }>
+          | null;
+      }
+    | Array<{
+        name?: unknown;
+        misc_maincategory?:
+          | { name?: unknown }
+          | Array<{ name?: unknown }>
+          | null;
+      }>
+    | null;
+}): LeadCategoryDisplay {
+  const cat = Array.isArray(row.misc_category) ? row.misc_category[0] : row.misc_category;
+  const sub = typeof cat?.name === 'string' ? cat.name.trim() : '';
+  const mainRel = cat?.misc_maincategory;
+  const mainObj = Array.isArray(mainRel) ? mainRel[0] : mainRel;
+  const main = typeof mainObj?.name === 'string' ? mainObj.name.trim() : '';
+  return {
+    main: main || null,
+    sub: sub || null,
+  };
+}
+
+/** Batch-resolve main + subcategory for allocation rows. */
+export async function fetchLeadCategoriesByIdentity(
+  identities: LeadStageLookupIdentity[],
+): Promise<Map<string, LeadCategoryDisplay>> {
+  const categoryByKey = new Map<string, LeadCategoryDisplay>();
+  if (identities.length === 0) return categoryByKey;
+
+  const newIds = [
+    ...new Set(
+      identities
+        .filter((row) => row.lead_type === 'new' && row.new_lead_id)
+        .map((row) => String(row.new_lead_id)),
+    ),
+  ];
+  const legacyIds = [
+    ...new Set(
+      identities
+        .filter((row) => row.lead_type === 'legacy' && row.legacy_lead_id != null)
+        .map((row) => Number(row.legacy_lead_id))
+        .filter((id) => Number.isFinite(id)),
+    ),
+  ];
+
+  const categorySelect =
+    'id, category_id, misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))';
+  const legacyCategorySelect =
+    'id, category_id, misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))';
+
+  const [newResult, legacyResult] = await Promise.all([
+    newIds.length > 0
+      ? supabase.from('leads').select(categorySelect).in('id', newIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    legacyIds.length > 0
+      ? supabase.from('leads_lead').select(legacyCategorySelect).in('id', legacyIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+  ]);
+
+  // Fallback FK name used elsewhere for new leads if category_id hint fails
+  let newRows = newResult.data || [];
+  if (newResult.error) {
+    const fallback = await supabase
+      .from('leads')
+      .select(
+        'id, category_id, misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))',
+      )
+      .in('id', newIds);
+    if (fallback.error) throw newResult.error;
+    newRows = fallback.data || [];
+  }
+  if (legacyResult.error) throw legacyResult.error;
+
+  for (const row of newRows) {
+    categoryByKey.set(`new:${row.id}`, parseCategoryJoin(row));
+  }
+  for (const row of legacyResult.data || []) {
+    categoryByKey.set(`legacy:${row.id}`, parseCategoryJoin(row));
+  }
+
+  return categoryByKey;
+}
+
+function leadStageLookupKey(identity: LeadStageLookupIdentity): string | null {
+  if (identity.lead_type === 'new' && identity.new_lead_id) {
+    return `new:${identity.new_lead_id}`;
+  }
+  if (identity.lead_type === 'legacy' && identity.legacy_lead_id != null) {
+    return `legacy:${identity.legacy_lead_id}`;
+  }
+  return null;
+}
+
+/** Keep only leads currently at Handler Nominated (105) or a later stage. */
+export async function filterIdentitiesByMinAllocationStage<
+  T extends LeadStageLookupIdentity,
+>(rows: T[], minStageId: number = LEAD_ALLOCATION_MIN_STAGE_ID): Promise<T[]> {
+  if (rows.length === 0) return rows;
+  const stageByKey = await fetchLeadStagesByIdentity(rows);
+  return rows.filter((row) => {
+    const key = leadStageLookupKey(row);
+    if (!key) return false;
+    const stage = stageByKey.get(key);
+    return stage != null && stage >= minStageId;
+  });
+}
+
+/**
+ * Same suffix rules as Clients.tsx: master with no master_id = id (or id/1 when it has
+ * subleads); each sublead is masterId/(index+2) ordered by id ascending.
+ */
+export async function resolveLegacyLeadDisplayNumbers(
+  legacyIds: number[],
+): Promise<Map<number, string>> {
+  const result = new Map<number, string>();
+  const uniqueIds = [...new Set(legacyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniqueIds.length === 0) return result;
+
+  const { data: rows, error } = await supabase
+    .from('leads_lead')
+    .select('id, master_id, lead_number, manual_id')
+    .in('id', uniqueIds);
+  if (error) throw error;
+  if (!rows?.length) return result;
+
+  const masterIds = [
+    ...new Set(
+      rows
+        .map((row) => Number(row.master_id))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ];
+
+  const siblingsByMaster = new Map<number, number[]>();
+  if (masterIds.length > 0) {
+    const { data: siblings, error: siblingsError } = await supabase
+      .from('leads_lead')
+      .select('id, master_id')
+      .in('master_id', masterIds)
+      .not('master_id', 'is', null)
+      .order('id', { ascending: true });
+    if (siblingsError) throw siblingsError;
+    for (const row of siblings || []) {
+      const masterId = Number(row.master_id);
+      const list = siblingsByMaster.get(masterId) || [];
+      list.push(Number(row.id));
+      siblingsByMaster.set(masterId, list);
+    }
+  }
+
+  for (const row of rows) {
+    const id = Number(row.id);
+    const masterRaw = row.master_id;
+    if (masterRaw == null || String(masterRaw).trim() === '') {
+      const raw = String(row.lead_number ?? row.manual_id ?? id).trim();
+      result.set(id, raw || String(id));
+      continue;
+    }
+    const masterId = Number(masterRaw);
+    const siblings = siblingsByMaster.get(masterId) || [id];
+    const index = siblings.findIndex((siblingId) => siblingId === id);
+    const suffix = index >= 0 ? index + 2 : siblings.length + 2;
+    result.set(id, `${masterId}/${suffix}`);
+  }
+
+  return result;
+}
+
+export type AllocationLeadDisplayMeta = {
+  stageId: string | null;
+  lead_number: string;
+  active_sub_effort_title: string | null;
+  category_main: string | null;
+  category_sub: string | null;
+};
+
+/** Stage + corrected display lead number (fixes legacy "master/?" placeholders). */
+export async function enrichAllocationLeadDisplayMeta(
+  rows: Array<{
+    key?: string;
+    lead_type: LeadReportingType;
+    new_lead_id?: string | null;
+    legacy_lead_id?: number | null;
+    lead_number?: string | null;
+  }>,
+): Promise<Map<string, AllocationLeadDisplayMeta>> {
+  const metaByKey = new Map<string, AllocationLeadDisplayMeta>();
+  if (rows.length === 0) return metaByKey;
+
+  const [stageByKey, legacyNumbers, subEffortTitles, categoriesByKey] = await Promise.all([
+    fetchLeadStagesByIdentity(rows),
+    resolveLegacyLeadDisplayNumbers(
+      rows
+        .filter((row) => row.lead_type === 'legacy' && row.legacy_lead_id != null)
+        .map((row) => Number(row.legacy_lead_id)),
+    ),
+    fetchActiveSubEffortTitlesByLeadIdentity(supabase, rows),
+    fetchLeadCategoriesByIdentity(rows),
+  ]);
+
+  for (const row of rows) {
+    const lookupKey = leadStageLookupKey(row);
+    const activityKey =
+      row.key ||
+      leadActivityKey({
+        lead_type: row.lead_type,
+        new_lead_id: row.new_lead_id ?? null,
+        legacy_lead_id: row.legacy_lead_id ?? null,
+        lead_number: row.lead_number || '',
+        client_name: '',
+      });
+    const stageNum = lookupKey ? stageByKey.get(lookupKey) : undefined;
+    let leadNumber = String(row.lead_number || '').trim();
+    if (row.lead_type === 'legacy' && row.legacy_lead_id != null) {
+      const resolved = legacyNumbers.get(Number(row.legacy_lead_id));
+      if (resolved) leadNumber = resolved;
+    }
+    const category = lookupKey ? categoriesByKey.get(lookupKey) : undefined;
+    metaByKey.set(activityKey, {
+      stageId: stageNum != null ? String(stageNum) : null,
+      lead_number: leadNumber || String(row.legacy_lead_id || row.new_lead_id || ''),
+      active_sub_effort_title: lookupKey ? subEffortTitles.get(lookupKey) ?? null : null,
+      category_main: category?.main ?? null,
+      category_sub: category?.sub ?? null,
+    });
+  }
+
+  return metaByKey;
 }
 
 export async function fetchDailyAllocation(
@@ -476,6 +852,65 @@ export async function fetchDailyAllocation(
     other_work_percent: Number(header.other_work_percent ?? 0),
     items: (items as AllocationItemInput[]) ?? [],
   };
+}
+
+/**
+ * Workdays (Sun–Thu) from the reporting start date through today that should have
+ * a daily lead allocation. Weekends are skipped; start date is inclusive.
+ */
+export function listExpectedLeadAllocationWorkDates(
+  todayIso: string = getJerusalemTodayIsoDate(),
+  startIso: string = LEAD_ALLOCATION_REPORTING_START_DATE,
+): string[] {
+  if (!todayIso || todayIso < startIso) return [];
+  return eachDayInRange(startIso, todayIso).filter((day) => !isIsraeliWeekendIso(day));
+}
+
+export async function fetchSubmittedLeadAllocationDates(
+  employeeId: number,
+  fromDate: string,
+  toDate: string,
+): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('employee_daily_lead_allocations')
+    .select('work_date')
+    .eq('employee_id', employeeId)
+    .gte('work_date', fromDate)
+    .lte('work_date', toDate);
+
+  if (error) throw error;
+
+  return new Set(
+    (data || [])
+      .map((row) => String(row.work_date || '').slice(0, 10))
+      .filter(Boolean),
+  );
+}
+
+/** Missing allocation dates ascending (oldest → newest). Newest missing is last. */
+export async function fetchMissingLeadAllocationDates(
+  employeeId: number,
+  options?: { todayIso?: string; startIso?: string },
+): Promise<string[]> {
+  const today = options?.todayIso ?? getJerusalemTodayIsoDate();
+  const start = options?.startIso ?? LEAD_ALLOCATION_REPORTING_START_DATE;
+  const expected = listExpectedLeadAllocationWorkDates(today, start);
+  if (expected.length === 0) return [];
+
+  const submitted = await fetchSubmittedLeadAllocationDates(
+    employeeId,
+    expected[0],
+    expected[expected.length - 1],
+  );
+
+  return expected.filter((day) => !submitted.has(day));
+}
+
+export function latestMissingLeadAllocationDate(
+  missingDates: string[],
+): string | null {
+  if (!missingDates.length) return null;
+  return missingDates[missingDates.length - 1];
 }
 
 export function allocationPercentTotal(items: { percent: number }[]): number {
@@ -511,6 +946,10 @@ export type LeadAllocationRowState = {
   pinned?: boolean;
   view_count?: number;
   last_viewed_at?: string;
+  stage_id?: string | null;
+  active_sub_effort_title?: string | null;
+  category_main?: string | null;
+  category_sub?: string | null;
 };
 
 export type LeadAllocationBucketsState = {
@@ -855,8 +1294,8 @@ export function addLeadToAllocationBuckets(
   maxOtherWorkPercent: number = 100,
 ): LeadAllocationBucketsState {
   const nextRows: LeadAllocationRowState[] = [
-    ...rows,
     { ...newRow, included: true, pinned: false, percent: 0 },
+    ...rows,
   ];
   return rebalanceUnpinnedAndOtherWork(nextRows, maxOtherWorkPercent);
 }
@@ -978,6 +1417,20 @@ export async function saveDailyAllocation(params: {
     throw new Error('Failed to load saved allocation.');
   }
   return saved;
+}
+
+/** Delete the day's allocation so it returns to the unsaved / null default state. */
+export async function deleteDailyAllocation(
+  employeeId: number,
+  workDate: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('employee_daily_lead_allocations')
+    .delete()
+    .eq('employee_id', employeeId)
+    .eq('work_date', workDate);
+
+  if (error) throw error;
 }
 
 export async function fetchAllocationReport(params: {
@@ -1139,6 +1592,11 @@ export function buildClientRouteFromAllocationRow(row: {
 }): string | null {
   if (row.is_other_work) return null;
   if (row.lead_type === 'legacy' && row.legacy_lead_id != null) {
+    const leadNumber = String(row.lead_number || '').trim();
+    // Match Clients.tsx: legacy subleads use ?lead= for the display number.
+    if (leadNumber.includes('/')) {
+      return `/clients/${encodeURIComponent(String(row.legacy_lead_id))}?lead=${encodeURIComponent(leadNumber)}`;
+    }
     return `/clients/${encodeURIComponent(String(row.legacy_lead_id))}`;
   }
   return `/clients/${encodeURIComponent(row.lead_number)}`;

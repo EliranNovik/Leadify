@@ -328,15 +328,46 @@ export const getSoftStageBadgeStyle = (
   stageId?: string | number | null,
 ): SoftStageBadgeStyle => {
   const stageStr = stageId != null ? String(stageId) : '';
+  const stageName = getStageName(stageStr);
   const isMtngSumAgreement =
     stageStr === '50' ||
-    areStagesEquivalent(getStageName(stageStr), 'Mtng sum+Agreement sent');
+    areStagesEquivalent(stageName, 'Mtng sum+Agreement sent');
 
   if (isMtngSumAgreement) {
     return {
       backgroundColor: 'rgba(22, 163, 74, 0.3)',
       borderColor: 'rgba(22, 163, 74, 0.45)',
       color: '#15803d',
+    };
+  }
+
+  // Application submitted — muted grey (neon yellow is too loud for soft badges)
+  const isApplicationSubmitted =
+    stageStr === '150' ||
+    areStagesEquivalent(stageName, 'Application submitted') ||
+    areStagesEquivalent(stageName, 'Applications submitted');
+
+  if (isApplicationSubmitted) {
+    return {
+      backgroundColor: 'rgba(156, 163, 175, 0.22)',
+      borderColor: 'rgba(156, 163, 175, 0.4)',
+      color: '#6b7280',
+    };
+  }
+
+  // Case finalized / Case Closed — orange soft badge
+  const isCaseFinalized =
+    stageStr === '200' ||
+    areStagesEquivalent(stageName, 'Case Closed') ||
+    areStagesEquivalent(stageName, 'Case finalized') ||
+    areStagesEquivalent(stageName, 'Case Finalized') ||
+    areStagesEquivalent(stageName, 'Finalized');
+
+  if (isCaseFinalized) {
+    return {
+      backgroundColor: 'rgba(249, 115, 22, 0.2)',
+      borderColor: 'rgba(249, 115, 22, 0.45)',
+      color: '#c2410c',
     };
   }
 

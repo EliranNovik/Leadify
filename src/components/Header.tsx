@@ -64,6 +64,7 @@ import { useAdminProfileBypass } from '../hooks/useAdminProfileBypass';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import { useUpcomingMeetingReminder } from '../hooks/useUpcomingMeetingReminder';
 import UpcomingMeetingHeaderBadge from './UpcomingMeetingHeaderBadge';
+import MissingLeadAllocationHeaderBadge from './MissingLeadAllocationHeaderBadge';
 import UpcomingMeetingsModal from './UpcomingMeetingsModal';
 import { ADMIN_PROFILE_BYPASS_CHANGED_EVENT } from '../lib/adminClockInBypass';
 import { clearAdminImpersonationGrant } from '../lib/adminImpersonationGrant';
@@ -4918,6 +4919,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               compact={isMobile}
               className="mr-0.5 md:mr-0"
               onClick={() => setShowUpcomingMeetingsModal(true)}
+            />
+          ) : null}
+          {!isExternalUser && !isLoadingExternal ? (
+            <MissingLeadAllocationHeaderBadge
+              compact={isMobile}
+              className="mr-0.5 md:mr-0"
             />
           ) : null}
           {/* Sign out button and Welcome message - desktop only */}

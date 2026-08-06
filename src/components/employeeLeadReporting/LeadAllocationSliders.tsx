@@ -16,6 +16,11 @@ import {
 } from '../../lib/employeeLeadReporting';
 import type { LeadAllocationBudgetHint } from '../../lib/leadAllocationBudget';
 import { formatBudgetAllocationDuration } from '../../lib/leadAllocationBudget';
+import {
+  getSoftStageBadgeStyle,
+  getStageColour,
+  getStageName,
+} from '../../lib/stageUtils';
 
 export type LeadAllocationRow = LeadAllocationRowState;
 
@@ -40,10 +45,10 @@ type LeadAllocationSlidersProps = {
 };
 
 const ALLOCATION_RANGE_CLASS =
-  'allocation-range range flex-1 cursor-grab active:cursor-grabbing';
+  'allocation-range range min-w-0 flex-1 cursor-grab active:cursor-grabbing';
 
 const TIME_BADGE_CLASS =
-  'inline-flex items-center rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 px-2.5 py-0.5 text-base font-semibold tabular-nums text-white shadow-sm';
+  'inline-flex items-center rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 px-2.5 py-0.5 text-sm font-semibold tabular-nums text-white shadow-sm';
 
 function msToHoursMinutes(ms: number): { hours: number; minutes: number } {
   const totalMinutes = Math.max(0, Math.round(ms / 60_000));
@@ -91,8 +96,8 @@ function AllocationPercentDisplay({
   const clampedMin = Math.max(0, Math.min(clampedMax, Math.round(minPercent)));
   const allocatedMs =
     dayWorkedMs > 0 ? allocationPercentToWorkedMs(dayWorkedMs, value) : 0;
-  const allocatedLabel =
-    dayWorkedMs > 0 ? formatAllocationWorkedDuration(allocatedMs) : null;
+  const allocatedLabel = formatAllocationWorkedDuration(allocatedMs);
+  const showTimeBadge = dayWorkedMs > 0;
   const maxAllowedMs = allocationPercentToWorkedMs(dayWorkedMs, clampedMax);
   const minAllowedMs = allocationPercentToWorkedMs(dayWorkedMs, clampedMin);
   const maxHours = Math.floor(maxAllowedMs / 3_600_000);
@@ -168,15 +173,15 @@ function AllocationPercentDisplay({
     'input input-bordered h-11 w-full min-h-11 rounded-[12px] px-2 text-center text-lg font-semibold tabular-nums text-gray-800';
 
   return (
-    <span className="relative inline-flex min-w-[5.5rem] shrink-0 items-center justify-end whitespace-nowrap text-sm font-semibold text-gray-800">
-      {displayed}%
-      {allocatedLabel == null ? null : (
+    <span className="relative inline-flex shrink-0 items-center justify-end gap-2 whitespace-nowrap">
+      <span className="text-xs font-semibold tabular-nums text-gray-600">{displayed}%</span>
+      {showTimeBadge ? (
         <button
           ref={badgeRef}
           type="button"
           disabled={!canEdit}
           onClick={startEditTime}
-          className={`${TIME_BADGE_CLASS} ml-2 ${
+          className={`${TIME_BADGE_CLASS} ${
             canEdit
               ? 'cursor-pointer transition hover:brightness-105 active:scale-[0.98]'
               : 'cursor-default'
@@ -185,7 +190,7 @@ function AllocationPercentDisplay({
         >
           {allocatedLabel}
         </button>
-      )}
+      ) : null}
 
       {editingTime && canEdit ? (
         <div
@@ -266,6 +271,11 @@ type AllocationPercentSliderProps = {
    * simply stops at the limit instead of rescaling the bar under the user's finger.
    */
   fullRangeTrack?: boolean;
+  className?: string;
+  /** Put % + time badge under the slider so they stay visible in tight columns. */
+  stackDisplay?: boolean;
+  /** Optional left-aligned content on the same row as % / time badge (stackDisplay only). */
+  metaLeft?: React.ReactNode;
 };
 
 function AllocationPercentSlider({
@@ -277,33 +287,58 @@ function AllocationPercentSlider({
   maxPercent = 100,
   minPercent = 0,
   fullRangeTrack = false,
+  className = 'flex min-w-[240px] flex-1 max-w-lg items-center gap-4 py-1',
+  stackDisplay = false,
+  metaLeft,
 }: AllocationPercentSliderProps) {
   const clampedMax = Math.max(0, Math.min(100, Math.round(maxPercent)));
   const clampedMin = Math.max(0, Math.min(clampedMax, Math.round(minPercent)));
   const roundedValue = Math.min(Math.max(Math.round(value), clampedMin), clampedMax);
 
+  const rangeInput = (
+    <input
+      type="range"
+      min={fullRangeTrack ? 0 : clampedMin}
+      max={fullRangeTrack ? 100 : clampedMax}
+      step={1}
+      value={roundedValue}
+      disabled={readOnly}
+      onChange={(e) => onChange(Math.round(Number(e.target.value)))}
+      className={`${ALLOCATION_RANGE_CLASS} ${variant === 'neutral' ? 'range-neutral' : 'range-primary'} ${
+        readOnly ? 'pointer-events-none opacity-60' : ''
+      } ${stackDisplay ? '!w-full !flex-none' : ''}`}
+    />
+  );
+
+  const percentDisplay = (
+    <AllocationPercentDisplay
+      value={roundedValue}
+      onChange={onChange}
+      readOnly={readOnly}
+      dayWorkedMs={dayWorkedMs}
+      maxPercent={clampedMax}
+      minPercent={clampedMin}
+    />
+  );
+
+  if (stackDisplay) {
+    return (
+      <div className="w-full min-w-0 space-y-1.5">
+        {rangeInput}
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1 text-left text-xs text-gray-400">
+            {metaLeft || null}
+          </div>
+          <div className="shrink-0">{percentDisplay}</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-w-[240px] flex-1 max-w-lg items-center gap-4 py-1">
-      <input
-        type="range"
-        min={fullRangeTrack ? 0 : clampedMin}
-        max={fullRangeTrack ? 100 : clampedMax}
-        step={1}
-        value={roundedValue}
-        disabled={readOnly}
-        onChange={(e) => onChange(Math.round(Number(e.target.value)))}
-        className={`${ALLOCATION_RANGE_CLASS} ${variant === 'neutral' ? 'range-neutral' : 'range-primary'} ${
-          readOnly ? 'pointer-events-none opacity-60' : ''
-        }`}
-      />
-      <AllocationPercentDisplay
-        value={roundedValue}
-        onChange={onChange}
-        readOnly={readOnly}
-        dayWorkedMs={dayWorkedMs}
-        maxPercent={clampedMax}
-        minPercent={clampedMin}
-      />
+    <div className={className}>
+      {rangeInput}
+      {percentDisplay}
     </div>
   );
 }
@@ -319,6 +354,13 @@ function formatViewedAt(iso?: string): string {
     return '';
   }
 }
+
+/** Shared column template so header + every lead row stay aligned. */
+const LEAD_TABLE_GRID =
+  'grid grid-cols-[2rem_minmax(7rem,1fr)_minmax(7rem,11rem)_minmax(7rem,10rem)_minmax(7rem,1fr)_minmax(18rem,26rem)] gap-x-3';
+
+const LEAD_TABLE_HEADER_CELL =
+  'flex items-center text-sm font-semibold tracking-wide text-gray-600';
 
 const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
   rows,
@@ -354,70 +396,66 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-white px-5 py-3.5 shadow-sm">
-        <p className="text-sm text-gray-600">
-          Allocate your day across other work and leads.
-          {dayWorkedMs > 0 ? (
-            <span className="ml-1 text-gray-400">
-              · Clocked {formatAllocationWorkedDuration(dayWorkedMs)} today
+      <div className="mx-auto grid w-full max-w-6xl grid-cols-1 items-stretch gap-3 lg:grid-cols-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-white px-5 py-3.5 shadow-sm">
+          <p className="text-sm text-gray-600">
+            Allocate your day across other work and leads.
+            {dayWorkedMs > 0 ? (
+              <span className="ml-1 text-gray-400">
+                · Clocked {formatAllocationWorkedDuration(dayWorkedMs)} today
+              </span>
+            ) : null}
+          </p>
+          <div
+            className={`inline-flex items-center gap-2.5 rounded-full pl-2.5 pr-4 py-1.5 shadow-sm ${
+              isTotalValid
+                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white'
+                : 'bg-gradient-to-r from-amber-400 to-orange-500 text-white'
+            }`}
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-xs font-bold">
+              {isTotalValid ? '✓' : '!'}
             </span>
-          ) : null}
-        </p>
-        <div
-          className={`inline-flex items-center gap-2.5 rounded-full pl-2.5 pr-4 py-1.5 shadow-sm ${
-            isTotalValid
-              ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white'
-              : 'bg-gradient-to-r from-amber-400 to-orange-500 text-white'
-          }`}
-        >
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-xs font-bold">
-            {isTotalValid ? '✓' : '!'}
-          </span>
-          <span className="leading-tight">
-            <span className="block text-[10px] font-semibold uppercase tracking-wider opacity-90">
-              Total
-            </span>
-            <span className="text-base font-bold">
-              {formatAllocationPercent(grandTotal)}%
-            </span>
-          </span>
-        </div>
-      </div>
-
-      <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-3.5 flex-1 min-w-[220px]">
-            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gray-100 text-gray-600">
-              <BriefcaseIcon className="w-7 h-7" aria-hidden />
-            </span>
-            <span>
-              <span className="font-semibold text-gray-900">Other work</span>
-              <span className="block text-xs text-gray-500 mt-1">
-                Tasks not tied to a specific lead
-                {otherWorkCap < 100 ? (
-                  <>
-                    {' '}
-                    · Max {otherWorkCap}% when{' '}
-                    {otherWorkCap <= 10 ? 'over base hours' : 'at or below base hours'}, so leads
-                    must cover at least {100 - otherWorkCap}%
-                  </>
-                ) : null}
+            <span className="leading-tight">
+              <span className="block text-[10px] font-semibold uppercase tracking-wider opacity-90">
+                Total
+              </span>
+              <span className="text-base font-bold">
+                {formatAllocationPercent(grandTotal)}%
               </span>
             </span>
           </div>
-          <AllocationPercentSlider
-            value={otherWorkPercent}
-            onChange={setOtherWork}
-            variant="neutral"
-            readOnly={readOnly}
-            dayWorkedMs={dayWorkedMs}
-            maxPercent={otherWorkCap}
-          />
+        </div>
+
+        <div className="rounded-[18px] bg-white px-5 py-3.5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gray-100 text-gray-600">
+                <BriefcaseIcon className="w-6 h-6" aria-hidden />
+              </span>
+              <span className="min-w-0">
+                <span className="font-semibold text-gray-900">Other work</span>
+                <span className="mt-0.5 block text-xs text-gray-500">
+                  Tasks not tied to a specific lead
+                  {otherWorkCap < 100 ? <> · Max {otherWorkCap}%</> : null}
+                </span>
+              </span>
+            </div>
+            <AllocationPercentSlider
+              value={otherWorkPercent}
+              onChange={setOtherWork}
+              variant="neutral"
+              readOnly={readOnly}
+              dayWorkedMs={dayWorkedMs}
+              maxPercent={otherWorkCap}
+              className="flex min-w-[200px] max-w-sm flex-1 items-center gap-3 py-0.5"
+            />
+          </div>
         </div>
       </div>
 
       {rows.length === 0 ? (
-        <div className="rounded-[18px] border border-dashed border-gray-200 bg-white px-5 py-6 text-center text-sm text-gray-600 shadow-sm space-y-3">
+        <div className="mx-auto w-full max-w-6xl rounded-[18px] border border-dashed border-gray-200 bg-white px-5 py-6 text-center text-sm text-gray-600 shadow-sm space-y-3">
           <p>
             No leads recorded for this day yet. You can still save 100% as other work, search for a lead
             to add, or open leads from the Clients page.
@@ -430,143 +468,240 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
           )}
         </div>
       ) : (
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between gap-3 px-1">
-            <h3 className="text-sm font-semibold text-gray-700">Leads you opened</h3>
-            {onAddLead && !readOnly && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm h-8 min-h-8 gap-1.5 rounded-full bg-white px-3 text-primary shadow-sm hover:bg-gray-50"
-                onClick={onAddLead}
-              >
-                <PlusIcon className="w-4 h-4" />
-                Add lead
-              </button>
-            )}
+        <div className="mx-auto w-full max-w-6xl space-y-2">
+          <div className="px-5 py-1.5" role="row">
+            <div className={`${LEAD_TABLE_GRID} items-center`}>
+              <span className={LEAD_TABLE_HEADER_CELL} aria-hidden />
+              <span className={LEAD_TABLE_HEADER_CELL}>Lead</span>
+              <span className={LEAD_TABLE_HEADER_CELL}>Category</span>
+              <span className={LEAD_TABLE_HEADER_CELL}>Stage</span>
+              <span className={LEAD_TABLE_HEADER_CELL}>Sub effort</span>
+              <span className={`${LEAD_TABLE_HEADER_CELL} justify-between gap-2`}>
+                <span>Allocation</span>
+                {onAddLead && !readOnly ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline"
+                    onClick={onAddLead}
+                  >
+                    <PlusIcon className="w-4 h-4" />
+                    Add lead
+                  </button>
+                ) : null}
+              </span>
+            </div>
           </div>
-          {rows.map((row) => {
-            const route = buildClientRouteFromAllocationRow(row);
-            const viewedLabel = formatViewedAt(row.last_viewed_at);
-            const budgetHint = budgetHintsByKey[row.key];
-            const overBudget = Boolean(row.included && budgetHint?.overBudget);
-            return (
-              <div
-                key={row.key}
-                className={`rounded-[18px] bg-white px-5 py-4 shadow-sm transition-all ${
-                  overBudget
-                    ? 'ring-2 ring-amber-300/80'
-                    : row.included
-                      ? row.pinned
-                        ? 'ring-2 ring-primary/20'
-                        : 'ring-2 ring-primary/15'
-                      : 'opacity-80'
-                }`}
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <label className={`flex items-start gap-3 flex-1 min-w-[220px] ${readOnly ? '' : 'cursor-pointer'}`}>
-                    <input
-                      type="checkbox"
-                      className="checkbox checkbox-primary mt-1"
-                      checked={row.included}
-                      disabled={readOnly}
-                      onChange={(e) => setIncluded(row.key, e.target.checked)}
-                    />
-                    <span>
+
+          <div className="overflow-x-auto rounded-[18px] bg-white shadow-sm divide-y divide-gray-100">
+            {rows.map((row) => {
+              const route = buildClientRouteFromAllocationRow(row);
+              const viewedLabel = formatViewedAt(row.last_viewed_at);
+              const budgetHint = budgetHintsByKey[row.key];
+              const overBudget = Boolean(row.included && budgetHint?.overBudget);
+              const stageLabel = row.stage_id
+                ? getStageName(row.stage_id) || row.stage_id
+                : null;
+              const hasViewMeta = row.view_count != null || Boolean(viewedLabel);
+
+              return (
+                <div
+                  key={row.key}
+                  className={`px-5 py-3.5 transition-colors ${
+                    overBudget
+                      ? 'bg-amber-50/70'
+                      : row.included
+                        ? 'bg-white'
+                        : 'bg-gray-50/80 opacity-80'
+                  }`}
+                >
+                  <div className={`${LEAD_TABLE_GRID} items-start`}>
+                    <label
+                      className={`flex items-center justify-center ${readOnly ? '' : 'cursor-pointer'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="checkbox checkbox-primary checkbox-sm"
+                        checked={row.included}
+                        disabled={readOnly}
+                        onChange={(e) => setIncluded(row.key, e.target.checked)}
+                        aria-label={`Include lead ${row.lead_number}`}
+                      />
+                    </label>
+
+                    <div className="min-w-0">
                       {route ? (
-                        <Link to={route} className="font-semibold text-primary hover:underline">
+                        <Link
+                          to={route}
+                          className="font-semibold text-primary hover:underline tabular-nums"
+                        >
                           #{row.lead_number}
                         </Link>
                       ) : (
-                        <span className="font-semibold text-gray-900">#{row.lead_number}</span>
-                      )}
-                      <span className="text-gray-700 ml-2">{row.client_name}</span>
-                      {(row.view_count != null || viewedLabel) && (
-                        <span className="block text-xs text-gray-400 mt-1">
-                          {row.view_count != null
-                            ? `${row.view_count} view${row.view_count === 1 ? '' : 's'}`
-                            : ''}
-                          {row.view_count != null && viewedLabel ? ' · ' : ''}
-                          {viewedLabel ? `Last ${viewedLabel}` : ''}
+                        <span className="font-semibold text-gray-900 tabular-nums">
+                          #{row.lead_number}
                         </span>
                       )}
-                      {overBudget && budgetHint ? (
-                        <span className="mt-1.5 block text-xs font-medium text-amber-700">
-                          Over budget
-                          {budgetHint.remainingWorkedMs != null ? (
-                            <>
-                              {' '}
-                              —{' '}
-                              <span className="font-semibold">
-                                {formatAllocationWorkedDuration(budgetHint.remainingWorkedMs)}
-                              </span>{' '}
-                              left on lead
-                            </>
+                      <span
+                        className="mt-0.5 block truncate text-sm text-gray-600"
+                        title={row.client_name}
+                      >
+                        {row.client_name}
+                      </span>
+                    </div>
+
+                    <div className="min-w-0">
+                      {row.category_main || row.category_sub ? (
+                        <>
+                          {row.category_main ? (
+                            <span
+                              className="block truncate text-sm font-medium text-gray-800"
+                              title={row.category_main}
+                            >
+                              {row.category_main}
+                            </span>
                           ) : null}
-                          {' · '}
-                          max{' '}
-                          {budgetHint.maxAllowedPercent > 0 &&
-                          budgetHint.maxAllowedPercent < 1
-                            ? budgetHint.maxAllowedPercent.toFixed(2)
-                            : formatAllocationPercent(budgetHint.maxAllowedPercent)}
-                          %
-                          {budgetHint.maxAllocatedMs > 0
-                            ? ` (${formatBudgetAllocationDuration(budgetHint.maxAllocatedMs)})`
-                            : ' (0m)'}{' '}
-                          today
-                          {!readOnly && onApplyLeadMaxBudget ? (
-                            <>
-                              {' · '}
-                              <button
-                                type="button"
-                                className="underline hover:text-amber-900"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  onApplyLeadMaxBudget(row.key, budgetHint.maxAllowedPercent);
-                                }}
-                              >
-                                Set to max
-                              </button>
-                            </>
+                          {row.category_sub ? (
+                            <span
+                              className="mt-0.5 block truncate text-sm text-gray-500"
+                              title={row.category_sub}
+                            >
+                              {row.category_sub}
+                            </span>
                           ) : null}
+                        </>
+                      ) : (
+                        <span className="text-sm text-gray-300">—</span>
+                      )}
+                    </div>
+
+                    <div className="min-w-0">
+                      {stageLabel && row.stage_id ? (
+                        <span
+                          className="inline-flex max-w-full truncate rounded-full px-3 py-1 text-sm font-semibold"
+                          style={getSoftStageBadgeStyle(
+                            getStageColour(String(row.stage_id)),
+                            row.stage_id,
+                          )}
+                          title={stageLabel}
+                        >
+                          {stageLabel}
                         </span>
-                      ) : budgetHint &&
-                        row.included &&
-                        row.percent > 0 &&
-                        budgetHint.remainingWorkedMs != null &&
-                        !budgetHint.overBudget ? (
-                        <span className="mt-1.5 block text-xs text-gray-500">
-                          <span className="font-medium text-gray-700">
+                      ) : (
+                        <span className="text-sm text-gray-300">—</span>
+                      )}
+                    </div>
+
+                    <div
+                      className="min-w-0 whitespace-normal break-words text-sm leading-snug text-gray-500"
+                      title={row.active_sub_effort_title || undefined}
+                    >
+                      {row.active_sub_effort_title || (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </div>
+
+                      <div className="min-w-0">
+                      {row.included ? (
+                        <AllocationPercentSlider
+                          value={row.percent}
+                          onChange={(percent) => setLeadPercent(row.key, percent)}
+                          readOnly={readOnly}
+                          dayWorkedMs={dayWorkedMs}
+                          minPercent={minLeadAllocationPercent(rows, row.key, otherWorkCap)}
+                          maxPercent={maxLeadAllocationPercent(rows, row.key)}
+                          fullRangeTrack
+                          stackDisplay
+                          metaLeft={
+                            hasViewMeta ? (
+                              <>
+                                {row.view_count != null
+                                  ? `${row.view_count} view${row.view_count === 1 ? '' : 's'}`
+                                  : ''}
+                                {row.view_count != null && viewedLabel ? ' · ' : ''}
+                                {viewedLabel ? `Last ${viewedLabel}` : ''}
+                              </>
+                            ) : null
+                          }
+                        />
+                      ) : (
+                        <>
+                          <span className="text-sm text-gray-300">—</span>
+                          {hasViewMeta ? (
+                            <span className="mt-1 block text-xs text-gray-400">
+                              {row.view_count != null
+                                ? `${row.view_count} view${row.view_count === 1 ? '' : 's'}`
+                                : ''}
+                              {row.view_count != null && viewedLabel ? ' · ' : ''}
+                              {viewedLabel ? `Last ${viewedLabel}` : ''}
+                            </span>
+                          ) : null}
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {overBudget && budgetHint ? (
+                    <div className="mt-2 pl-11 text-xs font-medium text-amber-700">
+                      Over budget
+                      {budgetHint.remainingWorkedMs != null ? (
+                        <>
+                          {' '}
+                          —{' '}
+                          <span className="font-semibold">
                             {formatAllocationWorkedDuration(budgetHint.remainingWorkedMs)}
                           </span>{' '}
                           left on lead
-                          {budgetHint.leadWorkedMs > 0 ? (
-                            <>
-                              {' '}
-                              · spent{' '}
-                              {formatAllocationWorkedDuration(budgetHint.leadWorkedMs)}
-                            </>
-                          ) : null}
-                        </span>
+                        </>
                       ) : null}
-                    </span>
-                  </label>
-
-                  {row.included && (
-                    <AllocationPercentSlider
-                      value={row.percent}
-                      onChange={(percent) => setLeadPercent(row.key, percent)}
-                      readOnly={readOnly}
-                      dayWorkedMs={dayWorkedMs}
-                      minPercent={minLeadAllocationPercent(rows, row.key, otherWorkCap)}
-                      maxPercent={maxLeadAllocationPercent(rows, row.key)}
-                      fullRangeTrack
-                    />
-                  )}
+                      {' · '}
+                      max{' '}
+                      {budgetHint.maxAllowedPercent > 0 && budgetHint.maxAllowedPercent < 1
+                        ? budgetHint.maxAllowedPercent.toFixed(2)
+                        : formatAllocationPercent(budgetHint.maxAllowedPercent)}
+                      %
+                      {budgetHint.maxAllocatedMs > 0
+                        ? ` (${formatBudgetAllocationDuration(budgetHint.maxAllocatedMs)})`
+                        : ' (0m)'}{' '}
+                      today
+                      {!readOnly && onApplyLeadMaxBudget ? (
+                        <>
+                          {' · '}
+                          <button
+                            type="button"
+                            className="underline hover:text-amber-900"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onApplyLeadMaxBudget(row.key, budgetHint.maxAllowedPercent);
+                            }}
+                          >
+                            Set to max
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                  ) : budgetHint &&
+                    row.included &&
+                    row.percent > 0 &&
+                    budgetHint.remainingWorkedMs != null &&
+                    !budgetHint.overBudget ? (
+                    <div className="mt-2 pl-11 text-xs text-gray-500">
+                      <span className="font-medium text-gray-700">
+                        {formatAllocationWorkedDuration(budgetHint.remainingWorkedMs)}
+                      </span>{' '}
+                      left on lead
+                      {budgetHint.leadWorkedMs > 0 ? (
+                        <>
+                          {' '}
+                          · spent {formatAllocationWorkedDuration(budgetHint.leadWorkedMs)}
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
       <style>{`
@@ -576,7 +711,9 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
           --range-bg: #e8ecf0;
           --range-p: 3px;
           --radius-selector: 9999px;
-          width: 100%;
+          width: auto;
+          min-width: 0;
+          flex: 1 1 0%;
           touch-action: pan-x;
         }
         .allocation-range.range-primary {
