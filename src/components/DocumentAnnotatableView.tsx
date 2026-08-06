@@ -261,6 +261,7 @@ function ImageAnnotatable({
   onDeleteHighlight,
   onError,
   zoom = 1,
+  rotation = 0,
 }: {
   src: string;
   alt: string;
@@ -274,6 +275,8 @@ function ImageAnnotatable({
   onError?: () => void;
   /** 1 = fit entire image in the viewer (landscape or portrait); >1 zooms in. */
   zoom?: number;
+  /** Clockwise degrees: 0 | 90 | 180 | 270 */
+  rotation?: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -285,6 +288,8 @@ function ImageAnnotatable({
     onDraftChange,
   });
   const activeDraft = drawing || draft;
+  const normalizedRotation = ((Math.round(rotation / 90) * 90) % 360 + 360) % 360;
+  const swapped = normalizedRotation === 90 || normalizedRotation === 270;
 
   useEffect(() => {
     setNatural(null);
@@ -310,11 +315,12 @@ function ImageAnnotatable({
       const cw = el.clientWidth;
       const ch = el.clientHeight;
       if (cw <= 0 || ch <= 0) return;
-      // Fit full image in the box for both landscape (width-bound) and portrait (height-bound).
-      const scale = Math.min(cw / natural.w, ch / natural.h);
+      const layoutW = swapped ? natural.h : natural.w;
+      const layoutH = swapped ? natural.w : natural.h;
+      const scale = Math.min(cw / layoutW, ch / layoutH);
       setFitSize({
-        w: Math.max(1, Math.floor(natural.w * scale)),
-        h: Math.max(1, Math.floor(natural.h * scale)),
+        w: Math.max(1, Math.floor(layoutW * scale)),
+        h: Math.max(1, Math.floor(layoutH * scale)),
       });
     };
 
@@ -322,10 +328,12 @@ function ImageAnnotatable({
     const ro = new ResizeObserver(updateFit);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [natural]);
+  }, [natural, swapped]);
 
   const displayW = fitSize ? Math.round(fitSize.w * zoom) : undefined;
   const displayH = fitSize ? Math.round(fitSize.h * zoom) : undefined;
+  const innerW = displayW && displayH ? (swapped ? displayH : displayW) : undefined;
+  const innerH = displayW && displayH ? (swapped ? displayW : displayH) : undefined;
 
   return (
     <div
@@ -335,40 +343,57 @@ function ImageAnnotatable({
       }`}
     >
       <div
-        ref={surfaceRef}
-        className={`relative shrink-0 ${drawEnabled ? 'cursor-crosshair touch-none' : ''}`}
+        className="relative shrink-0"
         style={
           displayW && displayH
             ? { width: displayW, height: displayH }
             : { maxWidth: '100%', maxHeight: '100%' }
         }
-        {...(drawEnabled ? handlers : {})}
       >
-        <img
-          ref={imgRef}
-          src={src}
-          alt={alt}
-          className="pointer-events-none block h-full w-full object-contain select-none"
-          draggable={false}
-          onLoad={(e) => {
-            const img = e.currentTarget;
-            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-              setNatural({ w: img.naturalWidth, h: img.naturalHeight });
-            }
-          }}
-          onError={onError}
-        />
-        <div className="pointer-events-none absolute inset-0">
-          <div className={`absolute inset-0 ${drawEnabled ? '' : 'pointer-events-auto'}`}>
-            <HighlightBoxes
-              markers={highlights}
-              draft={activeDraft}
-              focusedId={focusedId}
-              onSelect={(id) => {
-                if (!drawEnabled) onSelectHighlight(id);
-              }}
-              onDelete={drawEnabled ? undefined : onDeleteHighlight}
-            />
+        <div
+          ref={surfaceRef}
+          className={`absolute left-1/2 top-1/2 ${drawEnabled ? 'cursor-crosshair touch-none' : ''}`}
+          style={
+            innerW && innerH
+              ? {
+                  width: innerW,
+                  height: innerH,
+                  transform: `translate(-50%, -50%) rotate(${normalizedRotation}deg)`,
+                }
+              : {
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  transform: `translate(-50%, -50%) rotate(${normalizedRotation}deg)`,
+                }
+          }
+          {...(drawEnabled ? handlers : {})}
+        >
+          <img
+            ref={imgRef}
+            src={src}
+            alt={alt}
+            className="pointer-events-none block h-full w-full object-contain select-none"
+            draggable={false}
+            onLoad={(e) => {
+              const img = e.currentTarget;
+              if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+              }
+            }}
+            onError={onError}
+          />
+          <div className="pointer-events-none absolute inset-0">
+            <div className={`absolute inset-0 ${drawEnabled ? '' : 'pointer-events-auto'}`}>
+              <HighlightBoxes
+                markers={highlights}
+                draft={activeDraft}
+                focusedId={focusedId}
+                onSelect={(id) => {
+                  if (!drawEnabled) onSelectHighlight(id);
+                }}
+                onDelete={drawEnabled ? undefined : onDeleteHighlight}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -596,6 +621,8 @@ type DocumentAnnotatableViewProps = {
   onPdfError?: () => void;
   /** Image mode only: 1 = fit full image (landscape or portrait); >1 zooms in. */
   zoom?: number;
+  /** Image mode only: clockwise rotation in degrees (0 / 90 / 180 / 270). */
+  rotation?: number;
 };
 
 export function DocumentAnnotatableView({
@@ -613,6 +640,7 @@ export function DocumentAnnotatableView({
   onImageError,
   onPdfError,
   zoom = 1,
+  rotation = 0,
 }: DocumentAnnotatableViewProps) {
   if (mode === 'image') {
     return (
@@ -628,6 +656,7 @@ export function DocumentAnnotatableView({
         onDeleteHighlight={onDeleteHighlight}
         onError={onImageError}
         zoom={zoom}
+        rotation={rotation}
       />
     );
   }

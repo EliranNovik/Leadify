@@ -549,14 +549,18 @@ export function DocumentPreviewModal({
   initialIndex = 0,
   onRename,
 }: DocumentPreviewModalProps) {
-  const viewerDocs: DocumentViewerItem[] = documents.map((d) => ({
-    id: d.id,
-    name: d.name,
-    url: d.downloadUrl,
-    fileType: d.fileType,
-    lastModified: d.lastModified,
-    storagePath: d.storagePath ?? null,
-  }));
+  const viewerDocs: DocumentViewerItem[] = useMemo(
+    () =>
+      documents.map((d) => ({
+        id: d.id,
+        name: d.name,
+        url: d.downloadUrl,
+        fileType: d.fileType,
+        lastModified: d.lastModified,
+        storagePath: d.storagePath ?? null,
+      })),
+    [documents],
+  );
 
   return (
     <DocumentViewerModal
@@ -1822,6 +1826,20 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     isStaffMeetingDocs || !requireCaseDocumentClassification || !!uploadClassificationId;
   const uploadDisabled = !showUploadZone || isUploading || caseUploadBlocked;
 
+  /** Stable viewer list — remapping every render was resetting the open gallery selection. */
+  const viewerDocuments = useMemo<DocumentViewerItem[]>(
+    () =>
+      documents.map((d) => ({
+        id: d.id,
+        name: d.name,
+        url: d.downloadUrl,
+        fileType: d.fileType,
+        lastModified: d.lastModified,
+        storagePath: d.storagePath ?? null,
+      })),
+    [documents],
+  );
+
   return createPortal(
     <>
     <div className="fixed inset-0 z-[1000] flex items-end justify-end bg-black bg-opacity-40 transition-opacity duration-300 opacity-100 pointer-events-auto" style={{ top: 0, left: 0 }}>
@@ -2405,14 +2423,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       <DocumentViewerModal
         isOpen={previewIndex !== null && documents.length > 0}
         onClose={() => setPreviewIndex(null)}
-        documents={documents.map((d) => ({
-          id: d.id,
-          name: d.name,
-          url: d.downloadUrl,
-          fileType: d.fileType,
-          lastModified: d.lastModified,
-          storagePath: d.storagePath ?? null,
-        }))}
+        documents={viewerDocuments}
         initialIndex={previewIndex ?? 0}
         onRename={handleRenamePreviewDocument}
       />

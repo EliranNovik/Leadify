@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { convertToNIS, ensureBoiRatesReady } from './boiCurrencyConversion';
 import type { LeadFeeIdentity } from './leadSubcontractorFees';
 import { resolveLeadFeeIdentity } from './leadSubcontractorFees';
 import {
@@ -862,7 +863,7 @@ export function leadExpenseReductionAmount(row: {
   return Math.round((amount + vat) * 100) / 100;
 }
 
-/** Sum of firm-paid expenses that should reduce lead total value. */
+/** Sum of firm-paid expenses that should reduce lead total value (original currencies, unconverted). */
 export async function fetchFirmPaidExpenseReductionTotal(
   identity: LeadFeeIdentity,
 ): Promise<number> {
@@ -884,6 +885,44 @@ export async function fetchFirmPaidExpenseReductionTotal(
   return Math.round(
     (data || []).reduce((sum, row) => sum + leadExpenseReductionAmount(row as any), 0) * 100,
   ) / 100;
+}
+
+/**
+ * Firm-paid expense reduction in NIS (each row converted via BOI rates).
+ * Use for employee-cost / budget caps — not for header display in lead currency.
+ */
+export async function fetchFirmPaidExpenseReductionTotalNis(
+  identity: LeadFeeIdentity,
+): Promise<number> {
+  let query = supabase
+    .from('lead_expenses')
+    .select('amount, include_vat, expense_date, paid_by, currency_id')
+    .eq('paid_by', 'firm');
+
+  if (identity.leadType === 'legacy' && identity.legacyLeadId != null) {
+    query = query.eq('legacy_lead_id', identity.legacyLeadId);
+  } else if (identity.newLeadId) {
+    query = query.eq('new_lead_id', identity.newLeadId);
+  } else {
+    return 0;
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const snapshot = await ensureBoiRatesReady();
+
+  let sumNis = 0;
+  for (const row of data || []) {
+    const amount = leadExpenseReductionAmount(row as any);
+    if (!(amount > 0)) continue;
+    const currencyId =
+      (row as { currency_id?: number | null }).currency_id != null
+        ? Number((row as { currency_id?: number | null }).currency_id)
+        : 1;
+    sumNis += convertToNIS(amount, currencyId > 0 ? currencyId : 1, snapshot);
+  }
+  return Math.round(sumNis * 100) / 100;
 }
 
 /** Payment-plan row helper: firm-paid Expense rows reduce lead total; client-paid do not. */

@@ -108,15 +108,18 @@ import LeadOverBudgetGateModal, {
 } from './LeadOverBudgetGateModal';
 import {
     fetchLeadEmployeeCostSummary,
+    fetchLeadPaymentPlanBaseTotalNis,
     resolveLeadIdentityForCost,
     resolveLeadTotalValueNis,
     type LeadEmployeeCostSummary,
 } from '../lib/leadEmployeeCost';
+import { LEAD_ALLOCATION_SAVED_EVENT } from '../lib/employeeLeadReporting';
 import {
     createLeadBudgetExtensionRequest,
 } from '../lib/leadBudgetExtensionRequests';
 import {
     fetchFirmPaidExpenseReductionTotal,
+    fetchFirmPaidExpenseReductionTotalNis,
     resolveLeadFeeIdentity,
 } from '../lib/leadExpenses';
 import {
@@ -552,6 +555,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return readClientsTabCache<ClientHeaderCostCacheSlice>(key, 'header')?.summary ?? null;
         });
     const [leadEmployeeCostLoading, setLeadEmployeeCostLoading] = useState(false);
+    /** Bumped when a daily lead allocation is saved so cost / time-left refetch. */
+    const [leadAllocationCostRefreshNonce, setLeadAllocationCostRefreshNonce] = useState(0);
     /** Firm-paid expenses (amount + VAT) — reduce Total; client-paid do not. Net shows full total without fees/expenses. */
     const [firmPaidExpenseTotal, setFirmPaidExpenseTotal] = useState(() => {
         const key = clientsTabCacheLeadKey(selectedClient);
@@ -632,18 +637,34 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             setLeadEmployeeCostLoading(false);
         }
 
-        const leadTotalValueNis = resolveLeadTotalValueNis(selectedClient, {
-            hasPaymentPlan,
-            paymentPlanBaseTotal,
-            firmPaidExpenseTotal: cached?.firmPaidExpenseTotal ?? firmPaidExpenseTotal,
-        });
-
-        void fetchLeadEmployeeCostSummary({
-            client: selectedClient,
-            leadTotalValueNis,
-        })
-            .then((summary) => {
+        void (async () => {
+            try {
+                const identity = resolveLeadFeeIdentity(selectedClient);
+                const [firmPaidExpenseTotalNis, planBaseNis] = await Promise.all([
+                    identity ? fetchFirmPaidExpenseReductionTotalNis(identity) : Promise.resolve(0),
+                    hasPaymentPlan === true
+                        ? fetchLeadPaymentPlanBaseTotalNis(selectedClient)
+                        : Promise.resolve(null),
+                ]);
                 if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
+
+                const leadTotalValueNis = await resolveLeadTotalValueNis(selectedClient, {
+                    hasPaymentPlan:
+                        planBaseNis != null ||
+                        (hasPaymentPlan === true && paymentPlanBaseTotal != null),
+                    paymentPlanBaseTotal:
+                        planBaseNis != null ? planBaseNis : paymentPlanBaseTotal,
+                    paymentPlanBaseTotalIsNis: planBaseNis != null,
+                    firmPaidExpenseTotalNis,
+                });
+                if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
+
+                const summary = await fetchLeadEmployeeCostSummary({
+                    client: selectedClient,
+                    leadTotalValueNis,
+                });
+                if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
+
                 setLeadEmployeeCostSummary(summary);
                 writeClientsTabCache(leadKey, 'header', {
                     summary,
@@ -667,15 +688,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 } else if (!summary.exceedsCap) {
                     setOverBudgetGateOpen(false);
                 }
-            })
-            .catch((err) => {
+            } catch (err) {
                 console.error('[ClientHeader] lead employee cost fetch failed:', err);
                 // Keep painted cache on soft failure
-            })
-            .finally(() => {
+            } finally {
                 if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
                 setLeadEmployeeCostLoading(false);
-            });
+            }
+        })();
     }, [
         selectedClient?.id,
         selectedClient?.balance,
@@ -688,7 +708,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         hasPaymentPlan,
         paymentPlanBaseTotal,
         firmPaidExpenseTotal,
+        leadAllocationCostRefreshNonce,
     ]);
+
+    useEffect(() => {
+        const onSaved = () => {
+            setLeadAllocationCostRefreshNonce((n) => n + 1);
+        };
+        window.addEventListener(LEAD_ALLOCATION_SAVED_EVENT, onSaved);
+        return () => window.removeEventListener(LEAD_ALLOCATION_SAVED_EVENT, onSaved);
+    }, []);
 
     const openLeadEmployeeCostModal = useCallback((mode: 'overview' | 'warning') => {
         setLeadEmployeeCostModalMode(mode);

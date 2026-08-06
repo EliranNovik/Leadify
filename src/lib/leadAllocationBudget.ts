@@ -9,18 +9,18 @@ import {
   workedMsAtHourlyRateToCostNis,
   type LeadReportingType,
 } from './employeeLeadReporting';
-import { isExpenseNoVatPayment } from './proformaVat';
 import {
   LEAD_EMPLOYEE_COST_OF_OPERATING_SHARE,
   LEAD_VALUE_OPERATING_SHARE,
   maxLeadEmployeeCostNis,
   resolveLeadTotalValueNis,
   fetchLeadEmployeeCostSummary,
+  fetchLeadPaymentPlanBaseTotalNis,
   remainingTimeFromLeadCostSummary,
   type LeadEmployeeCostSummary,
 } from './leadEmployeeCost';
 import {
-  fetchFirmPaidExpenseReductionTotal,
+  fetchFirmPaidExpenseReductionTotalNis,
   resolveLeadFeeIdentity,
 } from './leadExpenses';
 import {
@@ -98,75 +98,6 @@ async function resolveNewLeadIdFromLeadNumber(
   return null;
 }
 
-/**
- * Same rules as Clients `fetchPaymentPlanTotal`:
- * - any active rows (including expenses) mean hasPlan
- * - base total only counts non-expense contract rows
- * - expense-only plans → hasPlan true, base null → fall back to lead balance
- */
-async function fetchNewLeadPaymentPlanTotals(leadId: string): Promise<{
-  hasPlan: boolean;
-  base: number | null;
-}> {
-  const { data, error } = await supabase
-    .from('payment_plans')
-    .select('id, value, payment_order, lead_id, lead_ids')
-    .or(`lead_id.eq.${leadId},lead_ids.eq.${leadId}`)
-    .is('cancel_date', null);
-  if (error) {
-    console.warn('[leadAllocationBudget] payment plan fetch failed:', error);
-    return { hasPlan: false, base: null };
-  }
-  const seen = new Set<string>();
-  const rows = ((data || []) as Array<{ id?: unknown; value?: unknown; payment_order?: unknown }>).filter(
-    (r) => {
-      const key = r?.id != null ? String(r.id) : JSON.stringify(r);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    },
-  );
-  if (rows.length === 0) return { hasPlan: false, base: null };
-
-  let baseTotal = 0;
-  let hasContractPayments = false;
-  for (const row of rows) {
-    if (isExpenseNoVatPayment(row.payment_order as string | number | null | undefined)) continue;
-    hasContractPayments = true;
-    const base = Number(row.value ?? 0);
-    if (Number.isFinite(base)) baseTotal += base;
-  }
-  return {
-    hasPlan: true,
-    base: hasContractPayments ? baseTotal : null,
-  };
-}
-
-async function fetchLegacyLeadPaymentPlanBaseTotal(legacyId: number): Promise<number | null> {
-  const { data, error } = await supabase
-    .from('finances_paymentplanrow')
-    .select('value, order')
-    .eq('lead_id', legacyId)
-    .is('cancel_date', null);
-  if (error) {
-    console.warn('[leadAllocationBudget] legacy payment plan fetch failed:', error);
-    return null;
-  }
-  const rows = data || [];
-  if (rows.length === 0) return null;
-
-  let baseTotal = 0;
-  let hasPlan = false;
-  for (const row of rows as Array<{ value?: unknown; order?: unknown }>) {
-    const order = row.order as string | number | null | undefined;
-    if (isExpenseNoVatPayment(order)) continue;
-    hasPlan = true;
-    const base = Number(row.value ?? 0);
-    if (Number.isFinite(base)) baseTotal += base;
-  }
-  return hasPlan ? baseTotal : null;
-}
-
 async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Promise<number> {
   if (lead.lead_type === 'legacy' && lead.legacy_lead_id != null) {
     const identity = resolveLeadFeeIdentity({
@@ -174,14 +105,18 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
       lead_type: 'legacy',
       lead_number: lead.lead_number,
     });
-    const [{ data, error }, planBase, firmPaidExpenseTotal] = await Promise.all([
+    const clientStub = {
+      id: `legacy_${lead.legacy_lead_id}`,
+      lead_type: 'legacy' as const,
+    };
+    const [{ data, error }, planBaseNis, firmPaidExpenseTotalNis] = await Promise.all([
       supabase
         .from('leads_lead')
         .select('id, total, total_base, currency_id, subcontractor_fee')
         .eq('id', lead.legacy_lead_id)
         .maybeSingle(),
-      fetchLegacyLeadPaymentPlanBaseTotal(lead.legacy_lead_id),
-      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
+      fetchLeadPaymentPlanBaseTotalNis(clientStub),
+      identity ? fetchFirmPaidExpenseReductionTotalNis(identity) : Promise.resolve(0),
     ]);
     if (error) {
       console.warn('[leadAllocationBudget] legacy lead value fetch failed:', error);
@@ -191,9 +126,10 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
         ? { ...data, lead_type: 'legacy', id: `legacy_${data.id}` }
         : { lead_type: 'legacy', id: `legacy_${lead.legacy_lead_id}` },
       {
-        hasPaymentPlan: planBase != null,
-        paymentPlanBaseTotal: planBase,
-        firmPaidExpenseTotal,
+        hasPaymentPlan: planBaseNis != null,
+        paymentPlanBaseTotal: planBaseNis,
+        paymentPlanBaseTotalIsNis: true,
+        firmPaidExpenseTotalNis,
       },
     );
   }
@@ -211,16 +147,17 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
     });
     // `leads` has no lead_type column — selecting it fails the whole value fetch
     // and zeros the budget max (false "0m left / max 0%" on daily allocation).
-    const [{ data, error }, planTotals, firmPaidExpenseTotal] = await Promise.all([
+    const clientStub = { id: newLeadId, lead_type: 'new' as const };
+    const [{ data, error }, planBaseNis, firmPaidExpenseTotalNis] = await Promise.all([
       supabase
         .from('leads')
         .select(
-          'id, balance, proposal_total, subcontractor_fee, case_handler_id, retainer_handler_id, lead_number',
+          'id, balance, proposal_total, currency_id, subcontractor_fee, case_handler_id, retainer_handler_id, lead_number',
         )
         .eq('id', newLeadId)
         .maybeSingle(),
-      fetchNewLeadPaymentPlanTotals(newLeadId),
-      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
+      fetchLeadPaymentPlanBaseTotalNis(clientStub),
+      identity ? fetchFirmPaidExpenseReductionTotalNis(identity) : Promise.resolve(0),
     ]);
     if (error) {
       console.warn('[leadAllocationBudget] lead value fetch failed:', error);
@@ -230,9 +167,10 @@ async function fetchLeadTotalValueNisForRef(lead: AllocationBudgetLeadRef): Prom
         ? { ...data, lead_type: 'new', id: newLeadId }
         : { id: newLeadId, lead_type: 'new', lead_number: lead.lead_number },
       {
-        hasPaymentPlan: planTotals.hasPlan,
-        paymentPlanBaseTotal: planTotals.base,
-        firmPaidExpenseTotal,
+        hasPaymentPlan: planBaseNis != null,
+        paymentPlanBaseTotal: planBaseNis,
+        paymentPlanBaseTotalIsNis: true,
+        firmPaidExpenseTotalNis,
       },
     );
   }

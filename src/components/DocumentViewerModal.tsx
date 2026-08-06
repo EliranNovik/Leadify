@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   ArrowDownTrayIcon,
   ArrowsPointingInIcon,
+  ArrowPathIcon,
   ChatBubbleLeftRightIcon,
   CheckCircleIcon,
   ChevronLeftIcon,
@@ -22,7 +23,6 @@ import {
 } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
-import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
 import {
@@ -35,6 +35,7 @@ import {
   type SubEffortAttachmentRef,
 } from '../lib/subEffortDocumentAttach';
 import { SubEffortAttachBadge } from './caseDocumentsModalUi';
+import DocumentSidebarThumb from './DocumentSidebarThumb';
 import {
   DocumentAnnotatableView,
   parseRegionHighlight,
@@ -285,11 +286,17 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     isGalleryMode && (subEffortRows != null || targetSubEffortId != null || typeof onAttached === 'function');
 
   const [previewIndex, setPreviewIndex] = useState(0);
+  const previewIndexRef = useRef(0);
+  previewIndexRef.current = previewIndex;
+  const selectedDocIdRef = useRef<string | null>(null);
+  const wasOpenRef = useRef(false);
   const [imageError, setImageError] = useState(false);
   const [pdfError, setPdfError] = useState(false);
   const [officeError, setOfficeError] = useState(false);
   /** 1 = fit to viewer; >1 zooms in. */
   const [imageZoom, setImageZoom] = useState(1);
+  /** Clockwise image rotation in degrees. */
+  const [imageRotation, setImageRotation] = useState(0);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -603,18 +610,46 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   );
 
   useEffect(() => {
-    if (!isOpen || galleryItems.length === 0) {
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      selectedDocIdRef.current = null;
+      return;
+    }
+
+    const justOpened = !wasOpenRef.current;
+    wasOpenRef.current = true;
+
+    if (galleryItems.length === 0) {
       setPreviewIndex(0);
       return;
     }
-    setPreviewIndex(Math.min(Math.max(0, initialIndex), galleryItems.length - 1));
+
+    // Only apply initialIndex when the modal first opens — not when the parent
+    // remaps `documents` (that was resetting selection to the first/opened doc).
+    if (justOpened) {
+      const start = Math.min(Math.max(0, initialIndex), galleryItems.length - 1);
+      setPreviewIndex(start);
+      selectedDocIdRef.current = galleryItems[start]?.id ?? null;
+      return;
+    }
+
+    const wantId = selectedDocIdRef.current;
+    if (wantId) {
+      const idx = galleryItems.findIndex((d) => d.id === wantId);
+      if (idx >= 0) {
+        if (idx !== previewIndexRef.current) setPreviewIndex(idx);
+        return;
+      }
+    }
+
+    if (previewIndexRef.current >= galleryItems.length) {
+      setPreviewIndex(galleryItems.length - 1);
+    }
   }, [isOpen, galleryItems, initialIndex]);
 
   useEffect(() => {
-    if (previewIndex >= galleryItems.length && galleryItems.length > 0) {
-      setPreviewIndex(galleryItems.length - 1);
-    }
-  }, [galleryItems.length, previewIndex]);
+    selectedDocIdRef.current = galleryItems[previewIndex]?.id ?? null;
+  }, [galleryItems, previewIndex]);
 
   const activeDoc = galleryItems[previewIndex] ?? null;
   const activeName = activeDoc?.name || documentName || 'Document';
@@ -631,6 +666,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     setPdfError(false);
     setOfficeError(false);
     setImageZoom(1);
+    setImageRotation(0);
     setCommentDraft('');
     setDraftHighlight(null);
     setHighlightMode(false);
@@ -900,26 +936,6 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const officeEmbedUrl =
     isOffice && displayUrl && !officeError ? buildOfficeOnlineEmbedUrl(displayUrl) : null;
 
-  useEffect(() => {
-    if (!isOpen || !isImage || imageError || !displayUrl) return;
-    const pane = imageZoomPaneRef.current;
-    if (!pane) return;
-
-    const onWheel = (e: WheelEvent) => {
-      // Trackpad pinch (ctrlKey) or two-finger / mouse-wheel scroll → rezoom.
-      e.preventDefault();
-      const direction = e.deltaY > 0 ? -1 : 1;
-      const step = e.ctrlKey || e.metaKey ? 0.08 : 0.12;
-      setImageZoom((z) => {
-        const next = Math.round((z + direction * step) * 100) / 100;
-        return Math.min(4, Math.max(0.5, next));
-      });
-    };
-
-    pane.addEventListener('wheel', onWheel, { passive: false });
-    return () => pane.removeEventListener('wheel', onWheel);
-  }, [isOpen, isImage, imageError, displayUrl, activeDoc?.id]);
-
   const goPrev = useCallback(() => {
     setPreviewIndex((i) => {
       const len = itemsRef.current.length;
@@ -935,6 +951,69 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       return (i + 1) % len;
     });
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    // While drawing/viewing highlights, keep normal scroll inside the annotate view.
+    if (highlightMode || draftHighlight) return;
+
+    let accum = 0;
+    let lockedUntil = 0;
+    const THRESHOLD = 50;
+    const COOLDOWN_MS = 380;
+
+    const onWheel = (e: WheelEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // Let the Files sidebar and comment panels scroll normally.
+      if (target.closest?.('aside[aria-label="Document thumbnails"]')) return;
+      if (target.closest?.('[data-doc-comments-panel]')) return;
+      if (target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+
+      // Ignore horizontal-dominant gestures.
+      if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
+
+      // Images: wheel / trackpad scroll zooms (pinch often sends ctrlKey).
+      if (isImage && !imageError && displayUrl) {
+        e.preventDefault();
+        const direction = e.deltaY > 0 ? -1 : 1;
+        const step = e.ctrlKey || e.metaKey ? 0.08 : 0.12;
+        setImageZoom((z) => {
+          const next = Math.round((z + direction * step) * 100) / 100;
+          return Math.min(4, Math.max(0.5, next));
+        });
+        return;
+      }
+
+      // Other files: wheel goes to next/prev document.
+      if (galleryItems.length <= 1) return;
+
+      e.preventDefault();
+      const now = Date.now();
+      if (now < lockedUntil) return;
+
+      accum += e.deltaY;
+      if (Math.abs(accum) < THRESHOLD) return;
+
+      if (accum > 0) goNext();
+      else goPrev();
+      accum = 0;
+      lockedUntil = now + COOLDOWN_MS;
+    };
+
+    window.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    return () => window.removeEventListener('wheel', onWheel, { capture: true } as EventListenerOptions);
+  }, [
+    isOpen,
+    galleryItems.length,
+    goNext,
+    goPrev,
+    highlightMode,
+    draftHighlight,
+    isImage,
+    imageError,
+    displayUrl,
+  ]);
 
   const activeThumbId = activeDoc ? `doc-viewer-thumb-${activeDoc.id}` : null;
   useEffect(() => {
@@ -1485,7 +1564,6 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               {galleryItems.map((d, i) => {
                 const isActive = i === previewIndex;
                 const ft = inferFileType(d.name, d.fileType);
-                const thumbIsImg = ft.includes('image/');
                 const shortName = shortenFileName(d.name, 28);
                 const canAttachDoc = Boolean(d.storagePath?.trim());
                 const checked = selectedAttachIds.has(d.id);
@@ -1533,45 +1611,14 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                       title={d.name}
                       className="flex w-full flex-col gap-1.5 text-left"
                     >
-                      <div
-                        className={`relative aspect-[3/4] w-full overflow-hidden rounded-lg border bg-base-300 ${
-                          isActive ? 'border-primary/30' : 'border-base-300/80'
-                        }`}
-                      >
-                        {thumbIsImg && d.url.startsWith('http') ? (
-                          <img
-                            src={d.url}
-                            alt=""
-                            className="h-full w-full object-cover"
-                            loading="lazy"
-                            draggable={false}
-                          />
-                        ) : ft.includes('pdf') ? (
-                          <div className="flex h-full w-full flex-col bg-white px-2.5 pb-2 pt-3">
-                            <div className="mb-2 h-1.5 w-2/3 rounded-full bg-red-500/80" />
-                            <div className="space-y-1.5">
-                              <div className="h-1 w-full rounded-full bg-slate-200" />
-                              <div className="h-1 w-[92%] rounded-full bg-slate-200" />
-                              <div className="h-1 w-[85%] rounded-full bg-slate-200" />
-                              <div className="h-1 w-full rounded-full bg-slate-200" />
-                              <div className="h-1 w-[70%] rounded-full bg-slate-200" />
-                            </div>
-                            <div className="mt-auto flex items-center justify-between pt-2">
-                              <span className="text-[9px] font-bold uppercase tracking-wide text-red-600">
-                                PDF
-                              </span>
-                              <div className="origin-center scale-[0.28]">
-                                <DocumentFileGlyph fileType={ft} fileName={d.name} />
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-b from-base-100 to-base-300 px-2">
-                            <div className="flex origin-center scale-[0.55] items-center justify-center">
-                              <DocumentFileGlyph fileType={ft} fileName={d.name} />
-                            </div>
-                          </div>
-                        )}
+                      <div className="relative w-full">
+                        <DocumentSidebarThumb
+                          name={d.name}
+                          url={d.url}
+                          fileType={ft}
+                          storagePath={d.storagePath}
+                          isActive={isActive}
+                        />
                         {isActive ? (
                           <span className="absolute right-1 top-1 rounded-md bg-primary px-1.5 py-0.5 text-[9px] font-semibold text-primary-content shadow">
                             {i + 1}/{galleryItems.length}
@@ -1707,6 +1754,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   >
                     <ArrowsPointingInIcon className="h-4 w-4" />
                   </button>
+                  <button
+                    type="button"
+                    className="pointer-events-auto btn btn-ghost btn-xs btn-square h-8 w-8 min-h-0 border-0 text-white hover:bg-white/15"
+                    aria-label="Rotate image"
+                    title="Rotate 90°"
+                    onClick={() => setImageRotation((r) => (r + 90) % 360)}
+                  >
+                    <ArrowPathIcon className="h-4 w-4" />
+                  </button>
                 </div>
                 <div
                   ref={imageZoomPaneRef}
@@ -1726,6 +1782,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     onDeleteHighlight={deleteHighlightById}
                     onImageError={() => setImageError(true)}
                     zoom={imageZoom}
+                    rotation={imageRotation}
                   />
                 </div>
               </div>
@@ -1827,6 +1884,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
         {commentsOpen && canComment ? (
           <aside
+            data-doc-comments-panel
             className="absolute inset-y-0 right-0 z-30 flex w-full max-w-md flex-col border-l border-base-300 bg-base-100 shadow-2xl md:static md:inset-auto md:z-0 md:w-[22rem] md:max-w-none md:shrink-0 lg:w-[26rem]"
             aria-label="Document comments"
           >

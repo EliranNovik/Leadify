@@ -1800,7 +1800,7 @@ export function workedMsToCostNis(
   hourRate: number | null,
   minHours?: number | null,
 ): number | null {
-  if (hourRate == null) return null;
+  if (hourRate == null || !Number.isFinite(hourRate) || hourRate <= 0) return null;
   const billableHours = workedMsToBillableHours(workedMs, minHours);
   return Math.round(hourRate * billableHours * 100) / 100;
 }
@@ -1838,7 +1838,9 @@ export function salaryPercentToCostNis(
   avgMonthlySalaryNis: number | null | undefined,
   percent: number,
 ): number | null {
-  if (avgMonthlySalaryNis == null || !Number.isFinite(avgMonthlySalaryNis)) return null;
+  if (avgMonthlySalaryNis == null || !Number.isFinite(avgMonthlySalaryNis) || avgMonthlySalaryNis <= 0) {
+    return null;
+  }
   const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
   return Math.round(((avgMonthlySalaryNis * safePercent) / 100) * 100) / 100;
 }
@@ -1848,7 +1850,7 @@ export function workedMsAtHourlyRateToCostNis(
   workedMs: number,
   hourRateNis: number | null | undefined,
 ): number | null {
-  if (hourRateNis == null || !Number.isFinite(hourRateNis)) return null;
+  if (hourRateNis == null || !Number.isFinite(hourRateNis) || hourRateNis <= 0) return null;
   const hours = Math.max(0, workedMs) / (1000 * 60 * 60);
   return Math.round(hours * hourRateNis * 100) / 100;
 }

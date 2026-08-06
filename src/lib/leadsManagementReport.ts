@@ -1,7 +1,8 @@
 import { supabase } from './supabase';
-import { filterCountedClockInRecords } from './employeeClockInApproval';
 import {
+  allocationEmployeeDateKey,
   allocationPercentToWorkedMs,
+  buildAllocationClockInMsByEmployeeDate,
   buildClientRouteFromAllocationRow,
   formatAllocationCostNis,
   formatAllocationWorkedDuration,
@@ -14,14 +15,14 @@ import {
 import {
   maxLeadEmployeeCostNis,
   resolveLeadTotalValueNis,
+  fetchLeadPaymentPlanBaseTotalNis,
 } from './leadEmployeeCost';
 import {
-  fetchFirmPaidExpenseReductionTotal,
+  fetchFirmPaidExpenseReductionTotalNis,
   resolveLeadFeeIdentity,
 } from './leadExpenses';
-import { isExpenseNoVatPayment } from './proformaVat';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
-import { fetchClockInRecordsInRangeForReport } from './workingHoursExport';
+import { fetchClockInRecordsForAllocationMs } from './workingHoursExport';
 import {
   fetchBudgetExtensionRequestsForLeads,
   type LeadBudgetExtensionRequest,
@@ -126,10 +127,6 @@ type AllocItemJoin = {
   } | null;
 };
 
-function employeeDateKey(employeeId: number, workDate: string): string {
-  return `${employeeId}|${workDate}`;
-}
-
 function leadKeyFromItem(item: {
   lead_type: string | null;
   new_lead_id: string | null;
@@ -143,63 +140,6 @@ function leadKeyFromItem(item: {
   const num = String(item.lead_number || '').trim();
   if (num && num !== '—') return `number:${num}`;
   return null;
-}
-
-function buildClockInMsByEmployeeDate(
-  records: { employee_id?: number | null; clock_in_time: string; clock_out_time: string | null }[],
-): Map<string, number> {
-  const counted = filterCountedClockInRecords(records as any);
-  const totals = new Map<string, number>();
-  const now = Date.now();
-
-  for (const record of counted) {
-    const employeeId = record.employee_id;
-    if (employeeId == null) continue;
-    const dateKey = getJerusalemTodayIsoDate(new Date(record.clock_in_time));
-    const start = new Date(record.clock_in_time).getTime();
-    const end = record.clock_out_time ? new Date(record.clock_out_time).getTime() : now;
-    const durationMs = Math.max(0, end - start);
-    const key = employeeDateKey(employeeId, dateKey);
-    totals.set(key, (totals.get(key) ?? 0) + durationMs);
-  }
-
-  return totals;
-}
-
-async function fetchNewLeadPaymentPlanBaseTotal(leadId: string): Promise<number | null> {
-  const { data, error } = await supabase
-    .from('payment_plans')
-    .select('value, payment_order')
-    .eq('lead_id', leadId)
-    .is('cancel_date', null);
-  if (error || !data?.length) return null;
-  let baseTotal = 0;
-  let hasPlan = false;
-  for (const row of data as Array<{ value?: unknown; payment_order?: unknown }>) {
-    if (isExpenseNoVatPayment(row.payment_order)) continue;
-    hasPlan = true;
-    const base = Number(row.value ?? 0);
-    if (Number.isFinite(base)) baseTotal += base;
-  }
-  return hasPlan ? baseTotal : null;
-}
-
-async function fetchLegacyLeadPaymentPlanBaseTotal(legacyId: number): Promise<number | null> {
-  const { data, error } = await supabase
-    .from('finances_paymentplanrow')
-    .select('value, order')
-    .eq('lead_id', legacyId)
-    .is('cancel_date', null);
-  if (error || !data?.length) return null;
-  let baseTotal = 0;
-  let hasPlan = false;
-  for (const row of data as Array<{ value?: unknown; order?: unknown }>) {
-    if (isExpenseNoVatPayment(row.order)) continue;
-    hasPlan = true;
-    const base = Number(row.value ?? 0);
-    if (Number.isFinite(base)) baseTotal += base;
-  }
-  return hasPlan ? baseTotal : null;
 }
 
 async function fetchLeadMeta(params: {
@@ -221,7 +161,11 @@ async function fetchLeadMeta(params: {
       lead_type: 'legacy',
       lead_number: params.leadNumber,
     });
-    const [{ data }, planBase, firmPaidExpenseTotal] = await Promise.all([
+    const clientStub = {
+      id: `legacy_${params.legacyLeadId}`,
+      lead_type: 'legacy' as const,
+    };
+    const [{ data }, planBaseNis, firmPaidExpenseTotalNis] = await Promise.all([
       supabase
         .from('leads_lead')
         .select(
@@ -235,17 +179,18 @@ async function fetchLeadMeta(params: {
         )
         .eq('id', params.legacyLeadId)
         .maybeSingle(),
-      fetchLegacyLeadPaymentPlanBaseTotal(params.legacyLeadId),
-      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
+      fetchLeadPaymentPlanBaseTotalNis(clientStub),
+      identity ? fetchFirmPaidExpenseReductionTotalNis(identity) : Promise.resolve(0),
     ]);
-    const leadTotalValueNis = resolveLeadTotalValueNis(
+    const leadTotalValueNis = await resolveLeadTotalValueNis(
       data
         ? { ...data, lead_type: 'legacy', id: `legacy_${data.id}` }
         : { lead_type: 'legacy', id: `legacy_${params.legacyLeadId}` },
       {
-        hasPaymentPlan: planBase != null,
-        paymentPlanBaseTotal: planBase,
-        firmPaidExpenseTotal,
+        hasPaymentPlan: planBaseNis != null,
+        paymentPlanBaseTotal: planBaseNis,
+        paymentPlanBaseTotalIsNis: true,
+        firmPaidExpenseTotalNis,
       },
     );
     const cats = formatLeadCategoryParts(data);
@@ -253,7 +198,7 @@ async function fetchLeadMeta(params: {
       ...cats,
       leadTotalValueNis,
       clientName: data?.name != null ? String(data.name).trim() || null : null,
-      hasPaymentPlan: planBase != null,
+      hasPaymentPlan: planBaseNis != null,
     };
   }
 
@@ -273,12 +218,13 @@ async function fetchLeadMeta(params: {
       lead_type: 'new',
       lead_number: params.leadNumber,
     });
-    const [{ data }, planBase, firmPaidExpenseTotal] = await Promise.all([
+    const clientStub = { id: newLeadId, lead_type: 'new' as const };
+    const [{ data }, planBaseNis, firmPaidExpenseTotalNis] = await Promise.all([
       supabase
         .from('leads')
         .select(
           `
-          id, name, category, category_id, balance, proposal_total, lead_number, subcontractor_fee,
+          id, name, category, category_id, balance, proposal_total, currency_id, lead_number, subcontractor_fee,
           misc_category!category_id (
             id, name, parent_id,
             misc_maincategory!parent_id ( id, name )
@@ -287,20 +233,21 @@ async function fetchLeadMeta(params: {
         )
         .eq('id', newLeadId)
         .maybeSingle(),
-      fetchNewLeadPaymentPlanBaseTotal(newLeadId),
-      identity ? fetchFirmPaidExpenseReductionTotal(identity) : Promise.resolve(0),
+      fetchLeadPaymentPlanBaseTotalNis(clientStub),
+      identity ? fetchFirmPaidExpenseReductionTotalNis(identity) : Promise.resolve(0),
     ]);
-    const leadTotalValueNis = resolveLeadTotalValueNis(data ?? { id: newLeadId }, {
-      hasPaymentPlan: planBase != null,
-      paymentPlanBaseTotal: planBase,
-      firmPaidExpenseTotal,
+    const leadTotalValueNis = await resolveLeadTotalValueNis(data ?? { id: newLeadId }, {
+      hasPaymentPlan: planBaseNis != null,
+      paymentPlanBaseTotal: planBaseNis,
+      paymentPlanBaseTotalIsNis: true,
+      firmPaidExpenseTotalNis,
     });
     const cats = formatLeadCategoryParts(data);
     return {
       ...cats,
       leadTotalValueNis,
       clientName: data?.name != null ? String(data.name).trim() || null : null,
-      hasPaymentPlan: planBase != null,
+      hasPaymentPlan: planBaseNis != null,
     };
   }
 
@@ -486,7 +433,9 @@ function accumulateItems(params: {
     const avgSalary = params.salaryMap.get(alloc.employee_id) ?? 0;
     const hourRateNis = salaryToHourlyRateNis(avgSalary > 0 ? avgSalary : null, minHours);
     const dayWorkedMs =
-      params.clockMsByEmpDate.get(employeeDateKey(alloc.employee_id, alloc.work_date)) ?? 0;
+      params.clockMsByEmpDate.get(
+        allocationEmployeeDateKey(alloc.employee_id, alloc.work_date),
+      ) ?? 0;
     const workedMs = allocationPercentToWorkedMs(dayWorkedMs, Number(item.percent) || 0);
     const costNis = workedMsAtHourlyRateToCostNis(workedMs, hourRateNis) ?? 0;
     const photoUrl =
@@ -562,6 +511,7 @@ function finalizeLeadRow(
     subcategory: string | null;
     leadTotalValueNis: number;
     clientName: string | null;
+    hasPaymentPlan?: boolean;
   },
   extensions?: {
     approvedExtensionCostNis: number;
@@ -761,9 +711,9 @@ export async function fetchLeadsManagementReport(params: {
 
   const [salaryMap, clockRecords] = await Promise.all([
     fetchAverageGrossSalaryLastMonths(Array.from(employeeIds), 6),
-    fetchClockInRecordsInRangeForReport(minDate, maxDate),
+    fetchClockInRecordsForAllocationMs(minDate, maxDate),
   ]);
-  const clockMsByEmpDate = buildClockInMsByEmployeeDate(clockRecords);
+  const clockMsByEmpDate = buildAllocationClockInMsByEmployeeDate(clockRecords);
 
   const byLead = accumulateItems({
     items,
@@ -922,9 +872,9 @@ export async function fetchLeadManagementDetail(params: {
 
   const [salaryMap, clockRecords] = await Promise.all([
     fetchAverageGrossSalaryLastMonths(Array.from(employeeIds), 6),
-    fetchClockInRecordsInRangeForReport(minDate, maxDate),
+    fetchClockInRecordsForAllocationMs(minDate, maxDate),
   ]);
-  const clockMsByEmpDate = buildClockInMsByEmployeeDate(clockRecords);
+  const clockMsByEmpDate = buildAllocationClockInMsByEmployeeDate(clockRecords);
   const byLead = accumulateItems({ items, clockMsByEmpDate, salaryMap });
   const lead = Array.from(byLead.values())[0];
   if (!lead) return null;

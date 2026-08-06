@@ -1,17 +1,23 @@
 import { supabase } from './supabase';
-import { filterCountedClockInRecords } from './employeeClockInApproval';
 import {
+  convertToNIS,
+  ensureBoiRatesReady,
+  type CurrencyInput,
+} from './boiCurrencyConversion';
+import {
+  allocationEmployeeDateKey,
   allocationPercentToWorkedMs,
+  buildAllocationClockInMsByEmployeeDate,
   formatAllocationCostNis,
   formatAllocationWorkedDuration,
-  getJerusalemTodayIsoDate,
   normalizeEmployeeMinHours,
   salaryToHourlyRateNis,
   SALARY_COST_HOURS_PER_MONTH,
   workedMsAtHourlyRateToCostNis,
 } from './employeeLeadReporting';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
-import { fetchClockInRecordsInRangeForReport } from './workingHoursExport';
+import { isExpenseNoVatPayment } from './proformaVat';
+import { fetchClockInRecordsForAllocationMs } from './workingHoursExport';
 import {
   fetchApprovedBudgetExtensionNis,
 } from './leadBudgetExtensionRequests';
@@ -32,16 +38,47 @@ export function maxLeadEmployeeCostNis(leadTotalValueNis: number): number {
   );
 }
 
-export function resolveLeadTotalValueNis(
+/** Resolve lead / accounting currency for BOI conversion. */
+export function resolveLeadCurrencyInput(client: any): CurrencyInput {
+  if (!client) return 1;
+  const accounting = client.accounting_currencies;
+  const rec = Array.isArray(accounting) ? accounting[0] : accounting;
+  if (rec?.iso_code) return String(rec.iso_code);
+  if (client.currency_id != null && client.currency_id !== '') return client.currency_id;
+  if (client.balance_currency) return client.balance_currency;
+  if (client.proposal_currency) return client.proposal_currency;
+  return 1;
+}
+
+/**
+ * Lead total value in NIS for employee-cost / budget caps.
+ * Converts base + subcontractor fee via BOI (`boiCurrencyConversion`).
+ * Prefer `firmPaidExpenseTotalNis` (from {@link fetchFirmPaidExpenseReductionTotalNis}).
+ */
+export async function resolveLeadTotalValueNis(
   client: any,
   options?: {
     hasPaymentPlan?: boolean | null;
+    /** Payment plan base in lead/plan currency (converted with lead currency unless already NIS). */
     paymentPlanBaseTotal?: number | null;
-    /** Firm-paid expenses (amount + VAT) — reduces lead total. Client-paid must not be included. */
+    /** When true, `paymentPlanBaseTotal` is already NIS. */
+    paymentPlanBaseTotalIsNis?: boolean;
+    /**
+     * Firm-paid expenses already in NIS.
+     * Prefer this over `firmPaidExpenseTotal`.
+     */
+    firmPaidExpenseTotalNis?: number | null;
+    /**
+     * Firm-paid expenses in lead currency (converted with lead currency when
+     * `firmPaidExpenseTotalNis` is omitted). Prefer the NIS fetch for mixed currencies.
+     */
     firmPaidExpenseTotal?: number | null;
   },
-): number {
+): Promise<number> {
   if (!client) return 0;
+
+  const snapshot = await ensureBoiRatesReady();
+  const currency = resolveLeadCurrencyInput(client);
 
   const isLegacy =
     client.lead_type === 'legacy' || String(client.id ?? '').startsWith('legacy_');
@@ -60,18 +97,112 @@ export function resolveLeadTotalValueNis(
     baseAmount = Number(client.balance || client.proposal_total || 0);
   }
 
+  let baseNis: number;
   if (options?.hasPaymentPlan === true && options.paymentPlanBaseTotal != null) {
-    baseAmount = Number(options.paymentPlanBaseTotal) || 0;
+    const planBase = Number(options.paymentPlanBaseTotal) || 0;
+    baseNis = options.paymentPlanBaseTotalIsNis
+      ? planBase
+      : convertToNIS(planBase, currency, snapshot);
+  } else {
+    baseNis = convertToNIS(baseAmount, currency, snapshot);
   }
 
   const subcontractorFee = Number(client.subcontractor_fee ?? 0);
-  const firmExpense = Math.max(0, Number(options?.firmPaidExpenseTotal ?? 0) || 0);
-  const reductions =
-    (Number.isFinite(subcontractorFee) && subcontractorFee > 0 ? subcontractorFee : 0) +
-    firmExpense;
-  const netAmount = baseAmount - reductions;
+  const feeNis =
+    Number.isFinite(subcontractorFee) && subcontractorFee > 0
+      ? convertToNIS(subcontractorFee, currency, snapshot)
+      : 0;
 
-  return Number.isFinite(netAmount) ? Math.max(0, netAmount) : 0;
+  const firmExpenseNis =
+    options?.firmPaidExpenseTotalNis != null
+      ? Math.max(0, Number(options.firmPaidExpenseTotalNis) || 0)
+      : convertToNIS(
+          Math.max(0, Number(options?.firmPaidExpenseTotal ?? 0) || 0),
+          currency,
+          snapshot,
+        );
+
+  const netAmount = baseNis - feeNis - firmExpenseNis;
+  return Number.isFinite(netAmount) ? Math.max(0, Math.round(netAmount * 100) / 100) : 0;
+}
+
+/**
+ * Contract payment-plan base total in NIS (per-row BOI conversion).
+ * Returns null when there is no plan or only expense rows (caller should fall back to lead balance).
+ */
+export async function fetchLeadPaymentPlanBaseTotalNis(client: any): Promise<number | null> {
+  if (!client?.id) return null;
+
+  const isLegacy =
+    client.lead_type === 'legacy' || String(client.id ?? '').startsWith('legacy_');
+
+  if (isLegacy) {
+    const rawId = String(client.id).replace(/^legacy_/, '');
+    const legacyId = Number(rawId);
+    if (!Number.isFinite(legacyId) || legacyId <= 0) return null;
+
+    const { data, error } = await supabase
+      .from('finances_paymentplanrow')
+      .select('value, order, currency_id')
+      .eq('lead_id', legacyId)
+      .is('cancel_date', null);
+    if (error || !data?.length) return null;
+
+    const snapshot = await ensureBoiRatesReady();
+    let baseTotalNis = 0;
+    let hasContract = false;
+    for (const row of data as Array<{
+      value?: unknown;
+      order?: unknown;
+      currency_id?: number | string | null;
+    }>) {
+      if (isExpenseNoVatPayment(row.order as string | number | null | undefined)) continue;
+      hasContract = true;
+      const base = Number(row.value ?? 0);
+      if (!Number.isFinite(base) || !(base > 0)) continue;
+      baseTotalNis += convertToNIS(base, row.currency_id ?? 1, snapshot);
+    }
+    return hasContract ? Math.round(baseTotalNis * 100) / 100 : null;
+  }
+
+  const leadId = String(client.id);
+  const { data, error } = await supabase
+    .from('payment_plans')
+    .select('id, value, payment_order, currency_id, currency')
+    .or(`lead_id.eq.${leadId},lead_ids.eq.${leadId}`)
+    .is('cancel_date', null);
+  if (error || !data?.length) return null;
+
+  const seen = new Set<string>();
+  const rows = (data as Array<{
+    id?: unknown;
+    value?: unknown;
+    payment_order?: unknown;
+    currency_id?: number | string | null;
+    currency?: string | null;
+  }>).filter((r) => {
+    const key = r?.id != null ? String(r.id) : JSON.stringify(r);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (rows.length === 0) return null;
+
+  const snapshot = await ensureBoiRatesReady();
+  let baseTotalNis = 0;
+  let hasContract = false;
+  for (const row of rows) {
+    if (isExpenseNoVatPayment(row.payment_order as string | number | null | undefined)) continue;
+    hasContract = true;
+    const base = Number(row.value ?? 0);
+    if (!Number.isFinite(base) || !(base > 0)) continue;
+    const currency =
+      row.currency_id != null && row.currency_id !== ''
+        ? row.currency_id
+        : row.currency ?? 1;
+    baseTotalNis += convertToNIS(base, currency, snapshot);
+  }
+  return hasContract ? Math.round(baseTotalNis * 100) / 100 : null;
 }
 
 export type LeadEmployeeCostRow = {
@@ -171,31 +302,6 @@ type AllocationItemJoin = {
       | null;
   } | null;
 };
-
-function employeeDateKey(employeeId: number, workDate: string): string {
-  return `${employeeId}|${workDate}`;
-}
-
-function buildClockInMsByEmployeeDate(
-  records: { employee_id?: number | null; clock_in_time: string; clock_out_time: string | null }[],
-): Map<string, number> {
-  const counted = filterCountedClockInRecords(records as any);
-  const totals = new Map<string, number>();
-  const now = Date.now();
-
-  for (const record of counted) {
-    const employeeId = record.employee_id;
-    if (employeeId == null) continue;
-    const dateKey = getJerusalemTodayIsoDate(new Date(record.clock_in_time));
-    const start = new Date(record.clock_in_time).getTime();
-    const end = record.clock_out_time ? new Date(record.clock_out_time).getTime() : now;
-    const durationMs = Math.max(0, end - start);
-    const key = employeeDateKey(employeeId, dateKey);
-    totals.set(key, (totals.get(key) ?? 0) + durationMs);
-  }
-
-  return totals;
-}
 
 export type LeadIdentityForCost = {
   isLegacy: boolean;
@@ -495,11 +601,12 @@ export async function fetchLeadEmployeeCostSummary(params: {
   const [salaryMap, clockRecords] = await Promise.all([
     fetchAverageGrossSalaryLastMonths(Array.from(employeeIds), 6),
     minDate && maxDate
-      ? fetchClockInRecordsInRangeForReport(minDate, maxDate)
+      ? fetchClockInRecordsForAllocationMs(minDate, maxDate)
       : Promise.resolve([]),
   ]);
 
-  const clockMsByEmpDate = buildClockInMsByEmployeeDate(clockRecords);
+  // Prefer pending/approved “Lead allocation hours” sessions (same as allocation report).
+  const clockMsByEmpDate = buildAllocationClockInMsByEmployeeDate(clockRecords);
 
   type Agg = {
     employeeId: number;
@@ -526,7 +633,8 @@ export async function fetchLeadEmployeeCostSummary(params: {
     const minHours = normalizeEmployeeMinHours(emp?.min_hours);
     const avgSalary = salaryMap.get(employeeId) ?? 0;
     const hourRateNis = salaryToHourlyRateNis(avgSalary > 0 ? avgSalary : null, minHours);
-    const dayWorkedMs = clockMsByEmpDate.get(employeeDateKey(employeeId, alloc.work_date)) ?? 0;
+    const dayWorkedMs =
+      clockMsByEmpDate.get(allocationEmployeeDateKey(employeeId, alloc.work_date)) ?? 0;
     const workedMs = allocationPercentToWorkedMs(dayWorkedMs, Number(item.percent) || 0);
     const costNis = workedMsAtHourlyRateToCostNis(workedMs, hourRateNis) ?? 0;
 

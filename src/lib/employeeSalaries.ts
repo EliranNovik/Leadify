@@ -355,8 +355,11 @@ export function enumerateLastNCalendarMonths(
 }
 
 /**
- * Average monthly gross salary over the last N calendar months (default 6),
- * matching Sales Contribution’s `totalSalaryCost` averaging from `employee_salary`.
+ * Average monthly gross salary over the last N calendar months (default 6).
+ *
+ * Only months with a **positive** gross salary count toward the average.
+ * Zero / missing months are ignored (new hires must not be diluted by zeros).
+ * Employees with no positive salary in the window are omitted from the map.
  */
 export async function fetchAverageGrossSalaryLastMonths(
   employeeIds: number[],
@@ -368,7 +371,6 @@ export async function fetchAverageGrossSalaryLastMonths(
 
   const months = enumerateLastNCalendarMonths(monthCount, ref);
   const allowed = new Set(months.map((p) => `${p.year}-${p.month}`));
-  const denom = months.length;
   const minYear = Math.min(...months.map((p) => p.year));
   const maxYear = Math.max(...months.map((p) => p.year));
 
@@ -385,17 +387,25 @@ export async function fetchAverageGrossSalaryLastMonths(
   }
 
   const sumByEmp = new Map<number, number>();
+  const countByEmp = new Map<number, number>();
   for (const row of data) {
     const yr = Number(row.salary_year);
     const mo = Number(row.salary_month);
     if (!allowed.has(`${yr}-${mo}`)) continue;
+    const gross = Number(row.gross_salary || 0);
+    // Never treat 0 (or negative) as a salary month for averaging.
+    if (!Number.isFinite(gross) || !(gross > 0)) continue;
     const eid = Number(row.employee_id);
-    sumByEmp.set(eid, (sumByEmp.get(eid) ?? 0) + Number(row.gross_salary || 0));
+    sumByEmp.set(eid, (sumByEmp.get(eid) ?? 0) + gross);
+    countByEmp.set(eid, (countByEmp.get(eid) ?? 0) + 1);
   }
 
   for (const eid of employeeIds) {
+    const count = countByEmp.get(eid) ?? 0;
     const sum = sumByEmp.get(eid);
-    result.set(eid, denom > 0 && sum != null ? sum / denom : 0);
+    if (count > 0 && sum != null) {
+      result.set(eid, Math.round((sum / count) * 100) / 100);
+    }
   }
   return result;
 }
