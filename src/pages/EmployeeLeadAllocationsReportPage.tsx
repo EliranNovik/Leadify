@@ -13,29 +13,38 @@ import {
   UsersIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
+import {
+  GradientSummaryCard,
+  REPORT_SUMMARY_GRADIENTS,
+} from '../components/reports/GradientSummaryCard';
 import { supabase } from '../lib/supabase';
 import {
+  ReportSortableTh,
+  compareNullableNumbers,
+  toggleReportSort,
+  type ReportSortDir,
+} from '../components/reports/ReportSortableTh';
+import {
+  allocationEmployeeDateKey,
   allocationPercentToWorkedMs,
   buildClientRouteFromAllocationRow,
   compareWorkedHoursToMin,
-  buildAllocationClockInMsByEmployee,
-  collectClockedOutEmployeesForDay,
-  listMissingLeadReportingEmployees,
+  buildAllocationClockInMsByEmployeeDate,
+  fetchMissingLeadReportingBacklog,
   fetchAllocationReport,
   fetchDepartmentsForFilter,
-  fetchSubmittedAllocationEmployeeIds,
   formatAllocationCostNis,
   formatAllocationPercent,
   formatAllocationWorkedDuration,
+  formatLeadAllocationMissingDayLabel,
   getJerusalemTodayIsoDate,
   minHoursToMs,
   salaryToHourlyRateNis,
   workedMsAtHourlyRateToCostNis,
   type AllocationReportRow,
-  type ClockedOutEmployeeRef,
-  type MissingLeadReportingEmployee,
+  type MissingLeadReportingBacklogRow,
 } from '../lib/employeeLeadReporting';
-import { fetchClockInRecordsInRange } from '../lib/workingHoursExport';
+import { fetchClockInRecordsForAllocationMs } from '../lib/workingHoursExport';
 import {
   fetchAverageGrossSalaryLastMonths,
   getSalaryEmployeeInitials,
@@ -101,6 +110,12 @@ function LeadBudgetBar({
   );
 }
 
+type EmployeeDaySlice = {
+  workDate: string;
+  totalWorkedMs: number;
+  rows: AllocationReportRow[];
+};
+
 type EmployeeAllocationGroup = {
   employeeId: number;
   employeeName: string;
@@ -111,9 +126,87 @@ type EmployeeAllocationGroup = {
   avgMonthlySalaryNis: number | null;
   /** Salary ÷ 127 monthly hours. */
   salaryHourRateNis: number | null;
+  /** Newest work date first. */
+  days: EmployeeDaySlice[];
+  /** Sum of worked ms across all days in the group. */
   totalWorkedMs: number;
-  rows: AllocationReportRow[];
 };
+
+type AllocationNumericSortKey = 'time' | 'cost' | 'max';
+
+function formatAllocationGroupDateLabel(workDate: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  }).format(new Date(`${workDate}T12:00:00`));
+}
+
+function shiftIsoDate(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const date = new Date(y, (m || 1) - 1, (d || 1) + days);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+type DateFilterMode = 'day' | 'period' | 'all';
+
+function dateFilterButtonClass(active: boolean): string {
+  return active
+    ? 'inline-flex h-10 items-center rounded-[14px] bg-primary px-3.5 text-sm font-semibold text-white shadow-sm'
+    : 'inline-flex h-10 items-center rounded-[14px] bg-white px-3.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200 transition-colors hover:bg-gray-50';
+}
+
+function rowSortMetrics(
+  row: AllocationReportRow,
+  dayWorkedMs: number,
+  salaryHourRateNis: number | null,
+  budgetStatus: AllocationLeadBudgetStatus | null,
+): { time: number; cost: number | null; max: number | null } {
+  const time = allocationPercentToWorkedMs(dayWorkedMs, row.percent);
+  return {
+    time,
+    cost: workedMsAtHourlyRateToCostNis(time, salaryHourRateNis),
+    max: row.is_other_work ? null : budgetStatus?.maxAllowedCostNis ?? null,
+  };
+}
+
+function sortAllocationRows(
+  rows: AllocationReportRow[],
+  dayWorkedMs: number,
+  salaryHourRateNis: number | null,
+  budgetByLeadKey: Map<string, AllocationLeadBudgetStatus>,
+  sortKey: AllocationNumericSortKey | null,
+  sortDir: ReportSortDir,
+): AllocationReportRow[] {
+  if (!sortKey) {
+    return [...rows].sort((a, b) => {
+      if (a.is_other_work !== b.is_other_work) return a.is_other_work ? 1 : -1;
+      return a.lead_number.localeCompare(b.lead_number);
+    });
+  }
+
+  return [...rows].sort((a, b) => {
+    const aKey = allocationLeadBudgetKey(a);
+    const bKey = allocationLeadBudgetKey(b);
+    const aMetrics = rowSortMetrics(
+      a,
+      dayWorkedMs,
+      salaryHourRateNis,
+      aKey ? budgetByLeadKey.get(aKey) ?? null : null,
+    );
+    const bMetrics = rowSortMetrics(
+      b,
+      dayWorkedMs,
+      salaryHourRateNis,
+      bKey ? budgetByLeadKey.get(bKey) ?? null : null,
+    );
+    return compareNullableNumbers(aMetrics[sortKey], bMetrics[sortKey], sortDir);
+  });
+}
 
 function EmployeeReportAvatar({
   employeeId,
@@ -157,99 +250,6 @@ function EmployeeReportAvatar({
   );
 }
 
-type StatTileProps = {
-  label: string;
-  value: string;
-  hint?: string;
-  tone?: 'default' | 'danger' | 'success' | 'primary';
-  outlined?: boolean;
-  variant?: 'muted' | 'card';
-  icon?: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  onClick?: () => void;
-};
-
-function StatTile({
-  label,
-  value,
-  hint,
-  tone = 'default',
-  outlined = true,
-  variant = 'muted',
-  icon: Icon,
-  onClick,
-}: StatTileProps) {
-  const toneClass =
-    variant === 'card'
-      ? 'bg-white shadow-sm ring-1 ring-gray-100'
-      : tone === 'danger'
-        ? 'bg-red-50/80'
-        : tone === 'success'
-          ? 'bg-emerald-50/80'
-          : tone === 'primary'
-            ? 'bg-primary/5'
-            : 'bg-gray-50/90';
-
-  const valueClass =
-    tone === 'danger'
-      ? 'text-red-700'
-      : tone === 'success'
-        ? 'text-emerald-700'
-        : tone === 'primary'
-          ? 'text-primary'
-          : 'text-gray-900';
-
-  const iconClass =
-    tone === 'danger'
-      ? 'bg-red-100 text-red-600'
-      : tone === 'success'
-        ? 'bg-emerald-100 text-emerald-600'
-        : tone === 'primary'
-          ? 'bg-primary/10 text-primary'
-          : 'bg-gray-100 text-gray-600';
-
-  const outlineClass = variant === 'card' || !outlined ? '' : 'ring-1 ring-gray-100';
-  const interactiveClass = onClick
-    ? 'cursor-pointer text-left transition hover:ring-2 hover:ring-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30'
-    : '';
-
-  const isCard = variant === 'card';
-  const labelClass = 'text-[10px] font-semibold uppercase tracking-wider text-gray-500';
-  const valueSizeClass = isCard ? 'text-2xl' : 'text-lg';
-  const iconBoxClass = isCard ? 'h-12 w-12 rounded-2xl' : 'h-10 w-10 rounded-xl';
-  const iconSizeClass = isCard ? 'h-6 w-6' : 'h-5 w-5';
-  const paddingClass = isCard ? 'px-5 py-4 md:px-6 md:py-5' : 'px-4 py-3';
-
-  const content = (
-    <div className={`flex items-start justify-between ${isCard ? 'gap-4' : 'gap-3'}`}>
-      <div className="min-w-0 flex-1">
-        <p className={labelClass}>{label}</p>
-        <p className={`mt-1.5 font-bold leading-tight ${valueSizeClass} ${valueClass}`}>{value}</p>
-        {hint ? <p className="mt-0.5 text-xs text-gray-500">{hint}</p> : null}
-      </div>
-      {Icon ? (
-        <span
-          className={`flex shrink-0 items-center justify-center ${iconBoxClass} ${iconClass}`}
-          aria-hidden
-        >
-          <Icon className={iconSizeClass} />
-        </span>
-      ) : null}
-    </div>
-  );
-
-  const className = `w-full rounded-[18px] ${paddingClass} ${outlineClass} ${toneClass} ${interactiveClass}`;
-
-  if (onClick) {
-    return (
-      <button type="button" onClick={onClick} className={className}>
-        {content}
-      </button>
-    );
-  }
-
-  return <div className={className}>{content}</div>;
-}
-
 type ReportGrandTotals = {
   employeeCount: number;
   missingReportingCount: number;
@@ -274,40 +274,39 @@ function ReportTotalsBar({
       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
         All employees total
       </p>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-5 lg:gap-4">
-        <StatTile
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <GradientSummaryCard
           label="Employees"
-          value={String(totals.employeeCount)}
-          variant="card"
+          value={totals.employeeCount}
           icon={UsersIcon}
+          gradientClassName={REPORT_SUMMARY_GRADIENTS[4]}
         />
-        <StatTile
+        <GradientSummaryCard
           label="Missing reporting"
-          value={String(totals.missingReportingCount)}
-          tone={totals.missingReportingCount > 0 ? 'danger' : 'success'}
-          variant="card"
+          value={totals.missingReportingCount}
+          hint="Handlers, DMs & admins · backlog by day"
           icon={ExclamationTriangleIcon}
+          gradientClassName={REPORT_SUMMARY_GRADIENTS[0]}
           onClick={onMissingReportingClick}
         />
-        <StatTile
+        <GradientSummaryCard
           label="Total worked"
           value={formatAllocationWorkedDuration(totals.totalWorkedMs)}
-          tone="primary"
-          variant="card"
           icon={ClockIcon}
+          gradientClassName={REPORT_SUMMARY_GRADIENTS[3]}
         />
-        <StatTile
+        <GradientSummaryCard
           label="Total cost"
           value={formatAllocationCostNis(totals.totalCostNis)}
-          variant="card"
           icon={BanknotesIcon}
+          gradientClassName={REPORT_SUMMARY_GRADIENTS[1]}
         />
-        <StatTile
+        <GradientSummaryCard
           label={overBudgetOnly ? 'Over budget · on' : 'Over budget'}
-          value={String(totals.overBudgetLeadCount)}
-          tone={totals.overBudgetLeadCount > 0 ? 'danger' : 'success'}
-          variant="card"
+          value={totals.overBudgetLeadCount}
           icon={ExclamationTriangleIcon}
+          gradientClassName={REPORT_SUMMARY_GRADIENTS[2]}
+          active={overBudgetOnly}
           onClick={onToggleOverBudget}
         />
       </div>
@@ -315,37 +314,28 @@ function ReportTotalsBar({
   );
 }
 
-function formatReportWorkDateLabel(workDate: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  }).format(new Date(`${workDate}T12:00:00`));
-}
-
 function MissingReportingModal({
   open,
-  workDate,
   employees,
+  loading,
   onClose,
 }: {
   open: boolean;
-  workDate: string;
-  employees: MissingLeadReportingEmployee[];
+  employees: MissingLeadReportingBacklogRow[];
+  loading: boolean;
   onClose: () => void;
 }) {
   if (!open) return null;
 
   return (
     <div className="modal modal-open z-[110]">
-      <div className="modal-box max-w-3xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
+      <div className="modal-box max-w-4xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
         <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-6 py-4">
           <div>
             <h3 className="text-lg font-bold text-gray-900">Missing lead reporting</h3>
             <p className="mt-1 text-sm text-gray-500">
-              {employees.length} employee{employees.length === 1 ? '' : 's'} clocked out on{' '}
-              {formatReportWorkDateLabel(workDate)} without a submitted allocation
+              Handlers, DMs, and admins with unsubmitted allocations for yesterday and earlier
+              (not limited to the selected report day)
             </p>
           </div>
           <button
@@ -359,9 +349,13 @@ function MissingReportingModal({
         </div>
 
         <div className="flex-1 overflow-auto px-6 py-4">
-          {employees.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-16">
+              <span className="loading loading-spinner loading-lg text-primary" />
+            </div>
+          ) : employees.length === 0 ? (
             <p className="py-10 text-center text-sm text-gray-500">
-              No employees are missing reporting for the current filters.
+              No employees are missing reporting in the backlog.
             </p>
           ) : (
             <table className="table w-full">
@@ -369,8 +363,7 @@ function MissingReportingModal({
                 <tr className="text-xs uppercase tracking-wider text-gray-400">
                   <th className="bg-transparent">Employee</th>
                   <th className="bg-transparent">Department</th>
-                  <th className="bg-transparent text-right">Worked</th>
-                  <th className="bg-transparent text-right">Cost</th>
+                  <th className="bg-transparent">Missing days</th>
                 </tr>
               </thead>
               <tbody>
@@ -390,11 +383,18 @@ function MissingReportingModal({
                     <td className="text-sm text-gray-600">
                       {employee.departmentName || 'No department'}
                     </td>
-                    <td className="text-right text-sm font-medium text-gray-900">
-                      {formatAllocationWorkedDuration(employee.workedMs)}
-                    </td>
-                    <td className="text-right text-sm font-medium text-gray-900">
-                      {formatAllocationCostNis(employee.costNis)}
+                    <td>
+                      <div className="flex flex-wrap gap-1.5">
+                        {employee.missingDates.map((day) => (
+                          <span
+                            key={day}
+                            className="inline-flex items-center rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-100"
+                            title={day}
+                          >
+                            {formatLeadAllocationMissingDayLabel(day)}
+                          </span>
+                        ))}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -438,13 +438,16 @@ function employeeHeaderWashStyle(
 
 function EmployeeAllocationHeader({
   group,
+  totalCostNis,
+  multiDay,
   embedded = false,
 }: {
   group: EmployeeAllocationGroup;
+  totalCostNis: number | null;
+  multiDay: boolean;
   embedded?: boolean;
 }) {
   const comparison = compareWorkedHoursToMin(group.totalWorkedMs, group.minHours);
-  const totalCostNis = sumEmployeeAllocationRowCostsNis(group);
   const minMs = minHoursToMs(group.minHours);
   const progressPercent =
     minMs > 0 ? Math.min(100, Math.round((group.totalWorkedMs / minMs) * 100)) : 0;
@@ -457,6 +460,14 @@ function EmployeeAllocationHeader({
         : 'bg-gradient-to-r from-emerald-500 to-teal-500';
 
   const headerTintStyle = employeeHeaderWashStyle(group.employeeId, group.employeeName);
+  const dayCount = group.days.length;
+  const subtitle = multiDay
+    ? `${dayCount} day${dayCount === 1 ? '' : 's'}${
+        group.departmentName ? ` · ${group.departmentName}` : ' · No department'
+      }`
+    : `${formatAllocationGroupDateLabel(group.days[0]?.workDate || '')}${
+        group.departmentName ? ` · ${group.departmentName}` : ' · No department'
+      }`;
 
   return (
     <div
@@ -483,56 +494,71 @@ function EmployeeAllocationHeader({
               <h2 className="text-xl font-bold tracking-tight text-gray-900">
                 {group.employeeName}
               </h2>
-              <p className="mt-0.5 text-sm text-gray-500">
-                {group.departmentName || 'No department'}
-              </p>
+              <p className="mt-0.5 text-sm text-gray-500">{subtitle}</p>
             </div>
           </div>
 
-          <div className="grid min-w-[min(100%,20rem)] grid-cols-2 gap-2.5 lg:shrink-0 lg:gap-3">
-            <div className="rounded-2xl px-4 py-3">
-              <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
-                <span className="flex items-center gap-1.5 font-medium text-gray-600">
-                  <ClockIcon className="h-3.5 w-3.5" />
-                  {formatAllocationWorkedDuration(group.totalWorkedMs)} of {group.minHours}h
-                </span>
-                <span
-                  className={
-                    comparison.status === 'below'
-                      ? 'font-semibold text-red-600'
-                      : comparison.status === 'above'
-                        ? 'font-semibold text-emerald-600'
-                        : 'font-semibold text-gray-500'
-                  }
-                >
-                  {progressPercent}%
-                </span>
-              </div>
-              <div className="h-2.5 overflow-hidden rounded-full bg-white/70">
-                <div
-                  className={`h-full rounded-full transition-all duration-500 ${progressBarClass}`}
-                  style={{
-                    width: `${Math.max(progressPercent, comparison.status === 'below' && progressPercent > 0 ? 4 : 0)}%`,
-                  }}
-                />
-              </div>
-              {comparison.status === 'above' ? (
-                <p className="mt-1.5 text-xs font-medium text-emerald-600">
-                  {formatAllocationWorkedDuration(comparison.differenceMs)} over minimum
+          {multiDay ? (
+            <div className="grid min-w-[min(100%,16rem)] grid-cols-2 gap-2.5 lg:shrink-0 lg:gap-3">
+              <div className="flex flex-col justify-center rounded-2xl bg-white/55 px-4 py-3 ring-1 ring-white/60">
+                <p className="text-xs font-medium text-gray-500">Total time</p>
+                <p className="mt-0.5 text-lg font-bold leading-tight text-gray-900">
+                  {formatAllocationWorkedDuration(group.totalWorkedMs)}
                 </p>
-              ) : null}
-            </div>
-            <div className="flex flex-col justify-center rounded-2xl bg-white/55 px-4 py-3 ring-1 ring-white/60">
-              <p className="text-lg font-bold leading-tight text-gray-900">
-                {formatAllocationCostNis(totalCostNis)}
-              </p>
-              {group.salaryHourRateNis != null ? (
-                <p className="mt-0.5 text-xs text-gray-500">
-                  {formatAllocationCostNis(group.salaryHourRateNis)}/h
+              </div>
+              <div className="flex flex-col justify-center rounded-2xl bg-white/55 px-4 py-3 ring-1 ring-white/60">
+                <p className="text-xs font-medium text-gray-500">Total cost</p>
+                <p className="mt-0.5 text-lg font-bold leading-tight text-gray-900">
+                  {formatAllocationCostNis(totalCostNis)}
                 </p>
-              ) : null}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="grid min-w-[min(100%,20rem)] grid-cols-2 gap-2.5 lg:shrink-0 lg:gap-3">
+              <div className="rounded-2xl px-4 py-3">
+                <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
+                  <span className="flex items-center gap-1.5 font-medium text-gray-600">
+                    <ClockIcon className="h-3.5 w-3.5" />
+                    {formatAllocationWorkedDuration(group.totalWorkedMs)} of {group.minHours}h
+                  </span>
+                  <span
+                    className={
+                      comparison.status === 'below'
+                        ? 'font-semibold text-red-600'
+                        : comparison.status === 'above'
+                          ? 'font-semibold text-emerald-600'
+                          : 'font-semibold text-gray-500'
+                    }
+                  >
+                    {progressPercent}%
+                  </span>
+                </div>
+                <div className="h-2.5 overflow-hidden rounded-full bg-white/70">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${progressBarClass}`}
+                    style={{
+                      width: `${Math.max(progressPercent, comparison.status === 'below' && progressPercent > 0 ? 4 : 0)}%`,
+                    }}
+                  />
+                </div>
+                {comparison.status === 'above' ? (
+                  <p className="mt-1.5 text-xs font-medium text-emerald-600">
+                    {formatAllocationWorkedDuration(comparison.differenceMs)} over minimum
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex flex-col justify-center rounded-2xl bg-white/55 px-4 py-3 ring-1 ring-white/60">
+                <p className="text-lg font-bold leading-tight text-gray-900">
+                  {formatAllocationCostNis(totalCostNis)}
+                </p>
+                {group.salaryHourRateNis != null ? (
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    {formatAllocationCostNis(group.salaryHourRateNis)}/h
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -541,21 +567,33 @@ function EmployeeAllocationHeader({
 
 function groupRowsByEmployee(
   rows: AllocationReportRow[],
-  clockInMsByEmployee: Map<number, number>,
+  clockInMsByEmployeeDate: Map<string, number>,
   avgMonthlySalaryByEmployee: Map<number, number>,
 ): EmployeeAllocationGroup[] {
-  const map = new Map<number, EmployeeAllocationGroup>();
+  type Builder = {
+    employeeId: number;
+    employeeName: string;
+    employeePhotoUrl: string | null;
+    departmentName: string | null;
+    minHours: number;
+    avgMonthlySalaryNis: number | null;
+    salaryHourRateNis: number | null;
+    days: Map<string, EmployeeDaySlice>;
+  };
+
+  const byEmployee = new Map<number, Builder>();
 
   for (const row of rows) {
-    let group = map.get(row.employee_id);
-    if (!group) {
+    const workDate = String(row.work_date || '').slice(0, 10);
+    let builder = byEmployee.get(row.employee_id);
+    if (!builder) {
       const avgSalaryRaw = avgMonthlySalaryByEmployee.get(row.employee_id);
       const avgMonthlySalaryNis =
         avgSalaryRaw != null && Number.isFinite(avgSalaryRaw) && avgSalaryRaw > 0
           ? Math.round(avgSalaryRaw * 100) / 100
           : null;
       const minHours = row.employee_min_hours;
-      group = {
+      builder = {
         employeeId: row.employee_id,
         employeeName: row.employee_name,
         employeePhotoUrl: row.employee_photo_url,
@@ -563,37 +601,59 @@ function groupRowsByEmployee(
         minHours,
         avgMonthlySalaryNis,
         salaryHourRateNis: salaryToHourlyRateNis(avgMonthlySalaryNis, minHours),
-        totalWorkedMs: clockInMsByEmployee.get(row.employee_id) ?? 0,
+        days: new Map(),
+      };
+      byEmployee.set(row.employee_id, builder);
+    }
+
+    let day = builder.days.get(workDate);
+    if (!day) {
+      const groupKey = allocationEmployeeDateKey(row.employee_id, workDate);
+      day = {
+        workDate,
+        totalWorkedMs: clockInMsByEmployeeDate.get(groupKey) ?? 0,
         rows: [],
       };
-      map.set(row.employee_id, group);
+      builder.days.set(workDate, day);
     }
-    group.rows.push(row);
+    day.rows.push(row);
   }
 
-  return Array.from(map.values())
-    .map((group) => ({
-      ...group,
-      rows: [...group.rows].sort((a, b) => {
-        if (a.is_other_work !== b.is_other_work) return a.is_other_work ? 1 : -1;
-        return a.lead_number.localeCompare(b.lead_number);
-      }),
-    }))
+  return Array.from(byEmployee.values())
+    .map((builder) => {
+      const days = Array.from(builder.days.values()).sort((a, b) =>
+        b.workDate.localeCompare(a.workDate),
+      );
+      const totalWorkedMs = days.reduce((sum, day) => sum + day.totalWorkedMs, 0);
+      return {
+        employeeId: builder.employeeId,
+        employeeName: builder.employeeName,
+        employeePhotoUrl: builder.employeePhotoUrl,
+        departmentName: builder.departmentName,
+        minHours: builder.minHours,
+        avgMonthlySalaryNis: builder.avgMonthlySalaryNis,
+        salaryHourRateNis: builder.salaryHourRateNis,
+        days,
+        totalWorkedMs,
+      };
+    })
     .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
 }
 
 function allocationRowKey(row: AllocationReportRow): string {
-  return `${row.allocation_id}-${row.is_other_work ? 'other' : row.lead_number}-${row.percent}`;
+  return `${row.allocation_id}-${row.work_date}-${row.is_other_work ? 'other' : row.lead_number}-${row.percent}`;
 }
 
-/** Sum of lead-row costs: each row’s allocated hours × salary hourly rate. */
+/** Sum of lead-row costs across all days: each row’s allocated hours × salary hourly rate. */
 function sumEmployeeAllocationRowCostsNis(group: EmployeeAllocationGroup): number | null {
   if (group.salaryHourRateNis == null) return null;
   let total = 0;
-  for (const row of group.rows) {
-    const workedMs = allocationPercentToWorkedMs(group.totalWorkedMs, row.percent);
-    const rowCost = workedMsAtHourlyRateToCostNis(workedMs, group.salaryHourRateNis);
-    if (rowCost != null) total += rowCost;
+  for (const day of group.days) {
+    for (const row of day.rows) {
+      const workedMs = allocationPercentToWorkedMs(day.totalWorkedMs, row.percent);
+      const rowCost = workedMsAtHourlyRateToCostNis(workedMs, group.salaryHourRateNis);
+      if (rowCost != null) total += rowCost;
+    }
   }
   return Math.round(total * 100) / 100;
 }
@@ -656,6 +716,20 @@ function AllocationReportTableRow({
       <td className="text-right text-sm font-semibold text-gray-900">
         {formatAllocationCostNis(rowCostNis)}
       </td>
+      <td className="text-right text-sm text-gray-500">
+        {row.is_other_work ? (
+          '—'
+        ) : (
+          <>
+            {formatAllocationCostNis(budgetStatus?.maxAllowedCostNis)}
+            {(budgetStatus?.approvedExtensionCostNis ?? 0) > 0 ? (
+              <p className="text-[10px] text-emerald-600">
+                +{formatAllocationCostNis(budgetStatus?.approvedExtensionCostNis)} ext
+              </p>
+            ) : null}
+          </>
+        )}
+      </td>
       <td>
         {budgetStatus ? (
           <LeadBudgetBar
@@ -688,20 +762,36 @@ function AllocationReportTableRow({
 
 type EmployeeAllocationSectionProps = {
   group: EmployeeAllocationGroup;
+  multiDay: boolean;
   budgetByLeadKey: Map<string, AllocationLeadBudgetStatus>;
+  sortKey: AllocationNumericSortKey | null;
+  sortDir: ReportSortDir;
+  onSort: (key: string) => void;
   onOpenBudgetHistory: (status: AllocationLeadBudgetStatus, row: AllocationReportRow) => void;
   onReviewRequest: (request: LeadBudgetExtensionRequest) => void;
 };
 
 function EmployeeAllocationSection({
   group,
+  multiDay,
   budgetByLeadKey,
+  sortKey,
+  sortDir,
+  onSort,
   onOpenBudgetHistory,
   onReviewRequest,
 }: EmployeeAllocationSectionProps) {
+  const totalCostNis = sumEmployeeAllocationRowCostsNis(group);
+  const showDayBreaks = multiDay && group.days.length > 1;
+
   return (
     <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
-      <EmployeeAllocationHeader group={group} embedded />
+      <EmployeeAllocationHeader
+        group={group}
+        totalCostNis={totalCostNis}
+        multiDay={multiDay}
+        embedded
+      />
 
       <div className="overflow-x-auto">
         <table className="table">
@@ -710,26 +800,73 @@ function EmployeeAllocationSection({
               <th>Lead</th>
               <th>Client</th>
               <th className="text-right">%</th>
-              <th className="text-right">Time</th>
-              <th className="text-right">Cost</th>
+              <ReportSortableTh
+                label="Time"
+                sortKey="time"
+                activeKey={sortKey}
+                direction={sortDir}
+                onSort={onSort}
+              />
+              <ReportSortableTh
+                label="Cost"
+                sortKey="cost"
+                activeKey={sortKey}
+                direction={sortDir}
+                onSort={onSort}
+              />
+              <ReportSortableTh
+                label="Max"
+                sortKey="max"
+                activeKey={sortKey}
+                direction={sortDir}
+                onSort={onSort}
+              />
               <th>Budget</th>
               <th className="text-right">Action</th>
               <th className="text-right">Submitted</th>
             </tr>
           </thead>
           <tbody>
-            {group.rows.map((row) => {
-              const key = allocationLeadBudgetKey(row);
+            {group.days.map((day) => {
+              const sortedRows = sortAllocationRows(
+                day.rows,
+                day.totalWorkedMs,
+                group.salaryHourRateNis,
+                budgetByLeadKey,
+                sortKey,
+                sortDir,
+              );
               return (
-                <AllocationReportTableRow
-                  key={allocationRowKey(row)}
-                  row={row}
-                  totalWorkedMs={group.totalWorkedMs}
-                  salaryHourRateNis={group.salaryHourRateNis}
-                  budgetStatus={key ? budgetByLeadKey.get(key) ?? null : null}
-                  onOpenBudgetHistory={onOpenBudgetHistory}
-                  onReviewRequest={onReviewRequest}
-                />
+                <React.Fragment key={day.workDate}>
+                  {showDayBreaks ? (
+                    <tr className="bg-gray-50/90">
+                      <td colSpan={9} className="!py-2.5">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                          <span className="text-gray-800">
+                            {formatAllocationGroupDateLabel(day.workDate)}
+                          </span>
+                          <span className="font-medium normal-case tracking-normal text-gray-500">
+                            {formatAllocationWorkedDuration(day.totalWorkedMs)} worked
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  {sortedRows.map((row) => {
+                    const key = allocationLeadBudgetKey(row);
+                    return (
+                      <AllocationReportTableRow
+                        key={allocationRowKey(row)}
+                        row={row}
+                        totalWorkedMs={day.totalWorkedMs}
+                        salaryHourRateNis={group.salaryHourRateNis}
+                        budgetStatus={key ? budgetByLeadKey.get(key) ?? null : null}
+                        onOpenBudgetHistory={onOpenBudgetHistory}
+                        onReviewRequest={onReviewRequest}
+                      />
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -743,18 +880,23 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   const navigate = useNavigate();
   const [isSuperUser, setIsSuperUser] = useState(false);
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [dateMode, setDateMode] = useState<DateFilterMode>('day');
   const [workDate, setWorkDate] = useState(() => getJerusalemTodayIsoDate());
+  const [rangeFrom, setRangeFrom] = useState(() =>
+    shiftIsoDate(getJerusalemTodayIsoDate(), -6),
+  );
+  const [rangeTo, setRangeTo] = useState(() => getJerusalemTodayIsoDate());
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [departmentId, setDepartmentId] = useState<string>('');
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
   const [rows, setRows] = useState<AllocationReportRow[]>([]);
-  const [clockInMsByEmployee, setClockInMsByEmployee] = useState<Map<number, number>>(
+  const [clockInMsByEmployeeDate, setClockInMsByEmployeeDate] = useState<Map<string, number>>(
     () => new Map(),
   );
-  const [clockedOutEmployees, setClockedOutEmployees] = useState<
-    Map<number, ClockedOutEmployeeRef>
-  >(() => new Map());
-  const [reportedEmployeeIds, setReportedEmployeeIds] = useState<Set<number>>(() => new Set());
+  const [missingReportingBacklog, setMissingReportingBacklog] = useState<
+    MissingLeadReportingBacklogRow[]
+  >([]);
+  const [missingReportingLoading, setMissingReportingLoading] = useState(false);
   const [avgMonthlySalaryByEmployee, setAvgMonthlySalaryByEmployee] = useState<Map<number, number>>(
     () => new Map(),
   );
@@ -764,12 +906,31 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     () => new Map(),
   );
   const [overBudgetOnly, setOverBudgetOnly] = useState(false);
+  const [sortKey, setSortKey] = useState<AllocationNumericSortKey | null>(null);
+  const [sortDir, setSortDir] = useState<ReportSortDir>('desc');
   const [historyLead, setHistoryLead] = useState<{
     label: string;
     status: AllocationLeadBudgetStatus;
   } | null>(null);
   const [reviewRequest, setReviewRequest] = useState<LeadBudgetExtensionRequest | null>(null);
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
+
+  const resolvedDateRange = useMemo(() => {
+    const today = getJerusalemTodayIsoDate();
+    if (dateMode === 'all') {
+      // No lower bound — true “all reporting”, capped at today.
+      return {
+        fromDate: null as string | null,
+        toDate: today,
+      };
+    }
+    if (dateMode === 'period') {
+      const from = rangeFrom <= rangeTo ? rangeFrom : rangeTo;
+      const to = rangeFrom <= rangeTo ? rangeTo : rangeFrom;
+      return { fromDate: from, toDate: to };
+    }
+    return { fromDate: workDate, toDate: workDate };
+  }, [dateMode, workDate, rangeFrom, rangeTo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -844,30 +1005,38 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     if (!isSuperUser) return;
     setLoading(true);
     try {
-      const [data, clockRecords, submittedEmployeeIds] = await Promise.all([
-        fetchAllocationReport({
-          fromDate: workDate,
-          toDate: workDate,
-          departmentId: departmentId ? Number(departmentId) : null,
-          employeeSearch,
-        }),
-        fetchClockInRecordsInRange(workDate, workDate),
-        fetchSubmittedAllocationEmployeeIds(workDate),
-      ]);
-      const clockInMs = buildAllocationClockInMsByEmployee(clockRecords);
-      const clockedOut = collectClockedOutEmployeesForDay(clockRecords);
+      const { fromDate, toDate } = resolvedDateRange;
+      const data = await fetchAllocationReport({
+        fromDate,
+        toDate,
+        departmentId: departmentId ? Number(departmentId) : null,
+        employeeSearch,
+      });
+
+      const workDates = data
+        .map((row) => String(row.work_date || '').slice(0, 10))
+        .filter(Boolean)
+        .sort();
+      let clockFrom = fromDate || workDates[0] || toDate || getJerusalemTodayIsoDate();
+      let clockTo = toDate || workDates[workDates.length - 1] || getJerusalemTodayIsoDate();
+      if (clockFrom > clockTo) {
+        const swap = clockFrom;
+        clockFrom = clockTo;
+        clockTo = swap;
+      }
+
+      const clockRecords = await fetchClockInRecordsForAllocationMs(clockFrom, clockTo);
+      const clockInMs = buildAllocationClockInMsByEmployeeDate(clockRecords);
       const employeeIds = Array.from(
         new Set([
           ...data.map((row) => row.employee_id),
-          ...Array.from(clockedOut.keys()),
+          ...Array.from(clockInMs.keys()).map((key) => Number(key.split('|')[0])),
         ]),
-      );
+      ).filter((id) => Number.isFinite(id));
       const salaryMap = await fetchAverageGrossSalaryLastMonths(employeeIds, 6);
 
       setRows(data);
-      setClockInMsByEmployee(clockInMs);
-      setClockedOutEmployees(clockedOut);
-      setReportedEmployeeIds(submittedEmployeeIds);
+      setClockInMsByEmployeeDate(clockInMs);
       setAvgMonthlySalaryByEmployee(salaryMap);
 
       void fetchAllocationLeadBudgetStatuses(data)
@@ -880,17 +1049,35 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         });
     } catch (error) {
       console.error('[EmployeeLeadAllocationsReport] load failed:', error);
-      toast.error('Failed to load allocation report.');
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to load allocation report.',
+      );
       setRows([]);
-      setClockInMsByEmployee(new Map());
-      setClockedOutEmployees(new Map());
-      setReportedEmployeeIds(new Set());
+      setClockInMsByEmployeeDate(new Map());
       setAvgMonthlySalaryByEmployee(new Map());
       setBudgetByLeadKey(new Map());
     } finally {
       setLoading(false);
     }
-  }, [isSuperUser, workDate, departmentId, employeeSearch]);
+  }, [isSuperUser, resolvedDateRange, departmentId, employeeSearch]);
+
+  const loadMissingReportingBacklog = useCallback(async () => {
+    if (!isSuperUser) return;
+    setMissingReportingLoading(true);
+    try {
+      const backlog = await fetchMissingLeadReportingBacklog({
+        departmentId: departmentId ? Number(departmentId) : null,
+        employeeSearch,
+      });
+      setMissingReportingBacklog(backlog);
+    } catch (error) {
+      console.error('[EmployeeLeadAllocationsReport] missing backlog failed:', error);
+      toast.error('Failed to load missing reporting backlog.');
+      setMissingReportingBacklog([]);
+    } finally {
+      setMissingReportingLoading(false);
+    }
+  }, [isSuperUser, departmentId, employeeSearch]);
 
   const reloadBudgetStatuses = useCallback(async () => {
     if (rows.length === 0) {
@@ -932,51 +1119,55 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     void loadReport();
   }, [permissionsLoaded, isSuperUser, loadReport]);
 
+  useEffect(() => {
+    if (!permissionsLoaded || !isSuperUser) return;
+    void loadMissingReportingBacklog();
+  }, [permissionsLoaded, isSuperUser, loadMissingReportingBacklog]);
+
   const employeeGroups = useMemo(
-    () => groupRowsByEmployee(rows, clockInMsByEmployee, avgMonthlySalaryByEmployee),
-    [rows, clockInMsByEmployee, avgMonthlySalaryByEmployee],
+    () => groupRowsByEmployee(rows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee),
+    [rows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee],
   );
+
+  const multiDayView = dateMode !== 'day';
+
+  const handleSort = useCallback((key: string) => {
+    const next = toggleReportSort(sortKey, sortDir, key);
+    setSortKey(next.key as AllocationNumericSortKey);
+    setSortDir(next.dir);
+  }, [sortKey, sortDir]);
 
   const visibleEmployeeGroups = useMemo(() => {
     if (!overBudgetOnly) return employeeGroups;
     return employeeGroups
-      .map((group) => ({
-        ...group,
-        rows: group.rows.filter((row) => {
-          const key = allocationLeadBudgetKey(row);
-          if (!key) return false;
-          return budgetByLeadKey.get(key)?.exceedsCap === true;
-        }),
-      }))
-      .filter((group) => group.rows.length > 0);
+      .map((group) => {
+        const days = group.days
+          .map((day) => ({
+            ...day,
+            rows: day.rows.filter((row) => {
+              const key = allocationLeadBudgetKey(row);
+              if (!key) return false;
+              return budgetByLeadKey.get(key)?.exceedsCap === true;
+            }),
+          }))
+          .filter((day) => day.rows.length > 0);
+        return {
+          ...group,
+          days,
+          totalWorkedMs: days.reduce((sum, day) => sum + day.totalWorkedMs, 0),
+        };
+      })
+      .filter((group) => group.days.length > 0);
   }, [employeeGroups, overBudgetOnly, budgetByLeadKey]);
-
-  const missingReportingEmployees = useMemo(
-    () =>
-      listMissingLeadReportingEmployees({
-        clockedOutEmployees,
-        reportedEmployeeIds,
-        clockInMsByEmployee,
-        departmentId: departmentId ? Number(departmentId) : null,
-        employeeSearch,
-        avgMonthlySalaryByEmployee,
-      }),
-    [
-      clockedOutEmployees,
-      reportedEmployeeIds,
-      clockInMsByEmployee,
-      departmentId,
-      employeeSearch,
-      avgMonthlySalaryByEmployee,
-    ],
-  );
 
   const reportTotals = useMemo(() => {
     let totalWorkedMs = 0;
     let totalCostNis = 0;
     let hasAnyCost = false;
+    const uniqueEmployees = new Set<number>();
 
     for (const group of employeeGroups) {
+      uniqueEmployees.add(group.employeeId);
       totalWorkedMs += group.totalWorkedMs;
       const employeeCost = sumEmployeeAllocationRowCostsNis(group);
       if (employeeCost != null) {
@@ -990,13 +1181,13 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     ).length;
 
     return {
-      employeeCount: employeeGroups.length,
-      missingReportingCount: missingReportingEmployees.length,
+      employeeCount: uniqueEmployees.size,
+      missingReportingCount: missingReportingBacklog.length,
       totalWorkedMs,
       totalCostNis: hasAnyCost ? Math.round(totalCostNis * 100) / 100 : null,
       overBudgetLeadCount,
     };
-  }, [employeeGroups, missingReportingEmployees.length, budgetByLeadKey]);
+  }, [employeeGroups, missingReportingBacklog.length, budgetByLeadKey]);
 
   if (!permissionsLoaded || !isSuperUser) {
     return (
@@ -1045,16 +1236,90 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-gray-600">Work date</span>
-              <input
-                type="date"
-                className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                value={workDate}
-                onChange={(e) => setWorkDate(e.target.value)}
-              />
-            </label>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="block lg:col-span-1">
+              <span className="mb-1.5 block text-sm font-medium text-gray-600">Date</span>
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {dateMode === 'day' ? (
+                    <input
+                      type="date"
+                      className="input h-10 min-h-10 min-w-[11rem] flex-1 rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                      value={workDate}
+                      max={getJerusalemTodayIsoDate()}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (!next) return;
+                        setWorkDate(next);
+                        setDateMode('day');
+                      }}
+                    />
+                  ) : dateMode === 'all' ? (
+                    <div className="flex h-10 min-w-[11rem] flex-1 items-center rounded-[14px] bg-white px-3 text-sm text-gray-600 ring-1 ring-gray-200">
+                      All reporting
+                    </div>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={dateFilterButtonClass(dateMode === 'period')}
+                    aria-pressed={dateMode === 'period'}
+                    onClick={() => setDateMode('period')}
+                  >
+                    Period
+                  </button>
+                  <button
+                    type="button"
+                    className={dateFilterButtonClass(dateMode === 'all')}
+                    aria-pressed={dateMode === 'all'}
+                    onClick={() => setDateMode('all')}
+                  >
+                    Show all
+                  </button>
+                  {dateMode !== 'day' ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-10 items-center rounded-[14px] px-3 text-sm font-medium text-gray-500 transition-colors hover:bg-white hover:text-gray-700"
+                      onClick={() => setDateMode('day')}
+                    >
+                      Day
+                    </button>
+                  ) : null}
+                </div>
+                {dateMode === 'period' ? (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="min-w-[9rem] flex-1">
+                      <span className="mb-1 block text-xs font-medium text-gray-500">From</span>
+                      <input
+                        type="date"
+                        className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                        value={rangeFrom}
+                        max={rangeTo || getJerusalemTodayIsoDate()}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          if (!next) return;
+                          setRangeFrom(next);
+                        }}
+                      />
+                    </label>
+                    <label className="min-w-[9rem] flex-1">
+                      <span className="mb-1 block text-xs font-medium text-gray-500">To</span>
+                      <input
+                        type="date"
+                        className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                        value={rangeTo}
+                        min={rangeFrom || undefined}
+                        max={getJerusalemTodayIsoDate()}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          if (!next) return;
+                          setRangeTo(next);
+                        }}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </div>
+            </div>
 
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-gray-600">Department</span>
@@ -1098,8 +1363,8 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
 
           <MissingReportingModal
             open={missingReportingModalOpen}
-            workDate={workDate}
-            employees={missingReportingEmployees}
+            employees={missingReportingBacklog}
+            loading={missingReportingLoading}
             onClose={() => setMissingReportingModalOpen(false)}
           />
 
@@ -1121,7 +1386,11 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
                 <EmployeeAllocationSection
                   key={group.employeeId}
                   group={group}
+                  multiDay={multiDayView}
                   budgetByLeadKey={budgetByLeadKey}
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={handleSort}
                   onOpenBudgetHistory={(status, row) =>
                     setHistoryLead({
                       label: `${row.client_name} · #${row.lead_number}`,

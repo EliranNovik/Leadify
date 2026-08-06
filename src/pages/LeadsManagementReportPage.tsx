@@ -12,6 +12,16 @@ import {
   MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
 import {
+  GradientSummaryCard,
+  REPORT_SUMMARY_GRADIENTS,
+} from '../components/reports/GradientSummaryCard';
+import {
+  ReportSortableTh,
+  compareNullableNumbers,
+  toggleReportSort,
+  type ReportSortDir,
+} from '../components/reports/ReportSortableTh';
+import {
   buildLeadManagementDetailPath,
   collectCategoriesFromRows,
   fetchLeadsManagementReport,
@@ -148,6 +158,8 @@ const LeadsManagementReportPage: React.FC = () => {
   const [category, setCategory] = useState('');
   const [overBudgetOnly, setOverBudgetOnly] = useState(false);
   const [pendingRequestsOnly, setPendingRequestsOnly] = useState(false);
+  const [sortKey, setSortKey] = useState<'time' | 'cost' | 'max' | null>(null);
+  const [sortDir, setSortDir] = useState<ReportSortDir>('desc');
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<LeadManagementLeadRow[]>([]);
   const [historyRow, setHistoryRow] = useState<LeadManagementLeadRow | null>(null);
@@ -298,14 +310,28 @@ const LeadsManagementReportPage: React.FC = () => {
   const categories = useMemo(() => collectCategoriesFromRows(rows), [rows]);
 
   const filteredRows = useMemo(() => {
-    return rows.filter((row) => {
+    const filtered = rows.filter((row) => {
       if (category && (row.mainCategory || '') !== category) return false;
       if (!leadMatchesSearchQuery(row, leadSearch)) return false;
       if (overBudgetOnly && !row.exceedsCap) return false;
       if (pendingRequestsOnly && row.pendingRequestCount <= 0) return false;
       return true;
     });
-  }, [rows, category, leadSearch, overBudgetOnly, pendingRequestsOnly]);
+
+    if (!sortKey) return filtered;
+
+    return [...filtered].sort((a, b) => {
+      if (sortKey === 'time') return compareNullableNumbers(a.workedMs, b.workedMs, sortDir);
+      if (sortKey === 'cost') return compareNullableNumbers(a.costNis, b.costNis, sortDir);
+      return compareNullableNumbers(a.maxAllowedCostNis, b.maxAllowedCostNis, sortDir);
+    });
+  }, [rows, category, leadSearch, overBudgetOnly, pendingRequestsOnly, sortKey, sortDir]);
+
+  const handleSort = useCallback((key: string) => {
+    const next = toggleReportSort(sortKey, sortDir, key);
+    setSortKey(next.key as 'time' | 'cost' | 'max');
+    setSortDir(next.dir);
+  }, [sortKey, sortDir]);
 
   const totals = useMemo(() => {
     const scoped = rows.filter((row) => {
@@ -410,73 +436,41 @@ const LeadsManagementReportPage: React.FC = () => {
           </label>
         </div>
 
-        <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <div className="rounded-2xl bg-white px-4 py-4 shadow-sm ring-1 ring-gray-100 md:px-5 md:py-5">
-            <p className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-gray-500 md:text-base">
-              <ClipboardDocumentListIcon className="h-5 w-5 shrink-0 md:h-6 md:w-6" /> Leads
-            </p>
-            <p className="mt-2 text-2xl font-bold text-gray-900 md:text-3xl">{totals.leadCount}</p>
-          </div>
-          <div className="rounded-2xl bg-white px-4 py-4 shadow-sm ring-1 ring-gray-100 md:px-5 md:py-5">
-            <p className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-gray-500 md:text-base">
-              <ClockIcon className="h-5 w-5 shrink-0 md:h-6 md:w-6" /> Time
-            </p>
-            <p className="mt-2 text-2xl font-bold text-gray-900 md:text-3xl">
-              {formatAllocationWorkedDuration(totals.workedMs)}
-            </p>
-          </div>
-          <div className="rounded-2xl bg-white px-4 py-4 shadow-sm ring-1 ring-gray-100 md:px-5 md:py-5">
-            <p className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-gray-500 md:text-base">
-              <BanknotesIcon className="h-5 w-5 shrink-0 md:h-6 md:w-6" /> Cost
-            </p>
-            <p className="mt-2 text-2xl font-bold text-gray-900 md:text-3xl">
-              {formatAllocationCostNis(totals.costNis)}
-            </p>
-          </div>
-          <button
-            type="button"
+        <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <GradientSummaryCard
+            label="Leads"
+            value={totals.leadCount}
+            icon={ClipboardDocumentListIcon}
+            gradientClassName={REPORT_SUMMARY_GRADIENTS[4]}
+          />
+          <GradientSummaryCard
+            label="Time"
+            value={formatAllocationWorkedDuration(totals.workedMs)}
+            icon={ClockIcon}
+            gradientClassName={REPORT_SUMMARY_GRADIENTS[3]}
+          />
+          <GradientSummaryCard
+            label="Cost"
+            value={formatAllocationCostNis(totals.costNis)}
+            icon={BanknotesIcon}
+            gradientClassName={REPORT_SUMMARY_GRADIENTS[1]}
+          />
+          <GradientSummaryCard
+            label={overBudgetOnly ? 'Over budget · on' : 'Over budget'}
+            value={totals.overBudget}
+            icon={ExclamationTriangleIcon}
+            gradientClassName={REPORT_SUMMARY_GRADIENTS[2]}
+            active={overBudgetOnly}
             onClick={() => setOverBudgetOnly((prev) => !prev)}
-            aria-pressed={overBudgetOnly}
-            className={`rounded-2xl px-4 py-4 text-left shadow-sm ring-1 transition-colors md:px-5 md:py-5 ${
-              overBudgetOnly
-                ? 'bg-amber-50 ring-amber-300'
-                : 'bg-white ring-gray-100 hover:bg-amber-50/60 hover:ring-amber-200'
-            }`}
-          >
-            <p className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-gray-500 md:text-base">
-              <ExclamationTriangleIcon className="h-5 w-5 shrink-0 md:h-6 md:w-6" />
-              Over budget{overBudgetOnly ? ' · on' : ''}
-            </p>
-            <p
-              className={`mt-2 text-2xl font-bold md:text-3xl ${
-                totals.overBudget > 0 ? 'text-amber-700' : 'text-emerald-700'
-              }`}
-            >
-              {totals.overBudget}
-            </p>
-          </button>
-          <button
-            type="button"
+          />
+          <GradientSummaryCard
+            label={pendingRequestsOnly ? 'Requests · on' : 'Requests'}
+            value={totals.pendingRequests}
+            icon={InboxStackIcon}
+            gradientClassName={REPORT_SUMMARY_GRADIENTS[0]}
+            active={pendingRequestsOnly}
             onClick={() => setPendingRequestsOnly((prev) => !prev)}
-            aria-pressed={pendingRequestsOnly}
-            className={`rounded-2xl px-4 py-4 text-left shadow-sm ring-1 transition-colors md:px-5 md:py-5 ${
-              pendingRequestsOnly
-                ? 'bg-red-50 ring-red-300'
-                : 'bg-white ring-gray-100 hover:bg-red-50/60 hover:ring-red-200'
-            }`}
-          >
-            <p className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-gray-500 md:text-base">
-              <InboxStackIcon className="h-5 w-5 shrink-0 md:h-6 md:w-6" />
-              Requests{pendingRequestsOnly ? ' · on' : ''}
-            </p>
-            <p
-              className={`mt-2 text-2xl font-bold md:text-3xl ${
-                totals.pendingRequests > 0 ? 'text-red-600' : 'text-gray-900'
-              }`}
-            >
-              {totals.pendingRequests}
-            </p>
-          </button>
+          />
         </div>
 
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
@@ -497,9 +491,27 @@ const LeadsManagementReportPage: React.FC = () => {
                     <th>Lead</th>
                     <th>Main / subcategory</th>
                     <th>Employees</th>
-                    <th className="text-right">Time</th>
-                    <th className="text-right">Cost</th>
-                    <th className="text-right">Max</th>
+                    <ReportSortableTh
+                      label="Time"
+                      sortKey="time"
+                      activeKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    />
+                    <ReportSortableTh
+                      label="Cost"
+                      sortKey="cost"
+                      activeKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    />
+                    <ReportSortableTh
+                      label="Max"
+                      sortKey="max"
+                      activeKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    />
                     <th>Budget</th>
                     <th>Request reason</th>
                     <th className="text-right">Action</th>

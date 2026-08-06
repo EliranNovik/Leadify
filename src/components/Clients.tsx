@@ -10416,6 +10416,17 @@ const Clients: React.FC<ClientsProps> = ({
         const res = await fetchPaymentPlanTotal(String(selectedClient.id), { updateState: false });
         if (!res.hasPlan) return;
 
+        // Expenses / fees alone create plan rows but must not overwrite the lead contract total with 0.
+        // Only sync when there is a contract (non-expense) payment-plan base.
+        if (res.base == null || !Number.isFinite(Number(res.base))) {
+          console.log('[paymentPlanTotal] skip lead-total sync (no contract payment base)', {
+            leadId,
+            hasPlan: res.hasPlan,
+            expenseNoVat: res.expenseNoVat,
+          });
+          return;
+        }
+
         const isLegacyLead = String(selectedClient.id).startsWith('legacy_') || selectedClient.lead_type === 'legacy';
         if (isLegacyLead) {
           const legacyIdStr = String(selectedClient.id).replace('legacy_', '');
@@ -10426,12 +10437,15 @@ const Clients: React.FC<ClientsProps> = ({
           let leadCurrencyId = typeof leadCurrencyIdRaw === 'string' ? parseInt(leadCurrencyIdRaw, 10) : Number(leadCurrencyIdRaw);
           if (!Number.isFinite(leadCurrencyId) || leadCurrencyId <= 0) leadCurrencyId = 1;
 
+          const contractBase = Number(res.base);
           const update: Record<string, unknown> = {};
           if (leadCurrencyId === 1) {
-            update.total_base = res.base ?? 0;
+            update.total_base = contractBase;
           } else {
-            update.total = res.base ?? 0;
-            update.total_base = res.currencyId ? convertToNIS(res.base ?? 0, Number(res.currencyId)) : convertToNIS(res.base ?? 0, leadCurrencyId);
+            update.total = contractBase;
+            update.total_base = res.currencyId
+              ? convertToNIS(contractBase, Number(res.currencyId))
+              : convertToNIS(contractBase, leadCurrencyId);
           }
           if (res.currencyId && Number(res.currencyId) > 0) {
             update.currency_id = Number(res.currencyId);
@@ -10447,11 +10461,12 @@ const Clients: React.FC<ClientsProps> = ({
             await refreshClientData(selectedClient.id);
           }
         } else {
+          const contractBase = Number(res.base);
           const { error } = await supabase
             .from('leads')
             .update({
-              proposal_total: res.base ?? 0,
-              balance: res.base ?? 0,
+              proposal_total: contractBase,
+              balance: contractBase,
               vat_value: res.vat ?? 0,
               vat: (res.vat != null && Number(res.vat) > 0) ? 'true' : 'false',
               currency_id: res.currencyId ?? (selectedClient as any)?.currency_id ?? 1

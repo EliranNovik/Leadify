@@ -552,7 +552,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return readClientsTabCache<ClientHeaderCostCacheSlice>(key, 'header')?.summary ?? null;
         });
     const [leadEmployeeCostLoading, setLeadEmployeeCostLoading] = useState(false);
-    /** Firm-paid expenses (amount + VAT) — reduce Net / employee-cost base; client-paid do not. */
+    /** Firm-paid expenses (amount + VAT) — reduce Total; client-paid do not. Net shows full total without fees/expenses. */
     const [firmPaidExpenseTotal, setFirmPaidExpenseTotal] = useState(() => {
         const key = clientsTabCacheLeadKey(selectedClient);
         return readClientsTabCache<ClientHeaderCostCacheSlice>(key, 'header')?.firmPaidExpenseTotal ?? 0;
@@ -3413,12 +3413,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             }
                             const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
                             const firmExpense = Math.max(0, Number(firmPaidExpenseTotal) || 0);
-                            // Primary figure = full lead total (ex VAT in DB); fees + firm-paid expenses reduce Net below
-                            const mainAmount = baseAmount;
+                            // Total (top) = lead total after office (firm-paid) expenses + subcontractor fees
+                            // Net = full lead total without those deductions
                             const totalReductions =
                                 (subcontractorFee > 0 ? subcontractorFee : 0) + firmExpense;
-                            const netAfterReductions =
-                                totalReductions > 0 ? Math.max(0, baseAmount - totalReductions) : null;
+                            const mainAmount = Math.max(0, baseAmount - totalReductions);
+                            const netWithoutFeesAndExpenses =
+                                totalReductions > 0 ? baseAmount : null;
                             const potentialAmount = isLegacyLead
                                 ? Number((selectedClient as any)?.potential_total ?? 0) || 0
                                 : Number(
@@ -3520,10 +3521,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             subtotal={mainAmount}
                                             vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
                                         />
-                                        {netAfterReductions !== null && (
+                                        {netWithoutFeesAndExpenses !== null && (
                                             <p className="text-[11px] text-base-content/50">
                                                 Net {currency}
-                                                {Number(netAfterReductions.toFixed(2)).toLocaleString()}
+                                                {Number(netWithoutFeesAndExpenses.toFixed(2)).toLocaleString()}
                                             </p>
                                         )}
                                         {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
@@ -3724,11 +3725,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                                 const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
                                 const firmExpense = Math.max(0, Number(firmPaidExpenseTotal) || 0);
-                                const mainAmount = baseAmount;
+                                // Total (top) = lead total after office (firm-paid) expenses + subcontractor fees
+                                // Net = full lead total without those deductions
                                 const totalReductions =
                                     (subcontractorFee > 0 ? subcontractorFee : 0) + firmExpense;
-                                const netAfterReductions =
-                                    totalReductions > 0 ? Math.max(0, baseAmount - totalReductions) : null;
+                                const mainAmount = Math.max(0, baseAmount - totalReductions);
+                                const netWithoutFeesAndExpenses =
+                                    totalReductions > 0 ? baseAmount : null;
                                 const potentialAmount = isLegacyLead
                                     ? Number((selectedClient as any)?.potential_total ?? 0) || 0
                                     : Number(
@@ -3792,7 +3795,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 const unpaidExpenseAmountDesktop = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
 
                                 const hasExpandableFinancialDetails =
-                                    netAfterReductions !== null ||
+                                    netWithoutFeesAndExpenses !== null ||
                                     (paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0) ||
                                     potentialAmount > 0 ||
                                     potentialApplicantsMeeting > 0 ||
@@ -3864,10 +3867,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     subtotal={mainAmount}
                                                     vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
                                                 />
-                                                {netAfterReductions !== null && (
+                                                {netWithoutFeesAndExpenses !== null && (
                                                     <p className="text-[11px] text-base-content/50">
                                                         Net {currency}
-                                                        {Number(netAfterReductions.toFixed(2)).toLocaleString()}
+                                                        {Number(netWithoutFeesAndExpenses.toFixed(2)).toLocaleString()}
                                                     </p>
                                                 )}
                                                 {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (

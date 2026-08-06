@@ -117,6 +117,7 @@ export type ClockInWithEmployee = ClockInExportRecord & {
     department_id?: number | null;
     min_hours?: number | null;
     hour_rate?: number | null;
+    bonuses_role?: string | null;
     tenant_departement?: { name: string } | { name: string }[] | null;
   } | {
     display_name: string | null;
@@ -124,9 +125,51 @@ export type ClockInWithEmployee = ClockInExportRecord & {
     department_id?: number | null;
     min_hours?: number | null;
     hour_rate?: number | null;
+    bonuses_role?: string | null;
     tenant_departement?: { name: string } | { name: string }[] | null;
   }[] | null;
 };
+
+/** Lightweight clock-in rows for allocation time totals (no GPS / location joins). */
+export type ClockInForAllocationMs = {
+  employee_id?: number | null;
+  clock_in_time: string;
+  clock_out_time: string | null;
+  notes?: string | null;
+  manually?: boolean;
+  approved?: boolean;
+  declined?: boolean;
+};
+
+const CLOCK_IN_ALLOCATION_MS_SELECT =
+  'employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined';
+
+/** Paginated clock-in fetch sized for allocation report aggregation. */
+export async function fetchClockInRecordsForAllocationMs(
+  dateFrom: string,
+  dateTo: string,
+): Promise<ClockInForAllocationMs[]> {
+  const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
+  const PAGE = 1000;
+  const all: ClockInForAllocationMs[] = [];
+
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('employee_clock_in')
+      .select(CLOCK_IN_ALLOCATION_MS_SELECT)
+      .gte('clock_in_time', start)
+      .lte('clock_in_time', end)
+      .order('clock_in_time', { ascending: false })
+      .range(from, from + PAGE - 1);
+
+    if (error) throw error;
+    const batch = (data as ClockInForAllocationMs[]) || [];
+    all.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+
+  return all;
+}
 
 /** All clock-in rows in range, with employee profile for report merging. */
 export async function fetchClockInRecordsInRange(
@@ -139,7 +182,7 @@ export async function fetchClockInRecordsInRange(
     .select(
       `${CLOCK_IN_DETAIL_SELECT},
        tenants_employee!employee_id (
-         display_name, photo_url, department_id, min_hours, hour_rate,
+         display_name, photo_url, department_id, min_hours, hour_rate, bonuses_role,
          tenant_departement!department_id ( name )
        )`,
     )

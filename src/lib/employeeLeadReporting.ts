@@ -255,6 +255,42 @@ export function buildAllocationClockInMsByEmployee(
   return totals;
 }
 
+export function allocationEmployeeDateKey(employeeId: number, workDate: string): string {
+  return `${employeeId}|${workDate}`;
+}
+
+/** Allocation-aware worked ms keyed by `employeeId|YYYY-MM-DD` (Jerusalem calendar day). */
+export function buildAllocationClockInMsByEmployeeDate(
+  records: Array<{
+    employee_id?: number | null;
+    clock_in_time: string;
+    clock_out_time: string | null;
+    notes?: string | null;
+    manually?: boolean;
+    approved?: boolean;
+    declined?: boolean;
+  }>,
+): Map<string, number> {
+  const byKey = new Map<string, typeof records>();
+
+  for (const record of records) {
+    const employeeId = record.employee_id;
+    if (employeeId == null) continue;
+    const dateKey = getJerusalemTodayIsoDate(new Date(record.clock_in_time));
+    const key = allocationEmployeeDateKey(employeeId, dateKey);
+    const list = byKey.get(key);
+    if (list) list.push(record);
+    else byKey.set(key, [record]);
+  }
+
+  const totals = new Map<string, number>();
+  for (const [key, empRecords] of byKey) {
+    const employeeId = Number(key.split('|')[0]);
+    totals.set(key, buildAllocationDayWorkedMs(empRecords, employeeId));
+  }
+  return totals;
+}
+
 export function combineWorkDateAndTime(date: string, time: string): Date {
   return new Date(`${date}T${time}`);
 }
@@ -1434,15 +1470,21 @@ export async function deleteDailyAllocation(
 }
 
 export async function fetchAllocationReport(params: {
-  fromDate: string;
-  toDate: string;
+  /** Inclusive lower bound. Omit / null = no lower bound (Show all). */
+  fromDate?: string | null;
+  /** Inclusive upper bound. Omit / null = no upper bound. */
+  toDate?: string | null;
   departmentId?: number | null;
   employeeSearch?: string;
 }): Promise<AllocationReportRow[]> {
-  let allocationQuery = supabase
-    .from('employee_daily_lead_allocations')
-    .select(
-      `
+  const PAGE = 1000;
+  const allocations: any[] = [];
+
+  for (let from = 0; ; from += PAGE) {
+    let allocationQuery = supabase
+      .from('employee_daily_lead_allocations')
+      .select(
+        `
       id,
       employee_id,
       work_date,
@@ -1470,20 +1512,30 @@ export async function fetchAllocationReport(params: {
         percent
       )
     `,
-    )
-    .gte('work_date', params.fromDate)
-    .lte('work_date', params.toDate)
-    .order('work_date', { ascending: false });
+      )
+      .order('work_date', { ascending: false })
+      .range(from, from + PAGE - 1);
 
-  const { data, error } = await allocationQuery;
-  if (error) throw error;
+    if (params.fromDate) {
+      allocationQuery = allocationQuery.gte('work_date', params.fromDate);
+    }
+    if (params.toDate) {
+      allocationQuery = allocationQuery.lte('work_date', params.toDate);
+    }
+
+    const { data, error } = await allocationQuery;
+    if (error) throw error;
+    const batch = data || [];
+    allocations.push(...batch);
+    if (batch.length < PAGE) break;
+  }
 
   const search = params.employeeSearch?.trim().toLowerCase() || '';
   const departmentId = params.departmentId ?? null;
 
   const rows: AllocationReportRow[] = [];
 
-  for (const alloc of data || []) {
+  for (const alloc of allocations) {
     const emp = Array.isArray(alloc.tenants_employee)
       ? alloc.tenants_employee[0]
       : alloc.tenants_employee;
@@ -1851,6 +1903,7 @@ export type ClockedOutEmployeeRef = {
   photoUrl: string | null;
   minHours: number;
   hourRate: number | null;
+  bonusesRole: string | null;
 };
 
 function resolveClockInEmployee(record: ClockInWithEmployee): {
@@ -1860,6 +1913,7 @@ function resolveClockInEmployee(record: ClockInWithEmployee): {
   photoUrl: string | null;
   minHours: number;
   hourRate: number | null;
+  bonusesRole: string | null;
 } {
   const emp = Array.isArray(record.tenants_employee)
     ? record.tenants_employee[0]
@@ -1876,6 +1930,8 @@ function resolveClockInEmployee(record: ClockInWithEmployee): {
     photoUrl: emp?.photo_url?.trim() || null,
     minHours: normalizeEmployeeMinHours(emp?.min_hours),
     hourRate: normalizeEmployeeHourRate(emp?.hour_rate),
+    bonusesRole:
+      typeof emp?.bonuses_role === 'string' ? emp.bonuses_role.trim() : null,
   };
 }
 
@@ -1891,8 +1947,15 @@ export function collectClockedOutEmployeesForDay(
     if (employeeId == null || !record.clock_out_time) continue;
     if (map.has(employeeId)) continue;
 
-    const { employeeName, departmentId, departmentName, photoUrl, minHours, hourRate } =
-      resolveClockInEmployee(record);
+    const {
+      employeeName,
+      departmentId,
+      departmentName,
+      photoUrl,
+      minHours,
+      hourRate,
+      bonusesRole,
+    } = resolveClockInEmployee(record);
     map.set(employeeId, {
       employeeId,
       employeeName,
@@ -1901,10 +1964,32 @@ export function collectClockedOutEmployeesForDay(
       photoUrl,
       minHours,
       hourRate,
+      bonusesRole,
     });
   }
 
   return map;
+}
+
+/** Employee IDs linked to superuser accounts (admin lead-allocation reporters). */
+export async function fetchSuperuserEmployeeIds(): Promise<Set<number>> {
+  const { data, error } = await supabase
+    .from('users')
+    .select('employee_id, is_superuser')
+    .not('employee_id', 'is', null);
+
+  if (error) throw error;
+
+  const ids = new Set<number>();
+  for (const row of data || []) {
+    const isSuper =
+      row.is_superuser === true ||
+      row.is_superuser === 'true' ||
+      row.is_superuser === 1;
+    if (!isSuper || row.employee_id == null) continue;
+    ids.add(Number(row.employee_id));
+  }
+  return ids;
 }
 
 export async function fetchSubmittedAllocationEmployeeIds(
@@ -1929,6 +2014,143 @@ export type MissingLeadReportingEmployee = ClockedOutEmployeeRef & {
   costNis: number | null;
 };
 
+function jerusalemIsoDateFromTimestamp(iso: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: JERUSALEM_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(iso));
+}
+
+/** Employee with past days (yesterday and earlier) still missing a lead allocation. */
+export type MissingLeadReportingBacklogRow = {
+  employeeId: number;
+  employeeName: string;
+  departmentId: number | null;
+  departmentName: string | null;
+  photoUrl: string | null;
+  /** Ascending ISO dates the employee clocked out without submitting. */
+  missingDates: string[];
+};
+
+/**
+ * Admin backlog of missing lead reporting — independent of any single work-date filter.
+ * Only handlers, DMs, and admins; only yesterday and earlier; only days they clocked out.
+ */
+export async function fetchMissingLeadReportingBacklog(params?: {
+  departmentId?: number | null;
+  employeeSearch?: string;
+  todayIso?: string;
+  startIso?: string;
+}): Promise<MissingLeadReportingBacklogRow[]> {
+  const today = params?.todayIso ?? getJerusalemTodayIsoDate();
+  const start = params?.startIso ?? LEAD_ALLOCATION_REPORTING_START_DATE;
+  const pastExpected = listExpectedLeadAllocationWorkDates(today, start).filter(
+    (day) => day < today,
+  );
+  if (pastExpected.length === 0) return [];
+
+  const fromDate = pastExpected[0];
+  const toDate = pastExpected[pastExpected.length - 1];
+  const pastExpectedSet = new Set(pastExpected);
+
+  const [clockRecords, superuserIds] = await Promise.all([
+    fetchClockInRecordsInRange(fromDate, toDate),
+    fetchSuperuserEmployeeIds(),
+  ]);
+
+  const counted = filterCountedClockInRecords(clockRecords);
+  const clockedOutDatesByEmployee = new Map<number, Set<string>>();
+  const profileByEmployee = new Map<number, ClockedOutEmployeeRef>();
+
+  for (const record of counted) {
+    const employeeId = record.employee_id;
+    if (employeeId == null || !record.clock_out_time) continue;
+    const day = jerusalemIsoDateFromTimestamp(record.clock_in_time);
+    if (!pastExpectedSet.has(day)) continue;
+
+    let dates = clockedOutDatesByEmployee.get(employeeId);
+    if (!dates) {
+      dates = new Set();
+      clockedOutDatesByEmployee.set(employeeId, dates);
+    }
+    dates.add(day);
+
+    if (!profileByEmployee.has(employeeId)) {
+      const resolved = resolveClockInEmployee(record);
+      profileByEmployee.set(employeeId, {
+        employeeId,
+        ...resolved,
+      });
+    }
+  }
+
+  const eligibleIds = Array.from(clockedOutDatesByEmployee.keys()).filter((id) => {
+    const profile = profileByEmployee.get(id);
+    if (!profile) return false;
+    return canAccessLeadTimeReport({
+      isSuperUser: superuserIds.has(id),
+      bonusesRole: profile.bonusesRole,
+    });
+  });
+
+  if (eligibleIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('employee_daily_lead_allocations')
+    .select('employee_id, work_date')
+    .in('employee_id', eligibleIds)
+    .gte('work_date', fromDate)
+    .lte('work_date', toDate);
+
+  if (error) throw error;
+
+  const submittedByEmployee = new Map<number, Set<string>>();
+  for (const row of data || []) {
+    const employeeId = row.employee_id as number | null;
+    const workDate = String(row.work_date || '').slice(0, 10);
+    if (employeeId == null || !workDate) continue;
+    let set = submittedByEmployee.get(employeeId);
+    if (!set) {
+      set = new Set();
+      submittedByEmployee.set(employeeId, set);
+    }
+    set.add(workDate);
+  }
+
+  const search = params?.employeeSearch?.trim().toLowerCase() || '';
+  const departmentId = params?.departmentId ?? null;
+  const rows: MissingLeadReportingBacklogRow[] = [];
+
+  for (const employeeId of eligibleIds) {
+    const profile = profileByEmployee.get(employeeId);
+    if (!profile) continue;
+    if (departmentId != null && profile.departmentId !== departmentId) continue;
+    if (search && !profile.employeeName.toLowerCase().includes(search)) continue;
+
+    const clockedDays = clockedOutDatesByEmployee.get(employeeId);
+    if (!clockedDays) continue;
+    const submitted = submittedByEmployee.get(employeeId) ?? new Set();
+    const missingDates = Array.from(clockedDays)
+      .filter((day) => !submitted.has(day))
+      .sort();
+
+    if (missingDates.length === 0) continue;
+
+    rows.push({
+      employeeId: profile.employeeId,
+      employeeName: profile.employeeName,
+      departmentId: profile.departmentId,
+      departmentName: profile.departmentName,
+      photoUrl: profile.photoUrl,
+      missingDates,
+    });
+  }
+
+  return rows.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+}
+
 export function listMissingLeadReportingEmployees(params: {
   clockedOutEmployees: Map<number, ClockedOutEmployeeRef>;
   reportedEmployeeIds: Set<number>;
@@ -1937,15 +2159,39 @@ export function listMissingLeadReportingEmployees(params: {
   employeeSearch?: string;
   /** Average monthly gross salary (last 6 months). Total cost = salary when provided. */
   avgMonthlySalaryByEmployee?: Map<number, number>;
+  /**
+   * Work date being reviewed. Missing reporting only applies to yesterday and
+   * earlier (strictly before Jerusalem today) — never today or future dates.
+   */
+  workDate?: string;
+  todayIso?: string;
+  /** Employee IDs with users.is_superuser (admins required to report). */
+  superuserEmployeeIds?: Set<number>;
 }): MissingLeadReportingEmployee[] {
+  const today = params.todayIso ?? getJerusalemTodayIsoDate();
+  if (params.workDate != null && params.workDate >= today) {
+    return [];
+  }
+
   const search = params.employeeSearch?.trim().toLowerCase() || '';
   const departmentId = params.departmentId ?? null;
+  const superuserIds = params.superuserEmployeeIds;
   const rows: MissingLeadReportingEmployee[] = [];
 
   for (const employee of params.clockedOutEmployees.values()) {
     if (departmentId != null && employee.departmentId !== departmentId) continue;
     if (search && !employee.employeeName.toLowerCase().includes(search)) continue;
     if (params.reportedEmployeeIds.has(employee.employeeId)) continue;
+
+    const isSuperUser = superuserIds?.has(employee.employeeId) === true;
+    if (
+      !canAccessLeadTimeReport({
+        isSuperUser,
+        bonusesRole: employee.bonusesRole,
+      })
+    ) {
+      continue;
+    }
 
     const workedMs = params.clockInMsByEmployee.get(employee.employeeId) ?? 0;
     const avgSalary = params.avgMonthlySalaryByEmployee?.get(employee.employeeId);
@@ -1968,6 +2214,9 @@ export function countMissingLeadReporting(params: {
   reportedEmployeeIds: Set<number>;
   departmentId?: number | null;
   employeeSearch?: string;
+  workDate?: string;
+  todayIso?: string;
+  superuserEmployeeIds?: Set<number>;
 }): number {
   return listMissingLeadReportingEmployees({
     ...params,
