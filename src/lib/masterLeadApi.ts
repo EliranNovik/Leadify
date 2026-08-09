@@ -173,32 +173,41 @@ export const fetchNewMasterLead = async (
   setContractsDataMap: (updater: (prev: Map<string, ContractData>) => Map<string, ContractData>) => void
 ): Promise<{ success: boolean; masterLead?: any; subLeads?: SubLead[]; error?: string }> => {
   try {
-    // Normalized base for linked_master_lead (we save without L/C prefix in linkLeadToChain)
+    // Find master lead in one round-trip (exact, L/C prefix, /1 variants, manual_id)
     const normalizedBaseForLinked = normalizeBaseLeadNumber(baseLeadNumber);
+    const numericBase = String(normalizedBaseForLinked || '').replace(/^[LC]/i, '');
+    const masterOr: string[] = [
+      `lead_number.eq.${baseLeadNumber}`,
+      `lead_number.eq.${normalizedBaseForLinked}`,
+      `lead_number.eq.${baseLeadNumber}/1`,
+      `lead_number.eq.${normalizedBaseForLinked}/1`,
+    ];
+    if (!String(baseLeadNumber).startsWith('L') && !String(baseLeadNumber).startsWith('C')) {
+      masterOr.push(`lead_number.eq.L${numericBase}`, `lead_number.eq.C${numericBase}`, `lead_number.eq.L${numericBase}/1`);
+    }
+    if (/^\d+$/.test(numericBase)) {
+      masterOr.push(`manual_id.eq.${numericBase}`);
+    }
 
-    // First, try to find master lead with exact match
-    let { data: masterLead, error: masterError } = await supabase
+    const { data: masterRows, error: masterError } = await supabase
       .from('leads')
       .select('*')
-      .eq('lead_number', baseLeadNumber)
-      .maybeSingle();
-
-    // If not found, try with /1 suffix (in case master has sub-leads)
-    if (!masterLead && !masterError) {
-      const { data: masterWithSuffix } = await supabase
-        .from('leads')
-        .select('*')
-        .eq('lead_number', `${baseLeadNumber}/1`)
-        .maybeSingle();
-
-      if (masterWithSuffix) {
-        masterLead = masterWithSuffix;
-      }
-    }
+      .or([...new Set(masterOr)].join(','))
+      .limit(5);
 
     if (masterError) {
       console.error('Error fetching new master lead:', masterError);
     }
+
+    // Prefer exact / base match, then /1 master row
+    const masterCandidates = masterRows || [];
+    let masterLead =
+      masterCandidates.find((l: any) => String(l.lead_number) === String(baseLeadNumber)) ||
+      masterCandidates.find((l: any) => String(l.lead_number) === String(normalizedBaseForLinked)) ||
+      masterCandidates.find((l: any) => String(l.lead_number) === `${baseLeadNumber}/1` || String(l.lead_number) === `${normalizedBaseForLinked}/1` || String(l.lead_number) === `L${numericBase}/1`) ||
+      masterCandidates.find((l: any) => !l.master_id || String(l.master_id).trim() === '') ||
+      masterCandidates[0] ||
+      null;
 
     if (!masterLead) {
       return { success: false };
@@ -206,10 +215,12 @@ export const fetchNewMasterLead = async (
 
     // Fetch all sub-leads (all leads with baseLeadNumber/ suffix)
     // This will include /1, /2, /3, /4, /5, /6, etc.
+    const patternBases = [...new Set([baseLeadNumber, normalizedBaseForLinked, `L${numericBase}`, numericBase].filter(Boolean))];
+    const likeFilters = patternBases.map((b) => `lead_number.like.${b}/%`).join(',');
     const { data: subLeadsData, error: subLeadsError } = await supabase
       .from('leads')
       .select('*')
-      .like('lead_number', `${baseLeadNumber}/%`)
+      .or(likeFilters)
       .order('lead_number', { ascending: true });
 
     if (subLeadsError) {
@@ -221,26 +232,60 @@ export const fetchNewMasterLead = async (
     const filteredSubLeadsFromPattern = subLeadsData?.filter(lead => {
       const leadNum = String(lead.lead_number || '');
       // Exclude the exact baseLeadNumber match (master lead)
-      return leadNum !== baseLeadNumber;
+      return leadNum !== baseLeadNumber && leadNum !== String(masterLead.lead_number || '');
     }) || [];
+
+    // Sub-leads linked by master_id (UUID) — same path Clients.tsx uses
+    const masterIdOrConditions: string[] = [];
+    if (masterLead?.id) {
+      masterIdOrConditions.push(`master_id.eq.${masterLead.id}`);
+    }
+    if (/^\d+$/.test(numericBase)) {
+      masterIdOrConditions.push(`master_id.eq.${numericBase}`);
+    }
+    const leadNumberBase = String(masterLead.lead_number || '')
+      .replace(/^[LC]/i, '')
+      .split('/')[0];
+    if (/^\d+$/.test(leadNumberBase) && leadNumberBase !== numericBase) {
+      masterIdOrConditions.push(`master_id.eq.${leadNumberBase}`);
+    }
+
+    const byMasterIdPromise =
+      masterIdOrConditions.length > 0
+        ? supabase
+            .from('leads')
+            .select('*')
+            .or(masterIdOrConditions.join(','))
+            .not('master_id', 'is', null)
+        : Promise.resolve({ data: null as any[] | null, error: null });
 
     // Also include new leads and legacy leads that point to this master via linked_master_lead (text: "L210292" or "210292").
     const linkedMasterValues = [normalizedBaseForLinked, baseLeadNumber].filter(Boolean);
     const [
       { data: linkedSubLeadsData },
-      { data: linkedLegacyToNewData }
+      { data: linkedLegacyToNewData },
+      { data: byMasterIdData }
     ] = await Promise.all([
       supabase.from('leads').select('*').in('linked_master_lead', linkedMasterValues),
-      supabase.from('leads_lead').select('*, accounting_currencies!leads_lead_currency_id_fkey (name, iso_code)').in('linked_master_lead', linkedMasterValues)
+      supabase.from('leads_lead').select('*, accounting_currencies!leads_lead_currency_id_fkey (name, iso_code)').in('linked_master_lead', linkedMasterValues),
+      byMasterIdPromise
     ]);
 
-    const linkedSubLeads = (linkedSubLeadsData || []).filter((lead: any) => {
-      if (!lead || !lead.id) return false;
-      if (masterLead?.id && String(lead.id) === String(masterLead.id)) return false;
-      return !filteredSubLeadsFromPattern.some((existing: any) => String(existing.id) === String(lead.id));
-    });
+    const mergeNewSubLead = (acc: any[], lead: any) => {
+      if (!lead || !lead.id) return acc;
+      if (masterLead?.id && String(lead.id) === String(masterLead.id)) return acc;
+      if (acc.some((existing: any) => String(existing.id) === String(lead.id))) return acc;
+      acc.push(lead);
+      return acc;
+    };
 
-    const filteredSubLeads = [...filteredSubLeadsFromPattern, ...linkedSubLeads];
+    let filteredSubLeads = [...filteredSubLeadsFromPattern];
+    (byMasterIdData || []).forEach((lead: any) => {
+      filteredSubLeads = mergeNewSubLead(filteredSubLeads, lead);
+    });
+    (linkedSubLeadsData || []).forEach((lead: any) => {
+      filteredSubLeads = mergeNewSubLead(filteredSubLeads, lead);
+    });
 
     const leadIdsForContacts = [
       masterLead?.id,
@@ -410,8 +455,12 @@ export const fetchNewMasterLead = async (
 
         console.log('🔍 Contract:', contract.id, 'for lead:', leadId, 'contact_id:', contract.contact_id, 'mainContactId:', mainContactId);
 
-        // Only assign contract if it belongs to the main contact
-        if (contract.contact_id && mainContactId && contract.contact_id === mainContactId) {
+        // Only assign contract if it belongs to the main contact (coerce ids — DB may return string/number)
+        if (
+          contract.contact_id != null &&
+          mainContactId != null &&
+          Number(contract.contact_id) === Number(mainContactId)
+        ) {
           // Only set if we don't already have a contract for this lead, or if this one is more recent/signed
           const existing = newContractsMap.get(leadId);
           if (!existing) {
@@ -565,17 +614,17 @@ export const fetchNewMasterLead = async (
         id: String(lead.id),
         lead_number: leadNumberValue,
         actual_lead_id: manualValue || leadNumberValue || String(lead.id),
-        manual_id: manualValue,
+        manual_id: manualValue ?? undefined,
         name: lead.name || 'Unknown',
         total: totalValue,
         currency: currencyCode,
         currency_symbol: getCurrencySymbol(currencyCode),
         category: categoryName,
-        topic: lead.topic || null,
+        topic: lead.topic || undefined,
         stage: String(lead.stage),
         contact: contactName,
         applicants: Number(applicantsValue) || 0,
-        agreement: null, // Will be set in component
+        agreement: undefined, // Will be set in component
         scheduler: schedulerName,
         scheduler_id: finalSchedulerId,
         closer: closerName,
@@ -605,17 +654,17 @@ export const fetchNewMasterLead = async (
         lead_number: String(lead.id),
         actual_lead_id: String(lead.id),
         isLinkedOnly: true,
-        manual_id: lead.manual_id,
+        manual_id: lead.manual_id ?? undefined,
         name: lead.name || 'Unknown',
         total: getLegacyLeadTotal(lead),
         currency: currencyInfo.currency,
         currency_symbol: currencyInfo.symbol,
         category: getCategoryName(lead.category_id, categories || []),
-        topic: lead.topic || null,
+        topic: lead.topic || undefined,
         stage: String(lead.stage ?? ''),
         contact: lead.name || '---',
         applicants: parseInt(lead.no_of_applicants) || 0,
-        agreement: null,
+        agreement: undefined,
         scheduler: '---',
         scheduler_id: lead.meeting_scheduler_id,
         closer: '---',
@@ -781,10 +830,42 @@ export const fetchLegacyMasterLead = async (
       .eq('linked_master_lead', masterLegacyIdStr);
 
     // New leads linked to this legacy master (linked_master_lead = legacy id as text)
-    const { data: linkedNewToLegacyData } = await supabase
+    // PLUS new leads whose master_id is the corresponding new-lead UUID or numeric legacy id
+    // (same resolution Clients.tsx uses — master_id UUID is the common case for new subleads)
+    const newMasterLookupOr: string[] = [
+      `lead_number.eq.${masterLegacyIdStr}`,
+      `lead_number.eq.L${masterLegacyIdStr}`,
+      `lead_number.eq.C${masterLegacyIdStr}`,
+      `lead_number.eq.${masterLegacyIdStr}/1`,
+      `lead_number.eq.L${masterLegacyIdStr}/1`,
+      `manual_id.eq.${masterLegacyIdStr}`,
+    ];
+    const { data: newMasterRows } = await supabase
+      .from('leads')
+      .select('id, lead_number, manual_id')
+      .or(newMasterLookupOr.join(','))
+      .limit(1);
+    const newMasterForLegacy = newMasterRows?.[0] ?? null;
+
+    const newSubleadMasterIdOr: string[] = [
+      `master_id.eq.${masterLegacyIdStr}`,
+      `linked_master_lead.eq.${masterLegacyIdStr}`,
+    ];
+    if (newMasterForLegacy?.id) {
+      newSubleadMasterIdOr.unshift(`master_id.eq.${newMasterForLegacy.id}`);
+    }
+
+    const { data: linkedNewToLegacyRaw } = await supabase
       .from('leads')
       .select('*')
-      .eq('linked_master_lead', masterLegacyIdStr);
+      .or(newSubleadMasterIdOr.join(','));
+
+    // Exclude the corresponding new master row itself; keep true subleads / linked leads only
+    const linkedNewToLegacyData = (linkedNewToLegacyRaw || []).filter((lead: any) => {
+      if (!lead?.id) return false;
+      if (newMasterForLegacy?.id && String(lead.id) === String(newMasterForLegacy.id)) return false;
+      return true;
+    });
 
     const existingIds = new Set((subLeadsData || []).map((l: any) => l.id));
     const linkedLegacySubLeads = (linkedLegacyData || []).filter(
@@ -793,6 +874,7 @@ export const fetchLegacyMasterLead = async (
     const allLegacySubLeads = [...(subLeadsData || []), ...linkedLegacySubLeads];
 
     const allLeadIds = [masterLead?.id, ...allLegacySubLeads.map(lead => lead.id)].filter(Boolean);
+    const newLinkedLeadIds = linkedNewToLegacyData.map((l: any) => l.id).filter(Boolean);
 
     // Fetch main contacts for legacy leads
     const legacyMainContactsMap = new Map<number, number>(); // leadId -> mainContactId
@@ -902,7 +984,11 @@ export const fetchLegacyMasterLead = async (
         const mainContactId = legacyMainContactsMap.get(Number(leadId));
 
         // Only assign contract if it belongs to the main contact
-        if (contract.contact_id && mainContactId && contract.contact_id === mainContactId) {
+        if (
+          contract.contact_id != null &&
+          mainContactId != null &&
+          Number(contract.contact_id) === Number(mainContactId)
+        ) {
           // Only set if we don't already have a contract for this lead
           if (!contractsMap.has(leadId)) {
             contractsMap.set(leadId, {
@@ -913,6 +999,14 @@ export const fetchLegacyMasterLead = async (
         } else if (!contract.contact_id && mainContactId) {
           // Fallback: if no contact_id, assign to main contact (backward compatibility)
           // Only if this lead has a main contact
+          if (!contractsMap.has(leadId)) {
+            contractsMap.set(leadId, {
+              id: contract.id,
+              isLegacy: false
+            });
+          }
+        } else if (contract.contact_id == null && !mainContactId) {
+          // Last resort: any contract on this legacy_id when we have no main contact mapping
           if (!contractsMap.has(leadId)) {
             contractsMap.set(leadId, {
               id: contract.id,
@@ -942,7 +1036,7 @@ export const fetchLegacyMasterLead = async (
         console.log('🔍 Legacy contract:', lc.id, 'for lead:', leadId, 'contact_id:', lc.contact_id, 'mainContactId:', mainContactId);
 
         // Assign when this row's contact_id matches the lead's main (or fallback) contact (same as ContactInfoTab)
-        if (mainContactId != null && mainContactId === lc.contact_id) {
+        if (mainContactId != null && Number(mainContactId) === Number(lc.contact_id)) {
           const leadIdNum = Number(lc.lead_id);
           const signedDate = signedDatesMap.get(leadIdNum);
           const hasSignedContract = lc.signed_contract_html &&
@@ -971,6 +1065,23 @@ export const fetchLegacyMasterLead = async (
         }
       });
       console.log('🔍 Final contractsMap after legacy processing:', Array.from(contractsMap.entries()));
+    }
+
+    // Contracts for new (UUID) subleads linked into this legacy master chain
+    if (newLinkedLeadIds.length > 0) {
+      const { data: newLinkedContracts } = await supabase
+        .from('contracts')
+        .select('id, client_id, contact_id')
+        .in('client_id', newLinkedLeadIds.map((id: any) => String(id)))
+        .order('created_at', { ascending: false });
+
+      (newLinkedContracts || []).forEach((contract: any) => {
+        if (!contract?.client_id || !contract?.id) return;
+        const leadId = String(contract.client_id);
+        if (!contractsMap.has(leadId)) {
+          contractsMap.set(leadId, { id: contract.id, isLegacy: false });
+        }
+      });
     }
 
     setContractsDataMap(() => contractsMap);
@@ -1021,17 +1132,17 @@ export const fetchLegacyMasterLead = async (
         id: `legacy_${masterLead.id}`,
         lead_number: displayNumber,
         actual_lead_id: String(masterLead.id),
-        manual_id: masterLead.manual_id,
+        manual_id: masterLead.manual_id ?? undefined,
         name: masterLead.name || 'Unknown',
         total: getLegacyLeadTotal(masterLead),
         currency: currencyInfo.currency,
         currency_symbol: currencyInfo.symbol,
         category: getCategoryName(masterLead.category_id, categories || []),
-        topic: masterLead.topic || null,
+        topic: masterLead.topic || undefined,
         stage: String(masterLead.stage),
         contact: getContactInfo(masterLead, contactMap),
         applicants: parseInt(masterLead.no_of_applicants) || 0,
-        agreement: null, // Will be set in component
+        agreement: undefined, // Will be set in component
         scheduler: (() => {
           const scheduler = Array.isArray(masterLead.scheduler) ? masterLead.scheduler[0] : masterLead.scheduler;
           return (scheduler as any)?.display_name || '---';
@@ -1084,17 +1195,17 @@ export const fetchLegacyMasterLead = async (
           lead_number: displayNumber,
           actual_lead_id: String(lead.id),
           isLinkedOnly: isLinkedOnly || undefined,
-          manual_id: lead.manual_id,
+          manual_id: lead.manual_id ?? undefined,
           name: lead.name || 'Unknown',
           total: getLegacyLeadTotal(lead),
           currency: currencyInfo.currency,
           currency_symbol: currencyInfo.symbol,
           category: getCategoryName(lead.category_id, categories || []),
-          topic: lead.topic || null,
+          topic: lead.topic || undefined,
           stage: String(lead.stage),
           contact: getContactInfo(lead, contactMap),
           applicants: parseInt(lead.no_of_applicants) || 0,
-          agreement: null, // Will be set in component
+          agreement: undefined, // Will be set in component
           scheduler: (() => {
             const scheduler = Array.isArray(lead.scheduler) ? lead.scheduler[0] : lead.scheduler;
             return (scheduler as any)?.display_name || '---';
@@ -1117,37 +1228,41 @@ export const fetchLegacyMasterLead = async (
       });
     }
 
-    // New leads linked to this legacy master (cross-save: new sublead → legacy master)
+    // New leads linked to this legacy master (cross-save: new sublead → legacy master / UUID master_id)
     (linkedNewToLegacyData || []).forEach((lead: any) => {
       if (!lead?.id) return;
+      if (processedSubLeads.some((p) => String(p.id) === String(lead.id))) return;
       const totalRaw = lead.balance ?? lead.proposal_total ?? 0;
       const totalValue = typeof totalRaw === 'number' ? totalRaw : parseFloat(String(totalRaw)) || 0;
       const currencyCode = (lead.balance_currency || lead.currency || 'NIS') as string;
       const leadNum = lead.lead_number || String(lead.id);
+      const hasMasterId = lead.master_id != null && String(lead.master_id).trim() !== '';
+      const linkedOnly = !hasMasterId && lead.linked_master_lead != null && String(lead.linked_master_lead).trim() !== '';
       processedSubLeads.push({
         id: String(lead.id),
         lead_number: leadNum,
         actual_lead_id: leadNum,
-        manual_id: lead.manual_id,
+        manual_id: lead.manual_id ?? undefined,
         name: lead.name || 'Unknown',
         total: totalValue,
         currency: currencyCode,
         currency_symbol: getCurrencySymbol(currencyCode),
         category: getCategoryName(lead.category_id, categories || []),
-        topic: lead.topic || null,
+        topic: lead.topic || undefined,
         stage: String(lead.stage ?? ''),
         contact: lead.name || '---',
         applicants: Number(lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0) || 0,
-        agreement: null,
+        agreement: contractsMap.get(String(lead.id))?.id ?? undefined,
+        agreementIsLegacy: contractsMap.get(String(lead.id))?.isLegacy,
         scheduler: '---',
         scheduler_id: undefined,
         closer: '---',
         closer_id: undefined,
         handler: '---',
         handler_id: undefined,
-        master_id: undefined,
+        master_id: lead.master_id || undefined,
         isMaster: false,
-        isLinkedOnly: true,
+        isLinkedOnly: linkedOnly || undefined,
         route: `/clients/${lead.lead_number || lead.id}`,
       });
     });

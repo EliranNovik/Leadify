@@ -5912,6 +5912,8 @@ const Dashboard: React.FC = () => {
     const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } = tableType === 'agreement' ? agreementData : invoicedData;
     const totalIndexToday = departmentNames.length + 1;
     const totalIndexMonth = departmentNames.length;
+    const accentBar = isAltTheme ? 'bg-emerald-500' : 'bg-blue-500';
+    const accentBarDone = 'bg-emerald-500';
 
     const openScoreboardDeals = (period: string, departmentName: string, count: number) => {
       if (!count) return;
@@ -5932,6 +5934,76 @@ const Dashboard: React.FC = () => {
       return row || { count: 0, amount: 0, expected: 0 };
     };
 
+    const getMonthTargetTotal = () => {
+      const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
+      const endExclusive = otherIdx >= 0 ? otherIdx + 1 : departmentNames.length;
+      return (
+        dataSource[selectedMonth]?.slice(0, endExclusive).reduce(
+          (sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0),
+          0,
+        ) || 0
+      );
+    };
+
+    const renderGoalBalken = (amount: number, target: number) => {
+      if (!(target > 0)) return null;
+      const pct = Math.max(0, Math.min(100, Math.round((amount / target) * 100)));
+      const nearOrMet = pct >= 90;
+      return (
+        <div className="mt-1.5 w-full max-w-[7.5rem] mx-auto">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className={`h-full rounded-full transition-all ${nearOrMet ? accentBarDone : accentBar}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className={`mt-0.5 text-right text-[10px] font-medium tabular-nums ${nearOrMet ? 'text-emerald-600' : 'text-slate-400'}`}>
+            {pct}%
+          </div>
+        </div>
+      );
+    };
+
+    const renderMetricCell = (opts: {
+      count: number;
+      amount: number;
+      periodKey: string;
+      deptName: string;
+      showGoal?: boolean;
+      target?: number;
+      isTotalCol?: boolean;
+    }) => {
+      const { count, amount, periodKey, deptName, showGoal, target = 0, isTotalCol } = opts;
+      return (
+        <div className={`inline-flex w-full flex-col items-center ${isTotalCol ? '' : ''}`}>
+          <div
+            className="whitespace-nowrap tabular-nums leading-snug"
+            style={{
+              fontSize: '15px',
+              fontWeight: 600,
+              color: '#111827',
+              letterSpacing: '-0.015em',
+              fontFeatureSettings: '"tnum"',
+            }}
+          >
+            ₪{Math.ceil(amount).toLocaleString()}
+          </div>
+          <button
+            type="button"
+            className={`mt-1 inline-flex min-w-[1.75rem] items-center justify-center rounded-md bg-slate-100/90 px-1.5 py-0.5 text-[11px] font-bold tabular-nums text-slate-500 border-0 outline-none ring-0 shadow-none ${
+              count > 0 ? 'cursor-pointer hover:bg-slate-200/90 hover:text-slate-600' : 'cursor-default'
+            }`}
+            onClick={() => openScoreboardDeals(periodKey, deptName, count)}
+            disabled={!(count > 0)}
+            title={count > 0 ? 'View deals' : undefined}
+          >
+            {count}
+          </button>
+          {showGoal ? renderGoalBalken(amount, target) : null}
+        </div>
+      );
+    };
+
     const mobilePeriods = [
       ...(showTodayCols
         ? [{
@@ -5949,42 +6021,43 @@ const Dashboard: React.FC = () => {
       ...(showLastMonthCols
         ? [{ key: selectedMonth, label: selectedMonth, dataKey: selectedMonth }]
         : []),
-      // Always keep Target month visible at the end (independent of This Month filter)
       { key: `Target ${selectedMonth}`, label: `Target ${selectedMonth}`, dataKey: `Target ${selectedMonth}` },
     ];
 
-    // Table full width on mobile (no inner box); desktop keeps existing layout
     return (
       <>
         {/* Mobile: departments as rows, periods as columns */}
-        <div className="md:hidden overflow-x-auto w-full min-w-0 px-2 pb-2">
-          <table className="w-full min-w-[600px] text-sm table-fixed">
-            <thead className="bg-white sticky top-0">
-              <tr>
-                <th className="text-left px-1.5 py-2 font-semibold text-slate-700 w-[96px]">Department</th>
+        <div className="md:hidden overflow-x-auto w-full min-w-0 px-2 pb-3">
+          <table className="w-full min-w-[640px] text-sm table-fixed">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="text-left px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400 w-[96px]">Department</th>
                 {mobilePeriods.map((p) => (
-                  <th key={p.key} className="text-center px-1.5 py-2 font-semibold text-slate-700 w-[118px]">
+                  <th
+                    key={p.key}
+                    className={`text-center px-1.5 py-2.5 text-[11px] text-slate-500 w-[118px] ${
+                      p.key.startsWith('Target ') ? 'font-normal' : 'font-semibold'
+                    }`}
+                  >
                     {p.label}
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody>
               {[...categories, 'Total'].map((deptName) => (
-                <tr key={deptName} className="hover:bg-slate-50">
-                  <td className="px-1.5 py-2 font-semibold text-slate-800 align-top">
+                <tr
+                  key={deptName}
+                  className={`border-b border-slate-200 ${deptName === 'Total' ? 'bg-indigo-50/40' : 'hover:bg-slate-50/80'}`}
+                >
+                  <td className="px-2 py-2.5 font-semibold text-sm text-slate-700 align-top">
                     {(() => {
                       if (deptName === 'Total') return <span className="whitespace-nowrap">Total</span>;
                       const [l1, l2] = splitCategoryTwoLines(deptName);
                       return (
-                        <span className="leading-tight text-xs">
+                        <span className="leading-tight">
                           {l1}
-                          {l2 ? (
-                            <>
-                              <br />
-                              {l2}
-                            </>
-                          ) : null}
+                          {l2 ? (<><br />{l2}</>) : null}
                         </span>
                       );
                     })()}
@@ -5992,25 +6065,24 @@ const Dashboard: React.FC = () => {
                   {mobilePeriods.map((p) => {
                     if (p.key === `Target ${selectedMonth}`) {
                       const row = deptName === 'Total'
-                        ? (() => {
-                          const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
-                          // Include dedicated departments + Other (exclude Total slot).
-                          const endExclusive = otherIdx >= 0 ? otherIdx + 1 : departmentNames.length;
-                          const totalTarget = dataSource[selectedMonth]?.slice(0, endExclusive).reduce(
-                            (sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0),
-                            0,
-                          ) || 0;
-                          return { expected: totalTarget, amount: getTotalData(selectedMonth).amount };
-                        })()
+                        ? { expected: getMonthTargetTotal(), amount: getTotalData(selectedMonth).amount }
                         : (() => {
                           const data = getDeptData(deptName, selectedMonth);
                           return { expected: data.expected || 0, amount: data.amount || 0 };
                         })();
                       const target = row.expected || 0;
                       const amount = row.amount || 0;
-                      const targetClass = target > 0 ? (amount >= target ? 'text-green-700' : 'text-red-700') : 'text-slate-700';
                       return (
-                        <td key={`${deptName}-${p.key}`} className={`px-1.5 py-2 text-center font-semibold whitespace-nowrap ${targetClass}`}>
+                        <td
+                          key={`${deptName}-${p.key}`}
+                          className="px-1.5 py-2.5 text-center whitespace-nowrap tabular-nums leading-snug"
+                          style={{
+                            fontSize: '15px',
+                            fontWeight: 600,
+                            letterSpacing: '-0.015em',
+                            color: target > 0 ? (amount >= target ? '#059669' : '#e11d48') : '#64748b',
+                          }}
+                        >
                           {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
                         </td>
                       );
@@ -6022,24 +6094,18 @@ const Dashboard: React.FC = () => {
                     const displayAmount = p.key === SCOREBOARD_LAST_3M
                       ? scoreboardThreeMonthAverage(row.amount || 0)
                       : (row.amount || 0);
+                    const isMonthCol = p.dataKey === selectedMonth;
                     return (
-                      <td key={`${deptName}-${p.key}`} className="px-1.5 py-2 text-center">
-                        <div className="inline-flex flex-col items-center gap-0.5">
-                          <button
-                            type="button"
-                            className={`badge badge-ghost text-[11px] font-semibold px-1.5 py-1 leading-none border-0 ${
-                              (row.count || 0) > 0 ? 'cursor-pointer hover:bg-slate-200' : 'cursor-default'
-                            }`}
-                            onClick={() => openScoreboardDeals(p.dataKey, deptName, row.count || 0)}
-                            disabled={!(row.count > 0)}
-                            title={(row.count || 0) > 0 ? 'View deals' : undefined}
-                          >
-                            {row.count || 0}
-                          </button>
-                          <div className="text-[13px] font-semibold text-slate-800 whitespace-nowrap leading-tight">
-                            ₪{Math.ceil(displayAmount).toLocaleString()}
-                          </div>
-                        </div>
+                      <td key={`${deptName}-${p.key}`} className={`px-1.5 py-2.5 text-center ${isMonthCol ? 'bg-slate-50/80' : ''}`}>
+                        {renderMetricCell({
+                          count: row.count || 0,
+                          amount: displayAmount,
+                          periodKey: p.dataKey,
+                          deptName,
+                          showGoal: isMonthCol,
+                          target: row.expected || 0,
+                          isTotalCol: deptName === 'Total',
+                        })}
                       </td>
                     );
                   })}
@@ -6049,147 +6115,148 @@ const Dashboard: React.FC = () => {
           </table>
         </div>
 
-        {/* Desktop: existing layout */}
+        {/* Desktop */}
         <div className="hidden md:block overflow-x-auto w-full min-w-0">
-          <table className="min-w-full text-xs md:text-sm w-full">
-            <thead className="bg-white">
-              <tr>
-                <th className="text-left px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
+          <table className="min-w-full w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400 w-[7.5rem]" />
                 {categories.map(category => {
                   const [line1, line2] = splitCategoryTwoLines(category);
                   return (
-                    <th key={category} className="text-center px-0.5 md:px-5 py-1 md:py-3 text-[10px] md:text-sm font-semibold text-slate-700 align-bottom">
-                      <span className="hidden md:inline whitespace-nowrap">{category}</span>
-                      <span className="md:hidden leading-tight">{line1}{line2 ? <><br />{line2}</> : ''}</span>
+                    <th key={category} className="text-center px-3 py-3 text-sm font-semibold text-slate-700 align-bottom">
+                      <span className="leading-snug">
+                        {line1}
+                        {line2 ? (<><br />{line2}</>) : null}
+                      </span>
                     </th>
                   );
                 })}
-                <th className="text-center px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700">Total</th>
+                <th className="text-center px-3 py-3 text-sm font-semibold text-slate-700 bg-indigo-50/50 rounded-t-lg">Total</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody>
               {visibleColumns.map(columnType => {
                 const isToday = columnType === 'Today';
                 const isYesterday = columnType === 'Yesterday';
                 const isWeek = columnType === 'Week';
                 const isLast30 = columnType === 'Last 30d';
                 const isLast3m = columnType === SCOREBOARD_LAST_3M;
+                const isMonthRow = columnType === selectedMonth;
 
                 return (
-                  <React.Fragment key={columnType}>
-                    <tr className="hover:bg-slate-50">
-                      <td className="px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{columnType}</td>
-                      {categories.map((category, index) => {
-                        const deptIndexInNames = departmentNames.indexOf(category);
-                        const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
-                        const data = isToday ? dataSource["Today"]?.[dataIndex + 1] :
-                          isYesterday ? dataSource["Yesterday"]?.[dataIndex + 1] :
-                            isWeek ? dataSource["Week"]?.[dataIndex + 1] :
-                              isLast30 ? dataSource["Last 30d"]?.[dataIndex + 1] :
-                                isLast3m ? dataSource[SCOREBOARD_LAST_3M]?.[dataIndex + 1] :
-                                  dataSource[selectedMonth]?.[dataIndex];
-                        const amount = data?.amount ?? 0;
-                        const displayAmount = isLast3m ? scoreboardThreeMonthAverage(amount) : amount;
-                        return (
-                          <td key={`${category}-combined`} className="px-0.5 md:px-5 py-1 md:py-3 text-center">
-                            <div className="space-y-0.5 md:space-y-1">
-                              <button
-                                type="button"
-                                className={`badge text-[10px] md:text-xs font-semibold px-0.5 md:px-2 py-0.5 bg-slate-100 text-slate-700 border-0 ${
-                                  (data?.count ?? 0) > 0 ? 'cursor-pointer hover:bg-slate-200' : 'cursor-default'
-                                }`}
-                                onClick={() => openScoreboardDeals(columnType, category, data?.count ?? 0)}
-                                disabled={!((data?.count ?? 0) > 0)}
-                                title={(data?.count ?? 0) > 0 ? 'View deals' : undefined}
-                              >
-                                {data?.count ?? 0}
-                              </button>
-                              <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
-                              <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
-                                ₪{Math.ceil(displayAmount).toLocaleString()}
-                              </div>
-                            </div>
-                          </td>
-                        );
-                      })}
-                      <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-slate-700">
-                        <div className="space-y-0.5 md:space-y-1">
-                          <div className="flex items-center justify-center">
-                            {(() => {
-                              const totalCount = isToday ? (dataSource["Today"]?.[totalIndexToday]?.count ?? 0) :
-                                isWeek ? (dataSource["Week"]?.[totalIndexToday]?.count ?? 0) :
-                                  isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.count ?? 0) :
-                                    isLast3m ? (dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.count ?? 0) :
-                                      (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0);
-                              return (
-                                <button
-                                  type="button"
-                                  className={`badge text-[10px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-0.5 md:px-2 py-0.5 border-0 ${
-                                    totalCount > 0 ? 'cursor-pointer hover:bg-slate-200' : 'cursor-default'
-                                  }`}
-                                  onClick={() => openScoreboardDeals(columnType, 'Total', totalCount)}
-                                  disabled={!(totalCount > 0)}
-                                  title={totalCount > 0 ? 'View deals' : undefined}
-                                >
-                                  {totalCount}
-                                </button>
-                              );
-                            })()}
-                          </div>
-                          <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
-                          <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
-                            ₪{Math.ceil(
-                              isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
-                                isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
-                                  isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
-                                    isLast3m ? scoreboardThreeMonthAverage(dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.amount ?? 0) :
-                                      (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0)
-                            ).toLocaleString()}
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  </React.Fragment>
+                  <tr
+                    key={columnType}
+                    className={`border-b border-slate-200 ${
+                      isMonthRow ? 'bg-slate-50/90' : 'hover:bg-slate-50/60'
+                    }`}
+                  >
+                    <td className="px-4 py-3.5 text-sm font-semibold text-slate-700 whitespace-nowrap">
+                      {columnType}
+                    </td>
+                    {categories.map((category, index) => {
+                      const deptIndexInNames = departmentNames.indexOf(category);
+                      const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
+                      const data = isToday ? dataSource["Today"]?.[dataIndex + 1] :
+                        isYesterday ? dataSource["Yesterday"]?.[dataIndex + 1] :
+                          isWeek ? dataSource["Week"]?.[dataIndex + 1] :
+                            isLast30 ? dataSource["Last 30d"]?.[dataIndex + 1] :
+                              isLast3m ? dataSource[SCOREBOARD_LAST_3M]?.[dataIndex + 1] :
+                                dataSource[selectedMonth]?.[dataIndex];
+                      const amount = data?.amount ?? 0;
+                      const displayAmount = isLast3m ? scoreboardThreeMonthAverage(amount) : amount;
+                      return (
+                        <td key={`${category}-combined`} className="px-3 py-3.5 text-center align-top">
+                          {renderMetricCell({
+                            count: data?.count ?? 0,
+                            amount: displayAmount,
+                            periodKey: columnType,
+                            deptName: category,
+                            showGoal: isMonthRow,
+                            target: data?.expected ?? 0,
+                          })}
+                        </td>
+                      );
+                    })}
+                    <td className={`px-3 py-3.5 text-center align-top ${isMonthRow ? 'bg-indigo-50/60' : 'bg-indigo-50/40'}`}>
+                      {(() => {
+                        const totalCount = isToday ? (dataSource["Today"]?.[totalIndexToday]?.count ?? 0) :
+                          isWeek ? (dataSource["Week"]?.[totalIndexToday]?.count ?? 0) :
+                            isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.count ?? 0) :
+                              isLast3m ? (dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.count ?? 0) :
+                                (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0);
+                        const totalAmount = isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
+                          isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
+                            isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
+                              isLast3m ? scoreboardThreeMonthAverage(dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.amount ?? 0) :
+                                (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0);
+                        const totalExpected = isMonthRow
+                          ? (dataSource[selectedMonth]?.[totalIndexMonth]?.expected ?? getMonthTargetTotal())
+                          : 0;
+                        return renderMetricCell({
+                          count: totalCount,
+                          amount: totalAmount,
+                          periodKey: columnType,
+                          deptName: 'Total',
+                          showGoal: isMonthRow,
+                          target: totalExpected || getMonthTargetTotal(),
+                          isTotalCol: true,
+                        });
+                      })()}
+                    </td>
+                  </tr>
                 );
               })}
-              {/* Always keep Target month at the bottom (independent of This Month filter) */}
-              <tr className="bg-white border border-slate-200">
-                <td className="px-0.5 md:px-5 py-1 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {selectedMonth}</td>
+              <tr className="border-t border-slate-200">
+                <td className="px-4 py-3.5 text-sm font-normal text-slate-600 whitespace-nowrap">
+                  <span className="inline-flex items-center gap-2.5">
+                    <svg
+                      className="h-7 w-7 shrink-0 text-slate-500"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
+                      <circle cx="12" cy="12" r="5.25" stroke="currentColor" strokeWidth="1.75" />
+                      <circle cx="12" cy="12" r="1.75" fill="currentColor" />
+                    </svg>
+                    Target {selectedMonth}
+                  </span>
+                </td>
                 {categories.map((category) => {
                   const data = getDeptData(category, selectedMonth);
                   const amount = data.amount ?? 0;
                   const target = data.expected ?? 0;
-                  const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
                   return (
-                    <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
+                    <td
+                      key={`${category}-target`}
+                      className="px-3 py-3.5 text-center whitespace-nowrap tabular-nums leading-snug"
+                      style={{
+                        fontSize: '15px',
+                        fontWeight: 600,
+                        letterSpacing: '-0.015em',
+                        color: target > 0 ? (amount >= target ? '#059669' : '#e11d48') : '#64748b',
+                      }}
+                    >
                       {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
                     </td>
                   );
                 })}
                 <td
-                  className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold whitespace-nowrap ${(() => {
-                    const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
-                    const endExclusive = otherIdx >= 0 ? otherIdx + 1 : departmentNames.length;
-                    const totalTarget =
-                      dataSource[selectedMonth]?.slice(0, endExclusive).reduce(
-                        (sum: number, item: { count: number; amount: number; expected: number }) =>
-                          sum + (item.expected || 0),
-                        0,
-                      ) || 0;
+                  className="px-3 py-3.5 text-center whitespace-nowrap tabular-nums leading-snug bg-indigo-50/40"
+                  style={(() => {
+                    const totalTarget = getMonthTargetTotal();
                     const totalAmount = dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0;
-                    if (!(totalTarget > 0)) return 'text-slate-700';
-                    return totalAmount >= totalTarget ? 'text-green-600' : 'text-red-600';
-                  })()}`}
+                    return {
+                      fontSize: '15px',
+                      fontWeight: 600,
+                      letterSpacing: '-0.015em',
+                      color: !(totalTarget > 0) ? '#64748b' : totalAmount >= totalTarget ? '#059669' : '#e11d48',
+                    };
+                  })()}
                 >
                   {(() => {
-                    const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
-                    const endExclusive = otherIdx >= 0 ? otherIdx + 1 : departmentNames.length;
-                    const totalTarget =
-                      dataSource[selectedMonth]?.slice(0, endExclusive).reduce(
-                        (sum: number, item: { count: number; amount: number; expected: number }) =>
-                          sum + (item.expected || 0),
-                        0,
-                      ) || 0;
+                    const totalTarget = getMonthTargetTotal();
                     return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
                   })()}
                 </td>
@@ -8037,8 +8104,16 @@ const Dashboard: React.FC = () => {
             {/* Header - simple on background */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
               <div className="flex items-center gap-3">
-                <div className={`flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-600 to-emerald-600' : 'from-purple-600 to-indigo-600'}`}>
-                  <ChartBarIcon className="w-6 h-6 text-white" />
+                <div className="flex items-center justify-center w-12 h-12 rounded-full shadow bg-white">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <defs>
+                      <linearGradient id="perfDashboardIconGradient" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+                        <stop stopColor="#a21caf" />
+                        <stop offset="1" stopColor="#06b6d4" />
+                      </linearGradient>
+                    </defs>
+                    <path d="M3 17V21M7 13V21M11 9V21M15 5V21M19 3V21" stroke="url(#perfDashboardIconGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </div>
                 <div>
                   <h2 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-base-content">Performance Dashboard</h2>
@@ -8046,12 +8121,12 @@ const Dashboard: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <div className="tabs tabs-boxed bg-gray-100 shadow-inner rounded-xl p-1 border border-gray-200">
+                <div className="tabs tabs-boxed bg-gray-100 shadow-inner rounded-xl p-1 border-0">
                   {scoreboardTabs.map(tab => (
                     <a
                       key={tab}
-                      className={`tab text-sm font-semibold px-4 py-2 rounded-lg transition-all ${scoreTab === tab 
-                        ? (isAltTheme ? 'tab-active bg-white text-green-600 shadow-sm border border-green-200' : 'tab-active bg-white text-purple-600 shadow-sm border border-purple-200')
+                      className={`tab text-sm font-semibold px-4 py-2 rounded-lg transition-all border-0 outline-none ${scoreTab === tab 
+                        ? (isAltTheme ? 'tab-active bg-white text-green-600 shadow-sm' : 'tab-active bg-white text-purple-600 shadow-sm')
                         : 'text-gray-600 hover:bg-gray-50'}`}
                       onClick={() => setScoreTab(tab)}
                     >
@@ -8178,33 +8253,53 @@ const Dashboard: React.FC = () => {
             {/* Department Performance Boxes */}
             {scoreTab === 'Tables' && (
               <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <h3 className="text-lg font-semibold text-slate-800 dark:text-base-content">Department Performance</h3>
-                </div>
                 {/* Agreement signed */}
                 <div>
-                  <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden min-w-0 w-full">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-white gap-2">
-                      <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Agreement signed</div>
-                      <div className="flex flex-wrap items-center gap-1 md:gap-2">
-                        <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
-                        <button className={`btn btn-xs ${showTodayCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                  <div className="bg-white rounded-2xl border-0 shadow-sm overflow-hidden min-w-0 w-full">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-5 py-3 md:py-3.5 bg-white gap-2">
+                      <div className={`text-sm font-semibold ${isAltTheme ? 'text-emerald-700' : 'text-slate-800'}`}>Agreement signed</div>
+                      <div className="flex flex-wrap items-center gap-1 md:gap-1.5">
+                        <span className="text-[11px] font-medium text-slate-400 mr-1">Filter by:</span>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showTodayCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowTodayCols(v => !v)}
+                        >
                           {todayFilterMode === 'week' ? 'Week' : 'Today'}
                         </button>
                         <button
-                          className={`btn btn-xs ${todayFilterMode === 'week' ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`}
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${todayFilterMode === 'week' ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
                           onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
                           title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
                         >
                           Week
                         </button>
-                        <button className={`btn btn-xs ${showLast30Cols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
-                        <button className={`btn btn-xs ${showLast3MonthsCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast3MonthsCols(v => !v)}>Last 3m</button>
-                        <button className={`btn btn-xs ${showLastMonthCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
-                        <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast30Cols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowLast30Cols(v => !v)}
+                        >
+                          Last 30d
+                        </button>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast3MonthsCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowLast3MonthsCols(v => !v)}
+                        >
+                          Last 3m
+                        </button>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLastMonthCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowLastMonthCols(v => !v)}
+                        >
+                          This Month
+                        </button>
+                        <div className="w-px h-4 md:h-5 mx-1 md:mx-1.5 bg-slate-200"></div>
                         <details className="dropdown dropdown-end">
-                          <summary className="btn btn-xs btn-ghost text-slate-700">
-                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                           </summary>
                           <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                             {months.map(month => (
@@ -8213,11 +8308,8 @@ const Dashboard: React.FC = () => {
                                   onClick={(e) => {
                                     e.preventDefault();
                                     setSelectedMonth(month);
-                                    // Close the details element
                                     const details = e.currentTarget.closest('details');
-                                    if (details) {
-                                      details.removeAttribute('open');
-                                    }
+                                    if (details) details.removeAttribute('open');
                                   }}
                                   className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? (isAltTheme ? 'bg-green-600 text-white' : 'bg-primary text-primary-content') : ''}`}
                                 >
@@ -8228,8 +8320,8 @@ const Dashboard: React.FC = () => {
                           </ul>
                         </details>
                         <details className="dropdown dropdown-end">
-                          <summary className="btn btn-xs btn-ghost text-slate-700">
-                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                           </summary>
                           <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                             {years.map(year => (
@@ -8238,11 +8330,8 @@ const Dashboard: React.FC = () => {
                                   onClick={(e) => {
                                     e.preventDefault();
                                     setSelectedYear(year);
-                                    // Close the details element
                                     const details = e.currentTarget.closest('details');
-                                    if (details) {
-                                      details.removeAttribute('open');
-                                    }
+                                    if (details) details.removeAttribute('open');
                                   }}
                                   className="block w-full p-2 text-sm hover:bg-gray-100"
                                 >
@@ -8266,28 +8355,51 @@ const Dashboard: React.FC = () => {
 
                 {/* Invoiced */}
                 <div className="mt-4 md:mt-6">
-                  <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden min-w-0 w-full">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-white gap-2">
-                      <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Invoiced</div>
-                      <div className="flex flex-wrap items-center gap-1 md:gap-2">
-                        <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
-                        <button className={`btn btn-xs ${showTodayCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                  <div className="bg-white rounded-2xl border-0 shadow-sm overflow-hidden min-w-0 w-full">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-5 py-3 md:py-3.5 bg-white gap-2">
+                      <div className={`text-sm font-semibold ${isAltTheme ? 'text-emerald-700' : 'text-slate-800'}`}>Invoiced</div>
+                      <div className="flex flex-wrap items-center gap-1 md:gap-1.5">
+                        <span className="text-[11px] font-medium text-slate-400 mr-1">Filter by:</span>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showTodayCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowTodayCols(v => !v)}
+                        >
                           {todayFilterMode === 'week' ? 'Week' : 'Today'}
                         </button>
                         <button
-                          className={`btn btn-xs ${todayFilterMode === 'week' ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`}
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${todayFilterMode === 'week' ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
                           onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
                           title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
                         >
                           Week
                         </button>
-                        <button className={`btn btn-xs ${showLast30Cols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
-                        <button className={`btn btn-xs ${showLast3MonthsCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast3MonthsCols(v => !v)}>Last 3m</button>
-                        <button className={`btn btn-xs ${showLastMonthCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
-                        <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast30Cols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowLast30Cols(v => !v)}
+                        >
+                          Last 30d
+                        </button>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast3MonthsCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowLast3MonthsCols(v => !v)}
+                        >
+                          Last 3m
+                        </button>
+                        <button
+                          type="button"
+                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLastMonthCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                          onClick={() => setShowLastMonthCols(v => !v)}
+                        >
+                          This Month
+                        </button>
+                        <div className="w-px h-4 md:h-5 mx-1 md:mx-1.5 bg-slate-200"></div>
                         <details className="dropdown dropdown-end">
-                          <summary className="btn btn-xs btn-ghost text-slate-700">
-                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                           </summary>
                           <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                             {months.map(month => (
@@ -8296,11 +8408,8 @@ const Dashboard: React.FC = () => {
                                   onClick={(e) => {
                                     e.preventDefault();
                                     setSelectedMonth(month);
-                                    // Close the details element
                                     const details = e.currentTarget.closest('details');
-                                    if (details) {
-                                      details.removeAttribute('open');
-                                    }
+                                    if (details) details.removeAttribute('open');
                                   }}
                                   className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? (isAltTheme ? 'bg-green-600 text-white' : 'bg-primary text-primary-content') : ''}`}
                                 >
@@ -8311,8 +8420,8 @@ const Dashboard: React.FC = () => {
                           </ul>
                         </details>
                         <details className="dropdown dropdown-end">
-                          <summary className="btn btn-xs btn-ghost text-slate-700">
-                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                           </summary>
                           <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                             {years.map(year => (
@@ -8321,11 +8430,8 @@ const Dashboard: React.FC = () => {
                                   onClick={(e) => {
                                     e.preventDefault();
                                     setSelectedYear(year);
-                                    // Close the details element
                                     const details = e.currentTarget.closest('details');
-                                    if (details) {
-                                      details.removeAttribute('open');
-                                    }
+                                    if (details) details.removeAttribute('open');
                                   }}
                                   className="block w-full p-2 text-sm hover:bg-gray-100"
                                 >

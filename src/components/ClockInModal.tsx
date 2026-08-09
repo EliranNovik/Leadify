@@ -612,6 +612,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
       ? 'pt-12 pb-6 md:pt-16 md:pb-8'
       : 'pt-12 pb-8 md:pt-14 md:pb-10';
 
+  const glassActionBtnClass = [
+    'btn border-0 outline-none ring-0 shadow-none backdrop-blur-md transition-all duration-200 disabled:opacity-60',
+    isGateStyle
+      ? 'bg-white/25 text-white hover:bg-white/35'
+      : 'bg-black/10 text-gray-900 hover:bg-black/15',
+  ].join(' ');
+
   const workplacePicker = (
     <>
       <div className="hidden md:block relative" ref={workplaceDropdownRef}>
@@ -816,7 +823,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                   || selectedWorkplaceId == null
                   || isQrOnlyClockInLocationId(selectedWorkplaceId)
                 }
-                className="btn mt-1 h-12 min-h-12 w-full gap-2 rounded-xl border-0 bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-base font-semibold text-white shadow-md hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 disabled:opacity-60"
+                className={`${glassActionBtnClass} mt-1 h-12 min-h-12 w-full gap-2 rounded-xl text-base font-semibold`}
               >
                 {isLoading ? (
                   <span className="loading loading-spinner loading-md" />
@@ -885,7 +892,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                     type="button"
                     onClick={handleSendHomeForApproval}
                     disabled={isLoading || pendingHomeApproval}
-                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-md bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white hover:from-amber-600 hover:via-orange-600 hover:to-amber-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60 md:h-[4.5rem] md:min-h-[4.5rem] md:px-12 md:gap-3"
+                    className={`${glassActionBtnClass} rounded-full h-20 min-h-20 px-10 gap-3 md:h-[4.5rem] md:min-h-[4.5rem] md:px-12 md:gap-3`}
                   >
                     {isLoading ? (
                       <span className="loading loading-spinner loading-md" />
@@ -903,7 +910,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                     type="button"
                     onClick={handleClockIn}
                     disabled={isLoading || selectedWorkplaceId == null}
-                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-green-600 via-emerald-600 to-teal-500 text-white hover:from-green-700 hover:via-emerald-700 hover:to-teal-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl"
+                    className={`${glassActionBtnClass} rounded-full h-20 min-h-20 px-10 gap-3 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl`}
                   >
                     {isLoading ? (
                       <span className="loading loading-spinner loading-md md:loading-lg" />
@@ -920,7 +927,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                   type="button"
                   onClick={handleClockOut}
                   disabled={isLoading}
-                  className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-white hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl"
+                  className={`${glassActionBtnClass} rounded-full h-20 min-h-20 px-10 gap-3 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl`}
                 >
                   {isLoading ? (
                     <span className="loading loading-spinner loading-md md:loading-lg" />

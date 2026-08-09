@@ -36,17 +36,20 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
   const updateDuration = useCallback((start: string, end: string | null) => {
     const startTime = new Date(start).getTime();
     const endTime = end ? new Date(end).getTime() : Date.now();
-    const diffMs = endTime - startTime;
+    const diffMs = Math.max(0, endTime - startTime);
     const hours = Math.floor(diffMs / (1000 * 60 * 60));
     const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-    setCurrentDuration(`${hours}h ${minutes}m`);
+    const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    setCurrentDuration(`${pad(hours)}:${pad(minutes)}:${pad(seconds)}`);
   }, []);
 
-  // Tick the displayed duration every minute while clocked in
+  // Live timer: tick every second while clocked in
   useEffect(() => {
     if (!isClockedIn || !clockInStartRef.current) return;
     const tick = () => updateDuration(clockInStartRef.current!, null);
-    const id = setInterval(tick, 60_000);
+    tick();
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [isClockedIn, updateDuration]);
 
@@ -261,10 +264,8 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
         {isClockedIn && (
           <div className="absolute top-1 right-1 md:top-1.5 md:right-1.5 z-10">
             <span
-              className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2 text-[10px] font-bold rounded-full shadow-lg animate-pulse ${
-                isDark2Theme
-                  ? 'bg-base-200 text-green-600 ring-2 ring-base-300'
-                  : 'bg-white text-green-600 ring-2 ring-white ring-opacity-75'
+              className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2.5 text-[10px] font-semibold tracking-wide rounded-full border-0 outline-none ring-0 shadow-none backdrop-blur-md bg-white/30 animate-pulse ${
+                isDark2Theme ? 'text-base-content/80' : 'text-white'
               }`}
             >
               Active

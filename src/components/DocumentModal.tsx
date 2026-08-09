@@ -1820,12 +1820,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     }, 3000);
   };
 
-  if (typeof window === 'undefined' || !isOpen) return null;
-
-  const showUploadZone =
-    isStaffMeetingDocs || !requireCaseDocumentClassification || !!uploadClassificationId;
-  const uploadDisabled = !showUploadZone || isUploading || caseUploadBlocked;
-
   /** Stable viewer list — remapping every render was resetting the open gallery selection. */
   const viewerDocuments = useMemo<DocumentViewerItem[]>(
     () =>
@@ -1839,6 +1833,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       })),
     [documents],
   );
+
+  if (typeof window === 'undefined' || !isOpen) return null;
+
+  const showUploadZone =
+    isStaffMeetingDocs || !requireCaseDocumentClassification || !!uploadClassificationId;
+  const uploadDisabled = !showUploadZone || isUploading || caseUploadBlocked;
 
   return createPortal(
     <>

@@ -181,10 +181,51 @@ const executeCommand = (command: string, value?: string) => {
 
 // SubLead and ContractData are now imported from masterLeadApi
 
+type MasterLeadEmployeeRow = {
+  id: number | string;
+  display_name?: string | null;
+  photo_url?: string | null;
+  photo?: string | null;
+};
+
+/** Survives SPA navigations so avatars paint immediately on return to this page. */
+let masterLeadEmployeesCache: MasterLeadEmployeeRow[] | null = null;
+let masterLeadEmployeesInflight: Promise<MasterLeadEmployeeRow[]> | null = null;
+
+async function loadMasterLeadEmployees(forceRefresh = false): Promise<MasterLeadEmployeeRow[]> {
+  if (!forceRefresh && masterLeadEmployeesCache && masterLeadEmployeesCache.length > 0) {
+    return masterLeadEmployeesCache;
+  }
+  if (!forceRefresh && masterLeadEmployeesInflight) {
+    return masterLeadEmployeesInflight;
+  }
+
+  masterLeadEmployeesInflight = (async () => {
+    const { data, error } = await supabase
+      .from('tenants_employee')
+      .select('id, display_name, photo_url, photo')
+      .order('display_name', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching employees for master lead page:', error);
+      return masterLeadEmployeesCache || [];
+    }
+
+    masterLeadEmployeesCache = (data || []) as MasterLeadEmployeeRow[];
+    return masterLeadEmployeesCache;
+  })().finally(() => {
+    masterLeadEmployeesInflight = null;
+  });
+
+  return masterLeadEmployeesInflight;
+}
+
 const MasterLeadPage: React.FC = () => {
   const { lead_number } = useParams<{ lead_number: string }>();
   const navigate = useNavigate();
-  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [allEmployees, setAllEmployees] = useState<MasterLeadEmployeeRow[]>(
+    () => masterLeadEmployeesCache || []
+  );
 
   // Persisted state - convert Map to/from array for serialization
   const [contractsDataArray, setContractsDataArray] = usePersistedState<Array<[string, ContractData]>>(
@@ -217,16 +258,48 @@ const MasterLeadPage: React.FC = () => {
 
   // Track the current lead number to detect changes and clear old data immediately
   const currentLeadNumberRef = useRef<string | undefined>(undefined);
+  const masterLeadInfoRef = useRef(masterLeadInfo);
+  const subLeadsRef = useRef(subLeads);
+  const fetchInFlightRef = useRef(false);
+  const lastFetchedBaseRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    masterLeadInfoRef.current = masterLeadInfo;
+  }, [masterLeadInfo]);
+  useEffect(() => {
+    subLeadsRef.current = subLeads;
+  }, [subLeads]);
+
+  const getRouteBaseLeadNumber = useCallback((raw?: string) => {
+    if (!raw) return '';
+    const decoded = decodeURIComponent(raw);
+    const baseRaw = decoded.includes('/') ? decoded.split('/')[0] : decoded;
+    return baseRaw.replace(/^[LC]/i, '');
+  }, []);
+
+  const persistedMatchesRoute = useCallback((baseLeadNumber: string, info: any, leads: SubLead[]) => {
+    if (!baseLeadNumber || !info || !leads?.length) return false;
+    const persistedLeadNumber = String(info.lead_number || info.id || '');
+    const persistedBase = (persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber).replace(/^[LC]/i, '');
+    if (persistedBase === baseLeadNumber) return true;
+    return leads.some((subLead) => {
+      const subLeadNumber = String(subLead.lead_number || subLead.id || '');
+      const subLeadBase = (subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber).replace(/^[LC]/i, '');
+      const clean = subLeadNumber.replace(/^[LC]/i, '');
+      const actual = String(subLead.actual_lead_id || '').replace(/^[LC]/i, '');
+      const rowId = String(subLead.id || '').replace(/^legacy_/, '');
+      return subLeadBase === baseLeadNumber || clean === baseLeadNumber || actual === baseLeadNumber || rowId === baseLeadNumber;
+    });
+  }, []);
 
   // Clear persisted state immediately when lead_number changes to prevent showing old data
   useEffect(() => {
     if (!lead_number) return;
 
     const decodedLeadNumber = decodeURIComponent(lead_number);
-    const baseLeadNumberRaw = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
-    const baseLeadNumber = baseLeadNumberRaw.replace(/^[LC]/i, '');
+    const baseLeadNumber = getRouteBaseLeadNumber(lead_number);
     const prevBaseLeadNumber = currentLeadNumberRef.current
-      ? (currentLeadNumberRef.current.includes('/') ? currentLeadNumberRef.current.split('/')[0] : currentLeadNumberRef.current)
+      ? getRouteBaseLeadNumber(currentLeadNumberRef.current)
       : undefined;
 
     // If lead number changed, clear persisted state immediately
@@ -234,75 +307,66 @@ const MasterLeadPage: React.FC = () => {
       setSubLeads([]);
       setMasterLeadInfo(null);
       setContractsDataArray([]);
+      lastFetchedBaseRef.current = null;
       setLoading(true);
       setSubLeadsLoading(true);
     }
 
     currentLeadNumberRef.current = decodedLeadNumber;
-  }, [lead_number, setSubLeads, setMasterLeadInfo, setContractsDataArray]);
+  }, [lead_number, getRouteBaseLeadNumber, setSubLeads, setMasterLeadInfo, setContractsDataArray]);
 
-  // Initialize loading based on whether we have persisted data
-  // If we have persisted data that matches, start with loading=false
+  // Start without a blocking loader when session cache already matches this route
   const [loading, setLoading] = useState(() => {
-    // We can't check lead_number here since it comes from useParams
-    // So we start with true and check in useEffect
-    return true;
+    if (typeof window === 'undefined' || !lead_number) return true;
+    try {
+      const base = (() => {
+        const decoded = decodeURIComponent(lead_number);
+        const baseRaw = decoded.includes('/') ? decoded.split('/')[0] : decoded;
+        return baseRaw.replace(/^[LC]/i, '');
+      })();
+      const infoRaw = sessionStorage.getItem('persisted_state_masterLeadPage_masterLeadInfo');
+      const leadsRaw = sessionStorage.getItem('persisted_state_masterLeadPage_subLeads');
+      if (!infoRaw || !leadsRaw) return true;
+      const info = JSON.parse(infoRaw);
+      const leads = JSON.parse(leadsRaw) as SubLead[];
+      if (!info || !Array.isArray(leads) || leads.length === 0) return true;
+      const persistedLeadNumber = String(info.lead_number || info.id || '');
+      const persistedBase = (persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber).replace(/^[LC]/i, '');
+      if (persistedBase === base) return false;
+      const subMatch = leads.some((subLead) => {
+        const subLeadNumber = String(subLead.lead_number || subLead.id || '');
+        const subLeadBase = (subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber).replace(/^[LC]/i, '');
+        return subLeadBase === base || subLeadNumber.replace(/^[LC]/i, '') === base;
+      });
+      return !subMatch;
+    } catch {
+      return true;
+    }
   });
 
-  // Check persisted data on mount and validate it matches current lead_number
-  // Clear immediately if it doesn't match to prevent showing old data
-  // Set loading to true immediately if no matching data found
+  // Validate persisted data once on mount (do not force a loading flash when cache matches)
   useEffect(() => {
     if (!lead_number) {
-      // No lead_number, clear any persisted data and set loading
       if (subLeads.length > 0 || masterLeadInfo) {
         setSubLeads([]);
         setMasterLeadInfo(null);
         setContractsDataArray([]);
       }
-      setLoading(true);
-      setSubLeadsLoading(true);
+      setLoading(false);
+      setSubLeadsLoading(false);
       return;
     }
 
-      const decodedLeadNumber = decodeURIComponent(lead_number);
-      const baseLeadNumberRaw = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
-      const baseLeadNumber = baseLeadNumberRaw.replace(/^[LC]/i, '');
-
-    // Set loading to true immediately - will be set to false only if we have matching persisted data
-    setLoading(true);
-    setSubLeadsLoading(true);
-
-    // If we have persisted data, validate it matches the current lead
-    if (masterLeadInfo && subLeads.length > 0) {
-      const persistedLeadNumber = String(masterLeadInfo.lead_number || masterLeadInfo.id || '');
-      const persistedBaseNumberRaw = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
-      const persistedBaseNumber = persistedBaseNumberRaw.replace(/^[LC]/i, '');
-
-      // Check if persisted data matches current lead
-      const subLeadMatches = subLeads.some(subLead => {
-        const subLeadNumber = String(subLead.lead_number || subLead.id || '');
-        const subLeadBaseRaw = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
-        const subLeadBase = subLeadBaseRaw.replace(/^[LC]/i, '');
-        const subLeadNumberClean = subLeadNumber.replace(/^[LC]/i, '');
-        return subLeadBase === baseLeadNumber || subLeadNumberClean === baseLeadNumber;
-      });
-
-      const dataMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
-
-      if (dataMatches) {
-        // We have matching persisted data, set loading to false immediately
-        setLoading(false);
-        setSubLeadsLoading(false);
-      } else {
-        // Persisted data doesn't match - clear it immediately to prevent showing old data
-        setSubLeads([]);
-        setMasterLeadInfo(null);
-        setContractsDataArray([]);
-        // Loading already set to true above
-      }
+    const baseLeadNumber = getRouteBaseLeadNumber(lead_number);
+    if (persistedMatchesRoute(baseLeadNumber, masterLeadInfo, subLeads)) {
+      setLoading(false);
+      setSubLeadsLoading(false);
+    } else if (masterLeadInfo || subLeads.length > 0) {
+      setSubLeads([]);
+      setMasterLeadInfo(null);
+      setContractsDataArray([]);
+      setLoading(true);
     }
-    // If no persisted data, loading is already set to true above
   }, []); // Only run on mount
   const [subLeadsLoading, setSubLeadsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -359,7 +423,7 @@ const MasterLeadPage: React.FC = () => {
   const getStageBadge = (stage?: string | number) => {
     if (!stage && stage !== 0) {
       return (
-        <span className="stage-badge badge badge-sm bg-gray-100 text-gray-600">
+        <span className="stage-badge badge badge-md bg-gray-100 text-gray-600 text-sm px-2.5 py-1.5">
           No Stage
         </span>
       );
@@ -375,7 +439,7 @@ const MasterLeadPage: React.FC = () => {
 
     return (
       <span
-        className="stage-badge badge badge-sm text-xs px-2 py-1"
+        className="stage-badge badge badge-md text-sm px-2.5 py-1.5"
         style={{
           backgroundColor: backgroundColor,
           color: textColor,
@@ -420,22 +484,26 @@ const MasterLeadPage: React.FC = () => {
     );
   };
 
-  // Fetch employees for avatars
+  // Fetch employees for avatars (use in-memory cache so return visits don't flash empty)
   useEffect(() => {
-    const fetchEmployees = async () => {
-      const { data, error } = await supabase
-        .from('tenants_employee')
-        .select('id, display_name, photo_url, photo')
-        .order('display_name', { ascending: true });
-
-      if (error) {
-        console.error('🔍 Error fetching employees:', error);
-      } else if (data) {
-        console.log('🔍 Fetched employees:', data.length, 'employees');
-        setAllEmployees(data);
+    let cancelled = false;
+    void (async () => {
+      const hadCache = !!(masterLeadEmployeesCache && masterLeadEmployeesCache.length > 0);
+      if (hadCache) {
+        setAllEmployees(masterLeadEmployeesCache!);
       }
+      const data = await loadMasterLeadEmployees(false);
+      if (!cancelled) setAllEmployees(data);
+      // Soft-refresh only when we painted from cache (keeps photos current without double first-load)
+      if (hadCache) {
+        void loadMasterLeadEmployees(true).then((fresh) => {
+          if (!cancelled) setAllEmployees(fresh);
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-    fetchEmployees();
   }, []);
 
   // Helper function to get employee by ID
@@ -445,23 +513,16 @@ const MasterLeadPage: React.FC = () => {
     }
 
     const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
-    if (isNaN(idAsNumber)) {
-      console.log('🔍 getEmployeeById: Invalid employee ID:', employeeId);
-      return null;
-    }
+    if (isNaN(idAsNumber)) return null;
 
-    const employee = allEmployees.find((emp: any) => {
-      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
-      const empIdNum = typeof empId === 'string' ? parseInt(empId, 10) : Number(empId);
-      if (isNaN(empIdNum)) return false;
-      return empIdNum === idAsNumber;
-    });
-
-    if (!employee) {
-      console.log('🔍 getEmployeeById: Employee not found for ID:', employeeId, 'Available IDs:', allEmployees.map((e: any) => e.id));
-    }
-
-    return employee || null;
+    return (
+      allEmployees.find((emp) => {
+        const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+        const empIdNum = typeof empId === 'string' ? parseInt(empId, 10) : Number(empId);
+        if (isNaN(empIdNum)) return false;
+        return empIdNum === idAsNumber;
+      }) || null
+    );
   };
 
   // Helper function to get employee initials
@@ -483,10 +544,11 @@ const MasterLeadPage: React.FC = () => {
     const employee = getEmployeeById(employeeId);
     const sizeClasses = size === 'sm' ? 'w-6 h-6 text-xs' : size === 'md' ? 'w-8 h-8 text-sm' : 'w-12 h-12 text-base';
 
-    if (!employee) {
-      console.log('🔍 EmployeeAvatar: No employee found for ID:', employeeId, 'allEmployees count:', allEmployees.length);
-      return null;
-    }
+    useEffect(() => {
+      setImageError(false);
+    }, [employeeId]);
+
+    if (!employee) return null;
 
     const photoUrl = employee.photo_url || employee.photo;
     const initials = getEmployeeInitials(employee.display_name);
@@ -510,7 +572,9 @@ const MasterLeadPage: React.FC = () => {
     return (
       <img
         src={photoUrl}
-        alt={employee.display_name}
+        alt={employee.display_name || ''}
+        loading="eager"
+        decoding="async"
         className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
         onClick={() => {
           if (employee.id) {
@@ -551,88 +615,95 @@ const MasterLeadPage: React.FC = () => {
 
   const fetchSubLeads = useCallback(async () => {
     if (!lead_number) return;
+    if (fetchInFlightRef.current) return;
 
     const decodedLeadNumber = decodeURIComponent(lead_number);
     const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const routeBase = getRouteBaseLeadNumber(lead_number);
+    const normalizedId = extractNumericId(baseLeadNumber);
 
-    // #region agent log
-    const fetchStartTime = Date.now();
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:237', message: 'fetchSubLeads START', data: { baseLeadNumber, currentLoading: loading, currentSubLeadsLoading: subLeadsLoading }, timestamp: fetchStartTime, sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-    // #endregion
-
+    fetchInFlightRef.current = true;
     try {
-      // Only set loading to true if we're not already loading (prevents redundant state updates)
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:244', message: 'Setting loading states', data: { currentLoading: loading, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-      // #endregion
-      // Only show main loading screen if we don't have any data yet
-      // subLeadsLoading will show a smaller loading indicator in the table when refreshing existing data
-      const hasExistingData = masterLeadInfo && subLeads.length > 0;
-      if (!hasExistingData) {
-        setLoading(true);
-        // Don't show subLeadsLoading if we're showing the full loading screen
-        setSubLeadsLoading(false);
-      } else {
-        // We have existing data, so only show the table loading indicator
+      const hasExistingData = persistedMatchesRoute(
+        routeBase,
+        masterLeadInfoRef.current,
+        subLeadsRef.current
+      );
+      // Never block the page when we already have matching rows — soft-refresh only.
+      if (hasExistingData) {
+        setLoading(false);
         setSubLeadsLoading(true);
+      } else {
+        setLoading(true);
+        setSubLeadsLoading(false);
       }
       setError(null);
 
-      // Decide which system to query first.
-      // Clients page effectively knows legacy vs new by context; MasterLeadPage must infer from the route.
-      // If the base looks numeric and exists in legacy table, prefer legacy to avoid mistakenly matching a new lead chain.
-      const normalizedIdCandidate = extractNumericId(baseLeadNumber);
-      const numericCandidate = normalizedIdCandidate ? parseInt(normalizedIdCandidate, 10) : NaN;
-      let shouldPreferLegacy = false;
-      if (!Number.isNaN(numericCandidate)) {
-        const { data: legacyExists, error: legacyExistsError } = await supabase
-          .from('leads_lead')
-          .select('id')
-          .eq('id', numericCandidate)
-          .maybeSingle();
-        if (!legacyExistsError && legacyExists?.id != null) {
-          shouldPreferLegacy = true;
+      // Start new-leads fetch immediately; in parallel check whether legacy id is a true root master.
+      let probedNewContracts: Map<string, ContractData> | null = null;
+      const probeSetContracts: typeof setContractsDataMap = (updater) => {
+        probedNewContracts = updater(new Map());
+      };
+
+      const legacyRootPromise =
+        normalizedId && !Number.isNaN(parseInt(normalizedId, 10))
+          ? supabase
+              .from('leads_lead')
+              .select('id, master_id')
+              .eq('id', parseInt(normalizedId, 10))
+              .maybeSingle()
+          : Promise.resolve({ data: null as any, error: null });
+
+      const [newLeadResult, legacyRootRes] = await Promise.all([
+        fetchNewMasterLead(baseLeadNumber, probeSetContracts),
+        legacyRootPromise,
+      ]);
+
+      const legacyRow = legacyRootRes?.data;
+      const isLegacyRootMaster =
+        !!legacyRow?.id &&
+        (legacyRow.master_id == null || String(legacyRow.master_id).trim() === '');
+
+      const newCount = newLeadResult.subLeads?.length || 0;
+      const newOk = !!(newLeadResult.success && newLeadResult.masterLead);
+
+      // Prefer the new-leads chain whenever it resolves — avoids a second heavy legacy round-trip.
+      if (newOk && newCount > 0) {
+        if (probedNewContracts) {
+          setContractsDataMap(() => probedNewContracts as Map<string, ContractData>);
         }
+        setMasterLeadInfo(newLeadResult.masterLead);
+        setSubLeads(newLeadResult.subLeads || []);
+        lastFetchedBaseRef.current = routeBase;
+        return;
       }
 
-      // Try legacy first when we have a confirmed legacy master.
-      const normalizedId = extractNumericId(baseLeadNumber);
-      if (!normalizedId) {
-        shouldPreferLegacy = false;
-      }
-
-      if (shouldPreferLegacy && normalizedId) {
+      if (isLegacyRootMaster && normalizedId) {
         const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
         if (legacyResult.success && legacyResult.masterLead) {
           setMasterLeadInfo(legacyResult.masterLead);
           setSubLeads(legacyResult.subLeads || []);
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:283', message: 'Legacy-first fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: (legacyResult.subLeads || []).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-          // #endregion
+          lastFetchedBaseRef.current = routeBase;
           return;
         }
       }
 
-      // Try new leads
-      const newLeadResult = await fetchNewMasterLead(baseLeadNumber, setContractsDataMap);
-      if (newLeadResult.success && newLeadResult.masterLead) {
+      if (newOk) {
+        if (probedNewContracts) {
+          setContractsDataMap(() => probedNewContracts as Map<string, ContractData>);
+        }
         setMasterLeadInfo(newLeadResult.masterLead);
         setSubLeads(newLeadResult.subLeads || []);
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:260', message: 'New lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: (newLeadResult.subLeads || []).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
+        lastFetchedBaseRef.current = routeBase;
         return;
       }
 
-      // Fallback: try legacy if not already tried or if legacy exists but first attempt failed.
       if (normalizedId) {
         const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
         if (legacyResult.success && legacyResult.masterLead) {
           setMasterLeadInfo(legacyResult.masterLead);
           setSubLeads(legacyResult.subLeads || []);
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:283', message: 'Legacy fallback fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: (legacyResult.subLeads || []).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-          // #endregion
+          lastFetchedBaseRef.current = routeBase;
           return;
         }
         setError(legacyResult.error || 'Failed to fetch master lead');
@@ -643,45 +714,35 @@ const MasterLeadPage: React.FC = () => {
     } catch (error) {
       console.error('Error fetching sub-leads:', error);
       setError('An unexpected error occurred while fetching data');
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:289', message: 'fetchSubLeads ERROR', data: { duration: Date.now() - fetchStartTime, error: error instanceof Error ? error.message : String(error) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-      // #endregion
     } finally {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:293', message: 'fetchSubLeads FINALLY - setting loading false', data: { totalDuration: Date.now() - fetchStartTime }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-      // #endregion
+      fetchInFlightRef.current = false;
       setLoading(false);
       setSubLeadsLoading(false);
     }
-  }, [lead_number, loading, masterLeadInfo, subLeads.length, subLeadsLoading, setContractsDataMap, setMasterLeadInfo, setSubLeads, setError]);
+  }, [
+    lead_number,
+    getRouteBaseLeadNumber,
+    persistedMatchesRoute,
+    setContractsDataMap,
+    setMasterLeadInfo,
+    setSubLeads,
+  ]);
 
-  // Refresh data when page becomes visible (e.g., returning from sub-lead creation)
+  // Soft refresh when returning to the tab (no full-page loader, no focus spam)
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && lead_number) {
-        // Small delay to ensure we're fully back on the page
-        setTimeout(() => {
-          fetchSubLeads();
-        }, 100);
-      }
+      if (document.visibilityState !== 'visible' || !lead_number) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        fetchSubLeads();
+      }, 250);
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    // Also refresh when window gains focus
-    const handleFocus = () => {
-      if (lead_number) {
-        setTimeout(() => {
-          fetchSubLeads();
-        }, 100);
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleFocus);
+      if (timer) clearTimeout(timer);
     };
   }, [lead_number, fetchSubLeads]);
 
@@ -805,122 +866,50 @@ const MasterLeadPage: React.FC = () => {
   }, [addLeadSelected, lead_number, masterLeadInfo, subLeads, fetchSubLeads]);
 
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:306', message: 'Main useEffect triggered', data: { lead_number, currentLoading: loading, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length, prevLeadNumber: prevLeadNumberRef.current, hasChecked: hasCheckedPersistedDataRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-    // #endregion
-
     if (!lead_number) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:310', message: 'No lead_number - setting loading false', data: {}, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-      // #endregion
       setLoading(false);
       return;
     }
 
     const decodedLeadNumber = decodeURIComponent(lead_number);
-    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
-    const prevBaseLeadNumber = prevLeadNumberRef.current ? (prevLeadNumberRef.current.includes('/') ? prevLeadNumberRef.current.split('/')[0] : prevLeadNumberRef.current) : undefined;
+    const routeBase = getRouteBaseLeadNumber(lead_number);
+    const prevBase = prevLeadNumberRef.current
+      ? getRouteBaseLeadNumber(prevLeadNumberRef.current)
+      : undefined;
 
-    // Clear persisted state when lead_number changes to a different lead
-    if (prevLeadNumberRef.current && baseLeadNumber !== prevBaseLeadNumber) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:319', message: 'Lead number changed - clearing persisted data and fetching', data: { baseLeadNumber, prevBaseLeadNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-      // #endregion
-      // Set loading immediately before clearing data
-      setLoading(true);
-      setSubLeadsLoading(true);
+    if (prevLeadNumberRef.current && routeBase !== prevBase) {
       setSubLeads([]);
       setMasterLeadInfo(null);
       setContractsDataArray([]);
-      prevLeadNumberRef.current = decodedLeadNumber;
+      lastFetchedBaseRef.current = null;
       hasCheckedPersistedDataRef.current = undefined;
-      // Fetch new lead data
+      prevLeadNumberRef.current = decodedLeadNumber;
+      setLoading(true);
       fetchSubLeads();
       return;
     }
 
-    // Check if we've already checked persisted data for this lead_number
-    const alreadyChecked = hasCheckedPersistedDataRef.current === baseLeadNumber;
-
-    // If already checked, don't do anything (prevent loops)
-    if (alreadyChecked) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:333', message: 'Already checked - early return', data: { baseLeadNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-      // #endregion
-      return;
-    }
-
-    // CRITICAL: Check persisted data FIRST before doing anything else
-    // This prevents showing loading screen when we have cached data
-    const currentMasterLeadInfo = masterLeadInfo;
-    const currentSubLeads = subLeads;
-    const hasPersistedData = currentMasterLeadInfo && currentSubLeads.length > 0;
-    let currentLeadMatches = false;
-    let persistedBaseNumber: string | undefined = undefined;
-
-    if (hasPersistedData) {
-      // Check if persisted data matches current lead_number
-      // Convert to string to handle both string and number IDs
-      const persistedLeadNumber = String(currentMasterLeadInfo.lead_number || currentMasterLeadInfo.id || '');
-      const persistedBaseNumberRaw = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
-      persistedBaseNumber = persistedBaseNumberRaw.replace(/^[LC]/i, '');
-
-      // Also check if any sub-lead matches
-      const subLeadMatches = currentSubLeads.some(subLead => {
-        const subLeadNumber = String(subLead.lead_number || subLead.id || '');
-        const subLeadBaseRaw = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
-        const subLeadBase = subLeadBaseRaw.replace(/^[LC]/i, '');
-        const subLeadNumberClean = subLeadNumber.replace(/^[LC]/i, '');
-        return subLeadBase === baseLeadNumber || subLeadNumberClean === baseLeadNumber;
-      });
-
-      currentLeadMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
-
-      // If persisted data doesn't match, clear it immediately and set loading
-      if (!currentLeadMatches) {
-        setLoading(true);
-        setSubLeadsLoading(true);
-        setSubLeads([]);
-        setMasterLeadInfo(null);
-        setContractsDataArray([]);
-        // Continue to fetch new data
-      }
-    } else {
-      // No persisted data - ensure loading is set immediately
-      setLoading(true);
-      setSubLeadsLoading(true);
-    }
-
-    // Mark as checked BEFORE deciding what to do (prevents loops)
-    hasCheckedPersistedDataRef.current = baseLeadNumber;
     prevLeadNumberRef.current = decodedLeadNumber;
 
-    // If we have persisted data for the current lead, we usually skip fetching.
-    // Exception: legacy master routes (numeric base) sometimes persist an incomplete dataset (only the master row),
-    // which would lock the page into "1 lead found" forever. In that case, force a refresh.
-    const persistedLooksIncompleteForLegacy =
-      hasPersistedData &&
-      currentLeadMatches &&
-      currentSubLeads.length === 1 &&
-      /^\d+$/.test(baseLeadNumber);
+    const hasMatchingCache = persistedMatchesRoute(
+      routeBase,
+      masterLeadInfoRef.current,
+      subLeadsRef.current
+    );
 
-    if (hasPersistedData && currentLeadMatches && !persistedLooksIncompleteForLegacy) {
-      console.log('🔍 MasterLeadPage: Using persisted data, skipping fetch');
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:365', message: 'Using persisted data - setting loading false IMMEDIATELY', data: { baseLeadNumber, persistedBaseNumber: persistedBaseNumber || 'undefined', hasPersistedData, currentLeadMatches }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-      // #endregion
-      // Set loading to false IMMEDIATELY to prevent loading screen
+    if (hasMatchingCache) {
+      // Paint cached rows immediately, then soft-refresh in background.
       setLoading(false);
-      setSubLeadsLoading(false);
+      hasCheckedPersistedDataRef.current = routeBase;
+      if (lastFetchedBaseRef.current !== routeBase) {
+        fetchSubLeads();
+      }
       return;
     }
 
-    // Only fetch if we don't have matching persisted data
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:373', message: 'No persisted data or mismatch - calling fetchSubLeads', data: { baseLeadNumber, hasPersistedData, currentLeadMatches }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-    // #endregion
+    hasCheckedPersistedDataRef.current = routeBase;
     fetchSubLeads();
-  }, [lead_number, fetchSubLeads]); // Removed masterLeadInfo and subLeads from dependencies to prevent unnecessary re-runs
+  }, [lead_number, fetchSubLeads, getRouteBaseLeadNumber, persistedMatchesRoute, setSubLeads, setMasterLeadInfo, setContractsDataArray]);
 
   // Handle view contract - for legacy contracts opens modal, for new contracts navigates
   const handleViewContract = async (contractId: string, isLegacyContract: boolean = false) => {
@@ -1037,12 +1026,19 @@ const MasterLeadPage: React.FC = () => {
     const baseLeadNumber = baseLeadNumberRaw.replace(/^[LC]/i, '');
 
     return subLeads.filter(subLead => {
-      if (subLead.isLinkedOnly) return true;
+      if (subLead.isMaster || subLead.isLinkedOnly) return true;
       const subLeadNumber = String(subLead.lead_number || subLead.id || '');
       const subLeadBaseRaw = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
       const subLeadBase = subLeadBaseRaw.replace(/^[LC]/i, '');
       const subLeadNumberClean = subLeadNumber.replace(/^[LC]/i, '');
-      return subLeadBase === baseLeadNumber || subLeadNumberClean === baseLeadNumber;
+      const actualId = String(subLead.actual_lead_id || '').replace(/^[LC]/i, '');
+      const rowId = String(subLead.id || '').replace(/^legacy_/, '');
+      return (
+        subLeadBase === baseLeadNumber ||
+        subLeadNumberClean === baseLeadNumber ||
+        actualId === baseLeadNumber ||
+        rowId === baseLeadNumber
+      );
     });
   }, [subLeads, lead_number]);
 
@@ -1076,22 +1072,22 @@ const MasterLeadPage: React.FC = () => {
   // Don't return early - always render the page structure so header/sidebar are visible
   // Show loading/error states within the content area instead
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-[#ececec]">
       <style>{compactTableStyles}</style>
       {/* Header */}
-      <div className="bg-white shadow-sm border-b">
-        <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-4">
+      <div className="bg-transparent">
+        <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 md:py-6">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4 min-w-0">
               <button
                 onClick={() => navigate(-1)}
-                className="btn btn-ghost btn-sm"
+                className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white px-4 py-2.5 text-sm font-semibold text-base-content shadow-sm transition-colors hover:bg-white/90 border-0 outline-none"
               >
-                <ArrowLeftIcon className="w-4 h-4 mr-2" />
+                <ArrowLeftIcon className="w-4 h-4" />
                 Back
               </button>
-              <div>
-                <h1 className="text-xl font-semibold text-gray-900">
+              <div className="min-w-0">
+                <h1 className="text-xl md:text-2xl font-semibold text-base-content truncate">
                   Master lead #{(() => {
                     if (!masterLeadInfo) return lead_number;
 
@@ -1109,7 +1105,12 @@ const MasterLeadPage: React.FC = () => {
 
                     // For legacy leads, format lead number using the same logic as Clients.tsx
                     const hasSubLeads = subLeads.length > 1;
-                    const formattedLeadNumber = formatLegacyLeadNumber(masterLeadInfo, undefined, hasSubLeads);
+                    // If this row still has master_id, it is not the chain root — show its own id, not "parent/?"
+                    const isRootMaster =
+                      !masterLeadInfo.master_id || String(masterLeadInfo.master_id).trim() === '';
+                    const formattedLeadNumber = isRootMaster
+                      ? formatLegacyLeadNumber(masterLeadInfo, undefined, hasSubLeads)
+                      : String(masterLeadInfo.id).replace(/^legacy_/, '');
                     let displayNumber = formattedLeadNumber;
 
                     // Add "C" prefix for legacy leads with stage "100" (Success) or higher (after stage 60)
@@ -1120,14 +1121,9 @@ const MasterLeadPage: React.FC = () => {
                     return displayNumber;
                   })()}
                 </h1>
-                <p className="text-sm text-gray-500 flex items-center gap-3 flex-wrap">
+                <p className="mt-1 text-sm text-base-content/60 flex items-center gap-3 flex-wrap">
                   <span>
                     {filteredSubLeads.length} lead{filteredSubLeads.length !== 1 ? 's' : ''} found (including master lead)
-                    {filteredSubLeads.length === 1 && (
-                      <span className="ml-2 text-orange-600">
-                        • Sub-leads temporarily unavailable due to database performance
-                      </span>
-                    )}
                   </span>
                   {masterLeadInfo && filteredSubLeads.length > 0 && (
                     <>
@@ -1139,9 +1135,9 @@ const MasterLeadPage: React.FC = () => {
                           setAddLeadSearchResults([]);
                           setAddLeadSelected(null);
                         }}
-                        className="btn btn-sm btn-outline btn-primary inline-flex items-center gap-1.5"
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80 hover:bg-primary/10 rounded-lg px-2 py-1 transition-colors border-0 outline-none bg-transparent cursor-pointer"
                       >
-                        <PlusCircleIcon className="w-4 h-4" />
+                        <PlusCircleIcon className="w-6 h-6" />
                         Add lead to chain
                       </button>
                       {linkedOnlyLeads.length > 0 && (
@@ -1210,11 +1206,14 @@ const MasterLeadPage: React.FC = () => {
 
         {/* Sub-leads Section - show if we have data or if not in error state */}
         {!error && (subLeads.length > 0 || masterLeadInfo) && (
-          <div>
+          <div className="overflow-hidden rounded-[18px] bg-white shadow-sm">
+            <div className="flex items-center gap-2 px-5 py-4">
+              <UserIcon className="h-5 w-5 text-base-content/50" />
+              <h2 className="text-base font-semibold text-base-content">Leads</h2>
+            </div>
             {subLeads.length === 0 ? (
-              <div className="px-4 sm:px-6 py-8 sm:py-12 text-center">
-                <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-sm sm:text-base text-gray-500">No sub-leads found for this master lead.</p>
+              <div className="px-5 py-10 text-center text-sm text-base-content/50">
+                No sub-leads found for this master lead.
               </div>
             ) : (
               <>
@@ -1344,92 +1343,66 @@ const MasterLeadPage: React.FC = () => {
 
                 {/* Desktop Table View */}
                 <div className="hidden md:block overflow-x-auto">
-                  <table className="table w-full compact-table">
+                  <table className="w-full min-w-[64rem] border-collapse text-left compact-table">
                     <thead>
-                      <tr>
-                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Lead
-                        </th>
-                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Total
-                        </th>
-                        <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Category / Topic
-                        </th>
-                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Stage
-                        </th>
-                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Contact
-                        </th>
-                        <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          APP
-                        </th>
-                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          CONTRACT
-                        </th>
-                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Scheduler
-                        </th>
-                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Closer
-                        </th>
-                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
-                          Handler
-                        </th>
+                      <tr className="border-b border-base-200/80 bg-white text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                        <th className="px-5 py-3 font-semibold">Lead</th>
+                        <th className="px-3 py-3 font-semibold">Total</th>
+                        <th className="hidden md:table-cell px-3 py-3 font-semibold">Category / Topic</th>
+                        <th className="px-3 py-3 font-semibold">Stage</th>
+                        <th className="hidden lg:table-cell px-3 py-3 font-semibold">Contact</th>
+                        <th className="hidden sm:table-cell px-3 py-3 font-semibold">APP</th>
+                        <th className="hidden xl:table-cell px-3 py-3 font-semibold">Contract</th>
+                        <th className="hidden lg:table-cell px-3 py-3 font-semibold">Scheduler</th>
+                        <th className="hidden xl:table-cell px-3 py-3 font-semibold">Closer</th>
+                        <th className="hidden xl:table-cell px-3 py-3 font-semibold">Handler</th>
                       </tr>
                     </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
+                    <tbody>
                       {filteredSubLeads.map((subLead) => (
                         <tr
                           key={subLead.id}
-                          className="hover:bg-gray-50 cursor-pointer"
+                          className="group cursor-pointer border-b border-base-200/60 last:border-b-0 bg-white transition-colors duration-150 hover:!bg-gray-50"
                           onClick={(e) => handleSubLeadClick(subLead, e)}
                         >
-                          <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                            <div className="flex items-center">
-
-                              <span className={`hover:text-blue-800 font-medium ${subLead.isMaster ? 'text-blue-700 font-bold' : 'text-blue-600'}`}>
+                          <td className="px-5 py-3.5 align-middle whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-base font-semibold ${subLead.isMaster ? 'text-black' : 'text-primary'}`}>
                                 {subLead.lead_number}
                               </span>
+                              {subLead.isMaster && (
+                                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-600">
+                                  Master
+                                </span>
+                              )}
                             </div>
                           </td>
-                          <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                            <div className="flex items-center">
-                              <span className="text-gray-900">
-                                {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
-                              </span>
-                            </div>
+                          <td className="px-3 py-3.5 align-middle whitespace-nowrap text-sm text-gray-700">
+                            {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
                           </td>
-                          <td className="hidden md:table-cell px-3 sm:px-6 py-4">
-                            <div className="flex flex-col gap-1">
+                          <td className="hidden md:table-cell max-w-[12rem] px-3 py-3.5 align-middle text-sm leading-snug text-gray-500">
+                            <div className="flex flex-col gap-0.5">
                               {subLead.category && subLead.category !== 'Unknown' && (
-                                <span className="text-gray-900 line-clamp-1 break-words text-sm">{subLead.category}</span>
+                                <span className="line-clamp-2 whitespace-normal break-words">{subLead.category}</span>
                               )}
                               {subLead.topic && (
-                                <span className="text-gray-600 line-clamp-1 break-words text-sm">{subLead.topic}</span>
+                                <span className="line-clamp-1 whitespace-normal break-words text-gray-400">{subLead.topic}</span>
                               )}
                               {(!subLead.category || subLead.category === 'Unknown') && !subLead.topic && (
-                                <span className="text-gray-500 text-sm">---</span>
+                                <span className="text-gray-300">—</span>
                               )}
                             </div>
                           </td>
-                          <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
+                          <td className="px-3 py-3.5 align-middle whitespace-nowrap">
                             {getStageBadge(subLead.stage)}
                           </td>
-                          <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                            <div className="text-sm">
-                              {subLead.contact}
-                            </div>
+                          <td className="hidden lg:table-cell max-w-[10rem] truncate px-3 py-3.5 align-middle text-sm font-medium text-gray-500" title={subLead.contact}>
+                            {subLead.contact || '—'}
                           </td>
-                          <td className="hidden sm:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                            <div className="flex items-center">
-                              <span className="text-sm font-medium">
-                                {subLead.applicants || 0}
-                              </span>
-                            </div>
+                          <td className="hidden sm:table-cell px-3 py-3.5 align-middle whitespace-nowrap text-sm text-gray-600">
+                            {subLead.applicants || 0}
                           </td>
-                          <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          <td className="hidden xl:table-cell px-3 py-3.5 align-middle whitespace-nowrap text-sm">
                             {subLead.agreement && subLead.agreement !== '---' ? (
                               <button
                                 onClick={(e) => {
@@ -1438,50 +1411,47 @@ const MasterLeadPage: React.FC = () => {
                                     handleViewContract(subLead.agreement, subLead.agreementIsLegacy);
                                   }
                                 }}
-                                className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                                className="font-medium text-primary hover:text-primary/80 underline-offset-2 hover:underline cursor-pointer border-0 bg-transparent p-0"
                               >
                                 View
                               </button>
                             ) : (
-                              '---'
+                              <span className="text-gray-300">—</span>
                             )}
                           </td>
-                          <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          <td className="hidden lg:table-cell px-3 py-3.5 align-middle whitespace-nowrap">
                             <div className="flex items-center gap-2">
-                              {subLead.scheduler && subLead.scheduler !== '---' && (
+                              {subLead.scheduler && subLead.scheduler !== '---' ? (
                                 <>
-                                  <EmployeeAvatar employeeId={subLead.scheduler_id} size="lg" />
-                                  <span className="text-sm">{subLead.scheduler}</span>
+                                  <EmployeeAvatar employeeId={subLead.scheduler_id} size="md" />
+                                  <span className="text-sm text-gray-600">{subLead.scheduler}</span>
                                 </>
-                              )}
-                              {(!subLead.scheduler || subLead.scheduler === '---') && (
-                                <span className="text-sm">---</span>
+                              ) : (
+                                <span className="text-sm text-gray-300">—</span>
                               )}
                             </div>
                           </td>
-                          <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          <td className="hidden xl:table-cell px-3 py-3.5 align-middle whitespace-nowrap">
                             <div className="flex items-center gap-2">
-                              {subLead.closer && subLead.closer !== '---' && (
+                              {subLead.closer && subLead.closer !== '---' ? (
                                 <>
-                                  <EmployeeAvatar employeeId={subLead.closer_id} size="lg" />
-                                  <span className="text-sm">{subLead.closer}</span>
+                                  <EmployeeAvatar employeeId={subLead.closer_id} size="md" />
+                                  <span className="text-sm text-gray-600">{subLead.closer}</span>
                                 </>
-                              )}
-                              {(!subLead.closer || subLead.closer === '---') && (
-                                <span className="text-sm">---</span>
+                              ) : (
+                                <span className="text-sm text-gray-300">—</span>
                               )}
                             </div>
                           </td>
-                          <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          <td className="hidden xl:table-cell px-3 py-3.5 align-middle whitespace-nowrap">
                             <div className="flex items-center gap-2">
-                              {subLead.handler && subLead.handler !== '---' && subLead.handler !== 'Not assigned' && (
+                              {subLead.handler && subLead.handler !== '---' && subLead.handler !== 'Not assigned' ? (
                                 <>
-                                  <EmployeeAvatar employeeId={subLead.handler_id} size="lg" />
-                                  <span className="text-sm">{subLead.handler}</span>
+                                  <EmployeeAvatar employeeId={subLead.handler_id} size="md" />
+                                  <span className="text-sm text-gray-600">{subLead.handler}</span>
                                 </>
-                              )}
-                              {(!subLead.handler || subLead.handler === '---' || subLead.handler === 'Not assigned') && (
-                                <span className="text-sm">---</span>
+                              ) : (
+                                <span className="text-sm text-gray-300">—</span>
                               )}
                             </div>
                           </td>
@@ -1489,10 +1459,10 @@ const MasterLeadPage: React.FC = () => {
                       ))}
                       {subLeadsLoading && (
                         <tr>
-                          <td colSpan={10} className="px-6 py-4 text-center">
+                          <td colSpan={10} className="px-5 py-4 text-center">
                             <div className="flex items-center justify-center">
                               <div className="loading loading-spinner loading-sm mr-2"></div>
-                              <span className="text-gray-500">Loading sub-leads...</span>
+                              <span className="text-sm text-base-content/50">Loading sub-leads...</span>
                             </div>
                           </td>
                         </tr>
