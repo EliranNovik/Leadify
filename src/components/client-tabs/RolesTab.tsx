@@ -938,9 +938,9 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
   return (
     <div className="p-1 sm:p-2 md:p-3">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-3">
         <ClientTabPageHeader
-          className="mb-6"
+          className="mb-0"
           icon={UserGroupIcon}
           title="Roles"
           subtitle={
@@ -1001,10 +1001,10 @@ const RolesTab: React.FC<ClientTabProps> = ({
                   return (
                     <div
                       key={role.id}
-                      className={`rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm transition-shadow dark:border-base-300/55 dark:bg-base-100 ${
+                      className={`rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] transition-shadow dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] ${
                         roleUiDisabled
                           ? 'opacity-45 pointer-events-none select-none'
-                          : 'hover:shadow-md'
+                          : 'hover:shadow-[0_8px_24px_rgba(20,24,40,0.08)]'
                       }`}
                       aria-disabled={roleUiDisabled}
                       title={roleUiDisabled ? 'This role is temporarily unavailable' : undefined}

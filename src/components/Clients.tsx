@@ -16762,6 +16762,42 @@ const Clients: React.FC<ClientsProps> = ({
             }}
           />
 
+          {/* Floating Interactions shortcut (desktop) */}
+          {!showEditLeadDrawer &&
+            !isBalanceModalOpen &&
+            !showScheduleMeetingPanel &&
+            !showRescheduleDrawer &&
+            !showUpdateDrawer &&
+            activeTab !== 'interactions' && (() => {
+              const interactionsBadge =
+                tabs.find((t) => t.id === 'interactions')?.badge ?? 0;
+              return (
+              <button
+                type="button"
+                onClick={() => setActiveTabWithUrl('interactions')}
+                onMouseEnter={() => prefetchTabChunk('interactions')}
+                className="hidden md:flex fixed bottom-6 right-6 z-[45] h-14 w-14 items-center justify-center rounded-full border border-gray-300/80 bg-gray-200 text-gray-800 shadow-xl transition-all hover:bg-gray-300 hover:shadow-2xl active:scale-95 dark:border-base-content/15 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200"
+                aria-label={
+                  interactionsBadge > 0
+                    ? `Interactions (${interactionsBadge})`
+                    : 'Interactions'
+                }
+                title={
+                  interactionsBadge > 0
+                    ? `Interactions (${interactionsBadge})`
+                    : 'Interactions'
+                }
+              >
+                <ChatBubbleLeftRightIcon className="h-7 w-7" aria-hidden />
+                {interactionsBadge > 0 ? (
+                  <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-gray-800 px-1 text-[11px] font-bold text-white dark:bg-base-content dark:text-base-300">
+                    {interactionsBadge > 99 ? '99+' : interactionsBadge}
+                  </span>
+                ) : null}
+              </button>
+              );
+            })()}
+
           {/* Mobile Tabs — native <select> picker (iOS/Android) */}
           {!showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
             <>
