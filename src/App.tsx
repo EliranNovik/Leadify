@@ -215,6 +215,7 @@ const AppContentInner: React.FC = () => {
   );
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [clientsAppNavOpen, setClientsAppNavOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isAiChatOpen, setIsAiChatOpen] = useState(false);
   const [isAiChatFullPage, setIsAiChatFullPage] = useState(false);
@@ -616,6 +617,21 @@ const AppContentInner: React.FC = () => {
     setIsSidebarOpen(false);
   }, []);
 
+  const handleToggleClientsAppNav = useCallback(() => {
+    setClientsAppNavOpen((prev) => !prev);
+  }, []);
+
+  const handleCloseClientsAppNav = useCallback(() => {
+    setClientsAppNavOpen(false);
+  }, []);
+
+  // Close docked Clients app nav when leaving client detail
+  useEffect(() => {
+    if (!isClientDetailPage && clientsAppNavOpen) {
+      setClientsAppNavOpen(false);
+    }
+  }, [isClientDetailPage, clientsAppNavOpen]);
+
   const handleOpenEmailThread = useCallback(() => {
     setIsEmailThreadOpen(true);
   }, []);
@@ -993,6 +1009,9 @@ const AppContentInner: React.FC = () => {
                   onClose={handleCloseSidebar}
                   onOpenAIChat={handleOpenAIChat}
                   mobileOnly={sidebarMobileOnly}
+                  presentation={isClientDetailPage ? 'docked' : 'floating'}
+                  dockedOpen={isClientDetailPage && clientsAppNavOpen}
+                  onDockedClose={handleCloseClientsAppNav}
                 />
               </div>
               <div
@@ -1024,7 +1043,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/" element={<HomeEntryPage />} />
                     <Route path="/external-home" element={<RouteSuspense><LazyExternalUserHomePage /></RouteSuspense>} />
                     <Route path="/contacts/:contactId" element={<RouteSuspense><LazyContactBridgePage /></RouteSuspense>} />
-                    <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
+                    <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} clientsAppNavOpen={clientsAppNavOpen} onToggleClientsAppNav={handleToggleClientsAppNav} /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
                     <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />
                     <Route
@@ -1058,7 +1077,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients/:lead_number/reschedule-meeting" element={<RouteSuspense><LazyRescheduleMeetingPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/duplicates" element={<RouteSuspense><LazyDuplicateContactsPage /></RouteSuspense>} />
-                    <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} clientsAppNavOpen={clientsAppNavOpen} onToggleClientsAppNav={handleToggleClientsAppNav} /></RouteSuspense>} />
                     <Route path="/calendar" element={<RouteSuspense><LazyCalendarPage /></RouteSuspense>} />
                     <Route path="/calendar/internal-meeting-documents" element={<RouteSuspense><LazyInternalMeetingDocumentsPage /></RouteSuspense>} />
                     <Route path="/outlook-calendar" element={<RouteSuspense><LazyOutlookCalendarPage /></RouteSuspense>} />

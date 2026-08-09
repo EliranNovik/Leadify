@@ -205,8 +205,17 @@ const CLIENT_HEADER_APP_INSET_MOBILE =
  * Use pl-* only (not px-*) so page right-padding utilities never override left inset.
  */
 const CLIENT_HEADER_SIDEBAR_PAD = 'md:pl-40';
+/**
+ * Clear fixed client tab rail (w-40 / 10rem) plus the same horizontal inset as
+ * Clients tab content (`md:px-5` / `lg:px-6` / `xl:px-8`) so header actions
+ * line up with the cards below.
+ */
+const CLIENT_HEADER_NAV_RAIL_PAD =
+    'md:pl-[calc(10rem+1.25rem)] lg:pl-[calc(10rem+1.5rem)] xl:pl-[calc(10rem+2rem)]';
 /** Right + mobile left page padding — never sets md:pl so sidebar pad stays intact. */
 const CLIENT_HEADER_PAGE_X = 'pl-3 pr-3 sm:pl-4 sm:pr-4 md:pr-6 lg:pr-8 xl:pr-10';
+/** Right-only page padding when left inset already includes content gutter (nav rail). */
+const CLIENT_HEADER_PAGE_X_WITH_RAIL = 'pr-3 sm:pr-4 md:pr-5 lg:pr-6 xl:pr-8';
 /**
  * Desktop top strip — edge-to-edge white.
  * Uses a dedicated spacer for the fixed navbar height so the name never sits under it.
@@ -227,12 +236,12 @@ const META_BADGE_WHITE =
 const META_BADGE_WHITE_BTN =
     `${META_BADGE_WHITE} font-sans transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:shadow-md`;
 
-/** Compact chips docked to the bottom of the client header top band. */
+/** Compact chips — same grey as stage action buttons (`bg-gray-200`). */
 const META_BADGE_CONNECTED =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full border-0 bg-white px-3 py-1.5 text-[13px] font-medium text-base-content/80 shadow-none dark:bg-base-100';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full border-0 bg-gray-200 px-3 py-1.5 text-[13px] font-medium text-base-content/80 shadow-none dark:bg-base-300';
 
 const META_BADGE_CONNECTED_BTN =
-    `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:bg-base-50 dark:hover:bg-base-200/40`;
+    `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:bg-gray-300 dark:hover:bg-base-200`;
 
 const CLIENT_HEADER_LEAD_NUMBER =
     'mt-0 block text-sm font-medium tabular-nums text-gray-500 dark:text-base-content/45';
@@ -368,6 +377,8 @@ interface ClientHeaderProps {
     openEditLeadDrawer?: () => void;
     /** Notifies parent when the header-hosted edit drawer opens/closes */
     onEditLeadDrawerOpenChange?: (open: boolean) => void;
+    /** Increment from parent (e.g. nav rail Edit) to open the header-hosted edit drawer */
+    editLeadOpenRequest?: number;
     handleActivation: () => void;
     setShowUnactivationModal: (show: boolean) => void;
     renderStageBadge: (anchor?: 'badge' | 'mobile' | 'desktop') => React.ReactNode;
@@ -424,6 +435,13 @@ interface ClientHeaderProps {
     /** Flush layout on client detail page: no outer white band, aligned page padding. */
     connectToAppHeader?: boolean;
     /**
+     * When set with connectToAppHeader, places this nav flush under the white top band
+     * with header actions + children in the column to its right.
+     */
+    navRail?: React.ReactNode;
+    /** Rendered beside navRail under the white top band (e.g. client tab content). */
+    children?: React.ReactNode;
+    /**
      * When false, hides the stage-105 missing-plan / next-payment banner in the header
      * (Clients shows it next to tab titles instead). Default true for modals.
      */
@@ -452,6 +470,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     setShowSubLeadDrawer,
     openEditLeadDrawer: openEditLeadDrawerProp,
     onEditLeadDrawerOpenChange,
+    editLeadOpenRequest = 0,
     handleActivation,
     setShowUnactivationModal,
     renderStageBadge,
@@ -489,9 +508,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     pendingProbabilitySaving = false,
     onDismissPendingProbability,
     connectToAppHeader = false,
+    navRail = null,
+    children = null,
     showHandlerPaymentBanner = true,
 }) => {
     const navigate = useNavigate();
+    const sidebarPadClass = navRail ? CLIENT_HEADER_NAV_RAIL_PAD : CLIENT_HEADER_SIDEBAR_PAD;
+    const pagePadClass = navRail ? CLIENT_HEADER_PAGE_X_WITH_RAIL : CLIENT_HEADER_PAGE_X;
     const [subEfforts, setSubEfforts] = useState<Array<{ id: number; name: string; sort_order: number }>>([]);
     const [isLoadingSubEfforts, setIsLoadingSubEfforts] = useState(false);
     const [leadSubEfforts, setLeadSubEfforts] = useState<any[]>([]);
@@ -528,6 +551,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             setEditLeadDrawerOpenState(true);
         }
     }, [openEditLeadDrawerProp, setEditLeadDrawerOpenState]);
+
+    useEffect(() => {
+        if (!editLeadOpenRequest) return;
+        handleOpenEditLeadDrawer();
+    }, [editLeadOpenRequest, handleOpenEditLeadDrawer]);
 
     const [isEditingCategory, setIsEditingCategory] = useState(false);
     /** Unpaid finance plan totals by currency (from payment_plans / finances_paymentplanrow, excludes paid rows). */
@@ -3288,7 +3316,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <div
                         className={
                             connectToAppHeader
-                                ? 'flex w-full flex-col gap-4 md:gap-3'
+                                ? 'flex w-full flex-col gap-4 md:gap-0'
                                 : 'flex w-full flex-col gap-5 px-4 py-4 sm:px-5 sm:pb-5 md:gap-4'
                         }
                     >
@@ -3296,7 +3324,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <div
                         className={
                             connectToAppHeader
-                                ? `flex w-full flex-col gap-5 md:hidden ${CLIENT_HEADER_APP_INSET_MOBILE} ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                                ? `flex w-full flex-col gap-5 md:hidden ${CLIENT_HEADER_APP_INSET_MOBILE} ${sidebarPadClass} ${pagePadClass}`
                                 : 'flex w-full flex-col gap-5 md:hidden'
                         }
                     >                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2">
@@ -4297,10 +4325,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     </div>
                     </div>
                         </div>
-                    </div>
+                        </div>
                         {connectToAppHeader ? (
-                            <div className="client-header-top-band__meta">
-                                <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-1.5 sm:gap-2">
+                            <div className="client-header-meta-band">
+                                <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                                     {renderClientMetaBadges('connected')}
                                 </div>
                             </div>
@@ -4317,7 +4345,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <div
                         className={
                             connectToAppHeader
-                                ? `mt-3 hidden w-full flex-col items-stretch gap-2 md:flex ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                                ? `${navRail ? 'mt-0 pt-3' : 'mt-3'} hidden w-full flex-col items-stretch gap-2 md:flex ${sidebarPadClass} ${pagePadClass}`
                                 : 'mt-3 hidden w-full flex-col items-stretch gap-2 md:flex'
                         }
                     >
@@ -4741,7 +4769,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <div
                             className={
                                 connectToAppHeader
-                                    ? `mt-5 w-full ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                                    ? `mt-5 w-full ${sidebarPadClass} ${pagePadClass}`
                                     : 'mt-5 w-full'
                             }
                         >
@@ -4820,7 +4848,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <div
                     className={
                         connectToAppHeader
-                            ? `mt-7 flex w-full flex-wrap items-center gap-4 md:hidden ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                            ? `mt-7 flex w-full flex-wrap items-center gap-4 md:hidden ${sidebarPadClass} ${pagePadClass}`
                             : 'mt-7 flex w-full flex-wrap items-center gap-4 md:hidden'
                     }
                 >                    {/* Check if case is unactivated - show message instead of buttons */}
@@ -5221,7 +5249,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <div
                     className={
                         connectToAppHeader
-                            ? `mt-7 pt-6 md:hidden w-full ${CLIENT_HEADER_SIDEBAR_PAD} ${CLIENT_HEADER_PAGE_X}`
+                            ? `mt-7 pt-6 md:hidden w-full ${sidebarPadClass} ${pagePadClass}`
                             : 'mt-7 pt-6 md:hidden w-full px-1 sm:px-2'
                     }
                 >                    {(() => {
@@ -5426,7 +5454,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     })()}
                 </div>
 
-                    </div>
+                </div>
                 </div>
 
                 {/* Category Edit Modal */}

@@ -163,6 +163,13 @@ import {
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
+import ClientDetailNavRail, {
+  CLIENT_DETAIL_DOCKED_SIDEBAR_WIDTH_CLASS,
+  CLIENT_DETAIL_NAV_PL_CLASS,
+  CLIENT_DETAIL_NAV_RAIL_LEFT_CLASS,
+  CLIENT_DETAIL_NAV_WITH_APP_LEFT_CLASS,
+  CLIENT_DETAIL_NAV_WITH_APP_PL_CLASS,
+} from './ClientDetailNavRail';
 import HeaderRoleAssignField, {
   HeaderRoleAssignDropdownItem,
   type AssignFieldEmployeeRef,
@@ -495,6 +502,8 @@ interface ClientsProps {
   setSelectedClient: React.Dispatch<any>;
   refreshClientData: (clientId: number | string) => Promise<void>;
   onOpenWhatsAppForContact?: (payload: WhatsAppPageSelectedContact) => void;
+  clientsAppNavOpen?: boolean;
+  onToggleClientsAppNav?: () => void;
 }
 
 const getCurrencySymbol = (currencyCode?: string) => {
@@ -649,6 +658,8 @@ const Clients: React.FC<ClientsProps> = ({
   setSelectedClient,
   refreshClientData,
   onOpenWhatsAppForContact,
+  clientsAppNavOpen = false,
+  onToggleClientsAppNav,
 }) => {
   const getClientTabMemoryKey = useCallback((client: any): string | null => {
     if (!client) return null;
@@ -1206,19 +1217,6 @@ const Clients: React.FC<ClientsProps> = ({
     if (!activeTab) return;
     setVisitedTabs((prev) => (prev.includes(activeTab) ? prev : [...prev, activeTab]));
   }, [activeTab]);
-  // Check if floating nav bar should always be open
-  const floatingNavBarAlwaysOpen = localStorage.getItem('floatingNavBarAlwaysOpen') === 'true';
-  const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(!floatingNavBarAlwaysOpen);
-  const tabBarCollapseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (tabBarCollapseTimeoutRef.current) {
-        clearTimeout(tabBarCollapseTimeoutRef.current);
-      }
-    };
-  }, []);
 
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
@@ -1236,6 +1234,51 @@ const Clients: React.FC<ClientsProps> = ({
     retainOnPageRefresh: true,
   });
   const tabContentRef = useRef<HTMLDivElement>(null);
+  const clientHeaderBandRef = useRef<HTMLDivElement>(null);
+
+  // Keep grey rail flush under the white name band (meta strip is full-bleed grey beside the rail)
+  useEffect(() => {
+    if (!selectedClient) {
+      document.documentElement.style.removeProperty('--client-detail-nav-top');
+      return;
+    }
+
+    const NAVBAR_PX = 48;
+    const updateNavTop = () => {
+      const root = clientHeaderBandRef.current;
+      const band =
+        (root?.querySelector('.client-header-top-band') as HTMLElement | null) ||
+        (document.querySelector('.client-header-top-band') as HTMLElement | null);
+      const body = band?.querySelector('.client-header-top-band__body') as HTMLElement | null;
+      const el = body || band;
+      if (!el) return;
+      const bottom = el.getBoundingClientRect().bottom;
+      const top = Math.max(Math.round(bottom), NAVBAR_PX);
+      document.documentElement.style.setProperty('--client-detail-nav-top', `${top}px`);
+    };
+
+    updateNavTop();
+    const t1 = window.setTimeout(updateNavTop, 0);
+    const t2 = window.setTimeout(updateNavTop, 100);
+    const scrollRoot = document.querySelector('main.clients-detail-scroll') || window;
+    scrollRoot.addEventListener('scroll', updateNavTop, { passive: true } as AddEventListenerOptions);
+    window.addEventListener('resize', updateNavTop);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateNavTop) : null;
+    const observeTarget =
+      (clientHeaderBandRef.current?.querySelector('.client-header-top-band__body') as HTMLElement | null) ||
+      (clientHeaderBandRef.current?.querySelector('.client-header-top-band') as HTMLElement | null) ||
+      clientHeaderBandRef.current;
+    if (observeTarget) ro?.observe(observeTarget);
+
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      scrollRoot.removeEventListener('scroll', updateNavTop);
+      window.removeEventListener('resize', updateNavTop);
+      ro?.disconnect();
+      document.documentElement.style.removeProperty('--client-detail-nav-top');
+    };
+  }, [selectedClient?.id]);
 
   useEffect(() => {
     prefetchTabChunk(activeTab);
@@ -1377,6 +1420,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [showDeclinedDrawer, setShowDeclinedDrawer] = useState(false);
   const [showLeadSummaryDrawer, setShowLeadSummaryDrawer] = useState(false);
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
+  const [editLeadOpenRequest, setEditLeadOpenRequest] = useState(0);
   // Helper function to get category display name for edit lead drawer
   // Main categories for Edit Lead drawer
   const [mainCategories, setMainCategories] = useState<string[]>([]);
@@ -1389,8 +1433,6 @@ const Clients: React.FC<ClientsProps> = ({
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
-  const desktopTabsRef = useRef<HTMLDivElement>(null);
-  // Remove tabScales and wave zoom effect
   // ---
 
   // Local loading state for client data.
@@ -13584,10 +13626,307 @@ const Clients: React.FC<ClientsProps> = ({
       {/* Only render main content if selectedClient exists */}
       {selectedClient && (
         <>
+          <ClientDetailNavRail
+            tabs={tabs}
+            activeTab={activeTab}
+            onSelectTab={setActiveTabWithUrl}
+            onPrefetchTab={prefetchTabChunk}
+            appNavOpen={clientsAppNavOpen}
+            onToggleAppNav={() => onToggleClientsAppNav?.()}
+            leadActions={{
+              onCreateSubLead: () => setShowSubLeadDrawer(true),
+              isInHighlights: isInHighlightsState,
+              onToggleHighlights: async () => {
+                if (!selectedClient?.id) return;
+                const isLegacyLead =
+                  selectedClient.lead_type === 'legacy' ||
+                  selectedClient.id?.toString().startsWith('legacy_');
+                const leadId = isLegacyLead
+                  ? typeof selectedClient.id === 'string'
+                    ? parseInt(selectedClient.id.replace('legacy_', ''), 10)
+                    : selectedClient.id
+                  : selectedClient.id;
+                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+                if (isInHighlightsState) {
+                  await removeFromHighlights(leadId, isLegacyLead);
+                } else {
+                  await addToHighlights(leadId, leadNumber, isLegacyLead);
+                }
+              },
+              onEditDetails: () => setEditLeadOpenRequest((n) => n + 1),
+              isUnactivated: (() => {
+                const isLegacy =
+                  selectedClient.lead_type === 'legacy' ||
+                  selectedClient.id?.toString().startsWith('legacy_');
+                return isLegacy
+                  ? selectedClient.status === 10
+                  : selectedClient.status === 'inactive';
+              })(),
+              onDeactivateOrActivate: () => {
+                const isLegacy =
+                  selectedClient.lead_type === 'legacy' ||
+                  selectedClient.id?.toString().startsWith('legacy_');
+                const isUnactivated = isLegacy
+                  ? selectedClient.status === 10
+                  : selectedClient.status === 'inactive';
+                if (isUnactivated) {
+                  void handleActivation();
+                } else {
+                  setShowUnactivationModal(true);
+                }
+              },
+            }}
+          />
+          <div ref={clientHeaderBandRef} className="w-full min-w-0">
+          <ClientHeader
+            connectToAppHeader
+            navRail
+            showHandlerPaymentBanner={false}
+            selectedClient={selectedClient}
+            assignSchedulerContent={
+              selectedClient &&
+              shouldShowAssignSchedulerField(
+                currentStageName,
+                selectedClient,
+                isStageNumeric ? stageNumeric : Number((selectedClient as any)?.stage),
+              ) ? (
+                <HeaderRoleAssignField
+                  label="Assign scheduler"
+                  placeholder="—"
+                  value={schedulerSearchTerm}
+                  onChange={(value) => {
+                    setSchedulerSearchTerm(value);
+                    setShowSchedulerDropdown(true);
+                  }}
+                  onFocus={() => setShowSchedulerDropdown(true)}
+                  onConfirm={() => {
+                    const searchText = schedulerSearchTerm.trim();
+                    if (searchText) {
+                      updateScheduler(searchText);
+                    }
+                  }}
+                  confirmTitle="Assign scheduler"
+                  dropdownOpen={showSchedulerDropdown}
+                  dropdown={
+                    <>
+                      <HeaderRoleAssignDropdownItem
+                        label="———"
+                        showAvatar={false}
+                        onClick={() => {
+                          setSchedulerSearchTerm('');
+                          setShowSchedulerDropdown(false);
+                          updateScheduler('');
+                        }}
+                      />
+                      {filteredSchedulerOptions.length > 0 ? (
+                        filteredSchedulerOptions.map((option) => (
+                          <HeaderRoleAssignDropdownItem
+                            key={option}
+                            label={option}
+                            employee={resolveAssignFieldEmployee({ name: option })}
+                            onClick={() => {
+                              setSchedulerSearchTerm(option);
+                              setShowSchedulerDropdown(false);
+                              updateScheduler(option);
+                            }}
+                          />
+                        ))
+                      ) : (
+                        <div className="px-3.5 py-2.5 text-sm text-base-content/55">No matches found</div>
+                      )}
+                    </>
+                  }
+                />
+              ) : null
+            }
+            flaggedConversationCount={headerFlaggedConversationCount}
+            pendingProbabilityValues={pendingProbabilityAfterFlag}
+            pendingProbabilitySaving={pendingProbabilitySaving}
+            onDismissPendingProbability={handleDismissPendingProbability}
+            onSwitchClientTab={setActiveTabWithUrl}
+            refreshClientData={refreshClientData}
+            isClientSyncing={isClientSyncing}
+            isSubLead={isSubLead}
+            masterLeadNumber={masterLeadNumber}
+            isMasterLead={isMasterLead}
+            subLeadsCount={isMasterLead ? subLeads.length : (isSubLead ? masterSubLeadsCount : 0)}
+            nextDuePayment={nextDuePayment}
+            setIsBalanceModalOpen={setIsBalanceModalOpen}
+            hasPaymentPlan={hasPaymentPlan}
+            paymentPlanBaseTotal={paymentPlanBaseTotal}
+            paymentPlanVatTotal={paymentPlanVatTotal}
+            paymentPlanExpenseNoVatTotal={paymentPlanExpenseNoVatTotal}
+            currentStageName={currentStageName}
+            handleStartCase={handleStartCase}
+            updateLeadStage={updateLeadStage}
+            isInHighlightsState={isInHighlightsState}
+            isSuperuser={isSuperuser}
+            setShowDeleteModal={setShowDeleteModal}
+            duplicateContacts={duplicateContacts}
+            setIsDuplicateDropdownOpen={setIsDuplicateDropdownOpen}
+            isDuplicateDropdownOpen={isDuplicateDropdownOpen}
+            setShowSubLeadDrawer={setShowSubLeadDrawer}
+            onEditLeadDrawerOpenChange={setShowEditLeadDrawer}
+            editLeadOpenRequest={editLeadOpenRequest}
+            handleActivation={handleActivation}
+            setShowUnactivationModal={setShowUnactivationModal}
+            renderStageBadge={(anchor) => getStageBadge(selectedClient.stage, anchor, selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
+            getEmployeeDisplayName={getEmployeeDisplayName}
+            allEmployees={allEmployees}
+            dropdownItems={dropdownItems}
+            onCombineLeads={(!isSubLead && !isMasterLead && !hasLinkedMasterLead) ? () => setCombineLeadsModalOpen(true) : undefined}
+            onOpenWhatsAppForContact={onOpenWhatsAppForContact}
+            handlePaymentReceivedNewClient={handlePaymentReceivedNewClient}
+            handleScheduleMenuClick={handleScheduleMenuClick}
+            handleStageUpdate={handleStageUpdate}
+            openSendOfferModal={openSendOfferModal}
+            handleOpenSignedDrawer={handleOpenSignedDrawer}
+            handleOpenDeclinedDrawer={handleOpenDeclinedDrawer}
+            setShowRescheduleDrawer={(show) => {
+              if (show && !isMobileMeetingScheduleUi()) {
+                navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+                return;
+              }
+              setShowRescheduleDrawer(show);
+            }}
+            scheduleMenuLabel={scheduleMenuLabel}
+            onMeetingScheduleClick={() => {
+              if (isMobileMeetingScheduleUi()) {
+                markPendingMeetingScheduleDrawer();
+                setActiveTabWithUrl('meeting');
+                window.dispatchEvent(new CustomEvent('meeting-tab:open-schedule-drawer'));
+              } else {
+                navigate(getScheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+              }
+            }}
+            onMeetingRescheduleClick={() => {
+              if (isMobileMeetingScheduleUi()) {
+                markPendingMeetingRescheduleDrawer();
+                setActiveTabWithUrl('meeting');
+                window.dispatchEvent(new CustomEvent('meeting-tab:open-reschedule-drawer'));
+              } else {
+                navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
+              }
+            }}
+            hasScheduledMeetings={hasScheduledMeetings}
+            isStageNumeric={isStageNumeric}
+            stageNumeric={stageNumeric ?? undefined}
+            dropdownsContent={
+              <>
+                {selectedClient &&
+                  (() => {
+                    const isSuccess = areStagesEquivalent(currentStageName, 'Success');
+                    const isClientSigned =
+                      areStagesEquivalent(currentStageName, 'Client signed agreement') ||
+                      areStagesEquivalent(currentStageName, 'client signed agreement') ||
+                      areStagesEquivalent(currentStageName, 'client_signed');
+                    const handlerLabel = normalizeHandlerToNull((selectedClient as any).handler);
+                    const handlerId = (selectedClient as any).case_handler_id;
+                    const isHandlerAssigned = !!handlerId || !!handlerLabel;
+                    return isSuccess || (isClientSigned && !isHandlerAssigned);
+                  })() && (
+                  <HeaderRoleAssignField
+                    label="Assign case handler"
+                    placeholder="Not assigned"
+                    value={successStageHandlerSearch}
+                    onChange={(value) => {
+                      setSuccessStageHandlerSearch(value);
+                      setShowSuccessStageHandlerDropdown(true);
+                    }}
+                    onFocus={() => {
+                      setShowSuccessStageHandlerDropdown(true);
+                      setFilteredSuccessStageHandlerOptions(handlerOptions);
+                    }}
+                    onConfirm={() => {
+                      const searchText = successStageHandlerSearch.trim();
+                      if (!searchText) return;
+
+                      const matchedEmployee = allEmployees.find(
+                        (emp) => emp.display_name.toLowerCase() === searchText.toLowerCase(),
+                      );
+
+                      let optionToAssign: HandlerOption;
+
+                      if (matchedEmployee) {
+                        optionToAssign = { id: matchedEmployee.id, label: matchedEmployee.display_name };
+                      } else {
+                        const matchedOption = handlerOptions.find(
+                          (opt) => opt.label.toLowerCase() === searchText.toLowerCase(),
+                        );
+                        if (matchedOption) {
+                          optionToAssign = matchedOption;
+                        } else {
+                          optionToAssign = { id: '', label: searchText };
+                        }
+                      }
+
+                      void assignSuccessStageHandler(optionToAssign);
+                    }}
+                    confirmDisabled={isUpdatingSuccessStageHandler}
+                    inputDisabled={isUpdatingSuccessStageHandler}
+                    confirmTitle="Assign handler"
+                    containerRef={successStageHandlerContainerRefDesktop}
+                    dropdownOpen={showSuccessStageHandlerDropdown}
+                    dropdown={
+                      <>
+                        <HeaderRoleAssignDropdownItem
+                          label="———"
+                          showAvatar={false}
+                          onClick={() => {
+                            setSuccessStageHandlerSearch('');
+                            setShowSuccessStageHandlerDropdown(false);
+                            setFilteredSuccessStageHandlerOptions(handlerOptions);
+                            void assignSuccessStageHandler(null);
+                          }}
+                          disabled={isUpdatingSuccessStageHandler}
+                        />
+                        {filteredSuccessStageHandlerOptions.length > 0 ? (
+                          filteredSuccessStageHandlerOptions.map((option) => (
+                            <HeaderRoleAssignDropdownItem
+                              key={option.id}
+                              label={option.label}
+                              employee={resolveAssignFieldEmployee({
+                                id: option.id,
+                                name: option.label,
+                              })}
+                              onClick={() => {
+                                setSuccessStageHandlerSearch(option.label);
+                                setShowSuccessStageHandlerDropdown(false);
+                                setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                void assignSuccessStageHandler(option);
+                              }}
+                              disabled={isUpdatingSuccessStageHandler}
+                            />
+                          ))
+                        ) : (
+                          <div className="px-3.5 py-2.5 text-sm text-base-content/55">No handlers found</div>
+                        )}
+                      </>
+                    }
+                  />
+                )}
+              </>
+            }
+          />
+          </div>
+          <div
+            className={`min-w-0 transition-[padding] duration-200 ease-out ${
+              clientsAppNavOpen ? CLIENT_DETAIL_NAV_WITH_APP_PL_CLASS : CLIENT_DETAIL_NAV_PL_CLASS
+            }`}
+          >
           {/* Sticky Header - appears when scrolled down, positioned below main header (desktop only - mobile bar removed) */}
           {/* Centered oval glassy bar */}
           {showStickyHeader && (
-            <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-3 transition-all duration-300 ease-in-out">
+            <div
+              className={`hidden md:flex fixed z-[35] justify-center px-3 transition-all duration-300 ease-in-out ${
+                clientsAppNavOpen
+                  ? CLIENT_DETAIL_NAV_WITH_APP_LEFT_CLASS
+                  : CLIENT_DETAIL_NAV_RAIL_LEFT_CLASS
+              }`}
+              style={{
+                top: 'calc(max(4rem, var(--client-detail-nav-top, 4rem)) + 0.75rem)',
+              }}
+            >
               <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-xl border border-white/20 dark:border-gray-700/20 px-4 py-2 md:px-5 md:py-2.5 overflow-visible transition-all duration-300 ease-in-out">
                 {/* Mobile View - Lead number, client name, stage badge, timeline, history, and duplicate button */}
                 <div className="md:hidden flex items-center justify-center gap-1.5">
@@ -13808,235 +14147,6 @@ const Clients: React.FC<ClientsProps> = ({
 
 
 
-          {/* Client header — cards on grey page background */}
-          <ClientHeader
-            connectToAppHeader
-            showHandlerPaymentBanner={false}
-            selectedClient={selectedClient}
-            assignSchedulerContent={
-              selectedClient &&
-              shouldShowAssignSchedulerField(
-                currentStageName,
-                selectedClient,
-                isStageNumeric ? stageNumeric : Number((selectedClient as any)?.stage),
-              ) ? (
-                <HeaderRoleAssignField
-                  label="Assign scheduler"
-                  placeholder="—"
-                  value={schedulerSearchTerm}
-                  onChange={(value) => {
-                    setSchedulerSearchTerm(value);
-                    setShowSchedulerDropdown(true);
-                  }}
-                  onFocus={() => setShowSchedulerDropdown(true)}
-                  onConfirm={() => {
-                    const searchText = schedulerSearchTerm.trim();
-                    if (searchText) {
-                      updateScheduler(searchText);
-                    }
-                  }}
-                  confirmTitle="Assign scheduler"
-                  dropdownOpen={showSchedulerDropdown}
-                  dropdown={
-                    <>
-                      <HeaderRoleAssignDropdownItem
-                        label="———"
-                        showAvatar={false}
-                        onClick={() => {
-                          setSchedulerSearchTerm('');
-                          setShowSchedulerDropdown(false);
-                          updateScheduler('');
-                        }}
-                      />
-                      {filteredSchedulerOptions.length > 0 ? (
-                        filteredSchedulerOptions.map((option) => (
-                          <HeaderRoleAssignDropdownItem
-                            key={option}
-                            label={option}
-                            employee={resolveAssignFieldEmployee({ name: option })}
-                            onClick={() => {
-                              setSchedulerSearchTerm(option);
-                              setShowSchedulerDropdown(false);
-                              updateScheduler(option);
-                            }}
-                          />
-                        ))
-                      ) : (
-                        <div className="px-3.5 py-2.5 text-sm text-base-content/55">No matches found</div>
-                      )}
-                    </>
-                  }
-                />
-              ) : null
-            }
-            flaggedConversationCount={headerFlaggedConversationCount}
-            pendingProbabilityValues={pendingProbabilityAfterFlag}
-            pendingProbabilitySaving={pendingProbabilitySaving}
-            onDismissPendingProbability={handleDismissPendingProbability}
-            onSwitchClientTab={setActiveTabWithUrl}
-            refreshClientData={refreshClientData}
-            isClientSyncing={isClientSyncing}
-            isSubLead={isSubLead}
-            masterLeadNumber={masterLeadNumber}
-            isMasterLead={isMasterLead}
-            subLeadsCount={isMasterLead ? subLeads.length : (isSubLead ? masterSubLeadsCount : 0)}
-            nextDuePayment={nextDuePayment}
-            setIsBalanceModalOpen={setIsBalanceModalOpen}
-            hasPaymentPlan={hasPaymentPlan}
-            paymentPlanBaseTotal={paymentPlanBaseTotal}
-            paymentPlanVatTotal={paymentPlanVatTotal}
-            paymentPlanExpenseNoVatTotal={paymentPlanExpenseNoVatTotal}
-            currentStageName={currentStageName}
-            handleStartCase={handleStartCase}
-            updateLeadStage={updateLeadStage}
-            isInHighlightsState={isInHighlightsState}
-            isSuperuser={isSuperuser}
-            setShowDeleteModal={setShowDeleteModal}
-            duplicateContacts={duplicateContacts}
-            setIsDuplicateDropdownOpen={setIsDuplicateDropdownOpen}
-            isDuplicateDropdownOpen={isDuplicateDropdownOpen}
-            setShowSubLeadDrawer={setShowSubLeadDrawer}
-            onEditLeadDrawerOpenChange={setShowEditLeadDrawer}
-            handleActivation={handleActivation}
-            setShowUnactivationModal={setShowUnactivationModal}
-            renderStageBadge={(anchor) => getStageBadge(selectedClient.stage, anchor, selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
-            getEmployeeDisplayName={getEmployeeDisplayName}
-            allEmployees={allEmployees}
-            dropdownItems={dropdownItems}
-            onCombineLeads={(!isSubLead && !isMasterLead && !hasLinkedMasterLead) ? () => setCombineLeadsModalOpen(true) : undefined}
-            onOpenWhatsAppForContact={onOpenWhatsAppForContact}
-            handlePaymentReceivedNewClient={handlePaymentReceivedNewClient}
-            handleScheduleMenuClick={handleScheduleMenuClick}
-            handleStageUpdate={handleStageUpdate}
-            openSendOfferModal={openSendOfferModal}
-            handleOpenSignedDrawer={handleOpenSignedDrawer}
-            handleOpenDeclinedDrawer={handleOpenDeclinedDrawer}
-            setShowRescheduleDrawer={(show) => {
-              if (show && !isMobileMeetingScheduleUi()) {
-                navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
-                return;
-              }
-              setShowRescheduleDrawer(show);
-            }}
-            scheduleMenuLabel={scheduleMenuLabel}
-            onMeetingScheduleClick={() => {
-              if (isMobileMeetingScheduleUi()) {
-                markPendingMeetingScheduleDrawer();
-                setActiveTabWithUrl('meeting');
-                window.dispatchEvent(new CustomEvent('meeting-tab:open-schedule-drawer'));
-              } else {
-                navigate(getScheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
-              }
-            }}
-            onMeetingRescheduleClick={() => {
-              if (isMobileMeetingScheduleUi()) {
-                markPendingMeetingRescheduleDrawer();
-                setActiveTabWithUrl('meeting');
-                window.dispatchEvent(new CustomEvent('meeting-tab:open-reschedule-drawer'));
-              } else {
-                navigate(getRescheduleMeetingPath(selectedClient?.lead_number || selectedClient?.id));
-              }
-            }}
-            hasScheduledMeetings={hasScheduledMeetings}
-            isStageNumeric={isStageNumeric}
-            stageNumeric={stageNumeric ?? undefined}
-            dropdownsContent={
-              <>
-                {selectedClient &&
-                  (() => {
-                    const isSuccess = areStagesEquivalent(currentStageName, 'Success');
-                    const isClientSigned =
-                      areStagesEquivalent(currentStageName, 'Client signed agreement') ||
-                      areStagesEquivalent(currentStageName, 'client signed agreement') ||
-                      areStagesEquivalent(currentStageName, 'client_signed');
-                    const handlerLabel = normalizeHandlerToNull((selectedClient as any).handler);
-                    const handlerId = (selectedClient as any).case_handler_id;
-                    const isHandlerAssigned = !!handlerId || !!handlerLabel;
-                    return isSuccess || (isClientSigned && !isHandlerAssigned);
-                  })() && (
-                  <HeaderRoleAssignField
-                    label="Assign case handler"
-                    placeholder="Not assigned"
-                    value={successStageHandlerSearch}
-                    onChange={(value) => {
-                      setSuccessStageHandlerSearch(value);
-                      setShowSuccessStageHandlerDropdown(true);
-                    }}
-                    onFocus={() => {
-                      setShowSuccessStageHandlerDropdown(true);
-                      setFilteredSuccessStageHandlerOptions(handlerOptions);
-                    }}
-                    onConfirm={() => {
-                      const searchText = successStageHandlerSearch.trim();
-                      if (!searchText) return;
-
-                      const matchedEmployee = allEmployees.find(
-                        (emp) => emp.display_name.toLowerCase() === searchText.toLowerCase(),
-                      );
-
-                      let optionToAssign: HandlerOption;
-
-                      if (matchedEmployee) {
-                        optionToAssign = { id: matchedEmployee.id, label: matchedEmployee.display_name };
-                      } else {
-                        const matchedOption = handlerOptions.find(
-                          (opt) => opt.label.toLowerCase() === searchText.toLowerCase(),
-                        );
-                        if (matchedOption) {
-                          optionToAssign = matchedOption;
-                        } else {
-                          optionToAssign = { id: '', label: searchText };
-                        }
-                      }
-
-                      void assignSuccessStageHandler(optionToAssign);
-                    }}
-                    confirmDisabled={isUpdatingSuccessStageHandler}
-                    inputDisabled={isUpdatingSuccessStageHandler}
-                    confirmTitle="Assign handler"
-                    containerRef={successStageHandlerContainerRefDesktop}
-                    dropdownOpen={showSuccessStageHandlerDropdown}
-                    dropdown={
-                      <>
-                        <HeaderRoleAssignDropdownItem
-                          label="———"
-                          showAvatar={false}
-                          onClick={() => {
-                            setSuccessStageHandlerSearch('');
-                            setShowSuccessStageHandlerDropdown(false);
-                            setFilteredSuccessStageHandlerOptions(handlerOptions);
-                            void assignSuccessStageHandler(null);
-                          }}
-                          disabled={isUpdatingSuccessStageHandler}
-                        />
-                        {filteredSuccessStageHandlerOptions.length > 0 ? (
-                          filteredSuccessStageHandlerOptions.map((option) => (
-                            <HeaderRoleAssignDropdownItem
-                              key={option.id}
-                              label={option.label}
-                              employee={resolveAssignFieldEmployee({
-                                id: option.id,
-                                name: option.label,
-                              })}
-                              onClick={() => {
-                                setSuccessStageHandlerSearch(option.label);
-                                setShowSuccessStageHandlerDropdown(false);
-                                setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                void assignSuccessStageHandler(option);
-                              }}
-                              disabled={isUpdatingSuccessStageHandler}
-                            />
-                          ))
-                        ) : (
-                          <div className="px-3.5 py-2.5 text-sm text-base-content/55">No handlers found</div>
-                        )}
-                      </>
-                    }
-                  />
-                )}
-              </>
-            }
-          />
           {/* Client record shell — tabs and tab content */}
           <div
             className={`w-full min-w-0 mt-3 md:mt-4 lg:mt-5 ${
@@ -14046,179 +14156,6 @@ const Clients: React.FC<ClientsProps> = ({
             }`}
           >
           {/* Tabs Navigation */}
-
-          {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Fixed at bottom with glassy blur effect */}
-          <style>{`
-        @media (max-width: 1023px) {
-          .desktop-tabs-navigation {
-            display: none !important;
-          }
-        }
-        @keyframes fadeInScale {
-          from {
-            opacity: 0;
-            transform: scale(0.8);
-          }
-          to {
-            opacity: 1;
-            transform: scale(1);
-          }
-        }
-        @keyframes fadeOutScale {
-          from {
-            opacity: 1;
-            transform: scale(1);
-          }
-          to {
-            opacity: 0;
-            transform: scale(0.8);
-          }
-        }
-        @keyframes fadeInSlide {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        @keyframes expandWidth {
-          from {
-            width: 56px;
-            opacity: 0;
-            transform: scale(0.9);
-          }
-          to {
-            width: auto;
-            opacity: 1;
-            transform: scale(1);
-          }
-        }
-        @keyframes collapseWidth {
-          from {
-            width: auto;
-            opacity: 1;
-            transform: scale(1);
-          }
-          to {
-            width: 56px;
-            opacity: 0;
-            transform: scale(0.9);
-          }
-        }
-        .desktop-tabs-navigation .transition-all {
-          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-      `}</style>
-          {/* z-30: below app sidebar (z-40) so left nav stays clickable at the bottom; modals/drawers use z-50+ */}
-          <div className="desktop-tabs-navigation hidden lg:block fixed bottom-0 left-0 right-0 z-30 pb-safe">
-            <div className="flex justify-center px-4 pb-4">
-              <div
-                onMouseEnter={floatingNavBarAlwaysOpen ? undefined : () => {
-                  // Clear any pending collapse timeout
-                  if (tabBarCollapseTimeoutRef.current) {
-                    clearTimeout(tabBarCollapseTimeoutRef.current);
-                    tabBarCollapseTimeoutRef.current = null;
-                  }
-                  setIsTabBarCollapsed(false);
-                }}
-                onMouseLeave={floatingNavBarAlwaysOpen ? undefined : () => {
-                  // Add delay before collapsing
-                  tabBarCollapseTimeoutRef.current = setTimeout(() => {
-                    setIsTabBarCollapsed(true);
-                    tabBarCollapseTimeoutRef.current = null;
-                  }, 500); // 500ms delay before closing
-                }}
-                className="relative py-2 px-2 -my-2 -mx-2"
-              >
-                {isTabBarCollapsed ? (
-                  // Collapsed state: Single circle with active tab icon
-                  <button
-                    className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center overflow-visible transition-all duration-300 ease-in-out hover:scale-110"
-                    title="Hover to expand"
-                    style={{
-                      animation: 'fadeInScale 0.3s ease-in-out'
-                    }}
-                  >
-                    <div className="relative inline-flex items-center justify-center overflow-visible">
-                      {(() => {
-                        const activeTabData = tabs.find(tab => tab.id === activeTab);
-                        const ActiveIcon = activeTabData?.icon || InformationCircleIcon;
-                        return <ActiveIcon className="w-7 h-7" style={{ animation: 'fadeInScale 0.5s ease-in-out 0.1s both' }} />;
-                      })()}
-                      {(() => {
-                        const activeTabData = tabs.find(tab => tab.id === activeTab);
-                        if (activeTabData?.id === 'interactions' && activeTabData?.badge) {
-                          return (
-                            <div
-                              className="absolute -top-1 -right-1 z-10 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap bg-white/20 text-white"
-                              style={{ animation: 'fadeInScale 0.4s ease-in-out 0.2s both', minWidth: '1.25rem' }}
-                            >
-                              {activeTabData.badge}
-                            </div>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                  </button>
-                ) : (
-                  // Expanded state: Full tab bar
-                  <div className="flex items-center gap-2 transition-all duration-300 ease-in-out">
-                    <div
-                      ref={desktopTabsRef}
-                      className="bg-white/90 dark:bg-gray-900/85 rounded-full shadow-2xl border-2 border-gray-200/80 dark:border-gray-800/80 px-3 pt-3 pb-2 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
-                      style={{
-                        borderRadius: '9999px',
-                        maxWidth: '95vw',
-                        animation: 'expandWidth 0.3s ease-in-out'
-                      }}
-                    >
-                      <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
-                        {tabs.map((tab, index) => (
-                          <button
-                            key={tab.id}
-                            className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 overflow-visible ${activeTab === tab.id
-                              ? 'bg-transparent text-[#471CCA] font-bold'
-                              : 'font-semibold text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700/50'
-                              }`}
-                            style={{
-                              animation: `fadeInSlide 0.3s ease-out ${index * 0.03}s both`
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveTabWithUrl(tab.id);
-                            }}
-                          >
-                            <div className="relative inline-flex items-center justify-center overflow-visible">
-                              <tab.icon className={`w-7 h-7 flex-shrink-0 ${activeTab === tab.id ? 'text-[#471CCA]' : 'text-gray-500'}`} />
-                              {tab.id === 'interactions' && tab.badge && (
-                                <div className={`absolute -top-1 -right-1 z-10 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
-                                  ? 'bg-purple-200/90 text-[#471CCA] dark:bg-purple-900/50 dark:text-purple-200'
-                                  : 'bg-primary/10 text-primary'
-                                  }`} style={{ minWidth: '1.25rem' }}>
-                                  {tab.badge}
-                                </div>
-                              )}
-                            </div>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span className={`saira-light text-sm ${activeTab === tab.id ? 'font-bold text-[#471CCA]' : 'font-bold text-gray-600 dark:text-gray-400'}`}>{tab.label}</span>
-                              {activeTab === tab.id && (
-                                <span className="h-1.5 w-1.5 rounded-full bg-[#471CCA]" aria-hidden />
-                              )}
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
 
           {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs - HIDDEN: Using edge arrows instead */}
           <div className="hidden px-4 py-3 space-y-3">
@@ -14420,9 +14357,7 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Tab Content — visited tabs stay mounted (hidden) so state/cache survives switches */}
           <div
             ref={tabContentRef}
-            className={`w-full min-h-[50vh] bg-gray-100 dark:bg-base-300 ${
-              activeTab === 'finances' ? 'md:pl-24' : 'md:pl-28'
-            }`}
+            className="w-full min-h-[50vh] bg-gray-100 dark:bg-base-300"
           >
             <div
               className={
@@ -16864,6 +16799,7 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
             </>
           )}
+          </div>
         </>
       )}
     </div>

@@ -45,6 +45,10 @@ interface SidebarProps {
   onClose?: () => void;
   onOpenAIChat?: () => void;
   mobileOnly?: boolean; // If true, only show mobile sidebar, hide desktop sidebar
+  /** On Clients detail: hide floating pill; show docked panel when dockedOpen. */
+  presentation?: 'floating' | 'docked';
+  dockedOpen?: boolean;
+  onDockedClose?: () => void;
 }
 
 interface SidebarItem {
@@ -142,7 +146,21 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
-const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat, mobileOnly = false }) => {
+const Sidebar: React.FC<SidebarProps> = ({
+  userName = '',
+  userInitials,
+  userRole = 'User',
+  isOpen = false,
+  onClose,
+  onOpenAIChat,
+  mobileOnly = false,
+  presentation = 'floating',
+  dockedOpen = false,
+  onDockedClose,
+}) => {
+  const isDockedPresentation = presentation === 'docked';
+  const showDockedDesktop = isDockedPresentation && dockedOpen;
+  const showFloatingDesktop = !isDockedPresentation;
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
 
@@ -581,14 +599,48 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
 
   // Handler for mouse enter with delay
   const handleMouseEnter = () => {
+    if (isDockedPresentation) return;
     if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
     hoverTimeout.current = setTimeout(() => setIsSidebarHovered(true), 80);
   };
   // Handler for mouse leave (immediate collapse)
   const handleMouseLeave = () => {
+    if (isDockedPresentation) return;
     if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
     setIsSidebarHovered(false);
   };
+
+  // Escape / click-away closes docked Clients app nav
+  React.useEffect(() => {
+    if (!showDockedDesktop) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onDockedClose?.();
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (sidebarRef.current?.contains(target)) return;
+      if ((target as Element).closest?.('[data-clients-app-nav-toggle]')) return;
+      onDockedClose?.();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [showDockedDesktop, onDockedClose]);
+
+  const labelsAlwaysVisible = isDockedPresentation || isSidebarHovered;
+
+  const dockedLinkBase =
+    'relative flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors';
+  const dockedLinkActive =
+    'bg-white font-semibold text-gray-900 shadow-sm dark:bg-base-100 dark:text-base-content';
+  const dockedLinkIdle =
+    'font-medium text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content';
+  const dockedIconActive = 'h-5 w-5 min-w-[1.25rem] shrink-0 text-gray-800 dark:text-base-content';
+  const dockedIconIdle = 'h-5 w-5 min-w-[1.25rem] shrink-0 text-gray-500 dark:text-base-content/60';
 
   // Filter sidebar items based on superuser status and bonuses_role
   const canSeeLeadTimeReport = canAccessLeadTimeReport({
@@ -663,17 +715,29 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
 
   return (
     <>
-      {/* Desktop/Tablet Sidebar */}
-      {!mobileOnly && (
+      {/* Desktop/Tablet Sidebar — floating (default) or docked next to Clients rail */}
+      {!mobileOnly && (showFloatingDesktop || showDockedDesktop) && (
         <div className="hidden md:block">
           <div
             ref={sidebarRef}
-            className={`fixed top-20 bottom-6 left-4 flex flex-col min-h-0 overflow-hidden shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-200 group/sidebar rounded-2xl min-h-[120px] border sidebar-frosted-glass`}
+            className={
+              showDockedDesktop
+                ? 'fixed bottom-0 left-40 z-40 flex w-64 flex-col min-h-0 overflow-hidden border-r border-gray-300/80 bg-gray-200 dark:border-base-content/10 dark:bg-base-300 top-[var(--client-detail-nav-top,3rem)]'
+                : `fixed top-20 bottom-6 left-4 z-40 flex min-h-[120px] min-h-0 flex-col overflow-hidden rounded-2xl border shadow-2xl transition-all duration-200 group/sidebar sidebar-frosted-glass ${
+                    isSidebarHovered ? 'w-64' : 'w-20'
+                  }`
+            }
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >
             {/* Navigation Items — min-h-0 + flex-1 so this scrolls fully; padding only inside scroll area */}
-            <nav className="hide-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden pt-2 pb-4 px-0 overscroll-contain">
+            <nav
+              className={
+                showDockedDesktop
+                  ? 'hide-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden overscroll-contain px-2 pb-2 pt-2.5'
+                  : 'hide-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-0 pb-4 pt-2'
+              }
+            >
               {filteredDesktopItems
                 .map((item, index) => {
                   const Icon = item.icon;
@@ -681,16 +745,84 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                   const isExpanded = expandedMenu === item.label;
                   // Highlight parent if itself or any subItem is active
                   const isActive = (item.path && location.pathname === item.path) || isSubItemActive(item.subItems);
+
+                  if (showDockedDesktop) {
+                    return (
+                      <div key={index} className="relative">
+                        {item.path && !hasSubItems && (
+                          <Link
+                            to={item.path}
+                            className={`${dockedLinkBase} ${isActive ? dockedLinkActive : dockedLinkIdle}`}
+                          >
+                            {isActive && (
+                              <span
+                                className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                                aria-hidden
+                              />
+                            )}
+                            <Icon className={isActive ? dockedIconActive : dockedIconIdle} />
+                            <span className="saira-regular truncate">{item.label}</span>
+                          </Link>
+                        )}
+                        {hasSubItems && (
+                          <>
+                            <button
+                              type="button"
+                              className={`${dockedLinkBase} ${isActive ? dockedLinkActive : dockedLinkIdle}`}
+                              onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
+                            >
+                              {isActive && (
+                                <span
+                                  className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                                  aria-hidden
+                                />
+                              )}
+                              <Icon className={isActive ? dockedIconActive : dockedIconIdle} />
+                              <span className="saira-regular min-w-0 flex-1 truncate text-left">{item.label}</span>
+                              <svg
+                                className={`h-4 w-4 shrink-0 text-gray-500 transition-transform duration-200 dark:text-base-content/60 ${isExpanded ? 'rotate-90' : ''}`}
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                              </svg>
+                            </button>
+                            {isExpanded && (
+                              <div className="ml-3 mt-0.5 flex flex-col gap-0.5 border-l border-gray-300/80 py-0.5 pl-2 dark:border-base-content/15">
+                                {item.subItems!.map((sub, subIdx) => {
+                                  const SubIcon = sub.icon;
+                                  const isSubActive = !!(sub.path && location.pathname === sub.path);
+                                  return (
+                                    <Link
+                                      key={subIdx}
+                                      to={sub.path!}
+                                      className={`${dockedLinkBase} py-2 ${isSubActive ? dockedLinkActive : dockedLinkIdle}`}
+                                      onClick={() => setExpandedMenu(item.label)}
+                                    >
+                                      <SubIcon className={isSubActive ? dockedIconActive : dockedIconIdle} />
+                                      <span className="saira-regular truncate">{sub.label}</span>
+                                    </Link>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  }
+
                   return (
                     <div key={index} className="relative group/sidebar-item">
                       {item.path && !hasSubItems && (
                         <Link
                           to={item.path}
-                          className={`sidebar-link flex items-center gap-4 px-4 py-3 transition-all duration-200 cursor-pointer group/sidebar-link hover:bg-white/10 hover:text-white relative
-                        ${isActive ? (isAltTheme ? 'sidebar-link--active text-green-200 font-bold border-l-4 border-green-300' : 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300') : 'text-white/80'}`}
+                          className={`sidebar-link group/sidebar-link relative flex cursor-pointer items-center gap-4 px-4 py-3 transition-all duration-200 hover:bg-white/10 hover:text-white
+                        ${isActive ? (isAltTheme ? 'sidebar-link--active border-l-4 border-green-300 font-bold text-green-200' : 'sidebar-link--active border-l-4 border-cyan-300 font-bold text-cyan-200') : 'text-white/80'}`}
                         >
-                          <Icon className={`w-7 h-7 min-w-[1.75rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
-                          <span className={`ml-2 text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>
+                          <Icon className={`h-7 w-7 min-w-[1.75rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                          <span className={`ml-2 whitespace-nowrap text-base font-medium transition-opacity duration-200 ${labelsAlwaysVisible ? 'opacity-100' : 'opacity-0'}`}>
                             {item.label}
                           </span>
                         </Link>
@@ -698,19 +830,19 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                       {hasSubItems && (
                         <>
                           <button
-                            className={`sidebar-link flex items-center gap-4 px-4 py-3 transition-all duration-200 cursor-pointer w-full group/sidebar-link hover:bg-white/10 hover:text-white
-                          ${isActive ? (isAltTheme ? 'sidebar-link--active text-green-200 font-bold border-l-4 border-green-300' : 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300') : 'text-white/80'}`}
+                            className={`sidebar-link group/sidebar-link flex w-full cursor-pointer items-center gap-4 px-4 py-3 transition-all duration-200 hover:bg-white/10 hover:text-white
+                          ${isActive ? (isAltTheme ? 'sidebar-link--active border-l-4 border-green-300 font-bold text-green-200' : 'sidebar-link--active border-l-4 border-cyan-300 font-bold text-cyan-200') : 'text-white/80'}`}
                             onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                             type="button"
                           >
-                            <Icon className={`w-7 h-7 min-w-[1.75rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
-                            <span className={`ml-2 text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>
+                            <Icon className={`h-7 w-7 min-w-[1.75rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                            <span className={`ml-2 whitespace-nowrap text-base font-medium transition-opacity duration-200 ${labelsAlwaysVisible ? 'opacity-100' : 'opacity-0'}`}>
                               {item.label}
                             </span>
-                            <svg className={`w-4 h-4 ml-auto transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''} opacity-0 group-hover/sidebar:opacity-100`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                            <svg className={`ml-auto h-4 w-4 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''} ${labelsAlwaysVisible ? 'opacity-100' : 'opacity-0 group-hover/sidebar:opacity-100'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                           </button>
                           {isExpanded && (
-                            <div className="ml-8 mt-1 flex flex-col gap-1 p-2 border-l border-white/15">
+                            <div className="ml-8 mt-1 flex flex-col gap-1 border-l border-white/15 p-2">
                               {item.subItems!.map((sub, subIdx) => {
                                 const SubIcon = sub.icon;
                                 const isSubActive = sub.path && location.pathname === sub.path;
@@ -718,12 +850,12 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                                   <Link
                                     key={subIdx}
                                     to={sub.path!}
-                                    className={`sidebar-sublink flex items-center gap-3 px-3 py-2 transition-all duration-200 cursor-pointer hover:bg-white/10 hover:text-white
-                                  ${isSubActive ? (isAltTheme ? 'sidebar-sublink--active text-green-200 font-semibold border-l-4 border-green-300' : 'sidebar-sublink--active text-cyan-200 font-semibold border-l-4 border-cyan-300') : 'text-white/80'}`}
+                                    className={`sidebar-sublink flex cursor-pointer items-center gap-3 px-3 py-2 transition-all duration-200 hover:bg-white/10 hover:text-white
+                                  ${isSubActive ? (isAltTheme ? 'sidebar-sublink--active border-l-4 border-green-300 font-semibold text-green-200' : 'sidebar-sublink--active border-l-4 border-cyan-300 font-semibold text-cyan-200') : 'text-white/80'}`}
                                     onClick={() => setExpandedMenu(item.label)}
                                   >
-                                    <SubIcon className={`w-6 h-6 min-w-[1.5rem] ${isSubActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
-                                    <span className={`text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>{sub.label}</span>
+                                    <SubIcon className={`h-6 w-6 min-w-[1.5rem] ${isSubActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                                    <span className={`whitespace-nowrap text-base font-medium transition-opacity duration-200 ${labelsAlwaysVisible ? 'opacity-100' : 'opacity-0'}`}>{sub.label}</span>
                                   </Link>
                                 );
                               })}
