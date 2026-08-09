@@ -21,6 +21,8 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const requestIdRef = useRef(0);
+  const resultsRef = useRef<CombinedLead[]>([]);
+  resultsRef.current = results;
 
   const refresh = useCallback(async (searchQuery: string) => {
     const trimmed = searchQuery.trim();
@@ -31,7 +33,11 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
     }
 
     const requestId = ++requestIdRef.current;
-    setLoading(true);
+    // Only show spinner when there is nothing to keep visible — otherwise result
+    // buttons unmount mid-click and the click never fires.
+    if (resultsRef.current.length === 0) {
+      setLoading(true);
+    }
 
     try {
       const data = await searchLeads(trimmed, { limit });
@@ -58,7 +64,8 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       return;
     }
 
-    setLoading(true);
+    // Do not set loading=true here: that would replace the result list with a
+    // spinner during debounce and steal clicks from result rows.
     debounceRef.current = window.setTimeout(() => {
       void refresh(trimmed);
     }, debounceMs);

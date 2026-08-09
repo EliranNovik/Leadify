@@ -64,7 +64,11 @@ export function poaToken(key: string): string {
   return `{{${key}}}`;
 }
 
-const TOKEN_RE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+const TOKEN_SOURCE = '\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}';
+
+function createTokenRe(): RegExp {
+  return new RegExp(TOKEN_SOURCE, 'g');
+}
 
 export type PoaBodySegment =
   | { kind: 'text'; text: string }
@@ -74,14 +78,14 @@ export type PoaBodySegment =
 export function parsePoaBody(body: string): PoaBodySegment[] {
   const segments: PoaBodySegment[] = [];
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  TOKEN_RE.lastIndex = 0;
-  while ((match = TOKEN_RE.exec(body)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ kind: 'text', text: body.slice(lastIndex, match.index) });
+  const re = createTokenRe();
+  for (const match of body.matchAll(re)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      segments.push({ kind: 'text', text: body.slice(lastIndex, index) });
     }
     segments.push({ kind: 'field', key: match[1] });
-    lastIndex = match.index + match[0].length;
+    lastIndex = index + match[0].length;
   }
   if (lastIndex < body.length) {
     segments.push({ kind: 'text', text: body.slice(lastIndex) });
@@ -92,12 +96,21 @@ export function parsePoaBody(body: string): PoaBodySegment[] {
 /** Distinct field keys referenced by {{...}} tokens in a body, in order. */
 export function extractPoaBodyKeys(body: string): string[] {
   const keys: string[] = [];
-  TOKEN_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = TOKEN_RE.exec(body)) !== null) {
+  for (const match of body.matchAll(createTokenRe())) {
     if (!keys.includes(match[1])) keys.push(match[1]);
   }
   return keys;
+}
+
+/** Remove every {{key}} token for the given field key from a body. */
+export function stripPoaFieldTokens(body: string, key: string): string {
+  const re = new RegExp(`\\{\\{\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\}\\}`, 'g');
+  return body
+    .replace(re, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/ {2,}/g, ' ')
+    .trimEnd();
 }
 
 /** One placed field token in the document body (duplicate keys get unique instance ids). */
@@ -169,26 +182,15 @@ export function resolvePoaTemplateField(key: string, fields: PoaTemplateField[])
   );
 }
 
-/** All fillable instances: body placements (incl. duplicate keys) + orphan field defs. */
+/** All fillable instances from body placements only (incl. duplicate keys). */
 export function listPoaFillableInstances(
   body: string,
   fields: PoaTemplateField[],
 ): { instanceId: string; field: PoaTemplateField }[] {
-  const placedKeys = new Set<string>();
-  const instances: { instanceId: string; field: PoaTemplateField }[] = [];
-
-  for (const { key, instanceId } of listPoaBodyFieldInstances(body)) {
-    placedKeys.add(key);
-    instances.push({ instanceId, field: resolvePoaTemplateField(key, fields) });
-  }
-
-  for (const f of fields) {
-    if (!placedKeys.has(f.key)) {
-      instances.push({ instanceId: f.key, field: f });
-    }
-  }
-
-  return instances;
+  return listPoaBodyFieldInstances(body).map(({ key, instanceId }) => ({
+    instanceId,
+    field: resolvePoaTemplateField(key, fields),
+  }));
 }
 
 /** Map a contact record to prefill values for a template's fields. */

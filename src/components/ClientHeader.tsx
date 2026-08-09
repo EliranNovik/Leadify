@@ -42,6 +42,7 @@ import {
     DocumentArrowUpIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
+import { isNonSelfLinkedMasterLead } from '../lib/masterLeadApi';
 import toast from 'react-hot-toast';
 import { getStageName, getStageColour, areStagesEquivalent, shouldShowAssignSchedulerField } from '../lib/stageUtils';
 import { HEADER_ROLE_ASSIGN_WIDTH_CLASS } from './HeaderRoleAssignField';
@@ -100,7 +101,6 @@ import EditFieldModal, {
     EditFieldLabel,
 } from './EditFieldModal';
 import ClientPortalAdminCard from './portal/ClientPortalAdminCard';
-import LeadEmployeeCostBadges from './LeadEmployeeCostBadges';
 import LeadEmployeeCostModal from './LeadEmployeeCostModal';
 import LeadRemainingTimeBar from './LeadRemainingTimeBar';
 import LeadOverBudgetGateModal, {
@@ -222,17 +222,17 @@ const CLIENT_HEADER_INNER_PANEL = CLIENT_HEADER_CARD;
 
 /** Individual white pills for language, source, category, topic (below header box). */
 const META_BADGE_WHITE =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-[18px] bg-white px-3.5 py-2.5 text-sm font-medium text-base-content/85 shadow-sm border border-base-200/50 dark:border-base-300/45 dark:bg-base-100';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-[18px] bg-white px-3.5 py-2.5 text-sm font-medium text-base-content/85 shadow-sm border-0 dark:bg-base-100';
 
 const META_BADGE_WHITE_BTN =
-    `${META_BADGE_WHITE} border-0 font-sans transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:shadow-md`;
+    `${META_BADGE_WHITE} font-sans transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:shadow-md`;
 
 /** Compact chips docked to the bottom of the client header top band. */
 const META_BADGE_CONNECTED =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full border border-base-200/70 bg-white px-3 py-1.5 text-[13px] font-medium text-base-content/80 shadow-none dark:border-base-300/50 dark:bg-base-100';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full border-0 bg-white px-3 py-1.5 text-[13px] font-medium text-base-content/80 shadow-none dark:bg-base-100';
 
 const META_BADGE_CONNECTED_BTN =
-    `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:border-base-300 hover:bg-base-50 dark:hover:bg-base-200/40`;
+    `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:bg-base-50 dark:hover:bg-base-200/40`;
 
 const CLIENT_HEADER_LEAD_NUMBER =
     'mt-0 block text-sm font-medium tabular-nums text-gray-500 dark:text-base-content/45';
@@ -324,20 +324,20 @@ const MORE_ACTIONS_ICON_TONE_PRIMARY =
 const MORE_ACTIONS_ICON_TONE_PURPLE =
     'bg-purple-50 text-purple-700 group-hover:bg-purple-100 dark:bg-purple-900/25 dark:text-purple-300';
 
-/** Stage workflow actions — unified size on desktop and mobile. */
+/** Stage workflow actions — soft purple oval pills (same tone as date/meta chips). */
 const STAGE_ACTION_BTN_BASE =
-    'btn btn-md min-h-11 !overflow-visible rounded-full px-5 gap-2 text-sm font-semibold whitespace-nowrap border-0 shadow-sm';
+    'inline-flex items-center justify-center gap-2 min-h-10 !overflow-visible rounded-full px-5 py-2 text-sm font-semibold whitespace-nowrap border-0 shadow-none transition-colors duration-150';
 
 const STAGE_ACTION_BTN_CLASS =
-    `${STAGE_ACTION_BTN_BASE} bg-gray-900 text-white hover:bg-gray-800 dark:bg-gray-950 dark:hover:bg-gray-900`;
+    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
 
 const STAGE_ACTION_BTN_CLASS_COMPACT = STAGE_ACTION_BTN_CLASS;
 
 const CLIENT_SIGNED_STAGE_BTN_CLASS =
-    `${STAGE_ACTION_BTN_BASE} btn-success text-white hover:brightness-95`;
+    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
 
 const CLIENT_DECLINED_STAGE_BTN_CLASS =
-    `${STAGE_ACTION_BTN_BASE} btn-error text-white hover:brightness-95`;
+    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
 
 const CLIENT_SIGNED_STAGE_BTN_COMPACT = CLIENT_SIGNED_STAGE_BTN_CLASS;
 
@@ -2523,8 +2523,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // Lead Number
     const renderLeadNumber = () => {
         if (!selectedClient) return '---';
-        // Linked-only subleads (linked_master_lead): show actual lead number only, no "/" or suffix, no "legacy_" prefix
-        const hasLinkedMasterLead = selectedClient.linked_master_lead != null && (typeof selectedClient.linked_master_lead === 'number' || (typeof selectedClient.linked_master_lead === 'string' && String(selectedClient.linked_master_lead).trim() !== ''));
+        // Linked-only subleads (non-self linked_master_lead): show actual lead number only, no "/" or suffix, no "legacy_" prefix
+        const hasLinkedMasterLead = isNonSelfLinkedMasterLead(
+          selectedClient.linked_master_lead,
+          selectedClient.lead_number,
+          selectedClient.id
+        );
         if (hasLinkedMasterLead) {
             let raw = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
             let rawStr = raw.toString();
@@ -3530,7 +3534,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     </button>
                                                 ) : null}
                                             </span>
-                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
                                         </div>
                                         <div className="flex flex-col items-end">
                                             <p className="inline-flex items-center gap-2 text-3xl font-bold leading-none tracking-tight text-base-content/95">
@@ -3845,7 +3848,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     {Number(subcontractorFee.toFixed(2)).toLocaleString()}
                                                 </button>
                                             ) : null}
-                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
                                         </div>
                                         <button
                                             type="button"
@@ -3875,11 +3877,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 {hasExpandableFinancialDetails ? (
                                                     <button
                                                         type="button"
-                                                        className="btn btn-ghost btn-xs h-7 min-h-7 gap-1 font-medium text-base-content/55"
+                                                        className="btn btn-ghost btn-xs h-7 min-h-7 w-7 min-w-7 p-0 text-base-content/55"
                                                         onClick={() => setHeaderFinancialDetailsOpen((open) => !open)}
                                                         aria-expanded={headerFinancialDetailsOpen}
+                                                        aria-label={headerFinancialDetailsOpen ? 'Hide financial details' : 'Show more financial details'}
+                                                        title={headerFinancialDetailsOpen ? 'Less' : 'More'}
                                                     >
-                                                        {headerFinancialDetailsOpen ? 'Less' : 'More'}
                                                         <ChevronDownIcon
                                                             className={`h-3.5 w-3.5 transition-transform duration-200 ${headerFinancialDetailsOpen ? 'rotate-180' : ''}`}
                                                         />
@@ -4222,14 +4225,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         loading={leadEmployeeCostLoading}
                                         align="start"
                                         className="w-auto shrink-0"
-                                        leadingAccessory={
-                                            <LeadEmployeeCostBadges
-                                                summary={leadEmployeeCostSummary}
-                                                loading={leadEmployeeCostLoading}
-                                                onOpenOverview={() => openLeadEmployeeCostModal('overview')}
-                                                onOpenWarning={() => openLeadEmployeeCostModal('warning')}
-                                                isSuperuser={isSuperuser}
-                                            />
+                                        showStatusIcon
+                                        onClick={() =>
+                                            openLeadEmployeeCostModal(
+                                                leadEmployeeCostSummary?.exceedsCap ? 'warning' : 'overview',
+                                            )
                                         }
                                     />
                                 ) : (
@@ -5369,14 +5369,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         loading={leadEmployeeCostLoading}
                                         align="start"
                                         className="w-full max-w-md self-stretch"
-                                        leadingAccessory={
-                                            <LeadEmployeeCostBadges
-                                                summary={leadEmployeeCostSummary}
-                                                loading={leadEmployeeCostLoading}
-                                                onOpenOverview={() => openLeadEmployeeCostModal('overview')}
-                                                onOpenWarning={() => openLeadEmployeeCostModal('warning')}
-                                                isSuperuser={isSuperuser}
-                                            />
+                                        showStatusIcon
+                                        onClick={() =>
+                                            openLeadEmployeeCostModal(
+                                                leadEmployeeCostSummary?.exceedsCap ? 'warning' : 'overview',
+                                            )
                                         }
                                     />
                                 ) : null}

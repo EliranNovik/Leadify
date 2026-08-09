@@ -6,8 +6,8 @@ import { readBootstrappedDisplayName } from '../lib/authBootstrap';
 import type { Lead } from '../lib/supabase';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import {
+  buildClientRouteFromCombinedLead,
   buildClientRouteFromRecentLead,
-  navigateLeadContactSearchResult,
 } from '../lib/leadContactSearchUi';
 import { toast } from 'react-hot-toast';
 import { usePushNotifications } from '../hooks/usePushNotifications';
@@ -2713,18 +2713,29 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   const handleSearchResultClick = (lead: CombinedLead) => {
-    addRecentLead({
-      id: lead.lead_type === 'legacy' ? String(lead.id).replace(/^legacy_/, '') : String(lead.lead_number || lead.id),
-      name: lead.contactName || lead.name || '',
-      lead_number: lead.lead_number || String(lead.id),
-      lead_type: lead.lead_type,
-    });
+    const path = buildClientRouteFromCombinedLead(lead);
+
+    try {
+      addRecentLead({
+        id: lead.lead_type === 'legacy' ? String(lead.id).replace(/^legacy_/, '') : String(lead.lead_number || lead.id),
+        name: lead.contactName || lead.name || '',
+        lead_number: lead.lead_number || String(lead.id),
+        lead_type: lead.lead_type,
+      });
+    } catch {
+      // Non-fatal — still navigate
+    }
+
     const identity = leadViewIdentityFromCombinedLead(lead);
     if (identity) {
       void recordEmployeeLeadView(identity);
     }
-    navigateLeadContactSearchResult(lead, navigate);
-    closeSearchBar();
+
+    // Navigate first; close the overlay after so teardown can't interfere with routing.
+    navigate(path);
+    queueMicrotask(() => {
+      closeSearchBar();
+    });
   };
 
   const handleClearSearch = () => {
@@ -2806,7 +2817,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     isMouseOverSearchRef.current = true;
     clearSearchHoverCloseTimer();
     setIsSearchActive(true);
-    setTimeout(() => searchInputRef.current?.focus(), 100);
+    // Don't steal focus while the user is moving toward / clicking a result row.
+    // Refocusing the input mid-click can cancel the click on the portaled dropdown.
   }, [clearSearchHoverCloseTimer]);
 
   const handleDesktopSearchMouseLeave = useCallback(() => {

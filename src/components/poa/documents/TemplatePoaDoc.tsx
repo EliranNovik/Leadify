@@ -49,8 +49,9 @@ function fieldInput(
 
 /**
  * Renders a staff-authored template: free text with {{key}} tokens turned into
- * the matching inputs / signature pads. Fields defined but not placed in the
- * body are appended at the end.
+ * the matching inputs / signature pads. Only tokens present in the body are
+ * rendered — field defs without a matching {{key}} stay in the editor sidebar
+ * for re-insert, but must not appear on the signing page.
  */
 const TemplatePoaDoc: React.FC<Props> = ({
   ctrl,
@@ -68,14 +69,6 @@ const TemplatePoaDoc: React.FC<Props> = ({
 
   const segments = useMemo(() => parsePoaBody(body), [body]);
   const instanceIdBySegment = useMemo(() => poaFieldInstanceIdBySegment(body), [body]);
-  const placedKeys = useMemo(
-    () => new Set(segments.filter((s) => s.kind === 'field').map((s) => (s as { key: string }).key)),
-    [segments],
-  );
-  const orphanFields = useMemo(
-    () => fields.filter((f) => !placedKeys.has(f.key)),
-    [fields, placedKeys],
-  );
 
   const docStyle: React.CSSProperties = { fontSize: fontSize || '15px' };
   if (fontFamily) docStyle.fontFamily = fontFamily;
@@ -102,14 +95,6 @@ const TemplatePoaDoc: React.FC<Props> = ({
           );
         })}
       </div>
-
-      {orphanFields.length > 0 && (
-        <div className="mt-6 space-y-3 border-t border-gray-200 pt-5">
-          {orphanFields.map((f) => (
-            <div key={f.key}>{fieldInput(f, ctrl, direction, false)}</div>
-          ))}
-        </div>
-      )}
     </div>
   );
 };

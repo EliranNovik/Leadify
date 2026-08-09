@@ -129,7 +129,7 @@ const LeadContactSearchResults: React.FC<Props> = ({
         />
       ) : null}
 
-      {loading ? (
+      {loading && filteredResults.length === 0 ? (
         <div className="flex justify-center px-4 py-8">
           <span className="loading loading-spinner loading-md text-primary" />
         </div>
@@ -157,6 +157,9 @@ const LeadContactSearchResults: React.FC<Props> = ({
                 <button
                   type="button"
                   className={getResultRowClass(inactive, isContact)}
+                  // Prevent input blur on mousedown so the click isn't cancelled;
+                  // navigate only on click (pointerdown+close was closing without navigating).
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => onSelect(lead)}
                 >
                   <div className="flex shrink-0 items-center self-center">

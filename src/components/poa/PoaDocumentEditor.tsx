@@ -35,6 +35,7 @@ import {
   extractPoaBodyKeys,
   allocatePoaFieldKey,
   buildTemplatePrefill,
+  stripPoaFieldTokens,
   type PoaTemplateField,
   type PoaFieldType,
   type PoaPrefillSource,
@@ -272,6 +273,7 @@ const PoaDocumentEditor: React.FC = () => {
   const pendingEditorHydrationRef = useRef(true);
   const lastMeetingSummariesRef = useRef('');
   const meetingSummariesPromiseRef = useRef<Promise<string> | null>(null);
+  const formRef = useRef<FormState | null>(null);
   const updateFormRef = useRef<(updater: (prev: FormState) => FormState, opts?: { debounce?: boolean }) => void>(
     () => undefined,
   );
@@ -343,9 +345,10 @@ const PoaDocumentEditor: React.FC = () => {
   );
 
   updateFormRef.current = updateForm;
+  formRef.current = form;
 
-  const editor = useEditor({
-    extensions: [
+  const editorExtensions = useMemo(
+    () => [
       StarterKit.configure({
         heading: false,
         bulletList: false,
@@ -356,6 +359,9 @@ const PoaDocumentEditor: React.FC = () => {
         italic: false,
         strike: false,
         code: false,
+        // StarterKit v3 ships Underline — disable so we register it once explicitly.
+        underline: false,
+        link: false,
         undoRedo: false,
         hardBreak: {
           keepMarks: true,
@@ -370,34 +376,44 @@ const PoaDocumentEditor: React.FC = () => {
         placeholder: 'Write the POA text here. Use fields from the panel on the right.',
       }),
     ],
-    content: '<p></p>',
-    editable: true,
-    editorProps: {
-      attributes: {
-        class:
-          'poa-body-editor w-full leading-relaxed focus:outline-none break-words',
-      },
-      handleKeyDown: (view, event) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
-          const hardBreak = view.state.schema.nodes.hardBreak;
-          if (hardBreak) {
-            view.dispatch(view.state.tr.replaceSelectionWith(hardBreak.create()).scrollIntoView());
-            return true;
+    [],
+  );
+
+  const editor = useEditor(
+    {
+      extensions: editorExtensions,
+      content: '<p></p>',
+      editable: true,
+      immediatelyRender: false,
+      shouldRerenderOnTransaction: false,
+      editorProps: {
+        attributes: {
+          class:
+            'poa-body-editor w-full leading-relaxed focus:outline-none break-words',
+        },
+        handleKeyDown: (view, event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            const hardBreak = view.state.schema.nodes.hardBreak;
+            if (hardBreak) {
+              view.dispatch(view.state.tr.replaceSelectionWith(hardBreak.create()).scrollIntoView());
+              return true;
+            }
           }
+          return false;
+        },
+      },
+      onUpdate: ({ editor: ed, transaction }) => {
+        if (pendingEditorHydrationRef.current) return;
+        if (!transaction.getMeta('poaAiHighlight')) {
+          clearAiHighlightsFromPoaEditor(ed);
         }
-        return false;
+        skipEditorSyncRef.current = true;
+        const markup = poaHtmlToMarkup(ed.getHTML());
+        updateFormRef.current((p) => ({ ...p, body: markup }), { debounce: true });
       },
     },
-    onUpdate: ({ editor: ed, transaction }) => {
-      if (pendingEditorHydrationRef.current) return;
-      if (!transaction.getMeta('poaAiHighlight')) {
-        clearAiHighlightsFromPoaEditor(ed);
-      }
-      skipEditorSyncRef.current = true;
-      const markup = poaHtmlToMarkup(ed.getHTML());
-      updateFormRef.current((p) => ({ ...p, body: markup }), { debounce: true });
-    },
-  });
+    [editorExtensions],
+  );
 
   const undo = useCallback(() => {
     if (historyIndexRef.current <= 0) return;
@@ -483,22 +499,27 @@ const PoaDocumentEditor: React.FC = () => {
   }, [editor, data?.read_only]);
 
   useLayoutEffect(() => {
-    if (!editor || form == null) return;
+    if (!editor || form == null || editor.isDestroyed) return;
 
-    const currentMarkup = poaHtmlToMarkup(editor.getHTML());
-    if (currentMarkup === form.body) {
-      pendingEditorHydrationRef.current = false;
-      return;
-    }
+    try {
+      const currentMarkup = poaHtmlToMarkup(editor.getHTML());
+      if (currentMarkup === form.body) {
+        pendingEditorHydrationRef.current = false;
+        return;
+      }
 
-    if (skipEditorSyncRef.current && !pendingEditorHydrationRef.current) {
+      if (skipEditorSyncRef.current && !pendingEditorHydrationRef.current) {
+        skipEditorSyncRef.current = false;
+        return;
+      }
       skipEditorSyncRef.current = false;
-      return;
-    }
-    skipEditorSyncRef.current = false;
 
-    editor.commands.setContent(poaMarkupToHtml(form.body), { emitUpdate: false });
-    pendingEditorHydrationRef.current = false;
+      editor.commands.setContent(poaMarkupToHtml(form.body), { emitUpdate: false });
+      pendingEditorHydrationRef.current = false;
+    } catch (err) {
+      console.error('[POA editor] Failed to hydrate body:', err);
+      pendingEditorHydrationRef.current = false;
+    }
   }, [editor, form?.body]);
 
   useLayoutEffect(() => {
@@ -556,7 +577,25 @@ const PoaDocumentEditor: React.FC = () => {
 
   const rightPanelOpen = insertPanelOpen || fieldsPanelOpen;
   const aiReviewOpen = showAiReviewPanel && !readOnly && !showPreview;
-  const usedKeys = useMemo(() => new Set((form?.fields || []).map((f) => f.key)), [form?.fields]);
+  const bodyKeys = useMemo(() => extractPoaBodyKeys(form?.body || ''), [form?.body]);
+  const bodyKeySet = useMemo(() => new Set(bodyKeys), [bodyKeys]);
+  const usedCatalogBaseKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const key of bodyKeys) {
+      const base = key.replace(/_\d+$/, '');
+      keys.add(base);
+      keys.add(key);
+    }
+    for (const f of form?.fields || []) {
+      keys.add(f.key);
+      keys.add(f.key.replace(/_\d+$/, ''));
+    }
+    return keys;
+  }, [bodyKeys, form?.fields]);
+  const fieldsMissingFromBody = useMemo(
+    () => (form?.fields || []).filter((f) => !bodyKeySet.has(f.key)),
+    [form?.fields, bodyKeySet],
+  );
 
   const previewValues = useMemo(() => {
     if (!data || !form) return {};
@@ -775,44 +814,67 @@ const PoaDocumentEditor: React.FC = () => {
     void ensureMeetingSummaries();
   }, [data, readOnly, showPreview, ensureMeetingSummaries]);
 
+  const insertTokenIntoBody = useCallback(
+    (prevBody: string, fieldKey: string): string => {
+      const tokenStr = poaToken(fieldKey);
+      if (editor && !editor.isDestroyed) {
+        // Must run outside setState updaters — React may invoke those twice (Strict Mode),
+        // which would insert {{signature}} twice into TipTap.
+        editor.chain().focus().insertContent(tokenStr).run();
+        skipEditorSyncRef.current = true;
+        return poaHtmlToMarkup(editor.getHTML());
+      }
+      return prevBody + (prevBody && !prevBody.endsWith('\n') ? ' ' : '') + tokenStr;
+    },
+    [editor],
+  );
+
   const addCatalogField = useCallback(
     (catalogKey: string) => {
       if (readOnly) return;
       const item = POA_FIELD_CATALOG.find((c) => c.key === catalogKey);
       if (!item) return;
-      setForm((prev) => {
-        if (!prev) return prev;
-        const fieldKey = allocatePoaFieldKey(item.key, prev.fields, prev.body);
-        const exists = prev.fields.some((f) => f.key === fieldKey);
-        const fields = exists
-          ? prev.fields
-          : [
-              ...prev.fields,
-              {
-                key: fieldKey,
-                label: item.label,
-                type: item.type,
-                required: item.type === 'signature',
-                prefill: item.prefill,
-              } as PoaTemplateField,
-            ];
+      const prev = formRef.current;
+      if (!prev) return;
 
-        const tokenStr = poaToken(fieldKey);
-        let body = prev.body;
-        if (editor && !editor.isDestroyed) {
-          editor.chain().focus().insertContent(tokenStr).run();
-          body = poaHtmlToMarkup(editor.getHTML());
-          skipEditorSyncRef.current = true;
-        } else {
-          body = body + (body && !body.endsWith('\n') ? ' ' : '') + tokenStr;
-        }
+      const fieldKey = allocatePoaFieldKey(item.key, prev.fields, prev.body);
+      const exists = prev.fields.some((f) => f.key === fieldKey);
+      const fields = exists
+        ? prev.fields
+        : [
+            ...prev.fields,
+            {
+              key: fieldKey,
+              label: item.label,
+              type: item.type,
+              required: item.type === 'signature',
+              prefill: item.prefill,
+            } as PoaTemplateField,
+          ];
 
-        const next = { ...prev, fields, body };
-        queueMicrotask(() => pushHistoryNow(next));
-        return next;
-      });
+      const body = insertTokenIntoBody(prev.body, fieldKey);
+      const next = { ...prev, fields, body };
+      formRef.current = next;
+      setForm(next);
+      pushHistoryNow(next);
     },
-    [readOnly, pushHistoryNow, editor],
+    [readOnly, pushHistoryNow, insertTokenIntoBody],
+  );
+
+  /** Re-insert an existing field token at the cursor (e.g. after deleting it from the body). */
+  const insertExistingField = useCallback(
+    (fieldKey: string) => {
+      if (readOnly) return;
+      const prev = formRef.current;
+      if (!prev || !prev.fields.some((f) => f.key === fieldKey)) return;
+
+      const body = insertTokenIntoBody(prev.body, fieldKey);
+      const next = { ...prev, body };
+      formRef.current = next;
+      setForm(next);
+      pushHistoryNow(next);
+    },
+    [readOnly, pushHistoryNow, insertTokenIntoBody],
   );
 
   const updateField = (key: string, patch: Partial<PoaTemplateField>) => {
@@ -825,17 +887,30 @@ const PoaDocumentEditor: React.FC = () => {
 
   const removeField = (key: string) => {
     if (readOnly) return;
-    updateForm((prev) => ({ ...prev, fields: prev.fields.filter((f) => f.key !== key) }));
+    const prev = formRef.current;
+    if (!prev) return;
+
+    let body = stripPoaFieldTokens(prev.body, key);
+    if (editor && !editor.isDestroyed) {
+      const html = poaMarkupToHtml(body);
+      editor.commands.setContent(html, { emitUpdate: false });
+      skipEditorSyncRef.current = true;
+      body = poaHtmlToMarkup(editor.getHTML());
+    }
+    const next = { ...prev, fields: prev.fields.filter((f) => f.key !== key), body };
+    formRef.current = next;
+    setForm(next);
+    pushHistoryNow(next);
   };
 
   const handleSave = async () => {
     if (!token || !form || readOnly) return;
 
-    const bodyKeys = extractPoaBodyKeys(form.body);
+    const placedKeys = extractPoaBodyKeys(form.body);
     const fieldsByKey = new Map(form.fields.map((f) => [f.key, f]));
-    for (const key of bodyKeys) {
+    for (const key of placedKeys) {
       if (!fieldsByKey.has(key)) {
-        const item = POA_FIELD_CATALOG.find((c) => c.key === key);
+        const item = POA_FIELD_CATALOG.find((c) => c.key === key || c.key === key.replace(/_\d+$/, ''));
         fieldsByKey.set(key, {
           key,
           label: item?.label || key,
@@ -845,6 +920,8 @@ const PoaDocumentEditor: React.FC = () => {
         });
       }
     }
+    // Keep defs that are temporarily missing from the body so staff can re-insert
+    // them from the sidebar. The signing page only renders tokens present in body.
     const fields = Array.from(fieldsByKey.values());
 
     setSaving(true);
@@ -1077,7 +1154,7 @@ const PoaDocumentEditor: React.FC = () => {
 
   const renderFormatControls = () => renderSidePanelContent(true);
 
-  if (loading) {
+  if (loading || !editor) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-100">
         <span className="loading loading-spinner loading-lg text-gray-400" />
@@ -1411,13 +1488,38 @@ const PoaDocumentEditor: React.FC = () => {
                       }`}
                     >
                       <div className="poa-editor-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
+                        {fieldsMissingFromBody.length > 0 && (
+                          <div className="mb-4">
+                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-700">
+                              Add back to document
+                            </p>
+                            <div className="flex flex-wrap gap-2.5">
+                              {fieldsMissingFromBody.map((f) => (
+                                <button
+                                  key={`missing-${f.key}`}
+                                  type="button"
+                                  onClick={() => insertExistingField(f.key)}
+                                  className="btn btn-sm btn-warning gap-1.5"
+                                  title={`Insert ${poaToken(f.key)} at cursor`}
+                                >
+                                  <PlusIcon className="h-4 w-4" />
+                                  {f.label || f.key}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="my-4 border-t border-gray-100" />
+                          </div>
+                        )}
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Insert a field
+                        </p>
                         <div className="flex flex-wrap gap-2.5">
                           {POA_FIELD_CATALOG.map((item) => (
                             <button
                               key={item.key}
                               type="button"
                               onClick={() => addCatalogField(item.key)}
-                              className={`btn btn-sm ${usedKeys.has(item.key) ? 'btn-primary' : 'btn-outline'} gap-1.5`}
+                              className={`btn btn-sm ${usedCatalogBaseKeys.has(item.key) ? 'btn-primary' : 'btn-outline'} gap-1.5`}
                               title={item.hint || item.label}
                             >
                               <PlusIcon className="h-4 w-4" />
@@ -1438,25 +1540,59 @@ const PoaDocumentEditor: React.FC = () => {
                           </div>
                         ) : (
                           <div className="space-y-3">
-                            {form.fields.map((f) => (
+                            {form.fields.map((f) => {
+                              const inDocument = bodyKeySet.has(f.key);
+                              return (
                               <div
                                 key={f.key}
-                                className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm"
+                                className={`rounded-2xl border bg-white p-4 shadow-sm ${
+                                  inDocument ? 'border-gray-200' : 'border-amber-300 ring-1 ring-amber-100'
+                                }`}
                               >
                                 <div className="mb-3 flex items-center justify-between gap-2">
-                                  <code className="rounded-md bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700">
-                                    {poaToken(f.key)}
-                                  </code>
-                                  {!readOnly && (
-                                    <button
-                                      type="button"
-                                      className="btn btn-ghost btn-sm btn-circle text-gray-400 hover:bg-red-50 hover:text-error"
-                                      onClick={() => removeField(f.key)}
-                                      title="Remove field"
-                                    >
-                                      <XMarkIcon className="h-5 w-5" />
-                                    </button>
-                                  )}
+                                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                    <code className="rounded-md bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700">
+                                      {poaToken(f.key)}
+                                    </code>
+                                    {!inDocument && (
+                                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                                        Not in document
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    {!readOnly && !inDocument && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-ghost btn-sm gap-1 text-amber-700 hover:bg-amber-50"
+                                        onClick={() => insertExistingField(f.key)}
+                                        title="Insert this field at the cursor"
+                                      >
+                                        <PlusIcon className="h-4 w-4" />
+                                        Insert
+                                      </button>
+                                    )}
+                                    {!readOnly && inDocument && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-ghost btn-sm gap-1 text-indigo-600 hover:bg-indigo-50"
+                                        onClick={() => insertExistingField(f.key)}
+                                        title="Insert another copy at the cursor"
+                                      >
+                                        <PlusIcon className="h-4 w-4" />
+                                      </button>
+                                    )}
+                                    {!readOnly && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-ghost btn-sm btn-circle text-gray-400 hover:bg-red-50 hover:text-error"
+                                        onClick={() => removeField(f.key)}
+                                        title="Remove field"
+                                      >
+                                        <XMarkIcon className="h-5 w-5" />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                                 <input
                                   className="input input-bordered input-sm mb-3 w-full"
@@ -1506,7 +1642,8 @@ const PoaDocumentEditor: React.FC = () => {
                                   </label>
                                 </div>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
                       </div>

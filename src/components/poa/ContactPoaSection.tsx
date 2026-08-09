@@ -193,7 +193,8 @@ const ContactPoaSection: React.FC<Props> = ({
 
   const openPoaEditor = useCallback(
     (secureToken: string) => {
-      navigate(`/poa/edit/${encodeURIComponent(secureToken)}`);
+      // Let React Router encode the path segment — avoid double-encoding the token.
+      navigate(`/poa/edit/${secureToken}`);
     },
     [navigate],
   );

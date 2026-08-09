@@ -40,6 +40,46 @@ export interface ContractData {
   signed_at?: string;
 }
 
+/**
+ * Normalize base lead number to the numeric base only (e.g. "6/1" or "L6/1" -> "6")
+ */
+function normalizeBaseLeadNumber(baseLeadNumber: string): string {
+  const trimmed = (baseLeadNumber || '').trim().replace(/^[LC]/i, '');
+  const firstSegment = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+  return firstSegment || baseLeadNumber;
+}
+
+/**
+ * True when linked_master_lead points at another lead (not the row's own self-root marker).
+ * New masters may store linked_master_lead = their own lead_number after the first combine.
+ */
+export function isNonSelfLinkedMasterLead(
+  linkedMasterLead: string | number | null | undefined,
+  ownLeadNumber?: string | null,
+  ownId?: string | number | null
+): boolean {
+  if (linkedMasterLead == null) return false;
+  const linked = String(linkedMasterLead).trim();
+  if (!linked) return false;
+
+  const normalize = (v: string) =>
+    v.trim().replace(/^[LC]/i, '').split('/')[0];
+
+  const linkedNorm = normalize(linked);
+
+  if (ownLeadNumber != null && String(ownLeadNumber).trim() !== '') {
+    const own = String(ownLeadNumber).trim();
+    if (linked === own || linkedNorm === normalize(own)) return false;
+  }
+
+  if (ownId != null) {
+    const idStr = String(ownId).replace(/^legacy_/, '').trim();
+    if (idStr && (linked === idStr || linkedNorm === idStr)) return false;
+  }
+
+  return true;
+}
+
 // Helper function to get category name with main category
 export const getCategoryName = (categoryId: string | number | null | undefined, categories: any[]): string => {
   if (!categoryId || !categories || categories.length === 0) {
@@ -641,7 +681,7 @@ export const fetchNewMasterLead = async (
     const hasSubLeads = filteredSubLeads && filteredSubLeads.length > 0;
     processedSubLeads.push(formatNewLead(masterLead, true, hasSubLeads, false));
     filteredSubLeads.forEach((lead: any) => {
-      const linkedOnly = !!(lead.linked_master_lead != null && String(lead.linked_master_lead).trim() !== '');
+      const linkedOnly = isNonSelfLinkedMasterLead(lead.linked_master_lead, lead.lead_number, lead.id);
       processedSubLeads.push(formatNewLead(lead, false, false, linkedOnly));
     });
 
@@ -1169,7 +1209,7 @@ export const fetchLegacyMasterLead = async (
       let linkedOnlySuffix = masterIdSubLeadsCount + 2;
 
       const subLeadsWithSuffix = allLegacySubLeads.map((lead: any) => {
-        const isLinkedOnly = lead.linked_master_lead != null && (lead.master_id == null || String(lead.master_id).trim() === '');
+        const isLinkedOnly = isNonSelfLinkedMasterLead(lead.linked_master_lead, null, lead.id) && (lead.master_id == null || String(lead.master_id).trim() === '');
         if (isLinkedOnly) {
           const suffix = linkedOnlySuffix++;
           return { lead, subLeadSuffix: suffix, displayAsId: false };
@@ -1185,7 +1225,7 @@ export const fetchLegacyMasterLead = async (
       });
 
       subLeadsWithSuffix.forEach(({ lead, subLeadSuffix, displayAsId }: { lead: any; subLeadSuffix?: number; displayAsId: boolean }) => {
-        const isLinkedOnly = lead.linked_master_lead != null && (lead.master_id == null || String(lead.master_id).trim() === '');
+        const isLinkedOnly = isNonSelfLinkedMasterLead(lead.linked_master_lead, null, lead.id) && (lead.master_id == null || String(lead.master_id).trim() === '');
         const formattedLeadNumber = isLinkedOnly ? String(lead.id) : formatLegacyLeadNumber(lead, subLeadSuffix, false);
         const displayNumber = lead.stage === 100 ? `C${formattedLeadNumber}` : formattedLeadNumber;
         const currencyInfo = getCurrencyInfo(lead);
@@ -1237,7 +1277,7 @@ export const fetchLegacyMasterLead = async (
       const currencyCode = (lead.balance_currency || lead.currency || 'NIS') as string;
       const leadNum = lead.lead_number || String(lead.id);
       const hasMasterId = lead.master_id != null && String(lead.master_id).trim() !== '';
-      const linkedOnly = !hasMasterId && lead.linked_master_lead != null && String(lead.linked_master_lead).trim() !== '';
+      const linkedOnly = !hasMasterId && isNonSelfLinkedMasterLead(lead.linked_master_lead, lead.lead_number, lead.id);
       processedSubLeads.push({
         id: String(lead.id),
         lead_number: leadNum,
@@ -1290,14 +1330,274 @@ export const fetchLegacyMasterLead = async (
   }
 };
 
+export type ChainRootInfo = {
+  /** Value passed to linkLeadToChain as baseLeadNumber (legacy id string or full new lead_number). */
+  baseLeadNumber: string;
+  isLegacyChain: boolean;
+  masterLeadInfo: { id?: number | string };
+};
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isLegacyMasterLinkValue(value: string): boolean {
+  const trimmed = (value || '').trim();
+  if (!trimmed || /^L/i.test(trimmed)) return false;
+  const numeric = normalizeBaseLeadNumber(trimmed);
+  return /^\d+$/.test(numeric);
+}
+
 /**
- * Normalize base lead number to the numeric base only (e.g. "6/1" or "L6/1" -> "6")
- * so that "existing" query matches all subleads (6/1, 6/2, ...) and nextSuffix is correct.
+ * Resolve the chain root for creating/linking a sublead from a parent lead.
+ * Prefer non-self linked_master_lead, then traditional master_id, else the parent itself.
  */
-function normalizeBaseLeadNumber(baseLeadNumber: string): string {
-  const trimmed = (baseLeadNumber || '').trim().replace(/^[LC]/i, '');
-  const firstSegment = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
-  return firstSegment || baseLeadNumber;
+export async function resolveChainRootFromLead(lead: {
+  id: string | number;
+  lead_type?: string | null;
+  lead_number?: string | null;
+  master_id?: string | number | null;
+  linked_master_lead?: string | number | null;
+}): Promise<{ success: true; root: ChainRootInfo } | { success: false; error: string }> {
+  try {
+    const isLegacyParent =
+      lead.lead_type === 'legacy' || String(lead.id).startsWith('legacy_');
+    const ownId = String(lead.id);
+    const ownLeadNumber = lead.lead_number != null ? String(lead.lead_number) : null;
+
+    if (isNonSelfLinkedMasterLead(lead.linked_master_lead, ownLeadNumber, ownId)) {
+      const linked = String(lead.linked_master_lead).trim();
+      if (isLegacyMasterLinkValue(linked)) {
+        const numericId = parseInt(normalizeBaseLeadNumber(linked), 10);
+        if (Number.isNaN(numericId)) {
+          return { success: false, error: 'Invalid linked master lead id' };
+        }
+        return {
+          success: true,
+          root: {
+            baseLeadNumber: String(numericId),
+            isLegacyChain: true,
+            masterLeadInfo: { id: numericId },
+          },
+        };
+      }
+      return {
+        success: true,
+        root: {
+          baseLeadNumber: linked.includes('/') ? linked.split('/')[0] : linked,
+          isLegacyChain: false,
+          masterLeadInfo: {},
+        },
+      };
+    }
+
+    const masterIdRaw =
+      lead.master_id != null && String(lead.master_id).trim() !== ''
+        ? String(lead.master_id).trim()
+        : null;
+
+    if (masterIdRaw) {
+      if (isUuid(masterIdRaw)) {
+        const { data: masterRow, error } = await supabase
+          .from('leads')
+          .select('id, lead_number')
+          .eq('id', masterIdRaw)
+          .maybeSingle();
+        if (error) {
+          console.error('resolveChainRootFromLead: master fetch failed', error);
+          return { success: false, error: 'Failed to resolve master lead' };
+        }
+        const leadNumber = (masterRow?.lead_number || '').trim();
+        if (!leadNumber) {
+          return { success: false, error: 'Master lead has no lead number' };
+        }
+        return {
+          success: true,
+          root: {
+            baseLeadNumber: leadNumber.includes('/') ? leadNumber.split('/')[0] : leadNumber,
+            isLegacyChain: false,
+            masterLeadInfo: { id: masterRow!.id },
+          },
+        };
+      }
+
+      // Numeric master_id: legacy root (or legacy-style id)
+      const numericId = parseInt(normalizeBaseLeadNumber(masterIdRaw), 10);
+      if (Number.isNaN(numericId)) {
+        return { success: false, error: 'Invalid master lead id' };
+      }
+      return {
+        success: true,
+        root: {
+          baseLeadNumber: String(numericId),
+          isLegacyChain: true,
+          masterLeadInfo: { id: numericId },
+        },
+      };
+    }
+
+    // Parent is the chain root
+    if (isLegacyParent) {
+      const numericId = parseInt(String(lead.id).replace(/^legacy_/, ''), 10);
+      if (Number.isNaN(numericId)) {
+        return { success: false, error: 'Invalid legacy lead id' };
+      }
+      return {
+        success: true,
+        root: {
+          baseLeadNumber: String(numericId),
+          isLegacyChain: true,
+          masterLeadInfo: { id: numericId },
+        },
+      };
+    }
+
+    const parentLeadNumber = (lead.lead_number || '').trim();
+    if (!parentLeadNumber) {
+      return { success: false, error: 'Unable to determine master lead number' };
+    }
+    return {
+      success: true,
+      root: {
+        baseLeadNumber: parentLeadNumber.includes('/')
+          ? parentLeadNumber.split('/')[0]
+          : parentLeadNumber,
+        isLegacyChain: false,
+        masterLeadInfo: { id: lead.id },
+      },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to resolve chain root';
+    console.error('resolveChainRootFromLead error:', err);
+    return { success: false, error: message };
+  }
+}
+
+export type CreateAndLinkLeadParams = {
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  topic?: string | null;
+  language?: string | null;
+  source?: string | null;
+  createdBy?: string | null;
+  balanceCurrency?: string;
+  proposalCurrency?: string;
+  /** Extra columns to patch onto the new leads row after RPC create (no master_id). */
+  extraFields?: Record<string, unknown>;
+  baseLeadNumber: string;
+  isLegacyChain: boolean;
+  masterLeadInfo?: { id?: number | string } | null;
+};
+
+export type CreateAndLinkLeadResult = {
+  success: boolean;
+  id?: string;
+  lead_number?: string;
+  error?: string;
+};
+
+/**
+ * Create a standalone lead in `leads` (own L-number) and attach it via linked_master_lead.
+ * Uses create_new_lead_v4 with v3 fallback — same path as Combine, without traditional master_id / BASE/N.
+ */
+export async function createAndLinkLeadToChain(
+  params: CreateAndLinkLeadParams
+): Promise<CreateAndLinkLeadResult> {
+  try {
+    const rpcBase = {
+      p_lead_name: params.name,
+      p_lead_email: params.email || null,
+      p_lead_phone: params.phone || null,
+      p_lead_topic: params.topic || null,
+      p_lead_language: params.language || 'HE',
+      p_lead_source: params.source || 'Manual',
+      p_created_by: params.createdBy || null,
+      p_balance_currency: params.balanceCurrency || 'NIS',
+      p_proposal_currency: params.proposalCurrency || 'NIS',
+    };
+
+    let created: { id: string; lead_number: string } | null = null;
+    let lastError: { message?: string } | null = null;
+
+    const v4 = await supabase.rpc('create_new_lead_v4', rpcBase);
+    lastError = v4.error;
+    if (!lastError && v4.data?.[0]?.id) {
+      created = {
+        id: String(v4.data[0].id),
+        lead_number: String(v4.data[0].lead_number || ''),
+      };
+    }
+
+    if (lastError?.message?.includes('does not exist')) {
+      const v3 = await supabase.rpc('create_new_lead_v3', {
+        p_lead_name: rpcBase.p_lead_name,
+        p_lead_email: rpcBase.p_lead_email,
+        p_lead_phone: rpcBase.p_lead_phone,
+        p_lead_topic: rpcBase.p_lead_topic,
+        p_lead_language: rpcBase.p_lead_language,
+        p_lead_source: rpcBase.p_lead_source,
+        p_created_by: rpcBase.p_created_by,
+      });
+      lastError = v3.error;
+      if (!lastError && v3.data?.[0]?.id) {
+        created = {
+          id: String(v3.data[0].id),
+          lead_number: String(v3.data[0].lead_number || ''),
+        };
+      }
+    }
+
+    if (lastError || !created) {
+      return {
+        success: false,
+        error: lastError?.message || 'Failed to create lead',
+      };
+    }
+
+    if (params.extraFields && Object.keys(params.extraFields).length > 0) {
+      // Never set master_id on combine-chain creates
+      const { master_id: _omitMasterId, ...safeFields } = params.extraFields as Record<
+        string,
+        unknown
+      > & { master_id?: unknown };
+      const { error: updateError } = await supabase
+        .from('leads')
+        .update(safeFields)
+        .eq('id', created.id);
+      if (updateError) {
+        console.error('createAndLinkLeadToChain: extraFields update failed', updateError);
+        return { success: false, error: updateError.message, id: created.id, lead_number: created.lead_number };
+      }
+    }
+
+    const linkResult = await linkLeadToChain(
+      created.id,
+      'new',
+      params.baseLeadNumber,
+      params.isLegacyChain,
+      params.masterLeadInfo
+    );
+
+    if (!linkResult.success) {
+      return {
+        success: false,
+        error: linkResult.error || 'Lead created but failed to link to chain',
+        id: created.id,
+        lead_number: created.lead_number,
+      };
+    }
+
+    return {
+      success: true,
+      id: created.id,
+      lead_number: created.lead_number,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to create and link lead';
+    console.error('createAndLinkLeadToChain error:', err);
+    return { success: false, error: message };
+  }
 }
 
 /**
