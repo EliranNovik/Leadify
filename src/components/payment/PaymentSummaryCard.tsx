@@ -53,23 +53,23 @@ const PaymentSummaryCard: React.FC<Props> = ({
               {secondaryForeign && (
                 <p className="text-sm mt-2 font-normal text-white/70">{secondaryForeign}</p>
               )}
-              <p className="text-sm font-semibold text-white/55 mt-3">{summary.service}</p>
+              <p className="text-lg font-semibold text-white/55 mt-3">{summary.service}</p>
             </>
           )}
         </div>
 
         {summary.topic !== '--' && (
-          <p className="text-xs text-white/80 leading-relaxed max-w-sm">{summary.topic}</p>
+          <p className="text-base text-white/80 leading-relaxed max-w-sm">{summary.topic}</p>
         )}
 
-        <div className="w-full max-w-xs rounded-2xl border border-white/20 bg-white/10 px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] backdrop-blur-[6px] space-y-2.5 text-sm text-white/80">
-          <div className="flex justify-between">
+        <div className="w-full max-w-xs rounded-2xl border-0 bg-white/10 px-4 py-3.5 shadow-none backdrop-blur-[6px] space-y-2.5 text-sm">
+          <div className="flex justify-between text-gray-300">
             <span>Subtotal</span>
-            <span className="text-white">{formatMoneyAmount(summary.subtotal, summary.currencySymbol)}</span>
+            <span>{formatMoneyAmount(summary.subtotal, summary.currencySymbol)}</span>
           </div>
-          <div className="flex justify-between">
+          <div className="flex justify-between text-gray-300">
             <span>VAT (18%)</span>
-            <span className="text-white">{formatMoneyAmount(summary.vat, summary.currencySymbol)}</span>
+            <span>{formatMoneyAmount(summary.vat, summary.currencySymbol)}</span>
           </div>
           <div className="flex justify-between pt-3 border-t border-white/20 text-base font-semibold text-white">
             <span>Total due today</span>

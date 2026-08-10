@@ -38,7 +38,7 @@ const IFRAME_SCROLL_SHELL_CLASS =
 const IFRAME_CONTENT_HEIGHT = 920;
 const IFRAME_CONTENT_HEIGHT_MOBILE = 1500;
 const IFRAME_HEIGHT_MAX_MOBILE = 5000;
-const IFRAME_HEIGHT_MAX_DESKTOP = 1400;
+const IFRAME_HEIGHT_MAX_DESKTOP = 2400;
 const IFRAME_HEIGHT_BUFFER_DESKTOP = 8;
 const IFRAME_HEIGHT_BUFFER_MOBILE = 96;
 /** Progressive mobile expansion when Pelecard does not postMessage document height. */

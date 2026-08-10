@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession, fetchBillingContact, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
@@ -22,8 +22,11 @@ import { runPelecardWalletDiagnostics } from '../lib/pelecardWalletDiagnostics';
 import PaymentWalletDebugPanel from '../components/payment/PaymentWalletDebugPanel';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import toast from 'react-hot-toast';
+import { FaApple, FaGoogle } from 'react-icons/fa';
 import {
+  ArrowDownIcon,
   CheckCircleIcon,
+  CreditCardIcon,
   ExclamationCircleIcon,
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
@@ -43,7 +46,7 @@ const CHECKOUT_FIRM_LOGO = '/DPLOGO1.png';
 const CHECKOUT_DESKTOP_FOOTER_IMAGE = '/ChatGPT Image May 26, 2026, 09_41_00 AM.png';
 
 const CHECKOUT_CARD_IMAGE_CLASS =
-  'mt-8 w-full max-w-[520px] sm:max-w-[560px] xl:max-w-[600px] h-auto object-contain pointer-events-none select-none';
+  'mt-12 w-full max-w-[520px] sm:max-w-[560px] xl:max-w-[600px] h-auto object-contain pointer-events-none select-none lg:mt-auto lg:pt-10';
 
 function CheckoutCardImage() {
   return (
@@ -71,12 +74,51 @@ function CheckoutSummaryHeading({ summary }: { summary?: PaymentSummaryData | nu
   if (!summary) return null;
   return (
     <p className="text-base text-white/90 mb-6 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-left">
-      <span className="font-mono text-[15px] font-medium text-white/80">Case #{summary.caseNumber}</span>
+      <span className="text-[17px] font-semibold text-white/55">Case #{summary.caseNumber}</span>
       <span className="text-white/40" aria-hidden>
         ·
       </span>
       <span className="text-[17px] font-semibold text-white/55">{summary.clientName}</span>
     </p>
+  );
+}
+
+function CheckoutSecureNote({ className = '' }: { className?: string }) {
+  return (
+    <p
+      className={`flex w-full items-start gap-2 text-left text-[11px] leading-relaxed text-white/50 ${className}`.trim()}
+    >
+      <ShieldCheckIcon
+        className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300/90"
+        strokeWidth={2}
+        aria-hidden
+      />
+      <span>Processed securely by Pelecard. Card details are not stored on our servers.</span>
+    </p>
+  );
+}
+
+function CheckoutPaymentMethodIcons({ className = '' }: { className?: string }) {
+  const badgeClass =
+    'inline-flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-semibold text-white/90 backdrop-blur-sm';
+  return (
+    <div
+      className={`flex w-full flex-wrap items-center gap-2 ${className}`.trim()}
+      aria-label="Accepted payment methods"
+    >
+      <span className={badgeClass}>
+        <FaApple className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        Apple Pay
+      </span>
+      <span className={badgeClass}>
+        <FaGoogle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        Google Pay
+      </span>
+      <span className={badgeClass}>
+        <CreditCardIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        Pelecard
+      </span>
+    </div>
   );
 }
 
@@ -237,26 +279,6 @@ function PaymentDoneStamp({ paidAt }: { paidAt: string | null }) {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function CheckoutSecuredStamp({ iconOnly = false }: { iconOnly?: boolean }) {
-  return (
-    <div
-      className={`inline-flex items-center justify-center rounded-full bg-white ${
-        iconOnly ? 'p-2' : 'gap-1.5 px-3 py-1.5'
-      }`}
-      role="img"
-      aria-label="Secured checkout"
-    >
-      <ShieldCheckIcon
-        className={`shrink-0 text-emerald-600 ${iconOnly ? 'h-5 w-5' : 'h-4 w-4'}`}
-        strokeWidth={2}
-      />
-      {!iconOnly && (
-        <span className="text-xs font-medium text-gray-700">Secured</span>
-      )}
     </div>
   );
 }
@@ -531,6 +553,11 @@ const PaymentPage: React.FC<{
 
   const isAlreadyPaid = paymentLink ? isPaymentComplete(paymentLink) : false;
   const paidAt = paymentLink ? getPaymentPaidAt(paymentLink) : null;
+  const checkoutPaymentRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToCheckoutPayment = useCallback(() => {
+    checkoutPaymentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
 
   const canPay =
     paymentLink &&
@@ -707,7 +734,7 @@ const PaymentPage: React.FC<{
             <p className="text-gray-600 mb-6">{pageError}</p>
           </div>
         </div>
-        <PortalFooter />
+        <PortalFooter tone="gray" logoSrc="/DPL-LOGO1.png" />
       </div>
     );
   }
@@ -724,26 +751,29 @@ const PaymentPage: React.FC<{
             </p>
           </div>
         </div>
-        <PortalFooter />
+        <PortalFooter tone="gray" logoSrc="/DPL-LOGO1.png" />
       </div>
     );
   }
 
   return (
-    <div className={`flex flex-col bg-white ${kioskMode ? 'kiosk-payment-root' : 'min-h-[100dvh]'}`}>
+    <div className={kioskMode ? 'kiosk-payment-root bg-white' : 'bg-white lg:bg-gray-100'}>
+      {/* Desktop: summary + payment fill the viewport; footer sits below. */}
       <div
         className={`flex flex-col lg:flex-row overflow-x-hidden ${
-          kioskMode ? 'lg:items-start' : 'flex-1 min-h-0'
+          kioskMode
+            ? 'lg:items-start'
+            : 'max-lg:min-h-0 lg:h-[100dvh] lg:min-h-[100dvh] lg:overflow-hidden lg:gap-1.5 lg:p-1.5'
         }`}
       >
       <div
-        className={`hidden lg:flex lg:w-[40%] lg:shrink-0 lg:p-1.5 ${
-          kioskMode ? '' : 'lg:self-stretch lg:min-h-0'
+        className={`hidden lg:flex lg:w-[38%] xl:w-[36%] lg:shrink-0 ${
+          kioskMode ? 'lg:p-1.5' : 'lg:self-stretch lg:min-h-0 lg:h-full'
         }`}
       >
         <aside
-          className={`relative flex flex-col w-full text-white overflow-hidden rounded-3xl shadow-sm ${
-            kioskMode ? '' : 'flex-1 h-full min-h-full overflow-y-auto'
+          className={`relative flex flex-col w-full text-white overflow-hidden rounded-2xl shadow-sm ${
+            kioskMode ? '' : 'flex-1 h-full min-h-0 overflow-y-auto'
           }`}
           style={SUMMARY_GRADIENT_STYLE}
         >
@@ -768,9 +798,8 @@ const PaymentPage: React.FC<{
             <CheckoutCardImage />
             {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
           </div>
-          <p className="w-full text-left text-[11px] text-white/50 leading-relaxed shrink-0 mt-6">
-            Processed securely by Pelecard. Card details are not stored on our servers.
-          </p>
+          <CheckoutSecureNote className="shrink-0 mt-6" />
+          <CheckoutPaymentMethodIcons className="shrink-0 mt-3" />
           </div>
           </div>
         </aside>
@@ -778,21 +807,27 @@ const PaymentPage: React.FC<{
 
       <main
         className={`relative flex flex-col w-full bg-white ${
-          kioskMode ? 'flex-1' : 'flex-1 max-lg:overflow-visible lg:min-h-0 lg:overflow-hidden'
+          kioskMode
+            ? 'flex-1'
+            : 'flex-1 max-lg:overflow-visible lg:min-h-0 lg:h-full lg:overflow-hidden lg:rounded-2xl lg:border lg:border-gray-100/80'
         }`}
       >
-        <div className="pointer-events-none absolute top-8 right-12 xl:right-16 z-20 hidden lg:block">
-          <CheckoutSecuredStamp />
-        </div>
         <div
-          className="lg:hidden shrink-0 relative mx-1.5 mt-1.5 mb-1.5 overflow-hidden rounded-3xl text-white px-5 pt-8 pb-8"
+          className="lg:hidden shrink-0 relative mx-1.5 mt-1.5 mb-1.5 overflow-hidden rounded-3xl text-white px-5 pt-8 pb-16"
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
           <CheckoutSummaryLogo className="absolute top-3.5 left-5 z-10" />
-          <div className="pointer-events-none absolute top-5 right-5 z-20">
-            <CheckoutSecuredStamp iconOnly />
-          </div>
+          {!isAlreadyPaid ? (
+            <button
+              type="button"
+              onClick={scrollToCheckoutPayment}
+              className="absolute top-3.5 right-3.5 z-20 inline-flex items-center gap-1.5 rounded-full bg-white px-3.5 py-1.5 text-sm font-semibold text-violet-800 shadow-sm transition hover:bg-white/90 active:scale-[0.98]"
+            >
+              <CreditCardIcon className="h-5 w-5 shrink-0" aria-hidden />
+              Pay now
+            </button>
+          ) : null}
           <div className="relative z-[1] flex flex-col items-center px-5 pt-8 pb-8">
             <div className="w-full max-w-md text-left pt-12">
             <CheckoutSummaryHeading summary={summaryData} />
@@ -806,18 +841,30 @@ const PaymentPage: React.FC<{
             )}
             <CheckoutCardImage />
             {isAlreadyPaid ? <PaymentDoneStamp paidAt={paidAt} /> : null}
+            <CheckoutSecureNote className="mt-6" />
+            <CheckoutPaymentMethodIcons className="mt-3" />
             </div>
           </div>
+          {!isAlreadyPaid ? (
+            <button
+              type="button"
+              onClick={scrollToCheckoutPayment}
+              aria-label="Scroll to payment form"
+              className="absolute bottom-3.5 left-3.5 z-20 inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white/90 shadow-none backdrop-blur-sm transition hover:bg-white/25 active:scale-[0.96] animate-pulse"
+            >
+              <ArrowDownIcon className="h-5 w-5" strokeWidth={2.5} aria-hidden />
+            </button>
+          ) : null}
         </div>
 
         <div
-          className={`checkout-payment relative flex flex-col w-full max-w-4xl mx-auto px-4 sm:px-6 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-4 sm:py-6 lg:pt-6 max-lg:pb-8 ${
-            kioskMode ? 'max-lg:shrink-0 lg:pb-6' : 'max-lg:shrink-0 max-lg:flex-none lg:flex-1 lg:min-h-0 lg:pb-0'
+          ref={checkoutPaymentRef}
+          className={`checkout-payment relative flex flex-col w-full max-w-4xl mx-auto px-4 sm:px-6 lg:max-w-none lg:mx-0 lg:px-5 xl:px-6 py-4 sm:py-6 lg:pt-3 lg:pb-2 max-lg:pb-8 ${
+            kioskMode
+              ? 'max-lg:shrink-0 lg:pb-6'
+              : 'max-lg:shrink-0 max-lg:flex-none lg:flex-1 lg:min-h-0 lg:h-full'
           }`}
         >
-          <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-4 tracking-tight shrink-0">
-            Payment information
-          </h2>
           {isAlreadyPaid ? (
             <div className="flex flex-1 items-center justify-center rounded-2xl border border-gray-100 bg-gray-50/60 px-6 py-16 text-center">
               <div>
@@ -847,8 +894,10 @@ const PaymentPage: React.FC<{
       </div>
 
       <PortalFooter
+        tone="gray"
+        logoSrc="/DPL-LOGO1.png"
         compact={kioskMode}
-        className={kioskMode ? 'shrink-0 mt-10' : '!mt-16 md:!mt-28 shrink-0'}
+        className={kioskMode ? 'shrink-0 !mt-10' : 'max-lg:!mt-10 lg:!mt-0'}
       />
 
       {!kioskMode ? <PublicPageContactButtons /> : null}
