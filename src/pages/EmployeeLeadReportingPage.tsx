@@ -35,13 +35,15 @@ import {
   isLeadAllocationHoursNote,
   leadActivityKey,
   minHoursToMs,
+  normalizeAllocationForSave,
   notifyLeadAllocationSaved,
   otherWorkPercentCap,
   rebalanceFlexAllocationBuckets,
   resolveLegacyLeadDisplayNumbers,
   saveDailyAllocation,
-  setLeadAllocationPercent,
+  setLeadAllocationPercentDraft,
   setOtherWorkAllocationPercent,
+  setOtherWorkAllocationPercentDraft,
   syncAllocationTo100,
   workIntervalDurationMs,
   type AllocationItemInput,
@@ -513,16 +515,21 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
   useEffect(() => {
     if (otherWorkPercentRef.current <= otherWorkMax) return;
-    // A shrinking cap (e.g. hours moved into overtime) pushes the excess back onto the leads
-    // so the day still totals 100% without breaching the new cap.
-    const next = syncAllocationTo100(rowsRef.current, otherWorkMax);
+    // Cap shrinks (e.g. into overtime) — clamp other work only; leads stay free until save.
+    const next = setOtherWorkAllocationPercentDraft(
+      rowsRef.current,
+      otherWorkPercentRef.current,
+      otherWorkMax,
+    );
     setRows(next.rows);
     setOtherWorkPercent(next.otherWorkPercent);
   }, [otherWorkMax]);
 
   const includedRows = useMemo(() => rows.filter((row) => row.included), [rows]);
   const grandTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
-  const canSave = isDailyAllocationValid(includedRows, otherWorkPercent, otherWorkMax);
+  // Save is allowed whenever something is allocated; save itself normalizes to 100% + 10/30 other-work cap.
+  const canSave =
+    includedRows.length > 0 || Number(otherWorkPercent) > 0;
   const existingLeadKeys = useMemo(() => new Set(rows.map((row) => row.key)), [rows]);
 
   const handleStartEdit = () => {
@@ -649,7 +656,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
   const handleSave = async () => {
     if (!employeeContext) return;
     if (!canSave) {
-      toast.error('Allocate exactly 100% across other work and selected leads.');
+      toast.error('Select at least one lead or set other work before saving.');
       return;
     }
 
@@ -687,7 +694,20 @@ const EmployeeLeadReportingPage: React.FC = () => {
         setRecordedDayWorkedMs(effectiveWorkedMs);
       }
 
-      const leadsForBudget = includedRows.map((row) => ({
+      const effectiveOtherMax = otherWorkPercentCap(effectiveWorkedMs, minHours);
+      const normalized = normalizeAllocationForSave(rows, otherWorkPercent, effectiveOtherMax);
+      setRows(normalized.rows);
+      setOtherWorkPercent(normalized.otherWorkPercent);
+
+      const normalizedIncluded = normalized.rows.filter((row) => row.included);
+      if (!isDailyAllocationValid(normalizedIncluded, normalized.otherWorkPercent, effectiveOtherMax)) {
+        toast.error(
+          `Could not balance to 100% with other work capped at ${effectiveOtherMax}%. Adjust leads and try again.`,
+        );
+        return;
+      }
+
+      const leadsForBudget = normalizedIncluded.map((row) => ({
         key: row.key,
         lead_type: row.lead_type,
         new_lead_id: row.new_lead_id,
@@ -716,7 +736,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         return;
       }
 
-      const items: AllocationItemInput[] = includedRows.map((row) => ({
+      const items: AllocationItemInput[] = normalizedIncluded.map((row) => ({
         lead_type: row.lead_type,
         new_lead_id: row.new_lead_id,
         legacy_lead_id: row.legacy_lead_id,
@@ -730,7 +750,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         userId: employeeContext.userId,
         workDate,
         items,
-        otherWorkPercent,
+        otherWorkPercent: normalized.otherWorkPercent,
       });
 
       setLastSavedAt(saved.updated_at || saved.submitted_at);
@@ -800,23 +820,22 @@ const EmployeeLeadReportingPage: React.FC = () => {
     let nextRows = rows;
     let nextOther = otherWorkPercent;
     for (const violation of budgetViolations) {
-      const result = setLeadAllocationPercent(
+      const result = setLeadAllocationPercentDraft(
         nextRows,
+        nextOther,
         violation.key,
         violation.maxAllowedPercent,
-        otherWorkMax,
       );
       nextRows = result.rows;
       nextOther = result.otherWorkPercent;
     }
 
-    const capped = setOtherWorkAllocationPercent(nextRows, nextOther, otherWorkMax);
-    setRows(capped.rows);
-    setOtherWorkPercent(capped.otherWorkPercent);
+    setRows(nextRows);
+    setOtherWorkPercent(nextOther);
     setBudgetAssistOpen(false);
     setBudgetViolations([]);
     toast.success('Sliders set to the max available on budget. Review and save again.');
-    void refreshBudgetHints(capped.rows, dayWorkedMs);
+    void refreshBudgetHints(nextRows, dayWorkedMs);
   };
 
   if (!permissionsLoaded || !hasAccess || loading) {
@@ -991,21 +1010,16 @@ const EmployeeLeadReportingPage: React.FC = () => {
             otherWorkMaxPercent={otherWorkMax}
             budgetHintsByKey={Object.fromEntries(budgetHints.map((h) => [h.key, h]))}
             onApplyLeadMaxBudget={(leadKey, maxAllowedPercent) => {
-              const result = setLeadAllocationPercent(
+              const result = setLeadAllocationPercentDraft(
                 rows,
+                otherWorkPercent,
                 leadKey,
                 maxAllowedPercent,
-                otherWorkMax,
               );
-              const capped = setOtherWorkAllocationPercent(
-                result.rows,
-                result.otherWorkPercent,
-                otherWorkMax,
-              );
-              setRows(capped.rows);
-              setOtherWorkPercent(capped.otherWorkPercent);
+              setRows(result.rows);
+              setOtherWorkPercent(result.otherWorkPercent);
               toast.success('Slider set to max available for this lead.');
-              void refreshBudgetHints(capped.rows, dayWorkedMs);
+              void refreshBudgetHints(result.rows, dayWorkedMs);
             }}
           />
 
@@ -1051,7 +1065,8 @@ const EmployeeLeadReportingPage: React.FC = () => {
               <span className="ml-2 text-gray-400">
                 · Other {formatAllocationPercent(otherWorkPercent)}%
                 {includedRows.length > 0 ? ` · ${includedRows.length} lead(s)` : ''}
-                · {formatAllocationPercent(grandTotal)}% total
+                · {formatAllocationPercent(grandTotal)}% current
+                {Math.abs(grandTotal - 100) > 0.01 ? ' · save balances to 100%' : ''}
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">

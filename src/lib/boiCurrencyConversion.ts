@@ -119,7 +119,7 @@ export function resolveCurrencyIsoCode(currency: CurrencyInput): string {
     const t = currency.trim();
     if (!t) return BOI_TARGET_CURRENCY;
     const upper = t.toUpperCase();
-    if (ILS_ISO_ALIASES.has(upper) || t === '₪') return BOI_TARGET_CURRENCY;
+    if (ILS_ISO_ALIASES.has(upper) || t === '₪' || t === '?') return BOI_TARGET_CURRENCY;
     if (/^[A-Z]{3}$/.test(upper)) return upper;
     if (t === '$') return 'USD';
     if (t === '€') return 'EUR';

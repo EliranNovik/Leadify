@@ -27,6 +27,7 @@ import {
   ExclamationCircleIcon,
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
+import { normalizePaymentLinkAmounts } from '../lib/paymentPageUtils';
 
 const PAGE_BG_STYLE: React.CSSProperties = {
   background: '#f3f4f6',
@@ -176,7 +177,9 @@ function paymentOrderLabel(order: number | string | null | undefined): string {
 function getCurrencySymbol(currency: string | undefined) {
   if (!currency) return '₪';
   if (currency === 'USD' || currency === '$') return '$';
-  if (currency === '₪') return '₪';
+  if (currency === '₪' || currency === 'ILS' || currency === 'NIS' || currency === '?') return '₪';
+  if (currency === 'EUR' || currency === '€') return '€';
+  if (currency === 'GBP' || currency === '£') return '£';
   return currency;
 }
 
@@ -468,6 +471,11 @@ const PaymentPage: React.FC<{
       const paid = isPaymentComplete(paymentLink);
       setExchangeLoading(true);
       try {
+        const amounts = normalizePaymentLinkAmounts({
+          subtotal: Number(paymentLink.amount) || 0,
+          vat: Number(paymentLink.vat_amount) || 0,
+          total: Number(paymentLink.total_amount) || 0,
+        });
         const info = await fetchProformaExchangeRateInfo({
           currency: isLegacyPaymentLink(paymentLink)
             ? currencyInputFromLegacyProforma({
@@ -485,9 +493,9 @@ const PaymentPage: React.FC<{
               ),
           paid,
           paidAt: getPaymentPaidAt(paymentLink),
-          subtotal: Number(paymentLink.amount) || 0,
-          vat: Number(paymentLink.vat_amount) || 0,
-          total: Number(paymentLink.total_amount) || 0,
+          subtotal: amounts.subtotal,
+          vat: amounts.vat,
+          total: amounts.total,
           paymentPlanId: paid ? paymentLink.payment_plan_id : null,
           lockedBoiCharge: paid ? lockedBoiChargeFromPaymentLinkRow(paymentLink) : null,
           useLatestBoiForUnpaid: !paid,
@@ -653,6 +661,11 @@ const PaymentPage: React.FC<{
       paymentOrderLabel(paymentLink.payment_plans?.payment_order) ||
       paymentOrderLabel(paymentLink.legacy_payment_plan?.order) ||
       'Payment';
+    const amounts = normalizePaymentLinkAmounts({
+      subtotal: Number(paymentLink.amount) || 0,
+      vat: Number(paymentLink.vat_amount) || 0,
+      total: Number(paymentLink.total_amount) || 0,
+    });
     return {
       service: serviceLabel,
       clientName:
@@ -662,9 +675,9 @@ const PaymentPage: React.FC<{
       caseNumber: paymentLink.leads?.lead_number || '—',
       topic: paymentLink.leads?.topic?.trim() ? paymentLink.leads.topic : '--',
       currencySymbol: getCurrencySymbol(paymentLink.currency),
-      subtotal: Number(paymentLink.amount) || 0,
-      vat: Number(paymentLink.vat_amount) || 0,
-      total: Number(paymentLink.total_amount) || 0,
+      subtotal: amounts.subtotal,
+      vat: amounts.vat,
+      total: amounts.total,
     };
   }, [paymentLink]);
 
@@ -723,9 +736,13 @@ const PaymentPage: React.FC<{
           kioskMode ? 'lg:items-start' : 'flex-1 min-h-0'
         }`}
       >
-      <div className={`hidden lg:flex lg:w-[40%] lg:shrink-0 ${kioskMode ? '' : 'lg:self-stretch lg:min-h-0'}`}>
+      <div
+        className={`hidden lg:flex lg:w-[40%] lg:shrink-0 lg:p-1.5 ${
+          kioskMode ? '' : 'lg:self-stretch lg:min-h-0'
+        }`}
+      >
         <aside
-          className={`relative flex flex-col w-full text-white overflow-hidden ${
+          className={`relative flex flex-col w-full text-white overflow-hidden rounded-3xl shadow-sm ${
             kioskMode ? '' : 'flex-1 h-full min-h-full overflow-y-auto'
           }`}
           style={SUMMARY_GRADIENT_STYLE}
@@ -768,7 +785,7 @@ const PaymentPage: React.FC<{
           <CheckoutSecuredStamp />
         </div>
         <div
-          className="lg:hidden shrink-0 relative mx-1.5 mt-1.5 mb-0.5 overflow-hidden rounded-3xl text-white px-5 pt-8 pb-8"
+          className="lg:hidden shrink-0 relative mx-1.5 mt-1.5 mb-1.5 overflow-hidden rounded-3xl text-white px-5 pt-8 pb-8"
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
@@ -829,7 +846,10 @@ const PaymentPage: React.FC<{
       </main>
       </div>
 
-      <PortalFooter compact={kioskMode} className={kioskMode ? 'shrink-0' : '!mt-0 shrink-0'} />
+      <PortalFooter
+        compact={kioskMode}
+        className={kioskMode ? 'shrink-0 mt-10' : '!mt-16 md:!mt-28 shrink-0'}
+      />
 
       {!kioskMode ? <PublicPageContactButtons /> : null}
       {walletDebug && <PaymentWalletDebugPanel paymentUrl={paymentUrl} />}

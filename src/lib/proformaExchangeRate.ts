@@ -514,15 +514,16 @@ export async function fetchProformaExchangeRateInfo(
       vat,
       undefined,
       params.forceLatestBoiRefresh,
+      total,
     );
     return {
-      isoCode,
-      displaySymbol: meta.displaySymbol,
+      isoCode: conv.isLocalCurrency ? 'ILS' : isoCode,
+      displaySymbol: conv.isLocalCurrency ? '₪' : meta.displaySymbol,
       rateToIls: conv.rateToIls,
       rateDate: conv.rateDate,
       rateLabel: 'today',
-      rateSource: 'boi',
-      isLocalCurrency: false,
+      rateSource: conv.isLocalCurrency ? 'legacy' : 'boi',
+      isLocalCurrency: conv.isLocalCurrency,
       paid: false,
       paidAt: null,
       subtotalNis: conv.subtotalNis,
@@ -614,7 +615,14 @@ export async function fetchProformaExchangeRateInfo(
     };
   }
 
-  const conv = await convertUnpaidToNisBoiToday(currency, subtotal, vat);
+  const conv = await convertUnpaidToNisBoiToday(
+    currency,
+    subtotal,
+    vat,
+    undefined,
+    false,
+    total,
+  );
 
   return {
     isoCode,
@@ -635,6 +643,8 @@ export async function fetchProformaExchangeRateInfo(
 
 /**
  * Unpaid amounts — BOI rows available now (created_at <= now), same as checkout session init.
+ * Prefer explicit `total` (payment_links.total_amount) over recomputing subtotal+vat so a
+ * mismatched amount/vat pair cannot inflate the payable total on the payment page.
  */
 export async function convertUnpaidToNisBoiToday(
   currency: CurrencyInput,
@@ -642,6 +652,7 @@ export async function convertUnpaidToNisBoiToday(
   vat = 0,
   preloadedSnapshot?: BoiRatesSnapshot,
   forceBoiRefresh = false,
+  explicitTotal?: number,
 ): Promise<{
   subtotalNis: number;
   vatNis: number;
@@ -653,7 +664,10 @@ export async function convertUnpaidToNisBoiToday(
 }> {
   await loadAccountingCurrenciesMap();
   const meta = buildCurrencyMetaFromId(currency);
-  const total = subtotal + vat;
+  const total =
+    explicitTotal != null && Number.isFinite(Number(explicitTotal)) && Number(explicitTotal) > 0
+      ? Number(explicitTotal)
+      : subtotal + vat;
 
   if (isLocalCurrency(meta.isoCode)) {
     return {

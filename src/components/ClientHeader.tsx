@@ -31,6 +31,7 @@ import {
     ClockIcon,
     ArchiveBoxIcon,
     EllipsisHorizontalIcon,
+    EllipsisVerticalIcon,
     Bars3Icon,
     DocumentTextIcon,
     LinkIcon,
@@ -276,9 +277,84 @@ const HEADER_ACTION_BAR_TIMELINE_BTN =
 const HEADER_ACTION_BAR_HISTORY_BTN =
     `${HEADER_ACTION_BAR_ROUND_BADGE} hover:!bg-slate-100 hover:text-slate-800 dark:hover:!bg-slate-700/55 dark:hover:text-slate-100`;
 
-/** Round badge for the Actions drawer trigger. */
-const HEADER_ACTION_BAR_MORE_BADGE =
-    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative !h-12 !w-12 !min-h-12 !min-w-12 !max-h-12 !max-w-12 shrink-0 !overflow-visible border border-base-200/50 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 hover:!bg-violet-50 hover:text-violet-800 dark:border-base-300/45 dark:!bg-base-100 dark:hover:!bg-violet-900/30 dark:hover:text-violet-200';
+/** Round badge for the header actions menu trigger (aligned with meta chips). */
+const HEADER_ACTIONS_MENU_TRIGGER =
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative z-[1] !h-10 !w-10 !min-h-10 !min-w-10 !max-h-10 !max-w-10 shrink-0 !overflow-visible border border-base-200/60 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 hover:!bg-violet-50 hover:text-violet-800 dark:border-base-300/45 dark:!bg-base-100 dark:hover:!bg-violet-900/30 dark:hover:text-violet-200 sm:!h-11 sm:!w-11 sm:!min-h-11 sm:!min-w-11';
+
+const HEADER_ACTIONS_MENU_TRIGGER_CONNECTED =
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative z-[1] !h-9 !w-9 !min-h-9 !min-w-9 !max-h-9 !max-w-9 shrink-0 !overflow-visible border-0 !bg-gray-200 !p-0 text-base-content/75 shadow-none transition-colors duration-150 hover:!bg-gray-300 hover:text-violet-800 dark:!bg-base-300 dark:hover:!bg-base-200';
+
+const HEADER_ACTIONS_FAB_BTN =
+    'btn btn-circle btn-ghost aspect-square relative !h-11 !w-11 !min-h-11 !min-w-11 !max-h-11 !max-w-11 shrink-0 !overflow-visible !p-0 shadow-md backdrop-blur-md transition-none';
+
+const HEADER_ACTIONS_FAB_LABEL =
+    'pointer-events-none inline-flex max-w-[9.5rem] shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-semibold text-white shadow-md backdrop-blur-md';
+
+const HEADER_ACTIONS_DROPDOWN_PANEL =
+    'absolute right-5 top-3 z-50 origin-top-right overflow-visible sm:right-5 xl:right-10';
+
+/** Clears the fixed-navbar spacer inside `.client-header-top-band`. */
+const HEADER_ACTIONS_DROPDOWN_PANEL_CONNECTED =
+    'absolute right-5 top-[5.25rem] z-50 origin-top-right overflow-visible sm:right-5 xl:right-10';
+
+const HEADER_ACTIONS_DROPDOWN_PANEL_ATTACHED =
+    'absolute right-0 top-[calc(100%+0.5rem)] z-50 origin-top-right overflow-visible';
+
+const HEADER_ACTIONS_FAB_TONE: Record<
+    'violet' | 'slate' | 'emerald' | 'sky' | 'cyan' | 'indigo' | 'purple' | 'amber' | 'orange',
+    { btn: string; label: string }
+> = {
+    violet: {
+        btn: '!bg-violet-500/30 border-violet-200/55 text-violet-900 dark:text-violet-100',
+        label: 'border-violet-200/30 bg-violet-950/55',
+    },
+    slate: {
+        btn: '!bg-slate-500/25 border-slate-200/55 text-slate-900 dark:text-slate-100',
+        label: 'border-slate-200/30 bg-slate-950/55',
+    },
+    emerald: {
+        btn: '!bg-emerald-500/30 border-emerald-200/55 text-emerald-900 dark:text-emerald-100',
+        label: 'border-emerald-200/30 bg-emerald-950/55',
+    },
+    sky: {
+        btn: '!bg-sky-500/30 border-sky-200/55 text-sky-900 dark:text-sky-100',
+        label: 'border-sky-200/30 bg-sky-950/55',
+    },
+    cyan: {
+        btn: '!bg-cyan-500/30 border-cyan-200/55 text-cyan-900 dark:text-cyan-100',
+        label: 'border-cyan-200/30 bg-cyan-950/55',
+    },
+    indigo: {
+        btn: '!bg-indigo-500/30 border-indigo-200/55 text-indigo-900 dark:text-indigo-100',
+        label: 'border-indigo-200/30 bg-indigo-950/55',
+    },
+    purple: {
+        btn: '!bg-purple-500/30 border-purple-200/55 text-purple-900 dark:text-purple-100',
+        label: 'border-purple-200/30 bg-purple-950/55',
+    },
+    amber: {
+        btn: '!bg-amber-500/30 border-amber-200/55 text-amber-950 dark:text-amber-100',
+        label: 'border-amber-200/30 bg-amber-950/55',
+    },
+    orange: {
+        btn: '!bg-orange-500/30 border-orange-200/55 text-orange-950 dark:text-orange-100',
+        label: 'border-orange-200/30 bg-orange-950/55',
+    },
+};
+
+/** Continuous dock magnification from fractional hover position (scale only). */
+function headerActionsDockScale(hoveredIndex: number | null, index: number): number {
+    if (hoveredIndex == null) return 1;
+    const distance = Math.abs(index - hoveredIndex);
+    const waveRadius = 1.65;
+    if (distance >= waveRadius) return 1;
+    const t = distance / waveRadius;
+    const wave = Math.cos(t * (Math.PI / 2));
+    return 1 + 0.36 * wave * wave;
+}
+
+const HEADER_ACTIONS_DOCK_TRANSITION_RESET =
+    'transform 160ms cubic-bezier(0.33, 1, 0.68, 1)';
 
 const HEADER_ACTION_BAR_BTN = HEADER_ACTION_BAR_ROUND_BADGE;
 
@@ -532,9 +608,45 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [editLeadDrawerOpen, setEditLeadDrawerOpen] = useState(false);
     const [clientPortalModalOpen, setClientPortalModalOpen] = useState(false);
     const [moreActionsSheetOpen, setMoreActionsSheetOpen] = useState(false);
+    const [headerActionsMenuOpen, setHeaderActionsMenuOpen] = useState(false);
+    const [headerActionsDockHover, setHeaderActionsDockHover] = useState<number | null>(null);
     const [inactiveNotesExpanded, setInactiveNotesExpanded] = useState(false);
+    const headerActionsMenuRef = useRef<HTMLDivElement | null>(null);
 
     const closeMoreActionsSheet = useCallback(() => setMoreActionsSheetOpen(false), []);
+    const closeHeaderActionsMenu = useCallback(() => {
+        setHeaderActionsMenuOpen(false);
+        setHeaderActionsDockHover(null);
+    }, []);
+    const toggleHeaderActionsMenu = useCallback(
+        () =>
+            setHeaderActionsMenuOpen((open) => {
+                if (open) setHeaderActionsDockHover(null);
+                return !open;
+            }),
+        [],
+    );
+
+    useEffect(() => {
+        if (!headerActionsMenuOpen) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') closeHeaderActionsMenu();
+        };
+        const onPointerDown = (event: MouseEvent | TouchEvent) => {
+            const target = event.target as Node | null;
+            if (!target) return;
+            if (target instanceof Element && target.closest('[data-header-actions-menu]')) return;
+            closeHeaderActionsMenu();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        document.addEventListener('mousedown', onPointerDown);
+        document.addEventListener('touchstart', onPointerDown);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown);
+            document.removeEventListener('mousedown', onPointerDown);
+            document.removeEventListener('touchstart', onPointerDown);
+        };
+    }, [headerActionsMenuOpen, closeHeaderActionsMenu]);
 
     const setEditLeadDrawerOpenState = useCallback(
         (open: boolean) => {
@@ -2958,6 +3070,342 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         </button>
     );
 
+    const runHeaderAction = useCallback(
+        (action: () => void) => {
+            closeHeaderActionsMenu();
+            action();
+        },
+        [closeHeaderActionsMenu],
+    );
+
+    const renderHeaderActionsFabRow = ({
+        label,
+        onClick,
+        title,
+        tone = 'slate',
+        index,
+        children,
+        disabled = false,
+    }: {
+        label: string;
+        onClick: () => void;
+        title?: string;
+        tone?: keyof typeof HEADER_ACTIONS_FAB_TONE;
+        index: number;
+        children: React.ReactNode;
+        disabled?: boolean;
+    }) => {
+        const scale = headerActionsDockScale(headerActionsDockHover, index);
+        const toneClasses = HEADER_ACTIONS_FAB_TONE[tone];
+        return (
+            <div
+                className="flex origin-right items-center justify-end gap-2.5 will-change-transform"
+                style={{
+                    transform: `scale(${scale})`,
+                    // Follow the pointer instantly; ease only when leaving the dock.
+                    transition:
+                        headerActionsDockHover == null ? HEADER_ACTIONS_DOCK_TRANSITION_RESET : 'none',
+                    zIndex: scale > 1.02 ? 5 : 1,
+                }}
+            >
+                <span className={`${HEADER_ACTIONS_FAB_LABEL} ${toneClasses.label}`}>{label}</span>
+                <button
+                    type="button"
+                    className={`${HEADER_ACTIONS_FAB_BTN} ${toneClasses.btn} disabled:pointer-events-none disabled:opacity-40`}
+                    title={title || label}
+                    aria-label={label}
+                    disabled={disabled}
+                    onClick={onClick}
+                >
+                    {children}
+                </button>
+            </div>
+        );
+    };
+
+    const renderHeaderActionsMenuItems = () => {
+        const items: Array<{
+            key: string;
+            label: string;
+            title?: string;
+            tone: keyof typeof HEADER_ACTIONS_FAB_TONE;
+            disabled?: boolean;
+            onClick: () => void;
+            children: React.ReactNode;
+        }> = [
+            {
+                key: 'more',
+                label: 'More',
+                title: 'More lead actions',
+                tone: 'violet',
+                onClick: () => runHeaderAction(() => setMoreActionsSheetOpen(true)),
+                children: <EllipsisHorizontalIcon className={HEADER_ACTION_ICON} aria-hidden />,
+            },
+        ];
+
+        if (displayPhone) {
+            items.push({
+                key: 'call',
+                label: 'Call',
+                title: 'Call',
+                tone: 'slate',
+                onClick: () => runHeaderAction(handleCallPrimaryPhone),
+                children: <PhoneArrowUpRightIcon className={HEADER_ACTION_ICON} aria-hidden />,
+            });
+        }
+
+        if (onOpenWhatsAppForContact && displayPhone) {
+            items.push({
+                key: 'whatsapp',
+                label: 'WhatsApp',
+                title: 'WhatsApp',
+                tone: 'emerald',
+                onClick: () => runHeaderAction(() => void handleHeaderWhatsAppClick()),
+                children: <FaWhatsapp className={HEADER_ACTION_ICON} aria-hidden />,
+            });
+        }
+
+        if (displayEmail) {
+            items.push({
+                key: 'email',
+                label: 'Email',
+                title: 'Email',
+                tone: 'sky',
+                onClick: () =>
+                    runHeaderAction(() => window.open(`mailto:${displayEmail}`, '_blank')),
+                children: <EnvelopeIcon className={HEADER_ACTION_ICON} aria-hidden />,
+            });
+        }
+
+        if (!hideHistoryAndTimeline) {
+            items.push(
+                {
+                    key: 'timeline',
+                    label: 'Timeline',
+                    title: 'View Timeline',
+                    tone: 'cyan',
+                    onClick: () => runHeaderAction(handleTimelineClick),
+                    children: <ClockIcon className={HEADER_ACTION_ICON} aria-hidden />,
+                },
+                {
+                    key: 'history',
+                    label: 'History',
+                    title: 'View History',
+                    tone: 'slate',
+                    onClick: () => runHeaderAction(handleHistoryClick),
+                    children: <ArchiveBoxIcon className={HEADER_ACTION_ICON} aria-hidden />,
+                },
+            );
+        }
+
+        items.push({
+            key: 'documents',
+            label: 'Documents',
+            title: headerDocsLeadNumber
+                ? 'Case documents on OneDrive'
+                : 'Lead number required',
+            tone: 'indigo',
+            disabled: !headerDocsLeadNumber,
+            onClick: () => runHeaderAction(openHeaderDocumentsModal),
+            children: (
+                <>
+                    <DocumentArrowUpIcon className={HEADER_ACTION_ICON} aria-hidden />
+                    {headerSupabaseDocumentsCount > 0 ? (
+                        <span
+                            className="absolute -right-1 -top-1 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-[10px] font-bold text-white"
+                            style={{ backgroundColor: '#3a3a3a' }}
+                        >
+                            {headerSupabaseDocumentsCount > 99
+                                ? '99+'
+                                : headerSupabaseDocumentsCount}
+                        </span>
+                    ) : null}
+                </>
+            ),
+        });
+
+        items.push({
+            key: 'tags',
+            label: 'Tags',
+            title: 'Tags',
+            tone: 'purple',
+            onClick: () => runHeaderAction(() => setTagsModalOpen(true)),
+            children: (
+                <>
+                    <TagIcon className={HEADER_ACTION_ICON} aria-hidden />
+                    {tagsCount > 0 ? (
+                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
+                            {tagsCount > 99 ? '99+' : tagsCount}
+                        </span>
+                    ) : null}
+                </>
+            ),
+        });
+
+        items.push({
+            key: 'flags',
+            label: 'Flags',
+            title: publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags',
+            tone: 'amber',
+            disabled: !publicUserId,
+            onClick: () => runHeaderAction(openFlaggedConversationsModal),
+            children: (
+                <>
+                    <FlagIcon className={HEADER_ACTION_ICON} aria-hidden />
+                    {totalFlagBadge > 0 ? (
+                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
+                            {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
+                        </span>
+                    ) : null}
+                </>
+            ),
+        });
+
+        if (duplicateContacts && duplicateContacts.length > 0) {
+            items.push({
+                key: 'duplicates',
+                label: 'Duplicates',
+                title:
+                    duplicateContacts.length === 1
+                        ? `Duplicate Contact: ${duplicateContacts[0].contactName}`
+                        : `${duplicateContacts.length} Duplicate Contacts`,
+                tone: 'orange',
+                onClick: () => runHeaderAction(handleDuplicatesClick),
+                children: (
+                    <>
+                        <DocumentDuplicateIcon className={HEADER_ACTION_ICON} aria-hidden />
+                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
+                            {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
+                        </span>
+                    </>
+                ),
+            });
+        }
+
+        return (
+            <div
+                className="flex flex-col items-end gap-4"
+                onMouseLeave={() => setHeaderActionsDockHover(null)}
+                onMouseMove={(event) => {
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    if (bounds.height <= 0 || items.length === 0) return;
+                    const ratio = (event.clientY - bounds.top) / bounds.height;
+                    const next = Math.max(0, Math.min(items.length - 1, ratio * items.length - 0.5));
+                    setHeaderActionsDockHover((prev) =>
+                        prev != null && Math.abs(prev - next) < 0.02 ? prev : next,
+                    );
+                }}
+            >
+                {items.map((item, index) => (
+                    <React.Fragment key={item.key}>
+                        {renderHeaderActionsFabRow({
+                            label: item.label,
+                            title: item.title,
+                            tone: item.tone,
+                            index,
+                            disabled: item.disabled,
+                            onClick: item.onClick,
+                            children: item.children,
+                        })}
+                    </React.Fragment>
+                ))}
+            </div>
+        );
+    };
+
+    const renderHeaderActionsMenuPanel = (placement: 'header-top' | 'attached' = 'header-top') => {
+        if (hideActionsDropdown) return null;
+        const panelClass =
+            placement === 'attached'
+                ? HEADER_ACTIONS_DROPDOWN_PANEL_ATTACHED
+                : connectToAppHeader
+                  ? HEADER_ACTIONS_DROPDOWN_PANEL_CONNECTED
+                  : HEADER_ACTIONS_DROPDOWN_PANEL;
+        return (
+            <div
+                data-header-actions-menu
+                role="menu"
+                aria-hidden={!headerActionsMenuOpen}
+                className={`${panelClass} transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                    headerActionsMenuOpen
+                        ? 'pointer-events-auto translate-y-0 scale-100 opacity-100'
+                        : 'pointer-events-none -translate-y-1.5 scale-[0.98] opacity-0'
+                }`}
+                {...(!headerActionsMenuOpen ? ({ inert: '' } as Record<string, string>) : {})}
+            >
+                <div
+                    aria-hidden
+                    className="pointer-events-none absolute -inset-x-6 -inset-y-5 -z-10 bg-white/70 backdrop-blur-2xl dark:bg-base-300/75"
+                    style={{
+                        borderRadius: '2.5rem',
+                        WebkitMaskImage:
+                            'radial-gradient(ellipse 82% 76% at 78% 50%, #000 42%, transparent 82%)',
+                        maskImage:
+                            'radial-gradient(ellipse 82% 76% at 78% 50%, #000 42%, transparent 82%)',
+                    }}
+                />
+                <div
+                    aria-hidden
+                    className="pointer-events-none absolute -inset-x-3 -inset-y-2 -z-10 bg-white/40 backdrop-blur-md dark:bg-base-200/45"
+                    style={{
+                        borderRadius: '2rem',
+                        WebkitMaskImage:
+                            'radial-gradient(ellipse 88% 82% at 80% 50%, #000 55%, transparent 88%)',
+                        maskImage:
+                            'radial-gradient(ellipse 88% 82% at 80% 50%, #000 55%, transparent 88%)',
+                    }}
+                />
+                {renderHeaderActionsMenuItems()}
+            </div>
+        );
+    };
+
+    const renderHeaderActionsMenuTrigger = (
+        variant: 'floating' | 'connected' = 'floating',
+        options?: { withPanel?: boolean },
+    ) => {
+        if (hideActionsDropdown) return null;
+        const withPanel = options?.withPanel !== false;
+        const triggerClass =
+            variant === 'connected' ? HEADER_ACTIONS_MENU_TRIGGER_CONNECTED : HEADER_ACTIONS_MENU_TRIGGER;
+        return (
+            <div className="relative z-40" ref={headerActionsMenuRef} data-header-actions-menu>
+                <button
+                    type="button"
+                    className={`${triggerClass} ${headerActionsMenuOpen ? 'ring-2 ring-violet-400/60 text-violet-800 dark:text-violet-200' : ''}`}
+                    aria-label={headerActionsMenuOpen ? 'Close actions' : 'Open actions'}
+                    aria-expanded={headerActionsMenuOpen}
+                    aria-haspopup="menu"
+                    onClick={toggleHeaderActionsMenu}
+                >
+                    {headerActionsMenuOpen ? (
+                        <XMarkIcon className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />
+                    ) : (
+                        <EllipsisVerticalIcon className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />
+                    )}
+                </button>
+
+                {withPanel ? renderHeaderActionsMenuPanel('attached') : null}
+            </div>
+        );
+    };
+
+    const renderMetaBadgesRow = (
+        variant: 'floating' | 'connected' = 'floating',
+        options?: { deferActionsPanel?: boolean },
+    ) => (
+        <div className="relative z-30 flex w-full min-w-0 items-start gap-2 sm:gap-2.5">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
+                {renderClientMetaBadges(variant)}
+            </div>
+            <div className="flex shrink-0 items-start pt-0.5">
+                {renderHeaderActionsMenuTrigger(variant, {
+                    withPanel: !options?.deferActionsPanel,
+                })}
+            </div>
+        </div>
+    );
+
     const renderTimelineHistoryButtons = (timelineBtnClass: string, historyBtnClass?: string) => {
         const historyClass = historyBtnClass ?? timelineBtnClass;
         return !hideHistoryAndTimeline ? (
@@ -3170,56 +3618,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return renderCompactHistoryIconRow();
         }
 
+        // Primary actions live in the meta-row circle menu (right rail + overlay).
         return (
             <div className={`flex flex-wrap items-center gap-2 ${wrapperClassName}`.trim()}>
-                {displayPhone ? (
-                    <button
-                        type="button"
-                        className={HEADER_ACTION_BAR_CALL_BTN}
-                        title="Call"
-                        aria-label="Call"
-                        onClick={handleCallPrimaryPhone}
-                    >
-                        <PhoneArrowUpRightIcon className={HEADER_ACTION_ICON} aria-hidden />
-                    </button>
-                ) : null}
-                {onOpenWhatsAppForContact && displayPhone ? (
-                    <button
-                        type="button"
-                        className={HEADER_ACTION_BAR_WHATSAPP_BTN}
-                        title="WhatsApp"
-                        aria-label="WhatsApp"
-                        onClick={() => void handleHeaderWhatsAppClick()}
-                    >
-                        <FaWhatsapp className={HEADER_ACTION_ICON} aria-hidden />
-                    </button>
-                ) : null}
-                {displayEmail ? (
-                    <button
-                        type="button"
-                        className={HEADER_ACTION_BAR_EMAIL_BTN}
-                        title="Email"
-                        aria-label="Email"
-                        onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                    >
-                        <EnvelopeIcon className={HEADER_ACTION_ICON} aria-hidden />
-                    </button>
-                ) : null}
-
-                {renderTimelineHistoryButtons(
-                    HEADER_ACTION_BAR_TIMELINE_BTN,
-                    HEADER_ACTION_BAR_HISTORY_BTN,
-                )}
-
-                {renderHeaderDocsButton()}
-                {renderTagsFlagsButtons(
-                    HEADER_ACTION_BAR_TAGS_BTN,
-                    HEADER_ACTION_BAR_FLAGS_BTN,
-                    HEADER_ACTION_ICON,
-                    HEADER_ACTION_BAR_DUPLICATES_BTN,
-                )}
-
-                {renderMoreActionsTrigger(HEADER_ACTION_BAR_MORE_BADGE)}
+                {renderHeaderActionsMenuTrigger('floating')}
             </div>
         );
     };
@@ -3420,13 +3822,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         </p>
                                     </div>
                                 </div>
-                                {renderSegmentedHeaderActions('mt-1')}
                             </div>
                         </div>
 
-                        <div className="flex w-full flex-wrap items-center gap-2">
-                            {renderClientMetaBadges()}
-                        </div>
+                        {renderMetaBadgesRow()}
 
                         {!hideTotalValueBadge && (
                             <div className="w-full border-t border-base-200/70 pb-8 pt-4 dark:border-base-300/40">
@@ -3646,8 +4045,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <div
                         className={
                             connectToAppHeader
-                                ? CLIENT_HEADER_TOP_BAND
-                                : `${CLIENT_HEADER_CARD} w-full`
+                                ? `${CLIENT_HEADER_TOP_BAND} relative`
+                                : `${CLIENT_HEADER_CARD} relative w-full`
                         }
                     >
                         {connectToAppHeader ? (
@@ -4328,17 +4727,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
                         {connectToAppHeader ? (
                             <div className="client-header-meta-band">
-                                <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
-                                    {renderClientMetaBadges('connected')}
-                                </div>
+                                {renderMetaBadgesRow('connected', { deferActionsPanel: true })}
                             </div>
                         ) : null}
+                        {renderHeaderActionsMenuPanel('header-top')}
                     </div>
                     </div>
 
                     {!connectToAppHeader ? (
-                    <div className="mt-2.5 flex w-full min-w-0 flex-wrap items-center gap-2">
-                        {renderClientMetaBadges()}
+                    <div className="mt-2.5 flex w-full min-w-0">
+                        {renderMetaBadgesRow('floating', { deferActionsPanel: true })}
                     </div>
                     ) : null}
 
@@ -4350,9 +4748,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         }
                     >
                         <div className="flex w-full flex-wrap items-center gap-2">
-                            <div className="shrink-0">
-                                {renderSegmentedHeaderActions()}
-                            </div>
                             <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
                                     {(() => {
                                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');

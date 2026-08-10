@@ -16,7 +16,7 @@ export function isExpenseNoVatPayment(order: number | string | null | undefined)
   return false;
 }
 
-/** Matches FinancesTab — VAT only on Israeli shekel (₪ / ILS / NIS or currency_id 1). */
+/** Matches FinancesTab — VAT only on Israeli shekel (₪ / ILS / NIS / corrupted "?" or currency_id 1). */
 export function isIsraeliShekelCurrency(
   currency: string | null | undefined,
   currencyId?: number | string | null,
@@ -24,7 +24,7 @@ export function isIsraeliShekelCurrency(
   if (currencyId != null && currencyId !== '' && Number(currencyId) === 1) return true;
   if (!currency) return false;
   const c = String(currency).trim();
-  return c === '₪' || c === 'ILS' || c === 'NIS';
+  return c === '₪' || c === 'ILS' || c === 'NIS' || c === '?';
 }
 
 export type ProformaVatInput = {

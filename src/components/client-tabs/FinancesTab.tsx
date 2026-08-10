@@ -38,7 +38,7 @@ import {
   type PaymentPlanSummaryFilter,
 } from './paymentPlanUi';
 
-// Portal dropdown ù avoids overflow:hidden / table clipping on DaisyUI dropdowns
+// Portal dropdown ? avoids overflow:hidden / table clipping on DaisyUI dropdowns
 const AnchorDropdownPortal: React.FC<{
   anchorId: string | number | null;
   buttonRefs: React.MutableRefObject<Record<string | number, HTMLButtonElement | null>>;
@@ -59,7 +59,7 @@ const AnchorDropdownPortal: React.FC<{
         position: 'fixed',
         top: rect.bottom + 4,
         right: window.innerWidth - rect.right,
-        zIndex: 99999,
+        zIndex: 40,
         visibility: 'visible',
       });
     };
@@ -205,7 +205,7 @@ type FinancesTabCachedState = {
   nisDisplays?: FinancesTabNisDisplays;
 };
 
-/** Stable signature of the payment rows that affect NIS totals ù used to skip needless recomputes. */
+/** Stable signature of the payment rows that affect NIS totals ? used to skip needless recomputes. */
 function financesNisSignature(payments?: PaymentPlan[]): string {
   return JSON.stringify(
     (payments ?? []).map((p) => [p.id, p.client, p.value, p.valueVat, p.paid, p.currency ?? '']),
@@ -298,7 +298,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     primary: string;
     secondary?: string;
     loading: boolean;
-  }>({ primary: 'ù', loading: true });
+  }>({ primary: '?', loading: true });
   const [expenseNoVatNisDisplay, setExpenseNoVatNisDisplay] = useState<{
     primary?: string;
     loading: boolean;
@@ -306,13 +306,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [outstandingNisDisplay, setOutstandingNisDisplay] = useState<{
     primary: string;
     loading: boolean;
-  }>({ primary: 'ù', loading: true });
+  }>({ primary: '?', loading: true });
   const [contactTotalNisByName, setContactTotalNisByName] = useState<
     Record<string, { primary: string; loading: boolean }>
   >({});
   // Signature of the payments the NIS displays were last computed for. Lets us skip recomputing
   // (and the loading flash) when financePlan changes reference but the underlying values are the
-  // same ù e.g. a silent background sync, a focus refetch, or restoring from cache.
+  // same ? e.g. a silent background sync, a focus refetch, or restoring from cache.
   const lastNisSigRef = useRef<string | null>(null);
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
@@ -391,7 +391,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Live updates: when this lead's payment plans / rows / proformas change in the database
   // (another user, an automation, the public payment link, etc.) refresh the finances data in
-  // place. Cached finances render instantly; only the changed rows update ù no full page reload.
+  // place. Cached finances render instantly; only the changed rows update ? no full page reload.
   useRealtimeRefresh({
     channelName: `finances-tab-${client?.id ?? 'none'}`,
     enabled: !!client?.id,
@@ -454,9 +454,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     if (!financePlan?.payments?.length) {
       lastNisSigRef.current = signature;
-      setContractTotalNisDisplay({ primary: 'ù', loading: false });
+      setContractTotalNisDisplay({ primary: '?', loading: false });
       setExpenseNoVatNisDisplay({ loading: false });
-      setOutstandingNisDisplay({ primary: 'ù', loading: false });
+      setOutstandingNisDisplay({ primary: '?', loading: false });
       setContactTotalNisByName({});
       return;
     }
@@ -476,7 +476,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setContactTotalNisByName(
       contactNames.reduce(
         (acc, name) => {
-          acc[name] = { primary: 'ù', loading: true };
+          acc[name] = { primary: '?', loading: true };
           return acc;
         },
         {} as Record<string, { primary: string; loading: boolean }>,
@@ -521,9 +521,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } catch (err) {
         console.error('[FinancesTab] NIS summary totals:', err);
         if (!cancelled) {
-          setContractTotalNisDisplay({ primary: 'ù', loading: false });
+          setContractTotalNisDisplay({ primary: '?', loading: false });
           setExpenseNoVatNisDisplay({ loading: false });
-          setOutstandingNisDisplay({ primary: 'ù', loading: false });
+          setOutstandingNisDisplay({ primary: '?', loading: false });
           setContactTotalNisByName({});
         }
       }
@@ -569,8 +569,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const normalized = String(code).trim().toUpperCase();
     if (normalized === '?' || normalized === 'NIS' || normalized === 'ILS') return '?';
     if (normalized === '$' || normalized === 'USD') return '$';
-    if (normalized === 'ù' || normalized === 'EUR') return 'ù';
-    if (normalized === 'ù' || normalized === 'GBP') return 'ù';
+    if (normalized === '?' || normalized === 'EUR') return '?';
+    if (normalized === '?' || normalized === 'GBP') return '?';
     return '?';
   };
 
@@ -629,7 +629,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Add state for stages dropdown and drawer
   const [showStagesDrawer, setShowStagesDrawer] = useState(false);
-  /** Payment history modal ù shows all paid payments across every contact for this lead. */
+  /** Payment history modal ? shows all paid payments across every contact for this lead. */
   const [showPaymentHistoryModal, setShowPaymentHistoryModal] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
     totalAmount: '',
@@ -655,6 +655,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Add state for deleted payments view
   const [showDeletedPayments, setShowDeletedPayments] = useState(false);
   const [deletedPayments, setDeletedPayments] = useState<any[]>([]);
+  const [financesMoreOpen, setFinancesMoreOpen] = useState(false);
+  const financesMoreRef = useRef<HTMLDivElement | null>(null);
 
   // Add state for legacy proformas
   const [legacyProformas, setLegacyProformas] = useState<any[]>([]);
@@ -998,7 +1000,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         amount: payment.value,
         vatAmount: payment.valueVat,
         totalAmount: payment.value + payment.valueVat,
-        currency: payment.currency || '?',
+        currency: payment.currency === '?' || !payment.currency ? '?' : payment.currency,
         description: `${payment.order} - ${client?.name} (#${client?.lead_number})`,
         expiresAt: expiresAt.toISOString(),
       });
@@ -1014,7 +1016,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         );
       } else if (code === '22003') {
         toast.error(
-          'Payment row id is too large for payment_links.payment_plan_id ù run the BIGINT line in sql/2026-05-20_payment_links_legacy.sql.',
+          'Payment row id is too large for payment_links.payment_plan_id ? run the BIGINT line in sql/2026-05-20_payment_links_legacy.sql.',
         );
       } else if (code === '42501') {
         toast.error(
@@ -1644,6 +1646,44 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   }, [openDropdownPaymentId]);
 
+  useEffect(() => {
+    if (!financePlan) return;
+    void fetchDeletedPayments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id, financePlan?.payments?.length]);
+
+  useEffect(() => {
+    if (!financesMoreOpen) return;
+    const handle = (e: MouseEvent) => {
+      if (!financesMoreRef.current?.contains(e.target as Node)) {
+        setFinancesMoreOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [financesMoreOpen]);
+
+  useEffect(() => {
+    if (
+      showStagesDrawer ||
+      showProformaDrawer ||
+      showPaymentHistoryModal ||
+      showPaidDateModal ||
+      invoiceAutomationModalOpen ||
+      sendInvoiceModalOpen
+    ) {
+      setOpenDropdownPaymentId(null);
+      setFinancesMoreOpen(false);
+    }
+  }, [
+    showStagesDrawer,
+    showProformaDrawer,
+    showPaymentHistoryModal,
+    showPaidDateModal,
+    invoiceAutomationModalOpen,
+    sendInvoiceModalOpen,
+  ]);
+
   // Define fetchContacts at component level so it can be called from multiple places
   // Returns the contacts array so it can be used immediately without waiting for state update
   const fetchContacts = async (): Promise<any[]> => {
@@ -2147,9 +2187,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 // If we have currency_id but no joined data, use a simple mapping
                 switch (plan.currency_id) {
                   case 1: currency = '?'; break; // NIS
-                  case 2: currency = 'ù'; break; // EUR
+                  case 2: currency = '?'; break; // EUR
                   case 3: currency = '$'; break; // USD
-                  case 4: currency = 'ù'; break; // GBP
+                  case 4: currency = '?'; break; // GBP
                   default: currency = '?'; break;
                 }
               }
@@ -2573,9 +2613,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Set fallback currencies
           setAvailableCurrencies([
             { id: 1, name: '?', iso_code: 'ILS' },
-            { id: 2, name: 'ù', iso_code: 'EUR' },
+            { id: 2, name: '?', iso_code: 'EUR' },
             { id: 3, name: '$', iso_code: 'USD' },
-            { id: 4, name: 'ù', iso_code: 'GBP' },
+            { id: 4, name: '?', iso_code: 'GBP' },
           ]);
         } else if (data && data.length > 0) {
           setAvailableCurrencies(data);
@@ -2583,9 +2623,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Set fallback currencies if no data
           setAvailableCurrencies([
             { id: 1, name: '?', iso_code: 'ILS' },
-            { id: 2, name: 'ù', iso_code: 'EUR' },
+            { id: 2, name: '?', iso_code: 'EUR' },
             { id: 3, name: '$', iso_code: 'USD' },
-            { id: 4, name: 'ù', iso_code: 'GBP' },
+            { id: 4, name: '?', iso_code: 'GBP' },
           ]);
         }
       } catch (error) {
@@ -2593,9 +2633,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Set fallback currencies
         setAvailableCurrencies([
           { id: 1, name: '?', iso_code: 'ILS' },
-          { id: 2, name: 'ù', iso_code: 'EUR' },
+          { id: 2, name: '?', iso_code: 'EUR' },
           { id: 3, name: '$', iso_code: 'USD' },
-          { id: 4, name: 'ù', iso_code: 'GBP' },
+          { id: 4, name: '?', iso_code: 'GBP' },
         ]);
       }
     };
@@ -2768,9 +2808,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             } else if (plan.currency_id) {
               switch (plan.currency_id) {
                 case 1: currency = '?'; break;
-                case 2: currency = 'ù'; break;
+                case 2: currency = '?'; break;
                 case 3: currency = '$'; break;
-                case 4: currency = 'ù'; break;
+                case 4: currency = '?'; break;
                 default: currency = '?'; break;
               }
             }
@@ -3892,9 +3932,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const getCurrencyName = (currencyId: number): string => {
             switch (currencyId) {
               case 1: return '?';
-              case 2: return 'ù';
+              case 2: return '?';
               case 3: return '$';
-              case 4: return 'ù';
+              case 4: return '?';
               default: return '?';
             }
           };
@@ -4155,7 +4195,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const hasClientPaidViaLink = contactPayments.some((p) => isPaidViaPaymentLink(p));
     if (hasClientPaidViaLink) {
       toast.error(
-        'Cannot delete this payment plan ù the client has completed payment via a payment link.',
+        'Cannot delete this payment plan ? the client has completed payment via a payment link.',
       );
       return;
     }
@@ -5380,10 +5420,135 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     </div>
   );
 
+  const financesMoreMenu = financePlan ? (
+    <div className="relative" ref={financesMoreRef}>
+      <button
+        type="button"
+        className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+        aria-expanded={financesMoreOpen}
+        aria-haspopup="menu"
+        onClick={() => setFinancesMoreOpen((open) => !open)}
+      >
+        <PlusIcon className="h-4 w-4 shrink-0" />
+        <span>More</span>
+        <ChevronDownIcon
+          className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${
+            financesMoreOpen ? 'rotate-180' : ''
+          }`}
+        />
+      </button>
+      {financesMoreOpen ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-30 mt-2 w-56 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1.5 shadow-xl"
+        >
+          {(() => {
+            const planPaymentsTotal = financePlan.payments.reduce(
+              (sum, p) => sum + Number(p.value),
+              0,
+            );
+            if (client?.balance === planPaymentsTotal) return null;
+            return (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => {
+                  setFinancesMoreOpen(false);
+                  void updateClientBalance(planPaymentsTotal);
+                }}
+              >
+                <ArrowPathIcon className="h-4 w-4 shrink-0 text-slate-500" />
+                Sync balance
+              </button>
+            );
+          })()}
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50"
+            onClick={() => {
+              setFinancesMoreOpen(false);
+              setViewMode(viewMode === 'table' ? 'boxes' : 'table');
+            }}
+          >
+            {viewMode === 'table' ? (
+              <Squares2X2Icon className="h-4 w-4 shrink-0 text-slate-500" />
+            ) : (
+              <Bars3Icon className="h-4 w-4 shrink-0 text-slate-500" />
+            )}
+            {viewMode === 'table' ? 'Box view' : 'Table view'}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50"
+            onClick={() => {
+              setFinancesMoreOpen(false);
+              handleOpenStagesDrawer();
+            }}
+          >
+            <PlusIcon className="h-4 w-4 shrink-0 text-slate-500" />
+            New payment plan
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50"
+            onClick={() => {
+              setFinancesMoreOpen(false);
+              setShowPaymentHistoryModal(true);
+            }}
+          >
+            <ClockIcon className="h-4 w-4 shrink-0 text-slate-500" />
+            Payment history
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium hover:bg-slate-50 ${
+              sendInvoiceSelectMode ? 'bg-primary/5 text-primary' : 'text-slate-700'
+            }`}
+            onClick={() => {
+              setFinancesMoreOpen(false);
+              if (sendInvoiceSelectMode) {
+                exitSendInvoiceSelectMode();
+              } else {
+                enterSendInvoiceSelectMode();
+              }
+            }}
+          >
+            <PaperAirplaneIcon className="h-4 w-4 shrink-0 text-slate-500" />
+            Send invoice
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium hover:bg-slate-50 ${
+              invoiceAutomationSelectMode ? 'bg-primary/5 text-primary' : 'text-slate-700'
+            }`}
+            onClick={() => {
+              setFinancesMoreOpen(false);
+              if (invoiceAutomationSelectMode) {
+                exitInvoiceAutomationSelectMode();
+              } else {
+                enterInvoiceAutomationSelectMode();
+              }
+            }}
+          >
+            <ClockIcon className="h-4 w-4 shrink-0 text-slate-500" />
+            Auto invoice
+          </button>
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
   const financesHeaderExtras = (
     <div className="flex flex-wrap items-center gap-2">
       {financesSubTabSwitcher}
       {clientOfficeToggle}
+      {financesMoreMenu}
     </div>
   );
 
@@ -5540,9 +5705,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           {availableCurrencies.length === 0 ? (
                             <>
                               <option value="?">? (ILS)</option>
-                              <option value="ù">ù (EUR)</option>
+                              <option value="?">? (EUR)</option>
                               <option value="$">$ (USD)</option>
-                              <option value="ù">ù (GBP)</option>
+                              <option value="?">? (GBP)</option>
                             </>
                           ) : (
                             availableCurrencies.map((curr) => (
@@ -5920,7 +6085,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return acc;
   }, {});
 
-  // Unpaid base + VAT per currency (excludes paid rows ù same rules as ClientHeader Outstanding)
+  // Unpaid base + VAT per currency (excludes paid rows ? same rules as ClientHeader Outstanding)
   const unpaidByCurrency = sumUnpaidBaseAndVatByCurrencyFromPayments(
     financePlan.payments.map((p) => ({
       value: Number(p.value),
@@ -6218,7 +6383,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
       toast.success(
         count === 1
-          ? 'Invoice automation enabled ù will send on due date'
+          ? 'Invoice automation enabled ? will send on due date'
           : `Invoice automation enabled for ${count} payments`,
       );
       const automationAt = new Date().toISOString();
@@ -6294,7 +6459,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const sent = Boolean(payment.invoice_send_automation_sent_at);
     const title = sent
       ? `Invoice sent automatically on ${formatDateDDMMYYYY(payment.invoice_send_automation_sent_at)}`
-      : `Scheduled invoice send on ${formatDateDDMMYYYY(payment.dueDate)} (${payment.invoice_send_automation_language === 'he' ? 'Hebrew' : 'English'}) ù click to remove`;
+      : `Scheduled invoice send on ${formatDateDDMMYYYY(payment.dueDate)} (${payment.invoice_send_automation_language === 'he' ? 'Hebrew' : 'English'}) ? click to remove`;
     return (
       <button
         type="button"
@@ -6379,7 +6544,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (result.confirmation_email_sent) {
         parts.push('confirmation email sent');
       }
-      toast.success(parts.length ? parts.join(' ù ') : 'Retry completed');
+      toast.success(parts.length ? parts.join(' ? ') : 'Retry completed');
     } catch (err) {
       console.error('handleRetryTaxReceipt:', err);
       toast.error(err instanceof Error ? err.message : 'Tax receipt retry failed');
@@ -6440,7 +6605,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     if (!paidViaLink && !info?.payper_invoice_status) {
-      return <span className="text-slate-400">ù</span>;
+      return <span className="text-slate-400">?</span>;
     }
 
     const status = info?.payper_invoice_status;
@@ -6483,7 +6648,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       );
     }
 
-    return <span className="text-slate-400">ù</span>;
+    return <span className="text-slate-400">?</span>;
   };
 
   const renderPaymentPickCell = (payment: PaymentPlan) => {
@@ -6519,7 +6684,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     ).length ?? 0;
 
   const renderPaymentRowActions = (p: PaymentPlan, isPaid: boolean) => {
-    if (!p.id) return <span className="text-slate-400">ù</span>;
+    if (!p.id) return <span className="text-slate-400">?</span>;
 
     const renderAdminMenuItems = () => {
       if (!showPaymentAdminMenu(p, isPaid)) return null;
@@ -6668,27 +6833,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           </button>
         )}
         {!isPaid && p.ready_to_pay && (
-          <div
-            className="tooltip tooltip-top z-[9999]"
-            data-tip={
-              p.ready_to_pay_by_display_name
-                ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert`
-                : 'Ready to pay - Click to revert'
-            }
-          >
             <button
               type="button"
               className={`${paymentRowIconBtn} border-red-300 bg-red-100 text-red-700 hover:bg-red-200`}
               title={
                 p.ready_to_pay_by_display_name
                   ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert`
-                  : 'Revert Ready to Pay'
+                  : 'Ready to pay - Click to revert'
               }
               onClick={() => handleRevertReadyToPay(p)}
             >
               <XMarkIcon className="h-5 w-5" />
             </button>
-          </div>
         )}
         {!isPaid && (isSuperuser || isCollection) && (
           <button
@@ -6905,93 +7061,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         {/* Payments Plan Section */}
         <div className="mb-8 space-y-6">
-          <div className="flex flex-wrap items-center justify-end gap-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  {financePlan && client?.balance !== total && (
-                    <button
-                      type="button"
-                      className="btn btn-sm rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
-                      onClick={() => updateClientBalance(total)}
-                      title="Sync client balance with finance plan total"
-                    >
-                      <ArrowPathIcon className="h-4 w-4" />
-                      <span className="ml-1 hidden md:inline">Sync balance</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="btn btn-sm rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
-                    onClick={() => setViewMode(viewMode === 'table' ? 'boxes' : 'table')}
-                    title={viewMode === 'table' ? 'Switch to Box View' : 'Switch to Table View'}
-                  >
-                    {viewMode === 'table' ? (
-                      <Squares2X2Icon className="h-4 w-4" />
-                    ) : (
-                      <Bars3Icon className="h-4 w-4" />
-                    )}
-                    <span className="ml-1 hidden md:inline">{viewMode === 'table' ? 'Box view' : 'Table view'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm rounded-xl border border-primary bg-white text-primary hover:bg-primary/5"
-                    onClick={() => {
-                      handleOpenStagesDrawer();
-                    }}
-                    title="Create a new payment plan"
-                  >
-                    <PlusIcon className="h-4 w-4" />
-                    <span className="ml-1 hidden md:inline">New Payment Plan</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
-                    onClick={() => setShowPaymentHistoryModal(true)}
-                    title="View payment history for all contacts of this lead"
-                  >
-                    <ClockIcon className="h-4 w-4" />
-                    <span className="ml-1 hidden md:inline">Payment History</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn btn-sm rounded-xl normal-case ${
-                      sendInvoiceSelectMode
-                        ? 'btn-primary'
-                        : 'border border-slate-200 bg-white hover:bg-slate-50'
-                    }`}
-                    onClick={() => {
-                      if (sendInvoiceSelectMode) {
-                        exitSendInvoiceSelectMode();
-                      } else {
-                        enterSendInvoiceSelectMode();
-                      }
-                    }}
-                    title="Send invoice by email and WhatsApp"
-                  >
-                    <PaperAirplaneIcon className="h-4 w-4" />
-                    <span className="ml-1 hidden md:inline">Send invoice</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn btn-sm rounded-xl normal-case ${
-                      invoiceAutomationSelectMode
-                        ? 'btn-primary'
-                        : 'border border-slate-200 bg-white hover:bg-slate-50'
-                    }`}
-                    onClick={() => {
-                      if (invoiceAutomationSelectMode) {
-                        exitInvoiceAutomationSelectMode();
-                      } else {
-                        enterInvoiceAutomationSelectMode();
-                      }
-                    }}
-                    title="Schedule automatic invoice send on due date"
-                  >
-                    <ClockIcon className="h-4 w-4" />
-                    <span className="ml-1 hidden md:inline">Auto invoice</span>
-                  </button>
-                </div>
-          </div>
-
           <PaymentPlanSummaryCards
             summary={planSummary}
             getCurrencySymbol={getCurrencySymbol}
@@ -7128,7 +7197,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         )}
                       </div>
 
-                      {/* Table or Box view for this contact ù same white card */}
+                      {/* Table or Box view for this contact ? same white card */}
                       {!collapsedContacts[contactName] && (
                         <div className="px-4 pb-4 pt-2 md:px-6 md:pb-5">
                           {viewMode === 'table' ? (
@@ -7181,7 +7250,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           {isPaid ? (
                                             <span className="text-sm font-semibold text-slate-900">
-                                              {formatDateDDMMYYYY(p.dueDate) || 'ù'}
+                                              {formatDateDDMMYYYY(p.dueDate) || '?'}
                                             </span>
                                           ) : (
                                             <DueDateBadge
@@ -7354,7 +7423,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           {getCurrencySymbol(newPaymentData.currency || '?')}
                                           {(Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">ù</td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">?</td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           <select
                                             className="select select-bordered select-sm w-full max-w-[180px]"
@@ -7377,8 +7446,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <option value="Expense">Expense</option>
                                           </select>
                                         </td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">ù</td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">ù</td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">?</td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">?</td>
                                         <td className="px-4 py-4 align-middle">
                                           <input className="input input-bordered input-sm mb-2 w-full max-w-[180px]" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
                                           <div className="flex flex-wrap items-center gap-2">
@@ -7411,9 +7480,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               {availableCurrencies.length === 0 ? (
                                                 <>
                                                   <option value="?">?</option>
-                                                  <option value="ù">ù</option>
+                                                  <option value="?">?</option>
                                                   <option value="$">$</option>
-                                                  <option value="ù">ù</option>
+                                                  <option value="?">?</option>
                                                 </>
                                               ) : (
                                                 availableCurrencies.map((curr) => (
@@ -7542,9 +7611,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               {availableCurrencies.length === 0 ? (
                                                 <>
                                                   <option value="?">? (ILS)</option>
-                                                  <option value="ù">ù (EUR)</option>
+                                                  <option value="?">? (EUR)</option>
                                                   <option value="$">$ (USD)</option>
-                                                  <option value="ù">ù (GBP)</option>
+                                                  <option value="?">? (GBP)</option>
                                                 </>
                                               ) : (
                                                 availableCurrencies.map((curr) => (
@@ -7759,7 +7828,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
                                             {isPaid ? (
                                             <span className="text-sm font-semibold text-slate-900">
-                                              {formatDateDDMMYYYY(p.dueDate) || 'ù'}
+                                              {formatDateDDMMYYYY(p.dueDate) || '?'}
                                             </span>
                                           ) : (
                                             <DueDateBadge
@@ -7947,27 +8016,31 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               })()}
 
           {/* Deleted Payments Section */}
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <div className="flex cursor-pointer items-center gap-3 p-4 transition-all duration-200 hover:bg-slate-50" onClick={() => {
-                  setShowDeletedPayments(!showDeletedPayments);
-                  if (!showDeletedPayments) {
-                    fetchDeletedPayments();
-                  }
-                }}>
-                  <div className="flex items-center gap-2">
-                    <TrashIcon className="w-5 h-5 text-orange-500" />
-                    <h4 className="text-lg font-bold text-gray-800">Deleted Payments</h4>
-                  </div>
-                  <div className="flex items-center gap-2 ml-auto">
-                    <span className="text-sm text-gray-500">{deletedPayments.length} deleted payment{deletedPayments.length !== 1 ? 's' : ''}</span>
-                    <svg className={`w-5 h-5 text-gray-400 transition-transform duration-200 ${showDeletedPayments ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </div>
-                </div>
+          <div className="pt-2">
+                <button
+                  type="button"
+                  className="inline-flex max-w-full flex-wrap items-center gap-2 text-left"
+                  onClick={() => {
+                    setShowDeletedPayments(!showDeletedPayments);
+                    if (!showDeletedPayments) {
+                      void fetchDeletedPayments();
+                    }
+                  }}
+                >
+                  <TrashIcon className="h-5 w-5 shrink-0 text-orange-500" />
+                  <h4 className="text-lg font-bold text-gray-800">Deleted Payments</h4>
+                  <span className="text-sm font-medium text-gray-500">
+                    {deletedPayments.length} deleted payment{deletedPayments.length !== 1 ? 's' : ''}
+                  </span>
+                  <ChevronDownIcon
+                    className={`h-5 w-5 shrink-0 text-gray-400 transition-transform duration-200 ${
+                      showDeletedPayments ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
 
                 {showDeletedPayments && (
-                  <div className="border-t border-slate-200 p-6">
+                  <div className="mt-4">
 
                     {deletedPayments.length > 0 ? (
                       <div className="bg-white rounded-xl overflow-x-auto">
@@ -8505,9 +8578,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         {availableCurrencies.length === 0 ? (
                           <>
                             <option value="?">? (ILS)</option>
-                            <option value="ù">ù (EUR)</option>
+                            <option value="?">? (EUR)</option>
                             <option value="$">$ (USD)</option>
-                            <option value="ù">ù (GBP)</option>
+                            <option value="?">? (GBP)</option>
                           </>
                         ) : (
                           availableCurrencies.map((curr) => (
@@ -9036,7 +9109,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         paymentId={selectedPaymentForNotes?.id}
       />
 
-      {/* Payment History Modal ù all paid payments across every contact for this lead */}
+      {/* Payment History Modal ? all paid payments across every contact for this lead */}
       {sendInvoiceSelectMode && selectedSendInvoicePayments.length > 0 && ReactDOM.createPortal(
         <div className="fixed bottom-6 left-1/2 z-[35] flex w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3 shadow-xl lg:bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))]">
           <span className="text-sm font-medium text-slate-700">
@@ -9195,9 +9268,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             const total = baseAmt + vatAmt;
                             return (
                               <tr key={String(p.id)} className="hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-700">{p.order || 'ù'}</td>
-                                <td className="px-3 py-2 font-medium text-slate-900">{p.client || 'ù'}</td>
-                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || 'ù'}</td>
+                                <td className="px-3 py-2 text-slate-700">{p.order || '?'}</td>
+                                <td className="px-3 py-2 font-medium text-slate-900">{p.client || '?'}</td>
+                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || '?'}</td>
                                 <td className="px-3 py-2">
                                   <PaidPaymentDateBadge date={p.paid_at} />
                                 </td>
@@ -9205,14 +9278,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   {sym}{baseAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                 </td>
                                 <td className="px-3 py-2 text-right tabular-nums text-slate-600">
-                                  {vatAmt > 0 ? `${sym}${vatAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'ù'}
+                                  {vatAmt > 0 ? `${sym}${vatAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '?'}
                                 </td>
                                 <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900">
                                   {sym}{total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                 </td>
-                                <td className="px-3 py-2 text-slate-700">{p.paid_by || 'ù'}</td>
+                                <td className="px-3 py-2 text-slate-700">{p.paid_by || '?'}</td>
                                 <td className="max-w-[16rem] truncate px-3 py-2 text-slate-600" title={p.notes || ''}>
-                                  {p.notes || 'ù'}
+                                  {p.notes || '?'}
                                 </td>
                               </tr>
                             );

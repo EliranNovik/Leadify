@@ -1,9 +1,10 @@
 /**
  * Resolve the ILS amount to charge via Pelecard (matches frontend BOI "Total (NIS)" display).
+ * Always charges payment_links.total_amount (never amount + vat again).
  */
 const boiExchangeRatesService = require('./boiExchangeRatesService');
 
-const ILS_ALIASES = new Set(['ILS', 'NIS']);
+const ILS_ALIASES = new Set(['ILS', 'NIS', '?']);
 const CURRENCY_ID_TO_ISO = {
   1: 'ILS',
   2: 'EUR',
@@ -15,6 +16,7 @@ const SYMBOL_TO_ISO = {
   '€': 'EUR',
   '£': 'GBP',
   '₪': 'ILS',
+  '?': 'ILS',
 };
 
 function normalizeIso(raw) {
@@ -52,7 +54,7 @@ function resolvePaymentIsoCode(payment) {
   const legacyCurrencyName = legacyPlan.accounting_currencies?.name;
   const text = String(legacyCurrencyName || payment.currency || plan.currency || '').trim();
   if (SYMBOL_TO_ISO[text]) return SYMBOL_TO_ISO[text];
-  if (ILS_ALIASES.has(text.toUpperCase()) || text === '₪') return 'ILS';
+  if (ILS_ALIASES.has(text.toUpperCase()) || text === '₪' || text === '?') return 'ILS';
   if (/^[A-Z]{3}$/.test(text.toUpperCase())) return text.toUpperCase();
 
   return 'ILS';

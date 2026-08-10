@@ -1080,6 +1080,183 @@ function normalizeOtherWorkCap(maxOtherWorkPercent: number | undefined): number 
 }
 
 /**
+ * Freely set one lead's percent (0–100) without moving other leads or other work.
+ * Caps / 100% balancing happen on save via {@link normalizeAllocationForSave}.
+ */
+export function setLeadAllocationPercentDraft(
+  rows: LeadAllocationRowState[],
+  otherWorkPercent: number,
+  leadKey: string,
+  nextValue: number,
+): LeadAllocationBucketsState {
+  const value = Math.round(clampAllocationPercent(nextValue) * 100) / 100;
+  return {
+    otherWorkPercent: Number(otherWorkPercent) || 0,
+    rows: rows.map((row) => {
+      if (row.key !== leadKey) return row;
+      if (!row.included) return row;
+      return { ...row, percent: value, pinned: true };
+    }),
+  };
+}
+
+/**
+ * Set other-work percent without moving lead rows.
+ * Always clamped to the 10%/30% other-work cap (and 0–100).
+ */
+export function setOtherWorkAllocationPercentDraft(
+  rows: LeadAllocationRowState[],
+  nextValue: number,
+  maxOtherWorkPercent: number = 100,
+): LeadAllocationBucketsState {
+  const cap = normalizeOtherWorkCap(maxOtherWorkPercent);
+  const value = Math.round(clampAllocationPercent(nextValue) * 100) / 100;
+  return {
+    otherWorkPercent: Math.min(value, cap),
+    rows,
+  };
+}
+
+/**
+ * Include / exclude a lead. On include (or when selection changes), rebalance so
+ * the day starts at 100%; after that the user can slide freely.
+ */
+export function toggleLeadAllocationIncludedDraft(
+  rows: LeadAllocationRowState[],
+  _otherWorkPercent: number,
+  leadKey: string,
+  included: boolean,
+  maxOtherWorkPercent: number = 100,
+): LeadAllocationBucketsState {
+  let nextRows = rows.map((row) =>
+    row.key === leadKey
+      ? {
+          ...row,
+          included,
+          percent: included ? row.percent : 0,
+          pinned: included ? row.pinned : false,
+        }
+      : row,
+  );
+
+  if (!included) {
+    return syncAllocationTo100(nextRows, maxOtherWorkPercent);
+  }
+
+  // Newly chosen lead joins as unpinned so remaining % is shared to reach 100%.
+  nextRows = nextRows.map((row) =>
+    row.key === leadKey ? { ...row, pinned: false, percent: 0 } : row,
+  );
+  return rebalanceUnpinnedAndOtherWork(nextRows, maxOtherWorkPercent);
+}
+
+/**
+ * Select / deselect every lead, then balance to 100% so chosen rows start correct.
+ */
+export function setAllLeadsIncludedDraft(
+  rows: LeadAllocationRowState[],
+  _otherWorkPercent: number,
+  included: boolean,
+  maxOtherWorkPercent: number = 100,
+): LeadAllocationBucketsState {
+  if (!included) {
+    return syncAllocationTo100(
+      rows.map((row) => ({ ...row, included: false, percent: 0, pinned: false })),
+      maxOtherWorkPercent,
+    );
+  }
+
+  const nextRows = rows.map((row) => ({
+    ...row,
+    included: true,
+    percent: 0,
+    pinned: false,
+  }));
+  return rebalanceUnpinnedAndOtherWork(nextRows, maxOtherWorkPercent);
+}
+
+/**
+ * On save: scale chosen leads + other work to 100%, then enforce the other-work
+ * cap (30% at/below base hours, 10% with overtime) by pouring any excess into leads.
+ */
+export function normalizeAllocationForSave(
+  rows: LeadAllocationRowState[],
+  otherWorkPercent: number,
+  maxOtherWorkPercent: number = 100,
+): LeadAllocationBucketsState {
+  const included = rows.filter((row) => row.included);
+  if (included.length === 0) {
+    return {
+      otherWorkPercent: 100,
+      rows: rows.map((row) => ({ ...row, percent: 0, pinned: false })),
+    };
+  }
+
+  const otherWeight = Math.max(0, Number(otherWorkPercent) || 0);
+  const leadWeights = included.map((row) => Math.max(0, Number(row.percent) || 0));
+  const weightSum = leadWeights.reduce((sum, w) => sum + w, 0) + otherWeight;
+
+  let nextOther: number;
+  let nextLeadPercents: number[];
+
+  if (weightSum <= 0) {
+    nextOther = 0;
+    nextLeadPercents = distributeAllocationTotal(100, included.length);
+  } else {
+    nextOther = (otherWeight / weightSum) * 100;
+    nextLeadPercents = leadWeights.map((w) => (w / weightSum) * 100);
+  }
+
+  const cap = normalizeOtherWorkCap(maxOtherWorkPercent);
+  if (nextOther > cap) {
+    const excess = nextOther - cap;
+    nextOther = cap;
+    const leadSum = nextLeadPercents.reduce((sum, p) => sum + p, 0);
+    if (leadSum > 0) {
+      nextLeadPercents = nextLeadPercents.map((p) => p + excess * (p / leadSum));
+    } else {
+      nextLeadPercents = distributeAllocationTotal(100 - cap, included.length);
+    }
+  }
+
+  const roundedLeads = nextLeadPercents.map((p) => Math.max(0, Math.round(p)));
+  let roundedOther = Math.max(0, Math.round(nextOther));
+  let leadRoundedSum = roundedLeads.reduce((sum, p) => sum + p, 0);
+  let drift = 100 - (leadRoundedSum + roundedOther);
+
+  if (drift !== 0 && roundedLeads.length > 0) {
+    const last = roundedLeads.length - 1;
+    roundedLeads[last] = Math.max(0, roundedLeads[last] + drift);
+    leadRoundedSum = roundedLeads.reduce((sum, p) => sum + p, 0);
+    drift = 100 - (leadRoundedSum + roundedOther);
+    if (drift !== 0) {
+      roundedOther = Math.max(0, roundedOther + drift);
+    }
+  }
+
+  if (roundedOther > cap) {
+    const overflow = roundedOther - cap;
+    roundedOther = cap;
+    if (roundedLeads.length > 0) {
+      roundedLeads[roundedLeads.length - 1] = Math.max(
+        0,
+        roundedLeads[roundedLeads.length - 1] + overflow,
+      );
+    }
+  }
+
+  let index = 0;
+  const nextRows = rows.map((row) => {
+    if (!row.included) return { ...row, percent: 0, pinned: false };
+    const percent = roundedLeads[index] ?? 0;
+    index += 1;
+    return { ...row, percent, pinned: false };
+  });
+
+  return { otherWorkPercent: roundedOther, rows: nextRows };
+}
+
+/**
  * Other work may never exceed its cap, so any excess is absorbed by the included leads.
  * With no included leads there is nothing to absorb it; the page blocks saving instead.
  */

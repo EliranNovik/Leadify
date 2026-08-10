@@ -7,7 +7,9 @@ import { getCurrencySymbol } from './currencyConversion';
 export function mapLeadCurrencyToSymbol(code?: string | null): string {
   if (!code) return '₪';
   const normalized = String(code).trim().toUpperCase();
-  if (normalized === '₪' || normalized === 'NIS' || normalized === 'ILS') return '₪';
+  if (normalized === '₪' || normalized === 'NIS' || normalized === 'ILS' || normalized === '?') {
+    return '₪';
+  }
   if (normalized === '$' || normalized === 'USD') return '$';
   if (normalized === '€' || normalized === 'EUR') return '€';
   if (normalized === '£' || normalized === 'GBP') return '£';

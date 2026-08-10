@@ -7,11 +7,10 @@ import {
   formatAllocationPercent,
   formatAllocationWorkedDuration,
   allocationPercentToWorkedMs,
-  maxLeadAllocationPercent,
-  minLeadAllocationPercent,
-  setLeadAllocationPercent,
-  setOtherWorkAllocationPercent,
-  toggleLeadAllocationIncluded,
+  setLeadAllocationPercentDraft,
+  setOtherWorkAllocationPercentDraft,
+  setAllLeadsIncludedDraft,
+  toggleLeadAllocationIncludedDraft,
   type LeadAllocationRowState,
 } from '../../lib/employeeLeadReporting';
 import type { LeadAllocationBudgetHint } from '../../lib/leadAllocationBudget';
@@ -374,6 +373,8 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
   onApplyLeadMaxBudget,
 }) => {
   const includedRows = rows.filter((row) => row.included);
+  const allSelected = rows.length > 0 && includedRows.length === rows.length;
+  const someSelected = includedRows.length > 0 && !allSelected;
   const grandTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
   const isTotalValid = Math.abs(grandTotal - 100) <= 0.01;
   const otherWorkCap = Math.max(0, Math.min(100, Math.round(otherWorkMaxPercent)));
@@ -383,15 +384,21 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
   };
 
   const setOtherWork = (percent: number) => {
-    applyChange(setOtherWorkAllocationPercent(rows, percent, otherWorkCap));
+    applyChange(setOtherWorkAllocationPercentDraft(rows, percent, otherWorkCap));
   };
 
   const setIncluded = (key: string, included: boolean) => {
-    applyChange(toggleLeadAllocationIncluded(rows, key, included, otherWorkCap));
+    applyChange(
+      toggleLeadAllocationIncludedDraft(rows, otherWorkPercent, key, included, otherWorkCap),
+    );
+  };
+
+  const setAllIncluded = (included: boolean) => {
+    applyChange(setAllLeadsIncludedDraft(rows, otherWorkPercent, included, otherWorkCap));
   };
 
   const setLeadPercent = (key: string, percent: number) => {
-    applyChange(setLeadAllocationPercent(rows, key, percent, otherWorkCap));
+    applyChange(setLeadAllocationPercentDraft(rows, otherWorkPercent, key, percent));
   };
 
   return (
@@ -412,13 +419,18 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                 ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white'
                 : 'bg-gradient-to-r from-amber-400 to-orange-500 text-white'
             }`}
+            title={
+              isTotalValid
+                ? 'Ready to save at 100%'
+                : `Currently ${formatAllocationPercent(grandTotal)}% — save will balance to 100%`
+            }
           >
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-xs font-bold">
               {isTotalValid ? '✓' : '!'}
             </span>
             <span className="leading-tight">
               <span className="block text-[10px] font-semibold uppercase tracking-wider opacity-90">
-                Total
+                {isTotalValid ? 'Total' : 'Current total'}
               </span>
               <span className="text-base font-bold">
                 {formatAllocationPercent(grandTotal)}%
@@ -442,12 +454,13 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
               </span>
             </div>
             <AllocationPercentSlider
-              value={otherWorkPercent}
+              value={Math.min(otherWorkPercent, otherWorkCap)}
               onChange={setOtherWork}
               variant="neutral"
               readOnly={readOnly}
               dayWorkedMs={dayWorkedMs}
               maxPercent={otherWorkCap}
+              minPercent={0}
               className="flex min-w-[200px] max-w-sm flex-1 items-center gap-3 py-0.5"
             />
           </div>
@@ -471,7 +484,21 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
         <div className="mx-auto w-full max-w-6xl space-y-2">
           <div className="px-5 py-1.5" role="row">
             <div className={`${LEAD_TABLE_GRID} items-center`}>
-              <span className={LEAD_TABLE_HEADER_CELL} aria-hidden />
+              <label
+                className={`flex items-center justify-center ${readOnly || rows.length === 0 ? '' : 'cursor-pointer'}`}
+              >
+                <input
+                  type="checkbox"
+                  className="checkbox checkbox-primary checkbox-sm"
+                  checked={allSelected}
+                  disabled={readOnly || rows.length === 0}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someSelected;
+                  }}
+                  onChange={(e) => setAllIncluded(e.target.checked)}
+                  aria-label="Select all leads"
+                />
+              </label>
               <span className={LEAD_TABLE_HEADER_CELL}>Lead</span>
               <span className={LEAD_TABLE_HEADER_CELL}>Category</span>
               <span className={LEAD_TABLE_HEADER_CELL}>Stage</span>
@@ -607,8 +634,8 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
                           onChange={(percent) => setLeadPercent(row.key, percent)}
                           readOnly={readOnly}
                           dayWorkedMs={dayWorkedMs}
-                          minPercent={minLeadAllocationPercent(rows, row.key, otherWorkCap)}
-                          maxPercent={maxLeadAllocationPercent(rows, row.key)}
+                          minPercent={0}
+                          maxPercent={100}
                           fullRangeTrack
                           stackDisplay
                           metaLeft={
