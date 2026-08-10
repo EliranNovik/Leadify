@@ -287,16 +287,12 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
   const openUploadModal = useCallback(
     (files: File[]) => {
       if (!files.length || isUploading) return;
-      if (!documentTypes.length) {
-        toast.error('No document types are available yet. Please contact support.');
-        return;
-      }
       setPendingFiles(files);
       setModalContactId(defaultContactId);
       setModalDocumentTypeId(defaultDocumentTypeId);
       setUploadModalOpen(true);
     },
-    [defaultContactId, defaultDocumentTypeId, documentTypes.length, isUploading],
+    [defaultContactId, defaultDocumentTypeId, isUploading],
   );
 
   const closeUploadModal = useCallback(() => {
@@ -305,11 +301,13 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
     setPendingFiles([]);
   }, [isUploading]);
 
+  // Contact is required; document type is optional when the catalog is empty
+  // (uploads must never be blocked on CRM “documents needed” setup).
   const modalCanSubmit =
     uploadModalOpen &&
     pendingFiles.length > 0 &&
     modalContactId !== '' &&
-    !!modalDocumentTypeId &&
+    (documentTypes.length === 0 || !!modalDocumentTypeId) &&
     !isUploading;
 
   const reloadDocuments = useCallback(
@@ -479,12 +477,16 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
 
   const handleConfirmUpload = async () => {
     if (!modalCanSubmit) {
-      toast.error('Please choose a contact and document type');
+      toast.error(
+        documentTypes.length === 0
+          ? 'Please choose a contact'
+          : 'Please choose a contact and document type',
+      );
       return;
     }
     await uploadFiles(pendingFiles, {
       contactId: Number(modalContactId),
-      documentTypeId: modalDocumentTypeId,
+      documentTypeId: modalDocumentTypeId || undefined,
     });
   };
 
@@ -539,7 +541,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
     [visibleDocuments, signedUrls],
   );
 
-  const canSelectFiles = documentTypes.length > 0 && !isUploading;
+  const canSelectFiles = !isUploading;
 
   if (loading) return <PortalLoading />;
 
@@ -561,16 +563,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
       <p className="text-xs text-base-content/65">
         {documentTypes.length > 0
           ? 'Select files to upload. You will choose the contact and document type before each upload.'
-          : 'Document types are not available yet. You can still view shared documents below.'}
+          : 'Select files to upload. You will choose the contact before each upload.'}
       </p>
-
-      {documentTypes.length === 0 ? (
-        <PortalCard>
-          <p className="text-sm text-base-content/60">
-            Upload is not available until document types are configured. Please contact support.
-          </p>
-        </PortalCard>
-      ) : null}
 
       <div
         className={`rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
@@ -594,9 +588,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         <div className="mb-4 text-base text-gray-600">
           {isUploading
             ? 'Processing files...'
-            : canSelectFiles
-              ? 'Drag and drop files here, or click to select files'
-              : 'Upload unavailable — no document types configured'}
+            : 'Drag and drop files here, or click to select files'}
         </div>
         <button
           type="button"
@@ -926,7 +918,9 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                 </select>
               </label>
               <label className="form-control w-full">
-                <span className="label-text mb-1 text-sm font-medium text-base-content/80">Document type</span>
+                <span className="label-text mb-1 text-sm font-medium text-base-content/80">
+                  Document type{documentTypes.length === 0 ? ' (optional)' : ''}
+                </span>
                 <select
                   className="select select-bordered w-full"
                   value={modalDocumentTypeId}
@@ -934,7 +928,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                   disabled={isUploading || documentTypes.length === 0}
                 >
                   <option value="">
-                    {documentTypes.length === 0 ? 'No document types available' : 'Select type…'}
+                    {documentTypes.length === 0 ? 'No type required' : 'Select type…'}
                   </option>
                   {documentTypes.map((t) => (
                     <option key={t.id} value={t.id}>

@@ -1398,7 +1398,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         (client as any)?.manual_interactions
       ).length === 0
   );
-  const [interactionsSyncing, setInteractionsSyncing] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBody] = useState('');
@@ -1464,6 +1463,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [showEmailDetail, setShowEmailDetail] = useState(false);
   const [showContactSelector, setShowContactSelector] = useState(false);
   const [showContactSelectorForEmail, setShowContactSelectorForEmail] = useState(false);
+  const contactActionsRef = useRef<HTMLDivElement | null>(null);
+  const [showFloatingContactButtons, setShowFloatingContactButtons] = useState(false);
   const [selectedContactForWhatsApp, setSelectedContactForWhatsApp] = useState<{
     contact: ContactInfo;
     leadId: string | number;
@@ -2173,7 +2174,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [whatsAppError]);
 
   // Find the index of the last email in the sorted interactions - memoized to prevent recalculation
-  const INITIAL_VISIBLE_INTERACTIONS = 20;
+  const INITIAL_VISIBLE_INTERACTIONS = 5;
   const [visibleInteractionsCount, setVisibleInteractionsCount] = useState(INITIAL_VISIBLE_INTERACTIONS);
 
   const sortedInteractions = useMemo(() => {
@@ -2243,6 +2244,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     () => sortedInteractions.slice(0, visibleInteractionsCount),
     [sortedInteractions, visibleInteractionsCount]
   );
+
+  // Show fixed contact FABs once the top contact actions scroll out of view
+  useEffect(() => {
+    const el = contactActionsRef.current;
+    if (!el) {
+      setShowFloatingContactButtons(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setShowFloatingContactButtons(!entry.isIntersecting);
+      },
+      { threshold: 0, rootMargin: '0px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [interactionsLoading, sortedInteractions.length]);
+
   const hasMoreInteractions = sortedInteractions.length > visibleInteractionsCount;
   const renderedInteractions = useMemo(
     () =>
@@ -3346,17 +3365,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         (Array.isArray((client as any)?.manual_interactions) &&
           (client as any).manual_interactions.length > 0);
       const clientKey = String(client.id);
-      const alreadyHydratedThisSession = serverTimelineHydratedClients.has(clientKey);
 
       if (isMountedRef.current && !skipLoadingSpinner && !hasLocalTimeline) {
         setInteractionsLoading(true);
-      }
-      if (
-        isMountedRef.current &&
-        !alreadyHydratedThisSession &&
-        (skipLoadingSpinner || hasLocalTimeline)
-      ) {
-        setInteractionsSyncing(true);
       }
       try {
         const contactsForFetch = leadContactsRef.current;
@@ -3417,88 +3428,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           return dedupeManualInteractionRecords(jsonSource);
         };
 
-        // Phase 1: fastest sources — paint timeline before slow call logs / legacy / emails
-        const [userFullName, manualInteractionsSource, whatsAppResult] = await Promise.all([
-          resolveUserFullName(),
-          fetchManualInteractionsSource(),
-          client?.id
-            ? (async () => {
-                try {
-                  let query = supabase
-                    .from('whatsapp_messages')
-                    .select(
-                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id'
-                    )
-                    .limit(FETCH_BATCH_SIZE);
-                  if (isLegacyLead) {
-                    if (legacyId !== null) {
-                      query = query.eq('legacy_id', legacyId);
-                    } else {
-                      return { data: [], error: null };
-                    }
-                  } else {
-                    query = query.eq('lead_id', client.id);
-                  }
-                  const { data, error } = await query.order('sent_at', { ascending: false });
-                  return { data: data || [], error };
-                } catch (err) {
-                  return { data: [], error: err };
-                }
-              })()
-            : Promise.resolve({ data: [], error: null }),
-        ]);
-
-        if (
-          fetchGenerationAtStart === interactionsFetchGenerationRef.current &&
-          (manualInteractionsSource.length > 0 || (whatsAppResult.data?.length ?? 0) > 0)
-        ) {
-          const quickManual = mapManualInteractionsQuick(
-            manualInteractionsSource,
-            client.name,
-            userFullName
-          );
-          const quickWhatsApp = (whatsAppResult.data || [])
-            .map((msg: any) => {
-              const sentAt = msg.sent_at || msg.created_at || new Date().toISOString();
-              const sentAtDate = new Date(sentAt);
-              if (isNaN(sentAtDate.getTime())) return null;
-              const processedContent = processWhatsAppTemplateMessage(msg, whatsAppTemplates);
-              return {
-                id: msg.id,
-                date: sentAtDate.toLocaleDateString('en-GB', {
-                  day: '2-digit',
-                  month: '2-digit',
-                  year: '2-digit',
-                }),
-                time: sentAtDate.toLocaleTimeString('en-GB', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                }),
-                raw_date: sentAt,
-                employee: msg.sender_name || 'You',
-                direction: msg.direction || 'in',
-                kind: 'whatsapp',
-                length: '',
-                content: processedContent,
-                observation: msg.error_message || '',
-                editable: false,
-                status: msg.whatsapp_status || 'sent',
-                error_message: msg.error_message,
-                contact_id: msg.contact_id || null,
-                phone_number: msg.phone_number || null,
-                template_id: msg.template_id || null,
-              };
-            })
-            .filter(Boolean) as Interaction[];
-          const quickTimeline = sortInteractionsByDate([...quickManual, ...quickWhatsApp]);
-          if (quickTimeline.length > 0) {
-            setInteractions(quickTimeline);
-            setInteractionsLoading(false);
-            interactionsClientIdRef.current = client?.id?.toString() || null;
-          }
-        }
-
-        const [callLogsResult, legacyResult, emailsResult] = await Promise.all([
+        // Start slow sources immediately (emails / calls / legacy) so they overlap with phase 1.
+        const slowSourcesPromise = Promise.all([
           client?.id ? (async () => {
             try {
               let query = supabase
@@ -3605,6 +3536,93 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               })()
             : Promise.resolve({ data: [], error: null })
         ]);
+
+        // Phase 1: fastest sources — paint timeline before slow call logs / legacy / emails finish
+        const [userFullName, manualInteractionsSource, whatsAppResult] = await Promise.all([
+          resolveUserFullName(),
+          fetchManualInteractionsSource(),
+          client?.id
+            ? (async () => {
+                try {
+                  let query = supabase
+                    .from('whatsapp_messages')
+                    .select(
+                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id'
+                    )
+                    .limit(FETCH_BATCH_SIZE);
+                  if (isLegacyLead) {
+                    if (legacyId !== null) {
+                      query = query.eq('legacy_id', legacyId);
+                    } else {
+                      return { data: [], error: null };
+                    }
+                  } else {
+                    query = query.eq('lead_id', client.id);
+                  }
+                  const { data, error } = await query.order('sent_at', { ascending: false });
+                  return { data: data || [], error };
+                } catch (err) {
+                  return { data: [], error: err };
+                }
+              })()
+            : Promise.resolve({ data: [], error: null }),
+        ]);
+
+        if (
+          fetchGenerationAtStart === interactionsFetchGenerationRef.current &&
+          (manualInteractionsSource.length > 0 || (whatsAppResult.data?.length ?? 0) > 0)
+        ) {
+          const quickManual = mapManualInteractionsQuick(
+            manualInteractionsSource,
+            client.name,
+            userFullName
+          );
+          const quickWhatsApp = (whatsAppResult.data || [])
+            .map((msg: any) => {
+              const sentAt = msg.sent_at || msg.created_at || new Date().toISOString();
+              const sentAtDate = new Date(sentAt);
+              if (isNaN(sentAtDate.getTime())) return null;
+              const processedContent = processWhatsAppTemplateMessage(msg, whatsAppTemplates);
+              return {
+                id: msg.id,
+                date: sentAtDate.toLocaleDateString('en-GB', {
+                  day: '2-digit',
+                  month: '2-digit',
+                  year: '2-digit',
+                }),
+                time: sentAtDate.toLocaleTimeString('en-GB', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                }),
+                raw_date: sentAt,
+                employee: msg.sender_name || 'You',
+                direction: msg.direction || 'in',
+                kind: 'whatsapp',
+                length: '',
+                content: processedContent,
+                observation: msg.error_message || '',
+                editable: false,
+                status: msg.whatsapp_status || 'sent',
+                error_message: msg.error_message,
+                contact_id: msg.contact_id || null,
+                phone_number: msg.phone_number || null,
+                template_id: msg.template_id || null,
+              };
+            })
+            .filter(Boolean) as Interaction[];
+          const quickTimeline = sortInteractionsByDate([...quickManual, ...quickWhatsApp]);
+          if (quickTimeline.length > 0) {
+            // Don't wipe a richer cached timeline (emails/calls) with phase-1-only rows.
+            const existing = interactionsRef.current;
+            if (existing.length === 0 || !shouldKeepExistingTimeline(existing, quickTimeline)) {
+              setInteractions(quickTimeline);
+            }
+            setInteractionsLoading(false);
+            interactionsClientIdRef.current = client?.id?.toString() || null;
+          }
+        }
+
+        const [callLogsResult, legacyResult, emailsResult] = await slowSourcesPromise;
 
         // Process results from parallel queries
         if (emailsResult.error) {
@@ -4749,7 +4767,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
       } finally {
         isFetchingInteractionsRef.current = false;
-        setInteractionsSyncing(false);
         if (isMountedRef.current && !skipLoadingSpinner) {
           setInteractionsLoading(false);
         }
@@ -4807,7 +4824,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       lastClientIdRef.current = currentClientId;
       interactionsClientIdRef.current = currentClientId;
       setInteractionsLoading(false);
-      setInteractionsSyncing(false);
       return;
     }
 
@@ -7173,23 +7189,41 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           </div>
         ) : (
           <>
-            {interactionsSyncing && sortedInteractions.length > 0 && (
-              <div className="flex items-center gap-2 text-sm text-base-content/60 mb-4">
-                <span className="loading loading-spinner loading-xs text-primary"></span>
-                Syncing latest interactions…
-              </div>
-            )}
-            {/* Header with Action Buttons */}
+            {/* Header — action buttons sit under the subtitle */}
             <ClientTabPageHeader
-              className="mb-6 md:mb-8"
+              className="mb-4"
               icon={ChatBubbleLeftRightIcon}
               title="Interactions"
               subtitle="Emails, calls, WhatsApp, and manual contact history"
+              actions={
+                <button
+                  type="button"
+                  className="btn btn-outline gap-2 border-amber-200 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:border-amber-700 dark:hover:bg-amber-900/30 relative"
+                  onClick={() => setFlaggedItemsModalOpen(true)}
+                  disabled={!publicUserId || interactionsLoading}
+                  title={publicUserId ? 'View flagged items on this lead (all users)' : 'Sign in to use flags'}
+                >
+                  <FlagIcon className="w-5 h-5" />
+                  <span className="hidden sm:inline">Flagged</span>
+                  {totalFlaggedCountWithRmq > 0 && (
+                    <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
+                      {totalFlaggedCountWithRmq > 99 ? '99+' : totalFlaggedCountWithRmq}
+                    </span>
+                  )}
+                </button>
+              }
             />
-            <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-8 md:mb-12">
+            <div
+              ref={contactActionsRef}
+              className="mb-6 md:mb-8 flex flex-wrap items-center gap-4 sm:gap-5"
+            >
+              <p className="text-sm font-medium text-black dark:text-base-content">
+                How do you want to contact the client?
+              </p>
+
               {/* Mobile: Contact Client Dropdown */}
               <div className="dropdown lg:hidden">
-                <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center">
+                <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer justify-center">
                   <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
                 </label>
                 <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
@@ -7214,79 +7248,77 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </li>
                 </ul>
               </div>
-              
-              {/* Desktop: Individual Buttons — icon in a coloured rounded badge, label below */}
-              <div className="hidden lg:flex gap-5">
+
+              {/* Desktop: icon + title inside each badge */}
+              <div className="hidden lg:flex items-center gap-3 sm:gap-4">
                 <button
                   type="button"
-                  className="group flex flex-col items-center gap-2 focus:outline-none"
+                  className="group inline-flex items-center gap-2.5 rounded-full bg-white px-4 py-2.5 text-sm font-semibold text-blue-600 shadow-md transition-all hover:shadow-lg hover:-translate-y-0.5 focus:outline-none"
                   onClick={() => setShowContactSelectorForEmail(true)}
                 >
-                  <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-blue-500 shadow-md transition-all group-hover:shadow-lg group-hover:-translate-y-0.5">
-                    <EnvelopeIcon className="w-6 h-6" />
-                  </span>
-                  <span className="rounded-full bg-base-200 px-3 py-0.5 text-xs font-semibold text-base-content">Email</span>
+                  <EnvelopeIcon className="w-6 h-6 shrink-0" />
+                  Email
                 </button>
                 <button
                   type="button"
-                  className="group flex flex-col items-center gap-2 focus:outline-none"
+                  className="group inline-flex items-center gap-2.5 rounded-full bg-white px-4 py-2.5 text-sm font-semibold text-green-600 shadow-md transition-all hover:shadow-lg hover:-translate-y-0.5 focus:outline-none"
                   onClick={() => setShowContactSelector(true)}
                 >
-                  <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-green-500 shadow-md transition-all group-hover:shadow-lg group-hover:-translate-y-0.5">
-                    <FaWhatsapp className="w-6 h-6" />
-                  </span>
-                  <span className="rounded-full bg-base-200 px-3 py-0.5 text-xs font-semibold text-base-content">WhatsApp</span>
+                  <FaWhatsapp className="w-6 h-6 shrink-0" />
+                  WhatsApp
                 </button>
                 <button
                   type="button"
-                  className="group flex flex-col items-center gap-2 focus:outline-none"
+                  className="group inline-flex items-center gap-2.5 rounded-full bg-white px-4 py-2.5 text-sm font-semibold text-purple-600 shadow-md transition-all hover:shadow-lg hover:-translate-y-0.5 focus:outline-none"
                   onClick={openContactDrawer}
                 >
-                  <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-purple-500 shadow-md transition-all group-hover:shadow-lg group-hover:-translate-y-0.5">
-                    <ChatBubbleLeftRightIcon className="w-6 h-6" />
-                  </span>
-                  <span className="rounded-full bg-base-200 px-3 py-0.5 text-xs font-semibold text-base-content">Manual Entry</span>
+                  <ChatBubbleLeftRightIcon className="w-6 h-6 shrink-0" />
+                  Manual Entry
                 </button>
               </div>
-
-              <div className="flex justify-center sm:justify-end w-full sm:w-auto sm:ml-auto">
-                <button
-                  type="button"
-                  className="btn btn-outline gap-2 border-amber-200 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:border-amber-700 dark:hover:bg-amber-900/30 relative"
-                  onClick={() => setFlaggedItemsModalOpen(true)}
-                  disabled={!publicUserId || interactionsLoading}
-                  title={publicUserId ? 'View flagged items on this lead (all users)' : 'Sign in to use flags'}
-                >
-                  <FlagIcon className="w-5 h-5" />
-                  <span className="hidden sm:inline">Flagged</span>
-                  {totalFlaggedCountWithRmq > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
-                      {totalFlaggedCountWithRmq > 99 ? '99+' : totalFlaggedCountWithRmq}
-                    </span>
-                  )}
-                </button>
-              </div>
-              
-              {/* AI Smart Recap Button */}
-              {/* <button 
-                className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto lg:ml-auto justify-center"
-                onClick={() => {
-                  // Toggle AI summary panel on mobile, or show/hide it on desktop
-                  if (window.innerWidth < 1024) {
-                    // Mobile: show drawer with AI summary
-                    setAiDrawerOpen(true);
-                  } else {
-                    // Desktop: toggle AI panel visibility
-                    setShowAiSummary(!showAiSummary);
-                  }
-                }}
-              >
-                <SparklesIcon className="w-5 h-5" />
-                AI Smart Recap
-              </button> */}
-              
             </div>
-            
+
+            {showFloatingContactButtons ? (
+                <div className="fixed bottom-6 right-6 z-[90] flex flex-col-reverse items-end gap-3">
+                  <button
+                    type="button"
+                    className="group flex h-14 items-center justify-center gap-0 rounded-full bg-white px-3.5 text-sm font-semibold text-blue-600 shadow-lg ring-1 ring-black/5 transition-all hover:gap-2 hover:pr-4 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none"
+                    onClick={() => setShowContactSelectorForEmail(true)}
+                    title="Email"
+                    aria-label="Email"
+                  >
+                    <EnvelopeIcon className="w-6 h-6 shrink-0" />
+                    <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover:max-w-[5rem] group-hover:opacity-100">
+                      Email
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="group flex h-14 items-center justify-center gap-0 rounded-full bg-white px-3.5 text-sm font-semibold text-green-600 shadow-lg ring-1 ring-black/5 transition-all hover:gap-2 hover:pr-4 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none"
+                    onClick={() => setShowContactSelector(true)}
+                    title="WhatsApp"
+                    aria-label="WhatsApp"
+                  >
+                    <FaWhatsapp className="w-6 h-6 shrink-0" />
+                    <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover:max-w-[6rem] group-hover:opacity-100">
+                      WhatsApp
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="group flex h-14 items-center justify-center gap-0 rounded-full bg-white px-3.5 text-sm font-semibold text-purple-600 shadow-lg ring-1 ring-black/5 transition-all hover:gap-2 hover:pr-4 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none"
+                    onClick={openContactDrawer}
+                    title="Manual Entry"
+                    aria-label="Manual Entry"
+                  >
+                    <ChatBubbleLeftRightIcon className="w-6 h-6 shrink-0" />
+                    <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 group-hover:max-w-[7rem] group-hover:opacity-100">
+                      Manual Entry
+                    </span>
+                  </button>
+                </div>
+              ) : null}
+
             {/* Timeline container with improved spacing */}
             <div className="relative max-w-5xl w-full">
               {/* Timeline line */}
@@ -7888,6 +7920,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             {hasMoreInteractions && (
               <div className="flex justify-center pt-4">
                 <button
+                  type="button"
                   className="btn btn-outline btn-primary"
                   onClick={() =>
                     setVisibleInteractionsCount(prev =>
@@ -7895,7 +7928,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     )
                   }
                 >
-                  Load more interactions ({sortedInteractions.length - visibleInteractionsCount})
+                  More ({sortedInteractions.length - visibleInteractionsCount})
                 </button>
               </div>
             )}

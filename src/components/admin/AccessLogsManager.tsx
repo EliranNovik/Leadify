@@ -280,10 +280,10 @@ const getMethodColor = (method: string) => {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
+              <table className="min-w-full divide-y divide-gray-200 border-separate border-spacing-0">
                                  <thead className="bg-gray-50">
                    <tr>
-                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                     <th className="sticky left-0 z-20 bg-white px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                        Date Created
                      </th>
                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -304,10 +304,10 @@ const getMethodColor = (method: string) => {
                    {logs.map((log) => (
                      <React.Fragment key={log.id}>
                        <tr 
-                         className="hover:bg-gray-50 cursor-pointer"
+                         className="group hover:bg-gray-50 cursor-pointer"
                          onClick={() => toggleRowExpansion(log.id)}
                        >
-                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                         <td className="sticky left-0 z-10 bg-white group-hover:bg-white px-6 py-4 whitespace-nowrap text-sm text-gray-900 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                            <div className="flex flex-col space-y-1">
                              <div className="flex items-center space-x-2">
                                <CalendarIcon className="w-4 h-4 text-gray-500" />

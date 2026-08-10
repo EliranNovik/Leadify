@@ -1290,10 +1290,10 @@ const PaymentPlansManager: React.FC = () => {
 
           {/* Desktop Table View */}
           <div className="hidden md:block overflow-x-auto bg-base-100 rounded-lg shadow">
-            <table className="table w-full">
+            <table className="table w-full border-separate border-spacing-0">
               <thead>
                 <tr>
-                  <th className="text-left">Lead #</th>
+                  <th className="sticky left-0 z-20 bg-white text-left shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">Lead #</th>
                   <th className="text-left">Client</th>
                   <th className="text-left">Order</th>
                   <th className="text-left">Currency</th>
@@ -1312,10 +1312,14 @@ const PaymentPlansManager: React.FC = () => {
                   return (
                     <tr 
                       key={`${plan.lead_type}-${plan.id}`}
-                      className={`cursor-pointer ${isCancelled ? 'bg-gray-300 text-gray-700' : ''}`}
+                      className={`group cursor-pointer ${isCancelled ? 'bg-gray-300 text-gray-700' : ''}`}
                       onClick={() => handleRowClick(plan)}
                     >
-                      <td className="font-bold">
+                      <td
+                        className={`sticky left-0 z-10 font-bold shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)] ${
+                          isCancelled ? 'bg-gray-300' : 'bg-white group-hover:bg-white'
+                        }`}
+                      >
                         {plan.lead_number || plan.lead_id}
                       </td>
                       <td className="max-w-xs truncate">

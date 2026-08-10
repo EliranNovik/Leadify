@@ -876,6 +876,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
     });
 
+    // Virtual UI field for lead-time fill calendar — expands into real columns below.
+    if (tableName === 'tenants_employee' && 'lead_time_reporting_schedule' in record) {
+      delete (record as any).lead_time_reporting_schedule;
+    }
+
     let preferredCategories: string[] | undefined;
     if (tableName === 'tenants_employee' && 'preferred_category' in record) {
       const rawValue = record.preferred_category;
@@ -2302,11 +2307,18 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         ) : (
           <>
             <div className="overflow-x-auto w-full">
-              <table className="table w-full">
+              <table className="table w-full border-separate border-spacing-0">
                 <thead className="bg-base-200">
                   <tr>
-                    {fields.filter(field => !field.hideInTable).map(field => (
-                      <th key={field.name} className="font-semibold">
+                    {fields.filter(field => !field.hideInTable).map((field, index) => (
+                      <th
+                        key={field.name}
+                        className={`font-semibold ${
+                          index === 0
+                            ? 'sticky left-0 z-20 bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]'
+                            : ''
+                        }`}
+                      >
                         {field.label}
                       </th>
                     ))}
@@ -2317,12 +2329,17 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                     {records.map(record => (
                       <tr 
                         key={record.id}
-                        className="cursor-pointer"
+                        className="group cursor-pointer"
                         onClick={() => openModal(record)}
                       >
-                        {fields.filter(field => !field.hideInTable).map(field => (
+                        {fields.filter(field => !field.hideInTable).map((field, index) => (
                           <td 
                             key={field.name}
+                            className={
+                              index === 0
+                                ? 'sticky left-0 z-10 bg-white group-hover:bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]'
+                                : undefined
+                            }
                             onClick={(e) => {
                               // Prevent row click if clicking on boolean toggle
                               if (field.type === 'boolean') {

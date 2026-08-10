@@ -423,10 +423,10 @@ const UserManagement: React.FC = () => {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="table w-full">
+              <table className="table w-full border-separate border-spacing-0">
                 <thead>
                   <tr>
-                    <th>User</th>
+                    <th className="sticky left-0 z-20 bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">User</th>
                     <th>Full Name</th>
                     <th>Email</th>
                     <th>Role</th>
@@ -438,10 +438,10 @@ const UserManagement: React.FC = () => {
                   {filteredUsers.map((user) => (
                     <tr 
                       key={user.id} 
-                      className="hover cursor-pointer"
+                      className="group hover cursor-pointer"
                       onClick={() => handleRowClick(user)}
                     >
-                      <td>
+                      <td className="sticky left-0 z-10 bg-white group-hover:bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                         <div className="flex items-center gap-3">
                           <div className="avatar placeholder">
                             <div className="bg-neutral-focus text-neutral-content rounded-full w-10">

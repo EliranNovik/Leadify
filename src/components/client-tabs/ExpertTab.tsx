@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
 import {
   AcademicCapIcon,
@@ -141,7 +142,7 @@ const safeFormatDate = (dateVal: string | number | Date | undefined | null): str
   return d.toLocaleString();
 };
 
-const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmployees = [] }) => {
   // Helper function to clean up text formatting
   const formatNoteText = (text: string): string => {
     if (!text) return '';
@@ -2576,6 +2577,42 @@ ${combinedText}`;
       assignedExpertDisplayName.trim().toLowerCase() === currentUserDisplayName.trim().toLowerCase())
   );
 
+  const navigate = useNavigate();
+  const [expertImageError, setExpertImageError] = useState(false);
+
+  const assignedExpertEmployee = useMemo(() => {
+    if (!allEmployees || allEmployees.length === 0) return null;
+
+    if (assignedExpertId != null) {
+      const byId = allEmployees.find((emp: any) => {
+        const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+        return Number(empId) === Number(assignedExpertId);
+      });
+      if (byId) return byId;
+    }
+
+    const name = (assignedExpertDisplayName || expertName || '').trim();
+    if (!name || name === '--') return null;
+
+    return (
+      allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === name.toLowerCase();
+      }) ?? null
+    );
+  }, [allEmployees, assignedExpertId, assignedExpertDisplayName, expertName]);
+
+  useEffect(() => {
+    setExpertImageError(false);
+  }, [assignedExpertEmployee?.id, assignedExpertEmployee?.photo_url, assignedExpertEmployee?.photo]);
+
+  const expertInitials = useMemo(() => {
+    const name = String(assignedExpertEmployee?.display_name || expertName || '').trim();
+    if (!name || name === '--') return '';
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return name.substring(0, 2).toUpperCase();
+  }, [assignedExpertEmployee?.display_name, expertName]);
 
   // Sync with the same total `DocumentModal` computes after load (keeps UI exact while tray is open).
   const handleDocumentCountChange = (count: number) => {
@@ -2621,11 +2658,55 @@ ${combinedText}`;
           <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-xs font-semibold uppercase tracking-wide text-base-content/60">Overview</div>
+                <div className="text-base font-semibold uppercase tracking-wide text-base-content/60">Overview</div>
                 <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-3">
                   <div className="min-w-0">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-base-content/50">Assigned expert</div>
-                    <div className="text-lg font-semibold text-base-content truncate">{expertName}</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Assigned expert</div>
+                    <div className="mt-1 flex items-center gap-3 min-w-0">
+                      {(() => {
+                        const hasExpert = Boolean(expertName && expertName !== '--');
+                        const photoUrl = assignedExpertEmployee?.photo_url || assignedExpertEmployee?.photo;
+                        const openProfile = () => {
+                          if (assignedExpertEmployee?.id) {
+                            navigate(`/my-profile/${assignedExpertEmployee.id}`);
+                          }
+                        };
+                        if (hasExpert && photoUrl && !expertImageError) {
+                          return (
+                            <img
+                              src={photoUrl}
+                              alt={expertName}
+                              className="w-10 h-10 rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                              onClick={openProfile}
+                              onError={() => setExpertImageError(true)}
+                              title={assignedExpertEmployee?.id ? `View ${expertName}'s profile` : expertName}
+                            />
+                          );
+                        }
+                        return (
+                          <div
+                            className={`w-10 h-10 rounded-full flex items-center justify-center bg-gray-200 text-gray-600 text-sm font-medium flex-shrink-0 ${
+                              assignedExpertEmployee?.id ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''
+                            }`}
+                            onClick={openProfile}
+                            title={
+                              hasExpert && assignedExpertEmployee?.id
+                                ? `View ${expertName}'s profile`
+                                : hasExpert
+                                  ? expertName
+                                  : 'No expert assigned'
+                            }
+                          >
+                            {hasExpert && expertInitials ? (
+                              expertInitials
+                            ) : (
+                              <AcademicCapIcon className="w-5 h-5 text-gray-500" />
+                            )}
+                          </div>
+                        );
+                      })()}
+                      <div className="text-lg font-semibold text-base-content truncate">{expertName}</div>
+                    </div>
                   </div>
                   <div className="min-w-0">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-base-content/50">Eligibility</div>
@@ -2655,14 +2736,9 @@ ${combinedText}`;
             </div>
           </div>
 
-          {/* Section Eligibility + Citizenship + Document Upload */}
+          {/* Section Eligibility + Citizenship */}
           <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm">
             <div className="space-y-6">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-base-content/60">Eligibility</div>
-                <div className="mt-1 text-base font-semibold text-base-content">Section eligibility</div>
-              </div>
-
               {/* Eligibility Dropdown */}
               <div className="space-y-2 text-left">
                 <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
@@ -2725,10 +2801,9 @@ ${combinedText}`;
                 </div>
               )}
 
-              {/* Document Upload — below citizenship selector */}
+              {/* Document Upload — temporarily disabled
               <div className="space-y-5 pt-6 border-t border-base-200">
                 <div className="text-base font-semibold text-base-content">Document upload</div>
-                {/* Upload Area */}
                 <div
                   className={`rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
                     isUploading
@@ -2766,7 +2841,6 @@ ${combinedText}`;
                   </label>
                 </div>
 
-                {/* Uploaded Files List */}
                 {uploadedFiles.length > 0 && (
                   <div className="space-y-2 text-left">
                     {uploadedFiles.map((file, index) => (
@@ -2806,6 +2880,7 @@ ${combinedText}`;
                   </div>
                 )}
               </div>
+              */}
             </div>
           </div>
 

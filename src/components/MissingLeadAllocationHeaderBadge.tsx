@@ -16,8 +16,8 @@ type Props = {
 };
 
 /**
- * Header badge for handlers / DMs / superusers: count of missing daily lead
- * allocation reports since the reporting start date. Click opens the latest missing day.
+ * Header badge for employees with lead time reporting enabled: count of missing
+ * daily lead allocation reports since the reporting start date. Click opens the latest missing day.
  */
 const MissingLeadAllocationHeaderBadge: React.FC<Props> = ({
   className = '',
@@ -31,15 +31,17 @@ const MissingLeadAllocationHeaderBadge: React.FC<Props> = ({
     try {
       const ctx = await fetchCurrentEmployeeContext();
       const canSee = canAccessLeadTimeReport({
-        isSuperUser: ctx?.isSuperUser,
-        bonusesRole: ctx?.bonusesRole,
+        leadTimeReportingEnabled: ctx?.leadTimeReportingEnabled,
       });
       setAllowed(canSee);
       if (!canSee || !ctx?.employeeId) {
         setMissingDates([]);
         return;
       }
-      const missing = await fetchMissingLeadAllocationDates(ctx.employeeId);
+      const missing = await fetchMissingLeadAllocationDates(ctx.employeeId, {
+        weekdays: ctx.leadTimeReportingWeekdays,
+        excludedDates: ctx.leadTimeReportingExcludedDates,
+      });
       setMissingDates(missing);
     } catch (error) {
       console.error('[MissingLeadAllocationHeaderBadge] refresh failed:', error);

@@ -118,6 +118,9 @@ export type ClockInWithEmployee = ClockInExportRecord & {
     min_hours?: number | null;
     hour_rate?: number | null;
     bonuses_role?: string | null;
+    lead_time_reporting_enabled?: boolean | null;
+    lead_time_reporting_weekdays?: number[] | null;
+    lead_time_reporting_excluded_dates?: string[] | null;
     tenant_departement?: { name: string } | { name: string }[] | null;
   } | {
     display_name: string | null;
@@ -126,6 +129,9 @@ export type ClockInWithEmployee = ClockInExportRecord & {
     min_hours?: number | null;
     hour_rate?: number | null;
     bonuses_role?: string | null;
+    lead_time_reporting_enabled?: boolean | null;
+    lead_time_reporting_weekdays?: number[] | null;
+    lead_time_reporting_excluded_dates?: string[] | null;
     tenant_departement?: { name: string } | { name: string }[] | null;
   }[] | null;
 };
@@ -183,6 +189,7 @@ export async function fetchClockInRecordsInRange(
       `${CLOCK_IN_DETAIL_SELECT},
        tenants_employee!employee_id (
          display_name, photo_url, department_id, min_hours, hour_rate, bonuses_role,
+         lead_time_reporting_enabled, lead_time_reporting_weekdays, lead_time_reporting_excluded_dates,
          tenant_departement!department_id ( name )
        )`,
     )

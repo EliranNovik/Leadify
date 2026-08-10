@@ -11,6 +11,10 @@ import {
   readClientsTabCache,
   writeClientsTabCache,
 } from '../../lib/clientsTabCache';
+import {
+  fetchLeadSubEffortContributors,
+  type LeadSubEffortContributor,
+} from '../../lib/leadSubEfforts';
 
 /** Cached light slice for Roles — avoids re-flashing permission gate on remount. */
 type RolesTabCacheSlice = {
@@ -53,6 +57,9 @@ const RolesTab: React.FC<ClientTabProps> = ({
   // Search terms and dropdown visibility for each role
   const [searchTerms, setSearchTerms] = useState<{ [key: string]: string }>({});
   const [showDropdowns, setShowDropdowns] = useState<{ [key: string]: boolean }>({});
+
+  const [subEffortContributors, setSubEffortContributors] = useState<LeadSubEffortContributor[]>([]);
+  const [subEffortContributorsLoading, setSubEffortContributorsLoading] = useState(false);
 
   // Check if this is a legacy lead
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -187,6 +194,34 @@ const RolesTab: React.FC<ClientTabProps> = ({
       setAllEmployees(allEmployeesProp);
     }
   }, [allEmployeesProp]);
+
+  // Employees with saved sub-effort updates on this lead (Sub Efforts modal)
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!client?.id) {
+        setSubEffortContributors([]);
+        return;
+      }
+      setSubEffortContributorsLoading(true);
+      try {
+        const rows = await fetchLeadSubEffortContributors(supabase, client);
+        if (!cancelled) setSubEffortContributors(rows);
+      } catch (err) {
+        console.error('Failed to load sub-effort contributors:', err);
+        if (!cancelled) {
+          setSubEffortContributors([]);
+          toast.error('Failed to load sub-effort contributors');
+        }
+      } finally {
+        if (!cancelled) setSubEffortContributorsLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [client?.id, client?.lead_type]);
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = useMemo(() => {
@@ -938,7 +973,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
   return (
     <div className="p-1 sm:p-2 md:p-3">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-3">
+      <div className="mb-3">
         <ClientTabPageHeader
           className="mb-0"
           icon={UserGroupIcon}
@@ -951,36 +986,34 @@ const RolesTab: React.FC<ClientTabProps> = ({
                 : 'Manage team roles and assignments'
           }
           titleExtra={
-            isRolesLocked ? <LockClosedIcon className="w-5 h-5 text-gray-500" /> : undefined
+            !readOnly && isSuperuser ? (
+              <button
+                type="button"
+                className={`inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  isRolesLocked
+                    ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                    : 'btn btn-ghost btn-sm h-auto min-h-0'
+                }`}
+                onClick={handleToggleLock}
+                title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}
+              >
+                {isRolesLocked ? (
+                  <>
+                    <LockClosedIcon className="w-4 h-4" />
+                    Locked
+                  </>
+                ) : (
+                  <>
+                    <LockOpenIcon className="w-4 h-4" />
+                    Lock Roles
+                  </>
+                )}
+              </button>
+            ) : isRolesLocked ? (
+              <LockClosedIcon className="w-5 h-5 text-gray-500" />
+            ) : undefined
           }
         />
-
-        {/* Action Buttons */}
-        {!readOnly && (
-        <div className="flex flex-row gap-2 sm:gap-4 flex-wrap">
-          {/* Lock Button - Only visible for superusers */}
-          {isSuperuser && (
-            <button
-              className="btn btn-ghost border border-gray-300 gap-2 px-6"
-              onClick={handleToggleLock}
-              title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}
-            >
-              {isRolesLocked ? (
-                <>
-                  <LockClosedIcon className="w-5 h-5" />
-                  Unlock Roles
-                </>
-              ) : (
-                <>
-                  <LockOpenIcon className="w-5 h-5" />
-                  Lock Roles
-                </>
-              )}
-            </button>
-          )}
-
-        </div>
-        )}
       </div>
 
       <div className="w-full min-w-0">
@@ -1010,12 +1043,38 @@ const RolesTab: React.FC<ClientTabProps> = ({
                       title={roleUiDisabled ? 'This role is temporarily unavailable' : undefined}
                     >
                       <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="text-sm font-medium text-gray-500">{role.title}</div>
-                        {roleUiDisabled && (
-                          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-gray-500 bg-base-200 px-2 py-0.5 rounded">
-                            Unavailable
-                          </span>
-                        )}
+                        <span className="inline-flex items-center gap-1.5 rounded-md bg-base-200 px-2.5 py-1 text-sm font-medium text-gray-700">
+                          {React.createElement(getRoleIcon(role.id), { className: 'w-5 h-5 text-black shrink-0' })}
+                          {role.title}
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {roleUiDisabled && (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 bg-base-200 px-2 py-0.5 rounded">
+                              Unavailable
+                            </span>
+                          )}
+                          {!readOnly && !isRolesLocked && !roleUiDisabled && (
+                            isEditingRow ? (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0"
+                                onClick={handleCancelRowEdit}
+                                title="Cancel"
+                              >
+                                <XMarkIcon className="w-5 h-5" />
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0"
+                                onClick={() => handleStartRowEdit(role.id)}
+                                title="Edit"
+                              >
+                                <PencilSquareIcon className="w-5 h-5" />
+                              </button>
+                            )
+                          )}
+                        </div>
                       </div>
 
                       <div className="flex items-center gap-3">
@@ -1062,25 +1121,6 @@ const RolesTab: React.FC<ClientTabProps> = ({
                             </span>
                           )}
                         </div>
-
-                        {!readOnly && !isRolesLocked && !roleUiDisabled && (
-                          isEditingRow ? (
-                            <button
-                              className="btn btn-ghost btn-sm flex-shrink-0"
-                              onClick={handleCancelRowEdit}
-                            >
-                              <XMarkIcon className="w-4 h-4" />
-                            </button>
-                          ) : (
-                            <button
-                              className="btn btn-ghost btn-sm flex-shrink-0"
-                              onClick={() => handleStartRowEdit(role.id)}
-                              title="Edit"
-                            >
-                              <PencilSquareIcon className="w-4 h-4" />
-                            </button>
-                          )
-                        )}
                       </div>
                     </div>
                   );
@@ -1088,6 +1128,95 @@ const RolesTab: React.FC<ClientTabProps> = ({
               </div>
             </div>
           ))}
+
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">
+              Sub efforts by employee
+            </h3>
+            <div className="rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]">
+              {subEffortContributorsLoading ? (
+                <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                  <span className="loading loading-spinner loading-sm mr-2" />
+                  Loading sub efforts…
+                </div>
+              ) : subEffortContributors.length === 0 ? (
+                <p className="py-6 text-sm text-gray-500 italic text-center">
+                  No employees have updated sub efforts on this lead yet.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="table w-full">
+                    <thead>
+                      <tr>
+                        <th className="bg-transparent">Employee</th>
+                        <th className="bg-transparent">Sub efforts</th>
+                        <th className="bg-transparent whitespace-nowrap">Effort %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {subEffortContributors.map((row) => {
+                        const avatarId = row.employeeId ?? row.employeeName;
+                        const matchedEmployee = getEmployeeById(avatarId);
+                        const totalEffortPct = row.efforts.reduce(
+                          (sum, effort) => sum + (effort.balancedPercentage ?? 0),
+                          0,
+                        );
+                        const totalEffortLabel = Number.isInteger(totalEffortPct)
+                          ? `${totalEffortPct}%`
+                          : `${Math.round(totalEffortPct * 10) / 10}%`;
+                        return (
+                          <tr key={row.employeeName}>
+                            <td className="align-middle">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {matchedEmployee ? (
+                                  <EmployeeAvatar employeeId={avatarId} size="md" />
+                                ) : (
+                                  <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-200 text-gray-600 text-sm font-medium flex-shrink-0">
+                                    {getEmployeeInitials(row.employeeName)}
+                                  </div>
+                                )}
+                                <span className="font-medium text-gray-900 truncate">
+                                  {row.employeeName}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="align-middle">
+                              <div className="flex flex-wrap gap-2">
+                                {row.efforts.map((effort) => (
+                                  <div key={effort.title} className="inline-flex flex-col items-start gap-0.5">
+                                    <span className="inline-flex items-center gap-2 rounded-md bg-base-200 px-3 py-1.5 text-sm font-medium text-gray-700">
+                                      <span>{effort.title}</span>
+                                      {effort.balancedPercentage != null && (
+                                        <span className="tabular-nums text-gray-500">
+                                          {Number.isInteger(effort.balancedPercentage)
+                                            ? `${effort.balancedPercentage}%`
+                                            : `${effort.balancedPercentage.toFixed(1)}%`}
+                                        </span>
+                                      )}
+                                    </span>
+                                    <span className="px-0.5 text-xs text-gray-500">
+                                      {effort.lastUpdatedAt
+                                        ? `Updated at ${new Date(effort.lastUpdatedAt).toLocaleDateString()}`
+                                        : '—'}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="align-middle whitespace-nowrap">
+                              <span className="text-base font-semibold tabular-nums text-gray-900">
+                                {totalEffortLabel}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 

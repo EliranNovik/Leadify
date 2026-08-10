@@ -496,10 +496,10 @@ const SubEffortsManager: React.FC = () => {
         </div>
       ) : (
         <div className="overflow-x-auto w-full py-2">
-          <table className="table w-full text-sm [&_tbody_td]:py-5 [&_tbody_td]:align-middle">
+          <table className="table w-full text-sm border-separate border-spacing-0 [&_tbody_td]:py-5 [&_tbody_td]:align-middle">
             <thead>
               <tr>
-                <th className="text-left font-medium text-gray-500">ID</th>
+                <th className="sticky left-0 z-20 bg-white text-left font-medium text-gray-500 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">ID</th>
                 <th className="text-left font-medium text-gray-500">Order</th>
                 <th className="text-left font-medium text-gray-500">Name</th>
                 <th className="text-left font-medium text-gray-500 min-w-[12rem]">Description</th>
@@ -514,11 +514,11 @@ const SubEffortsManager: React.FC = () => {
               {visibleItems.map((item) => (
                 <tr
                   key={item.id}
-                  className="cursor-pointer"
+                  className="group cursor-pointer"
                   onClick={() => openEdit(item)}
                   title="Click to edit"
                 >
-                  <td className="text-gray-400 text-xs tabular-nums">#{item.id}</td>
+                  <td className="sticky left-0 z-10 bg-white group-hover:bg-white text-gray-400 text-xs tabular-nums shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">#{item.id}</td>
                   <td className="text-gray-600 tabular-nums">{item.sort_order}</td>
                   <td>
                     <div className="font-semibold text-gray-900">{item.name}</div>

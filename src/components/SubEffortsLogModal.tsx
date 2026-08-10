@@ -26,7 +26,7 @@ import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import { resolveCaseDocumentUploadContentType } from '../lib/caseDocumentsStorage';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { getSoftStageBadgeStyle, getStageColour, getStageName } from '../lib/stageUtils';
-import { compareSubEffortDisplayOrder, dedupeLeadSubEffortRows, defaultClientVisibleFromTemplate, hasLeadSubEffortSavedUpdate, leadSubEffortInternalFromTemplate, leadSubEffortSavedUpdatedAt, leadSubEffortSavedUpdatedBy } from '../lib/leadSubEfforts';
+import { compareSubEffortDisplayOrder, dedupeLeadSubEffortRows, defaultClientVisibleFromTemplate, hasLeadSubEffortSavedUpdate, leadSubEffortInternalFromTemplate, leadSubEffortRowTemplateId, leadSubEffortSavedUpdatedAt, leadSubEffortSavedUpdatedBy, balanceSubEffortPercentages } from '../lib/leadSubEfforts';
 import { DocumentPreviewModal, type DocumentPreviewItem } from './DocumentModal';
 import { SequenceOfEventsDocumentsModal } from './SequenceOfEventsDocumentsModal';
 import { ClientUploadsDocumentsModal } from './ClientUploadsDocumentsModal';
@@ -271,6 +271,17 @@ function readSubEffortJoin(row: any): {
 
 function readSubEffortName(row: any): string {
   return readSubEffortJoin(row)?.name ?? 'Sub effort';
+}
+
+function readSubEffortTemplatePercentage(row: any): number {
+  const se = Array.isArray(row?.sub_efforts) ? row.sub_efforts[0] : row?.sub_efforts;
+  const n = Number(se?.percentage ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatBalancedSubEffortPercentage(value: number | null | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
 }
 
 function readSubEffortDescription(row: any): string | null {
@@ -590,6 +601,7 @@ function TimelineStepButton({
   isDragging,
   isHolding,
   photoByUpdaterName,
+  balancedPercentage = null,
   onSelect,
   onPointerDown,
   onPointerUp,
@@ -607,6 +619,7 @@ function TimelineStepButton({
   isDragging?: boolean;
   isHolding?: boolean;
   photoByUpdaterName?: Map<string, string>;
+  balancedPercentage?: number | null;
   onSelect: () => void;
   onPointerDown: (e: React.PointerEvent) => void;
   onPointerUp: (e: React.PointerEvent) => void;
@@ -614,6 +627,7 @@ function TimelineStepButton({
   onOpenDescription: () => void;
 }) {
   const name = readSubEffortName(row);
+  const percentageLabel = formatBalancedSubEffortPercentage(balancedPercentage);
   const who = workflowUpdatedBy(row);
   const when = workflowUpdatedAt(row);
   const isPending = progress === 'pending' && !isSelected;
@@ -701,9 +715,19 @@ function TimelineStepButton({
                             ? 'text-[15px] text-gray-800'
                             : 'text-[15px] text-gray-900',
                     ].join(' ')}
-                    title={name}
+                    title={percentageLabel ? `${name} · ${percentageLabel}` : name}
                   >
-                    {name}
+                    <span>{name}</span>
+                    {percentageLabel ? (
+                      <span
+                        className={[
+                          'ml-2 inline-flex align-middle tabular-nums font-medium',
+                          isSelected ? 'text-primary/70' : 'text-gray-500',
+                        ].join(' ')}
+                      >
+                        {percentageLabel}
+                      </span>
+                    ) : null}
                   </div>
                   <ChevronRightIcon
                     className={`h-4 w-4 shrink-0 transition md:hidden ${
@@ -1062,6 +1086,17 @@ export function SubEffortsLogModal({
 
   const timelineRows = orderedTimelineRows;
   const currentSubEffortRowId = useMemo(() => findCurrentSubEffortRowId(timelineRows), [timelineRows]);
+  const balancedPercentageByTemplateId = useMemo(() => {
+    const activeTemplates = timelineRows
+      .filter((row: any) => row?.active !== false)
+      .map((row: any) => {
+        const id = leadSubEffortRowTemplateId(row);
+        if (id == null) return null;
+        return { id, percentage: readSubEffortTemplatePercentage(row) };
+      })
+      .filter((row: { id: number; percentage: number } | null): row is { id: number; percentage: number } => row != null);
+    return balanceSubEffortPercentages(activeTemplates);
+  }, [timelineRows]);
   const photoByUpdaterName = useMemo(
     () => buildUpdaterPhotoByName(timelineRows, employeePhotoDirectory),
     [timelineRows, employeePhotoDirectory],
@@ -1127,6 +1162,12 @@ export function SubEffortsLogModal({
     if (selectedId == null) return timelineRows[0] ?? null;
     return timelineRows.find((r: any) => String(r?.id) === String(selectedId)) ?? timelineRows[0] ?? null;
   }, [timelineRows, selectedId]);
+
+  const selectedBalancedPercentageLabel = useMemo(() => {
+    const templateId = leadSubEffortRowTemplateId(selectedRow);
+    if (templateId == null) return null;
+    return formatBalancedSubEffortPercentage(balancedPercentageByTemplateId.get(templateId) ?? null);
+  }, [selectedRow, balancedPercentageByTemplateId]);
 
   const selectedSubCategoryEfforts = useMemo(
     () => (selectedRow ? readSubCategoryEfforts(selectedRow) : []),
@@ -2264,6 +2305,9 @@ export function SubEffortsLogModal({
                           : null;
                       const connectsDoneToDone =
                         progress === 'completed' && nextProgress === 'completed';
+                      const templateId = leadSubEffortRowTemplateId(r);
+                      const balancedPercentage =
+                        templateId != null ? balancedPercentageByTemplateId.get(templateId) ?? null : null;
                       return (
                         <TimelineStepButton
                           key={r?.id ?? index}
@@ -2275,6 +2319,7 @@ export function SubEffortsLogModal({
                           isLast={index === timelineRows.length - 1}
                           connectsDoneToDone={connectsDoneToDone}
                           photoByUpdaterName={photoByUpdaterName}
+                          balancedPercentage={balancedPercentage}
                           isDragging={draggingRowId === rowId}
                           isHolding={holdingRowId === rowId && draggingRowId !== rowId}
                           isDragOver={dragOverRowId === rowId && draggingRowId !== rowId}
@@ -2510,9 +2555,18 @@ export function SubEffortsLogModal({
                             <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
                               <h2
                                 className="min-w-0 max-w-full text-2xl font-bold leading-tight tracking-tight text-white line-clamp-2 break-words [overflow-wrap:anywhere] drop-shadow-sm md:text-[28px]"
-                                title={readSubEffortName(selectedRow)}
+                                title={
+                                  selectedBalancedPercentageLabel
+                                    ? `${readSubEffortName(selectedRow)} · ${selectedBalancedPercentageLabel}`
+                                    : readSubEffortName(selectedRow)
+                                }
                               >
                                 {readSubEffortName(selectedRow)}
+                                {selectedBalancedPercentageLabel ? (
+                                  <span className="ml-2 inline-flex align-middle text-lg font-semibold tabular-nums text-white/75 md:text-xl">
+                                    {selectedBalancedPercentageLabel}
+                                  </span>
+                                ) : null}
                               </h2>
                               <button
                                 type="button"

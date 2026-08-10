@@ -11,7 +11,6 @@ import {
   type CurrentEmployeeContext,
 } from './employeeLeadReporting';
 import { fetchActiveClockInRecord } from './employeeClockOut';
-import { isIsraeliWeekendIso } from './employeeExtraHours';
 
 const JERUSALEM_TZ = 'Asia/Jerusalem';
 
@@ -161,8 +160,9 @@ export function jerusalemMinutesSinceMidnight(now = new Date()): number {
 
 /**
  * Due reminder slots for this moment.
- * Clocked in → 1h and 15m before (clock-in + base hours).
- * Not clocked in → 16:00 and 17:00 Asia/Jerusalem.
+ * Clocked in (today’s session only) → 1h and 15m before (clock-in + base hours).
+ * Not clocked in / stale prior-day session → 16:00 and 17:00 Asia/Jerusalem.
+ * Never returns today-slots before those times.
  */
 export function resolveDueLeadAllocationReminderSlots(params: {
   now?: Date;
@@ -171,31 +171,43 @@ export function resolveDueLeadAllocationReminderSlots(params: {
   clockInTimeIso: string | null;
   minHours: number;
   firedSlots: Iterable<LeadAllocationReminderSlot>;
+  weekdays?: number[];
+  excludedDates?: string[];
 }): LeadAllocationReminderSlot[] {
   const now = params.now ?? new Date();
   const fired = new Set(params.firedSlots);
   const due: LeadAllocationReminderSlot[] = [];
 
-  // Timed day-end reminders only on expected workdays.
-  if (isIsraeliWeekendIso(params.dateKey)) return due;
-  if (!listExpectedLeadAllocationWorkDates(params.dateKey).includes(params.dateKey)) {
+  // Timed day-end reminders only on expected workdays for this employee.
+  if (
+    !listExpectedLeadAllocationWorkDates(params.dateKey, undefined, {
+      weekdays: params.weekdays,
+      excludedDates: params.excludedDates,
+    }).includes(params.dateKey)
+  ) {
     return due;
   }
 
-  if (params.isClockedIn && params.clockInTimeIso) {
-    const clockInMs = new Date(params.clockInTimeIso).getTime();
-    if (Number.isFinite(clockInMs)) {
-      const baseEndMs = clockInMs + minHoursToMs(params.minHours);
-      const oneHourBefore = baseEndMs - 60 * 60 * 1000;
-      const fifteenBefore = baseEndMs - 15 * 60 * 1000;
-      const nowMs = now.getTime();
+  const clockInMs =
+    params.isClockedIn && params.clockInTimeIso
+      ? new Date(params.clockInTimeIso).getTime()
+      : NaN;
+  const clockInIsToday =
+    Number.isFinite(clockInMs) &&
+    getJerusalemTodayIsoDate(new Date(clockInMs)) === params.dateKey;
 
-      if (nowMs >= oneHourBefore && !fired.has('clocked_1h')) {
-        due.push('clocked_1h');
-      }
-      if (nowMs >= fifteenBefore && !fired.has('clocked_15m')) {
-        due.push('clocked_15m');
-      }
+  if (clockInIsToday) {
+    const baseEndMs = clockInMs + minHoursToMs(params.minHours);
+    const oneHourBefore = baseEndMs - 60 * 60 * 1000;
+    const fifteenBefore = baseEndMs - 15 * 60 * 1000;
+    const nowMs = now.getTime();
+
+    // Only after the reminder instant — never early for today's report.
+    if (nowMs >= oneHourBefore && !fired.has('clocked_1h')) {
+      due.push('clocked_1h');
+    }
+    if (nowMs >= fifteenBefore && !fired.has('clocked_15m')) {
+      due.push('clocked_15m');
     }
     return due;
   }
@@ -253,15 +265,17 @@ export async function loadLeadAllocationReminderSnapshot(): Promise<LeadAllocati
   if (
     !ctx ||
     !canAccessLeadTimeReport({
-      isSuperUser: ctx.isSuperUser,
-      bonusesRole: ctx.bonusesRole,
+      leadTimeReportingEnabled: ctx.leadTimeReportingEnabled,
     })
   ) {
     return null;
   }
 
   const [missingDates, active] = await Promise.all([
-    fetchMissingLeadAllocationDates(ctx.employeeId),
+    fetchMissingLeadAllocationDates(ctx.employeeId, {
+      weekdays: ctx.leadTimeReportingWeekdays,
+      excludedDates: ctx.leadTimeReportingExcludedDates,
+    }),
     fetchActiveClockInRecord(ctx.employeeId).catch(() => null),
   ]);
 

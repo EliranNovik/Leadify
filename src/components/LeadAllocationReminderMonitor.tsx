@@ -94,7 +94,8 @@ function showLeadAllocationReminderToast(params: {
 /**
  * Modal + timed toast reminders for missing daily lead allocations.
  * Modal: past days only, once per Jerusalem hour. Never for today alone.
- * Toasts: still for today's missing report on the clocked-in / 16:00–17:00 schedule.
+ * Toasts for today: only after the due reminder times (today’s clock-in end −1h/−15m,
+ * or 16:00/17:00 when not on a valid today clock-in). Never before those times.
  */
 const LeadAllocationReminderMonitor: React.FC = () => {
   const navigate = useNavigate();
@@ -150,6 +151,8 @@ const LeadAllocationReminderMonitor: React.FC = () => {
         clockInTimeIso: snap.clockInTimeIso,
         minHours: snap.ctx.minHours,
         firedSlots: fired,
+        weekdays: snap.ctx.leadTimeReportingWeekdays,
+        excludedDates: snap.ctx.leadTimeReportingExcludedDates,
       });
 
       for (const slot of due) {

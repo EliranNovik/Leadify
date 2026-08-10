@@ -1869,10 +1869,10 @@ const ContractTemplatesManager: React.FC = () => {
             ) : (
               <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="table w-full">
+                  <table className="table w-full border-separate border-spacing-0">
                     <thead>
                       <tr className="bg-gray-50">
-                        <th className="font-semibold text-gray-700">Template Name</th>
+                        <th className="sticky left-0 z-20 bg-white font-semibold text-gray-700 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">Template Name</th>
                         <th className="font-semibold text-gray-700">Created</th>
                         <th className="font-semibold text-gray-700">Status</th>
                         <th className="font-semibold text-gray-700">Type</th>
@@ -1885,10 +1885,10 @@ const ContractTemplatesManager: React.FC = () => {
                       {filteredTemplates.map(template => (
                         <tr
                           key={`${template.sourceTable}_${template.id}`}
-                          className="hover:bg-gray-50 cursor-pointer transition-colors"
+                          className="group hover:bg-gray-50 cursor-pointer transition-colors"
                           onClick={() => openQuickEditDrawer(template)}
                         >
-                          <td>
+                          <td className="sticky left-0 z-10 bg-white group-hover:bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                             <div className="flex items-center gap-3">
                               <div className="p-2 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg">
                                 <DocumentTextIcon className="w-4 h-4 text-white" />

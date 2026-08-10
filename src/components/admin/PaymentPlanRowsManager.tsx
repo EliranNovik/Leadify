@@ -309,10 +309,10 @@ const PaymentPlanRowsManager: React.FC = () => {
 
           {/* Desktop Table View */}
           <div className="hidden md:block overflow-x-auto bg-base-100 rounded-lg shadow">
-            <table className="table w-full">
+            <table className="table w-full border-separate border-spacing-0">
               <thead>
                 <tr>
-                  <th>Creation Date</th>
+                  <th className="sticky left-0 z-20 bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">Creation Date</th>
                   <th>Lead #</th>
                   <th>Client</th>
                   <th>Currency</th>
@@ -329,10 +329,10 @@ const PaymentPlanRowsManager: React.FC = () => {
                   return (
                     <tr 
                       key={plan.id}
-                      className="cursor-pointer hover:bg-primary/10 transition-colors"
+                      className="group cursor-pointer hover:bg-primary/10 transition-colors"
                       onClick={() => handleRowClick(plan)}
                     >
-                      <td className="font-mono text-sm">
+                      <td className="sticky left-0 z-10 bg-white group-hover:bg-white font-mono text-sm shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                         {formatDate(plan.created_at)}
                       </td>
                       <td className="font-bold">
@@ -596,10 +596,10 @@ const PaymentPlanRowsManager: React.FC = () => {
               <p className="text-gray-500">No changes recorded</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="table table-sm w-full">
+                <table className="table table-sm w-full border-separate border-spacing-0">
                   <thead>
                     <tr>
-                      <th>Date</th>
+                      <th className="sticky left-0 z-20 bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">Date</th>
                       <th>Field</th>
                       <th>Old Value</th>
                       <th>New Value</th>
@@ -608,8 +608,8 @@ const PaymentPlanRowsManager: React.FC = () => {
                   </thead>
                   <tbody>
                     {changeHistory.map((change) => (
-                      <tr key={change.id}>
-                        <td className="font-mono text-sm">
+                      <tr key={change.id} className="group">
+                        <td className="sticky left-0 z-10 bg-white group-hover:bg-white font-mono text-sm shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                           {formatDate(change.changed_at)}
                         </td>
                         <td className="font-semibold">

@@ -9,7 +9,7 @@ import ClockInBox from './ClockInBox';
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
 const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
 const NewHandlerCasesWidget = lazy(() => import('./NewHandlerCasesWidget'));
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, DocumentCheckIcon, BanknotesIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
@@ -29,10 +29,14 @@ import {
 } from '../lib/stage60SignDate';
 import {
   applyDashboardCostTargetsToDepartments,
+  departmentScoreboardCostBase,
   departmentScoreboardExpected,
   fetchDashboardDepartmentCostTargets,
   fetchDashboardOtherColumnCostTarget,
   otherScoreboardExpected,
+  SCOREBOARD_TARGET_MARKUP_30,
+  SCOREBOARD_TARGET_MARKUP_40,
+  type DashboardDeptCostBreakdown,
 } from '../lib/dashboardDepartmentCostTargets';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
@@ -343,6 +347,25 @@ const SCOREBOARD_LAST_3M = 'Last 3m';
 /** Months in the Last 3m averaging window. */
 const SCOREBOARD_LAST_3M_MONTHS = 3;
 
+/** Target rows for Last 3m: department cost + (top-up % × Last 3m signed/invoiced amount).
+ * +40% row tops up 60% of period total; +30% row tops up 70%. */
+const SCOREBOARD_TARGET_ROWS = [
+  {
+    key: 'target-3m-40',
+    label: 'Target Last 3m · +40%',
+    periodKey: SCOREBOARD_LAST_3M,
+    markup: SCOREBOARD_TARGET_MARKUP_40,
+    averagePeriod: true,
+  },
+  {
+    key: 'target-3m-30',
+    label: 'Target Last 3m · +30%',
+    periodKey: SCOREBOARD_LAST_3M,
+    markup: SCOREBOARD_TARGET_MARKUP_30,
+    averagePeriod: true,
+  },
+] as const;
+
 const createEmptyScoreboardRow = () => ({ count: 0, amount: 0, expected: 0 });
 
 /** Monthly average for a 3-month rolling window total. */
@@ -391,6 +414,9 @@ let departmentsCategoriesCache: {
     categoryNameToDataMap: Map<string, any>;
     targetMap: { [key: number]: number };
     otherExpected: number;
+    otherCostBase: number;
+    costByDeptName: Record<string, number>;
+    costBreakdownByDeptName: Record<string, DashboardDeptCostBreakdown>;
     selectedMonthName: string;
   };
   periodKey: string;
@@ -483,6 +509,8 @@ type DashboardScoreboardCache = {
   agreementData: DashboardScoreboardData;
   invoicedData: DashboardScoreboardData;
   departmentNames: string[];
+  scoreboardCostByDeptName?: Record<string, number>;
+  scoreboardCostBreakdownByDeptName?: Record<string, DashboardDeptCostBreakdown>;
   departmentChartData: { [category: string]: { date: string; contracts: number; amount: number }[] };
   fetchedAt: number;
 };
@@ -3361,9 +3389,12 @@ const Dashboard: React.FC = () => {
     categoryNameToDataMap: Map<string, any>;
     targetMap: { [key: number]: number };
     otherExpected: number;
+    otherCostBase: number;
+    costByDeptName: Record<string, number>;
+    costBreakdownByDeptName: Record<string, DashboardDeptCostBreakdown>;
     selectedMonthName: string;
   }> => {
-    const periodKey = `${selectedYear}-${selectedMonth}`;
+    const periodKey = `${selectedYear}-${selectedMonth}-cost-hs-mfp-v2`;
     if (
       departmentsCategoriesCache &&
       departmentsCategoriesCache.periodKey === periodKey &&
@@ -3416,14 +3447,18 @@ const Dashboard: React.FC = () => {
     const departmentIds = departmentTargets.map((d: any) => d.id);
 
     let otherExpected = 0;
+    let otherCostBase = 0;
+    let costBreakdownByDeptId = new Map<number, DashboardDeptCostBreakdown>();
     try {
       const scoreboardRefs = departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') }));
-      const [costByDept, otherCost] = await Promise.all([
+      const [costResult, otherCost] = await Promise.all([
         fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
         fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
       ]);
-      departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costByDept);
-      otherExpected = otherScoreboardExpected(otherCost);
+      departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costResult.totals);
+      costBreakdownByDeptId = costResult.breakdownByDeptId;
+      otherCostBase = Math.max(0, Number(otherCost) || 0);
+      otherExpected = otherScoreboardExpected(otherCostBase);
     } catch (costErr) {
       console.error('[Dashboard] department cost targets failed:', costErr);
       departmentTargets = departmentTargets.map((dept: any) => ({
@@ -3438,9 +3473,24 @@ const Dashboard: React.FC = () => {
     });
 
     const targetMap: { [key: number]: number } = {};
+    const costByDeptName: Record<string, number> = {};
+    const costBreakdownByDeptName: Record<string, DashboardDeptCostBreakdown> = {};
     departmentTargets.forEach((dept: any) => {
       targetMap[dept.id] = departmentScoreboardExpected(dept);
+      const name = String(dept.name || '');
+      costByDeptName[name] = departmentScoreboardCostBase(dept);
+      costBreakdownByDeptName[name] = costBreakdownByDeptId.get(dept.id) ?? {
+        total: costByDeptName[name],
+        handlersSales: 0,
+        partnersMarketingFinance: 0,
+      };
     });
+    costByDeptName[SCOREBOARD_OTHER_COLUMN] = otherCostBase;
+    costBreakdownByDeptName[SCOREBOARD_OTHER_COLUMN] = {
+      total: otherCostBase,
+      handlersSales: 0,
+      partnersMarketingFinance: 0,
+    };
 
     const result = {
       departmentTargets,
@@ -3449,6 +3499,9 @@ const Dashboard: React.FC = () => {
       categoryNameToDataMap,
       targetMap,
       otherExpected,
+      otherCostBase,
+      costByDeptName,
+      costBreakdownByDeptName,
       selectedMonthName,
     };
     departmentsCategoriesCache = { data: result, periodKey, fetchedAt: Date.now() };
@@ -3539,11 +3592,11 @@ const Dashboard: React.FC = () => {
 
         try {
           const scoreboardRefs = departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') }));
-          const [costByDept, otherCost] = await Promise.all([
+          const [costResult, otherCost] = await Promise.all([
             fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
             fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
           ]);
-          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costByDept);
+          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costResult.totals);
           otherExpected = otherScoreboardExpected(otherCost);
         } catch (costErr) {
           console.error('[Dashboard Agreement Signed] department cost targets failed:', costErr);
@@ -3563,9 +3616,37 @@ const Dashboard: React.FC = () => {
       // Set department names for UI display (main departments + Other bucket)
       const names = [...departmentTargets.map(dept => dept.name), SCOREBOARD_OTHER_COLUMN];
       setDepartmentNames(names);
-      // Debug: Show the exact mapping of ID -> Name -> Target
-      departmentTargets.forEach((dept, index) => {
-      });
+      const costMap: Record<string, number> =
+        shared?.costByDeptName ??
+        (() => {
+          const m: Record<string, number> = {};
+          departmentTargets.forEach((dept: any) => {
+            m[String(dept.name || '')] = departmentScoreboardCostBase(dept);
+          });
+          m[SCOREBOARD_OTHER_COLUMN] = shared?.otherCostBase ?? 0;
+          return m;
+        })();
+      setScoreboardCostByDeptName(costMap);
+      const breakdownMap: Record<string, DashboardDeptCostBreakdown> =
+        shared?.costBreakdownByDeptName ??
+        (() => {
+          const m: Record<string, DashboardDeptCostBreakdown> = {};
+          departmentTargets.forEach((dept: any) => {
+            const total = departmentScoreboardCostBase(dept);
+            m[String(dept.name || '')] = {
+              total,
+              handlersSales: 0,
+              partnersMarketingFinance: 0,
+            };
+          });
+          m[SCOREBOARD_OTHER_COLUMN] = {
+            total: shared?.otherCostBase ?? 0,
+            handlersSales: 0,
+            partnersMarketingFinance: 0,
+          };
+          return m;
+        })();
+      setScoreboardCostBreakdownByDeptName(breakdownMap);
 
       const targetMap = shared?.targetMap ?? (() => {
         const t: { [key: number]: number } = {};
@@ -4122,6 +4203,8 @@ const Dashboard: React.FC = () => {
       return {
         agreementData: newAgreementData,
         departmentNames: names,
+        scoreboardCostByDeptName: costMap,
+        scoreboardCostBreakdownByDeptName: breakdownMap,
         departmentChartData: {},
       };
     } catch (error) {
@@ -4320,11 +4403,11 @@ const Dashboard: React.FC = () => {
         try {
           const scoreboardRefs = departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') }));
           const salesDeptIdsToExclude = [12, 14, 15];
-          const [costByDept, otherCost] = await Promise.all([
+          const [costResult, otherCost] = await Promise.all([
             fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
             fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
           ]);
-          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costByDept);
+          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costResult.totals);
           otherExpected = otherScoreboardExpected(otherCost);
         } catch (costErr) {
           console.error('[Dashboard Invoiced] department cost targets failed:', costErr);
@@ -5196,6 +5279,21 @@ const Dashboard: React.FC = () => {
   const scoreboardTabs = ["Today", "Last 30d", "Tables"];
   // Department names state
   const [departmentNames, setDepartmentNames] = useState<string[]>([]);
+  const [scoreboardCostByDeptName, setScoreboardCostByDeptName] = useState<Record<string, number>>({});
+  const [scoreboardCostBreakdownByDeptName, setScoreboardCostBreakdownByDeptName] = useState<
+    Record<string, DashboardDeptCostBreakdown>
+  >({});
+  const [scoreboardTargetCostModal, setScoreboardTargetCostModal] = useState<{
+    tableType: 'agreement' | 'invoiced';
+    departmentName: string;
+    targetLabel: string;
+    targetAmount: number;
+    periodAmount: number;
+    markup: number;
+    costTotal: number;
+    handlersSales: number;
+    partnersMarketingFinance: number;
+  } | null>(null);
 
   // Dynamic scoreboard categories based on actual departments
   const scoreboardCategories = [
@@ -5299,6 +5397,12 @@ const Dashboard: React.FC = () => {
         setAgreementData(cached.agreementData);
         setInvoicedData(cached.invoicedData);
         setDepartmentNames(cached.departmentNames);
+        if (cached.scoreboardCostByDeptName) {
+          setScoreboardCostByDeptName(cached.scoreboardCostByDeptName);
+        }
+        if (cached.scoreboardCostBreakdownByDeptName) {
+          setScoreboardCostBreakdownByDeptName(cached.scoreboardCostBreakdownByDeptName);
+        }
         setDepartmentChartData(cached.departmentChartData);
         setDepartmentPerformanceLoading(false);
         setInvoicedDataLoading(false);
@@ -5329,6 +5433,12 @@ const Dashboard: React.FC = () => {
         ]);
         if (agreementResult && invoicedResult) {
           setDepartmentNames(agreementResult.departmentNames);
+          if (agreementResult.scoreboardCostByDeptName) {
+            setScoreboardCostByDeptName(agreementResult.scoreboardCostByDeptName);
+          }
+          if (agreementResult.scoreboardCostBreakdownByDeptName) {
+            setScoreboardCostBreakdownByDeptName(agreementResult.scoreboardCostBreakdownByDeptName);
+          }
           // Chart is filled asynchronously after the agreement table paints; keep prior chart if empty.
           if (
             agreementResult.departmentChartData &&
@@ -5340,6 +5450,8 @@ const Dashboard: React.FC = () => {
             agreementData: agreementResult.agreementData,
             invoicedData: invoicedResult,
             departmentNames: agreementResult.departmentNames,
+            scoreboardCostByDeptName: agreementResult.scoreboardCostByDeptName,
+            scoreboardCostBreakdownByDeptName: agreementResult.scoreboardCostBreakdownByDeptName,
             departmentChartData: agreementResult.departmentChartData,
             fetchedAt: Date.now(),
           });
@@ -5934,14 +6046,163 @@ const Dashboard: React.FC = () => {
       return row || { count: 0, amount: 0, expected: 0 };
     };
 
-    const getMonthTargetTotal = () => {
-      const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
-      const endExclusive = otherIdx >= 0 ? otherIdx + 1 : departmentNames.length;
-      return (
-        dataSource[selectedMonth]?.slice(0, endExclusive).reduce(
-          (sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0),
+    const getDeptCostBase = (deptName: string) =>
+      Math.max(0, Number(scoreboardCostByDeptName[deptName]) || 0);
+
+    /** Period amount for targets. Last 3m uses monthly average (same as Last 3m row). */
+    const getPeriodAmountForTarget = (
+      deptName: string,
+      periodKey: string,
+      averagePeriod = false,
+    ) => {
+      const raw =
+        deptName === 'Total'
+          ? getTotalData(periodKey).amount || 0
+          : getDeptData(deptName, periodKey).amount || 0;
+      return averagePeriod ? scoreboardThreeMonthAverage(raw) : raw;
+    };
+
+    /**
+     * Target = department cost + (markup × Last 3m agreement/invoiced amount).
+     * +40% row → +60% of period total; +30% row → +70% of period total.
+     */
+    const getDeptPeriodMarkupTarget = (
+      deptName: string,
+      markup: number,
+      periodKey: string,
+      averagePeriod: boolean,
+    ) => {
+      const cost = getDeptCostBase(deptName);
+      const periodAmount = getPeriodAmountForTarget(deptName, periodKey, averagePeriod);
+      if (!(cost > 0) && !(periodAmount > 0)) return 0;
+      return Math.round((cost + markup * periodAmount) * 100) / 100;
+    };
+
+    const getPeriodMarkupTargetTotal = (
+      markup: number,
+      periodKey: string,
+      averagePeriod: boolean,
+    ) =>
+      categories.reduce(
+        (sum, cat) => sum + getDeptPeriodMarkupTarget(cat, markup, periodKey, averagePeriod),
+        0,
+      );
+
+    const getPeriodGoalTarget = (deptName: string, periodKey: string) => {
+      const averagePeriod = periodKey === SCOREBOARD_LAST_3M;
+      if (deptName === 'Total') {
+        return getPeriodMarkupTargetTotal(SCOREBOARD_TARGET_MARKUP_40, periodKey, averagePeriod);
+      }
+      return getDeptPeriodMarkupTarget(
+        deptName,
+        SCOREBOARD_TARGET_MARKUP_40,
+        periodKey,
+        averagePeriod,
+      );
+    };
+
+    /** Goal-bar amount: Last 3m compares the displayed monthly average. */
+    const getPeriodGoalAmount = (deptName: string, periodKey: string) =>
+      getPeriodAmountForTarget(deptName, periodKey, periodKey === SCOREBOARD_LAST_3M);
+
+    const openTargetCostModal = (
+      deptName: string,
+      targetLabel: string,
+      targetAmount: number,
+      periodAmount: number,
+      markup: number,
+    ) => {
+      if (deptName === 'Total') {
+        const handlersSales = categories.reduce(
+          (sum, cat) => sum + (scoreboardCostBreakdownByDeptName[cat]?.handlersSales ?? 0),
           0,
-        ) || 0
+        );
+        const partnersMarketingFinance = categories.reduce(
+          (sum, cat) => sum + (scoreboardCostBreakdownByDeptName[cat]?.partnersMarketingFinance ?? 0),
+          0,
+        );
+        const costTotal = categories.reduce(
+          (sum, cat) => sum + (scoreboardCostBreakdownByDeptName[cat]?.total ?? getDeptCostBase(cat)),
+          0,
+        );
+        setScoreboardTargetCostModal({
+          tableType,
+          departmentName: 'Total',
+          targetLabel,
+          targetAmount,
+          periodAmount,
+          markup,
+          costTotal,
+          handlersSales,
+          partnersMarketingFinance,
+        });
+        return;
+      }
+      const breakdown = scoreboardCostBreakdownByDeptName[deptName] ?? {
+        total: getDeptCostBase(deptName),
+        handlersSales: 0,
+        partnersMarketingFinance: 0,
+      };
+      setScoreboardTargetCostModal({
+        tableType,
+        departmentName: deptName,
+        targetLabel,
+        targetAmount,
+        periodAmount,
+        markup,
+        costTotal: breakdown.total,
+        handlersSales: breakdown.handlersSales,
+        partnersMarketingFinance: breakdown.partnersMarketingFinance,
+      });
+    };
+
+    /**
+     * Color target cells vs the matching period row (Last 3m):
+     * green when that period’s amount is over (or equal) the target, red when under.
+     */
+    const renderTargetAmountCell = (
+      targetAmount: number,
+      periodAmount: number,
+      key: string,
+      opts: {
+        isTotalCol?: boolean;
+        deptName: string;
+        targetLabel: string;
+        markup: number;
+      },
+    ) => {
+      const metOrOver = periodAmount >= targetAmount;
+      const { isTotalCol = false, deptName, targetLabel, markup } = opts;
+      const amountStyle = {
+        fontSize: '15px',
+        fontWeight: 600,
+        letterSpacing: '-0.015em',
+        color: targetAmount > 0 ? (metOrOver ? '#059669' : '#e11d48') : '#64748b',
+      } as const;
+      const display = targetAmount ? `₪${Math.ceil(targetAmount).toLocaleString()}` : '—';
+      return (
+        <td
+          key={key}
+          className={`px-3 py-3.5 text-center whitespace-nowrap tabular-nums leading-snug${
+            isTotalCol ? ' bg-indigo-50/40' : ''
+          }`}
+        >
+          {dashboardIsSuperuser ? (
+            <button
+              type="button"
+              className="border-0 bg-transparent p-0 outline-none ring-0 shadow-none cursor-pointer hover:underline"
+              style={amountStyle}
+              title="View cost breakdown"
+              onClick={() =>
+                openTargetCostModal(deptName, targetLabel, targetAmount, periodAmount, markup)
+              }
+            >
+              {display}
+            </button>
+          ) : (
+            <span style={amountStyle}>{display}</span>
+          )}
+        </td>
       );
     };
 
@@ -5971,9 +6232,11 @@ const Dashboard: React.FC = () => {
       deptName: string;
       showGoal?: boolean;
       target?: number;
+      /** When set (e.g. Last 3m raw total), progress bar uses this instead of displayed amount. */
+      goalAmount?: number;
       isTotalCol?: boolean;
     }) => {
-      const { count, amount, periodKey, deptName, showGoal, target = 0, isTotalCol } = opts;
+      const { count, amount, periodKey, deptName, showGoal, target = 0, goalAmount, isTotalCol } = opts;
       return (
         <div className={`inline-flex w-full flex-col items-center ${isTotalCol ? '' : ''}`}>
           <div
@@ -5999,7 +6262,7 @@ const Dashboard: React.FC = () => {
           >
             {count}
           </button>
-          {showGoal ? renderGoalBalken(amount, target) : null}
+          {showGoal ? renderGoalBalken(goalAmount ?? amount, target) : null}
         </div>
       );
     };
@@ -6021,7 +6284,12 @@ const Dashboard: React.FC = () => {
       ...(showLastMonthCols
         ? [{ key: selectedMonth, label: selectedMonth, dataKey: selectedMonth }]
         : []),
-      { key: `Target ${selectedMonth}`, label: `Target ${selectedMonth}`, dataKey: `Target ${selectedMonth}` },
+      ...SCOREBOARD_TARGET_ROWS.map((row) => ({
+        key: row.key,
+        label: row.label,
+        dataKey: row.key,
+        targetRow: row,
+      })),
     ];
 
     return (
@@ -6032,11 +6300,11 @@ const Dashboard: React.FC = () => {
             <thead>
               <tr className="border-b border-slate-200">
                 <th className="text-left px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400 w-[96px]">Department</th>
-                {mobilePeriods.map((p) => (
+                  {mobilePeriods.map((p) => (
                   <th
                     key={p.key}
                     className={`text-center px-1.5 py-2.5 text-[11px] text-slate-500 w-[118px] ${
-                      p.key.startsWith('Target ') ? 'font-normal' : 'font-semibold'
+                      'targetRow' in p && p.targetRow ? 'font-normal' : 'font-semibold'
                     }`}
                   >
                     {p.label}
@@ -6063,27 +6331,47 @@ const Dashboard: React.FC = () => {
                     })()}
                   </td>
                   {mobilePeriods.map((p) => {
-                    if (p.key === `Target ${selectedMonth}`) {
-                      const row = deptName === 'Total'
-                        ? { expected: getMonthTargetTotal(), amount: getTotalData(selectedMonth).amount }
-                        : (() => {
-                          const data = getDeptData(deptName, selectedMonth);
-                          return { expected: data.expected || 0, amount: data.amount || 0 };
-                        })();
-                      const target = row.expected || 0;
-                      const amount = row.amount || 0;
+                    if ('targetRow' in p && p.targetRow) {
+                      const { markup, periodKey, averagePeriod, label } = p.targetRow;
+                      const targetAmount =
+                        deptName === 'Total'
+                          ? getPeriodMarkupTargetTotal(markup, periodKey, averagePeriod)
+                          : getDeptPeriodMarkupTarget(deptName, markup, periodKey, averagePeriod);
+                      const periodAmount = getPeriodAmountForTarget(deptName, periodKey, averagePeriod);
+                      const metOrOver = periodAmount >= targetAmount;
+                      const amountStyle = {
+                        fontSize: '15px',
+                        fontWeight: 600,
+                        letterSpacing: '-0.015em',
+                        color: targetAmount > 0 ? (metOrOver ? '#059669' : '#e11d48') : '#64748b',
+                      } as const;
+                      const display = targetAmount ? `₪${Math.ceil(targetAmount).toLocaleString()}` : '—';
                       return (
                         <td
                           key={`${deptName}-${p.key}`}
                           className="px-1.5 py-2.5 text-center whitespace-nowrap tabular-nums leading-snug"
-                          style={{
-                            fontSize: '15px',
-                            fontWeight: 600,
-                            letterSpacing: '-0.015em',
-                            color: target > 0 ? (amount >= target ? '#059669' : '#e11d48') : '#64748b',
-                          }}
                         >
-                          {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
+                          {dashboardIsSuperuser ? (
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent p-0 outline-none ring-0 shadow-none cursor-pointer hover:underline"
+                              style={amountStyle}
+                              title="View cost breakdown"
+                              onClick={() =>
+                                openTargetCostModal(
+                                  deptName,
+                                  label,
+                                  targetAmount,
+                                  periodAmount,
+                                  markup,
+                                )
+                              }
+                            >
+                              {display}
+                            </button>
+                          ) : (
+                            <span style={amountStyle}>{display}</span>
+                          )}
                         </td>
                       );
                     }
@@ -6095,6 +6383,9 @@ const Dashboard: React.FC = () => {
                       ? scoreboardThreeMonthAverage(row.amount || 0)
                       : (row.amount || 0);
                     const isMonthCol = p.dataKey === selectedMonth;
+                    const showGoal = p.dataKey === SCOREBOARD_LAST_3M;
+                    const goalTarget = showGoal ? getPeriodGoalTarget(deptName, p.dataKey) : 0;
+                    const goalAmount = showGoal ? getPeriodGoalAmount(deptName, p.dataKey) : displayAmount;
                     return (
                       <td key={`${deptName}-${p.key}`} className={`px-1.5 py-2.5 text-center ${isMonthCol ? 'bg-slate-50/80' : ''}`}>
                         {renderMetricCell({
@@ -6102,8 +6393,9 @@ const Dashboard: React.FC = () => {
                           amount: displayAmount,
                           periodKey: p.dataKey,
                           deptName,
-                          showGoal: isMonthCol,
-                          target: row.expected || 0,
+                          showGoal,
+                          target: goalTarget,
+                          goalAmount,
                           isTotalCol: deptName === 'Total',
                         })}
                       </td>
@@ -6165,6 +6457,7 @@ const Dashboard: React.FC = () => {
                                 dataSource[selectedMonth]?.[dataIndex];
                       const amount = data?.amount ?? 0;
                       const displayAmount = isLast3m ? scoreboardThreeMonthAverage(amount) : amount;
+                      const showGoal = isLast3m;
                       return (
                         <td key={`${category}-combined`} className="px-3 py-3.5 text-center align-top">
                           {renderMetricCell({
@@ -6172,8 +6465,11 @@ const Dashboard: React.FC = () => {
                             amount: displayAmount,
                             periodKey: columnType,
                             deptName: category,
-                            showGoal: isMonthRow,
-                            target: data?.expected ?? 0,
+                            showGoal,
+                            target: showGoal ? getPeriodGoalTarget(category, columnType) : 0,
+                            goalAmount: showGoal
+                              ? (isLast3m ? displayAmount : amount)
+                              : displayAmount,
                           })}
                         </td>
                       );
@@ -6185,21 +6481,23 @@ const Dashboard: React.FC = () => {
                             isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.count ?? 0) :
                               isLast3m ? (dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.count ?? 0) :
                                 (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0);
-                        const totalAmount = isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
+                        const rawTotalAmount = isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
                           isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
                             isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
-                              isLast3m ? scoreboardThreeMonthAverage(dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.amount ?? 0) :
+                              isLast3m ? (dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.amount ?? 0) :
                                 (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0);
-                        const totalExpected = isMonthRow
-                          ? (dataSource[selectedMonth]?.[totalIndexMonth]?.expected ?? getMonthTargetTotal())
-                          : 0;
+                        const totalAmount = isLast3m
+                          ? scoreboardThreeMonthAverage(rawTotalAmount)
+                          : rawTotalAmount;
+                        const showGoal = isLast3m;
                         return renderMetricCell({
                           count: totalCount,
                           amount: totalAmount,
                           periodKey: columnType,
                           deptName: 'Total',
-                          showGoal: isMonthRow,
-                          target: totalExpected || getMonthTargetTotal(),
+                          showGoal,
+                          target: showGoal ? getPeriodGoalTarget('Total', columnType) : 0,
+                          goalAmount: showGoal ? totalAmount : totalAmount,
                           isTotalCol: true,
                         });
                       })()}
@@ -6207,60 +6505,71 @@ const Dashboard: React.FC = () => {
                   </tr>
                 );
               })}
-              <tr className="border-t border-slate-200">
-                <td className="px-4 py-3.5 text-sm font-normal text-slate-600 whitespace-nowrap">
-                  <span className="inline-flex items-center gap-2.5">
-                    <svg
-                      className="h-7 w-7 shrink-0 text-slate-500"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
-                      <circle cx="12" cy="12" r="5.25" stroke="currentColor" strokeWidth="1.75" />
-                      <circle cx="12" cy="12" r="1.75" fill="currentColor" />
-                    </svg>
-                    Target {selectedMonth}
-                  </span>
-                </td>
-                {categories.map((category) => {
-                  const data = getDeptData(category, selectedMonth);
-                  const amount = data.amount ?? 0;
-                  const target = data.expected ?? 0;
-                  return (
-                    <td
-                      key={`${category}-target`}
-                      className="px-3 py-3.5 text-center whitespace-nowrap tabular-nums leading-snug"
-                      style={{
-                        fontSize: '15px',
-                        fontWeight: 600,
-                        letterSpacing: '-0.015em',
-                        color: target > 0 ? (amount >= target ? '#059669' : '#e11d48') : '#64748b',
-                      }}
-                    >
-                      {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
+              {SCOREBOARD_TARGET_ROWS.map((targetRow) => {
+                const periodAmountTotal = getPeriodAmountForTarget(
+                  'Total',
+                  targetRow.periodKey,
+                  targetRow.averagePeriod,
+                );
+                const totalTarget = getPeriodMarkupTargetTotal(
+                  targetRow.markup,
+                  targetRow.periodKey,
+                  targetRow.averagePeriod,
+                );
+                return (
+                  <tr key={targetRow.key} className="border-t border-slate-200">
+                    <td className="px-4 py-3.5 text-sm font-normal text-slate-600 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-2.5">
+                        <svg
+                          className="h-7 w-7 shrink-0 text-slate-500"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          aria-hidden="true"
+                        >
+                          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
+                          <circle cx="12" cy="12" r="5.25" stroke="currentColor" strokeWidth="1.75" />
+                          <circle cx="12" cy="12" r="1.75" fill="currentColor" />
+                        </svg>
+                        {targetRow.label}
+                      </span>
                     </td>
-                  );
-                })}
-                <td
-                  className="px-3 py-3.5 text-center whitespace-nowrap tabular-nums leading-snug bg-indigo-50/40"
-                  style={(() => {
-                    const totalTarget = getMonthTargetTotal();
-                    const totalAmount = dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0;
-                    return {
-                      fontSize: '15px',
-                      fontWeight: 600,
-                      letterSpacing: '-0.015em',
-                      color: !(totalTarget > 0) ? '#64748b' : totalAmount >= totalTarget ? '#059669' : '#e11d48',
-                    };
-                  })()}
-                >
-                  {(() => {
-                    const totalTarget = getMonthTargetTotal();
-                    return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
-                  })()}
-                </td>
-              </tr>
+                    {categories.map((category) => {
+                      const targetAmount = getDeptPeriodMarkupTarget(
+                        category,
+                        targetRow.markup,
+                        targetRow.periodKey,
+                        targetRow.averagePeriod,
+                      );
+                      const periodAmount = getPeriodAmountForTarget(
+                        category,
+                        targetRow.periodKey,
+                        targetRow.averagePeriod,
+                      );
+                      return renderTargetAmountCell(
+                        targetAmount,
+                        periodAmount,
+                        `${category}-${targetRow.key}`,
+                        {
+                          deptName: category,
+                          targetLabel: targetRow.label,
+                          markup: targetRow.markup,
+                        },
+                      );
+                    })}
+                    {renderTargetAmountCell(
+                      totalTarget,
+                      periodAmountTotal,
+                      `total-${targetRow.key}`,
+                      {
+                        isTotalCol: true,
+                        deptName: 'Total',
+                        targetLabel: targetRow.label,
+                        markup: targetRow.markup,
+                      },
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -8257,7 +8566,12 @@ const Dashboard: React.FC = () => {
                 <div>
                   <div className="bg-white rounded-2xl border-0 shadow-sm overflow-hidden min-w-0 w-full">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-5 py-3 md:py-3.5 bg-white gap-2">
-                      <div className={`text-sm font-semibold ${isAltTheme ? 'text-emerald-700' : 'text-slate-800'}`}>Agreement signed</div>
+                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500">
+                        <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
+                          <DocumentCheckIcon className="h-5 w-5" aria-hidden="true" />
+                        </span>
+                        Agreement signed
+                      </div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-1.5">
                         <span className="text-[11px] font-medium text-slate-400 mr-1">Filter by:</span>
                         <button
@@ -8357,7 +8671,12 @@ const Dashboard: React.FC = () => {
                 <div className="mt-4 md:mt-6">
                   <div className="bg-white rounded-2xl border-0 shadow-sm overflow-hidden min-w-0 w-full">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-5 py-3 md:py-3.5 bg-white gap-2">
-                      <div className={`text-sm font-semibold ${isAltTheme ? 'text-emerald-700' : 'text-slate-800'}`}>Invoiced</div>
+                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500">
+                        <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
+                          <BanknotesIcon className="h-5 w-5" aria-hidden="true" />
+                        </span>
+                        Invoiced
+                      </div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-1.5">
                         <span className="text-[11px] font-medium text-slate-400 mr-1">Filter by:</span>
                         <button
@@ -8629,316 +8948,420 @@ const Dashboard: React.FC = () => {
       <div className="w-full mt-12">
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-6">
           {/* Team Availability Section */}
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden min-w-0">
-            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 px-6 py-4 border-b border-gray-200">
-              <div className="flex items-center justify-between w-full lg:w-auto">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
-                    <UserGroupIcon className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
+          <div className="min-w-0 space-y-4">
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 px-6 py-4">
+                <div className="flex items-center justify-between w-full lg:w-auto">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
+                      <UserGroupIcon className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
                       <h2 className="text-lg font-bold text-gray-900">
                         Team Availability
                       </h2>
-                      {dashboardIsSuperuser && (
-                        <button
-                          type="button"
-                          className="btn btn-xs btn-outline btn-primary rounded-full px-3 min-h-0 h-7"
-                          onClick={() => setIsTeamStatusModalOpen(true)}
-                        >
-                          View all
-                        </button>
-                      )}
+                      <p className="text-sm text-gray-500">
+                        {getDateDescription(teamAvailabilityDate)}
+                      </p>
                     </div>
-                    <p className="text-sm text-gray-500">
-                  {getDateDescription(teamAvailabilityDate)}
-                    </p>
+                  </div>
+                  {/* My Availability Button - Mobile Only (icon only) */}
+                  <button
+                    onClick={() => setIsMyAvailabilityModalOpen(true)}
+                    className="btn btn-sm btn-primary lg:hidden btn-square"
+                    title="My Availability"
+                  >
+                    <CalendarIcon className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Summary sub-boxes — compact tinted pills */}
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                  <div className="inline-flex items-center gap-2.5 rounded-xl bg-orange-50 px-3.5 py-2.5">
+                    <FaceFrownIcon className="w-7 h-7 text-orange-500 shrink-0" />
+                    <span className="text-lg font-bold text-gray-900 tabular-nums">
+                      {unavailableEmployeesLoading ? '—' : groupedUnavailableData.sick_days.length}
+                    </span>
+                    <span className="text-sm font-medium text-gray-600">Sick</span>
+                  </div>
+                  <div className="inline-flex items-center gap-2.5 rounded-xl bg-green-50 px-3.5 py-2.5">
+                    <SunIcon className="w-7 h-7 text-green-500 shrink-0" />
+                    <span className="text-lg font-bold text-gray-900 tabular-nums">
+                      {unavailableEmployeesLoading ? '—' : groupedUnavailableData.vacation.length}
+                    </span>
+                    <span className="text-sm font-medium text-gray-600">Vacation</span>
+                  </div>
+                  <div className="inline-flex items-center gap-2.5 rounded-xl bg-sky-50 px-3.5 py-2.5">
+                    <CalendarDaysIcon className="w-7 h-7 text-sky-500 shrink-0" />
+                    <span className="text-lg font-bold text-gray-900 tabular-nums">
+                      {unavailableEmployeesLoading ? '—' : groupedUnavailableData.general.length}
+                    </span>
+                    <span className="text-sm font-medium text-gray-600">General</span>
                   </div>
                 </div>
-                {/* My Availability Button - Mobile Only (icon only) */}
-                <button
-                  onClick={() => setIsMyAvailabilityModalOpen(true)}
-                  className="btn btn-sm btn-primary lg:hidden btn-square"
-                  title="My Availability"
-                >
-                  <CalendarIcon className="w-5 h-5" />
-                </button>
-              </div>
 
-              {/* Center: Department Filter - Dropdown - Desktop Only */}
-              <div className="hidden lg:flex items-center justify-center flex-1">
-                <div className="relative">
-                  <select
-                    className="select select-bordered select-sm w-48"
-                    value={departmentFilter}
-                    onChange={(e) => setDepartmentFilter(e.target.value)}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="hidden lg:block">
+                    <select
+                      className="select select-bordered select-sm w-48"
+                      value={departmentFilter}
+                      onChange={(e) => setDepartmentFilter(e.target.value)}
+                    >
+                      <option value="">All Departments</option>
+                      {availableDepartments.map((dept) => (
+                        <option key={dept} value={dept}>
+                          {dept}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
+                      currentDate.setDate(currentDate.getDate() - 1);
+                      const year = currentDate.getFullYear();
+                      const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+                      const day = String(currentDate.getDate()).padStart(2, '0');
+                      setTeamAvailabilityDate(`${year}-${month}-${day}`);
+                    }}
+                    className="btn btn-sm btn-ghost btn-circle"
+                    title="Previous day"
                   >
-                    <option value="">All Departments</option>
-                    {availableDepartments.map((dept) => (
-                      <option key={dept} value={dept}>
-                        {dept}
-                      </option>
-                    ))}
-                  </select>
+                    <ChevronLeftIcon className="w-5 h-5" />
+                  </button>
+                  <CalendarIcon className="w-5 h-5 text-gray-500" />
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm"
+                    value={teamAvailabilityDate}
+                    onChange={(e) => setTeamAvailabilityDate(e.target.value)}
+                    title="Select date to check availability"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
+                      currentDate.setDate(currentDate.getDate() + 1);
+                      const year = currentDate.getFullYear();
+                      const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+                      const day = String(currentDate.getDate()).padStart(2, '0');
+                      setTeamAvailabilityDate(`${year}-${month}-${day}`);
+                    }}
+                    className="btn btn-sm btn-ghost btn-circle"
+                    title="Next day"
+                  >
+                    <ChevronRightIcon className="w-5 h-5" />
+                  </button>
                 </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
-                    currentDate.setDate(currentDate.getDate() - 1);
-                    const year = currentDate.getFullYear();
-                    const month = String(currentDate.getMonth() + 1).padStart(2, '0');
-                    const day = String(currentDate.getDate()).padStart(2, '0');
-                    setTeamAvailabilityDate(`${year}-${month}-${day}`);
-                  }}
-                  className="btn btn-sm btn-ghost btn-circle"
-                  title="Previous day"
-                >
-                  <ChevronLeftIcon className="w-5 h-5" />
-                </button>
-                <CalendarIcon className="w-5 h-5 text-gray-500" />
-                <input
-                  type="date"
-                  className="input input-bordered input-sm"
-                  value={teamAvailabilityDate}
-                  onChange={(e) => setTeamAvailabilityDate(e.target.value)}
-                  title="Select date to check availability"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
-                    currentDate.setDate(currentDate.getDate() + 1);
-                    const year = currentDate.getFullYear();
-                    const month = String(currentDate.getMonth() + 1).padStart(2, '0');
-                    const day = String(currentDate.getDate()).padStart(2, '0');
-                    setTeamAvailabilityDate(`${year}-${month}-${day}`);
-                  }}
-                  className="btn btn-sm btn-ghost btn-circle"
-                  title="Next day"
-                >
-                  <ChevronRightIcon className="w-5 h-5" />
-                </button>
               </div>
             </div>
 
-            {/* Employee List - Grouped by Type */}
+            {/* Per-type tables */}
             {unavailableEmployeesLoading ? (
-              <div className="flex justify-center items-center py-8 px-6">
+              <div className="flex justify-center items-center py-8 px-6 bg-white rounded-2xl shadow-lg border border-gray-200">
                 <div className="loading loading-spinner loading-lg text-gray-600"></div>
               </div>
-            ) : (groupedUnavailableData.sick_days.length > 0 || groupedUnavailableData.vacation.length > 0 || groupedUnavailableData.general.length > 0) ? (
-              <div className="pb-6 pt-4">
-                {(() => {
-                  const hasSickDays = groupedUnavailableData.sick_days.length > 0;
-                  const hasVacation = groupedUnavailableData.vacation.length > 0;
-                  const hasGeneral = groupedUnavailableData.general.length > 0;
+            ) : (
+              (() => {
+                const filterByDepartment = (items: any[]) =>
+                  items.filter((item) => {
+                    if (!departmentFilter.trim()) return true;
+                    return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
+                  });
 
-                  // Helper function to render employee list rows
-                  const renderEmployeeRow = (item: any, badgeColor: string, badgeText: string) => {
-                    const employeeInitials = item.employeeName
-                      .split(' ')
-                      .map((n: string) => n[0])
-                      .join('')
-                      .toUpperCase()
-                      .slice(0, 2);
+                const sickItems = filterByDepartment(groupedUnavailableData.sick_days);
+                const vacationItems = filterByDepartment(groupedUnavailableData.vacation);
+                const generalItems = filterByDepartment(groupedUnavailableData.general);
 
-                    const hasMore = item.allUnavailabilities && item.allUnavailabilities.length > 1;
+                // Shared column widths so Employee / Department / Status / Time align across tables.
+                // On small screens, Employee is tighter so Department sits closer to the name.
+                const colgroup = (
+                  <colgroup>
+                    <col className="w-[28%] sm:w-[34%]" />
+                    <col className="w-[22%] sm:w-[24%]" />
+                    <col className="w-[30%] sm:w-[26%]" />
+                    <col className="w-[20%] sm:w-[16%]" />
+                  </colgroup>
+                );
 
-                    return (
-                      <>
-                        <div
-                          key={item.id}
-                          role={hasMore ? 'button' : undefined}
-                          tabIndex={hasMore ? 0 : undefined}
-                          onClick={hasMore ? () => setExpandedEmployeeCards(prev => {
-                            const newSet = new Set(prev);
-                            if (newSet.has(item.employeeId)) newSet.delete(item.employeeId);
-                            else newSet.add(item.employeeId);
-                            return newSet;
-                          }) : undefined}
-                          onKeyDown={hasMore ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedEmployeeCards(prev => { const newSet = new Set(prev); if (newSet.has(item.employeeId)) newSet.delete(item.employeeId); else newSet.add(item.employeeId); return newSet; }); } } : undefined}
-                          className={`flex items-center gap-2 md:gap-4 px-3 md:px-6 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0 min-w-0 ${hasMore ? 'cursor-pointer' : ''}`}
-                        >
-                          {/* Avatar + Name: on mobile name under avatar; on desktop avatar left of name+department */}
-                          <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-4 flex-shrink-0 md:flex-1 md:min-w-0">
-                            <div className="flex-shrink-0">
-                              {item.photo_url ? (
-                                <img
-                                  src={item.photo_url}
-                                  alt={item.employeeName}
-                                  className="w-12 h-12 rounded-full object-cover"
-                                  onError={(e) => {
-                                    const target = e.target as HTMLImageElement;
-                                    const targetParent = target.parentElement;
-                                    if (targetParent) {
-                                      target.style.display = 'none';
-                                      const fallback = document.createElement('div');
-                                      fallback.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold';
-                                      fallback.textContent = employeeInitials;
-                                      targetParent.insertBefore(fallback, target);
-                                    }
-                                  }}
-                                />
-                              ) : (
-                                <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold">
-                                  {employeeInitials}
-                                </div>
-                              )}
-                            </div>
-                            <div className="min-w-0 text-center md:text-left">
-                              <div className="font-semibold text-gray-900 text-sm md:text-base truncate">{item.employeeName}</div>
-                              <div className="text-sm text-gray-500 truncate hidden md:block">{item.department || 'N/A'}</div>
-                            </div>
+                const renderEmployeeRows = (
+                  item: any,
+                  badgeColor: string,
+                  badgeText: string,
+                  typeIcon: React.ReactNode,
+                  showAvailabilityDot = false,
+                ) => {
+                  const employeeInitials = item.employeeName
+                    .split(' ')
+                    .map((n: string) => n[0])
+                    .join('')
+                    .toUpperCase()
+                    .slice(0, 2);
+
+                  const hasMore = item.allUnavailabilities && item.allUnavailabilities.length > 1;
+                  const isExpanded = expandedEmployeeCards.has(item.employeeId);
+                  const formatTime = (time?: string) => {
+                    if (!time || time === 'All Day') return 'All Day';
+                    if (time.includes(' - ')) {
+                      return time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' – ');
+                    }
+                    return time.includes(':') ? formatTimeString(time) : time;
+                  };
+
+                  // Green = available now; red = currently inside a general unavailability window (today only)
+                  const isUnavailableNow = (() => {
+                    if (!showAvailabilityDot) return false;
+                    const now = new Date();
+                    const todayString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                    if (teamAvailabilityDate !== todayString) return false;
+
+                    const currentMins = now.getHours() * 60 + now.getMinutes();
+                    const slots =
+                      Array.isArray(item.allUnavailabilities) && item.allUnavailabilities.length > 0
+                        ? item.allUnavailabilities
+                        : [{ time: item.time }];
+
+                    const parseHm = (raw: string) => {
+                      const formatted = formatTimeString(raw.trim());
+                      const [h, m] = formatted.split(':').map((n) => parseInt(n, 10));
+                      if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+                      return h * 60 + m;
+                    };
+
+                    return slots.some((slot: any) => {
+                      const time = String(slot?.time || '').trim();
+                      if (!time || time === 'All Day') return true;
+                      const parts = time.split(/\s*[–-]\s*/).map((p: string) => p.trim()).filter(Boolean);
+                      if (parts.length < 2) return false;
+                      const start = parseHm(parts[0]);
+                      const end = parseHm(parts[1]);
+                      if (start == null || end == null) return false;
+                      return currentMins >= start && currentMins <= end;
+                    });
+                  })();
+
+                  const avatar = (
+                    <div className="relative shrink-0 w-10 h-10">
+                      {item.photo_url ? (
+                        <img
+                          src={item.photo_url}
+                          alt={item.employeeName}
+                          className="w-10 h-10 rounded-full object-cover"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            const targetParent = target.parentElement;
+                            if (targetParent) {
+                              target.style.display = 'none';
+                              if (!targetParent.querySelector('[data-avatar-fallback]')) {
+                                const fallback = document.createElement('div');
+                                fallback.setAttribute('data-avatar-fallback', '1');
+                                fallback.className = 'w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold';
+                                fallback.textContent = employeeInitials;
+                                targetParent.insertBefore(fallback, target);
+                              }
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold">
+                          {employeeInitials}
+                        </div>
+                      )}
+                      {showAvailabilityDot && (
+                        <span
+                          className={`absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white shadow-sm ${
+                            isUnavailableNow ? 'bg-red-500' : 'bg-green-500'
+                          }`}
+                          title={isUnavailableNow ? 'Unavailable now' : 'Available now'}
+                          aria-label={isUnavailableNow ? 'Unavailable now' : 'Available now'}
+                        />
+                      )}
+                    </div>
+                  );
+
+                  return (
+                    <React.Fragment key={item.id}>
+                      <tr
+                        role={hasMore ? 'button' : undefined}
+                        tabIndex={hasMore ? 0 : undefined}
+                        onClick={hasMore ? () => setExpandedEmployeeCards(prev => {
+                          const newSet = new Set(prev);
+                          if (newSet.has(item.employeeId)) newSet.delete(item.employeeId);
+                          else newSet.add(item.employeeId);
+                          return newSet;
+                        }) : undefined}
+                        onKeyDown={hasMore ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setExpandedEmployeeCards(prev => {
+                              const newSet = new Set(prev);
+                              if (newSet.has(item.employeeId)) newSet.delete(item.employeeId);
+                              else newSet.add(item.employeeId);
+                              return newSet;
+                            });
+                          }
+                        } : undefined}
+                        className={`border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors ${hasMore ? 'cursor-pointer' : ''}`}
+                      >
+                        <td className="pl-4 pr-2 sm:px-4 py-3 align-middle">
+                          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                            {avatar}
+                            <span className="font-semibold text-gray-900 text-sm truncate">{item.employeeName}</span>
                           </div>
-
-                          {/* Status Badge: RTL-aware for Hebrew, uses remaining space on mobile */}
-                          <div className="flex-1 min-w-0 md:flex-initial md:max-w-none">
+                        </td>
+                        <td className="pl-1 pr-4 sm:px-4 py-3 align-middle text-sm text-gray-600">
+                          <span className="block truncate" title={item.department || 'N/A'}>
+                            {item.department || 'N/A'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 align-middle">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="shrink-0">{typeIcon}</span>
                             <span
-                              className={`inline-block px-3 py-1 rounded-full text-sm font-semibold truncate max-w-full ${badgeColor}`}
+                              className={`inline-block px-2.5 py-1 rounded-full text-xs font-semibold truncate max-w-[12rem] ${badgeColor}`}
                               title={item.reason || badgeText}
                               dir="auto"
                             >
                               {item.reason || badgeText}
                             </span>
-                          </div>
-
-                          {/* Count (if more) on top of time, at right */}
-                          <div className="flex flex-shrink-0 flex-col items-end gap-0.5 ml-auto text-right min-w-0">
                             {hasMore && (
-                              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`} title={`${item.allUnavailabilities!.length - 1} more`}>
+                              <span className={`px-2 py-0.5 rounded-full text-xs font-semibold shrink-0 ${badgeColor}`}>
                                 +{item.allUnavailabilities!.length - 1}
                               </span>
                             )}
-                            <div className="font-semibold text-gray-900 text-sm md:text-base whitespace-nowrap">
-                              {item.time && item.time !== 'All Day'
-                                ? item.time.includes(' - ')
-                                  ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                  : formatTimeString(item.time)
-                                : 'All Day'}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 align-middle text-right">
+                          <div className="font-semibold text-gray-900 text-sm whitespace-nowrap">
+                            {formatTime(item.time)}
+                          </div>
+                          {item.date && item.date.includes('to') && (
+                            <div className="text-xs text-gray-500 mt-0.5 whitespace-nowrap">{item.date}</div>
+                          )}
+                        </td>
+                      </tr>
+
+                      {hasMore && isExpanded && item.allUnavailabilities.slice(1).map((unav: any, idx: number) => (
+                        <tr key={unav.id || idx} className="bg-gray-50 border-b border-gray-100">
+                          <td className="pl-4 pr-2 sm:px-4 py-2.5" />
+                          <td className="pl-1 pr-4 sm:px-4 py-2.5" />
+                          <td className="px-4 py-2.5 align-middle">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="shrink-0">{typeIcon}</span>
+                              <span
+                                className={`inline-block px-2.5 py-1 rounded-full text-xs font-semibold truncate max-w-[12rem] ${badgeColor}`}
+                                title={unav.reason || badgeText}
+                                dir="auto"
+                              >
+                                {unav.reason || badgeText}
+                              </span>
                             </div>
-                            {item.date && item.date.includes('to') && (
-                              <div className="text-xs text-gray-500">{item.date}</div>
+                          </td>
+                          <td className="px-4 py-2.5 align-middle text-right">
+                            <div className="font-semibold text-gray-900 text-sm whitespace-nowrap">
+                              {formatTime(unav.time)}
+                            </div>
+                            {unav.date && unav.date.includes('to') && (
+                              <div className="text-xs text-gray-500 mt-0.5 whitespace-nowrap">{unav.date}</div>
                             )}
-                          </div>
-                        </div>
-
-                        {/* Expandable section for additional unavailabilities */}
-                        {item.allUnavailabilities && item.allUnavailabilities.length > 1 && expandedEmployeeCards.has(item.employeeId) && (
-                          <div className="bg-gray-50 border-b border-gray-100">
-                            {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
-                              const formattedTime = unav.time && unav.time !== 'All Day' && unav.time.includes(':')
-                                ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                : unav.time !== 'All Day' ? unav.time : 'All Day';
-                              return (
-                                <div
-                                  key={unav.id || idx}
-                                  className="flex items-center gap-3 md:gap-4 px-4 md:px-6 py-3 hover:bg-gray-100 transition-colors"
-                                >
-                                  {/* Reason badge - left-aligned (no avatar/name in these rows) */}
-                                  <div className="flex-shrink-0 min-w-0 max-w-[50%] md:max-w-none">
-                                    <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold truncate max-w-full ${badgeColor}`} title={unav.reason || badgeText} dir="auto">
-                                      {unav.reason || badgeText}
-                                    </span>
-                                  </div>
-
-                                  <div className="flex-1 min-w-0" />
-
-                                  {/* Time - right-aligned */}
-                                  <div className="flex-shrink-0 text-right min-w-0">
-                                    <div className="font-semibold text-gray-900 text-sm md:text-base whitespace-nowrap">
-                                      {formattedTime}
-                                    </div>
-                                    {unav.date && unav.date.includes('to') && (
-                                      <div className="text-xs text-gray-500 mt-0.5">{unav.date}</div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </>
-                    );
-                  };
-
-                  return (
-                    <div className="flex flex-col gap-8">
-                      {/* Sick Days Section */}
-                      {hasSickDays && (
-                        <div className="flex flex-col">
-                          <h3 className="text-base font-semibold text-gray-700 mb-3 px-6 flex items-center gap-2">
-                            <FaceFrownIcon className="w-5 h-5 text-orange-500" />
-                            Sick Days
-                          </h3>
-                          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-                            {groupedUnavailableData.sick_days
-                              .filter((item) => {
-                                if (!departmentFilter.trim()) return true;
-                                return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
-                              })
-                              .map((item) => renderEmployeeRow(item, 'bg-orange-100 text-orange-700', 'Sick Day'))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Vacation Section */}
-                      {hasVacation && (
-                        <div className="flex flex-col">
-                          <h3 className="text-base font-semibold text-gray-700 mb-3 px-6 flex items-center gap-2">
-                            <SunIcon className="w-5 h-5 text-green-500" />
-                            Vacation
-                          </h3>
-                          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-                            {groupedUnavailableData.vacation
-                              .filter((item) => {
-                                if (!departmentFilter.trim()) return true;
-                                return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
-                              })
-                              .map((item) => renderEmployeeRow(item, 'bg-green-100 text-green-700', 'Vacation'))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* General Section */}
-                      {hasGeneral && (
-                        <div className="flex flex-col">
-                          <h3 className="text-base font-semibold text-gray-700 mb-3 px-6 flex items-center gap-2">
-                            <CalendarDaysIcon className="w-5 h-5 text-gray-500" />
-                            General
-                          </h3>
-                          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-                            {groupedUnavailableData.general
-                              .filter((item) => {
-                                if (!departmentFilter.trim()) return true;
-                                return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
-                              })
-                              .map((item) => renderEmployeeRow(item, 'bg-gray-100 text-gray-700', 'Unavailable'))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
                   );
-                })()}
-              </div>
-            ) : (
-              <div className="px-6 pb-6 pt-8 text-center">
-                <div className="flex flex-col items-center gap-4">
-                  <div className="p-3 bg-green-100 rounded-full">
-                    <CheckCircleIcon className="w-8 h-8 text-green-600" />
+                };
+
+                const renderTypeTable = (opts: {
+                  title: string;
+                  icon: React.ReactNode;
+                  rowIcon: React.ReactNode;
+                  count: number;
+                  items: any[];
+                  badgeColor: string;
+                  badgeText: string;
+                  emptyLabel: string;
+                  showAvailabilityDot?: boolean;
+                }) => (
+                  <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden min-w-0">
+                    <div className="flex items-center gap-2.5 px-4 py-3 border-b border-gray-200 bg-gray-50/80">
+                      <h3 className="text-sm font-semibold text-gray-800 flex items-center gap-2.5 min-w-0">
+                        {opts.icon}
+                        <span className="truncate">{opts.title}</span>
+                      </h3>
+                      <span className="inline-flex items-center justify-center min-w-[2rem] h-7 rounded-full bg-gray-200 px-2.5 text-sm font-bold text-gray-700 tabular-nums">
+                        {opts.count}
+                      </span>
+                    </div>
+                    {opts.items.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="table table-fixed w-full">
+                          {colgroup}
+                          <thead>
+                            <tr className="border-b border-gray-200">
+                              <th className="bg-transparent pl-4 pr-2 sm:px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500">Employee</th>
+                              <th className="bg-transparent pl-1 pr-4 sm:px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500">Department</th>
+                              <th className="bg-transparent px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500">Status</th>
+                              <th className="bg-transparent px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 text-right">Time</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {opts.items.map((item) =>
+                              renderEmployeeRows(
+                                item,
+                                opts.badgeColor,
+                                opts.badgeText,
+                                opts.rowIcon,
+                                opts.showAvailabilityDot,
+                              ),
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="flex min-h-[6rem] items-center justify-center px-4 py-6 text-center text-sm text-gray-500">
+                        {opts.emptyLabel}
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
-                    <p className="text-gray-600">
-                      No employees are unavailable on {getDateDescription(teamAvailabilityDate)}. Great job team!
-                    </p>
+                );
+
+                return (
+                  <div className="flex flex-col gap-4">
+                    {renderTypeTable({
+                      title: 'Sick Days',
+                      icon: <FaceFrownIcon className="w-6 h-6 text-orange-500 shrink-0" />,
+                      rowIcon: <FaceFrownIcon className="w-5 h-5 text-orange-500" />,
+                      count: sickItems.length,
+                      items: sickItems,
+                      badgeColor: 'bg-orange-100 text-orange-700',
+                      badgeText: 'Sick Day',
+                      emptyLabel: 'No sick days',
+                    })}
+                    {renderTypeTable({
+                      title: 'Vacation',
+                      icon: <SunIcon className="w-6 h-6 text-green-500 shrink-0" />,
+                      rowIcon: <SunIcon className="w-5 h-5 text-green-500" />,
+                      count: vacationItems.length,
+                      items: vacationItems,
+                      badgeColor: 'bg-green-100 text-green-700',
+                      badgeText: 'Vacation',
+                      emptyLabel: 'No vacations',
+                    })}
+                    {renderTypeTable({
+                      title: 'General',
+                      icon: <CalendarDaysIcon className="w-6 h-6 text-sky-500 shrink-0" />,
+                      rowIcon: <CalendarDaysIcon className="w-5 h-5 text-sky-500" />,
+                      count: generalItems.length,
+                      items: generalItems,
+                      badgeColor: 'bg-sky-100 text-sky-700',
+                      badgeText: 'Unavailable',
+                      emptyLabel: 'No general unavailability',
+                      showAvailabilityDot: true,
+                    })}
                   </div>
-                </div>
-              </div>
+                );
+              })()
             )}
           </div>
 
@@ -9211,6 +9634,106 @@ const Dashboard: React.FC = () => {
             : []
         }
       />
+
+      {/* Target cost breakdown modal */}
+      {dashboardIsSuperuser && scoreboardTargetCostModal && (
+        <div className="modal modal-open">
+          <div className="modal-box max-w-md bg-white">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <h3 className="font-semibold text-lg text-slate-800">
+                  {scoreboardTargetCostModal.targetLabel}
+                </h3>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  {scoreboardTargetCostModal.tableType === 'agreement' ? 'Agreement signed' : 'Invoiced'}
+                  {' · '}
+                  {scoreboardTargetCostModal.departmentName}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-circle btn-ghost"
+                onClick={() => setScoreboardTargetCostModal(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-sm">
+              <div className="rounded-xl border border-slate-200 px-3.5 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Handlers &amp; Sales cost
+                </div>
+                <div className="mt-1 text-base font-semibold tabular-nums text-slate-800">
+                  ₪{Math.ceil(scoreboardTargetCostModal.handlersSales).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 px-3.5 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Partners, Marketing &amp; Finance cost
+                </div>
+                <div className="mt-1 text-base font-semibold tabular-nums text-slate-800">
+                  ₪{Math.ceil(scoreboardTargetCostModal.partnersMarketingFinance).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Total employee cost
+                </div>
+                <div className="mt-1 text-base font-semibold tabular-nums text-slate-800">
+                  ₪{Math.ceil(scoreboardTargetCostModal.costTotal).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 px-3.5 py-3 space-y-1.5">
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-600">Last 3m amount</span>
+                  <span className="font-semibold tabular-nums text-slate-800">
+                    ₪{Math.ceil(scoreboardTargetCostModal.periodAmount).toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-600">
+                    Top-up ({Math.round(scoreboardTargetCostModal.markup * 100)}% of period)
+                  </span>
+                  <span className="font-semibold tabular-nums text-slate-800">
+                    ₪
+                    {Math.ceil(
+                      scoreboardTargetCostModal.markup * scoreboardTargetCostModal.periodAmount,
+                    ).toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-3 border-t border-indigo-100 pt-1.5">
+                  <span className="font-medium text-slate-700">Target</span>
+                  <span className="font-bold tabular-nums text-slate-900">
+                    ₪{Math.ceil(scoreboardTargetCostModal.targetAmount).toLocaleString()}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 pt-1">
+                  Target = employee cost + ({Math.round(scoreboardTargetCostModal.markup * 100)}% × Last 3m
+                  amount)
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-action mt-5">
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setScoreboardTargetCostModal(null)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="modal-backdrop bg-black/40"
+            aria-label="Close modal backdrop"
+            onClick={() => setScoreboardTargetCostModal(null)}
+          />
+        </div>
+      )}
 
       {/* Unavailable Employees Modal */}
       <UnavailableEmployeesModal

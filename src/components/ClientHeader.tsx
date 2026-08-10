@@ -1323,6 +1323,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         id,
                         name,
                         sort_order,
+                        percentage,
                         description,
                         default_client_visible,
                         sub_category_efforts (

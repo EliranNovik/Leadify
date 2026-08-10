@@ -49,6 +49,12 @@ interface SidebarProps {
   presentation?: 'floating' | 'docked';
   dockedOpen?: boolean;
   onDockedClose?: () => void;
+  /** Tailwind classes for docked panel position (default under Clients rail). */
+  dockedPositionClassName?: string;
+  /** Tailwind classes for docked panel surface. */
+  dockedSurfaceClassName?: string;
+  /** Light (white) docked rail — active/hover use gray fills instead of white chips. */
+  dockedOnLight?: boolean;
 }
 
 interface SidebarItem {
@@ -157,6 +163,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   presentation = 'floating',
   dockedOpen = false,
   onDockedClose,
+  dockedPositionClassName = 'fixed bottom-0 left-40 z-40 top-[var(--client-detail-nav-top,3rem)]',
+  dockedSurfaceClassName = 'border-r border-gray-300/80 bg-gray-200 dark:border-base-content/10 dark:bg-base-300',
+  dockedOnLight = false,
 }) => {
   const isDockedPresentation = presentation === 'docked';
   const showDockedDesktop = isDockedPresentation && dockedOpen;
@@ -228,6 +237,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             userRoleFromDB: data.userRoleFromDB || 'User',
             userDepartment: data.userDepartment || '',
             bonusesRole: typeof data.bonusesRole === 'string' ? data.bonusesRole : '',
+            leadTimeReportingEnabled: data.leadTimeReportingEnabled === true,
             isSuperUser: data.isSuperUser || false,
             cachedUserId: cachedUserId
           };
@@ -241,6 +251,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       userRoleFromDB: 'User',
       userDepartment: '',
       bonusesRole: '',
+      leadTimeReportingEnabled: false,
       isSuperUser: false,
       cachedUserId: null
     };
@@ -251,6 +262,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>(initialUserInfo.userRoleFromDB);
   const [userDepartment, setUserDepartment] = React.useState<string>(initialUserInfo.userDepartment);
   const [bonusesRole, setBonusesRole] = React.useState<string>(initialUserInfo.bonusesRole || '');
+  const [leadTimeReportingEnabled, setLeadTimeReportingEnabled] = React.useState<boolean>(
+    initialUserInfo.leadTimeReportingEnabled === true,
+  );
   // Use cached name, then AuthContext, then prop, then email
   const initialName = initialUserInfo.userOfficialName || userFullName || userName || authUser?.email || 'User';
   const [userOfficialName, setUserOfficialName] = React.useState<string>(initialName);
@@ -408,6 +422,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               display_name,
               official_name,
               bonuses_role,
+              lead_time_reporting_enabled,
               department_id,
               tenant_departement!department_id(
                 id,
@@ -439,6 +454,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 display_name,
                 official_name,
                 bonuses_role,
+                lead_time_reporting_enabled,
                 department_id,
                 tenant_departement!department_id(
                   id,
@@ -461,6 +477,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             let roleDisplay = 'User';
             let deptName = 'General';
             let rawBonusesRole = '';
+            let reportingEnabled = false;
 
             if (userData.tenants_employee) {
               // Handle both array and single object responses
@@ -476,6 +493,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                 roleDisplay = getRoleDisplayName(rawBonusesRole);
                 setUserRoleFromDB(roleDisplay);
                 setBonusesRole(rawBonusesRole);
+                reportingEnabled =
+                  empData.lead_time_reporting_enabled === true ||
+                  empData.lead_time_reporting_enabled === 't' ||
+                  empData.lead_time_reporting_enabled === 'true' ||
+                  empData.lead_time_reporting_enabled === 1;
+                setLeadTimeReportingEnabled(reportingEnabled);
 
                 // Set department
                 const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
@@ -487,6 +510,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 setUserOfficialName(officialName);
                 setUserRoleFromDB('User');
                 setBonusesRole('');
+                setLeadTimeReportingEnabled(false);
                 setUserDepartment(''); // Clear department if no employee data
               }
             } else {
@@ -495,6 +519,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               setUserOfficialName(officialName);
               setUserRoleFromDB('User');
               setBonusesRole('');
+              setLeadTimeReportingEnabled(false);
               setUserDepartment(''); // Clear department if no employee relationship
             }
 
@@ -505,6 +530,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 userRoleFromDB: roleDisplay,
                 userDepartment: deptName,
                 bonusesRole: rawBonusesRole,
+                leadTimeReportingEnabled: reportingEnabled,
               };
               sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
               sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
@@ -635,17 +661,18 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const dockedLinkBase =
     'relative flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors';
-  const dockedLinkActive =
-    'bg-white font-semibold text-gray-900 shadow-sm dark:bg-base-100 dark:text-base-content';
-  const dockedLinkIdle =
-    'font-medium text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content';
+  const dockedLinkActive = dockedOnLight
+    ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+    : 'bg-white font-semibold text-gray-900 shadow-sm dark:bg-base-100 dark:text-base-content';
+  const dockedLinkIdle = dockedOnLight
+    ? 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
+    : 'font-medium text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content';
   const dockedIconActive = 'h-5 w-5 min-w-[1.25rem] shrink-0 text-gray-800 dark:text-base-content';
   const dockedIconIdle = 'h-5 w-5 min-w-[1.25rem] shrink-0 text-gray-500 dark:text-base-content/60';
 
-  // Filter sidebar items based on superuser status and bonuses_role
+  // Filter sidebar items based on superuser status and lead time reporting opt-in
   const canSeeLeadTimeReport = canAccessLeadTimeReport({
-    isSuperUser,
-    bonusesRole,
+    leadTimeReportingEnabled,
   });
 
   const filteredDesktopItems = React.useMemo(() => {
@@ -722,7 +749,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             ref={sidebarRef}
             className={
               showDockedDesktop
-                ? 'fixed bottom-0 left-40 z-40 flex w-64 flex-col min-h-0 overflow-hidden border-r border-gray-300/80 bg-gray-200 dark:border-base-content/10 dark:bg-base-300 top-[var(--client-detail-nav-top,3rem)]'
+                ? `flex w-64 flex-col min-h-0 overflow-hidden ${dockedPositionClassName} ${dockedSurfaceClassName}`
                 : `fixed top-20 bottom-6 left-4 z-40 flex min-h-[120px] min-h-0 flex-col overflow-hidden rounded-2xl border shadow-2xl transition-all duration-200 group/sidebar sidebar-frosted-glass ${
                     isSidebarHovered ? 'w-64' : 'w-20'
                   }`

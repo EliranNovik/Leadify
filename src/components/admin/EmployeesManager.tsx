@@ -3,6 +3,13 @@ import GenericCRUDManager from './GenericCRUDManager';
 import { supabase } from '../../lib/supabase';
 import { getSalaryEmployeeInitials, salaryAvatarGradientStyle } from '../../lib/employeeSalaries';
 import type { AdminCrudEmbedProps } from './FirmsManager';
+import LeadTimeReportingScheduleEditor, {
+  defaultLeadTimeReportingSchedule,
+} from './LeadTimeReportingScheduleEditor';
+import {
+  normalizeLeadTimeReportingExcludedDates,
+  normalizeLeadTimeReportingWeekdays,
+} from '../../lib/employeeLeadReporting';
 
 const EmployeeTableDisplayName: React.FC<{ value: unknown; record: Record<string, unknown> }> = ({
   value,
@@ -337,6 +344,71 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       type: 'boolean' as const,
       required: false,
       hideInEdit: true // Toggle in table only
+    },
+    {
+      name: 'lead_time_reporting_enabled',
+      label: 'Lead time reporting',
+      type: 'boolean' as const,
+      required: false,
+      hideInEdit: true, // Toggle in table; schedule edited in drawer
+      defaultValue: false,
+    },
+    {
+      name: 'lead_time_reporting_schedule',
+      label: 'Lead time fill days',
+      type: 'custom' as const,
+      required: false,
+      hideInTable: true,
+      hideInAdd: false,
+      hideInEdit: false,
+      defaultValue: defaultLeadTimeReportingSchedule(),
+      customComponent: LeadTimeReportingScheduleEditor,
+      prepareValueForForm: (_value: any, record?: Record<string, any> | null) => ({
+        weekdays: normalizeLeadTimeReportingWeekdays(
+          record?.lead_time_reporting_weekdays,
+        ),
+        excluded_dates: normalizeLeadTimeReportingExcludedDates(
+          record?.lead_time_reporting_excluded_dates,
+        ),
+      }),
+      prepareValueForSave: (value: any, record?: Partial<Record<string, any>> | null) => {
+        if (record) {
+          record.lead_time_reporting_weekdays = normalizeLeadTimeReportingWeekdays(
+            value?.weekdays,
+          );
+          record.lead_time_reporting_excluded_dates =
+            normalizeLeadTimeReportingExcludedDates(value?.excluded_dates);
+        }
+        return undefined;
+      },
+    },
+    {
+      name: 'lead_time_reporting_weekdays',
+      label: 'Lead time weekdays',
+      type: 'jsonb' as const,
+      required: false,
+      hideInTable: true,
+      hideInAdd: true,
+      hideInEdit: true,
+      defaultValue: [0, 1, 2, 3, 4],
+      prepareValueForSave: (value: any, record?: Partial<Record<string, any>> | null) =>
+        normalizeLeadTimeReportingWeekdays(
+          record?.lead_time_reporting_weekdays ?? value,
+        ),
+    },
+    {
+      name: 'lead_time_reporting_excluded_dates',
+      label: 'Lead time excluded dates',
+      type: 'jsonb' as const,
+      required: false,
+      hideInTable: true,
+      hideInAdd: true,
+      hideInEdit: true,
+      defaultValue: [],
+      prepareValueForSave: (value: any, record?: Partial<Record<string, any>> | null) =>
+        normalizeLeadTimeReportingExcludedDates(
+          record?.lead_time_reporting_excluded_dates ?? value,
+        ),
     },
     {
       name: 'bonuses_role',

@@ -2132,12 +2132,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return false;
       };
 
-      // Fetch unread incoming emails with client_id, legacy_id, and sender_email
+      // Fetch recent unread incoming emails only (full-table scan times out on large emails tables)
+      const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       const { data: emailsData, error: emailsError } = await supabase
         .from('emails')
         .select('id, client_id, legacy_id, sender_email')
         .eq('direction', 'incoming')
-        .or('is_read.is.null,is_read.eq.false');
+        .or('is_read.is.null,is_read.eq.false')
+        .gte('sent_at', sinceIso)
+        .order('sent_at', { ascending: false })
+        .limit(1000);
 
       if (emailsError) {
         console.error('Error fetching email unread count:', emailsError);
@@ -2308,14 +2312,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return false;
       };
 
+      // Avoid DB-side ilike on recipient_list (seq scan → statement timeout).
+      // Pull recent unread rows, then filter office inbox client-side.
+      const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       const { data, error } = await supabase
         .from('emails')
         .select('id, sender_name, sender_email, subject, body_preview, body_html, sent_at, recipient_list')
         .eq('direction', 'incoming')
         .or('is_read.is.null,is_read.eq.false')
-        .ilike('recipient_list', '%office@lawoffice.org.il%')
+        .gte('sent_at', sinceIso)
         .order('sent_at', { ascending: false })
-        .limit(50);
+        .limit(250);
 
       if (error) {
         console.error('Error fetching email lead messages:', error);
@@ -2324,8 +2331,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return;
       }
 
+      const officeInbox = (data || []).filter((email: { recipient_list?: string | null }) =>
+        (email.recipient_list || '').toLowerCase().includes('office@lawoffice.org.il')
+      );
+
       // Filter out blocked sender emails and domains
-      const filteredData = (data || []).filter((email: any) => {
+      const filteredData = officeInbox.filter((email: any) => {
         const senderEmail = email.sender_email?.toLowerCase() || '';
         return senderEmail && !isEmailBlocked(senderEmail);
       });

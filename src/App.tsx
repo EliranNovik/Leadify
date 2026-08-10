@@ -188,9 +188,16 @@ const AppContentInner: React.FC = () => {
   const { user, userFullName, userInitials, isLoading, isInitialized } = useAuthContext();
   const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
 
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [clientsAppNavOpen, setClientsAppNavOpen] = useState(false);
+  const [adminAppNavOpen, setAdminAppNavOpen] = useState(false);
+
   // Memoize computed props for Header/Sidebar to prevent unnecessary re-renders
   const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
-  const sidebarMobileOnly = useMemo(() => isReportsPage || isAdminPage, [isReportsPage, isAdminPage]);
+  const sidebarMobileOnly = useMemo(
+    () => isReportsPage || (isAdminPage && !adminAppNavOpen),
+    [isReportsPage, isAdminPage, adminAppNavOpen],
+  );
   const showBottomNav = useMemo(
     () => !isFullBleedEditorPage && !isCaseManagerPage && !isReportsPage,
     [isFullBleedEditorPage, isCaseManagerPage, isReportsPage]
@@ -214,8 +221,6 @@ const AppContentInner: React.FC = () => {
     ],
   );
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [clientsAppNavOpen, setClientsAppNavOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isAiChatOpen, setIsAiChatOpen] = useState(false);
   const [isAiChatFullPage, setIsAiChatFullPage] = useState(false);
@@ -625,12 +630,27 @@ const AppContentInner: React.FC = () => {
     setClientsAppNavOpen(false);
   }, []);
 
+  const handleToggleAdminAppNav = useCallback(() => {
+    setAdminAppNavOpen((prev) => !prev);
+  }, []);
+
+  const handleCloseAdminAppNav = useCallback(() => {
+    setAdminAppNavOpen(false);
+  }, []);
+
   // Close docked Clients app nav when leaving client detail
   useEffect(() => {
     if (!isClientDetailPage && clientsAppNavOpen) {
       setClientsAppNavOpen(false);
     }
   }, [isClientDetailPage, clientsAppNavOpen]);
+
+  // Close docked Admin app nav when leaving admin
+  useEffect(() => {
+    if (!isAdminPage && adminAppNavOpen) {
+      setAdminAppNavOpen(false);
+    }
+  }, [isAdminPage, adminAppNavOpen]);
 
   const handleOpenEmailThread = useCallback(() => {
     setIsEmailThreadOpen(true);
@@ -1009,9 +1029,25 @@ const AppContentInner: React.FC = () => {
                   onClose={handleCloseSidebar}
                   onOpenAIChat={handleOpenAIChat}
                   mobileOnly={sidebarMobileOnly}
-                  presentation={isClientDetailPage ? 'docked' : 'floating'}
-                  dockedOpen={isClientDetailPage && clientsAppNavOpen}
-                  onDockedClose={handleCloseClientsAppNav}
+                  presentation={isClientDetailPage || isAdminPage ? 'docked' : 'floating'}
+                  dockedOpen={
+                    (isClientDetailPage && clientsAppNavOpen) ||
+                    (isAdminPage && adminAppNavOpen)
+                  }
+                  onDockedClose={
+                    isAdminPage ? handleCloseAdminAppNav : handleCloseClientsAppNav
+                  }
+                  dockedPositionClassName={
+                    isAdminPage
+                      ? 'fixed bottom-0 left-56 top-12 z-40'
+                      : 'fixed bottom-0 left-40 z-40 top-[var(--client-detail-nav-top,3rem)]'
+                  }
+                  dockedSurfaceClassName={
+                    isAdminPage
+                      ? 'border-r border-gray-200 bg-white dark:border-base-content/10 dark:bg-base-100'
+                      : 'border-r border-gray-300/80 bg-gray-200 dark:border-base-content/10 dark:bg-base-300'
+                  }
+                  dockedOnLight={isAdminPage}
                 />
               </div>
               <div
@@ -1095,7 +1131,17 @@ const AppContentInner: React.FC = () => {
                     <Route path="/case-manager" element={<RouteSuspense><LazyCaseManagerPageNew /></RouteSuspense>} />
                     <Route path="/case-manager/:caseId" element={<RouteSuspense><LazyCaseDetailsPage /></RouteSuspense>} />
                     <Route path="/double-leads" element={<RouteSuspense><LazyDoubleLeadsPage /></RouteSuspense>} />
-                    <Route path="/admin" element={<RouteSuspense><LazyAdminPage /></RouteSuspense>} />
+                    <Route
+                      path="/admin"
+                      element={
+                        <RouteSuspense>
+                          <LazyAdminPage
+                            appNavOpen={adminAppNavOpen}
+                            onToggleAppNav={handleToggleAdminAppNav}
+                          />
+                        </RouteSuspense>
+                      }
+                    />
                     <Route path="/teams" element={<RouteSuspense><LazyTeamsPage /></RouteSuspense>} />
                     <Route path="/employee-performance" element={<RouteSuspense><LazyEmployeePerformancePage /></RouteSuspense>} />
                     <Route path="/scheduler-tool" element={<RouteSuspense><LazySchedulerToolPage /></RouteSuspense>} />

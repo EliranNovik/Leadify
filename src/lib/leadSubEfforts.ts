@@ -664,3 +664,179 @@ export async function fetchActiveSubEffortTitlesByLeadIdentity(
 
   return result;
 }
+
+export type LeadSubEffortContributorEffort = {
+  title: string;
+  lastUpdatedAt: string | null;
+  /** Lead-balanced share (0–100) so all active sub-efforts on the lead sum to 100. */
+  balancedPercentage: number | null;
+};
+
+export type LeadSubEffortContributor = {
+  employeeName: string;
+  employeeId: number | null;
+  efforts: LeadSubEffortContributorEffort[];
+};
+
+/**
+ * Rebalance template weight shares so they sum to 100 for the subset present on a lead.
+ * Uses largest-remainder rounding to 1 decimal place.
+ */
+export function balanceSubEffortPercentages(
+  items: Array<{ id: number; percentage: number }>,
+): Map<number, number> {
+  const result = new Map<number, number>();
+  if (items.length === 0) return result;
+
+  const weights = items.map((item) => {
+    const n = Number(item.percentage);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  });
+  const sum = weights.reduce((acc, n) => acc + n, 0);
+
+  if (sum <= 0) {
+    const equalTenths = Math.floor(1000 / items.length);
+    let remainder = 1000 - equalTenths * items.length;
+    for (let i = 0; i < items.length; i += 1) {
+      const tenths = equalTenths + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder -= 1;
+      result.set(items[i].id, tenths / 10);
+    }
+    return result;
+  }
+
+  const exact = weights.map((w) => (w / sum) * 100);
+  const flooredTenths = exact.map((v) => Math.floor(v * 10));
+  let remainder = 1000 - flooredTenths.reduce((acc, n) => acc + n, 0);
+  const order = exact
+    .map((v, i) => ({ i, frac: v * 10 - flooredTenths[i] }))
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+
+  for (const { i } of order) {
+    if (remainder <= 0) break;
+    flooredTenths[i] += 1;
+    remainder -= 1;
+  }
+
+  for (let i = 0; i < items.length; i += 1) {
+    result.set(items[i].id, flooredTenths[i] / 10);
+  }
+  return result;
+}
+
+/**
+ * Employees who have an explicit `updated_by` save on any sub-effort for this lead,
+ * with the sub-effort titles they updated (Sub Efforts modal semantics).
+ */
+export async function fetchLeadSubEffortContributors(
+  supabase: SupabaseClient,
+  client: { id?: unknown; lead_type?: string | null },
+): Promise<LeadSubEffortContributor[]> {
+  const { legacyId, newLeadId } = leadSubEffortIdentity(client);
+  if (!legacyId && !newLeadId) return [];
+
+  let query = supabase
+    .from('lead_sub_efforts')
+    .select(`
+      id,
+      employee_id,
+      active,
+      created_by,
+      created_at,
+      updated_by,
+      updated_at,
+      sub_effort_id,
+      sub_efforts ( id, name, percentage )
+    `);
+  if (legacyId != null) {
+    query = query.eq('legacy_lead_id', legacyId);
+  } else if (newLeadId) {
+    query = query.eq('new_lead_id', newLeadId);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const timeline = dedupeLeadSubEffortRows(data ?? []);
+  const activeTemplates = timeline
+    .filter((row) => row?.active !== false)
+    .map((row) => {
+      const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
+      const id = Number(row.sub_effort_id ?? se?.id);
+      const percentage = Number(se?.percentage ?? 0);
+      if (!Number.isFinite(id) || id <= 0) return null;
+      return { id, percentage: Number.isFinite(percentage) ? percentage : 0 };
+    })
+    .filter((row): row is { id: number; percentage: number } => row != null);
+
+  const balancedByTemplateId = balanceSubEffortPercentages(activeTemplates);
+
+  type EffortAgg = {
+    title: string;
+    templateId: number | null;
+    lastUpdatedAt: string | null;
+    lastUpdatedMs: number;
+  };
+  type Agg = {
+    employeeName: string;
+    employeeId: number | null;
+    effortsByTitle: Map<string, EffortAgg>;
+  };
+  const byName = new Map<string, Agg>();
+
+  for (const row of data ?? []) {
+    if (!hasLeadSubEffortSavedUpdate(row)) continue;
+    const employeeName = leadSubEffortSavedUpdatedBy(row);
+    if (!employeeName) continue;
+    const se = Array.isArray((row as any).sub_efforts)
+      ? (row as any).sub_efforts[0]
+      : (row as any).sub_efforts;
+    const title = String(se?.name ?? '').trim();
+    if (!title) continue;
+    const templateId = Number(row.sub_effort_id ?? se?.id);
+    const resolvedTemplateId = Number.isFinite(templateId) && templateId > 0 ? templateId : null;
+
+    const key = employeeName.toLowerCase();
+    const existing = byName.get(key) ?? {
+      employeeName,
+      employeeId: null as number | null,
+      effortsByTitle: new Map<string, EffortAgg>(),
+    };
+    const updatedAt = leadSubEffortSavedUpdatedAt(row);
+    const updatedMs = updatedAt ? new Date(updatedAt).getTime() : NaN;
+    const prev = existing.effortsByTitle.get(title);
+    if (
+      !prev ||
+      (Number.isFinite(updatedMs) && (!Number.isFinite(prev.lastUpdatedMs) || updatedMs > prev.lastUpdatedMs))
+    ) {
+      existing.effortsByTitle.set(title, {
+        title,
+        templateId: resolvedTemplateId,
+        lastUpdatedAt: updatedAt,
+        lastUpdatedMs: Number.isFinite(updatedMs) ? updatedMs : -1,
+      });
+    }
+    const empId = row.employee_id != null ? Number(row.employee_id) : NaN;
+    if (existing.employeeId == null && Number.isFinite(empId) && empId > 0) {
+      existing.employeeId = empId;
+    }
+    byName.set(key, existing);
+  }
+
+  return [...byName.values()]
+    .map((row) => ({
+      employeeName: row.employeeName,
+      employeeId: row.employeeId,
+      efforts: [...row.effortsByTitle.values()]
+        .map(({ title, templateId, lastUpdatedAt }) => ({
+          title,
+          lastUpdatedAt,
+          balancedPercentage:
+            templateId != null && balancedByTemplateId.has(templateId)
+              ? (balancedByTemplateId.get(templateId) as number)
+              : null,
+        }))
+        .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })),
+    }))
+    .sort((a, b) => a.employeeName.localeCompare(b.employeeName, undefined, { sensitivity: 'base' }));
+}

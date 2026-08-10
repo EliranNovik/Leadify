@@ -564,10 +564,10 @@ const PoaTemplatesManager: React.FC = () => {
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm [&_tbody_td]:py-6 [&_tbody_td]:align-middle">
+          <table className="w-full text-sm border-separate border-spacing-0 [&_tbody_td]:py-6 [&_tbody_td]:align-middle">
             <thead>
               <tr>
-                <th className="text-left font-medium text-gray-500">Name</th>
+                <th className="sticky left-0 z-20 bg-white text-left font-medium text-gray-500 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">Name</th>
                 <th className="text-left font-medium text-gray-500">Category</th>
                 <th className="text-left font-medium text-gray-500">Language</th>
                 <th className="text-left font-medium text-gray-500">Fields</th>
@@ -579,9 +579,9 @@ const PoaTemplatesManager: React.FC = () => {
                 <tr
                   key={t.id}
                   onClick={() => startEdit(t)}
-                  className="cursor-pointer"
+                  className="group cursor-pointer"
                 >
-                  <td>
+                  <td className="sticky left-0 z-10 bg-white group-hover:bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                     <div className="font-semibold text-gray-900">{t.name}</div>
                     {t.description && <div className="text-xs text-gray-400">{t.description}</div>}
                   </td>

@@ -505,14 +505,14 @@ const EmployeeSalariesManager: React.FC<EmployeeSalariesManagerProps> = ({
           </p>
         ) : (
           <div className="overflow-x-auto w-full">
-            <table className={`table w-full ${embedded ? 'text-base' : ''}`}>
+            <table className={`table w-full border-separate border-spacing-0 ${embedded ? 'text-base' : ''}`}>
               <thead>
                 <tr
                   className={
                     embedded ? 'text-sm uppercase tracking-wider text-gray-500' : undefined
                   }
                 >
-                  <th className={embedded ? 'bg-transparent font-semibold' : 'font-semibold'}>
+                  <th className="sticky left-0 z-20 bg-white font-semibold shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                     Employee
                   </th>
                   <th className={embedded ? 'bg-transparent font-semibold' : 'font-semibold'}>
@@ -552,8 +552,14 @@ const EmployeeSalariesManager: React.FC<EmployeeSalariesManagerProps> = ({
                   const hourRate = salaryToHourlyRateNis(row.gross_salary, row.min_hours);
                   const cellClass = embedded ? 'text-base text-gray-700' : undefined;
                   return (
-                  <tr key={row.employee_id}>
-                    <td className={embedded ? 'font-medium text-base text-gray-900 whitespace-nowrap' : undefined}>
+                  <tr key={row.employee_id} className="group">
+                    <td
+                      className={
+                        embedded
+                          ? 'sticky left-0 z-10 bg-white group-hover:bg-white font-medium text-base text-gray-900 whitespace-nowrap shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]'
+                          : 'sticky left-0 z-10 bg-white group-hover:bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]'
+                      }
+                    >
                       <div className="flex items-center gap-3 min-w-[10rem]">
                         <SalaryEmployeeAvatar
                           employeeId={row.employee_id}

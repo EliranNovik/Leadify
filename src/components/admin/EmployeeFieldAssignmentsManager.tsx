@@ -500,10 +500,10 @@ const EmployeeFieldAssignmentsManager: React.FC = () => {
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table w-full">
+          <table className="table w-full border-separate border-spacing-0">
             <thead>
               <tr>
-                <th>Employee</th>
+                <th className="sticky left-0 z-20 bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">Employee</th>
                 <th>Field</th>
                 <th>Percentage</th>
                 <th>Department Role</th>
@@ -527,9 +527,12 @@ const EmployeeFieldAssignmentsManager: React.FC = () => {
                       const record = field.firstRecord;
 
                       return (
-                        <tr key={`${employeeId}-${field.field_id}-${idx}`}>
+                        <tr key={`${employeeId}-${field.field_id}-${idx}`} className="group">
                           {idx === 0 && (
-                            <td rowSpan={fields.length} className="align-top">
+                            <td
+                              rowSpan={fields.length}
+                              className="align-top sticky left-0 z-10 bg-white group-hover:bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]"
+                            >
                               {employeeMap.get(employeeId) || `Employee #${employeeId}`}
                             </td>
                           )}

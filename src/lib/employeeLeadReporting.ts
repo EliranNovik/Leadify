@@ -4,8 +4,15 @@ import type { CombinedLead } from './legacyLeadsApi';
 import { filterCountedClockInRecords } from './employeeClockInApproval';
 import { formatDurationMs } from './employeeClockInOvertime';
 import { eachDayInRange } from './employeeClockInFormat';
-import { isIsraeliWeekendIso } from './employeeExtraHours';
 import { fetchClockInRecordsInRange, type ClockInWithEmployee } from './workingHoursExport';
+import {
+  expandUnavailabilitiesToDailyRows,
+  fetchAllUnavailabilitiesInRange,
+  fetchEmployeeUnavailabilitiesInRange,
+  filterCountedUnavailability,
+  isUnavailabilityCounted,
+  type EmployeeUnavailabilityEntry,
+} from './employeeUnavailabilities';
 import { LEAD_ALLOCATION_HOURS_NOTE } from './employeeClockInManual';
 import { fetchActiveSubEffortTitlesByLeadIdentity } from './leadSubEfforts';
 
@@ -83,6 +90,17 @@ export type CurrentEmployeeContext = {
   worksFromHome: boolean;
   bonusesRole: string | null;
   isSuperUser: boolean;
+  /** Opt-in for Lead time report, missing badge, and reminders. */
+  leadTimeReportingEnabled: boolean;
+  /** Weekdays that require a fill (0=Sun … 6=Sat). */
+  leadTimeReportingWeekdays: number[];
+  /** Specific dates that do not require a fill. */
+  leadTimeReportingExcludedDates: string[];
+};
+
+export type LeadTimeReportingSchedule = {
+  weekdays: number[];
+  excluded_dates: string[];
 };
 
 export const OTHER_WORK_PERCENT_CAP_BASE = 30;
@@ -103,6 +121,9 @@ export function getJerusalemTodayIsoDate(date = new Date()): string {
 /** First calendar day lead allocation reporting is required (inclusive). */
 export const LEAD_ALLOCATION_REPORTING_START_DATE = '2026-08-06';
 
+/** Default required weekdays: Sunday–Thursday (excludes Friday & Saturday). */
+export const DEFAULT_LEAD_TIME_REPORTING_WEEKDAYS = [0, 1, 2, 3, 4] as const;
+
 export const LEAD_ALLOCATION_SAVED_EVENT = 'lead-allocation-saved';
 
 export function isHandlerBonusesRole(role: string | null | undefined): boolean {
@@ -115,15 +136,128 @@ export function isDepartmentManagerBonusesRole(
   return String(role || '').trim().toLowerCase() === 'dm';
 }
 
+export function normalizeLeadTimeReportingWeekdays(
+  value: unknown,
+): number[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return [...DEFAULT_LEAD_TIME_REPORTING_WEEKDAYS];
+  }
+  const days = value
+    .map((v) => Number(v))
+    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6);
+  const unique = [...new Set(days)].sort((a, b) => a - b);
+  return unique.length > 0 ? unique : [...DEFAULT_LEAD_TIME_REPORTING_WEEKDAYS];
+}
+
+export function normalizeLeadTimeReportingExcludedDates(
+  value: unknown,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .map((d) => String(d || '').slice(0, 10))
+        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+    ),
+  ].sort();
+}
+
+export function isLeadTimeReportingEnabledFlag(
+  value: unknown,
+): boolean {
+  return value === true || value === 'true' || value === 't' || value === 1;
+}
+
+/**
+ * Employee can see Lead time report / missing badge / reminders when explicitly enabled.
+ * (Legacy role-based access is replaced by this admin toggle.)
+ */
 export function canAccessLeadTimeReport(params: {
+  leadTimeReportingEnabled?: boolean | null;
+  /** @deprecated Prefer leadTimeReportingEnabled; kept for gradual call-site updates. */
   isSuperUser?: boolean | null;
+  /** @deprecated Prefer leadTimeReportingEnabled; kept for gradual call-site updates. */
   bonusesRole?: string | null;
 }): boolean {
+  if (params.leadTimeReportingEnabled != null) {
+    return params.leadTimeReportingEnabled === true;
+  }
+  // Fallback only when flag not loaded yet (should not happen after context fetch).
   if (params.isSuperUser === true) return true;
   return (
     isHandlerBonusesRole(params.bonusesRole) ||
     isDepartmentManagerBonusesRole(params.bonusesRole)
   );
+}
+
+export function weekdayIndexFromIsoDate(isoDate: string): number {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1).getDay();
+}
+
+/** Only approved sick_days / vacation cover a reporting day (not general). */
+export function isLeadTimeReportingExemptUnavailability(
+  entry: Pick<EmployeeUnavailabilityEntry, 'unavailability_type'> & {
+    approved?: boolean | null;
+    declined?: boolean | null;
+  },
+): boolean {
+  const type = String(entry.unavailability_type || '').trim().toLowerCase();
+  if (type !== 'sick_days' && type !== 'vacation') return false;
+  return isUnavailabilityCounted(entry);
+}
+
+export function collectSickVacationExemptDates(
+  entries: EmployeeUnavailabilityEntry[],
+  dateFrom: string,
+  dateTo: string,
+): string[] {
+  const exempt = filterCountedUnavailability(entries).filter((entry) => {
+    const type = String(entry.unavailability_type || '').trim().toLowerCase();
+    return type === 'sick_days' || type === 'vacation';
+  });
+  return [
+    ...new Set(
+      expandUnavailabilitiesToDailyRows(exempt, dateFrom, dateTo).map((row) =>
+        String(row.date).slice(0, 10),
+      ),
+    ),
+  ].sort();
+}
+
+export async function fetchSickVacationExemptDatesForEmployee(
+  employeeId: number,
+  dateFrom: string,
+  dateTo: string,
+): Promise<string[]> {
+  if (!dateFrom || !dateTo || dateTo < dateFrom) return [];
+  const entries = await fetchEmployeeUnavailabilitiesInRange(
+    employeeId,
+    dateFrom,
+    dateTo,
+  );
+  return collectSickVacationExemptDates(entries, dateFrom, dateTo);
+}
+
+export async function fetchSickVacationExemptDatesByEmployee(
+  dateFrom: string,
+  dateTo: string,
+): Promise<Map<number, Set<string>>> {
+  const map = new Map<number, Set<string>>();
+  if (!dateFrom || !dateTo || dateTo < dateFrom) return map;
+  const entries = await fetchAllUnavailabilitiesInRange(dateFrom, dateTo);
+  for (const entry of filterCountedUnavailability(entries)) {
+    const type = String(entry.unavailability_type || '').trim().toLowerCase();
+    if (type !== 'sick_days' && type !== 'vacation') continue;
+    const days = expandUnavailabilitiesToDailyRows([entry], dateFrom, dateTo);
+    let set = map.get(entry.employee_id);
+    if (!set) {
+      set = new Set();
+      map.set(entry.employee_id, set);
+    }
+    for (const row of days) set.add(String(row.date).slice(0, 10));
+  }
+  return map;
 }
 
 export function leadTimeReportPathForDate(workDate: string): string {
@@ -463,7 +597,9 @@ export async function fetchCurrentEmployeeContext(): Promise<CurrentEmployeeCont
     .select(
       `employee_id, is_superuser,
        tenants_employee!employee_id(
-         display_name, min_hours, works_from_home, bonuses_role
+         display_name, min_hours, works_from_home, bonuses_role,
+         lead_time_reporting_enabled, lead_time_reporting_weekdays,
+         lead_time_reporting_excluded_dates
        )`,
     )
     .eq('auth_id', user.id)
@@ -494,6 +630,15 @@ export async function fetchCurrentEmployeeContext(): Promise<CurrentEmployeeCont
     bonusesRole:
       typeof emp?.bonuses_role === 'string' ? emp.bonuses_role.trim() : null,
     isSuperUser: Boolean(isSuper),
+    leadTimeReportingEnabled: isLeadTimeReportingEnabledFlag(
+      emp?.lead_time_reporting_enabled,
+    ),
+    leadTimeReportingWeekdays: normalizeLeadTimeReportingWeekdays(
+      emp?.lead_time_reporting_weekdays,
+    ),
+    leadTimeReportingExcludedDates: normalizeLeadTimeReportingExcludedDates(
+      emp?.lead_time_reporting_excluded_dates,
+    ),
   };
 }
 
@@ -891,15 +1036,29 @@ export async function fetchDailyAllocation(
 }
 
 /**
- * Workdays (Sun–Thu) from the reporting start date through today that should have
- * a daily lead allocation. Weekends are skipped; start date is inclusive.
+ * Workdays from the reporting start date through today that should have
+ * a daily lead allocation. Uses per-employee weekday mask + excluded dates
+ * (default: Sun–Thu from 2026-08-06).
  */
 export function listExpectedLeadAllocationWorkDates(
   todayIso: string = getJerusalemTodayIsoDate(),
   startIso: string = LEAD_ALLOCATION_REPORTING_START_DATE,
+  options?: {
+    weekdays?: number[];
+    excludedDates?: string[];
+  },
 ): string[] {
   if (!todayIso || todayIso < startIso) return [];
-  return eachDayInRange(startIso, todayIso).filter((day) => !isIsraeliWeekendIso(day));
+  const weekdays = new Set(
+    normalizeLeadTimeReportingWeekdays(options?.weekdays),
+  );
+  const excluded = new Set(
+    normalizeLeadTimeReportingExcludedDates(options?.excludedDates),
+  );
+  return eachDayInRange(startIso, todayIso).filter((day) => {
+    if (excluded.has(day)) return false;
+    return weekdays.has(weekdayIndexFromIsoDate(day));
+  });
 }
 
 export async function fetchSubmittedLeadAllocationDates(
@@ -926,11 +1085,51 @@ export async function fetchSubmittedLeadAllocationDates(
 /** Missing allocation dates ascending (oldest → newest). Newest missing is last. */
 export async function fetchMissingLeadAllocationDates(
   employeeId: number,
-  options?: { todayIso?: string; startIso?: string },
+  options?: {
+    todayIso?: string;
+    startIso?: string;
+    weekdays?: number[];
+    excludedDates?: string[];
+  },
 ): Promise<string[]> {
   const today = options?.todayIso ?? getJerusalemTodayIsoDate();
   const start = options?.startIso ?? LEAD_ALLOCATION_REPORTING_START_DATE;
-  const expected = listExpectedLeadAllocationWorkDates(today, start);
+
+  let weekdays = options?.weekdays;
+  let excludedDates = options?.excludedDates;
+  if (weekdays == null || excludedDates == null) {
+    const { data: emp, error: empError } = await supabase
+      .from('tenants_employee')
+      .select(
+        'lead_time_reporting_weekdays, lead_time_reporting_excluded_dates',
+      )
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (empError) throw empError;
+    weekdays =
+      weekdays ??
+      normalizeLeadTimeReportingWeekdays(emp?.lead_time_reporting_weekdays);
+    excludedDates =
+      excludedDates ??
+      normalizeLeadTimeReportingExcludedDates(
+        emp?.lead_time_reporting_excluded_dates,
+      );
+  }
+
+  const sickVacationDates = await fetchSickVacationExemptDatesForEmployee(
+    employeeId,
+    start,
+    today,
+  );
+  const mergedExcluded = normalizeLeadTimeReportingExcludedDates([
+    ...(excludedDates || []),
+    ...sickVacationDates,
+  ]);
+
+  const expected = listExpectedLeadAllocationWorkDates(today, start, {
+    weekdays,
+    excludedDates: mergedExcluded,
+  });
   if (expected.length === 0) return [];
 
   const submitted = await fetchSubmittedLeadAllocationDates(
@@ -2083,6 +2282,9 @@ export type ClockedOutEmployeeRef = {
   minHours: number;
   hourRate: number | null;
   bonusesRole: string | null;
+  leadTimeReportingEnabled: boolean;
+  leadTimeReportingWeekdays: number[];
+  leadTimeReportingExcludedDates: string[];
 };
 
 function resolveClockInEmployee(record: ClockInWithEmployee): {
@@ -2093,6 +2295,9 @@ function resolveClockInEmployee(record: ClockInWithEmployee): {
   minHours: number;
   hourRate: number | null;
   bonusesRole: string | null;
+  leadTimeReportingEnabled: boolean;
+  leadTimeReportingWeekdays: number[];
+  leadTimeReportingExcludedDates: string[];
 } {
   const emp = Array.isArray(record.tenants_employee)
     ? record.tenants_employee[0]
@@ -2111,6 +2316,15 @@ function resolveClockInEmployee(record: ClockInWithEmployee): {
     hourRate: normalizeEmployeeHourRate(emp?.hour_rate),
     bonusesRole:
       typeof emp?.bonuses_role === 'string' ? emp.bonuses_role.trim() : null,
+    leadTimeReportingEnabled: isLeadTimeReportingEnabledFlag(
+      emp?.lead_time_reporting_enabled,
+    ),
+    leadTimeReportingWeekdays: normalizeLeadTimeReportingWeekdays(
+      emp?.lead_time_reporting_weekdays,
+    ),
+    leadTimeReportingExcludedDates: normalizeLeadTimeReportingExcludedDates(
+      emp?.lead_time_reporting_excluded_dates,
+    ),
   };
 }
 
@@ -2134,6 +2348,9 @@ export function collectClockedOutEmployeesForDay(
       minHours,
       hourRate,
       bonusesRole,
+      leadTimeReportingEnabled,
+      leadTimeReportingWeekdays,
+      leadTimeReportingExcludedDates,
     } = resolveClockInEmployee(record);
     map.set(employeeId, {
       employeeId,
@@ -2144,6 +2361,9 @@ export function collectClockedOutEmployeesForDay(
       minHours,
       hourRate,
       bonusesRole,
+      leadTimeReportingEnabled,
+      leadTimeReportingWeekdays,
+      leadTimeReportingExcludedDates,
     });
   }
 
@@ -2215,7 +2435,7 @@ export type MissingLeadReportingBacklogRow = {
 
 /**
  * Admin backlog of missing lead reporting — independent of any single work-date filter.
- * Only handlers, DMs, and admins; only yesterday and earlier; only days they clocked out.
+ * Only employees with lead_time_reporting_enabled; yesterday and earlier; only days they clocked out.
  */
 export async function fetchMissingLeadReportingBacklog(params?: {
   departmentId?: number | null;
@@ -2225,19 +2445,16 @@ export async function fetchMissingLeadReportingBacklog(params?: {
 }): Promise<MissingLeadReportingBacklogRow[]> {
   const today = params?.todayIso ?? getJerusalemTodayIsoDate();
   const start = params?.startIso ?? LEAD_ALLOCATION_REPORTING_START_DATE;
-  const pastExpected = listExpectedLeadAllocationWorkDates(today, start).filter(
-    (day) => day < today,
+  if (!today || today <= start) return [];
+
+  const fromDate = start;
+  const toDate = today;
+
+  const clockRecords = await fetchClockInRecordsInRange(fromDate, toDate);
+  const sickVacationByEmployee = await fetchSickVacationExemptDatesByEmployee(
+    fromDate,
+    toDate,
   );
-  if (pastExpected.length === 0) return [];
-
-  const fromDate = pastExpected[0];
-  const toDate = pastExpected[pastExpected.length - 1];
-  const pastExpectedSet = new Set(pastExpected);
-
-  const [clockRecords, superuserIds] = await Promise.all([
-    fetchClockInRecordsInRange(fromDate, toDate),
-    fetchSuperuserEmployeeIds(),
-  ]);
 
   const counted = filterCountedClockInRecords(clockRecords);
   const clockedOutDatesByEmployee = new Map<number, Set<string>>();
@@ -2247,7 +2464,7 @@ export async function fetchMissingLeadReportingBacklog(params?: {
     const employeeId = record.employee_id;
     if (employeeId == null || !record.clock_out_time) continue;
     const day = jerusalemIsoDateFromTimestamp(record.clock_in_time);
-    if (!pastExpectedSet.has(day)) continue;
+    if (!day || day < start || day >= today) continue;
 
     let dates = clockedOutDatesByEmployee.get(employeeId);
     if (!dates) {
@@ -2269,8 +2486,7 @@ export async function fetchMissingLeadReportingBacklog(params?: {
     const profile = profileByEmployee.get(id);
     if (!profile) return false;
     return canAccessLeadTimeReport({
-      isSuperUser: superuserIds.has(id),
-      bonusesRole: profile.bonusesRole,
+      leadTimeReportingEnabled: profile.leadTimeReportingEnabled,
     });
   });
 
@@ -2281,7 +2497,7 @@ export async function fetchMissingLeadReportingBacklog(params?: {
     .select('employee_id, work_date')
     .in('employee_id', eligibleIds)
     .gte('work_date', fromDate)
-    .lte('work_date', toDate);
+    .lt('work_date', toDate);
 
   if (error) throw error;
 
@@ -2310,15 +2526,23 @@ export async function fetchMissingLeadReportingBacklog(params?: {
 
     const clockedDays = clockedOutDatesByEmployee.get(employeeId);
     if (!clockedDays) continue;
-    const submitted = submittedByEmployee.get(employeeId) ?? new Set();
-    const missingDates = Array.from(clockedDays)
-      .filter((day) => !submitted.has(day))
-      .sort();
 
+    const expectedPast = listExpectedLeadAllocationWorkDates(today, start, {
+      weekdays: profile.leadTimeReportingWeekdays,
+      excludedDates: [
+        ...profile.leadTimeReportingExcludedDates,
+        ...Array.from(sickVacationByEmployee.get(employeeId) || []),
+      ],
+    }).filter((day) => day < today);
+
+    const submitted = submittedByEmployee.get(employeeId) || new Set<string>();
+    const missingDates = expectedPast.filter(
+      (day) => clockedDays.has(day) && !submitted.has(day),
+    );
     if (missingDates.length === 0) continue;
 
     rows.push({
-      employeeId: profile.employeeId,
+      employeeId,
       employeeName: profile.employeeName,
       departmentId: profile.departmentId,
       departmentName: profile.departmentName,
@@ -2346,6 +2570,8 @@ export function listMissingLeadReportingEmployees(params: {
   todayIso?: string;
   /** Employee IDs with users.is_superuser (admins required to report). */
   superuserEmployeeIds?: Set<number>;
+  /** Approved sick/vacation dates that should not require a lead allocation. */
+  sickVacationExemptDatesByEmployee?: Map<number, Set<string>>;
 }): MissingLeadReportingEmployee[] {
   const today = params.todayIso ?? getJerusalemTodayIsoDate();
   if (params.workDate != null && params.workDate >= today) {
@@ -2354,7 +2580,6 @@ export function listMissingLeadReportingEmployees(params: {
 
   const search = params.employeeSearch?.trim().toLowerCase() || '';
   const departmentId = params.departmentId ?? null;
-  const superuserIds = params.superuserEmployeeIds;
   const rows: MissingLeadReportingEmployee[] = [];
 
   for (const employee of params.clockedOutEmployees.values()) {
@@ -2362,12 +2587,28 @@ export function listMissingLeadReportingEmployees(params: {
     if (search && !employee.employeeName.toLowerCase().includes(search)) continue;
     if (params.reportedEmployeeIds.has(employee.employeeId)) continue;
 
-    const isSuperUser = superuserIds?.has(employee.employeeId) === true;
     if (
       !canAccessLeadTimeReport({
-        isSuperUser,
-        bonusesRole: employee.bonusesRole,
+        leadTimeReportingEnabled: employee.leadTimeReportingEnabled,
       })
+    ) {
+      continue;
+    }
+
+    const sickVacationDates = Array.from(
+      params.sickVacationExemptDatesByEmployee?.get(employee.employeeId) || [],
+    );
+
+    // Skip dates that are not required for this employee’s schedule.
+    if (
+      params.workDate &&
+      !listExpectedLeadAllocationWorkDates(params.workDate, LEAD_ALLOCATION_REPORTING_START_DATE, {
+        weekdays: employee.leadTimeReportingWeekdays,
+        excludedDates: [
+          ...employee.leadTimeReportingExcludedDates,
+          ...sickVacationDates,
+        ],
+      }).includes(params.workDate)
     ) {
       continue;
     }

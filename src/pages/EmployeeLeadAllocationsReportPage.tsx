@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import {
@@ -887,6 +887,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   );
   const [rangeTo, setRangeTo] = useState(() => getJerusalemTodayIsoDate());
   const [employeeSearch, setEmployeeSearch] = useState('');
+  const [debouncedEmployeeSearch, setDebouncedEmployeeSearch] = useState('');
   const [departmentId, setDepartmentId] = useState<string>('');
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
   const [rows, setRows] = useState<AllocationReportRow[]>([]);
@@ -902,6 +903,11 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   );
   const [missingReportingModalOpen, setMissingReportingModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const hasLoadedOnceRef = useRef(false);
+  const loadRequestIdRef = useRef(0);
+  const backlogRequestIdRef = useRef(0);
+  const budgetRequestIdRef = useRef(0);
   const [budgetByLeadKey, setBudgetByLeadKey] = useState<Map<string, AllocationLeadBudgetStatus>>(
     () => new Map(),
   );
@@ -993,6 +999,13 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   }, [navigate]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedEmployeeSearch(employeeSearch.trim());
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [employeeSearch]);
+
+  useEffect(() => {
     if (!isSuperUser) return;
     void fetchDepartmentsForFilter()
       .then(setDepartments)
@@ -1003,15 +1016,19 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
 
   const loadReport = useCallback(async () => {
     if (!isSuperUser) return;
-    setLoading(true);
+    const requestId = ++loadRequestIdRef.current;
+    const isInitial = !hasLoadedOnceRef.current;
+    if (isInitial) setLoading(true);
+    else setRefreshing(true);
     try {
       const { fromDate, toDate } = resolvedDateRange;
       const data = await fetchAllocationReport({
         fromDate,
         toDate,
         departmentId: departmentId ? Number(departmentId) : null,
-        employeeSearch,
+        employeeSearch: debouncedEmployeeSearch,
       });
+      if (requestId !== loadRequestIdRef.current) return;
 
       const workDates = data
         .map((row) => String(row.work_date || '').slice(0, 10))
@@ -1026,6 +1043,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       }
 
       const clockRecords = await fetchClockInRecordsForAllocationMs(clockFrom, clockTo);
+      if (requestId !== loadRequestIdRef.current) return;
       const clockInMs = buildAllocationClockInMsByEmployeeDate(clockRecords);
       const employeeIds = Array.from(
         new Set([
@@ -1034,20 +1052,27 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         ]),
       ).filter((id) => Number.isFinite(id));
       const salaryMap = await fetchAverageGrossSalaryLastMonths(employeeIds, 6);
+      if (requestId !== loadRequestIdRef.current) return;
 
       setRows(data);
       setClockInMsByEmployeeDate(clockInMs);
       setAvgMonthlySalaryByEmployee(salaryMap);
+      hasLoadedOnceRef.current = true;
 
+      const budgetRequestId = ++budgetRequestIdRef.current;
       void fetchAllocationLeadBudgetStatuses(data)
         .then((statuses) => {
+          if (budgetRequestId !== budgetRequestIdRef.current) return;
+          if (requestId !== loadRequestIdRef.current) return;
           setBudgetByLeadKey(statuses);
         })
         .catch((budgetError) => {
+          if (budgetRequestId !== budgetRequestIdRef.current) return;
           console.error('[EmployeeLeadAllocationsReport] budget status failed:', budgetError);
           setBudgetByLeadKey(new Map());
         });
     } catch (error) {
+      if (requestId !== loadRequestIdRef.current) return;
       console.error('[EmployeeLeadAllocationsReport] load failed:', error);
       toast.error(
         error instanceof Error ? error.message : 'Failed to load allocation report.',
@@ -1056,28 +1081,37 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       setClockInMsByEmployeeDate(new Map());
       setAvgMonthlySalaryByEmployee(new Map());
       setBudgetByLeadKey(new Map());
+      hasLoadedOnceRef.current = true;
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [isSuperUser, resolvedDateRange, departmentId, employeeSearch]);
+  }, [isSuperUser, resolvedDateRange, departmentId, debouncedEmployeeSearch]);
 
   const loadMissingReportingBacklog = useCallback(async () => {
     if (!isSuperUser) return;
+    const requestId = ++backlogRequestIdRef.current;
     setMissingReportingLoading(true);
     try {
       const backlog = await fetchMissingLeadReportingBacklog({
         departmentId: departmentId ? Number(departmentId) : null,
-        employeeSearch,
+        employeeSearch: debouncedEmployeeSearch,
       });
+      if (requestId !== backlogRequestIdRef.current) return;
       setMissingReportingBacklog(backlog);
     } catch (error) {
+      if (requestId !== backlogRequestIdRef.current) return;
       console.error('[EmployeeLeadAllocationsReport] missing backlog failed:', error);
       toast.error('Failed to load missing reporting backlog.');
       setMissingReportingBacklog([]);
     } finally {
-      setMissingReportingLoading(false);
+      if (requestId === backlogRequestIdRef.current) {
+        setMissingReportingLoading(false);
+      }
     }
-  }, [isSuperUser, departmentId, employeeSearch]);
+  }, [isSuperUser, departmentId, debouncedEmployeeSearch]);
 
   const reloadBudgetStatuses = useCallback(async () => {
     if (rows.length === 0) {
@@ -1352,14 +1386,12 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
             </label>
           </div>
 
-          {!loading && (
-            <ReportTotalsBar
-              totals={reportTotals}
-              onMissingReportingClick={() => setMissingReportingModalOpen(true)}
-              overBudgetOnly={overBudgetOnly}
-              onToggleOverBudget={() => setOverBudgetOnly((prev) => !prev)}
-            />
-          )}
+          <ReportTotalsBar
+            totals={reportTotals}
+            onMissingReportingClick={() => setMissingReportingModalOpen(true)}
+            overBudgetOnly={overBudgetOnly}
+            onToggleOverBudget={() => setOverBudgetOnly((prev) => !prev)}
+          />
 
           <MissingReportingModal
             open={missingReportingModalOpen}
@@ -1381,7 +1413,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
               No over-budget leads for these filters.
             </div>
           ) : (
-            <div className="space-y-5">
+            <div className={`space-y-5 transition-opacity ${refreshing ? 'opacity-60' : 'opacity-100'}`}>
               {visibleEmployeeGroups.map((group) => (
                 <EmployeeAllocationSection
                   key={group.employeeId}

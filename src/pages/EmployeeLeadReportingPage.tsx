@@ -249,6 +249,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
   const [toTime, setToTime] = useState('');
   const [locationId, setLocationId] = useState<number | ''>('');
   const [locations, setLocations] = useState<ClockInLocationOption[]>([]);
+  const loadRequestIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -257,13 +258,12 @@ const EmployeeLeadReportingPage: React.FC = () => {
         const ctx = await fetchCurrentEmployeeContext();
         if (cancelled) return;
         const allowed = canAccessLeadTimeReport({
-          isSuperUser: ctx?.isSuperUser,
-          bonusesRole: ctx?.bonusesRole,
+          leadTimeReportingEnabled: ctx?.leadTimeReportingEnabled,
         });
         setHasAccess(allowed);
         setPermissionsLoaded(true);
         if (!allowed) {
-          toast.error('Access denied. Daily lead allocation is only available to handlers, department managers, and superusers.');
+          toast.error('Access denied. Daily lead allocation is not enabled for your account.');
           navigate('/');
         }
       } catch (error) {
@@ -271,7 +271,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         if (!cancelled) {
           setHasAccess(false);
           setPermissionsLoaded(true);
-          toast.error('Access denied. Daily lead allocation is only available to handlers, department managers, and superusers.');
+          toast.error('Access denied. Daily lead allocation is not enabled for your account.');
           navigate('/');
         }
       }
@@ -308,20 +308,34 @@ const EmployeeLeadReportingPage: React.FC = () => {
     }
   }, [searchParams, workDate]);
 
-  const refreshMissingDates = useCallback(async (employeeId: number) => {
-    try {
-      const missing = await fetchMissingLeadAllocationDates(employeeId);
-      setMissingDates(missing);
-    } catch (error) {
-      console.error('[EmployeeLeadReportingPage] missing dates failed:', error);
-    }
-  }, []);
+  const refreshMissingDates = useCallback(
+    async (
+      employeeId: number,
+      schedule?: {
+        weekdays?: number[] | null;
+        excludedDates?: string[] | null;
+      },
+    ) => {
+      try {
+        const missing = await fetchMissingLeadAllocationDates(employeeId, {
+          weekdays: schedule?.weekdays,
+          excludedDates: schedule?.excludedDates,
+        });
+        setMissingDates(missing);
+      } catch (error) {
+        console.error('[EmployeeLeadReportingPage] missing dates failed:', error);
+      }
+    },
+    [],
+  );
 
   const loadData = useCallback(async () => {
     if (!hasAccess) return;
+    const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     try {
       const ctx = await fetchCurrentEmployeeContext();
+      if (requestId !== loadRequestIdRef.current) return;
       setEmployeeContext(ctx);
       if (!ctx) {
         setRows([]);
@@ -339,12 +353,11 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
       if (
         !canAccessLeadTimeReport({
-          isSuperUser: ctx.isSuperUser,
-          bonusesRole: ctx.bonusesRole,
+          leadTimeReportingEnabled: ctx.leadTimeReportingEnabled,
         })
       ) {
         setHasAccess(false);
-        toast.error('Access denied. Daily lead allocation is only available to handlers, department managers, and superusers.');
+        toast.error('Access denied. Daily lead allocation is not enabled for your account.');
         navigate('/');
         return;
       }
@@ -355,12 +368,14 @@ const EmployeeLeadReportingPage: React.FC = () => {
         fetchClockInRecordsInRange(workDate, workDate),
         fetchActiveClockInLocations(),
       ]);
+      if (requestId !== loadRequestIdRef.current) return;
 
       // Only Handler Nominated (105) and later stages appear on the allocation list.
       const [activity, eligibleSavedItems] = await Promise.all([
         filterIdentitiesByMinAllocationStage(activityRaw),
         filterIdentitiesByMinAllocationStage(allocation?.items || []),
       ]);
+      if (requestId !== loadRequestIdRef.current) return;
 
       const employeeRecords = clockRecords.filter(
         (row) => row.employee_id === ctx.employeeId,
@@ -482,12 +497,18 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setLastSavedAt(allocation?.updated_at || allocation?.submitted_at || null);
       setIsEditing(!hasSavedAllocation);
       setEditSnapshot(null);
-      void refreshMissingDates(ctx.employeeId);
+      void refreshMissingDates(ctx.employeeId, {
+        weekdays: ctx.leadTimeReportingWeekdays,
+        excludedDates: ctx.leadTimeReportingExcludedDates,
+      });
     } catch (error) {
+      if (requestId !== loadRequestIdRef.current) return;
       console.error('[EmployeeLeadReportingPage] load failed:', error);
       toast.error('Failed to load lead activity.');
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [hasAccess, workDate, navigate, refreshMissingDates]);
 
@@ -759,7 +780,10 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setEditSnapshot(null);
       setBudgetViolations([]);
       setBudgetAssistOpen(false);
-      void refreshMissingDates(employeeContext.employeeId);
+      void refreshMissingDates(employeeContext.employeeId, {
+        weekdays: employeeContext.leadTimeReportingWeekdays,
+        excludedDates: employeeContext.leadTimeReportingExcludedDates,
+      });
       notifyLeadAllocationSaved(workDate);
       setSavedThanksOpen(true);
     } catch (error) {
@@ -800,7 +824,10 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setBudgetHints([]);
       setBudgetViolations([]);
       setBudgetAssistOpen(false);
-      void refreshMissingDates(employeeContext.employeeId);
+      void refreshMissingDates(employeeContext.employeeId, {
+        weekdays: employeeContext.leadTimeReportingWeekdays,
+        excludedDates: employeeContext.leadTimeReportingExcludedDates,
+      });
       notifyLeadAllocationSaved(workDate);
       toast.success('Allocation reset.');
     } catch (error) {
@@ -838,7 +865,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
     void refreshBudgetHints(nextRows, dayWorkedMs);
   };
 
-  if (!permissionsLoaded || !hasAccess || loading) {
+  if (!permissionsLoaded || !hasAccess || (loading && !employeeContext)) {
     return (
       <div className="lead-allocation-page-shell flex min-h-[calc(100dvh-3.5rem)] items-center justify-center bg-[#ececec]">
         <span className="loading loading-spinner loading-lg text-primary" />

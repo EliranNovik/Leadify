@@ -15,6 +15,8 @@ import {
   HomeIcon,
   ReceiptPercentIcon,
   CalendarDaysIcon,
+  Bars3BottomLeftIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import PoaTemplatesManager from './PoaTemplatesManager';
@@ -335,7 +337,15 @@ const buildUserChangeRowsFromHistory = (
   });
 };
 
-const AdminPage: React.FC = () => {
+type AdminPageProps = {
+  appNavOpen?: boolean;
+  onToggleAppNav?: () => void;
+};
+
+const AdminPage: React.FC<AdminPageProps> = ({
+  appNavOpen = false,
+  onToggleAppNav,
+}) => {
   const { isAdmin, isLoading, refreshAdminStatus } = useAdminRole();
   const navigate = useNavigate();
   const [openTab, setOpenTab] = useState<number | null>(null);
@@ -347,8 +357,6 @@ const AdminPage: React.FC = () => {
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const [isTopSectionCollapsed, setIsTopSectionCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [isSidebarHovered, setIsSidebarHovered] = useState(false);
-  const [currentUserPhotoUrl, setCurrentUserPhotoUrl] = useState<string | null>(null);
   const [employeeData, setEmployeeData] = useState<{
     department?: string;
     bonusRole?: string;
@@ -576,7 +584,6 @@ const AdminPage: React.FC = () => {
             department: deptName,
             bonusRole: empData.bonuses_role || ''
           });
-          setCurrentUserPhotoUrl(empData.photo_url || empData.photo || null);
         }
       }
 
@@ -982,17 +989,17 @@ const AdminPage: React.FC = () => {
 
   return (
     <div className="admin-page-shell flex h-screen bg-[#ececec] w-full overflow-hidden">
-      {/* Fixed Desktop Sidebar */}
+      {/* Fixed Desktop Sidebar — flush under app Header (md:h-12) */}
       <aside
-        className={`hidden md:flex fixed left-4 top-24 bottom-6 z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} bg-white/95 border border-gray-200 rounded-[2rem] shadow-[0_18px_45px_rgba(15,23,42,0.18),0_6px_18px_rgba(15,23,42,0.10),inset_0_1px_0_rgba(255,255,255,0.75)] flex-col transition-all duration-300 overflow-hidden`}
-        onMouseEnter={() => setIsSidebarHovered(true)}
-        onMouseLeave={() => setIsSidebarHovered(false)}
+        className="hidden md:flex w-56 fixed bottom-0 left-0 top-12 z-40 flex-col border-r border-gray-200 bg-white dark:border-base-content/10 dark:bg-base-100"
+        aria-label="Admin sections"
       >
-        <div className="border-b border-gray-200 px-4 py-4 min-h-[72px] flex items-center">
-          <h2 className={`text-lg font-semibold text-gray-900 transition-opacity duration-200 ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>Admin</h2>
+        <div className="flex shrink-0 items-center px-3 py-3">
+          <h2 className="saira-regular text-sm font-semibold text-gray-800 dark:text-base-content">Admin</h2>
         </div>
-        <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
+        <nav className="hide-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2">
           <button
+            type="button"
             onClick={() => {
               setSelected({ tab: null, sub: null });
               setOpenTab(null);
@@ -1000,16 +1007,27 @@ const AdminPage: React.FC = () => {
               setSearchQuery('');
               setIsSearchFocused(false);
             }}
-            className={`w-full rounded-lg px-3 py-2.5 text-left transition-all ${
+            className={`relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors ${
               selected.tab === null && selected.sub === null
-                ? 'bg-primary/10 text-primary'
-                : 'hover:bg-gray-100 text-gray-800'
+                ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+                : 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
             }`}
+            aria-current={selected.tab === null && selected.sub === null ? 'page' : undefined}
           >
-            <div className="flex items-center gap-2.5">
-              <HomeIcon className="h-5 w-5 shrink-0" />
-              <span className={`text-sm font-semibold whitespace-nowrap transition-opacity duration-200 ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>Dashboard</span>
-            </div>
+            {selected.tab === null && selected.sub === null && (
+              <span
+                className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                aria-hidden
+              />
+            )}
+            <HomeIcon
+              className={`h-5 w-5 shrink-0 ${
+                selected.tab === null && selected.sub === null
+                  ? 'text-gray-800 dark:text-base-content'
+                  : 'text-gray-500 dark:text-base-content/60'
+              }`}
+            />
+            <span className="saira-regular truncate">Dashboard</span>
           </button>
           {ADMIN_TABS
             .filter(tab => !tab.requiresAdmin || isAdmin)
@@ -1019,66 +1037,108 @@ const AdminPage: React.FC = () => {
               );
               if (visibleSubcategories.length === 0) return null;
               const isOpen = openTab === tabIndex;
+              const hasActiveSub = selected.tab === tabIndex && selected.sub !== null;
               const Icon = tab.icon;
 
               return (
-                <div key={tab.label} className="space-y-1">
+                <div key={tab.label} className="space-y-0.5">
                   <button
+                    type="button"
                     onClick={() => setOpenTab(isOpen ? null : tabIndex)}
-                    className={`w-full rounded-lg px-3 py-2.5 text-left transition-all flex items-center justify-between ${
-                      isOpen ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100 text-gray-800'
+                    className={`relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors ${
+                      isOpen || hasActiveSub
+                        ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+                        : 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <Icon className="h-5 w-5 shrink-0" />
-                      <span className={`text-sm font-semibold whitespace-nowrap transition-opacity duration-200 ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>{tab.label}</span>
-                    </div>
+                    {(isOpen || hasActiveSub) && (
+                      <span
+                        className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                        aria-hidden
+                      />
+                    )}
+                    <Icon
+                      className={`h-5 w-5 shrink-0 ${
+                        isOpen || hasActiveSub
+                          ? 'text-gray-800 dark:text-base-content'
+                          : 'text-gray-500 dark:text-base-content/60'
+                      }`}
+                    />
+                    <span className="saira-regular truncate">{tab.label}</span>
                   </button>
 
-                  {isOpen && isSidebarHovered && (
-                    <div className="pl-7 space-y-1">
-                      {visibleSubcategories.map((subLabel, subIndex) => (
-                        <button
-                          key={`${tab.label}-${subLabel}`}
-                          onClick={() => {
-                            const originalSubIndex = tab.subcategories.findIndex((s) => s === subLabel);
-                            setSelected({ tab: tabIndex, sub: originalSubIndex >= 0 ? originalSubIndex : subIndex });
-                            setOpenTab(tabIndex);
-                            setIsTopSectionCollapsed(true);
-                          }}
-                          className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-all ${
-                            selected.tab === tabIndex && selected.sub === subIndex
-                              ? 'bg-primary/10 text-primary font-semibold'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          {subLabel}
-                        </button>
-                      ))}
+                  {isOpen && (
+                    <div className="space-y-0.5 pl-3">
+                      {visibleSubcategories.map((subLabel) => {
+                        const originalSubIndex = tab.subcategories.findIndex((s) => s === subLabel);
+                        const isSubActive =
+                          selected.tab === tabIndex && selected.sub === originalSubIndex;
+                        return (
+                          <button
+                            key={`${tab.label}-${subLabel}`}
+                            type="button"
+                            onClick={() => {
+                              setSelected({
+                                tab: tabIndex,
+                                sub: originalSubIndex >= 0 ? originalSubIndex : 0,
+                              });
+                              setOpenTab(tabIndex);
+                              setIsTopSectionCollapsed(true);
+                            }}
+                            className={`relative flex w-full items-center rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
+                              isSubActive
+                                ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+                                : 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
+                            }`}
+                            aria-current={isSubActive ? 'page' : undefined}
+                          >
+                            {isSubActive && (
+                              <span
+                                className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                                aria-hidden
+                              />
+                            )}
+                            <span className="saira-regular truncate pl-1">{subLabel}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
               );
             })}
-        </div>
-        <div className="p-3 border-t border-gray-200 flex items-center justify-center">
+        </nav>
+        <div className="flex shrink-0 flex-col gap-0.5 border-t border-gray-200 px-2 py-2.5 dark:border-base-content/10">
+          {onToggleAppNav ? (
+            <button
+              type="button"
+              onClick={onToggleAppNav}
+              className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors ${
+                appNavOpen
+                  ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+                  : 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
+              }`}
+              aria-expanded={appNavOpen}
+              title={appNavOpen ? 'Close app menu' : 'Open app menu'}
+            >
+              {appNavOpen ? (
+                <XMarkIcon className="h-5 w-5 shrink-0 text-gray-700 dark:text-base-content" />
+              ) : (
+                <Bars3BottomLeftIcon className="h-5 w-5 shrink-0 text-gray-500 dark:text-base-content/60" />
+              )}
+              <span className="saira-regular truncate">
+                {appNavOpen ? 'Close menu' : 'App menu'}
+              </span>
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={handleLogout}
-            className="rounded-full focus:outline-none focus:ring-2 focus:ring-primary/40"
-            title={`Logout ${currentUser?.first_name || currentUser?.email || ''}`}
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm font-medium text-red-400/80 transition-colors hover:bg-red-50 hover:text-red-500 dark:text-red-400/70 dark:hover:bg-red-950/30 dark:hover:text-red-400"
+            title="Log out"
           >
-            {currentUserPhotoUrl ? (
-              <img
-                src={currentUserPhotoUrl}
-                alt={currentUser?.first_name || 'Profile'}
-                className="h-10 w-10 rounded-full object-cover border border-gray-200"
-              />
-            ) : (
-              <div className="h-10 w-10 rounded-full bg-gray-200 text-gray-700 flex items-center justify-center text-sm font-semibold border border-gray-300">
-                {(currentUser?.first_name || currentUser?.email || 'U').charAt(0).toUpperCase()}
-              </div>
-            )}
+            <ArrowRightOnRectangleIcon className="h-5 w-5 shrink-0" />
+            <span className="saira-regular truncate">Log out</span>
           </button>
         </div>
       </aside>
@@ -1104,20 +1164,22 @@ const AdminPage: React.FC = () => {
             onClick={() => setIsMobileSidebarOpen(false)}
           />
           {/* Sidebar Panel */}
-          <div className="absolute left-0 top-0 bottom-0 w-80 bg-white shadow-2xl overflow-y-auto">
-            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-gray-900">Admin Menu</h2>
+          <div className="absolute left-0 top-0 bottom-0 flex w-80 flex-col border-r border-gray-200 bg-white shadow-2xl dark:border-base-content/10 dark:bg-base-100">
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-base-content/10">
+              <h2 className="saira-regular text-lg font-semibold text-gray-900 dark:text-base-content">Admin Menu</h2>
               <button
+                type="button"
                 onClick={() => setIsMobileSidebarOpen(false)}
-                className="p-2 hover:bg-gray-100 rounded-lg"
+                className="rounded-lg p-2 text-gray-600 hover:bg-gray-50 dark:text-base-content/70 dark:hover:bg-base-200/60"
               >
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
-            <div className="p-4 space-y-1">
+            <div className="flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
               <button
+                type="button"
                 onClick={() => {
                   setSelected({ tab: null, sub: null });
                   setOpenTab(null);
@@ -1126,16 +1188,26 @@ const AdminPage: React.FC = () => {
                   setIsSearchFocused(false);
                   setIsMobileSidebarOpen(false);
                 }}
-                className={`w-full rounded-lg px-3 py-2.5 text-left transition-all ${
+                className={`relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors ${
                   selected.tab === null && selected.sub === null
-                    ? 'bg-primary/10 text-primary'
-                    : 'hover:bg-gray-100 text-gray-800'
+                    ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+                    : 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
                 }`}
               >
-                <div className="flex items-center gap-2.5">
-                  <HomeIcon className="h-5 w-5 shrink-0" />
-                  <span className="text-sm font-semibold">Dashboard</span>
-                </div>
+                {selected.tab === null && selected.sub === null && (
+                  <span
+                    className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                    aria-hidden
+                  />
+                )}
+                <HomeIcon
+                  className={`h-5 w-5 shrink-0 ${
+                    selected.tab === null && selected.sub === null
+                      ? 'text-gray-800 dark:text-base-content'
+                      : 'text-gray-500 dark:text-base-content/60'
+                  }`}
+                />
+                <span className="saira-regular truncate">Dashboard</span>
               </button>
               {ADMIN_TABS
                 .filter(tab => !tab.requiresAdmin || isAdmin)
@@ -1145,43 +1217,71 @@ const AdminPage: React.FC = () => {
                   );
                   if (visibleSubcategories.length === 0) return null;
                   const isOpen = openTab === tabIndex;
+                  const hasActiveSub = selected.tab === tabIndex && selected.sub !== null;
                   const Icon = tab.icon;
 
                   return (
-                    <div key={`mobile-${tab.label}`} className="space-y-1">
+                    <div key={`mobile-${tab.label}`} className="space-y-0.5">
                       <button
+                        type="button"
                         onClick={() => setOpenTab(isOpen ? null : tabIndex)}
-                        className={`w-full rounded-lg px-3 py-2.5 text-left transition-all flex items-center justify-between ${
-                          isOpen ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100 text-gray-800'
+                        className={`relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors ${
+                          isOpen || hasActiveSub
+                            ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+                            : 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
                         }`}
                       >
-                        <div className="flex items-center gap-2.5">
-                          <Icon className="h-5 w-5 shrink-0" />
-                          <span className="text-sm font-semibold">{tab.label}</span>
-                        </div>
+                        {(isOpen || hasActiveSub) && (
+                          <span
+                            className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                            aria-hidden
+                          />
+                        )}
+                        <Icon
+                          className={`h-5 w-5 shrink-0 ${
+                            isOpen || hasActiveSub
+                              ? 'text-gray-800 dark:text-base-content'
+                              : 'text-gray-500 dark:text-base-content/60'
+                          }`}
+                        />
+                        <span className="saira-regular truncate">{tab.label}</span>
                       </button>
 
                       {isOpen && (
-                        <div className="pl-7 space-y-1">
-                          {visibleSubcategories.map((subLabel, subIndex) => (
-                            <button
-                              key={`mobile-${tab.label}-${subLabel}`}
-                              onClick={() => {
-                                const originalSubIndex = tab.subcategories.findIndex((s) => s === subLabel);
-                                setSelected({ tab: tabIndex, sub: originalSubIndex >= 0 ? originalSubIndex : subIndex });
-                                setOpenTab(tabIndex);
-                                setIsTopSectionCollapsed(true);
-                                setIsMobileSidebarOpen(false);
-                              }}
-                              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-all ${
-                                selected.tab === tabIndex && selected.sub === subIndex
-                                  ? 'bg-primary/10 text-primary font-semibold'
-                                  : 'hover:bg-gray-100 text-gray-700'
-                              }`}
-                            >
-                              {subLabel}
-                            </button>
-                          ))}
+                        <div className="space-y-0.5 pl-3">
+                          {visibleSubcategories.map((subLabel) => {
+                            const originalSubIndex = tab.subcategories.findIndex((s) => s === subLabel);
+                            const isSubActive =
+                              selected.tab === tabIndex && selected.sub === originalSubIndex;
+                            return (
+                              <button
+                                key={`mobile-${tab.label}-${subLabel}`}
+                                type="button"
+                                onClick={() => {
+                                  setSelected({
+                                    tab: tabIndex,
+                                    sub: originalSubIndex >= 0 ? originalSubIndex : 0,
+                                  });
+                                  setOpenTab(tabIndex);
+                                  setIsTopSectionCollapsed(true);
+                                  setIsMobileSidebarOpen(false);
+                                }}
+                                className={`relative flex w-full items-center rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
+                                  isSubActive
+                                    ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
+                                    : 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
+                                }`}
+                              >
+                                {isSubActive && (
+                                  <span
+                                    className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
+                                    aria-hidden
+                                  />
+                                )}
+                                <span className="saira-regular truncate pl-1">{subLabel}</span>
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -1194,7 +1294,9 @@ const AdminPage: React.FC = () => {
 
       {/* Main Content Area */}
       <div
-        className="flex-1 overflow-y-auto px-2 sm:px-3 md:px-6 py-4 md:py-6 transition-all duration-300 md:ml-24"
+        className={`flex-1 overflow-y-auto px-2 sm:px-3 md:px-6 py-4 md:py-6 transition-all duration-300 ${
+          appNavOpen ? 'md:ml-[30rem]' : 'md:ml-56'
+        }`}
       >
         {/* Top nav + search */}
         <div className="max-w-6xl mx-auto mb-3 flex flex-col lg:flex-row lg:flex-nowrap lg:items-center lg:justify-between gap-2.5" ref={searchBoxRef}>
@@ -1499,10 +1601,10 @@ const AdminPage: React.FC = () => {
                 ) : (
                   <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-3">
                     <div className="overflow-x-auto max-h-[min(70vh,560px)] overflow-y-auto">
-                      <table className="w-full text-sm text-left border-collapse">
+                      <table className="w-full text-sm text-left border-separate border-spacing-0">
                         <thead>
                           <tr className="border-b border-gray-200">
-                            <th scope="col" className="py-3 pr-4 font-medium text-gray-500 whitespace-nowrap sticky top-0 bg-white z-[1]">
+                            <th scope="col" className="py-3 pr-4 font-medium text-gray-500 whitespace-nowrap sticky top-0 left-0 z-[2] bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                               User
                             </th>
                             <th scope="col" className="py-3 pr-4 font-medium text-gray-500 whitespace-nowrap sticky top-0 bg-white z-[1]">
@@ -1518,8 +1620,8 @@ const AdminPage: React.FC = () => {
                         </thead>
                         <tbody className="divide-y divide-gray-100">
                           {fullUserChanges.map(change => (
-                            <tr key={`${change.type}-${change.id}`} className="align-top hover:bg-gray-50/50">
-                              <td className="py-3 pr-4 font-medium text-gray-900 whitespace-nowrap">
+                            <tr key={`${change.type}-${change.id}`} className="group align-top hover:bg-gray-50/50">
+                              <td className="py-3 pr-4 font-medium text-gray-900 whitespace-nowrap sticky left-0 z-[1] bg-white group-hover:bg-white shadow-[2px_0_8px_-2px_rgba(0,0,0,0.12)]">
                                 {change.user_name}
                               </td>
                               <td className="py-3 pr-4 text-gray-600 whitespace-nowrap">
@@ -1547,7 +1649,7 @@ const AdminPage: React.FC = () => {
         <div className="relative">
           <button
             onClick={() => setIsTopSectionCollapsed(!isTopSectionCollapsed)}
-            className="fixed top-24 right-4 md:right-8 z-50 p-2 md:p-3 rounded-full bg-[#4B18D2] text-white border border-[#4B18D2]/80 shadow-[0_10px_26px_rgba(75,24,210,0.34)] transition-all duration-300 transform hover:scale-110 hover:bg-[#4214BC]"
+            className="fixed top-12 right-4 md:right-8 z-50 p-2 md:p-3 rounded-full bg-[#4B18D2] text-white border border-[#4B18D2]/80 shadow-[0_10px_26px_rgba(75,24,210,0.34)] transition-all duration-300 transform hover:scale-110 hover:bg-[#4214BC]"
             title={isTopSectionCollapsed ? 'Show Welcome Section' : 'Hide Welcome Section'}
           >
             <svg
