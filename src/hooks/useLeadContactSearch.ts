@@ -14,7 +14,7 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
     enabled = true,
     minLength = 2,
     limit = 20,
-    debounceMs = 300,
+    debounceMs = 180,
   } = options;
 
   const [results, setResults] = useState<CombinedLead[]>([]);
@@ -23,6 +23,9 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
   const requestIdRef = useRef(0);
   const resultsRef = useRef<CombinedLead[]>([]);
   resultsRef.current = results;
+
+  // Trim so trailing spaces don't re-fire the same search with different races.
+  const trimmedQuery = query.trim();
 
   const refresh = useCallback(async (searchQuery: string) => {
     const trimmed = searchQuery.trim();
@@ -57,8 +60,7 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
   useEffect(() => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
 
-    const trimmed = query.trim();
-    if (!enabled || trimmed.length < minLength) {
+    if (!enabled || trimmedQuery.length < minLength) {
       setResults([]);
       setLoading(false);
       return;
@@ -67,13 +69,13 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
     // Do not set loading=true here: that would replace the result list with a
     // spinner during debounce and steal clicks from result rows.
     debounceRef.current = window.setTimeout(() => {
-      void refresh(trimmed);
+      void refresh(trimmedQuery);
     }, debounceMs);
 
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
-  }, [debounceMs, enabled, minLength, query, refresh]);
+  }, [debounceMs, enabled, minLength, trimmedQuery, refresh]);
 
   return { results, loading, refresh };
 }

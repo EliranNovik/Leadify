@@ -337,7 +337,18 @@ export function dedupeLeadContactSearchResults(results: CombinedLead[], query = 
     }
   }
 
-  return collapseSearchResultsToMasterLeads(afterContactDedupe, query);
+  // Only collapse sublead families for lead-number searches.
+  // Name/email/phone searches should keep every distinct person/contact hit.
+  const trimmed = query.trim();
+  const isLeadNumberQuery =
+    Boolean(trimmed) &&
+    !trimmed.includes('@') &&
+    (/^[LC]?\d/i.test(trimmed) || /^\d/.test(trimmed.replace(/^[LC]/i, '')));
+  if (isLeadNumberQuery || isSubleadQuery(query)) {
+    return collapseSearchResultsToMasterLeads(afterContactDedupe, query);
+  }
+
+  return afterContactDedupe;
 }
 
 export function combinedLeadToRouteLead(lead: CombinedLead) {

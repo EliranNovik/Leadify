@@ -135,18 +135,16 @@ export function looksLikePhoneSearchQuery(raw: string): boolean {
   if (trimmed.includes('/')) return false;
 
   const d = phoneDigitsOnly(trimmed);
-  if (!d) return false;
+  // Short prefixes (052, 050) are too broad for indexed equality search.
+  if (!d || d.length < 7) return false;
 
   const hasFormatting = trimmed.length > d.length;
-  if (hasFormatting && d.length >= 3) return true;
-  if (d.startsWith('00972') && d.length >= 6) return true;
-  if (d.startsWith('972') && d.length >= 5) return true;
-  if (d.startsWith('0') && d.length >= 3) return true;
-  // Local mobile without leading 0 (52… / 5xxxxxxxx), or longer digit fragments
-  // typed without the 052 / +972 prefix.
-  if (d.startsWith('5') && d.length >= 7) return true;
-  if (d.length >= 7) return true;
-
+  if (hasFormatting) return true;
+  if (d.startsWith('00972') && d.length >= 8) return true;
+  if (d.startsWith('972') && d.length >= 8) return true;
+  if (d.startsWith('0')) return true;
+  // Local mobile without leading 0 (52… / 5xxxxxxxx)
+  if (d.startsWith('5')) return true;
   return false;
 }
 
@@ -170,13 +168,14 @@ export function phoneDigitsMatch(stored: string, queryDigits: string): boolean {
 
 /** Build Supabase `.or()` clause for phone/mobile ilike matching. */
 export function buildPhoneSearchOrClause(digits: string, rawQuery?: string): string {
-  const digitPatterns = expandPhoneSearchPatterns(digits);
+  // Cap expansions — dozens of %…% ORs defeat indexes and blow PostgREST filters.
+  const digitPatterns = expandPhoneSearchPatterns(digits).slice(0, 5);
   if (digitPatterns.length === 0) return '';
 
   const searchForms = new Set<string>();
   for (const p of digitPatterns) {
     searchForms.add(p);
-    for (const h of hyphenatedPhoneForms(p)) searchForms.add(h);
+    for (const h of hyphenatedPhoneForms(p).slice(0, 3)) searchForms.add(h);
   }
 
   const raw = rawQuery?.trim();
@@ -185,7 +184,7 @@ export function buildPhoneSearchOrClause(digits: string, rawQuery?: string): str
   }
 
   const clauses = new Set<string>();
-  for (const form of searchForms) {
+  for (const form of Array.from(searchForms).slice(0, 10)) {
     // Drop spaced variants — they break unquoted filters and are redundant with hyphen/+ forms.
     if (/\s/.test(form)) continue;
     const escaped = form.replace(/[%_,]/g, '');

@@ -120,11 +120,15 @@ function appendInvoiceBlock(bodyHtml, invoiceLink, invoiceNumber) {
  * Uses misc_emailtemplate id 184 (override via PAYMENT_CONFIRMATION_EMAIL_TEMPLATE_ID).
  * Sends via Microsoft Graph using PAYMENT_CONFIRMATION_MAILBOX_USER_ID (connected mailbox).
  * Never throws — payment flow must not be affected by mail failures.
+ *
+ * Concurrency: claim `payment_confirmation_email_sent_at` BEFORE Graph send so concurrent
+ * status polls / reconciliation / return handlers cannot send the same template N times.
  */
 async function sendPaymentConfirmationEmail(
   paymentLink,
   { paidAt, invoiceLink, invoiceNumber, force = false } = {},
 ) {
+  let claimedSendSlot = false;
   try {
     const mailboxUserId = getMailboxUserId();
     if (!mailboxUserId) {
@@ -145,19 +149,25 @@ async function sendPaymentConfirmationEmail(
       return { skipped: true, reason: 'no_recipient' };
     }
 
-    const { data: existingRow, error: existingError } = await supabase
-      .from('payment_links')
-      .select('payment_confirmation_email_sent_at')
-      .eq('id', paymentLink.id)
-      .maybeSingle();
+    const claimAt = new Date().toISOString();
+    if (!force) {
+      // Atomic single-winner claim: only one concurrent caller proceeds to Graph.
+      const { data: claimed, error: claimError } = await supabase
+        .from('payment_links')
+        .update({ payment_confirmation_email_sent_at: claimAt })
+        .eq('id', paymentLink.id)
+        .is('payment_confirmation_email_sent_at', null)
+        .select('id')
+        .maybeSingle();
 
-    if (existingError && existingError.code !== 'PGRST204') {
-      console.error('[PaymentConfirmationEmail] Failed to read send status:', existingError);
-      return { skipped: true, reason: 'read_error' };
-    }
-
-    if (existingRow?.payment_confirmation_email_sent_at && !force) {
-      return { skipped: true, reason: 'already_sent' };
+      if (claimError && claimError.code !== 'PGRST204') {
+        console.error('[PaymentConfirmationEmail] Failed to claim send slot:', claimError);
+        return { skipped: true, reason: 'claim_error' };
+      }
+      if (!claimed) {
+        return { skipped: true, reason: 'already_sent' };
+      }
+      claimedSendSlot = true;
     }
 
     const templateId = getTemplateId();
@@ -200,15 +210,16 @@ async function sendPaymentConfirmationEmail(
       },
     });
 
-    const sentAt = new Date().toISOString();
-    const { error: markSentError } = await supabase
-      .from('payment_links')
-      .update({ payment_confirmation_email_sent_at: sentAt })
-      .eq('id', paymentLink.id)
-      .is('payment_confirmation_email_sent_at', null);
+    if (force) {
+      const sentAt = new Date().toISOString();
+      const { error: markSentError } = await supabase
+        .from('payment_links')
+        .update({ payment_confirmation_email_sent_at: sentAt })
+        .eq('id', paymentLink.id);
 
-    if (markSentError && markSentError.code !== 'PGRST204') {
-      console.warn('[PaymentConfirmationEmail] Email sent but failed to record sent_at:', markSentError);
+      if (markSentError && markSentError.code !== 'PGRST204') {
+        console.warn('[PaymentConfirmationEmail] Email sent but failed to record sent_at:', markSentError);
+      }
     }
 
     console.info('[PaymentConfirmationEmail] Sent confirmation email', {
@@ -216,10 +227,25 @@ async function sendPaymentConfirmationEmail(
       recipient,
       templateId,
       hasInvoiceLink: Boolean(resolvedInvoiceLink),
+      force,
     });
 
     return { sent: true, recipient };
   } catch (error) {
+    // Release claim so a later poll/reconcile can retry if Graph failed after we reserved the slot.
+    if (claimedSendSlot && paymentLink?.id) {
+      try {
+        await supabase
+          .from('payment_links')
+          .update({ payment_confirmation_email_sent_at: null })
+          .eq('id', paymentLink.id);
+      } catch (releaseErr) {
+        console.warn(
+          '[PaymentConfirmationEmail] Failed to release send claim after error:',
+          releaseErr?.message || releaseErr,
+        );
+      }
+    }
     console.error('[PaymentConfirmationEmail] Send failed (payment unaffected):', error.message || error);
     return { failed: true, error: error.message || String(error) };
   }

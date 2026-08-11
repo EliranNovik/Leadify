@@ -216,7 +216,10 @@ async function getPaymentStatus(req, res) {
 
     if (payment.status === 'paid' && !payment.payment_confirmation_email_sent_at) {
       payment = await ensurePaymentLinkPlanContact(payment);
-      await sendPaymentConfirmationEmail(payment, {
+      // Do not await Graph send — PaymentResultPage polls this endpoint every ~2s.
+      // sendPaymentConfirmationEmail atomically claims payment_confirmation_email_sent_at
+      // before sending, so overlapping polls cannot emit duplicate templates.
+      void sendPaymentConfirmationEmail(payment, {
         paidAt: payment.paid_at,
         invoiceLink: payment.payper_invoice_link || null,
         invoiceNumber: payment.payper_invoice_number || null,
