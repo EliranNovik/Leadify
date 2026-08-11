@@ -19,7 +19,15 @@ import {
   PaperClipIcon,
   PlusIcon,
   SparklesIcon,
+  ArrowUturnLeftIcon,
+  ArrowUturnRightIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
+import {
+  buildComposeDraft,
+  resolveEmailDeleteFilter,
+  type EmailComposeMode,
+} from '../lib/interactions/emailComposeActions';
 
 interface EmailLead {
   id: string;
@@ -35,6 +43,7 @@ interface EmailLead {
 interface EmailMessage {
   id: string;
   message_id: string;
+  db_id?: string | number;
   subject: string;
   body_html: string | null;
   body_preview: string | null;
@@ -58,6 +67,34 @@ function emailContentLikelyHebrew(...parts: (string | null | undefined)[]) {
   const combined = parts.filter(Boolean).join('\n');
   const plain = stripTagsForRtl(combined);
   return plain.trim().length > 0 && HEBREW_CHAR_RE.test(plain);
+}
+
+/** Sidepanel subject line — keep list scannable */
+function truncateSidepanelTitle(value: string | null | undefined, max = 20): string {
+  const text = String(value || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return 'No Subject';
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
+const OFFICE_THREAD_LIST_SELECT =
+  'id, message_id, sender_name, sender_email, recipient_list, subject, body_preview, sent_at, direction, attachments, client_id, legacy_id, contact_id';
+
+function asJsonArray<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (typeof data === 'string') {
+    try {
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 const EmailThreadLeadPage: React.FC = () => {
@@ -89,6 +126,9 @@ const EmailThreadLeadPage: React.FC = () => {
   // Composer state
   const [newMessage, setNewMessage] = useState('');
   const [subject, setSubject] = useState('');
+  const [composeToRecipients, setComposeToRecipients] = useState<string[]>([]);
+  const [composeCcRecipients, setComposeCcRecipients] = useState<string[]>([]);
+  const [composeMode, setComposeMode] = useState<EmailComposeMode | 'reply'>('reply');
   const [isSending, setIsSending] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -107,18 +147,34 @@ const EmailThreadLeadPage: React.FC = () => {
 
   const dispatchEmailUnreadCount = useCallback(async () => {
     try {
-      // Count ALL unread incoming emails to office@lawoffice.org.il
-      // IMPORTANT: We do NOT filter by client_id, legacy_id, or contact_id
-      // This count includes ALL emails sent to office@lawoffice.org.il, regardless of link status
+      // Bounded count — full-table ilike+count times out on large emails tables.
+      const sinceIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const { count, error } = await supabase
         .from('emails')
         .select('id', { count: 'exact', head: true })
         .eq('direction', 'incoming')
-        .or('is_read.is.null,is_read.eq.false')
-        .ilike('recipient_list', '%office@lawoffice.org.il%');
+        .is('is_read', false)
+        .ilike('recipient_list', '%office@lawoffice.org.il%')
+        .gte('sent_at', sinceIso);
 
       if (error) {
-        console.error('Error fetching unread email count:', error);
+        // null unread (is_read IS NULL) — try IS NOT TRUE via or, still date-bounded
+        const { count: count2, error: error2 } = await supabase
+          .from('emails')
+          .select('id', { count: 'exact', head: true })
+          .eq('direction', 'incoming')
+          .or('is_read.is.null,is_read.eq.false')
+          .ilike('recipient_list', '%office@lawoffice.org.il%')
+          .gte('sent_at', sinceIso);
+        if (error2) {
+          console.error('Error fetching unread email count:', error2);
+          return;
+        }
+        window.dispatchEvent(
+          new CustomEvent<{ count: number }>('email:unread-count', {
+            detail: { count: count2 || 0 },
+          })
+        );
         return;
       }
 
@@ -137,9 +193,7 @@ const EmailThreadLeadPage: React.FC = () => {
       if (!senderEmail) return;
 
       try {
-        // Mark ALL incoming emails to office@lawoffice.org.il as read for this sender
-        // IMPORTANT: We do NOT filter by client_id, legacy_id, or contact_id
-        // This updates ALL emails sent to office@lawoffice.org.il from this sender, regardless of link status
+        // Indexed sender_email only — never recipient_list ILIKE (times out on this table).
         const { error } = await supabase
           .from('emails')
           .update({
@@ -149,22 +203,16 @@ const EmailThreadLeadPage: React.FC = () => {
           })
           .eq('direction', 'incoming')
           .ilike('sender_email', senderEmail)
-          .ilike('recipient_list', '%office@lawoffice.org.il%')
           .or('is_read.is.null,is_read.eq.false');
 
         if (error) {
-          // Handle permission errors gracefully - these can occur due to database triggers
-          // The UI will still update correctly even if the database update fails
           if (error.code === '42501' && error.message?.includes('pending_stage_evaluations')) {
-            // This is a known issue with database triggers - log as warning, not error
             console.warn('⚠️ Could not mark emails as read in database (trigger permission issue), but UI will update correctly');
           } else {
             console.error('Error marking emails as read:', error);
           }
-          // Continue with UI update even if database update fails
         }
 
-        // Update UI regardless of database update success
         const normalizedEmail = senderEmail.toLowerCase();
         setLeads(prev =>
           prev.map(lead =>
@@ -173,10 +221,9 @@ const EmailThreadLeadPage: React.FC = () => {
               : lead
           )
         );
-        dispatchEmailUnreadCount();
+        void dispatchEmailUnreadCount();
       } catch (error) {
         console.error('Unexpected error marking emails as read:', error);
-        // Still update UI even on unexpected errors
         const normalizedEmail = senderEmail.toLowerCase();
         setLeads(prev =>
           prev.map(lead =>
@@ -290,6 +337,9 @@ const EmailThreadLeadPage: React.FC = () => {
     'info@citizensinternational.com',
     'ir@2961969.brevosend.com',
     'marketing@crocoblock.com',
+    'info@crocoblock.com',
+    'artalegal@googlegroups.com',
+    'alljobs@alljob.co.il',
     'jay@tlvsalon.com',
   ]);
 
@@ -317,62 +367,59 @@ const EmailThreadLeadPage: React.FC = () => {
     return false;
   };
 
-  // Check if each lead has connections
-  const checkConnectionsForAllLeads = useCallback(async (leadsList: EmailLead[]) => {
+  // Derive connection badges from data we already have (no extra emails table scan).
+  const checkConnectionsForAllLeads = useCallback(async (leadsList: EmailLead[], emailsSnapshot?: any[]) => {
     if (!leadsList || leadsList.length === 0) return;
 
     try {
-      // Fetch all emails with connections for all sender emails at once
-      const senderEmails = leadsList.map(lead => lead.sender_email).filter(Boolean);
-      if (senderEmails.length === 0) return;
-
-      // Check connections for ALL emails (read and unread) received at office@lawoffice.org.il
-      // This ensures the green icon persists even after emails are marked as read
-      const { data: emailsData, error: emailsError } = await supabase
-        .from('emails')
-        .select('sender_email, client_id, legacy_id, contact_id')
-        .in('sender_email', senderEmails)
-        .ilike('recipient_list', '%office@lawoffice.org.il%')
-        .or('client_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
-
-      if (emailsError) {
-        console.error('Error checking connections for leads:', emailsError);
-        return;
-      }
-
-      // Create a map of email -> hasConnections
       const connectionsMap = new Map<string, boolean>();
 
-      // Group by sender_email
-      const emailsBySender = new Map<string, any[]>();
-      (emailsData || []).forEach((email: any) => {
-        const sender = email.sender_email?.toLowerCase();
-        if (sender) {
-          if (!emailsBySender.has(sender)) {
-            emailsBySender.set(sender, []);
+      if (Array.isArray(emailsSnapshot) && emailsSnapshot.length > 0) {
+        const linkedSenders = new Set<string>();
+        emailsSnapshot.forEach((email: any) => {
+          const sender = String(email.sender_email || '').toLowerCase().trim();
+          if (!sender) return;
+          if (email.client_id || email.legacy_id || email.contact_id) {
+            linkedSenders.add(sender);
           }
-          emailsBySender.get(sender)!.push(email);
-        }
-      });
+        });
+        leadsList.forEach((lead) => {
+          const key = lead.sender_email?.toLowerCase() || lead.id;
+          connectionsMap.set(lead.id, linkedSenders.has(key));
+        });
+      } else {
+        // Lightweight fallback: indexed sender_email only (no recipient_list ILIKE).
+        const senderEmails = Array.from(
+          new Set(leadsList.map((lead) => lead.sender_email).filter(Boolean)),
+        ).slice(0, 40);
+        if (senderEmails.length === 0) return;
 
-      // Check each lead
-      leadsList.forEach(lead => {
-        const normalizedEmail = lead.sender_email?.toLowerCase();
-        if (!normalizedEmail) {
-          connectionsMap.set(lead.id, false);
+        const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+        const { data: emailsData, error: emailsError } = await supabase
+          .from('emails')
+          .select('sender_email, client_id, legacy_id, contact_id')
+          .in('sender_email', senderEmails)
+          .gte('sent_at', sinceIso)
+          .limit(800);
+
+        if (emailsError) {
+          console.error('Error checking connections for leads:', emailsError);
           return;
         }
 
-        const emails = emailsBySender.get(normalizedEmail) || [];
-        const hasConnections = emails.some((email: any) =>
-          email.client_id || email.legacy_id || email.contact_id
-        );
-        connectionsMap.set(lead.id, hasConnections);
-      });
+        const linkedSenders = new Set<string>();
+        (emailsData || []).forEach((email: any) => {
+          if (!(email.client_id || email.legacy_id || email.contact_id)) return;
+          const sender = String(email.sender_email || '').toLowerCase().trim();
+          if (sender) linkedSenders.add(sender);
+        });
+        leadsList.forEach((lead) => {
+          const key = lead.sender_email?.toLowerCase() || lead.id;
+          connectionsMap.set(lead.id, linkedSenders.has(key));
+        });
+      }
 
-      // Merge with existing connections map to preserve state, only update changed leads
-      // This ensures the green icon persists even when leads state is updated (e.g., after marking as read)
-      setLeadsWithConnections(prev => {
+      setLeadsWithConnections((prev) => {
         const merged = new Map(prev);
         connectionsMap.forEach((hasConnections, leadId) => {
           merged.set(leadId, hasConnections);
@@ -390,20 +437,55 @@ const EmailThreadLeadPage: React.FC = () => {
       try {
         setLoading(true);
 
-        // Fetch ALL incoming emails to office@lawoffice.org.il
-        // IMPORTANT: We do NOT filter by client_id, legacy_id, or contact_id
-        // This query returns ALL emails sent to office@lawoffice.org.il, regardless of:
-        // - Whether they are linked to a lead (client_id or legacy_id)
-        // - Whether they are linked to a contact (contact_id)
-        // - Whether they have no links at all (all ID fields are null)
-        // Note: Using limit() to fetch more than default 1000 emails
-        const { data: emailsData, error: emailsError } = await supabase
-          .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, is_read, client_id, legacy_id, contact_id')
-          .eq('direction', 'incoming')
-          .ilike('recipient_list', '%office@lawoffice.org.il%')
-          .order('sent_at', { ascending: false })
-          .limit(10000); // Fetch up to 10,000 emails (adjust if needed)
+        // Prefer sent_at-first RPC (no driving ILIKE). Fallback: recent incoming, filter office@ in JS.
+        const sinceIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        let emailsData: any[] | null = null;
+        let emailsError: { message?: string; code?: string } | null = null;
+
+        const rpcResult = await supabase.rpc('email_office_inbox_recent', {
+          p_days: 30,
+          p_limit: 400,
+        });
+
+        const rpcTimedOut =
+          String(rpcResult.error?.code || '') === '57014' ||
+          String(rpcResult.error?.message || '').toLowerCase().includes('statement timeout');
+
+        if (!rpcResult.error) {
+          if (Array.isArray(rpcResult.data)) {
+            emailsData = rpcResult.data;
+          } else if (typeof rpcResult.data === 'string') {
+            try {
+              const parsed = JSON.parse(rpcResult.data);
+              emailsData = Array.isArray(parsed) ? parsed : [];
+            } catch {
+              emailsData = [];
+            }
+          } else {
+            emailsData = [];
+          }
+        } else if (rpcTimedOut) {
+          emailsError = rpcResult.error;
+        } else {
+          const direct = await supabase
+            .from('emails')
+            .select(
+              'id, message_id, sender_name, sender_email, recipient_list, subject, body_preview, sent_at, direction, is_read, client_id, legacy_id, contact_id'
+            )
+            .eq('direction', 'incoming')
+            .gte('sent_at', sinceIso)
+            .order('sent_at', { ascending: false })
+            .limit(2000);
+          if (direct.error) {
+            emailsError = direct.error;
+          } else {
+            emailsData = (direct.data || []).filter((email: any) =>
+              String(email.recipient_list || '')
+                .toLowerCase()
+                .includes('office@lawoffice.org.il'),
+            );
+          }
+        }
 
         if (emailsError) {
           console.error('Error fetching emails:', emailsError);
@@ -446,7 +528,7 @@ const EmailThreadLeadPage: React.FC = () => {
               unread_count: 0,
               last_message_at: email.sent_at,
               last_subject: email.subject || 'No Subject',
-              last_message_preview: email.body_preview || email.body_html || '',
+              last_message_preview: email.body_preview || '',
             });
           }
 
@@ -480,8 +562,8 @@ const EmailThreadLeadPage: React.FC = () => {
 
         setLeads(leadsList);
 
-        // Check connections for all leads
-        checkConnectionsForAllLeads(leadsList);
+        // Check connections from the inbox rows we already fetched (no second scan)
+        checkConnectionsForAllLeads(leadsList, emailsData || []);
       } catch (error) {
         console.error('Error fetching email leads:', error);
         toast.error('Failed to load email leads');
@@ -492,14 +574,6 @@ const EmailThreadLeadPage: React.FC = () => {
 
     fetchEmailLeads();
   }, [checkConnectionsForAllLeads]);
-
-  // Re-check connections whenever leads change (e.g., after marking emails as read)
-  // This ensures the green icon persists even after state updates
-  useEffect(() => {
-    if (leads.length > 0) {
-      checkConnectionsForAllLeads(leads);
-    }
-  }, [leads, checkConnectionsForAllLeads]);
 
   // Filter leads based on search
   const filteredLeads = leads.filter(lead =>
@@ -515,71 +589,23 @@ const EmailThreadLeadPage: React.FC = () => {
       return;
     }
 
+    const leadEmail = selectedLead.sender_email.toLowerCase().trim();
+
     try {
       setChatLoading(true);
-
-      // Fetch ONLY incoming messages received to office@lawoffice.org.il from this sender
-      // CRITICAL: We ONLY fetch emails that were received at office@lawoffice.org.il
-      // This ensures we don't show emails from client/contact interactions that weren't sent to office@lawoffice.org.il
-      const incomingPromise = supabase
-        .from('emails')
-        .select(
-          'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id, contact_id'
-        )
-        .eq('direction', 'incoming')
-        .ilike('recipient_list', '%office@lawoffice.org.il%')
-        .eq('sender_email', selectedLead.sender_email)
-        .order('sent_at', { ascending: true })
-        .limit(200);
-
-      // Fetch outgoing messages sent FROM office@lawoffice.org.il OR from the logged-in user's email
-      // This includes both office emails and replies sent by the logged-in user from the email leads page
-      const outgoingPromise = userEmail
-        ? supabase
-          .from('emails')
-          .select(
-            'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments'
-          )
-          .eq('direction', 'outgoing')
-          // Fetch outgoing emails where sender is either office@lawoffice.org.il OR the logged-in user's email
-          .or(`sender_email.ilike.%office@lawoffice.org.il%,sender_email.eq.${userEmail}`)
-          .ilike('recipient_list', `%${selectedLead.sender_email}%`)
-          .order('sent_at', { ascending: true })
-          .limit(200)
-        : Promise.resolve({ data: [], error: null });
-
-      const [{ data: incomingData, error: incomingError }, { data: outgoingRaw, error: outgoingError }] =
-        await Promise.all([incomingPromise, outgoingPromise]);
-
-      if (incomingError) {
-        console.error('Error fetching incoming messages:', incomingError);
-        return;
-      }
-      if (outgoingError) {
-        console.error('Error fetching outgoing messages:', outgoingError);
-      }
-
-      const outgoingData = outgoingRaw || [];
+      setMessages([]);
 
       const formatMessage = (email: any, dbId: string | number): EmailMessage & { _dbId: string | number } => {
-        // Parse attachments from JSONB - it might be a string or already an array
         let parsedAttachments: any[] = [];
         if (email.attachments) {
           try {
-            // If it's a string, parse it
             if (typeof email.attachments === 'string') {
               parsedAttachments = JSON.parse(email.attachments);
-            }
-            // If it's already an array, use it directly
-            else if (Array.isArray(email.attachments)) {
+            } else if (Array.isArray(email.attachments)) {
               parsedAttachments = email.attachments;
-            }
-            // If it's an object with a value property (Graph API format), extract the array
-            else if (email.attachments.value && Array.isArray(email.attachments.value)) {
+            } else if (email.attachments.value && Array.isArray(email.attachments.value)) {
               parsedAttachments = email.attachments.value;
-            }
-            // If it's a single object, wrap it in an array
-            else if (typeof email.attachments === 'object') {
+            } else if (typeof email.attachments === 'object') {
               parsedAttachments = [email.attachments];
             }
           } catch (e) {
@@ -588,185 +614,193 @@ const EmailThreadLeadPage: React.FC = () => {
           }
         }
 
-        // Filter out inline attachments that shouldn't be displayed as separate attachments
-        parsedAttachments = parsedAttachments.filter((att: any) => {
-          // Only show non-inline attachments or if isInline is false/undefined
-          return att && !att.isInline && att.name;
-        });
+        parsedAttachments = parsedAttachments.filter((att: any) => att && !att.isInline && att.name);
 
         return {
           id: email.message_id || email.id,
           message_id: email.message_id || email.id,
           subject: email.subject || 'No Subject',
-          body_html: email.body_html,
-          body_preview: email.body_preview || email.body_html,
+          body_html: email.body_html || null,
+          body_preview: email.body_preview || email.body_html || '',
           sender_name: email.sender_name || selectedLead.sender_name,
           sender_email: email.sender_email || selectedLead.sender_email,
           recipient_list: email.recipient_list || '',
           sent_at: email.sent_at,
           direction: email.direction === 'outgoing' ? 'outgoing' : 'incoming',
           attachments: parsedAttachments,
-          _dbId: dbId, // Store database ID for deduplication
+          db_id: dbId,
+          _dbId: dbId,
         };
       };
 
-      const formattedMessages = [
-        ...(incomingData || []).map((email: any) => formatMessage(email, email.id)),
-        ...(outgoingData || []).map((email: any) => formatMessage(email, email.id))
-      ];
+      const dedupeAndFilter = (rows: any[]) => {
+        const formattedMessages = (rows || []).map((email: any) => formatMessage(email, email.id));
+        const messageMap = new Map<string, EmailMessage & { _dbId: string | number }>();
 
-      // Deduplicate messages - prioritize same timestamp + sender as duplicate
-      // Primary key: sender_email + sent_at (same sender + same time = duplicate)
-      // Secondary: message_id (if available)
-      const messageMap = new Map<string, EmailMessage & { _dbId: string | number }>();
-      const duplicateLog: Array<{ key: string; count: number; message_ids: string[] }> = [];
-
-      formattedMessages.forEach((message) => {
-        // Create a unique key for deduplication
-        // PRIMARY: Use sender_email + sent_at (normalized timestamp) as the main deduplication key
-        // This ensures same sender + same time = same email, regardless of message_id
-        const sentAt = message.sent_at ? new Date(message.sent_at).toISOString() : '';
-        const normalizedSender = (message.sender_email || '').toLowerCase().trim();
-
-        // Primary deduplication key: sender + timestamp
-        // Round timestamp to nearest second to handle microsecond differences
-        let timestampKey = sentAt;
-        if (sentAt) {
-          try {
-            const date = new Date(sentAt);
-            // Round to nearest second
-            date.setMilliseconds(0);
-            timestampKey = date.toISOString();
-          } catch (e) {
-            // Keep original if parsing fails
-            timestampKey = sentAt;
+        formattedMessages.forEach((message) => {
+          const sentAt = message.sent_at ? new Date(message.sent_at).toISOString() : '';
+          const normalizedSender = (message.sender_email || '').toLowerCase().trim();
+          let timestampKey = sentAt;
+          if (sentAt) {
+            try {
+              const date = new Date(sentAt);
+              date.setMilliseconds(0);
+              timestampKey = date.toISOString();
+            } catch {
+              timestampKey = sentAt;
+            }
           }
-        }
-
-        const uniqueKey = `${normalizedSender}_${timestampKey}`;
-
-        // Track duplicates for logging
-        const existingMessage = messageMap.get(uniqueKey);
-        if (existingMessage) {
-          const existingEntry = duplicateLog.find(d => d.key === uniqueKey);
-          if (existingEntry) {
-            existingEntry.count++;
-            existingEntry.message_ids.push(String(message._dbId));
-          } else {
-            duplicateLog.push({
-              key: uniqueKey,
-              count: 2,
-              message_ids: [String(existingMessage._dbId), String(message._dbId)]
-            });
+          const uniqueKey = `${normalizedSender}_${timestampKey}`;
+          const existingMessage = messageMap.get(uniqueKey);
+          if (!existingMessage) {
+            messageMap.set(uniqueKey, message);
+            return;
           }
-        }
-
-        // If we already have this message (same sender + timestamp), keep the one with more complete data
-        if (!existingMessage) {
-          messageMap.set(uniqueKey, message);
-        } else {
-          // Prefer message with message_id, or with more complete body_html
           const existingHasMessageId = existingMessage.message_id && existingMessage.message_id.trim();
           const currentHasMessageId = message.message_id && message.message_id.trim();
-
           if (currentHasMessageId && !existingHasMessageId) {
             messageMap.set(uniqueKey, message);
-          } else if (existingHasMessageId && !currentHasMessageId) {
-            // Keep existing
-          } else {
-            // Both have or don't have message_id, prefer the one with more complete body
-            const existingBodyLength = (existingMessage.body_html || existingMessage.body_preview || '').length;
-            const currentBodyLength = (message.body_html || message.body_preview || '').length;
-
-            // If body lengths are equal, prefer the one with later database ID (more recent insert)
-            if (currentBodyLength > existingBodyLength) {
-              messageMap.set(uniqueKey, message);
-            } else if (currentBodyLength === existingBodyLength) {
-              // Compare database IDs - keep the one with higher ID (more recent)
-              const existingDbId = typeof existingMessage._dbId === 'string' ? parseInt(existingMessage._dbId) : existingMessage._dbId;
-              const currentDbId = typeof message._dbId === 'string' ? parseInt(message._dbId) : message._dbId;
-              if (currentDbId > existingDbId) {
-                messageMap.set(uniqueKey, message);
-              }
-            }
-            // Otherwise keep existing
+            return;
           }
-        }
-      });
-
-      // Remove _dbId before setting state (it's only for deduplication)
-      // CRITICAL: Additional client-side filtering to ensure ONLY emails with office@lawoffice.org.il in recipient (incoming) or sender (outgoing)
-      // This prevents emails from client/contact interactions that don't involve office@lawoffice.org.il from appearing
-      const combinedMessages = Array.from(messageMap.values())
-        .map(({ _dbId, ...message }) => message as EmailMessage)
-        .filter((message) => {
-          // For incoming messages: office@lawoffice.org.il must be in recipient_list
-          if (message.direction === 'incoming') {
-            const recipientList = (message.recipient_list || '').toLowerCase();
-            return recipientList.includes('office@lawoffice.org.il');
-          }
-          // For outgoing messages: sender must be office@lawoffice.org.il OR the logged-in user's email
-          if (message.direction === 'outgoing') {
-            const senderEmail = (message.sender_email || '').toLowerCase();
-            const userEmailLower = (userEmail || '').toLowerCase();
-            return senderEmail.includes('office@lawoffice.org.il') || senderEmail === userEmailLower;
-          }
-          return false; // Reject any messages that don't match the criteria
-        })
-        .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
-
-      // Debug: Log messages with attachments
-      const messagesWithAttachments = combinedMessages.filter(msg => msg.attachments && msg.attachments.length > 0);
-      if (messagesWithAttachments.length > 0) {
-        console.log('📎 Messages with attachments found:', messagesWithAttachments.length);
-        messagesWithAttachments.forEach((msg, idx) => {
-          if (idx < 3) { // Only log first 3
-            console.log(`  Message ${idx + 1}:`, {
-              subject: msg.subject,
-              attachments: msg.attachments,
-              attachmentCount: msg.attachments.length
-            });
+          if (existingHasMessageId && !currentHasMessageId) return;
+          const existingBodyLength = (existingMessage.body_html || existingMessage.body_preview || '').length;
+          const currentBodyLength = (message.body_html || message.body_preview || '').length;
+          if (currentBodyLength > existingBodyLength) {
+            messageMap.set(uniqueKey, message);
+          } else if (currentBodyLength === existingBodyLength) {
+            const existingDbId =
+              typeof existingMessage._dbId === 'string' ? parseInt(existingMessage._dbId, 10) : existingMessage._dbId;
+            const currentDbId = typeof message._dbId === 'string' ? parseInt(message._dbId, 10) : message._dbId;
+            if (currentDbId > existingDbId) messageMap.set(uniqueKey, message);
           }
         });
-      } else {
-        console.log('📎 No messages with attachments found. Sample email data:', incomingData?.[0]);
-      }
 
-      // Log deduplication info with details
-      if (formattedMessages.length !== combinedMessages.length) {
-        console.log(`🔍 Deduplicated ${formattedMessages.length} messages down to ${combinedMessages.length} unique messages`);
-        if (duplicateLog.length > 0) {
-          console.log('📋 Duplicate details:', duplicateLog);
-          duplicateLog.forEach(dup => {
-            console.log(`  - Found ${dup.count} duplicates for key: ${dup.key.substring(0, 50)}... (DB IDs: ${dup.message_ids.join(', ')})`);
-          });
-        }
-      }
+        const userEmailLower = (userEmail || '').toLowerCase();
+        return Array.from(messageMap.values())
+          .map(({ _dbId, ...message }) => ({ ...message, db_id: message.db_id ?? _dbId }) as EmailMessage)
+          .filter((message) => {
+            if (message.direction === 'incoming') {
+              return String(message.recipient_list || '')
+                .toLowerCase()
+                .includes('office@lawoffice.org.il');
+            }
+            if (message.direction === 'outgoing') {
+              const senderEmail = (message.sender_email || '').toLowerCase();
+              const recipients = String(message.recipient_list || '').toLowerCase();
+              const fromOffice =
+                senderEmail.includes('office@lawoffice.org.il') ||
+                (userEmailLower && senderEmail === userEmailLower);
+              return fromOffice && recipients.includes(leadEmail);
+            }
+            return false;
+          })
+          .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+      };
 
-      // Also log if we see duplicate message_ids in the raw data
-      const messageIdCounts = new Map<string, number>();
-      formattedMessages.forEach(msg => {
-        if (msg.message_id) {
-          messageIdCounts.set(msg.message_id, (messageIdCounts.get(msg.message_id) || 0) + 1);
-        }
+      // Prefer SECURITY DEFINER RPC (no body_html, indexed sender path).
+      let combinedMessages: EmailMessage[] | null = null;
+      const rpcResult = await supabase.rpc('email_office_thread_for_sender', {
+        p_sender_email: selectedLead.sender_email,
+        p_days: 365,
+        p_limit: 400,
       });
-      const duplicateMessageIds = Array.from(messageIdCounts.entries()).filter(([_, count]) => count > 1);
-      if (duplicateMessageIds.length > 0) {
-        console.warn(`⚠️ Found ${duplicateMessageIds.length} message_id(s) with duplicates in database:`, duplicateMessageIds.map(([id, count]) => `${id.substring(0, 30)}... (${count}x)`));
+
+      if (!rpcResult.error) {
+        combinedMessages = dedupeAndFilter(asJsonArray(rpcResult.data));
+      } else {
+        console.warn('email_office_thread_for_sender RPC unavailable, using fallback:', rpcResult.error.message);
+      }
+
+      // Fallback: indexed sender_email lookups, NO body_html (hydrate later).
+      if (combinedMessages === null) {
+        const sinceIso = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+        const outgoingSenders = Array.from(
+          new Set(
+            ['office@lawoffice.org.il', userEmail]
+              .filter(Boolean)
+              .map((e) => String(e).toLowerCase()),
+          ),
+        );
+
+        const withTimeout = <T,>(promise: PromiseLike<T>, ms: number, label: string): Promise<T> =>
+          Promise.race([
+            Promise.resolve(promise),
+            new Promise<T>((_, reject) =>
+              setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+            ),
+          ]);
+
+        const incomingPromise = supabase
+          .from('emails')
+          .select(OFFICE_THREAD_LIST_SELECT)
+          .eq('direction', 'incoming')
+          .ilike('sender_email', selectedLead.sender_email)
+          .gte('sent_at', sinceIso)
+          .order('sent_at', { ascending: true })
+          .limit(400);
+
+        // Cap office outbound scan — filter recipient in JS (never recipient_list ILIKE).
+        const outgoingPromise =
+          outgoingSenders.length > 0
+            ? supabase
+                .from('emails')
+                .select(OFFICE_THREAD_LIST_SELECT)
+                .eq('direction', 'outgoing')
+                .in('sender_email', outgoingSenders)
+                .gte('sent_at', sinceIso)
+                .order('sent_at', { ascending: false })
+                .limit(1200)
+            : Promise.resolve({ data: [] as any[], error: null });
+
+        const [incomingSettled, outgoingSettled] = await Promise.allSettled([
+          withTimeout(incomingPromise, 12000, 'incoming thread'),
+          withTimeout(outgoingPromise, 12000, 'outgoing thread'),
+        ]);
+
+        const incomingRaw =
+          incomingSettled.status === 'fulfilled' ? (incomingSettled.value as any)?.data || [] : [];
+        const outgoingRaw =
+          outgoingSettled.status === 'fulfilled' ? (outgoingSettled.value as any)?.data || [] : [];
+
+        if (incomingSettled.status === 'rejected') {
+          console.error('Error fetching incoming messages:', incomingSettled.reason);
+        } else if ((incomingSettled.value as any)?.error) {
+          console.error('Error fetching incoming messages:', (incomingSettled.value as any).error);
+        }
+        if (outgoingSettled.status === 'rejected') {
+          console.error('Error fetching outgoing messages:', outgoingSettled.reason);
+        } else if ((outgoingSettled.value as any)?.error) {
+          console.error('Error fetching outgoing messages:', (outgoingSettled.value as any).error);
+        }
+
+        const incomingData = (incomingRaw || []).filter((email: any) =>
+          String(email.recipient_list || '')
+            .toLowerCase()
+            .includes('office@lawoffice.org.il'),
+        );
+        const outgoingData = (outgoingRaw || []).filter((email: any) =>
+          String(email.recipient_list || '')
+            .toLowerCase()
+            .includes(leadEmail),
+        );
+
+        combinedMessages = dedupeAndFilter([...(incomingData || []), ...(outgoingData || [])]);
       }
 
       setMessages(combinedMessages);
-      await markEmailsAsRead(selectedLead.sender_email);
+      setChatLoading(false);
 
-      // Hydrate email bodies if they're missing or truncated
+      // Non-blocking: never keep the spinner waiting on mark-read / hydrate
+      void markEmailsAsRead(selectedLead.sender_email);
       if (userId && combinedMessages.length > 0) {
-        hydrateEmailBodies(combinedMessages);
+        void hydrateEmailBodies(combinedMessages);
       }
     } catch (error) {
       console.error('Error fetching messages:', error);
-    } finally {
       setChatLoading(false);
     }
+    // hydrateEmailBodies is stable enough; defined below — omit from deps to avoid TDZ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLead, markEmailsAsRead, userEmail, userId]);
 
   // Hydrate email bodies that are missing or truncated
@@ -863,12 +897,14 @@ const EmailThreadLeadPage: React.FC = () => {
 
     setIsLoadingConnections(true);
     try {
-      // Fetch all emails with this sender_email to get client_id, legacy_id, and contact_id
+      // Indexed sender_email lookup only — filter linked ids in JS (no OR IS NOT NULL).
+      const sinceIso = new Date(Date.now() - 730 * 24 * 60 * 60 * 1000).toISOString();
       const { data: emailsData, error: emailsError } = await supabase
         .from('emails')
         .select('client_id, legacy_id, contact_id')
         .eq('sender_email', selectedLead.sender_email)
-        .or('client_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
+        .gte('sent_at', sinceIso)
+        .limit(300);
 
       if (emailsError) {
         console.error('Error fetching connected emails:', emailsError);
@@ -1058,6 +1094,9 @@ const EmailThreadLeadPage: React.FC = () => {
       setAiSuggestions([]);
       setMessages([]);
       setChatLoading(true);
+      setComposeMode('reply');
+      setComposeToRecipients([selectedLead.sender_email].filter(Boolean));
+      setComposeCcRecipients([]);
       if (textareaRef.current) {
         textareaRef.current.style.height = '100px';
       }
@@ -1065,6 +1104,8 @@ const EmailThreadLeadPage: React.FC = () => {
     } else {
       setMessages([]);
       setChatLoading(false);
+      setComposeToRecipients([]);
+      setComposeCcRecipients([]);
     }
   }, [selectedLead]);
 
@@ -1150,9 +1191,76 @@ const EmailThreadLeadPage: React.FC = () => {
     setAiSuggestions([]);
   };
 
+  const getActiveLeadMessage = useCallback((): EmailMessage | null => {
+    if (!messages.length) return null;
+    return [...messages].sort(
+      (a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime(),
+    )[0] || null;
+  }, [messages]);
+
+  const applyComposeAction = useCallback(
+    (mode: EmailComposeMode) => {
+      if (!selectedLead) return;
+      const active = getActiveLeadMessage();
+      if (!active && mode !== 'reply') {
+        toast.error('No email selected in this conversation yet');
+        return;
+      }
+      const draft = buildComposeDraft(active, mode, {
+        userEmail,
+        fallbackTo: selectedLead.sender_email,
+      });
+      setComposeMode(mode);
+      setComposeToRecipients(
+        draft.to.length > 0 ? draft.to : [selectedLead.sender_email].filter(Boolean),
+      );
+      setComposeCcRecipients(draft.cc);
+      setSubject(draft.subject || (selectedLead.last_subject ? `Re: ${selectedLead.last_subject}` : ''));
+      setNewMessage(draft.body);
+      if (mode === 'forward') {
+        toast('Add recipients, then send the forward');
+      }
+    },
+    [selectedLead, getActiveLeadMessage, userEmail],
+  );
+
+  const handleDeleteActiveLeadEmail = useCallback(async () => {
+    const active = getActiveLeadMessage();
+    if (!active) {
+      toast.error('No email to delete');
+      return;
+    }
+    if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) return;
+    const filter = resolveEmailDeleteFilter(active);
+    if (!filter) {
+      toast.error('Could not resolve email id for delete');
+      return;
+    }
+    try {
+      let query = supabase.from('emails').delete();
+      query = filter.by === 'id' ? query.eq('id', filter.value) : query.eq('message_id', filter.value);
+      const { error } = await query;
+      if (error) throw error;
+      setMessages((prev) => prev.filter((m) => String(m.id) !== String(active.id)));
+      toast.success('Email deleted');
+    } catch (error) {
+      console.error('Error deleting email:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to delete email');
+    }
+  }, [getActiveLeadMessage]);
+
   const handleSendEmail = async () => {
     if (!selectedLead || !userId || !newMessage.trim()) {
       toast.error('Please enter a message before sending');
+      return;
+    }
+
+    const to =
+      composeToRecipients.length > 0
+        ? composeToRecipients
+        : [selectedLead.sender_email].filter(Boolean);
+    if (to.length === 0) {
+      toast.error('Add at least one recipient');
       return;
     }
 
@@ -1168,7 +1276,8 @@ const EmailThreadLeadPage: React.FC = () => {
         userId,
         subject: finalSubject,
         bodyHtml: htmlWithSignature,
-        to: [selectedLead.sender_email],
+        to,
+        cc: composeCcRecipients.length > 0 ? composeCcRecipients : undefined,
         attachments: backendAttachments,
         context: {
           contactEmail: selectedLead.sender_email,
@@ -1185,7 +1294,7 @@ const EmailThreadLeadPage: React.FC = () => {
         body_preview: newMessage,
         sender_name: currentUserFullName || userEmail || 'You',
         sender_email: userEmail || '',
-        recipient_list: selectedLead.sender_email,
+        recipient_list: [...to, ...composeCcRecipients].join(', '),
         sent_at: new Date().toISOString(),
         direction: 'outgoing',
         attachments: backendAttachments,
@@ -1197,6 +1306,9 @@ const EmailThreadLeadPage: React.FC = () => {
       setIsActionMenuOpen(false);
       setShowAISuggestions(false);
       setAiSuggestions([]);
+      setComposeMode('reply');
+      setComposeToRecipients([selectedLead.sender_email].filter(Boolean));
+      setComposeCcRecipients([]);
       toast.success('Email sent');
       await fetchMessages();
     } catch (error) {
@@ -1870,41 +1982,41 @@ const EmailThreadLeadPage: React.FC = () => {
 
   return (
     <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
-      <div className="h-full flex flex-col overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200 bg-white">
-          <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-            <EnvelopeIcon className="w-6 h-6 md:w-8 md:h-8 text-blue-600 flex-shrink-0" />
-            <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">Email Leads</h2>
-            <div className="flex items-center gap-2">
-              <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
-                {leads.length} Leads
-              </span>
-            </div>
-          </div>
-          <button
-            onClick={() => window.history.back()}
-            className="btn btn-ghost btn-circle flex-shrink-0"
-          >
-            <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="flex-1 flex overflow-hidden">
-          {/* Left Panel - Leads List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''} overflow-hidden`}>
+      <div className="flex h-full min-h-0 overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
+          {/* Left Panel - Leads List (full height to top of screen) */}
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex h-full min-h-0 shrink-0 flex-col ${isMobile && showChat ? 'hidden' : ''} overflow-hidden bg-white`}>
+            {/* Mobile list header */}
+            {isMobile && (
+              <div className="flex shrink-0 items-center justify-between border-b border-gray-200 bg-white px-3 py-2.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <EnvelopeIcon className="h-5 w-5 shrink-0 text-blue-600" />
+                  <h2 className="truncate text-base font-bold text-gray-900">Email Leads</h2>
+                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-800">
+                    {leads.length}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => window.history.back()}
+                  className="btn btn-ghost btn-circle btn-sm shrink-0"
+                  aria-label="Close"
+                >
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
             {/* Search Bar */}
-            <div className="p-3 border-b border-gray-200 flex-shrink-0">
+            <div className="p-3 border-b border-gray-200 flex-shrink-0 bg-white">
               <div className="relative">
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
                 <input
                   type="text"
                   placeholder="Search by email or name..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
             </div>
@@ -1937,47 +2049,47 @@ const EmailThreadLeadPage: React.FC = () => {
                           setShowChat(true);
                         }
                       }}
-                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
+                      className={`p-2.5 md:p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
                         }`}
                     >
-                      <div className="flex items-start gap-3 min-w-0 w-full">
+                      <div className="flex items-start gap-2 min-w-0 w-full">
                         {/* Avatar */}
-                        <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative border bg-blue-100 border-blue-200 text-blue-700">
+                        <div className="w-7 h-7 md:w-8 md:h-8 rounded-full flex items-center justify-center flex-shrink-0 relative border bg-blue-100 border-blue-200 text-blue-700">
                           {lead.sender_name && lead.sender_name !== lead.sender_email ? (
-                            <span className="font-semibold text-sm md:text-lg">
+                            <span className="font-semibold text-xs md:text-sm">
                               {lead.sender_name.charAt(0).toUpperCase()}
                             </span>
                           ) : (
-                            <EnvelopeIcon className="w-5 h-5 md:w-6 md:h-6 text-blue-700" />
+                            <EnvelopeIcon className="w-3.5 h-3.5 md:w-4 md:h-4 text-blue-700" />
                           )}
                           {/* Connection indicator icon */}
                           {leadsWithConnections.get(lead.id) && (
-                            <div className="absolute -bottom-1 -right-1 w-5 h-5 md:w-6 md:h-6 rounded-full border-2 border-white flex items-center justify-center shadow-sm" style={{ backgroundColor: '#4218cc' }}>
-                              <LinkIcon className="w-3 h-3 md:w-4 md:h-4 text-white" />
+                            <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 md:w-4 md:h-4 rounded-full border-2 border-white flex items-center justify-center shadow-sm" style={{ backgroundColor: '#4218cc' }}>
+                              <LinkIcon className="w-2 h-2 md:w-2.5 md:h-2.5 text-white" />
                             </div>
                           )}
                         </div>
 
                         {/* Lead Info */}
                         <div className="flex-1 min-w-0 overflow-hidden">
-                          <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2 mb-0.5 min-w-0">
                             <div className="flex flex-col min-w-0 flex-1">
-                              <h3 className="font-semibold text-gray-900 truncate">
+                              <h3 className="font-semibold text-sm text-gray-900 truncate">
                                 {lead.sender_name && lead.sender_name !== lead.sender_email
                                   ? lead.sender_name
                                   : lead.sender_email || 'Unknown Sender'}
                               </h3>
                               {lead.sender_name && lead.sender_name !== lead.sender_email && (
-                                <p className="text-xs text-gray-500 truncate">
+                                <p className="text-[11px] text-gray-500 truncate">
                                   {lead.sender_email}
                                 </p>
                               )}
                             </div>
                             <div className="flex items-center gap-1 flex-shrink-0">
-                              <span className="text-xs text-gray-500 whitespace-nowrap">
+                              <span className="text-[11px] text-gray-500 whitespace-nowrap">
                                 {formatTime(lead.last_message_at)}
                               </span>
-                              <span className={`text-xs rounded-full px-1.5 py-0.5 min-w-[20px] h-5 flex items-center justify-center flex-shrink-0 ${lead.unread_count && lead.unread_count > 0 ? 'bg-blue-500 text-white' : 'invisible'}`}>
+                              <span className={`text-[11px] rounded-full px-1.5 py-0.5 min-w-[18px] h-4 flex items-center justify-center flex-shrink-0 ${lead.unread_count && lead.unread_count > 0 ? 'bg-blue-500 text-white' : 'invisible'}`}>
                                 {lead.unread_count && lead.unread_count > 0 ? lead.unread_count : '0'}
                               </span>
                             </div>
@@ -1985,13 +2097,14 @@ const EmailThreadLeadPage: React.FC = () => {
 
                           <p
                             dir={leadPreviewRtl ? 'rtl' : 'ltr'}
-                            className="text-sm text-gray-600 truncate mb-1 font-medium text-start"
+                            className="text-xs text-gray-600 truncate mb-0.5 font-medium text-start"
+                            title={lead.last_subject || undefined}
                           >
-                            {lead.last_subject}
+                            {truncateSidepanelTitle(lead.last_subject, 20)}
                           </p>
                           <p
                             dir={leadPreviewRtl ? 'rtl' : 'ltr'}
-                            className="text-sm text-gray-600 truncate text-start"
+                            className="text-xs text-gray-500 truncate text-start"
                           >
                             {getMessagePreview(lead.last_message_preview)}
                           </p>
@@ -2005,8 +2118,30 @@ const EmailThreadLeadPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
+          {/* Right Panel - Chat (header only above main content) */}
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex min-h-0 min-w-0 flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
+            {/* Page header — main content only */}
+            {!isMobile && (
+              <div className="flex shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 py-3 md:px-6 md:py-4">
+                <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-4">
+                  <EnvelopeIcon className="h-6 w-6 shrink-0 text-blue-600 md:h-7 md:w-7" />
+                  <h2 className="shrink-0 text-lg font-bold text-gray-900 md:text-2xl">Email Leads</h2>
+                  <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-800">
+                    {leads.length} Leads
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => window.history.back()}
+                  className="btn btn-ghost btn-circle shrink-0"
+                  aria-label="Close"
+                >
+                  <svg className="h-5 w-5 md:h-6 md:w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
             {selectedLead ? (
               <>
                 {/* Mobile Chat Header */}
@@ -2369,6 +2504,114 @@ const EmailThreadLeadPage: React.FC = () => {
 
                 <div className="border-t border-gray-200 bg-white">
                   <div className="p-4 space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm gap-1.5"
+                        onClick={() => applyComposeAction('reply')}
+                      >
+                        <ArrowUturnLeftIcon className="h-4 w-4" />
+                        Reply
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm gap-1.5"
+                        onClick={() => applyComposeAction('reply_all')}
+                        disabled={messages.length === 0}
+                      >
+                        <ArrowUturnLeftIcon className="h-4 w-4" />
+                        Reply all
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm gap-1.5"
+                        onClick={() => applyComposeAction('forward')}
+                        disabled={messages.length === 0}
+                      >
+                        <ArrowUturnRightIcon className="h-4 w-4" />
+                        Forward
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm gap-1.5 text-error"
+                        onClick={() => void handleDeleteActiveLeadEmail()}
+                        disabled={messages.length === 0}
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                        Delete
+                      </button>
+                    </div>
+
+                    {(composeToRecipients.length > 0 || composeCcRecipients.length > 0) && (
+                      <div className="space-y-1 text-xs text-gray-600">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="font-semibold text-gray-700">To:</span>
+                          {composeToRecipients.length === 0 ? (
+                            <span className="text-gray-400">Add recipients for forward…</span>
+                          ) : (
+                            composeToRecipients.map((email) => (
+                              <span
+                                key={email}
+                                className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5"
+                              >
+                                {email}
+                                <button
+                                  type="button"
+                                  className="text-gray-400 hover:text-gray-700"
+                                  onClick={() =>
+                                    setComposeToRecipients((prev) => prev.filter((e) => e !== email))
+                                  }
+                                  aria-label={`Remove ${email}`}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))
+                          )}
+                          {composeMode === 'forward' && (
+                            <input
+                              type="email"
+                              className="input input-bordered input-xs w-48"
+                              placeholder="Add recipient…"
+                              onKeyDown={(e) => {
+                                if (e.key !== 'Enter') return;
+                                e.preventDefault();
+                                const value = (e.target as HTMLInputElement).value.trim().toLowerCase();
+                                if (!value.includes('@')) return;
+                                setComposeToRecipients((prev) =>
+                                  prev.includes(value) ? prev : [...prev, value],
+                                );
+                                (e.target as HTMLInputElement).value = '';
+                              }}
+                            />
+                          )}
+                        </div>
+                        {composeCcRecipients.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="font-semibold text-gray-700">Cc:</span>
+                            {composeCcRecipients.map((email) => (
+                              <span
+                                key={email}
+                                className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5"
+                              >
+                                {email}
+                                <button
+                                  type="button"
+                                  className="text-gray-400 hover:text-gray-700"
+                                  onClick={() =>
+                                    setComposeCcRecipients((prev) => prev.filter((e) => e !== email))
+                                  }
+                                  aria-label={`Remove ${email}`}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {showAISuggestions && (
                       <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2 relative">
                         <div className="flex items-center gap-2 text-sm font-semibold text-blue-700 pr-8">
@@ -2549,7 +2792,6 @@ const EmailThreadLeadPage: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
       </div>
 
       {/* Lead Search Modal */}

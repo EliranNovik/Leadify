@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { resolveEmployeePhotoUrl } from '../lib/employeePhotoUrl';
 import { ChevronDownIcon, ChevronRightIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon, ChatBubbleLeftRightIcon, FolderIcon, TagIcon, LinkIcon, FunnelIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
@@ -2589,8 +2590,8 @@ const NewCasesPage: React.FC = () => {
                                     : (categoryStats?.categoryBreakdown || fallbackStats?.categoryBreakdown || []);
                                   const totalAssigned = effectiveStats?.totalLeadsAssigned || 0;
                                   const isSelected = categorySelectedEmployees.get(mobileSelectedCategory)?.has(emp.display_name);
-                                  const rawPhoto = (emp as any).photo_url || (emp as any).photo;
-                                  const hasValidPhotoUrl = typeof rawPhoto === 'string' && rawPhoto.trim().length > 0 && (rawPhoto.startsWith('http') || rawPhoto.startsWith('/') || rawPhoto.startsWith('data:'));
+                                  const rawPhoto = resolveEmployeePhotoUrl((emp as any).photo_url, (emp as any).photo);
+                                  const hasValidPhotoUrl = Boolean(rawPhoto);
                                   const initial = (emp.display_name && String(emp.display_name).trim())
                                     ? String(emp.display_name).trim().charAt(0).toUpperCase()
                                     : 'U';
@@ -2608,7 +2609,7 @@ const NewCasesPage: React.FC = () => {
                                         <div className="w-14 h-14 rounded-full overflow-hidden bg-base-200">
                                           {hasValidPhotoUrl ? (
                                             <img
-                                              src={rawPhoto.trim()}
+                                              src={rawPhoto!}
                                               alt={emp.display_name}
                                               className="w-full h-full object-cover"
                                               onError={(e) => {
@@ -2846,8 +2847,8 @@ const NewCasesPage: React.FC = () => {
                                 : categoryStats?.categoryBreakdown || fallbackStats?.categoryBreakdown || [];
                               const totalAssigned = effectiveStats?.totalLeadsAssigned || 0;
                               const isSelected = categorySelectedEmployees.get(categoryName)?.has(emp.display_name);
-                              const rawPhoto = (emp as any).photo_url || (emp as any).photo;
-                              const hasValidPhotoUrl = typeof rawPhoto === 'string' && rawPhoto.trim().length > 0 && (rawPhoto.startsWith('http') || rawPhoto.startsWith('/') || rawPhoto.startsWith('data:'));
+                              const rawPhoto = resolveEmployeePhotoUrl((emp as any).photo_url, (emp as any).photo);
+                              const hasValidPhotoUrl = Boolean(rawPhoto);
                               const initial = (emp.display_name && String(emp.display_name).trim()) ? String(emp.display_name).trim().charAt(0).toUpperCase() : 'U';
                               return (
                                 <div 
@@ -2859,12 +2860,23 @@ const NewCasesPage: React.FC = () => {
                                       <div className="avatar flex-shrink-0">
                                         <div className="w-14 h-14 rounded-full overflow-hidden bg-base-200">
                                           {hasValidPhotoUrl ? (
-                                            <img src={rawPhoto.trim()} alt={emp.display_name} className="w-full h-full object-cover" />
-                                          ) : (
-                                            <div className="w-full h-full flex items-center justify-center text-base-content font-semibold text-base">
-                                              {initial}
-                                            </div>
-                                          )}
+                                            <img
+                                              src={rawPhoto!}
+                                              alt={emp.display_name}
+                                              className="w-full h-full object-cover"
+                                              onError={(e) => {
+                                                e.currentTarget.style.display = 'none';
+                                                const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
+                                                if (fallback) fallback.style.display = 'flex';
+                                              }}
+                                            />
+                                          ) : null}
+                                          <div
+                                            className="w-full h-full flex items-center justify-center text-base-content font-semibold text-base"
+                                            style={{ display: hasValidPhotoUrl ? 'none' : 'flex' }}
+                                          >
+                                            {initial}
+                                          </div>
                                         </div>
                                       </div>
                                       {isSelected && (

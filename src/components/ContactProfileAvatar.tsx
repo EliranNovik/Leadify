@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { isUsableEmployeePhotoUrl } from '../lib/employeePhotoUrl';
 
 function initialsFromName(name?: string | null): string {
   const s = (name || '').trim();
@@ -25,7 +26,7 @@ const ContactProfileAvatar: React.FC<Props> = ({
   className = 'h-10 w-10 text-sm',
 }) => {
   const [broken, setBroken] = useState(false);
-  const resolvedUrl = imageUrl?.trim() || '';
+  const resolvedUrl = isUsableEmployeePhotoUrl(imageUrl) ? (imageUrl || '').trim() : '';
   const showImage = Boolean(resolvedUrl) && !broken;
 
   useEffect(() => {

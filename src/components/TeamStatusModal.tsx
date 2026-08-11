@@ -27,6 +27,7 @@ import {
 } from '../lib/employeeUnavailabilities';
 import { resolveWorkplaceName } from '../lib/clockInLocations';
 import { fetchActiveStaffEmployeesWithDepartment } from '../lib/employeeSalaries';
+import { isUsableEmployeePhotoUrl } from '../lib/employeePhotoUrl';
 import { useAdminRole } from '../hooks/useAdminRole';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -125,12 +126,7 @@ function avatarColorClass(name: string): string {
 }
 
 function isValidPhotoUrl(url: string | null | undefined): boolean {
-  if (!url?.trim()) return false;
-  const trimmed = url.trim();
-  return trimmed.startsWith('http://')
-    || trimmed.startsWith('https://')
-    || trimmed.startsWith('data:')
-    || trimmed.startsWith('/');
+  return isUsableEmployeePhotoUrl(url);
 }
 
 function filterMatches(emp: EmployeeRow, filter: ActiveFilter): boolean {

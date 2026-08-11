@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { normalizeEmployeeMinHours } from './employeeLeadReporting';
+import { resolveEmployeePhotoUrl } from './employeePhotoUrl';
 
 export interface SalaryEntryRow {
   employee_id: number;
@@ -54,10 +55,7 @@ function mapActiveStaffEmployee(emp: {
   return {
     id: emp.id,
     display_name: emp.display_name?.trim() || `Employee #${emp.id}`,
-    photo_url:
-      (typeof emp.photo_url === 'string' && emp.photo_url.trim()) ||
-      (typeof emp.photo === 'string' && emp.photo.trim()) ||
-      null,
+    photo_url: resolveEmployeePhotoUrl(emp.photo_url, emp.photo),
   };
 }
 

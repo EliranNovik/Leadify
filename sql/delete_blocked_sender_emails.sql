@@ -28,5 +28,8 @@ WHERE LOWER(sender_email) IN (
   'news@events.imhbusiness.com',
   'khawaish@usareaimmigrationservices.com',
   'message@shidurit.com',
-  'contact@legalimmigrationisrael.com'
+  'contact@legalimmigrationisrael.com',
+  'artalegal@googlegroups.com',
+  'alljobs@alljob.co.il',
+  'info@crocoblock.com'
 );

@@ -19,6 +19,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { StarIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
+import { resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
 import { toast } from 'react-hot-toast';
 import UploadDocumentModal from './UploadDocumentModal';
 import DocumentModal from '../DocumentModal';
@@ -727,7 +728,7 @@ const CasesTab: React.FC<HandlerTabProps> = ({
       return null;
     }
 
-    const photoUrl = employee.photo_url || employee.photo;
+    const photoUrl = resolveEmployeePhotoUrl(employee.photo_url, employee.photo);
     const initials = getEmployeeInitials(employee.display_name);
 
     if (imageError || !photoUrl) {

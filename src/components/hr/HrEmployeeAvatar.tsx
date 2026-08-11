@@ -3,6 +3,7 @@ import {
   getSalaryEmployeeInitials,
   salaryAvatarGradientStyle,
 } from '../../lib/employeeSalaries';
+import { isUsableEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
 
 type AvatarSize = 'sm' | 'md' | 'lg' | 'xl' | '2xl';
 
@@ -38,12 +39,13 @@ const HrEmployeeAvatar: React.FC<HrEmployeeAvatarProps> = ({
   const [imageError, setImageError] = useState(false);
   const label = name.trim() || 'Employee';
   const url = typeof photoUrl === 'string' ? photoUrl.trim() : '';
+  const usableUrl = isUsableEmployeePhotoUrl(url) ? url : '';
 
   useEffect(() => {
     setImageError(false);
-  }, [url]);
+  }, [usableUrl]);
 
-  const showPhoto = url.length > 0 && !imageError;
+  const showPhoto = usableUrl.length > 0 && !imageError;
   const id = employeeId != null && Number.isFinite(Number(employeeId)) ? Number(employeeId) : 0;
   const shapeClass = shape === 'rounded' ? 'rounded-2xl' : 'rounded-full';
   const sizeClass = SIZE_CLASS[size];
@@ -51,7 +53,7 @@ const HrEmployeeAvatar: React.FC<HrEmployeeAvatarProps> = ({
   if (showPhoto) {
     return (
       <img
-        src={url}
+        src={usableUrl}
         alt=""
         className={`${sizeClass} shrink-0 ${shapeClass} object-cover ${className}`.trim()}
         onError={() => setImageError(true)}

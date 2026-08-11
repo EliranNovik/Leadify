@@ -29,6 +29,8 @@ import {
   UserPlusIcon,
   CheckIcon,
   FlagIcon,
+  TrashIcon,
+  InboxIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
@@ -71,21 +73,39 @@ import { interactionsDevLog, interactionsDevWarn } from '../../lib/interactions/
 import {
   fileAttachmentsForUi,
   formatEmailHtmlForDisplay,
+  formatEmailHtmlForReadingPane,
+  formatEmailBodyForTimeline,
+  formatPlainBodyForTimeline,
   isOfficeEmail,
   parseEmailAttachmentsFromDb,
   processEmailHtmlWithInlineImages,
   sanitizeEmailHtml,
 } from './interactionsEmailViewUtils';
 import { InteractionsEmailModal } from './InteractionsEmailModal';
+import { EmailMessageActionsDropdown } from './EmailMessageActionsDropdown';
+import { EmailMessageComments } from './EmailMessageComments';
+import type { EmailComment } from '../../lib/interactions/emailComments';
+import { fetchEmailCommentsByEmailIds } from '../../lib/interactions/emailComments';
 import {
   collectClientEmails,
   buildEmailFilterClauses,
   normalizeEmailForFilter,
   fetchLeadEmailsForTimeline,
   stableEmailRowId,
+  dedupeEmailsForSidepanel,
   emailInteractionVisibleOnTimeline,
   EMAIL_MODAL_SELECT,
+  EMAIL_LIST_SELECT,
 } from '../../lib/interactions/emailFilters';
+import {
+  readEmailSidepanelCache,
+  writeEmailSidepanelCache,
+  subscribeEmailSidepanel,
+} from '../../lib/interactions/emailSidepanelCache';
+import {
+  buildComposeDraft,
+  resolveEmailDeleteFilter,
+} from '../../lib/interactions/emailComposeActions';
 import { INTERACTIONS_TIMELINE_INVALIDATE_EVENT } from '../../lib/interactionsTimelineInvalidation';
 import { processWhatsAppTemplateMessage } from '../../lib/interactions/whatsappTimeline';
 import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
@@ -743,8 +763,8 @@ const TruncatedContent: React.FC<{
         </div>
       )}
       <div 
-        className="max-w-none whitespace-pre-wrap overflow-visible"
-        style={{ lineHeight: '1.6', maxHeight: 'none' }}
+        className="max-w-none overflow-visible whitespace-pre-wrap break-words"
+        style={{ lineHeight: 1.55, maxHeight: 'none', whiteSpace: 'pre-wrap' }}
         dir={direction || 'auto'}
         dangerouslySetInnerHTML={{ 
           __html: isExpanded ? content : truncatedContent
@@ -1389,7 +1409,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [emails, setEmails] = useState<any[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState('');
-  const [isSearchBarOpen, setIsSearchBarOpen] = useState(false);
   const [interactionsLoading, setInteractionsLoading] = useState(
     () =>
       readInitialInteractionsFromStorage(
@@ -1399,6 +1418,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       ).length === 0
   );
   const [showCompose, setShowCompose] = useState(false);
+  const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
+  const [composeSideSearch, setComposeSideSearch] = useState('');
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBody] = useState('');
   const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
@@ -3516,7 +3537,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   clientId: client.id,
                   emailFilters,
                   limit: EMAIL_MODAL_LIMIT,
+                  select: EMAIL_LIST_SELECT,
                   matchByAddress: true,
+                  contactIds: contactsForFetch.map((c: any) => c?.id),
                 });
                 
                 // Debug: Log results
@@ -4159,8 +4182,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             const emailDate = new Date(e.sent_at);
             if (Number.isNaN(emailDate.getTime())) return null;
 
-            const bodyHtml = e.body_html ? formatEmailHtmlForDisplay(e.body_html) : null;
-            const bodyPreview = e.body_preview ? formatEmailHtmlForDisplay(e.body_preview) : '';
+            const bodyHtml = e.body_html ? formatEmailBodyForTimeline(e.body_html) : null;
+            const bodyPreview = e.body_preview ? formatEmailBodyForTimeline(e.body_preview) : '';
             const subject = (e.subject || '').trim();
 
             let body = '';
@@ -4169,9 +4192,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             } else if (bodyPreview && emailPlainText(bodyPreview).length > 0) {
               body = bodyPreview;
             } else if (subject) {
-              body = sanitizeEmailHtml(convertBodyToHtml(subject));
+              body = formatEmailBodyForTimeline(subject);
             } else {
-              body = sanitizeEmailHtml(convertBodyToHtml('(No preview)'));
+              body = formatEmailBodyForTimeline('(No preview)');
             }
 
             const timelineId = stableEmailRowId(e) || (e.id != null ? String(e.id) : '');
@@ -4673,14 +4696,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
           const previewSource = e.body_html || e.body_preview || e.subject || '';
-          // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
-          const previewHtmlSource = previewSource
-            ? (/<[a-z][\s\S]*>/i.test(previewSource) 
-                ? formatEmailHtmlForDisplay(previewSource) 
-                : convertBodyToHtml(previewSource))
-            : '';
-          const sanitizedPreviewBase = previewHtmlSource ? sanitizeEmailHtml(previewHtmlSource) : '';
-          const sanitizedPreview = sanitizedPreviewBase || sanitizeEmailHtml(convertBodyToHtml(e.subject || ''));
+          const sanitizedPreview = previewSource
+            ? sanitizeEmailHtml(formatEmailHtmlForReadingPane(previewSource))
+            : sanitizeEmailHtml(formatEmailHtmlForReadingPane(e.subject || ''));
 
           return {
             id: stableEmailRowId(e),
@@ -4690,6 +4708,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             to: e.recipient_list,
             date: e.sent_at,
             bodyPreview: sanitizedPreview,
+            body_html: e.body_html
+              ? sanitizeEmailHtml(formatEmailHtmlForReadingPane(e.body_html))
+              : sanitizedPreview,
+            body_preview: sanitizedPreview,
             direction: e.direction,
             attachments: parseEmailAttachmentsFromDb(e.attachments),
           };
@@ -4736,7 +4758,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const endTime = performance.now();
         const duration = Math.round(endTime - startTime);
         interactionsDevLog(`✅ InteractionsTab loaded in ${duration}ms with ${merged.length} interactions`);
-        setEmails(formattedEmailsForModal);
+        setEmails(dedupeEmailsForSidepanel(formattedEmailsForModal));
 
         onInteractionCountUpdate?.(merged.length);
         onInteractionsCacheUpdate?.({
@@ -5310,16 +5332,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             const { body: rawContent, attachments } = await fetchEmailBodyFromBackend(userId, message.id);
             if (!rawContent || typeof rawContent !== 'string') return;
 
-            // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
-            const formattedHtml = formatEmailHtmlForDisplay(rawContent);
-            const cleanedHtml = sanitizeEmailHtml(formattedHtml);
+            // Format for reading pane immediately so line breaks are correct on first paint
+            // (not after a late hydrate re-render).
+            const formattedHtml = sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawContent));
             const previewHtml =
-              cleanedHtml && cleanedHtml.trim()
-                ? cleanedHtml
-                : sanitizeEmailHtml(convertBodyToHtml(rawContent));
+              formattedHtml && formattedHtml.trim()
+                ? formattedHtml
+                : sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawContent));
 
             updates[message.id] = {
-              html: cleanedHtml,
+              html: formattedHtml,
               preview: previewHtml,
               attachments: Array.isArray(attachments) ? attachments : undefined,
             };
@@ -5397,16 +5419,30 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const { body, attachments } = await fetchEmailBodyFromBackend(userId, message.id);
         if (!attachments?.length) return;
         setEmails((prev) =>
-          prev.map((e) => (e.id === message.id ? { ...e, attachments } : e))
+          prev.map((e) => {
+            if (e.id !== message.id) return e;
+            const next: any = { ...e, attachments };
+            if (body) {
+              const prevLen = String(e.body_html || e.bodyPreview || e.body_preview || '').length;
+              if (body.length > prevLen) {
+                const formatted = sanitizeEmailHtml(formatEmailHtmlForReadingPane(body));
+                next.body_html = formatted;
+                next.bodyPreview = formatted;
+                next.body_preview = formatted;
+              }
+            }
+            return next;
+          })
         );
         setSelectedEmailForView((prev: any) => {
           if (!prev || prev.id !== message.id) return prev;
           const next = { ...prev, attachments };
           const prevLen = String(prev.body_html || prev.bodyPreview || prev.body_preview || '').length;
           if (body && body.length > prevLen) {
-            next.body_html = body;
-            next.bodyPreview = body;
-            next.body_preview = body;
+            const formatted = sanitizeEmailHtml(formatEmailHtmlForReadingPane(body));
+            next.body_html = formatted;
+            next.bodyPreview = formatted;
+            next.body_preview = formatted;
           }
           return next;
         });
@@ -5419,8 +5455,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   const fetchEmailsForModal = useCallback(async () => {
     if (!client.id) return;
-    
-    setEmailsLoading(true);
+
+    const cacheKey = `interactions:${client.id}:${selectedContactForEmail?.contact?.id || 'all'}`;
+    const cached = readEmailSidepanelCache<any[]>(cacheKey);
+    if (cached && cached.length > 0) {
+      // Re-apply reading-pane formatting so cached bodies don't flash unformatted then snap.
+      const normalized = dedupeEmailsForSidepanel(cached).map((e: any) => {
+        const raw = e.body_html || e.bodyPreview || e.body_preview || '';
+        if (!raw || /timeline-prewrap/i.test(String(raw))) return e;
+        const formatted = sanitizeEmailHtml(formatEmailHtmlForReadingPane(raw));
+        return {
+          ...e,
+          body_html: formatted,
+          bodyPreview: formatted,
+          body_preview: formatted,
+        };
+      });
+      setEmails(normalized);
+      setEmailsLoading(false);
+    } else {
+      setEmailsLoading(true);
+    }
+
     try {
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
@@ -5455,8 +5511,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         clientId: client.id,
         emailFilters,
         limit: EMAIL_MODAL_LIMIT,
-        select: EMAIL_MODAL_SELECT,
+        select: EMAIL_LIST_SELECT,
         matchByAddress: true,
+        contactIds: [
+          selectedContactForEmail?.contact?.id,
+          ...(leadContacts || []).map((c: any) => c?.id),
+        ],
       });
       
       // Note: We'll filter by contact client-side to handle both contact_id and email matching
@@ -5509,42 +5569,32 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Build employee email-to-name mapping once for all emails
         const employeeEmailMap = await buildEmployeeEmailToNameMap();
         
-        // Deduplicate: use Graph message_id when set, else DB id (meeting invites / system rows may lack message_id)
-        const uniqueEmailsMap = new Map<string, any>();
-        clientEmails.forEach((e: any) => {
-          const key = stableEmailRowId(e);
-          if (key && !uniqueEmailsMap.has(key)) {
-            uniqueEmailsMap.set(key, e);
-          }
-        });
-        const uniqueClientEmails = Array.from(uniqueEmailsMap.values());
+        // Deduplicate: Graph message_id, else DB id, then sender+subject+timestamp fingerprint
+        const uniqueClientEmails = dedupeEmailsForSidepanel(clientEmails);
         
-        // Format emails for modal display - preserve Outlook HTML structure
+        // Format emails for modal display — reading-pane formatter so breaks are correct immediately
         const formattedEmailsForModal = uniqueClientEmails.map((e: any) => {
           const rawHtml = typeof e.body_html === 'string' ? e.body_html : null;
           const rawPreview = typeof e.body_preview === 'string' ? e.body_preview : null;
           
-          // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
           let cleanedHtml = null;
           if (rawHtml) {
-            cleanedHtml = formatEmailHtmlForDisplay(rawHtml);
+            cleanedHtml = sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawHtml));
           }
           
           let cleanedPreview = null;
           if (rawPreview) {
-            cleanedPreview = formatEmailHtmlForDisplay(rawPreview);
+            cleanedPreview = sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawPreview));
           } else if (cleanedHtml) {
             cleanedPreview = cleanedHtml;
           }
           
           const fallbackText = cleanedPreview || cleanedHtml || e.subject || '';
           
-          // Sanitize but preserve Outlook's direction and style attributes
-          // Note: formatEmailHtmlForDisplay already handles line breaks and RTL, so we just sanitize
-          const sanitizedHtml = cleanedHtml ? sanitizeEmailHtml(cleanedHtml) : null;
+          const sanitizedHtml = cleanedHtml;
           const sanitizedPreview = cleanedPreview
-            ? sanitizeEmailHtml(cleanedPreview)
-            : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(convertBodyToHtml(fallbackText)) : null);
+            ? cleanedPreview
+            : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(formatEmailHtmlForReadingPane(fallbackText)) : null);
           
           // Determine if email is from team/user based on sender email domain
           // Emails from @lawoffice.org.il are ALWAYS team/user, never client
@@ -5586,14 +5636,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           };
         });
         
-        const finalUniqueEmails = formattedEmailsForModal.reduce((acc: any[], email: any) => {
-          if (email.id != null && String(email.id) !== '' && !acc.some((x) => x.id === email.id)) {
-            acc.push(email);
-          }
-          return acc;
-        }, []);
+        const finalUniqueEmails = dedupeEmailsForSidepanel(formattedEmailsForModal);
         
         setEmails(finalUniqueEmails);
+        writeEmailSidepanelCache(cacheKey, finalUniqueEmails);
         
         // Check which emails need hydration (missing body_html)
         const emailsNeedingHydration = finalUniqueEmails.filter((e: any) => 
@@ -6002,6 +6048,160 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   };
 
+  const openComposeForEmailMessage = useCallback(
+    (message: any, mode: 'reply' | 'forward') => {
+      if (!message) {
+        toast.error('Select an email first');
+        return;
+      }
+      setSelectedEmailForView(message);
+      setIsEmailModalOpen(true);
+      const emailToUse = selectedContactForEmail?.contact.email || client.email;
+      const draft = buildComposeDraft(
+        {
+          id: message.id,
+          message_id: message.message_id || message.id,
+          subject: message.subject,
+          body_html: message.body || message.body_html,
+          body_preview: message.bodyPreview || message.body_preview,
+          sender_email: message.from,
+          sender_name: message.sender_display_name,
+          recipient_list: message.to,
+          sent_at: message.date,
+          direction: message.direction,
+        },
+        mode,
+        { userEmail, fallbackTo: emailToUse },
+      );
+      if (mode === 'reply') {
+        setComposeToRecipients(
+          draft.to.length > 0 ? draft.to : normaliseAddressList(emailToUse),
+        );
+        setComposeCcRecipients(draft.cc);
+        setComposeSubject(
+          draft.subject ||
+            `[${client.lead_number}] - ${
+              selectedContactForEmail?.contact.name || client.name
+            } - ${client.topic || ''}`,
+        );
+      } else {
+        setComposeToRecipients([]);
+        setComposeCcRecipients([]);
+        setComposeSubject(draft.subject);
+      }
+      setComposeToInput('');
+      setComposeCcInput('');
+      setComposeRecipientError(null);
+      setShowComposeLinkForm(false);
+      setComposeLinkLabel('');
+      setComposeLinkUrl('');
+      setSelectedComposeTemplateId(null);
+      setComposeTemplateSearch('');
+      setComposeTemplateLanguageFilter(null);
+      setComposeTemplatePlacementFilter(null);
+      setComposeBody(draft.body);
+      setComposeAttachments([]);
+      setShowCompose(true);
+    },
+    [
+      client.email,
+      client.lead_number,
+      client.name,
+      client.topic,
+      selectedContactForEmail,
+      userEmail,
+    ],
+  );
+
+  const deleteEmailMessage = useCallback(async (message: any) => {
+    if (!message) {
+      toast.error('Select an email to delete');
+      return;
+    }
+    if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) {
+      return;
+    }
+    const filter = resolveEmailDeleteFilter({
+      id: message.id,
+      message_id: message.message_id || message.id,
+    });
+    if (!filter) {
+      toast.error('Could not resolve email id for delete');
+      return;
+    }
+    try {
+      let query = supabase.from('emails').delete();
+      query =
+        filter.by === 'id' ? query.eq('id', filter.value) : query.eq('message_id', filter.value);
+      const { error } = await query;
+      if (error) throw error;
+      setEmails((prev) => prev.filter((m) => String(m.id) !== String(message.id)));
+      setInteractions((prev) =>
+        prev.filter((m) => String(m.id) !== String(message.id) && String((m as any).message_id || '') !== String(message.message_id || message.id)),
+      );
+      setSelectedEmailForView((prev: any) =>
+        prev && String(prev.id) === String(message.id) ? null : prev,
+      );
+      toast.success('Email deleted');
+    } catch (error) {
+      console.error('Error deleting email:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to delete email');
+    }
+  }, []);
+
+  const interactionRowToComposeMessage = useCallback((row: Interaction) => {
+    const direction =
+      row.direction === 'out' || row.direction === 'outgoing' ? 'outgoing' : 'incoming';
+    return {
+      id: row.id,
+      message_id: (row as any).message_id || row.id,
+      subject: row.subject,
+      body: (row as any).body_html || row.content,
+      body_html: (row as any).body_html || null,
+      bodyPreview: (row as any).body_preview || row.content,
+      body_preview: (row as any).body_preview || null,
+      from: (row as any).sender_email || null,
+      to: (row as any).recipient_list || null,
+      date: row.raw_date,
+      direction,
+      sender_display_name: row.direction === 'out' ? row.employee : null,
+    };
+  }, []);
+
+  const [timelineCommentsByEmailId, setTimelineCommentsByEmailId] = useState<
+    Record<string, EmailComment[]>
+  >({});
+  const [timelineCommentComposerEmailId, setTimelineCommentComposerEmailId] = useState<string | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const ids = interactions
+      .filter((row) => row.kind === 'email' && !row.editable)
+      .map((row) => String(row.id))
+      .filter(Boolean);
+    if (ids.length === 0) {
+      setTimelineCommentsByEmailId({});
+      return;
+    }
+    let cancelled = false;
+    void fetchEmailCommentsByEmailIds(ids)
+      .then((map) => {
+        if (!cancelled) setTimelineCommentsByEmailId(map);
+      })
+      .catch((err) => {
+        console.error('Failed to load timeline email comments', err);
+        if (!cancelled) setTimelineCommentsByEmailId({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [interactions]);
+
+  const handleTimelineCommentsChange = useCallback((emailId: string, next: EmailComment[]) => {
+    setTimelineCommentsByEmailId((prev) => ({ ...prev, [emailId]: next }));
+  }, []);
+
   const handleAttachmentUpload = async (files: FileList) => {
     if (!files || files.length === 0) return;
     
@@ -6061,6 +6261,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       fetchEmailsForModal();
     }
   }, [selectedContactForEmail?.contact.id, isEmailModalOpen, fetchEmailsForModal]);
+
+  // Live subscription while Interactions email modal is open
+  useEffect(() => {
+    if (!isEmailModalOpen || !client?.id) return;
+    const isLegacyLead = client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+    const filter = isLegacyLead
+      ? undefined
+      : `client_id=eq.${client.id}`;
+    return subscribeEmailSidepanel(supabase, {
+      channelName: `interactions-emails-${client.id}`,
+      filter,
+      onChange: () => {
+        void fetchEmailsForModal();
+      },
+    });
+  }, [isEmailModalOpen, client?.id, client?.lead_type, fetchEmailsForModal]);
 
   // Clear selected contact when email modal closes
   useEffect(() => {
@@ -7046,6 +7262,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
     if (showCompose) {
       fetchComposeEmployees();
+      setComposeSideFilter('all');
+      setComposeSideSearch('');
     }
   }, [showCompose]);
 
@@ -7566,23 +7784,47 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     <div className="flex-1 min-w-0">
                       <div className="relative rounded-2xl border border-base-200 bg-white p-4 shadow-md transition-all duration-300 hover:shadow-lg group-hover:scale-[1.01] sm:p-5 md:p-6">
                           <div
-                            className={`absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-sm sm:right-4 sm:top-4 sm:h-9 sm:w-9 ${
-                              isSentByUs
-                                ? 'bg-blue-100 text-blue-600'
-                                : 'bg-emerald-100 text-emerald-600'
-                            }`}
-                            title={isSentByUs ? 'Sent by us' : 'Received from client'}
-                            aria-label={isSentByUs ? 'Sent by us' : 'Received from client'}
+                            className="absolute right-2 top-2 z-20 flex items-center gap-1 sm:right-3 sm:top-3"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            {isSentByUs ? (
-                              <ArrowUpIcon className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} />
-                            ) : (
-                              <ArrowDownIcon className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} />
+                            <div
+                              className={`flex h-8 w-8 items-center justify-center rounded-full shadow-sm sm:h-9 sm:w-9 ${
+                                isSentByUs
+                                  ? 'bg-blue-100 text-blue-600'
+                                  : 'bg-emerald-100 text-emerald-600'
+                              }`}
+                              title={isSentByUs ? 'Sent by us' : 'Received from client'}
+                              aria-label={isSentByUs ? 'Sent by us' : 'Received from client'}
+                            >
+                              {isSentByUs ? (
+                                <ArrowUpIcon className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} />
+                              ) : (
+                                <ArrowDownIcon className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} />
+                              )}
+                            </div>
+                            {row.kind === 'email' && !row.editable && (
+                              <EmailMessageActionsDropdown
+                                onReply={() =>
+                                  openComposeForEmailMessage(
+                                    interactionRowToComposeMessage(row),
+                                    'reply',
+                                  )
+                                }
+                                onForward={() =>
+                                  openComposeForEmailMessage(
+                                    interactionRowToComposeMessage(row),
+                                    'forward',
+                                  )
+                                }
+                                onComment={() => setTimelineCommentComposerEmailId(String(row.id))}
+                                onDelete={() =>
+                                  void deleteEmailMessage(interactionRowToComposeMessage(row))
+                                }
+                              />
                             )}
                           </div>
                           {/* Header section with employee info and status */}
-                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4 pr-10 sm:pr-12">
+                          <div className="mb-4 flex flex-col gap-3 pr-20 sm:flex-row sm:items-center sm:pr-24">
                             <div className="flex items-center gap-3">
                               <EmployeeAvatar photo={employeePhoto} name={row.employee} initials={initials} avatarBg={avatarBg} />
                               <div className="flex flex-col gap-0">
@@ -7735,7 +7977,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             </div>
                             
                             {/* Status badges */}
-                            <div className="flex flex-wrap gap-2">
+                            <div
+                              className="flex flex-wrap items-center justify-end gap-2"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               {/* Show status badge for WhatsApp and Call interactions */}
                               {row.kind === 'whatsapp' && row.status && (
                                 <span className={`px-3 py-1 rounded-full font-medium shadow-sm bg-base-200 text-base-content text-sm sm:text-xs ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>
@@ -7807,42 +8052,56 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           {row.content && (
                             <TruncatedContent
                               content={(() => {
-                                let contentToProcess = '';
-                                // For email_manual and whatsapp_manual interactions, content is already normalized with proper line breaks
-                                if ((row.kind === 'email_manual' || row.kind === 'whatsapp_manual') && row.content) {
-                                  // Content should already be normalized, but ensure it's properly formatted
-                                  contentToProcess = row.renderedContent || row.renderedContentFallback || row.content;
-                                } else {
-                                  // For other interactions, use existing logic
-                                  contentToProcess = row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '');
+                                if (row.kind === 'email') {
+                                  const raw =
+                                    row.renderedContent ||
+                                    row.renderedContentFallback ||
+                                    row.content ||
+                                    '';
+                                  return formatEmailBodyForTimeline(
+                                    String(raw)
+                                      .replace(/^<div[^>]*>/i, '')
+                                      .replace(/<\/div>$/i, '')
+                                      .replace(/<br\s*\/?>/gi, '\n'),
+                                  );
                                 }
-                                
-                                if (!contentToProcess) return '';
-                                
-                                // Check if content already contains HTML tags (excluding <br> tags)
-                                const contentWithoutBr = contentToProcess.replace(/<br\s*\/?>/gi, '');
-                                const hasHtmlTags = /<[^>]+>/.test(contentWithoutBr);
-                                
-                                // For plain text content (WhatsApp, SMS, etc.), apply formatting
-                                if (!hasHtmlTags) {
-                                  // Remove any existing <br> tags, process as plain text, then add <br> back
-                                  const plainText = contentToProcess.replace(/<br\s*\/?>/gi, '\n');
-                                  // Process plain text: apply bold and link formatting
-                                  const processed = renderTextWithLinksAsHtml(plainText);
-                                  // Convert newlines to <br>
-                                  return processed.replace(/\n/g, '<br>');
-                                }
-                                
-                                // For HTML content (emails), process text nodes while preserving HTML structure
-                                // This is a simplified approach: extract text, process it, and re-insert
-                                // For now, we'll process the content as-is but ensure newlines are handled
-                                // More sophisticated HTML parsing could be added later if needed
-                                return contentToProcess;
+
+                                // WhatsApp / SMS / manual: keep real newlines (incl. blank lines)
+                                const raw =
+                                  row.renderedContent ||
+                                  row.renderedContentFallback ||
+                                  row.content ||
+                                  '';
+                                const plain = formatPlainBodyForTimeline(String(raw));
+                                const withLinksAndBold = renderTextWithLinksAsHtml(plain);
+                                return `<div dir="auto" class="timeline-prewrap" style="white-space:pre-wrap;line-height:1.55;">${withLinksAndBold}</div>`;
                               })()}
                               maxCharacters={500}
                               direction={getTextDirection(row.content)}
                               subject={row.subject}
                             />
+                          )}
+
+                          {row.kind === 'email' && !row.editable && (
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <EmailMessageComments
+                                emailId={String(row.id)}
+                                comments={timelineCommentsByEmailId[String(row.id)] || []}
+                                onCommentsChange={handleTimelineCommentsChange}
+                                composerOpen={timelineCommentComposerEmailId === String(row.id)}
+                                onComposerClose={() =>
+                                  setTimelineCommentComposerEmailId((prev) =>
+                                    prev === String(row.id) ? null : prev,
+                                  )
+                                }
+                                currentUserName={currentUserFullName}
+                                currentUserPhotoUrl={
+                                  currentUserFullName
+                                    ? employeePhotoMap.get(currentUserFullName) || null
+                                    : null
+                                }
+                              />
+                            </div>
                           )}
                           
                           {/* Call recording playback controls - only show play button for NO+ANSWER and BUSY status */}
@@ -7957,8 +8216,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           setSelectedEmailForView={setSelectedEmailForView}
           setIsEmailModalOpen={setIsEmailModalOpen}
           setEmailSearchQuery={setEmailSearchQuery}
-          isSearchBarOpen={isSearchBarOpen}
-          setIsSearchBarOpen={setIsSearchBarOpen}
           emailSearchQuery={emailSearchQuery}
           mailboxStatus={mailboxStatus}
           formattedLastSync={formattedLastSync}
@@ -7976,14 +8233,182 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           downloadingAttachments={downloadingAttachments}
           handleDownloadAttachment={handleDownloadAttachment}
           employeePhotoMap={employeePhotoMap}
+          onReplyMessage={(message) => openComposeForEmailMessage(message, 'reply')}
+          onForwardMessage={(message) => openComposeForEmailMessage(message, 'forward')}
+          onDeleteMessage={(message) => void deleteEmailMessage(message)}
         >
             {/* Compose Area — border-top on parent in InteractionsEmailModal */}
             <div className="p-3 md:px-6 md:pb-6 md:pt-4">
               {showCompose && createPortal(
-                <div className="fixed inset-0 z-[10002]">
+                <div className="fixed inset-0 z-[10002] flex overflow-hidden">
                   <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
-                  <div className="relative z-[10003] flex h-full w-full flex-col bg-white shadow-2xl">
-                    <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 md:px-6 lg:px-10">
+                  <div className="relative z-[10003] flex h-full w-full overflow-hidden bg-white shadow-2xl">
+                    {/* Left: email list sidepanel — match main email modal */}
+                    <aside className="hidden md:flex w-[22rem] xl:w-96 shrink-0 flex-col overflow-hidden border-r border-slate-200/90 bg-white">
+                      <div className="shrink-0 bg-white px-3 py-2">
+                        <div className="relative w-full">
+                          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
+                            <MagnifyingGlassIcon className="h-4 w-4 text-gray-400" />
+                          </div>
+                          <input
+                            type="text"
+                            className="block w-full rounded-full border border-gray-300 bg-white py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:border-[#4218CC] focus:outline-none focus:ring-1 focus:ring-[#4218CC]"
+                            placeholder="Search emails…"
+                            value={composeSideSearch}
+                            onChange={(e) => setComposeSideSearch(e.target.value)}
+                          />
+                          {composeSideSearch && (
+                            <button
+                              type="button"
+                              onClick={() => setComposeSideSearch('')}
+                              className="absolute inset-y-0 right-0 flex items-center pr-2.5"
+                              aria-label="Clear search"
+                            >
+                              <XMarkIcon className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-y-auto">
+                        {emails.length === 0 ? (
+                          <div className="p-4 text-center text-sm text-slate-400">No emails</div>
+                        ) : (
+                          <ul className="divide-y divide-slate-200/80">
+                            {dedupeEmailsForSidepanel([...emails])
+                              .filter((message) => {
+                                const outgoing =
+                                  isOfficeEmail(message.from) || message.direction === 'outgoing';
+                                if (composeSideFilter === 'incoming' && outgoing) return false;
+                                if (composeSideFilter === 'outgoing' && !outgoing) return false;
+                                const q = composeSideSearch.trim().toLowerCase();
+                                if (!q) return true;
+                                const hay = [
+                                  message.subject,
+                                  message.from,
+                                  message.to,
+                                  message.bodyPreview || message.body_preview,
+                                  (message as any).sender_display_name,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' ')
+                                  .toLowerCase();
+                                return hay.includes(q);
+                              })
+                              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                              .map((message) => {
+                                const outgoing =
+                                  isOfficeEmail(message.from) || message.direction === 'outgoing';
+                                const preview = String(
+                                  message.bodyPreview || message.body_preview || '',
+                                )
+                                  .replace(/<[^>]*>/g, ' ')
+                                  .replace(/\s+/g, ' ')
+                                  .trim();
+                                const displayName = outgoing
+                                  ? (message as any).sender_display_name ||
+                                    currentUserFullName ||
+                                    'Team'
+                                  : selectedContactForEmail?.contact.name ||
+                                    client.name ||
+                                    'Client';
+                                const initials = String(displayName)
+                                  .trim()
+                                  .split(/\s+/)
+                                  .filter(Boolean)
+                                  .slice(0, 2)
+                                  .map((p: string) => p[0] || '')
+                                  .join('')
+                                  .toUpperCase() || '?';
+                                return (
+                                  <li key={message.id}>
+                                    <button
+                                      type="button"
+                                      className={`relative flex w-full gap-2 border-l-[3px] px-3 pb-8 pt-2.5 text-left transition ${
+                                        String(selectedEmailForView?.id) === String(message.id)
+                                          ? 'border-l-[#4218CC] bg-[#4218CC]/12 shadow-[inset_0_0_0_1px_rgba(66,24,204,0.12)]'
+                                          : 'border-l-transparent hover:bg-slate-50'
+                                      }`}
+                                      onClick={() => {
+                                        setShowCompose(false);
+                                        setSelectedEmailForView(message);
+                                        hydrateEmailBodies([message]);
+                                        void ensureAttachmentsIfNeeded(message);
+                                      }}
+                                    >
+                                      <div
+                                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[0.6rem] font-bold uppercase tracking-wide text-white ${
+                                          outgoing ? 'bg-[#4218CC]' : 'bg-emerald-600'
+                                        }`}
+                                        aria-hidden
+                                      >
+                                        {initials}
+                                      </div>
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="truncate text-sm font-semibold text-slate-900">
+                                            {displayName}
+                                          </span>
+                                          <time className="shrink-0 text-[11px] text-slate-400">
+                                            {formatTime(message.date)}
+                                          </time>
+                                        </div>
+                                        <p className="mt-0.5 truncate text-sm font-medium text-slate-800">
+                                          {message.subject || '(no subject)'}
+                                        </p>
+                                        <p className="mt-0.5 truncate text-xs text-slate-500">
+                                          {preview || '—'}
+                                        </p>
+                                      </div>
+                                      <span
+                                        className={`pointer-events-none absolute bottom-1.5 left-2.5 inline-flex items-center justify-center ${
+                                          outgoing ? 'text-blue-600' : 'text-emerald-600'
+                                        }`}
+                                        title={outgoing ? 'Sent' : 'Inbox'}
+                                        aria-label={outgoing ? 'Sent' : 'Inbox'}
+                                      >
+                                        {outgoing ? (
+                                          <PaperAirplaneIcon className="h-5 w-5" />
+                                        ) : (
+                                          <InboxIcon className="h-5 w-5" />
+                                        )}
+                                      </span>
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                          </ul>
+                        )}
+                      </div>
+                      <div className="shrink-0 bg-white p-2">
+                        <div className="flex gap-1">
+                          {(
+                            [
+                              ['all', 'All', EnvelopeIcon],
+                              ['incoming', 'Inbox', InboxIcon],
+                              ['outgoing', 'Sent', PaperAirplaneIcon],
+                            ] as const
+                          ).map(([key, label, Icon]) => (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => setComposeSideFilter(key)}
+                              className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
+                                composeSideFilter === key
+                                  ? 'bg-[#4218CC] text-white shadow-sm'
+                                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                              }`}
+                            >
+                              <Icon className="h-3.5 w-3.5 shrink-0" />
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </aside>
+
+                    {/* Right: compose form */}
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                    <div className="flex items-center justify-between border-b border-white/40 bg-white/55 px-4 py-4 shadow-sm backdrop-blur-xl backdrop-saturate-150 md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
                       <h2 className="text-lg font-semibold md:text-xl">Compose Email</h2>
                       <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
                         <XMarkIcon className="w-5 h-5" />
@@ -8122,7 +8547,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   )}
                   
                   </div>
-                    <div className="px-4 py-4 border-t border-gray-200 flex items-center justify-between gap-4 md:px-6 lg:px-10">
+                    <div className="flex items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-4 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
                       {/* Left side - Buttons and Template Filters */}
                       <div className="flex items-center gap-4 flex-wrap">
                         {/* Circle action buttons */}
@@ -8336,6 +8761,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                         )}
                       </button>
                     </div>
+                    </div>
                   </div>
                 </div>,
                 document.body
@@ -8453,36 +8879,183 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               )}
               
               {!showCompose && (
-                <button
-                  onClick={() => {
-                    // Use selected contact's email if available, otherwise fall back to client email
-                    const emailToUse = selectedContactForEmail?.contact.email || client.email;
-                    const initialRecipients = normaliseAddressList(emailToUse);
-                    setComposeToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
-                    setComposeCcRecipients([]);
-                    setComposeToInput('');
-                    setComposeCcInput('');
-                    setComposeRecipientError(null);
-                    setShowComposeLinkForm(false);
-                    setComposeLinkLabel('');
-                    setComposeLinkUrl('');
-                    setSelectedComposeTemplateId(null);
-                    setComposeTemplateSearch('');
-                    setComposeTemplateLanguageFilter(null);
-                    setComposeTemplatePlacementFilter(null);
-                    // Use selected contact's name if available, otherwise use client name
-                    const nameToUse = selectedContactForEmail?.contact.name || client.name;
-                    const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
-                    setComposeSubject(defaultSubjectValue);
-                    setComposeBody('');
-                    setComposeAttachments([]);
-                    setShowCompose(true);
-                  }}
-                  className="w-full btn btn-primary"
-                >
-                  <PaperAirplaneIcon className="w-4 h-4 mr-2" />
-                  Compose Message
-                </button>
+                <div className="flex w-full flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
+                      const draft = buildComposeDraft(
+                        selectedEmailForView
+                          ? {
+                              id: selectedEmailForView.id,
+                              message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                              subject: selectedEmailForView.subject,
+                              body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+                              body_preview:
+                                selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+                              sender_email: selectedEmailForView.from,
+                              sender_name: selectedEmailForView.sender_display_name,
+                              recipient_list: selectedEmailForView.to,
+                              sent_at: selectedEmailForView.date,
+                              direction: selectedEmailForView.direction,
+                            }
+                          : null,
+                        'reply',
+                        { userEmail, fallbackTo: emailToUse },
+                      );
+                      setComposeToRecipients(
+                        draft.to.length > 0 ? draft.to : normaliseAddressList(emailToUse),
+                      );
+                      setComposeCcRecipients(draft.cc);
+                      setComposeToInput('');
+                      setComposeCcInput('');
+                      setComposeRecipientError(null);
+                      setShowComposeLinkForm(false);
+                      setComposeLinkLabel('');
+                      setComposeLinkUrl('');
+                      setSelectedComposeTemplateId(null);
+                      setComposeTemplateSearch('');
+                      setComposeTemplateLanguageFilter(null);
+                      setComposeTemplatePlacementFilter(null);
+                      setComposeSubject(
+                        draft.subject ||
+                          `[${client.lead_number}] - ${
+                            selectedContactForEmail?.contact.name || client.name
+                          } - ${client.topic || ''}`,
+                      );
+                      setComposeBody(draft.body);
+                      setComposeAttachments([]);
+                      setShowCompose(true);
+                    }}
+                    className="btn btn-primary btn-sm gap-1.5 border-0"
+                  >
+                    <ArrowUturnLeftIcon className="h-4 w-4" />
+                    Reply
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedEmailForView) {
+                        toast.error('Select an email first');
+                        return;
+                      }
+                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
+                      const draft = buildComposeDraft(
+                        {
+                          id: selectedEmailForView.id,
+                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                          subject: selectedEmailForView.subject,
+                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+                          body_preview:
+                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+                          sender_email: selectedEmailForView.from,
+                          recipient_list: selectedEmailForView.to,
+                          sent_at: selectedEmailForView.date,
+                          direction: selectedEmailForView.direction,
+                        },
+                        'reply_all',
+                        { userEmail, fallbackTo: emailToUse },
+                      );
+                      setComposeToRecipients(draft.to);
+                      setComposeCcRecipients(draft.cc);
+                      setComposeToInput('');
+                      setComposeCcInput('');
+                      setComposeRecipientError(null);
+                      setComposeSubject(draft.subject);
+                      setComposeBody(draft.body);
+                      setComposeAttachments([]);
+                      setShowCompose(true);
+                    }}
+                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
+                    disabled={!selectedEmailForView}
+                  >
+                    <ArrowUturnLeftIcon className="h-4 w-4" />
+                    Reply all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedEmailForView) {
+                        toast.error('Select an email first');
+                        return;
+                      }
+                      const draft = buildComposeDraft(
+                        {
+                          id: selectedEmailForView.id,
+                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                          subject: selectedEmailForView.subject,
+                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+                          body_preview:
+                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+                          sender_email: selectedEmailForView.from,
+                          recipient_list: selectedEmailForView.to,
+                          sent_at: selectedEmailForView.date,
+                          direction: selectedEmailForView.direction,
+                        },
+                        'forward',
+                        { userEmail },
+                      );
+                      setComposeToRecipients([]);
+                      setComposeCcRecipients([]);
+                      setComposeToInput('');
+                      setComposeCcInput('');
+                      setComposeRecipientError(null);
+                      setComposeSubject(draft.subject);
+                      setComposeBody(draft.body);
+                      setComposeAttachments([]);
+                      setShowCompose(true);
+                    }}
+                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
+                    disabled={!selectedEmailForView}
+                  >
+                    <ArrowUturnRightIcon className="h-4 w-4" />
+                    Forward
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!selectedEmailForView) {
+                        toast.error('Select an email to delete');
+                        return;
+                      }
+                      if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) {
+                        return;
+                      }
+                      const filter = resolveEmailDeleteFilter({
+                        id: selectedEmailForView.id,
+                        message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                      });
+                      if (!filter) {
+                        toast.error('Could not resolve email id for delete');
+                        return;
+                      }
+                      try {
+                        let query = supabase.from('emails').delete();
+                        query =
+                          filter.by === 'id'
+                            ? query.eq('id', filter.value)
+                            : query.eq('message_id', filter.value);
+                        const { error } = await query;
+                        if (error) throw error;
+                        setEmails((prev) =>
+                          prev.filter((m) => String(m.id) !== String(selectedEmailForView.id)),
+                        );
+                        setSelectedEmailForView(null);
+                        toast.success('Email deleted');
+                      } catch (error) {
+                        console.error('Error deleting email:', error);
+                        toast.error(
+                          error instanceof Error ? error.message : 'Failed to delete email',
+                        );
+                      }
+                    }}
+                    className="btn btn-ghost btn-sm ml-auto gap-1.5 border-0 text-error hover:bg-error/10"
+                    disabled={!selectedEmailForView}
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                    Delete
+                  </button>
+                </div>
               )}
             </div>
         </InteractionsEmailModal>,

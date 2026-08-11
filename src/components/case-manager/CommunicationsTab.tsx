@@ -31,6 +31,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
+import { isUsableEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
 import { toast } from 'react-hot-toast';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from '../client-tabs/AISummaryPanel';
@@ -202,8 +203,8 @@ const buildEmailFilterClauses = (params: {
   params.emails.forEach((email) => {
     const sanitized = sanitizeEmailForFilter(email);
     if (sanitized) {
-      clauses.push(`sender_email.ilike.${sanitized}`);
-      clauses.push(`recipient_list.ilike.%${sanitized}%`);
+      // Never use recipient_list ILIKE — times out on large emails table.
+      clauses.push(`sender_email.eq.${sanitized}`);
     }
   });
 
@@ -902,11 +903,12 @@ const EMAIL_MODAL_LIMIT = 200;
 // Helper component to handle employee avatar with image error fallback
 const EmployeeAvatar: React.FC<{ photo: string | null; name: string; initials: string; avatarBg: string }> = ({ photo, name, initials, avatarBg }) => {
   const [imageError, setImageError] = React.useState(false);
-  
-  if (photo && !imageError) {
+  const usablePhoto = isUsableEmployeePhotoUrl(photo) ? (photo || '').trim() : '';
+
+  if (usablePhoto && !imageError) {
     return (
       <img
-        src={photo}
+        src={usablePhoto}
         alt={name}
         className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full object-cover shadow-lg ring-2 ring-white`}
         onError={() => setImageError(true)}

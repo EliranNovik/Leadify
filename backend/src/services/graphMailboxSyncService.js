@@ -61,6 +61,8 @@ const BLOCKED_SENDER_EMAILS = new Set([
   'message@shidurit.com',
   'contact@legalimmigrationisrael.com',
   'artalegal@googlegroups.com',
+  'alljobs@alljob.co.il',
+  'info@crocoblock.com',
   'noreply@business.facebook.com',
   'newsletter@mag.genealogie.com',
   'ancestry@email.ancestry.de',

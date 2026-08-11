@@ -71,6 +71,11 @@ import { clearAdminImpersonationGrant } from '../lib/adminImpersonationGrant';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { runMailboxCatchUpSync } from '../lib/mailboxApi';
+import {
+  fetchHeaderOfficeInboxUnreadEmails,
+  fetchHeaderUnreadEmailsForBadge,
+  isHeaderEmailBlocked,
+} from '../lib/headerEmailNotifications';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -1205,7 +1210,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           }
         }
       } catch (error) {
-        console.error('Error reading header user data cache:', error);
+        // Stale cache shapes (e.g. missing `extern`) are expected — refetch below.
+        if (!(error instanceof Error && error.message.includes('Header cache missing extern'))) {
+          console.warn('Error reading header user data cache:', error);
+        }
       }
 
       if (user.email) {
@@ -2085,63 +2093,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const fetchEmailUnreadCount = useCallback(async () => {
     try {
-      // Blocked sender emails to ignore (same as EmailThreadLeadPage.tsx)
-      const BLOCKED_SENDER_EMAILS = new Set([
-        'wordpress@german-and-austrian-citizenship.lawoffice.org.il',
-        'wordpress@insolvency-law.com',
-        'wordpress@citizenship-for-children.usa-immigration.lawyer',
-        'lawoffic@israel160.jetserver.net',
-        'list@wordfence.com',
-        'wordpress@usa-immigration.lawyer',
-        'wordpress@heritage-based-european-citizenship.lawoffice.org.il',
-        'wordpress@heritage-based-european-citizenship-heb.lawoffice.org.il',
-        'no-reply@lawzana.com',
-        'support@lawfirms1.com',
-        'no-reply@zoom.us',
-        'info@israel-properties.com',
-        'notifications@invoice4u.co.il',
-        'isetbeforeyou@yahoo.com',
-        'no-reply@support.microsoft.com',
-        'ivy@pipe.hnssd.com',
-        'no-reply@mail.instagram.com',
-        'no_reply@email.apple.com',
-        'noreplay@maskyoo.co.il',
-        'email@german-and-austrian-citizenship.lawoffice.org.il',
-        'noreply@mobilepunch.com',
-        'notification@facebookmail.com',
-        'news@events.imhbusiness.com',
-      ]);
-
-      const BLOCKED_DOMAINS: string[] = [
-        'lawoffice.org.il',
-      ];
-
-      const isEmailBlocked = (email: string): boolean => {
-        const normalizedEmail = email.toLowerCase().trim();
-        if (!normalizedEmail) return true;
-
-        if (BLOCKED_SENDER_EMAILS.has(normalizedEmail)) {
-          return true;
-        }
-
-        const emailDomain = normalizedEmail.split('@')[1];
-        if (emailDomain && BLOCKED_DOMAINS.some(domain => emailDomain === domain || emailDomain.endsWith(`.${domain}`))) {
-          return true;
-        }
-
-        return false;
-      };
-
-      // Fetch recent unread incoming emails only (full-table scan times out on large emails tables)
-      const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      const { data: emailsData, error: emailsError } = await supabase
-        .from('emails')
-        .select('id, client_id, legacy_id, sender_email')
-        .eq('direction', 'incoming')
-        .or('is_read.is.null,is_read.eq.false')
-        .gte('sent_at', sinceIso)
-        .order('sent_at', { ascending: false })
-        .limit(1000);
+      // Short window + single-flight/circuit-breaker in helper (avoids 57014 stampede).
+      const { data: emailsData, error: emailsError } = await fetchHeaderUnreadEmailsForBadge({
+        days: 2,
+        limit: 80,
+      });
 
       if (emailsError) {
         console.error('Error fetching email unread count:', emailsError);
@@ -2155,9 +2111,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
 
       // Filter out blocked sender emails and domains
-      const filteredEmailsData = emailsData.filter((email: any) => {
+      const filteredEmailsData = emailsData.filter((email) => {
         const senderEmail = email.sender_email?.toLowerCase() || '';
-        return senderEmail && !isEmailBlocked(senderEmail);
+        return Boolean(senderEmail) && !isHeaderEmailBlocked(senderEmail);
       });
 
       if (filteredEmailsData.length === 0) {
@@ -2165,8 +2121,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return;
       }
 
+      const employeeId = currentUserEmployee?.id || currentUser?.employee_id;
+      const fullName = userFullName?.trim().toLowerCase();
+
       // If we don't have user data, count all filtered emails
-      if (!currentUserEmployee?.id && !currentUser?.employee_id && !userFullName) {
+      if (!employeeId && !fullName) {
         setEmailUnreadCount(filteredEmailsData.length);
         return;
       }
@@ -2175,7 +2134,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const uniqueClientIds = new Set<string>();
       const uniqueLegacyIds = new Set<number>();
 
-      filteredEmailsData.forEach((email: any) => {
+      filteredEmailsData.forEach((email) => {
         if (email.client_id) {
           uniqueClientIds.add(String(email.client_id));
         }
@@ -2199,9 +2158,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .in('id', newLeadIds);
 
         if (!newLeadsError && newLeads) {
-          const employeeId = currentUserEmployee?.id || currentUser?.employee_id;
-          const fullName = userFullName?.trim().toLowerCase();
-
           newLeads.forEach((lead: any) => {
             // Check text fields (scheduler, closer, handler are saved as display names)
             if (fullName) {
@@ -2231,22 +2187,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .select('id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
           .in('id', legacyLeadIds);
 
-        if (!legacyLeadsError && legacyLeads) {
-          const employeeId = currentUserEmployee?.id || currentUser?.employee_id;
-
-          if (employeeId) {
-            legacyLeads.forEach((lead: any) => {
-              const numericFields = [lead.closer_id, lead.meeting_scheduler_id, lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
-              if (numericFields.some(field => field && String(field) === String(employeeId))) {
-                matchingLegacyIds.add(Number(lead.id));
-              }
-            });
-          }
+        if (!legacyLeadsError && legacyLeads && employeeId) {
+          legacyLeads.forEach((lead: any) => {
+            const numericFields = [lead.closer_id, lead.meeting_scheduler_id, lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
+            if (numericFields.some(field => field && String(field) === String(employeeId))) {
+              matchingLegacyIds.add(Number(lead.id));
+            }
+          });
         }
       }
 
       // Count emails that belong to matching leads (using filtered emails)
-      const count = filteredEmailsData.filter((email: any) => {
+      const count = filteredEmailsData.filter((email) => {
         if (email.client_id && matchingLeadIds.has(String(email.client_id))) {
           return true;
         }
@@ -2261,68 +2213,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       console.error('Unexpected error fetching email unread count:', error);
       setEmailUnreadCount(0);
     }
-  }, [currentUserEmployee, currentUser, userFullName]);
+  }, [currentUserEmployee?.id, currentUser?.employee_id, userFullName]);
 
   const fetchEmailLeadMessages = useCallback(async () => {
     try {
-      // Blocked sender emails to ignore (same as EmailThreadLeadPage.tsx)
-      const BLOCKED_SENDER_EMAILS = new Set([
-        'wordpress@german-and-austrian-citizenship.lawoffice.org.il',
-        'wordpress@insolvency-law.com',
-        'wordpress@citizenship-for-children.usa-immigration.lawyer',
-        'lawoffic@israel160.jetserver.net',
-        'list@wordfence.com',
-        'wordpress@usa-immigration.lawyer',
-        'wordpress@heritage-based-european-citizenship.lawoffice.org.il',
-        'wordpress@heritage-based-european-citizenship-heb.lawoffice.org.il',
-        'no-reply@lawzana.com',
-        'support@lawfirms1.com',
-        'no-reply@zoom.us',
-        'info@israel-properties.com',
-        'notifications@invoice4u.co.il',
-        'isetbeforeyou@yahoo.com',
-        'no-reply@support.microsoft.com',
-        'ivy@pipe.hnssd.com',
-        'no-reply@mail.instagram.com',
-        'no_reply@email.apple.com',
-        'noreplay@maskyoo.co.il',
-        'email@german-and-austrian-citizenship.lawoffice.org.il',
-        'noreply@mobilepunch.com',
-        'notification@facebookmail.com',
-        'news@events.imhbusiness.com',
-      ]);
-
-      const BLOCKED_DOMAINS: string[] = [
-        'lawoffice.org.il',
-      ];
-
-      const isEmailBlocked = (email: string): boolean => {
-        const normalizedEmail = email.toLowerCase().trim();
-        if (!normalizedEmail) return true;
-
-        if (BLOCKED_SENDER_EMAILS.has(normalizedEmail)) {
-          return true;
-        }
-
-        const emailDomain = normalizedEmail.split('@')[1];
-        if (emailDomain && BLOCKED_DOMAINS.some(domain => emailDomain === domain || emailDomain.endsWith(`.${domain}`))) {
-          return true;
-        }
-
-        return false;
-      };
-
-      // Avoid DB-side ilike on recipient_list (seq scan → statement timeout).
-      // Pull recent unread rows, then filter office inbox client-side.
-      const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      const { data, error } = await supabase
-        .from('emails')
-        .select('id, sender_name, sender_email, subject, body_preview, body_html, sent_at, recipient_list')
-        .eq('direction', 'incoming')
-        .or('is_read.is.null,is_read.eq.false')
-        .gte('sent_at', sinceIso)
-        .order('sent_at', { ascending: false })
-        .limit(250);
+      const { data, error } = await fetchHeaderOfficeInboxUnreadEmails({
+        days: 2,
+        limit: 40,
+        scanLimit: 250,
+      });
 
       if (error) {
         console.error('Error fetching email lead messages:', error);
@@ -2331,14 +2230,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return;
       }
 
-      const officeInbox = (data || []).filter((email: { recipient_list?: string | null }) =>
-        (email.recipient_list || '').toLowerCase().includes('office@lawoffice.org.il')
-      );
-
       // Filter out blocked sender emails and domains
-      const filteredData = officeInbox.filter((email: any) => {
+      const filteredData = (data || []).filter((email) => {
         const senderEmail = email.sender_email?.toLowerCase() || '';
-        return senderEmail && !isEmailBlocked(senderEmail);
+        return Boolean(senderEmail) && !isHeaderEmailBlocked(senderEmail);
       });
 
       const groupedMap = new Map<string, {
@@ -2354,7 +2249,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       filteredData.forEach(email => {
         const key = (email.sender_email || `unknown-${email.id}`).toLowerCase();
-        const previewText = email.body_preview || email.body_html || '';
+        const previewText = email.body_preview || '';
         if (!groupedMap.has(key)) {
           groupedMap.set(key, {
             id: key,
@@ -2364,12 +2259,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             latest_preview: previewText,
             latest_sent_at: email.sent_at,
             message_count: 1,
-            message_ids: [email.id],
+            message_ids: [Number(email.id)],
           });
         } else {
           const entry = groupedMap.get(key)!;
           entry.message_count += 1;
-          entry.message_ids.push(email.id);
+          entry.message_ids.push(Number(email.id));
           if (new Date(email.sent_at) > new Date(entry.latest_sent_at)) {
             entry.latest_subject = email.subject || 'No Subject';
             entry.latest_preview = previewText;
@@ -2570,9 +2465,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   }, [allEmployees]);
 
-  // Fetch RMQ messages and WhatsApp leads messages when user is loaded
+  // Fetch notification sources once when user/super-user is ready; refresh every 60s.
+  // Intentionally omit fetch* from deps — those recreate when employee profile loads and were causing RPC stampedes.
   useEffect(() => {
-    if (currentUser) {
+    if (!currentUser) return;
+
+    fetchRmqMessages();
+    if (isSuperUser) {
+      fetchWhatsappLeadsMessages();
+      fetchEmailLeadMessages();
+      fetchEmailUnreadCount();
+    }
+    fetchWhatsappClientsUnreadCount();
+
+    const interval = setInterval(() => {
       fetchRmqMessages();
       if (isSuperUser) {
         fetchWhatsappLeadsMessages();
@@ -2580,19 +2486,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         fetchEmailUnreadCount();
       }
       fetchWhatsappClientsUnreadCount();
-      // Refresh messages every 60 seconds
-      const interval = setInterval(() => {
-        fetchRmqMessages();
-        if (isSuperUser) {
-          fetchWhatsappLeadsMessages();
-          fetchEmailLeadMessages();
-          fetchEmailUnreadCount();
-        }
-        fetchWhatsappClientsUnreadCount();
-      }, 60000);
-      return () => clearInterval(interval);
-    }
-  }, [currentUser, isSuperUser, fetchEmailUnreadCount, fetchEmailLeadMessages, fetchWhatsappClientsUnreadCount]);
+    }, 60000);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, isSuperUser]);
+
+  // Re-filter email unread badge once employee identity is known (single extra call, not on every profile object change)
+  const emailBadgeIdentityKey = `${currentUserEmployee?.id || currentUser?.employee_id || ''}|${(userFullName || '').trim().toLowerCase()}`;
+  useEffect(() => {
+    if (!currentUser || !emailBadgeIdentityKey || emailBadgeIdentityKey === '|') return;
+    fetchEmailUnreadCount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, emailBadgeIdentityKey]);
 
   // Send push notifications when new messages arrive
   // Only trigger on count changes, not on message array reference changes
@@ -2626,20 +2532,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [unreadCount, whatsappLeadsUnreadCount, rmqUnreadCount, currentUser, sendNotificationForNewMessage]);
   // Note: whatsappLeadsMessages and rmqMessages are intentionally excluded from deps
   // to prevent re-triggering on array reference changes. The hook tracks message IDs internally.
-
-  useEffect(() => {
-    if (!currentUser) {
-      fetchEmailLeadMessages();
-      fetchEmailUnreadCount();
-    }
-  }, [currentUser, fetchEmailLeadMessages, fetchEmailUnreadCount]);
-
-  // Re-fetch email unread count when user employee data changes (for "My Contacts" filtering)
-  useEffect(() => {
-    if (currentUser || currentUserEmployee || userFullName) {
-      fetchEmailUnreadCount();
-    }
-  }, [currentUserEmployee, userFullName, fetchEmailUnreadCount]);
 
   // Fetch new leads count when component mounts and every 30 seconds
   // Also refetch when employees are loaded (needed for filtering)

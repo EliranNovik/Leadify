@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, TrashIcon, InboxIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { appendEmailSignature } from '../lib/emailSignature';
 import sanitizeHtml from '../lib/sanitizeHtml';
@@ -19,13 +19,26 @@ import { searchLeads } from '../lib/legacyLeadsApi';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { generateSearchVariants } from '../lib/transliteration';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
+import EmailGmailSplitPane from './EmailGmailSplitPane';
 import {
   buildEmailFilterClauses,
   collectClientEmails,
   EMAIL_THREAD_MODAL_SELECT,
+  batchLeadEmailListMeta,
   fetchLeadEmailsForTimeline,
   normalizeEmailForFilter as normalizeEmailForFilterShared,
+  dedupeEmailsForSidepanel,
 } from '../lib/interactions/emailFilters';
+import {
+  readEmailSidepanelCache,
+  writeEmailSidepanelCache,
+  subscribeEmailSidepanel,
+} from '../lib/interactions/emailSidepanelCache';
+import {
+  buildComposeDraft,
+  resolveEmailDeleteFilter,
+  type EmailComposeMode,
+} from '../lib/interactions/emailComposeActions';
 
 const EMAIL_THREAD_FETCH_LIMIT = 200;
 
@@ -136,6 +149,7 @@ interface Contact {
 
 interface EmailMessage {
   id: string;
+  db_id?: string | number;
   subject: string;
   body_html: string | null;
   body_preview?: string | null;
@@ -497,6 +511,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [filteredContacts, setFilteredContacts] = useState<Contact[]>([]);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [emailThread, setEmailThread] = useState<EmailMessage[]>([]);
+  const [selectedThreadEmailId, setSelectedThreadEmailId] = useState<string | null>(null);
+  const [threadListFilter, setThreadListFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
+  const [showThreadReadingPane, setShowThreadReadingPane] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -505,10 +522,32 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [subject, setSubject] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [showCompose, setShowCompose] = useState(false);
+  const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
+  const [composeSideSearch, setComposeSideSearch] = useState('');
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showContactSelector, setShowContactSelector] = useState(false);
   const [allContacts, setAllContacts] = useState<Contact[]>([]);
+
+  // Keep a selected message for Gmail-style reading pane
+  useEffect(() => {
+    if (emailThread.length === 0) {
+      setSelectedThreadEmailId(null);
+      return;
+    }
+    const stillThere = emailThread.some((m) => String(m.id) === String(selectedThreadEmailId));
+    if (!stillThere) {
+      const newest = [...emailThread].sort(
+        (a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime(),
+      )[0];
+      setSelectedThreadEmailId(newest ? String(newest.id) : null);
+    }
+  }, [emailThread, selectedThreadEmailId]);
+
+  useEffect(() => {
+    setShowThreadReadingPane(false);
+    setThreadListFilter('all');
+  }, [selectedContact?.id]);
 
   // Wrapper to ensure allContacts always filters out @lawoffice.org.il
   const setAllContactsFiltered = useCallback((contacts: Contact[]) => {
@@ -1326,36 +1365,53 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       try {
         setIsLoading(true);
 
-        // Fetch unique client_id and legacy_id from emails table
-        // Only get emails where client_id or legacy_id is not null
-        // IMPORTANT: We fetch ALL emails here (including @lawoffice.org.il) because we need to find
-        // which leads have email conversations. We'll filter the leads themselves, not the emails.
-        const { data: emailsData, error: emailsError } = await supabase
-          .from('emails')
-          .select('client_id, legacy_id, sender_email, recipient_list')
-          .or('client_id.not.is.null,legacy_id.not.is.null');
-
-        console.log(`📧 [EmailThreadModal] Fetched ${emailsData?.length || 0} emails from database`);
-
-        if (emailsError) {
-          console.error('Error fetching emails:', emailsError);
-          setIsLoading(false);
-          return;
-        }
-
-        // Get unique client IDs (new leads) and legacy IDs
-        // We'll filter contacts by their email field later, not by email thread participants
+        // Prefer RPC (sent_at-first). Fallback: recent rows by sent_at, filter linked in JS.
+        // Never use .or(client_id.not.is.null,...) — that times out on this table.
         const uniqueClientIds = new Set<string>();
         const uniqueLegacyIds = new Set<number>();
 
-        (emailsData || []).forEach((email: any) => {
-          if (email.client_id) {
-            uniqueClientIds.add(String(email.client_id));
-          }
-          if (email.legacy_id) {
-            uniqueLegacyIds.add(Number(email.legacy_id));
-          }
+        const linkedRpc = await supabase.rpc('email_recent_linked_lead_ids', {
+          p_days: 90,
+          p_scan_limit: 2500,
         });
+
+        if (!linkedRpc.error && linkedRpc.data && typeof linkedRpc.data === 'object') {
+          const payload = linkedRpc.data as { client_ids?: unknown; legacy_ids?: unknown };
+          const clientIds = Array.isArray(payload.client_ids) ? payload.client_ids : [];
+          const legacyIds = Array.isArray(payload.legacy_ids) ? payload.legacy_ids : [];
+          clientIds.forEach((id) => {
+            if (id != null) uniqueClientIds.add(String(id));
+          });
+          legacyIds.forEach((id) => {
+            const n = Number(id);
+            if (!Number.isNaN(n)) uniqueLegacyIds.add(n);
+          });
+          console.log(
+            `📧 [EmailThreadModal] Linked leads via RPC: ${uniqueClientIds.size} new, ${uniqueLegacyIds.size} legacy`,
+          );
+        } else {
+          const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+          const { data: recentEmails, error: emailsError } = await supabase
+            .from('emails')
+            .select('client_id, legacy_id')
+            .gte('sent_at', sinceIso)
+            .order('sent_at', { ascending: false })
+            .limit(2500);
+
+          if (emailsError) {
+            console.error('Error fetching emails:', emailsError);
+            setIsLoading(false);
+            return;
+          }
+
+          (recentEmails || []).forEach((email: { client_id?: string | null; legacy_id?: number | null }) => {
+            if (email.client_id) uniqueClientIds.add(String(email.client_id));
+            if (email.legacy_id != null) uniqueLegacyIds.add(Number(email.legacy_id));
+          });
+          console.log(
+            `📧 [EmailThreadModal] Linked leads via fallback: ${uniqueClientIds.size} new, ${uniqueLegacyIds.size} legacy`,
+          );
+        }
 
         // Fetch new leads with email conversations (with role filter if enabled)
         const newLeadIds = Array.from(uniqueClientIds);
@@ -1574,131 +1630,52 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
         console.log(`📧 [EmailThreadModal] Fetched ${allContacts.length} contacts with email conversations (${beforeFilterCount} before filtering, filtered out ${beforeFilterCount - allContacts.length} @lawoffice.org.il contacts)`);
 
-        // Fetch last message time and unread status for each contact
-        const contactsWithLastMessage = await Promise.all(
-          allContacts.map(async (contact) => {
-            const isLegacyContact = contact.lead_type === 'legacy';
-            const legacyId = isLegacyContact
-              ? (() => {
-                const raw = contact.lead_number ?? contact.id;
-                const numeric = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
-                return Number.isFinite(numeric) ? numeric : null;
-              })()
-              : null;
+        // Batch last-message + unread (indexed client_id/legacy_id) — no per-contact N+1.
+        const clientIdsForMeta = allContacts
+          .filter((c) => c.lead_type !== 'legacy')
+          .map((c) => String((c as any).client_uuid || c.id))
+          .filter(Boolean);
+        const legacyIdsForMeta = allContacts
+          .filter((c) => c.lead_type === 'legacy')
+          .map((c) => {
+            const raw = c.lead_number ?? c.id;
+            const numeric = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
+            return Number.isFinite(numeric) ? numeric : null;
+          })
+          .filter((id): id is number => id != null);
 
-            if (isLegacyContact && legacyId === null) {
-              return null;
-            }
+        const { byClientId, byLegacyId } = await batchLeadEmailListMeta(supabase, {
+          clientIds: clientIdsForMeta,
+          legacyIds: legacyIdsForMeta,
+          unreadDays: 7,
+          lookbackDays: 180,
+        });
 
-            let lastMessage: { sent_at: string; direction: string } | null = null;
-            if (isLegacyContact && legacyId !== null) {
-              const { data: legacyMessage } = await supabase
-                .from('emails')
-                .select('sent_at, direction')
-                .eq('legacy_id', legacyId)
-                .order('sent_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-              lastMessage = legacyMessage ?? null;
-            } else {
-              const { data: clientMessage } = await supabase
-                .from('emails')
-                .select('sent_at, direction')
-                .eq('client_id', String(contact.id))
-                .order('sent_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-              lastMessage = clientMessage ?? null;
-            }
-
-            // Check for unread incoming messages (last 7 days)
-            // For contacts, we need to check by both client_id/legacy_id AND contact_id when available
-            const sevenDaysAgo = new Date();
-            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-            // First, try to find a contact with matching email to get contact_id
-            let contactIdForUnread: number | null = null;
-            if (contact.email) {
-              // Fetch contacts for this lead to find matching contact_id
-              const isLegacyForContact = contact.lead_type === 'legacy';
-              const leadIdForContact = isLegacyForContact
-                ? (contact.lead_number ? parseInt(contact.lead_number.replace(/[^0-9]/g, ''), 10) : null)
-                : (contact.client_uuid || contact.id);
-
-              if (leadIdForContact) {
-                try {
-                  const contactsList = await fetchLeadContacts(
-                    String(leadIdForContact),
-                    isLegacyForContact
-                  );
-                  const matchingContact = contactsList.find((c: ContactInfo) =>
-                    c.email && contact.email && c.email.toLowerCase() === contact.email.toLowerCase()
-                  );
-                  if (matchingContact) {
-                    contactIdForUnread = matchingContact.id;
-                  }
-                } catch (error) {
-                  console.error('Error fetching contacts for unread count:', error);
-                }
-              }
-            }
-
-            // Build query for unread emails
-            let unreadMessages: { id: string }[] | null = null;
-
-            if (isLegacyContact && legacyId !== null) {
-              // For legacy contacts: check by legacy_id and optionally by contact_id
-              let query = supabase
-                .from('emails')
-                .select('id, contact_id')
-                .eq('legacy_id', legacyId)
-                .eq('direction', 'incoming')
-                .gte('sent_at', sevenDaysAgo.toISOString())
-                .or('is_read.is.null,is_read.eq.false');
-
-              const { data } = await query;
-
-              // Filter in memory if we have a contact_id
-              if (contactIdForUnread && data) {
-                // Include emails that match contact_id OR don't have contact_id set (fallback to main contact)
-                const filtered = data.filter((email: any) =>
-                  !email.contact_id || email.contact_id === contactIdForUnread
-                );
-                unreadMessages = filtered;
-              } else {
-                unreadMessages = data ?? null;
-              }
-            } else {
-              // For new leads: check by client_id and optionally by contact_id
-              let query = supabase
-                .from('emails')
-                .select('id, contact_id')
-                .eq('client_id', String(contact.id))
-                .eq('direction', 'incoming')
-                .gte('sent_at', sevenDaysAgo.toISOString())
-                .or('is_read.is.null,is_read.eq.false');
-
-              const { data } = await query;
-
-              // Filter in memory if we have a contact_id
-              if (contactIdForUnread && data) {
-                // Include emails that match contact_id OR don't have contact_id set (fallback to main contact)
-                const filtered = data.filter((email: any) =>
-                  !email.contact_id || email.contact_id === contactIdForUnread
-                );
-                unreadMessages = filtered;
-              } else {
-                unreadMessages = data ?? null;
-              }
-            }
-
+        const contactsWithLastMessage = allContacts.map((contact) => {
+          const isLegacyContact = contact.lead_type === 'legacy';
+          if (isLegacyContact) {
+            const legacyId = (() => {
+              const raw = contact.lead_number ?? contact.id;
+              const numeric = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
+              return Number.isFinite(numeric) ? numeric : null;
+            })();
+            if (legacyId === null) return null;
+            const meta = byLegacyId.get(legacyId);
             return {
               ...contact,
-              last_message_time: lastMessage?.sent_at || null,
-              unread_count: unreadMessages?.length || 0
+              last_message_time: meta?.last_message_time || null,
+              unread_count: meta?.unread_count || 0,
             };
-          })
-        );
+          }
+
+          const clientKey = String((contact as any).client_uuid || contact.id);
+          const meta = byClientId.get(clientKey);
+          return {
+            ...contact,
+            last_message_time: meta?.last_message_time || null,
+            unread_count: meta?.unread_count || 0,
+          };
+        });
 
         // Filter out null contacts
         const filtered = contactsWithLastMessage.filter(Boolean) as Contact[];
@@ -2422,6 +2399,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     [userId]
   );
 
+  // Hydrate body when the reading-pane selection changes
+  useEffect(() => {
+    if (!selectedThreadEmailId) return;
+    const msg = emailThread.find((m) => String(m.id) === String(selectedThreadEmailId));
+    if (msg) void hydrateEmailThreadBodies([msg]);
+    // Only re-run on selection change; hydrate itself no-ops when body already present
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedThreadEmailId, hydrateEmailThreadBodies]);
+
   const fetchEmailThread = useCallback(async () => {
     if (!selectedContact) {
       currentLoadingContactIdRef.current = null;
@@ -2445,9 +2431,16 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
     console.log(`🔄 Fetching email thread for contact: ${selectedContact.name} (ID: ${selectedContact.id}), contactId: ${selectedContactId}`);
 
-    // Clear thread immediately to prevent showing old emails
-    setEmailThread([]);
-    setIsLoading(true);
+    const cacheKey = `thread:${selectedContact.id}:${selectedContactId || 'null'}`;
+    const cached = readEmailSidepanelCache<EmailMessage[]>(cacheKey);
+    if (cached && cached.length > 0) {
+      setEmailThread(cached);
+      setIsLoading(false);
+    } else {
+      // Clear thread immediately to prevent showing old emails
+      setEmailThread([]);
+      setIsLoading(true);
+    }
 
     try {
       const isLegacyContact =
@@ -2736,6 +2729,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
         return {
           id: row.message_id || row.id?.toString?.() || `email_${row.id}`,
+          db_id: row.id,
           subject: row.subject || 'No Subject',
           body_html: sanitizedHtml,
           body_preview: sanitizedPreview ?? null,
@@ -2752,16 +2746,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
       // Only set emails if this is still the contact we're loading for
       if (currentLoadingContactIdRef.current === loadingContactId) {
-        // Deduplicate emails by message_id before setting state
-        const uniqueEmails = formattedThread.reduce((acc, email) => {
-          const messageId = email.id;
-          if (messageId && !acc.some(e => e.id === messageId)) {
-            acc.push(email);
-          }
-          return acc;
-        }, [] as typeof formattedThread);
+        // Deduplicate emails by message_id / content fingerprint before setting state
+        const uniqueEmails = dedupeEmailsForSidepanel(formattedThread);
 
         setEmailThread(uniqueEmails);
+        writeEmailSidepanelCache(cacheKey, uniqueEmails);
         hydrateEmailThreadBodies(uniqueEmails);
 
         // Mark incoming emails as read when viewing the conversation
@@ -2871,6 +2860,26 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     fetchEmailThread();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedContact?.id, selectedContactId, setupComplete]); // Added setupComplete to trigger when setup is done
+
+  // Live updates for the open thread sidepanel
+  useEffect(() => {
+    if (!selectedContact?.id) return;
+    const cacheKey = `thread:${selectedContact.id}:${selectedContactId || 'null'}`;
+    const filter =
+      selectedContactId != null
+        ? `contact_id=eq.${selectedContactId}`
+        : typeof selectedContact.id === 'string' && selectedContact.id.includes('-')
+          ? `client_id=eq.${selectedContact.id}`
+          : undefined;
+    return subscribeEmailSidepanel(supabase, {
+      channelName: `email-thread-${cacheKey}`,
+      filter,
+      onChange: () => {
+        lastFetchedKeyRef.current = '';
+        void fetchEmailThread();
+      },
+    });
+  }, [selectedContact?.id, selectedContactId, fetchEmailThread]);
 
   const runMailboxSync = useCallback(async () => {
     if (!userId) {
@@ -3301,6 +3310,98 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setSelectedContactIds(new Set());
   };
 
+  const getActiveThreadMessage = useCallback((): EmailMessage | null => {
+    if (!emailThread.length) return null;
+    if (selectedThreadEmailId) {
+      const selected = emailThread.find((m) => String(m.id) === String(selectedThreadEmailId));
+      if (selected) return selected;
+    }
+    return [...emailThread].sort(
+      (a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime(),
+    )[0] || null;
+  }, [emailThread, selectedThreadEmailId]);
+
+  const openComposeAction = useCallback(
+    (mode: EmailComposeMode, message?: EmailMessage | null) => {
+      if (!selectedContact) {
+        toast.error('Select a contact first');
+        return;
+      }
+      const active = message || getActiveThreadMessage();
+      if (message?.id) {
+        setSelectedThreadEmailId(String(message.id));
+      }
+      if (!active && mode !== 'forward') {
+        // Allow reply with contact email when thread empty
+      }
+      if (!active && (mode === 'forward' || mode === 'reply_all')) {
+        toast.error('Select an email first');
+        return;
+      }
+
+      const draft = buildComposeDraft(active, mode, {
+        userEmail,
+        fallbackTo: selectedContact.email,
+      });
+
+      setToRecipients(draft.to);
+      setCcRecipients(draft.cc);
+      setToInput('');
+      setCcInput('');
+      setRecipientError(null);
+      setSelectedTemplateId(null);
+      setTemplateSearch('');
+      setShowLinkForm(false);
+      setLinkLabel('');
+      setLinkUrl('');
+      setSubject(draft.subject || `${selectedContact.lead_number} - ${selectedContact.name}`);
+      setNewMessage(draft.body);
+      setNewMessageIsRTL(/[\u0590-\u05FF]/.test(draft.body));
+      setComposeSideFilter('all');
+      setComposeSideSearch('');
+      setShowCompose(true);
+    },
+    [selectedContact, getActiveThreadMessage, userEmail],
+  );
+
+  const handleDeleteEmailMessage = useCallback(
+    async (message?: EmailMessage | null) => {
+      const active = message || getActiveThreadMessage();
+      if (!active) {
+        toast.error('Select an email to delete');
+        return;
+      }
+      if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) return;
+
+      const filter = resolveEmailDeleteFilter(active as any);
+      if (!filter) {
+        toast.error('Could not resolve email id for delete');
+        return;
+      }
+
+      try {
+        let query = supabase.from('emails').delete();
+        query = filter.by === 'id' ? query.eq('id', filter.value) : query.eq('message_id', filter.value);
+        const { error } = await query;
+        if (error) throw error;
+
+        setEmailThread((prev) => prev.filter((m) => String(m.id) !== String(active.id)));
+        if (String(selectedThreadEmailId) === String(active.id)) {
+          setSelectedThreadEmailId(null);
+        }
+        toast.success('Email deleted');
+      } catch (error) {
+        console.error('Error deleting email:', error);
+        toast.error(error instanceof Error ? error.message : 'Failed to delete email');
+      }
+    },
+    [getActiveThreadMessage, selectedThreadEmailId],
+  );
+
+  const handleDeleteActiveEmail = useCallback(async () => {
+    await handleDeleteEmailMessage(null);
+  }, [handleDeleteEmailMessage]);
+
   const handleSendEmail = async () => {
     if (!selectedContact || !newMessage.trim()) {
       toast.error('Please enter a message');
@@ -3510,13 +3611,20 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           // Re-fetch contacts to update last_message_time and sort order
           const fetchContactsAsync = async () => {
             try {
-              // Fetch unique client_id and legacy_id from emails table
-              const { data: emailsData } = await supabase
+              const sinceIso = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+              const { data: recentEmails } = await supabase
                 .from('emails')
                 .select('client_id, legacy_id')
-                .or('client_id.not.is.null,legacy_id.not.is.null');
+                .gte('sent_at', sinceIso)
+                .order('sent_at', { ascending: false })
+                .limit(2500);
 
-              if (!emailsData) return;
+              const emailsData = (recentEmails || []).filter(
+                (email: { client_id?: string | null; legacy_id?: number | null }) =>
+                  email.client_id != null || email.legacy_id != null,
+              );
+
+              if (!emailsData.length) return;
 
               const uniqueClientIds = new Set<string>();
               const uniqueLegacyIds = new Set<number>();
@@ -3810,6 +3918,16 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
       {/* CSS to ensure email content displays fully and preserves Outlook formatting */}
       <style>{`
+        .email-content a,
+        .email-content a:link,
+        .email-content a:visited {
+          color: #2563eb !important;
+          text-decoration: underline !important;
+          text-underline-offset: 2px;
+        }
+        .email-content a:hover {
+          color: #1d4ed8 !important;
+        }
         .email-content {
           max-width: none !important;
           overflow: visible !important;
@@ -3849,88 +3967,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           text-align: left;
         }
       `}</style>
-      <div className="h-full flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className={`flex-none flex flex-col border-b border-gray-200`}>
-          <div className="flex items-center justify-between p-4 md:p-6">
-            <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-              <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">Email Thread</h2>
-              {selectedContact && !isMobile && (
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span
-                    className="text-gray-600"
-                    dir="auto"
-                  >
-                    {selectedContact.name} ({selectedContact.lead_number})
-                  </span>
-                </div>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {selectedContact && (
-                <button
-                  onClick={() => {
-                    // Get the correct lead identifier based on lead type
-                    const isLegacy = selectedContact.lead_type === 'legacy' || selectedContact.id?.toString().startsWith('legacy_');
-
-                    let leadIdentifier: string | null = null;
-
-                    if (isLegacy) {
-                      // For legacy leads, extract the numeric ID
-                      const contactId = selectedContact.id?.toString();
-                      if (contactId) {
-                        if (contactId.startsWith('legacy_')) {
-                          // Extract numeric ID from "legacy_<id>"
-                          leadIdentifier = contactId.replace('legacy_', '');
-                        } else if (/^\d+$/.test(contactId)) {
-                          // Already numeric
-                          leadIdentifier = contactId;
-                        }
-                      }
-                    } else {
-                      // For new leads, use lead_number
-                      leadIdentifier = selectedContact.lead_number || selectedContact.client_uuid || null;
-                    }
-
-                    if (!leadIdentifier) {
-                      console.error('Cannot navigate: No valid lead identifier found', selectedContact);
-                      return;
-                    }
-
-                    // Encode the identifier to handle sub-leads with '/' characters
-                    const encodedIdentifier = encodeURIComponent(leadIdentifier);
-                    console.log('Navigating to client:', leadIdentifier, 'encoded:', encodedIdentifier);
-
-                    // Close email modal first, then navigate
-                    onClose();
-
-                    // Small delay to ensure modal closes before navigation
-                    setTimeout(() => {
-                      navigate(`/clients/${encodedIdentifier}`, { replace: true });
-                    }, 100);
-                  }}
-                  className="btn btn-primary btn-sm gap-2"
-                  title="View Client Page"
-                >
-                  <UserIcon className="w-4 h-4" />
-                  <span className="hidden md:inline">View Client</span>
-                </button>
-              )}
-              <button
-                onClick={onClose}
-                className="btn btn-ghost btn-circle flex-shrink-0"
-              >
-                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-              </button>
-            </div>
-          </div>
-
-        </div>
-
-        <div className="flex-1 flex overflow-hidden">
-          {/* Left Panel - Contacts */}
-          <div className={`${isMobile ? (showChat ? 'hidden' : 'w-full') : 'w-80'} border-r border-gray-200 flex flex-col`}>
+      <div className="flex h-full min-h-0 overflow-hidden">
+          {/* Left Panel - Contacts (full height to top of screen) */}
+          <div className={`${isMobile ? (showChat ? 'hidden' : 'w-full') : 'w-80'} flex h-full min-h-0 shrink-0 flex-col border-r border-gray-200 bg-white`}>
             {/* Mobile Contacts Header */}
             {isMobile && !showChat && (
               <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
@@ -3981,14 +4020,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               )}
 
               {/* Search Bar */}
-              <div className="relative">
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <div className="relative w-full">
+                <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                 <input
                   type="text"
                   placeholder="Search contacts..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full rounded-full border border-gray-300 py-1.5 pl-9 pr-3 text-left text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
@@ -4011,8 +4050,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   safeContacts = safeContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
                 }
 
-                // Log what we're about to render
-                console.log(`🎨 [EmailThreadModal] Rendering ${safeContacts.length} contacts in main list (from ${filteredContacts.length} filteredContacts)`);
+                // Log what we're about to render (skip empty list spam)
+                if (safeContacts.length > 0) {
+                  console.log(`🎨 [EmailThreadModal] Rendering ${safeContacts.length} contacts`);
+                }
 
                 // Final check - log ALL emails being rendered and check for @lawoffice.org.il
                 const emailsBeingRendered = safeContacts.map(c => c.email).filter(Boolean);
@@ -4040,9 +4081,6 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   });
                 }
 
-                // Log sample of emails being rendered (first 10)
-                console.log(`📋 [EmailThreadModal] Sample emails being rendered:`, safeContacts.slice(0, 10).map(c => c.email));
-
                 return safeContacts;
               })().filter(contact => {
                 // Final check right before rendering each contact
@@ -4065,7 +4103,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       }`}
                   >
                     <div className="flex items-center gap-2 md:gap-3">
-                      <div className="w-8 h-8 md:w-10 md:h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm md:text-base">
+                      <div className="w-7 h-7 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-xs">
                         {contact.name.charAt(0).toUpperCase()}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -4125,293 +4163,152 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             </div>
           </div>
 
-          {/* Right Panel - Email Thread */}
-          <div className={`${isMobile ? (showChat ? 'w-full' : 'hidden') : 'flex-1'} flex flex-col`}>
+          {/* Right Panel - Email Thread (header only above main content) */}
+          <div className={`${isMobile ? (showChat ? 'w-full' : 'hidden') : 'flex-1'} relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-slate-100`}>
+            {/* Header — main content only */}
+            <div className="absolute inset-x-0 top-0 z-20 flex flex-none items-center justify-between border-b border-white/40 bg-white/55 px-4 py-3 shadow-sm backdrop-blur-xl backdrop-saturate-150 md:px-6 md:py-4 supports-[backdrop-filter]:bg-white/40">
+              <div className="flex min-w-0 flex-1 items-center gap-2 md:gap-4">
+                <h2 className="shrink-0 text-lg font-bold text-gray-900 md:text-2xl">Email Thread</h2>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {selectedContact && (
+                  <button
+                    onClick={() => {
+                      const isLegacy = selectedContact.lead_type === 'legacy' || selectedContact.id?.toString().startsWith('legacy_');
+                      let leadIdentifier: string | null = null;
+                      if (isLegacy) {
+                        const contactId = selectedContact.id?.toString();
+                        if (contactId) {
+                          if (contactId.startsWith('legacy_')) {
+                            leadIdentifier = contactId.replace('legacy_', '');
+                          } else if (/^\d+$/.test(contactId)) {
+                            leadIdentifier = contactId;
+                          }
+                        }
+                      } else {
+                        leadIdentifier = selectedContact.lead_number || selectedContact.client_uuid || null;
+                      }
+                      if (!leadIdentifier) {
+                        console.error('Cannot navigate: No valid lead identifier found', selectedContact);
+                        return;
+                      }
+                      const encodedIdentifier = encodeURIComponent(leadIdentifier);
+                      onClose();
+                      setTimeout(() => {
+                        navigate(`/clients/${encodedIdentifier}`, { replace: true });
+                      }, 100);
+                    }}
+                    className="btn btn-primary btn-sm gap-2"
+                    title="View Client Page"
+                  >
+                    <UserIcon className="w-4 h-4" />
+                    <span className="hidden md:inline">View Client</span>
+                  </button>
+                )}
+                <button
+                  onClick={onClose}
+                  className="btn btn-ghost btn-circle flex-shrink-0"
+                >
+                  <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+                </button>
+              </div>
+            </div>
+
             {selectedContact ? (
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <div className="flex-none flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={() => setShowChat(false)}
-                        className="btn btn-ghost btn-circle btn-sm"
-                        title="Back to contacts"
-                      >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                        </svg>
-                      </button>
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">
-                          {selectedContact.name.charAt(0).toUpperCase()}
-                        </div>
-                        <div>
-                          <h3
-                            className="font-semibold text-gray-900 text-sm"
-                            dir="auto"
-                          >
-                            {selectedContact.name}
-                          </h3>
-                          <p className="text-xs text-gray-500" dir="ltr">
-                            {selectedContact.lead_number}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
+                  <div className="absolute inset-x-0 top-[3.75rem] z-20 flex flex-none items-center border-b border-white/40 bg-white/55 px-4 py-3 shadow-sm backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/40">
+                    <button
+                      onClick={() => setShowChat(false)}
+                      className="btn btn-ghost btn-circle btn-sm"
+                      title="Back to contacts"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                    <span className="ml-2 text-sm font-semibold text-slate-800">Emails</span>
                   </div>
                 )}
 
-                {/* Desktop Chat Header */}
-                {!isMobile && (
-                  <div className="flex-none flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold">
-                        {selectedContact.name.charAt(0).toUpperCase()}
-                      </div>
-                      <div>
-                        <h3
-                          className="font-semibold text-gray-900"
-                          dir="auto"
-                        >
-                          {selectedContact.name}
-                        </h3>
-                        <p className="text-sm text-gray-500" dir="ltr">
-                          {selectedContact.lead_number}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Email Thread */}
-                <div className={`flex-1 overflow-y-auto p-4 md:p-6 min-h-0 overscroll-contain ${isMobile ? '' : ''}`} style={isMobile ? { WebkitOverflowScrolling: 'touch' } : {}}>
-                  {isLoading ? (
-                    <div className="flex flex-col items-center justify-center h-full gap-4">
-                      <div className="loading loading-spinner loading-lg text-blue-500"></div>
-                      <div className="text-center">
-                        <p className="text-lg font-medium text-gray-700">Loading emails...</p>
-                        {selectedContact && (
-                          <p className="text-sm text-gray-500 mt-1">Fetching emails for {selectedContact.name}</p>
-                        )}
-                      </div>
-                    </div>
-                  ) : emailThread.length === 0 ? (
-                    <div className="flex items-center justify-center h-full text-gray-500">
-                      <div className="text-center">
-                        <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                          <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                          </svg>
-                        </div>
-                        <p className="text-lg font-medium">No emails available</p>
-                        <p className="text-sm">No emails found for {selectedContact.name}. Try syncing or send a new email.</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {emailThread.map((message, index) => {
-                        const showDateSeparator = index === 0 ||
-                          new Date(message.sent_at).toDateString() !== new Date(emailThread[index - 1].sent_at).toDateString();
-
-                        // Determine if email is from team/user based on sender email domain
-                        // Emails from @lawoffice.org.il are ALWAYS team/user, never client
-                        const senderEmail = message.sender_email || '';
-                        const isFromOffice = isOfficeEmail(senderEmail);
-                        // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
-                        const isOutgoing = isFromOffice ? true : (message.direction === 'outgoing');
-
-                        // Get sender display name - use employee display_name for office emails
-                        let senderDisplayName: string;
-                        if (isOutgoing) {
-                          // For team/user emails: use employee display_name from cache if available, otherwise fallback
-                          senderDisplayName = (message as any).sender_display_name
-                            || message.sender_name
-                            || currentUserFullName
-                            || userEmail
-                            || 'You';
-                        } else {
-                          // For client emails
-                          senderDisplayName = message.sender_name || selectedContact.name || 'Sender';
-                        }
-                        const messageDirection = getMessageDirection(message);
-                        const isRTLMessage = messageDirection === 'rtl';
-
-                        return (
-                          <React.Fragment key={message.id || index}>
-                            {showDateSeparator && (
-                              <div className="flex justify-center my-4">
-                                <div className="bg-white border border-gray-200 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full shadow-sm">
-                                  {formatDateSeparator(message.sent_at)}
-                                </div>
-                              </div>
-                            )}
-
-                            <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
-                              <div className="flex items-center gap-2 mb-1">
-                                <div className={`px-3 py-1 rounded-full text-xs font-semibold ${isOutgoing
-                                    ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                                    : 'bg-pink-100 text-pink-700 border border-pink-200'
-                                  }`}>
-                                  {isOutgoing ? 'Team' : 'Client'}
-                                </div>
-                                <div
-                                  className={`text-xs font-semibold ${isOutgoing ? 'text-blue-600' : 'text-gray-600'
-                                    }`}
-                                  dir="auto"
-                                >
-                                  {senderDisplayName}
-                                </div>
-                              </div>
-                              <div
-                                className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                                style={{
-                                  wordBreak: 'break-word',
-                                  overflowWrap: 'anywhere'
-                                }}
-                              >
-                                <div className="mb-2">
-                                  <div
-                                    className="text-sm font-semibold text-gray-900"
-                                    dir="auto"
-                                  >
-                                    {message.subject}
-                                  </div>
-                                  <div className="text-xs text-gray-500 mt-1 space-y-0.5" dir="ltr" style={{ textAlign: 'left' }}>
-                                    <div>
-                                      <span className="font-medium">From:</span> <span className="text-gray-700">{message.sender_email || 'Unknown'}</span>
-                                    </div>
-                                    {message.recipient_list && (() => {
-                                      const recipients = message.recipient_list.split(/[,;]/).map((r: string) => r.trim()).filter((r: string) => r);
-                                      return (
-                                        <div>
-                                          <span className="font-medium">To:</span> <span className="text-gray-700">
-                                            {recipients.map((recipient: string, idx: number) => (
-                                              <span key={idx}>
-                                                {recipient}
-                                                {idx < recipients.length - 1 && ', '}
-                                              </span>
-                                            ))}
-                                          </span>
-                                        </div>
-                                      );
-                                    })()}
-                                    <div className="text-gray-400">{formatTime(message.sent_at)}</div>
-                                  </div>
-                                </div>
-
-                                {message.body_html ? (
-                                  <div
-                                    dangerouslySetInnerHTML={{ __html: message.body_html }}
-                                    className="prose prose-sm max-w-none text-gray-700 break-words email-content"
-                                    style={{
-                                      wordBreak: 'break-word',
-                                      overflowWrap: 'anywhere',
-                                      whiteSpace: 'pre-wrap' // Preserve line breaks and whitespace
-                                    }}
-                                    dir="auto"
-                                  />
-                                ) : message.body_preview ? (
-                                  <div
-                                    className="text-gray-700 whitespace-pre-wrap break-words"
-                                    style={{
-                                      wordBreak: 'break-word',
-                                      overflowWrap: 'anywhere'
-                                    }}
-                                    dir="auto"
-                                  >
-                                    {message.body_preview}
-                                  </div>
-                                ) : (
-                                  <div className="text-gray-500 italic">No content available</div>
-                                )}
-
-                                {message.attachments && Array.isArray(message.attachments) && message.attachments.length > 0 && (
-                                  <div className="mt-3 pt-3 border-t border-gray-200">
-                                    <div className="text-xs font-medium text-gray-600 mb-2">
-                                      Attachments ({message.attachments.length}):
-                                    </div>
-                                    <div className="space-y-1">
-                                      {message.attachments.map((attachment: any, idx: number) => {
-                                        if (!attachment || (!attachment.id && !attachment.name)) {
-                                          return null; // Skip invalid attachments
-                                        }
-
-                                        const attachmentKey = attachment.id || attachment.name || `${message.id}-${idx}`;
-                                        const attachmentName = attachment.name || `Attachment ${idx + 1}`;
-                                        const isDownloading =
-                                          attachment.id && downloadingAttachments[attachment.id];
-
-                                        return (
-                                          <button
-                                            key={attachmentKey}
-                                            type="button"
-                                            className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors w-full text-left"
-                                            onClick={() => downloadAttachment(message.id, attachment)}
-                                            disabled={Boolean(isDownloading)}
-                                          >
-                                            {isDownloading ? (
-                                              <span className="loading loading-spinner loading-xs text-blue-500" />
-                                            ) : (
-                                              <DocumentTextIcon className="w-4 h-4 flex-shrink-0" />
-                                            )}
-                                            <span className="truncate flex-1">
-                                              {attachmentName}
-                                            </span>
-                                            {attachment.size && (
-                                              <span className="text-xs text-gray-500 flex-shrink-0">
-                                                ({(attachment.size / 1024).toFixed(1)} KB)
-                                              </span>
-                                            )}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </React.Fragment>
-                        );
-                      })}
-                      <div ref={messagesEndRef} />
-                    </div>
-                  )}
+                {/* Gmail-style: email list + reading pane */}
+                <div className={`min-h-0 flex-1 overflow-hidden ${isMobile ? 'pt-[7.25rem] pb-[4.25rem]' : 'pt-[4.5rem] pb-[4.25rem]'}`}>
+                <EmailGmailSplitPane
+                  emails={emailThread as any}
+                  selectedId={selectedThreadEmailId}
+                  onSelect={(id) => {
+                    setSelectedThreadEmailId(id);
+                    if (isMobile) setShowThreadReadingPane(true);
+                  }}
+                  filter={threadListFilter}
+                  onFilterChange={setThreadListFilter}
+                  isLoading={isLoading}
+                  isMobile={isMobile}
+                  showReadingPane={showThreadReadingPane}
+                  onBackToList={() => setShowThreadReadingPane(false)}
+                  contactName={selectedContact.name}
+                  formatTime={formatTime}
+                  downloadingAttachments={downloadingAttachments}
+                  onDownloadAttachment={downloadAttachment}
+                  getIsOutgoing={(message) => {
+                    const sender = (message.sender_email || '').toLowerCase();
+                    if (sender.endsWith('@lawoffice.org.il')) return true;
+                    return message.direction === 'outgoing';
+                  }}
+                  onReplyMessage={(message) => openComposeAction('reply', message as any)}
+                  onForwardMessage={(message) => openComposeAction('forward', message as any)}
+                  onDeleteMessage={(message) => void handleDeleteEmailMessage(message as any)}
+                />
                 </div>
 
-                {/* Compose Area */}
-                <div className="border-t border-gray-200 bg-white flex-none mt-auto">
-                  <div className="px-4 md:px-6 py-4 bg-white">
+                {/* Reply / Forward / Delete actions */}
+                <div className="absolute inset-x-0 bottom-0 z-20 flex-none border-t border-white/40 bg-white/55 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/40">
+                  <div className="flex flex-wrap items-center gap-2 px-4 py-3 md:px-6">
                     <button
-                      onClick={() => {
-                        setShowCompose(true);
-                        if (selectedContact) {
-                          const initialRecipients = normaliseAddressList(selectedContact.email);
-                          setToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
-                          setCcRecipients([]);
-                          setToInput('');
-                          setCcInput('');
-                          setRecipientError(null);
-                          setSelectedTemplateId(null);
-                          setTemplateSearch('');
-                          setShowLinkForm(false);
-                          setLinkLabel('');
-                          setLinkUrl('');
-                        }
-                      }}
-                      className="w-full btn btn-primary h-12 min-h-0"
+                      type="button"
+                      onClick={() => openComposeAction('reply')}
+                      className="btn btn-primary btn-sm gap-1.5 border-0"
+                      disabled={!selectedContact}
                     >
-                      <PaperAirplaneIcon className="w-4 h-4 mr-2" />
-                      Compose Message
+                      <ArrowUturnLeftIcon className="h-4 w-4" />
+                      Reply
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openComposeAction('reply_all')}
+                      className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
+                      disabled={!selectedContact || emailThread.length === 0}
+                    >
+                      <ArrowUturnLeftIcon className="h-4 w-4" />
+                      Reply all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openComposeAction('forward')}
+                      className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
+                      disabled={!selectedContact || emailThread.length === 0}
+                    >
+                      <ArrowUturnRightIcon className="h-4 w-4" />
+                      Forward
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteActiveEmail()}
+                      className="btn btn-ghost btn-sm ml-auto gap-1.5 border-0 text-error hover:bg-error/10"
+                      disabled={emailThread.length === 0}
+                    >
+                      <TrashIcon className="h-4 w-4" />
+                      Delete
                     </button>
                   </div>
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex items-center justify-center text-gray-500">
+              <div className="flex flex-1 items-center justify-center pt-16 text-gray-500">
                 <div className="text-center">
-                  <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-white/70 shadow-sm backdrop-blur">
+                    <svg className="h-8 w-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                     </svg>
                   </div>
@@ -4421,14 +4318,171 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               </div>
             )}
           </div>
-        </div>
       </div>
 
       {showCompose && createPortal(
         <div className="fixed inset-0 z-[10001] flex overflow-hidden">
           <div className="fixed inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
-          <div className="relative w-full h-full bg-white shadow-2xl flex flex-col overflow-hidden">
-            <div className="flex-none flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="relative flex h-full w-full overflow-hidden bg-white shadow-2xl">
+            {/* Left: email list sidepanel — match main thread list */}
+            <aside className="hidden md:flex w-[22rem] xl:w-96 shrink-0 flex-col overflow-hidden border-r border-slate-200/90 bg-white">
+              <div className="shrink-0 bg-white px-3 py-2">
+                <div className="relative w-full">
+                  <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
+                    <MagnifyingGlassIcon className="h-4 w-4 text-gray-400" />
+                  </div>
+                  <input
+                    type="text"
+                    className="block w-full rounded-full border border-gray-300 bg-white py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:border-[#4218CC] focus:outline-none focus:ring-1 focus:ring-[#4218CC]"
+                    placeholder="Search emails…"
+                    value={composeSideSearch}
+                    onChange={(e) => setComposeSideSearch(e.target.value)}
+                  />
+                  {composeSideSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setComposeSideSearch('')}
+                      className="absolute inset-y-0 right-0 flex items-center pr-2.5"
+                      aria-label="Clear search"
+                    >
+                      <XMarkIcon className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {emailThread.length === 0 ? (
+                  <div className="p-4 text-center text-sm text-slate-400">No emails</div>
+                ) : (
+                  <ul className="divide-y divide-slate-200/80">
+                    {dedupeEmailsForSidepanel([...emailThread])
+                      .filter((message) => {
+                        const sender = (message.sender_email || '').toLowerCase();
+                        const outgoing =
+                          sender.endsWith('@lawoffice.org.il') || message.direction === 'outgoing';
+                        if (composeSideFilter === 'incoming' && outgoing) return false;
+                        if (composeSideFilter === 'outgoing' && !outgoing) return false;
+                        const q = composeSideSearch.trim().toLowerCase();
+                        if (!q) return true;
+                        const hay = [
+                          message.subject,
+                          message.sender_name,
+                          message.sender_email,
+                          message.recipient_list,
+                          message.body_preview,
+                        ]
+                          .filter(Boolean)
+                          .join(' ')
+                          .toLowerCase();
+                        return hay.includes(q);
+                      })
+                      .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())
+                      .map((message) => {
+                        const sender = (message.sender_email || '').toLowerCase();
+                        const outgoing =
+                          sender.endsWith('@lawoffice.org.il') || message.direction === 'outgoing';
+                        const preview = String(message.body_preview || message.body_html || '')
+                          .replace(/<[^>]*>/g, ' ')
+                          .replace(/\s+/g, ' ')
+                          .trim();
+                        const displayName = outgoing
+                          ? message.sender_name || 'You'
+                          : message.sender_name || selectedContact?.name || 'Sender';
+                        const initials = String(displayName)
+                          .trim()
+                          .split(/\s+/)
+                          .filter(Boolean)
+                          .slice(0, 2)
+                          .map((p) => p[0] || '')
+                          .join('')
+                          .toUpperCase() || '?';
+                        return (
+                          <li key={message.id}>
+                            <button
+                              type="button"
+                              className={`relative flex w-full gap-2 border-l-[3px] px-3 pb-8 pt-2.5 text-left transition ${
+                                String(selectedThreadEmailId) === String(message.id)
+                                  ? 'border-l-[#4218CC] bg-[#4218CC]/12 shadow-[inset_0_0_0_1px_rgba(66,24,204,0.12)]'
+                                  : 'border-l-transparent hover:bg-slate-50'
+                              }`}
+                              onClick={() => {
+                                setShowCompose(false);
+                                setSelectedThreadEmailId(String(message.id));
+                                if (isMobile) setShowThreadReadingPane(true);
+                              }}
+                            >
+                              <div
+                                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[0.6rem] font-bold uppercase tracking-wide text-white ${
+                                  outgoing ? 'bg-[#4218CC]' : 'bg-emerald-600'
+                                }`}
+                                aria-hidden
+                              >
+                                {initials}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="truncate text-sm font-semibold text-slate-900">
+                                    {displayName}
+                                  </span>
+                                  <time className="shrink-0 text-[11px] text-slate-400">
+                                    {formatTime(message.sent_at)}
+                                  </time>
+                                </div>
+                                <p className="mt-0.5 truncate text-sm font-medium text-slate-800">
+                                  {message.subject || '(no subject)'}
+                                </p>
+                                <p className="mt-0.5 truncate text-xs text-slate-500">{preview || '—'}</p>
+                              </div>
+                              <span
+                                className={`pointer-events-none absolute bottom-1.5 left-2.5 inline-flex items-center justify-center ${
+                                  outgoing ? 'text-blue-600' : 'text-emerald-600'
+                                }`}
+                                title={outgoing ? 'Sent' : 'Inbox'}
+                                aria-label={outgoing ? 'Sent' : 'Inbox'}
+                              >
+                                {outgoing ? (
+                                  <PaperAirplaneIcon className="h-5 w-5" />
+                                ) : (
+                                  <InboxIcon className="h-5 w-5" />
+                                )}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                  </ul>
+                )}
+              </div>
+              <div className="shrink-0 bg-white p-2">
+                <div className="flex gap-1">
+                  {(
+                    [
+                      ['all', 'All', EnvelopeIcon],
+                      ['incoming', 'Inbox', InboxIcon],
+                      ['outgoing', 'Sent', PaperAirplaneIcon],
+                    ] as const
+                  ).map(([key, label, Icon]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setComposeSideFilter(key)}
+                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
+                        composeSideFilter === key
+                          ? 'bg-[#4218CC] text-white shadow-sm'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5 shrink-0" />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </aside>
+
+            {/* Right: compose form — header only here */}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="flex flex-none items-center justify-between border-b border-white/40 bg-white/55 px-6 py-4 shadow-sm backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/40">
               <h2 className="text-xl font-semibold">Compose Email</h2>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
                 <XMarkIcon className="w-5 h-5" />
@@ -4591,7 +4645,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 </div>
               )}
             </div>
-            <div className="flex-none px-6 py-4 border-t border-gray-200 flex items-center justify-between gap-4" style={{ position: 'sticky', bottom: 0, zIndex: 10 }}>
+            <div className="flex flex-none items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-6 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/40" style={{ position: 'sticky', bottom: 0, zIndex: 10 }}>
               {/* Left side - Buttons and Template Filters */}
               <div className="flex items-center gap-4 flex-wrap">
                 {/* Circle action buttons */}
@@ -4803,6 +4857,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   </>
                 )}
               </button>
+            </div>
             </div>
           </div>
         </div>,
