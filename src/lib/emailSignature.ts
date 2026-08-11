@@ -240,11 +240,10 @@ export const appendEmailSignature = async (emailContent: string): Promise<string
   const isHtml = signature.includes('<') && signature.includes('>');
   
   if (isHtml) {
-    // For HTML emails, append HTML signature
-    return `${emailContent}<br><br>${signature}`;
+    // Marker div lets the reading pane keep free text and signature on separate rows
+    return `${emailContent}<br><br><div data-email-signature="1">${signature}</div>`;
   } else {
-    // For plain text emails, append plain text signature
-    return `${emailContent}\n\n${signature}`;
+    return `${emailContent}\n\n--\n${signature}`;
   }
 };
 

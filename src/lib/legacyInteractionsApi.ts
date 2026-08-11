@@ -229,12 +229,12 @@ export const fetchLegacyInteractions = async (
     return [];
   }
 
-  let result = await supabase
+  // No employee embeds — creator_id/employee_id FKs to tenants_employee do not exist
+  // (PostgREST 400). Names are resolved via the batch employee lookup below.
+  const result = await supabase
     .from('leads_leadinteractions')
     .select(
-      `id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description, contact_id,
-      creator_employee:tenants_employee!leads_leadinteractions_creator_id_fkey(id, display_name, official_name),
-      employee_employee:tenants_employee!leads_leadinteractions_employee_id_fkey(id, display_name, official_name)`,
+      'id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description, contact_id',
     )
     .eq('lead_id', numericId)
     .order('cdate', { ascending: false })
@@ -242,16 +242,6 @@ export const fetchLegacyInteractions = async (
 
   let data: LegacyInteraction[] | null = result.data;
   let error = result.error;
-  if (error) {
-    const fallback = await supabase
-      .from('leads_leadinteractions')
-      .select('id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description, contact_id')
-      .eq('lead_id', numericId)
-      .order('cdate', { ascending: false })
-      .limit(LEGACY_INTERACTION_LIMIT);
-    data = fallback.data as LegacyInteraction[] | null;
-    error = fallback.error;
-  }
 
   if (error) {
     console.error('❌ Error fetching legacy interactions:', error);

@@ -486,8 +486,9 @@ export async function fetchLeadEmailsForTimeline(
       p_limit: limit,
       p_lookback_days: EMAIL_ADDRESS_LOOKBACK_DAYS,
       p_contact_ids: normalizedContactIds.length > 0 ? normalizedContactIds : null,
+      // Always pass senders when available — RPC merges them with lead-scoped rows.
       p_sender_emails:
-        matchByAddress && !hasLeadScope && senderEmails.length > 0
+        matchByAddress && senderEmails.length > 0
           ? Array.from(new Set(senderEmails)).slice(0, 6)
           : null,
     };
@@ -502,12 +503,20 @@ export async function fetchLeadEmailsForTimeline(
       rpcArgs.p_legacy_id = null;
     }
 
+    // Function statement_timeout is 20s; keep client wait slightly under that.
     const rpcResult = await withQueryTimeout(
       supabaseClient.rpc('email_lead_timeline', rpcArgs),
-      Math.max(EMAIL_ADDRESS_MATCH_TIMEOUT_MS, 5000),
+      Math.max(EMAIL_ADDRESS_MATCH_TIMEOUT_MS, 18000),
     );
 
-    const rpcData = rpcResult?.data;
+    let rpcData: unknown = rpcResult?.data;
+    if (!rpcResult?.error && typeof rpcData === 'string') {
+      try {
+        rpcData = JSON.parse(rpcData);
+      } catch {
+        rpcData = null;
+      }
+    }
     if (!rpcResult?.error && Array.isArray(rpcData)) {
       return { data: rpcData.slice(0, limit), error: null };
     }

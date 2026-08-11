@@ -1045,7 +1045,7 @@ const AppContentInner: React.FC = () => {
                   dockedSurfaceClassName={
                     isAdminPage
                       ? 'border-r border-gray-200 bg-white dark:border-base-content/10 dark:bg-base-100'
-                      : 'border-r border-gray-300/80 bg-gray-200 dark:border-base-content/10 dark:bg-base-300'
+                      : 'bg-gray-100 dark:bg-base-300'
                   }
                   dockedOnLight={isAdminPage}
                 />

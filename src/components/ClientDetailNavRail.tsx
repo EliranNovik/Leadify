@@ -51,7 +51,8 @@ const railActionBtnClass =
   'relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium transition-colors';
 
 /**
- * Fixed grey tab rail — top edge flush under the white client header band
+ * Fixed tab rail — same grey as the Clients page (`bg-gray-100`).
+ * Top edge flush under the white client header band
  * (`--client-detail-nav-top` measured from `.client-header-top-band`).
  */
 const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
@@ -65,7 +66,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
 }) => {
   return (
     <aside
-      className={`hidden md:flex ${CLIENT_DETAIL_NAV_RAIL_WIDTH_CLASS} fixed bottom-0 left-0 z-30 flex-col border-r border-gray-300/80 bg-gray-200 dark:border-base-content/10 dark:bg-base-300`}
+      className={`hidden md:flex ${CLIENT_DETAIL_NAV_RAIL_WIDTH_CLASS} fixed bottom-0 left-0 z-30 flex-col bg-gray-100 dark:bg-base-300`}
       style={{ top: 'var(--client-detail-nav-top, 3rem)' }}
       aria-label="Client sections"
     >
@@ -165,7 +166,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
       ) : null}
 
       {/* Edit + Dashboard + app menu at bottom of rail */}
-      <div className="flex shrink-0 items-center justify-center gap-1.5 border-t border-gray-300/70 px-2 py-2.5 dark:border-base-content/10">
+      <div className="flex shrink-0 items-center justify-center gap-1.5 px-2 py-2.5">
         {leadActions ? (
           <button
             type="button"

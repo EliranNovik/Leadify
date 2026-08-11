@@ -5366,11 +5366,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               }
             }
           } catch (err) {
+            const status = Number((err as any)?.statusCode || 0);
+            const msg = String((err as any)?.message || err || '');
+            // Graph ItemNotFound / deleted mail — expected; don't spam console or retry forever
+            if (
+              status === 404 ||
+              /ErrorItemNotFound|not found in the store|ItemNotFound/i.test(msg)
+            ) {
+              return;
+            }
             // Only log if it's not a network/CORS error (those are expected if backend is down)
-            if (err instanceof TypeError && err.message.includes('fetch')) {
+            if (err instanceof TypeError && msg.includes('fetch')) {
               // Network error - backend might be down, skip logging to avoid spam
             } else {
-              console.error('Unexpected error hydrating email body', err);
+              console.warn('Email body hydrate skipped:', msg.slice(0, 180));
             }
           }
         })
