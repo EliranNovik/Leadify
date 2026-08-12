@@ -135,7 +135,7 @@ const LeadContactSearchResults: React.FC<Props> = ({
 
       {filteredResults.length > 0 ? (
         <ul
-          className={`scrollbar-hide max-h-[min(24rem,60vh)] overflow-y-auto ${
+          className={`scrollbar-hide max-h-[min(32rem,70vh)] overflow-y-auto ${
             loading ? 'opacity-80' : ''
           }`}
         >

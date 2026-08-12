@@ -258,7 +258,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const { results: textSearchResults, loading: textSearchLoading } = useLeadContactSearch(searchValue, {
     enabled: supabaseSessionReady && searchValue.trim().length >= 2 && !hasAppliedFilters,
     limit: 20,
-    debounceMs: 80,
+    debounceMs: 50,
     minLength: 2,
   });
   const activeSearchResults =
@@ -1137,12 +1137,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   }, [showFilterDropdown, isSearchActive]);
 
-  // Warm header search RPC after auth is ready (avoids cold first typed query)
+  // Warm header search RPC as soon as auth is ready (avoids cold first typed query)
   useEffect(() => {
     if (!supabaseSessionReady) return;
     const t = window.setTimeout(() => {
       void warmHeaderLeadSearch();
-    }, 400);
+    }, 0);
     return () => window.clearTimeout(t);
   }, [supabaseSessionReady, sessionRefreshNonce]);
 
@@ -2781,6 +2781,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const handleDesktopSearchMouseEnter = useCallback(() => {
     isMouseOverSearchRef.current = true;
     clearSearchHoverCloseTimer();
+    // Warm RPC before the first keystroke when possible.
+    void warmHeaderLeadSearch();
     const openingFromIdle = !isSearchActiveRef.current;
     isSearchActiveRef.current = true;
     setIsSearchActive(true);
@@ -4578,7 +4580,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) ? (
               <div
                 ref={searchDropdownRef}
-                className="search-dropdown scrollbar-hide bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto min-w-0"
+                className="search-dropdown scrollbar-hide bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-[min(36rem,72vh)] overflow-y-auto min-w-0"
                 style={{
                   width: searchDropdownStyle.width,
                   zIndex: 10000,
@@ -4592,7 +4594,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               /* Desktop: Recently viewed leads - white box below search bar when no query (appears when search bar is fully open) */
               <div
                 ref={searchDropdownRef}
-                className="search-dropdown scrollbar-hide bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto md:min-w-0"
+                className="search-dropdown scrollbar-hide bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-base-300 max-h-[min(36rem,72vh)] overflow-y-auto md:min-w-0"
                 style={{
                   width: searchDropdownStyle.width,
                   zIndex: 10000,

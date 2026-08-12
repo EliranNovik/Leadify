@@ -613,7 +613,8 @@ BEGIN
         WHERE l.name IS NOT NULL
           AND (
             lower(l.name) LIKE ANY (v_name_prefixes)
-            OR (length(v_lower) >= 3 AND lower(l.name) LIKE ('% ' || v_lower || '%'))
+            -- Word-start / contains are expensive; keep for longer queries only.
+            OR (length(v_lower) >= 4 AND NOT v_has_non_latin AND lower(l.name) LIKE ('% ' || v_lower || '%'))
             OR (v_has_non_latin AND lower(l.name) LIKE ('%' || v_lower || '%'))
           )
         ORDER BY l.created_at DESC NULLS LAST
@@ -634,7 +635,7 @@ BEGIN
         WHERE ll.name IS NOT NULL
           AND (
             lower(ll.name) LIKE ANY (v_name_prefixes)
-            OR (length(v_lower) >= 3 AND lower(ll.name) LIKE ('% ' || v_lower || '%'))
+            OR (length(v_lower) >= 4 AND NOT v_has_non_latin AND lower(ll.name) LIKE ('% ' || v_lower || '%'))
             OR (v_has_non_latin AND lower(ll.name) LIKE ('%' || v_lower || '%'))
           )
         ORDER BY ll.cdate DESC NULLS LAST
@@ -668,7 +669,7 @@ BEGIN
           WHERE name IS NOT NULL
             AND (
               lower(name) LIKE ANY (v_name_prefixes)
-              OR (length(v_lower) >= 3 AND lower(name) LIKE ('% ' || v_lower || '%'))
+              OR (length(v_lower) >= 4 AND NOT v_has_non_latin AND lower(name) LIKE ('% ' || v_lower || '%'))
               OR (v_has_non_latin AND lower(name) LIKE ('%' || v_lower || '%'))
             )
           LIMIT (v_limit * 2)

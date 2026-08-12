@@ -1,0 +1,12 @@
+-- Fast first name inputs for header search.
+--
+-- Apply in Supabase by re-running the full updated function in:
+--   sql/2026-08-11_search_leads_header_rpc.sql
+--
+-- What changed in the NAME branch:
+-- 1) Short Latin queries (≤3 chars): prefix-only — no "% term%" word-start
+-- 2) Contacts are ALWAYS searched (not skipped)
+-- 3) Latin last-name / word-start match starts at 4+ characters
+--
+-- Client also: zero debounce on first fetch, smaller limit/variants for 2–3 chars,
+-- warm on search hover.

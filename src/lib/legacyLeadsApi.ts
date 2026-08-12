@@ -121,7 +121,8 @@ function buildNameSearchOrFilter(variants: string[], rawQuery: string): string {
   }
 
   // One word-start on the typed term only (last-name: "cohen" → "David Cohen")
-  if (primary.length >= 3) {
+  // Skip on short first inputs — prefix match is enough and much cheaper.
+  if (primary.length >= 4) {
     parts.push(`name.ilike.${quoteFilterValue(`% ${primary}%`)}`);
   }
 
@@ -301,7 +302,9 @@ function detectIntent(query: string): SearchIntent | null {
 
   // Default name intent — lean variants only (fuzzy is a second pass if empty)
   const variants = generateSearchVariants(raw).map((v) => v.trim().toLowerCase()).filter(Boolean);
-  const uniqVariants = Array.from(new Set(variants.length ? variants : [lower(raw)])).slice(0, 4);
+  // First inputs (2–3 chars): one term only — multi-variant OR slows the cold RPC.
+  const variantCap = raw.trim().length <= 3 ? 1 : 4;
+  const uniqVariants = Array.from(new Set(variants.length ? variants : [lower(raw)])).slice(0, variantCap);
   return { kind: "name", raw, variants: uniqVariants };
 }
 
@@ -476,23 +479,66 @@ async function trySearchLeadsHeaderRpc(
 }
 
 let headerSearchWarmPromise: Promise<void> | null = null;
+let headerSearchWarmAt = 0;
+const HEADER_SEARCH_WARM_REUSE_MS = 45_000;
+
+const HEADER_SEARCH_CACHE_TTL_MS = 90_000;
+const HEADER_SEARCH_CACHE_MAX = 48;
+type HeaderSearchCacheEntry = { at: number; rows: CombinedLead[] };
+const headerSearchResultCache = new Map<string, HeaderSearchCacheEntry>();
+
+function headerSearchCacheKey(query: string, variants?: string[]): string {
+  const q = String(query || "").trim().toLowerCase();
+  const v = (variants || []).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean);
+  return `${q}|${v.join(",")}`;
+}
+
+function getCachedHeaderSearch(query: string, variants?: string[]): CombinedLead[] | null {
+  const key = headerSearchCacheKey(query, variants);
+  const hit = headerSearchResultCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > HEADER_SEARCH_CACHE_TTL_MS) {
+    headerSearchResultCache.delete(key);
+    return null;
+  }
+  // Refresh LRU order
+  headerSearchResultCache.delete(key);
+  headerSearchResultCache.set(key, hit);
+  return hit.rows.map((row) => ({ ...row }));
+}
+
+function setCachedHeaderSearch(query: string, variants: string[] | undefined, rows: CombinedLead[]): void {
+  const key = headerSearchCacheKey(query, variants);
+  headerSearchResultCache.set(key, { at: Date.now(), rows: rows.map((row) => ({ ...row })) });
+  while (headerSearchResultCache.size > HEADER_SEARCH_CACHE_MAX) {
+    const oldest = headerSearchResultCache.keys().next().value;
+    if (oldest == null) break;
+    headerSearchResultCache.delete(oldest);
+  }
+}
 
 /**
  * Warm TLS + PostgREST + RPC plan + name indexes so the first typed search isn't cold.
- * Safe to call multiple times; only the first call does work.
+ * Reuses an in-flight warm; re-warms after ~45s so idle connections don't go cold again.
  */
 export function warmHeaderLeadSearch(): Promise<void> {
-  if (headerSearchWarmPromise) return headerSearchWarmPromise;
+  const now = Date.now();
+  if (headerSearchWarmPromise && now - headerSearchWarmAt < HEADER_SEARCH_WARM_REUSE_MS) {
+    return headerSearchWarmPromise;
+  }
+  headerSearchWarmAt = now;
   headerSearchWarmPromise = (async () => {
     try {
       // Intentional no-hit query: still executes the NAME branch and warms caches.
       await supabase.rpc("search_leads_header", {
         p_query: "zz",
         p_limit: 1,
+        p_variants: ["zz"],
       });
     } catch {
       // Best-effort — allow a later warm retry if this failed before auth was ready
       headerSearchWarmPromise = null;
+      headerSearchWarmAt = 0;
     }
   })();
   return headerSearchWarmPromise;
@@ -1285,49 +1331,20 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       return mapped.slice(0, opts.limit);
     }
 
-    // If a warm is already in flight, wait briefly so we don't race it (double cold hit).
-    // Do NOT kick a new warm here — Header/focus already warms on session ready.
-    if (headerSearchWarmPromise) {
-      await Promise.race([
-        headerSearchWarmPromise,
-        new Promise<void>((resolve) => setTimeout(resolve, 350)),
-      ]);
-    }
-
+    // Never block typing on warm — Header already warms on session/focus; racing is fine.
     if (signal?.aborted) return [];
 
     const rpcQuery = intentQueryText(intent);
-
-    // Fast path: single DB round-trip within one budget. Fall back to multi-query if RPC
-    // missing/errors. Phone/email timeouts fall through to PostgREST waterfall.
-    const rpcBudget = Math.min(opts.timeoutMs, HEADER_RPC_BUDGET_MS);
-    let rpcRows = await trySearchLeadsHeaderRpc(
-      rpcQuery,
-      opts.limit,
-      rpcBudget,
-      intent.kind === "name" ? intent.variants : undefined,
-      signal,
-    );
-
-    // One short retry only (same budget family) — not stacked 1.8s + 3.2s.
-    if (rpcRows == null && intent.kind !== "lead" && !signal?.aborted) {
-      rpcRows = await trySearchLeadsHeaderRpc(
-        rpcQuery,
-        opts.limit,
-        Math.min(rpcBudget, 1800),
-        intent.kind === "name" ? intent.variants : undefined,
-        signal,
-      );
-      if (rpcRows == null) {
-        // Phone/email: allow client PostgREST fallback. Name: prefer empty over cold waterfall.
-        if (intent.kind === "name") {
-          return [];
-        }
-      }
-    }
-
-    const isSubleadQuery =
-      intent.kind === "lead" && intent.raw.includes("/") && intent.master != null;
+    const isShortName =
+      intent.kind === "name" && intent.raw.trim().length <= 3;
+    const nameVariants =
+      intent.kind === "name"
+        ? isShortName
+          ? [intent.raw.trim().toLowerCase()]
+          : intent.variants
+        : undefined;
+    // Smaller payload / cheaper sort for the first 2–3 characters.
+    const rpcLimit = isShortName ? Math.min(opts.limit, 12) : opts.limit;
 
     const finalize = (rows: CombinedLead[]) => {
       rows.forEach((r) => {
@@ -1337,24 +1354,69 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       return rows.slice(0, opts.limit);
     };
 
+    const cachedRows = getCachedHeaderSearch(rpcQuery, nameVariants);
+    if (cachedRows != null) {
+      return finalize(cachedRows);
+    }
+
+    // Fast path: single DB round-trip within one budget. Fall back to multi-query if RPC
+    // missing/errors. Phone/email timeouts fall through to PostgREST waterfall.
+    const rpcBudget = isShortName
+      ? Math.min(opts.timeoutMs, 1200)
+      : intent.kind === "name"
+        ? Math.min(opts.timeoutMs, 1800)
+        : Math.min(opts.timeoutMs, HEADER_RPC_BUDGET_MS);
+    let rpcRows = await trySearchLeadsHeaderRpc(
+      rpcQuery,
+      rpcLimit,
+      rpcBudget,
+      nameVariants,
+      signal,
+    );
+
+    // Phone/email: one short retry. Name: skip retry — a second round-trip doubles spin on cold miss.
+    if (rpcRows == null && intent.kind !== "lead" && intent.kind !== "name" && !signal?.aborted) {
+      rpcRows = await trySearchLeadsHeaderRpc(
+        rpcQuery,
+        opts.limit,
+        Math.min(rpcBudget, 1800),
+        nameVariants,
+        signal,
+      );
+    }
+    if (rpcRows == null && intent.kind === "name") {
+      return [];
+    }
+
+    const isSubleadQuery =
+      intent.kind === "lead" && intent.raw.includes("/") && intent.master != null;
+
     if (rpcRows != null && !(isSubleadQuery && rpcRows.length === 0)) {
       // Fast hit — return immediately (including valid empty for non-name / short names)
-      if (rpcRows.length > 0 || intent.kind !== "name" || intent.raw.trim().length < 4) {
+      if (rpcRows.length > 0 || intent.kind !== "name" || intent.raw.trim().length < 6) {
+        if (rpcRows.length > 0 || intent.kind !== "name") {
+          setCachedHeaderSearch(rpcQuery, nameVariants, rpcRows);
+        }
         return finalize(rpcRows);
       }
 
-      // Name miss: one cheap fuzzy retry (few spelling variants), then stop.
+      // Name miss on longer queries only: one cheap fuzzy enrich (was delaying every ≥4-char miss).
       const fuzzyExtra = generateFuzzyNameVariants(intent.raw);
       if (fuzzyExtra.length > 0) {
+        const fuzzyVariants = Array.from(new Set([...intent.variants, ...fuzzyExtra])).slice(0, 4);
         const fuzzyRows = await trySearchLeadsHeaderRpc(
           rpcQuery,
           opts.limit,
-          Math.min(opts.timeoutMs, 1200),
-          Array.from(new Set([...intent.variants, ...fuzzyExtra])).slice(0, 4),
+          Math.min(opts.timeoutMs, 700),
+          fuzzyVariants,
           signal,
         );
-        if (fuzzyRows != null) return finalize(fuzzyRows);
+        if (fuzzyRows != null) {
+          setCachedHeaderSearch(rpcQuery, nameVariants, fuzzyRows);
+          return finalize(fuzzyRows);
+        }
       }
+      setCachedHeaderSearch(rpcQuery, nameVariants, []);
       return finalize([]);
     }
 
