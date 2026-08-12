@@ -3,7 +3,7 @@
 const supabase = require('../config/supabase');
 const kioskMeetingClockService = require('./kioskMeetingClockService');
 
-const RECENT_MS = 12_000;
+const RECENT_MS = 20_000;
 const byLocation = new Map();
 
 function normalizeLocationId(raw) {

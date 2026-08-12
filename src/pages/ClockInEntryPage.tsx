@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
+import { isRefreshTokenReuseRaceError, supabase } from '../lib/supabase';
 /**
  * Office entry-kiosk QR handler (`/clock-in/entry?token=…`).
  * Independent of the forced CRM clock-in gate (which is currently optional/disabled).
@@ -22,7 +22,7 @@ import {
   fetchActiveClockInRecord,
 } from '../lib/employeeClockOut';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
-import { refreshSessionIfNeeded, resolveSessionWithRecovery } from '../lib/authSessionKeepAlive';
+import { resolveSessionWithRecovery } from '../lib/authSessionKeepAlive';
 import KioskWelcomeGoodbyeModal, {
   PHONE_WELCOME_DURATION_MS,
   PHONE_WELCOME_DURATION_SEC,
@@ -38,8 +38,47 @@ type EntryStatus =
   | 'no_employee'
   | 'error';
 
-/** Prevent Strict Mode / remount double clock-in → immediate clock-out races. */
-const inFlightEntryTokens = new Set<string>();
+type EntryRunResult =
+  | {
+      kind: 'success';
+      action: ClockInKioskFlashAction;
+      name: string;
+      photoUrl: string | null;
+      employeeId: number;
+      locationId: number;
+      atIso: string;
+      remark: string | null;
+      meetings: ClockInKioskWelcomeMeeting[];
+      message: string;
+    }
+  | { kind: 'need_login'; returnPath: string; message: string }
+  | { kind: 'no_employee'; message: string }
+  | { kind: 'external'; message: string }
+  | { kind: 'error'; message: string }
+  | { kind: 'missing_token'; message: string };
+
+/**
+ * Shared in-flight runs keyed by QR token.
+ * Strict Mode remounts must JOIN this promise (not early-return), otherwise the live
+ * mount never applies state and the UI sticks on "Connecting…" until refresh.
+ */
+const entryRunsByToken = new Map<string, Promise<EntryRunResult>>();
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 /**
  * Resolve the signed-in session for a scan.
@@ -49,7 +88,7 @@ const inFlightEntryTokens = new Set<string>();
  * PKCE / magic-link exchange to land.
  */
 async function resolveSessionForEntryPage() {
-  const recovered = await resolveSessionWithRecovery();
+  const recovered = await resolveSessionWithRecovery({ attempts: 6, baseDelayMs: 400 });
   if (recovered?.user) return recovered;
 
   if (typeof window === 'undefined') return null;
@@ -61,8 +100,8 @@ async function resolveSessionForEntryPage() {
     || hash.includes('type=magiclink');
   if (!authInUrl) return null;
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    await new Promise((r) => window.setTimeout(r, 250));
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise((r) => window.setTimeout(r, 300));
     const { data } = await supabase.auth.getSession();
     if (data.session?.user) return data.session;
   }
@@ -101,6 +140,293 @@ async function resolveEmployeeProfile(employeeId: number | null, fallbackEmail?:
   return { name, photoUrl };
 }
 
+/** Rotate refresh token on every successful QR identity resolve (extends stay-signed-in). */
+async function rotateSessionAfterScan(): Promise<void> {
+  try {
+    const { error } = await withTimeout(supabase.auth.refreshSession(), 8_000, 'session refresh');
+    if (!error) return;
+    if (isRefreshTokenReuseRaceError(error)) {
+      // Another refresh (autoRefresh / parallel tab) already rotated — session should still be valid.
+      await withTimeout(supabase.auth.getSession(), 4_000, 'session read after reuse');
+      return;
+    }
+    console.warn('[ClockInEntry] refresh after scan skipped:', error);
+  } catch (err) {
+    console.warn('[ClockInEntry] refresh after scan skipped:', err);
+  }
+}
+
+async function executeEntryRun(token: string, locationId: number): Promise<EntryRunResult> {
+  if (!token) {
+    return { kind: 'missing_token', message: 'Missing QR token. Please scan the screen again.' };
+  }
+
+  const [validation, session] = await Promise.all([
+    withTimeout(validateClockInKioskToken(token, locationId), 12_000, 'QR validation'),
+    withTimeout(resolveSessionForEntryPage(), 15_000, 'session recovery'),
+  ]);
+
+  if (!validation.success || !validation.valid) {
+    return {
+      kind: 'error',
+      message: validation.error || 'QR code expired — scan the screen again.',
+    };
+  }
+
+  const resolvedLocationId = validation.locationId ?? locationId;
+
+  if (!session?.user) {
+    const returnPath = buildClockInEntryPath(resolvedLocationId, token);
+    return {
+      kind: 'need_login',
+      returnPath,
+      message: 'Sign in to finish…',
+    };
+  }
+
+  // Each scan is often the only chance that day to rotate the refresh token.
+  await rotateSessionAfterScan();
+
+  const profileResult = await withTimeout(
+    fetchClockInGateProfile(session.user.id, { email: session.user.email }),
+    12_000,
+    'employee profile',
+  );
+  if (profileResult.queryFailed) {
+    return {
+      kind: 'error',
+      message: 'Could not verify your employee profile. Please try again.',
+    };
+  }
+  const profile = profileResult.profile;
+  if (profile.isExternalUser) {
+    return {
+      kind: 'external',
+      message: 'Signed in. External accounts skip office clock-in.',
+    };
+  }
+  if (!profileResult.userRowFound || profile.employeeId == null) {
+    return {
+      kind: 'no_employee',
+      message: 'Your account is not linked to an employee profile. Contact an admin.',
+    };
+  }
+
+  const employeeId = profile.employeeId;
+  const [profileInfo, activeRecord] = await Promise.all([
+    resolveEmployeeProfile(employeeId, session.user.email),
+    withTimeout(fetchActiveClockInRecord(employeeId), 12_000, 'active clock record'),
+  ]);
+
+  const { name, photoUrl: nextPhotoUrl } = profileInfo;
+  const nowIso = new Date().toISOString();
+
+  if (activeRecord) {
+    // Clock out first; meeting adjustment patches in the background so welcome isn't blocked.
+    try {
+      await withTimeout(
+        clockOutEmployeeRecord(
+          {
+            ...activeRecord,
+            clock_in_location_id: activeRecord.clock_in_location_id || resolvedLocationId,
+          },
+          { skipGeolocation: true, clockOutTime: nowIso },
+        ),
+        15_000,
+        'clock out',
+      );
+    } catch (err) {
+      console.error('Entry kiosk clock-out failed:', err);
+      return {
+        kind: 'error',
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Failed to clock out. Please try again from the CRM.',
+      };
+    }
+
+    void (async () => {
+      try {
+        const adjustment = await fetchMeetingClockAdjustment(
+          employeeId,
+          'out',
+          activeRecord.clock_in_time,
+        );
+        if (adjustment.success && adjustment.adjusted && adjustment.adjustedAt) {
+          await supabase
+            .from('employee_clock_in')
+            .update({ clock_out_time: adjustment.adjustedAt })
+            .eq('id', activeRecord.id);
+        }
+        await announceClockInKioskSuccess(
+          resolvedLocationId,
+          name,
+          nextPhotoUrl,
+          employeeId,
+          'out',
+          {
+            remark: adjustment.success ? adjustment.remark || null : null,
+            adjustedAt:
+              adjustment.success && adjustment.adjusted && adjustment.adjustedAt
+                ? adjustment.adjustedAt
+                : nowIso,
+          },
+        );
+      } catch (err) {
+        console.warn('Kiosk clock-out follow-up failed:', err);
+        void announceClockInKioskSuccess(
+          resolvedLocationId,
+          name,
+          nextPhotoUrl,
+          employeeId,
+          'out',
+          { adjustedAt: nowIso },
+        ).catch(() => undefined);
+      }
+    })();
+
+    return {
+      kind: 'success',
+      action: 'out',
+      name,
+      photoUrl: nextPhotoUrl,
+      employeeId,
+      locationId: resolvedLocationId,
+      atIso: nowIso,
+      remark: null,
+      meetings: [],
+      message: 'You are clocked out',
+    };
+  }
+
+  const payload = {
+    employee_id: employeeId,
+    user_id: session.user.id,
+    clock_in_time: nowIso,
+    clock_in_location_id: resolvedLocationId,
+    notes: 'Entry kiosk QR',
+    is_active: true,
+    manually: false,
+    approved: true,
+    declined: false,
+  };
+
+  let insertedId: number | null = null;
+  type InsertRow = { id?: number | null };
+  let inserted: InsertRow | null = null;
+  let error: { message?: string } | null = null;
+
+  try {
+    const first = await withTimeout(
+      Promise.resolve(
+        supabase.from('employee_clock_in').insert(payload).select('id').single(),
+      ) as Promise<{ data: InsertRow | null; error: { message?: string } | null }>,
+      15_000,
+      'clock in',
+    );
+    inserted = first.data;
+    error = first.error;
+  } catch (err) {
+    return {
+      kind: 'error',
+      message: err instanceof Error ? err.message : 'Failed to clock in. Please try again from the CRM.',
+    };
+  }
+
+  if (error) {
+    const { clock_in_location_id: _drop, ...withoutPreset } = payload;
+    try {
+      const retry = await withTimeout(
+        Promise.resolve(
+          supabase.from('employee_clock_in').insert(withoutPreset).select('id').single(),
+        ) as Promise<{ data: InsertRow | null; error: { message?: string } | null }>,
+        15_000,
+        'clock in retry',
+      );
+      error = retry.error;
+      inserted = retry.data;
+    } catch (err) {
+      return {
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Failed to clock in. Please try again from the CRM.',
+      };
+    }
+  }
+
+  if (error) {
+    console.error('Entry kiosk clock-in failed:', error);
+    return {
+      kind: 'error',
+      message: error.message || 'Failed to clock in. Please try again from the CRM.',
+    };
+  }
+  insertedId = inserted?.id != null ? Number(inserted.id) : null;
+
+  void (async () => {
+    try {
+      const adjustment = await fetchMeetingClockAdjustment(employeeId, 'in');
+      let atIso = nowIso;
+      let remark: string | null = null;
+      if (adjustment.success) {
+        if (adjustment.remark) remark = adjustment.remark;
+        if (adjustment.adjusted && adjustment.adjustedAt && insertedId != null) {
+          atIso = adjustment.adjustedAt;
+          await supabase
+            .from('employee_clock_in')
+            .update({ clock_in_time: atIso })
+            .eq('id', insertedId);
+        }
+      }
+      await announceClockInKioskSuccess(
+        resolvedLocationId,
+        name,
+        nextPhotoUrl,
+        employeeId,
+        'in',
+        { remark, adjustedAt: atIso },
+      );
+    } catch (err) {
+      console.warn('Kiosk clock-in follow-up failed:', err);
+      void announceClockInKioskSuccess(
+        resolvedLocationId,
+        name,
+        nextPhotoUrl,
+        employeeId,
+        'in',
+        { adjustedAt: nowIso },
+      ).catch(() => undefined);
+    }
+  })();
+
+  return {
+    kind: 'success',
+    action: 'in',
+    name,
+    photoUrl: nextPhotoUrl,
+    employeeId,
+    locationId: resolvedLocationId,
+    atIso: nowIso,
+    remark: null,
+    meetings: [],
+    message: 'You are clocked in',
+  };
+}
+
+function getOrStartEntryRun(token: string, locationId: number): Promise<EntryRunResult> {
+  const existing = entryRunsByToken.get(token);
+  if (existing) return existing;
+
+  const run = executeEntryRun(token, locationId).finally(() => {
+    // Keep lock briefly so a remount cannot immediately start a second clock-out.
+    window.setTimeout(() => {
+      entryRunsByToken.delete(token);
+    }, 2_500);
+  });
+  entryRunsByToken.set(token, run);
+  return run;
+}
+
 /**
  * Public scan landing page opened from the entry-kiosk QR.
  * Validates token via backend, then clocks in or out based on current status.
@@ -126,6 +452,7 @@ const ClockInEntryPage: React.FC = () => {
   const [welcomeMeetings, setWelcomeMeetings] = useState<ClockInKioskWelcomeMeeting[]>([]);
   const [secondsLeft, setSecondsLeft] = useState(PHONE_WELCOME_DURATION_SEC);
   const [now, setNow] = useState(() => new Date());
+  const [retryNonce, setRetryNonce] = useState(0);
   const welcomeTickRef = useRef<number | null>(null);
   const welcomeCloseRef = useRef<number | null>(null);
 
@@ -145,6 +472,13 @@ const ClockInEntryPage: React.FC = () => {
     navigate('/', { replace: true });
   }, [clearWelcomeTimers, navigate]);
 
+  const retryEntry = useCallback(() => {
+    if (token) entryRunsByToken.delete(token);
+    setStatus('loading');
+    setMessage('Connecting…');
+    setRetryNonce((n) => n + 1);
+  }, [token]);
+
   useEffect(() => {
     if (status !== 'success') return undefined;
     const clock = window.setInterval(() => setNow(new Date()), 1000);
@@ -159,36 +493,18 @@ const ClockInEntryPage: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
-    const finishSuccess = (
-      nextAction: ClockInKioskFlashAction,
-      name: string,
-      nextPhotoUrl: string | null,
-      employeeId: number,
-      resolvedLocationId: number,
-      atIso: string,
-      nextRemark?: string | null,
-      nextMeetings?: ClockInKioskWelcomeMeeting[],
-    ) => {
+    const applySuccess = (result: Extract<EntryRunResult, { kind: 'success' }>) => {
       if (cancelled) return;
-      setAction(nextAction);
-      setDisplayName(name);
-      setPhotoUrl(nextPhotoUrl);
-      setClockedAt(atIso);
-      setRemark(nextRemark || null);
-      setWelcomeMeetings(nextMeetings || []);
+      setAction(result.action);
+      setDisplayName(result.name);
+      setPhotoUrl(result.photoUrl);
+      setClockedAt(result.atIso);
+      setRemark(result.remark);
+      setWelcomeMeetings(result.meetings);
       setStatus('success');
-      setMessage(nextAction === 'out' ? 'You are clocked out' : 'You are clocked in');
+      setMessage(result.message);
       setSecondsLeft(PHONE_WELCOME_DURATION_SEC);
       clearClockInGateCache();
-
-      void announceClockInKioskSuccess(
-        resolvedLocationId,
-        name,
-        nextPhotoUrl,
-        employeeId,
-        nextAction,
-        { remark: nextRemark || null, adjustedAt: atIso },
-      ).catch((err) => console.warn('Kiosk announce failed:', err));
 
       clearWelcomeTimers();
       welcomeTickRef.current = window.setInterval(() => {
@@ -202,247 +518,61 @@ const ClockInEntryPage: React.FC = () => {
       }, PHONE_WELCOME_DURATION_MS);
     };
 
-    const run = async () => {
-      if (!token) {
-        if (!cancelled) {
-          setStatus('error');
-          setMessage('Missing QR token. Please scan the screen again.');
-        }
-        return;
-      }
-
-      if (inFlightEntryTokens.has(token)) {
-        // Another mount (e.g. Strict Mode) is already handling this scan.
-        return;
-      }
-      inFlightEntryTokens.add(token);
-
-      try {
-      setStatus('connecting');
-      setMessage('Connecting to entry…');
-
-      const [validation, session] = await Promise.all([
-        validateClockInKioskToken(token, locationId),
-        resolveSessionForEntryPage(),
-      ]);
+    const applyResult = (result: EntryRunResult) => {
       if (cancelled) return;
 
-      if (!validation.success || !validation.valid) {
+      if (result.kind === 'missing_token' || result.kind === 'error') {
         setStatus('error');
-        setMessage(validation.error || 'QR code expired — scan the screen again.');
+        setMessage(result.message);
         return;
       }
-
-      const resolvedLocationId = validation.locationId ?? locationId;
-
-      if (!session?.user) {
-        const returnPath = buildClockInEntryPath(resolvedLocationId, token);
-        persistPostLoginRedirect(returnPath);
+      if (result.kind === 'need_login') {
+        persistPostLoginRedirect(result.returnPath);
         setStatus('need_login');
-        setMessage('Sign in to finish…');
-        navigate(`/login?redirect=${encodeURIComponent(returnPath)}`, {
+        setMessage(result.message);
+        navigate(`/login?redirect=${encodeURIComponent(result.returnPath)}`, {
           replace: true,
-          state: { from: returnPath },
+          state: { from: result.returnPath },
         });
         return;
       }
-
-      // A phone often only opens the CRM to scan this QR, so each scan is the one chance to
-      // rotate the refresh token and push the "stay signed in" window forward another cycle.
-      void refreshSessionIfNeeded();
-
-      const profileResult = await fetchClockInGateProfile(session.user.id, {
-        email: session.user.email,
-      });
-      if (cancelled) return;
-      if (profileResult.queryFailed) {
-        setStatus('error');
-        setMessage('Could not verify your employee profile. Please try again.');
-        return;
-      }
-      const profile = profileResult.profile;
-      if (profile.isExternalUser) {
-        setStatus('success');
-        setMessage('Signed in. External accounts skip office clock-in.');
-        window.setTimeout(() => navigate('/', { replace: true }), 900);
-        return;
-      }
-      if (!profileResult.userRowFound || profile.employeeId == null) {
+      if (result.kind === 'no_employee') {
         setStatus('no_employee');
-        setMessage('Your account is not linked to an employee profile. Contact an admin.');
+        setMessage(result.message);
         return;
       }
-
-      const employeeId = profile.employeeId;
-      const [profileInfo, activeRecord] = await Promise.all([
-        resolveEmployeeProfile(employeeId, session.user.email),
-        fetchActiveClockInRecord(employeeId),
-      ]);
-      if (cancelled) return;
-
-      const { name, photoUrl: nextPhotoUrl } = profileInfo;
-      setDisplayName(name);
-      setPhotoUrl(nextPhotoUrl);
-
-      const nowIso = new Date().toISOString();
-
-      if (activeRecord) {
-        setStatus('clocking_out');
-        setMessage('Clocking you out…');
-        setAction('out');
-
-        // Meeting-time check and DB write in parallel — phone confirms sooner.
-        let outAt = nowIso;
-        let outRemark: string | null = null;
-        const adjustmentPromise = fetchMeetingClockAdjustment(
-          employeeId,
-          'out',
-          activeRecord.clock_in_time,
-        ).catch((adjErr) => {
-          console.warn('Meeting clock-out adjustment skipped:', adjErr);
-          return { success: false as const, adjusted: false as const };
-        });
-
-        try {
-          await clockOutEmployeeRecord(
-            {
-              ...activeRecord,
-              clock_in_location_id: activeRecord.clock_in_location_id || resolvedLocationId,
-            },
-            { skipGeolocation: true, clockOutTime: nowIso },
-          );
-        } catch (err) {
-          console.error('Entry kiosk clock-out failed:', err);
-          if (!cancelled) {
-            setStatus('error');
-            setMessage(
-              err instanceof Error
-                ? err.message
-                : 'Failed to clock out. Please try again from the CRM.',
-            );
-          }
-          return;
-        }
-
-        if (cancelled) return;
-
-        const adjustment = await adjustmentPromise;
-        if (adjustment.success) {
-          if (adjustment.remark) outRemark = adjustment.remark;
-          if (adjustment.adjusted && adjustment.adjustedAt) {
-            outAt = adjustment.adjustedAt;
-            const patch = await supabase
-              .from('employee_clock_in')
-              .update({ clock_out_time: outAt })
-              .eq('id', activeRecord.id);
-            if (patch.error) {
-              console.warn('Meeting-adjusted clock-out time patch failed:', patch.error);
-              outAt = nowIso;
-            }
-          }
-        }
-
-        finishSuccess(
-          'out',
-          name,
-          nextPhotoUrl,
-          employeeId,
-          resolvedLocationId,
-          outAt,
-          outRemark,
-        );
-        return;
-      }
-
-      setStatus('clocking_in');
-      setMessage('Clocking you in…');
-      setAction('in');
-
-      // Meeting-time check and DB insert in parallel — phone confirms sooner.
-      let inAt = nowIso;
-      let inRemark: string | null = null;
-      const adjustmentPromise = fetchMeetingClockAdjustment(employeeId, 'in').catch((adjErr) => {
-        console.warn('Meeting clock-in adjustment skipped:', adjErr);
-        return { success: false as const, adjusted: false as const };
-      });
-
-      const payload = {
-        employee_id: employeeId,
-        user_id: session.user.id,
-        clock_in_time: nowIso,
-        clock_in_location_id: resolvedLocationId,
-        notes: 'Entry kiosk QR',
-        is_active: true,
-        manually: false,
-        approved: true,
-        declined: false,
-      };
-
-      let insertedId: number | null = null;
-      let { data: inserted, error } = await supabase
-        .from('employee_clock_in')
-        .insert(payload)
-        .select('id')
-        .single();
-      if (error) {
-        const { clock_in_location_id: _drop, ...withoutPreset } = payload;
-        const retry = await supabase
-          .from('employee_clock_in')
-          .insert(withoutPreset)
-          .select('id')
-          .single();
-        error = retry.error;
-        inserted = retry.data;
-      }
-      if (cancelled) return;
-
-      if (error) {
-        console.error('Entry kiosk clock-in failed:', error);
-        setStatus('error');
-        setMessage(error.message || 'Failed to clock in. Please try again from the CRM.');
-        return;
-      }
-      insertedId = inserted?.id != null ? Number(inserted.id) : null;
-
-      const adjustment = await adjustmentPromise;
-      if (adjustment.success) {
-        if (adjustment.remark) inRemark = adjustment.remark;
-        if (adjustment.adjusted && adjustment.adjustedAt && insertedId != null) {
-          inAt = adjustment.adjustedAt;
-          const patch = await supabase
-            .from('employee_clock_in')
-            .update({ clock_in_time: inAt })
-            .eq('id', insertedId);
-          if (patch.error) {
-            console.warn('Meeting-adjusted clock-in time patch failed:', patch.error);
-            inAt = nowIso;
-          }
-        }
-      }
-
-      finishSuccess(
-        'in',
-        name,
-        nextPhotoUrl,
-        employeeId,
-        resolvedLocationId,
-        inAt,
-        inRemark,
-      );
-      } finally {
-        // Keep lock briefly so a remount cleanup+re-run cannot immediately clock out.
+      if (result.kind === 'external') {
+        setStatus('success');
+        setMessage(result.message);
         window.setTimeout(() => {
-          inFlightEntryTokens.delete(token);
-        }, 2_500);
+          if (!cancelled) navigate('/', { replace: true });
+        }, 900);
+        return;
       }
+      applySuccess(result);
     };
 
-    void run();
+    setStatus('connecting');
+    setMessage('Connecting to entry…');
+
+    void getOrStartEntryRun(token, locationId)
+      .then(applyResult)
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('Entry kiosk run failed:', err);
+        setStatus('error');
+        setMessage(
+          err instanceof Error
+            ? err.message
+            : 'Something went wrong. Tap retry or scan the screen again.',
+        );
+      });
+
     return () => {
       cancelled = true;
       clearWelcomeTimers();
     };
-  }, [token, locationId, navigate, clearWelcomeTimers]);
+  }, [token, locationId, navigate, clearWelcomeTimers, retryNonce]);
 
   if (status === 'success' && displayName && clockedAt) {
     return (
@@ -501,7 +631,10 @@ const ClockInEntryPage: React.FC = () => {
 
         {status === 'error' && (
           <div className="mt-6 flex flex-col gap-3">
-            <Link to="/login" className="btn btn-primary btn-sm">
+            <button type="button" className="btn btn-primary btn-sm" onClick={retryEntry}>
+              Retry clock-in
+            </button>
+            <Link to="/login" className="btn btn-ghost btn-sm">
               Go to login
             </Link>
             <p className="text-xs text-slate-400">Scan the tablet QR again if it rotated.</p>

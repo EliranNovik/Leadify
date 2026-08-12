@@ -46,6 +46,10 @@ If phones still log out roughly every 24 hours, the cause is server-side: check
 an **inactivity timeout**, or **time-boxed sessions**. With a 24h refresh-token lifetime a device
 that is only used once a day sits right on the edge and will drop.
 
+**Important:** JWT expiry (e.g. 86 hours) is **not** the stay-signed-in window. The **refresh
+token** lifetime is. Set refresh token expiry to **at least 7 days** (`604800`) for daily QR
+clock-in phones. Each successful scan also calls `refreshSession()` to rotate/extend that window.
+
 ## Changes in code
 
 ### Supabase client (`src/lib/supabase.ts`)
@@ -94,6 +98,19 @@ that is only used once a day sits right on the edge and will drop.
 ## Troubleshooting unexpected logouts
 
 1. Confirm refresh token expiry in the Supabase dashboard (raise above 24h if needed)
-2. Check that `localStorage` is available (private mode / IT policies)
-3. Look for repeated `refreshSession` failures in the console (`VITE_DEBUG_AUTH=true` helps)
-4. Verify rotation + reuse interval are not fighting multi-tab refresh
+2. Prefer **Inactivity timeout = 0** (disabled) for daily QR phones — an 80h inactivity box can still interact oddly with suspended tabs; the refresh-token lifetime should be the only long-lived control
+3. Check that `localStorage` is available (private mode / IT policies)
+4. Look for repeated `refreshSession` failures in the console (`VITE_DEBUG_AUTH=true` helps). With debug on, run `await probePersistedAuthSession()` in the phone browser console *before* re-logging in:
+   - `hasAuthKeys: false` → storage was cleared (PWA / browser eviction)
+   - `hasAuthKeys: true` + `refreshError` mentioning `already used` → rotation race (app now recovers instead of wiping)
+   - `refreshError` mentioning expired / not found → server-side refresh TTL
+5. Verify rotation + reuse interval are not fighting multi-tab refresh (reuse interval ≈ 10s is fine)
+
+## App hardening (refresh races)
+
+Forced logout no longer runs on the first failed refresh. The client:
+
+- Coalesces refresh calls and waits for the “winning” session after `already used` errors
+- Skips wiping `localStorage` on network / transient failures while auth keys remain
+- Treats GoTrue `SIGNED_OUT` as recoverable when auth keys still contain a session
+- Only redirects to `/login` after a **definitive** dead refresh token (or empty storage)

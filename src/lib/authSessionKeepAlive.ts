@@ -11,7 +11,12 @@
  */
 
 import type { Session } from '@supabase/supabase-js';
-import { isExpectedNoSessionError, isNetworkError, supabase } from './supabase';
+import {
+  isNetworkError,
+  isRefreshTokenReuseRaceError,
+  isDefinitiveRefreshTokenDead,
+  supabase,
+} from './supabase';
 import { hasAnySupabaseAuthKey } from './authBootstrap';
 
 /** Treat the user as "actively using the app" within this window. */
@@ -95,6 +100,10 @@ function shouldProactiveRefreshWhileActive(now = Date.now()): boolean {
   return now - lastSuccessfulRefreshAt >= PROACTIVE_REFRESH_MIN_INTERVAL_MS;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Refresh the Supabase session when needed.
  * - Near access-token expiry (buffer depends on recent activity)
@@ -116,6 +125,15 @@ export async function refreshSessionIfNeeded(options?: {
           lastSuccessfulRefreshAt = Date.now();
           markAuthActivity();
           return 'refreshed';
+        }
+        if (isRefreshTokenReuseRaceError(refreshError)) {
+          await sleep(500);
+          const { data: { session: winner } } = await supabase.auth.getSession();
+          if (winner?.user) {
+            lastSuccessfulRefreshAt = Date.now();
+            markAuthActivity();
+            return 'refreshed';
+          }
         }
         return 'failed';
       }
@@ -139,8 +157,24 @@ export async function refreshSessionIfNeeded(options?: {
         lastSuccessfulRefreshAt = Date.now();
         return 'refreshed';
       }
+      if (isRefreshTokenReuseRaceError(refreshError)) {
+        await sleep(500);
+        const { data: { session: winner } } = await supabase.auth.getSession();
+        if (winner?.user) {
+          lastSuccessfulRefreshAt = Date.now();
+          return 'refreshed';
+        }
+      }
       return 'failed';
-    } catch {
+    } catch (e) {
+      if (isRefreshTokenReuseRaceError(e)) {
+        await sleep(500);
+        const { data: { session: winner } } = await supabase.auth.getSession();
+        if (winner?.user) {
+          lastSuccessfulRefreshAt = Date.now();
+          return 'refreshed';
+        }
+      }
       return 'failed';
     } finally {
       refreshInFlight = null;
@@ -157,14 +191,14 @@ export async function refreshSessionIfNeeded(options?: {
  * expired access token while the network is still switching (cellular → office Wi-Fi), so
  * the very first refresh can fail even though the stored refresh token is fine. Retry with
  * backoff and only report "signed out" when storage has no auth keys or Supabase says the
- * refresh token itself is invalid/expired.
+ * refresh token itself is invalid/expired (not a rotation reuse race).
  */
 export async function resolveSessionWithRecovery(options?: {
   attempts?: number;
   baseDelayMs?: number;
 }): Promise<Session | null> {
-  const attempts = Math.max(1, options?.attempts ?? 3);
-  const baseDelayMs = options?.baseDelayMs ?? 350;
+  const attempts = Math.max(1, options?.attempts ?? 4);
+  const baseDelayMs = options?.baseDelayMs ?? 400;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const { data: { session }, error } = await supabase.auth.getSession();
@@ -181,16 +215,33 @@ export async function resolveSessionWithRecovery(options?: {
         markAuthActivity();
         return refreshed;
       }
+      // Rotation race: wait for the winning refresh to land in storage.
+      if (isRefreshTokenReuseRaceError(refreshError)) {
+        await sleep(baseDelayMs * (attempt + 1));
+        const { data: { session: winner } } = await supabase.auth.getSession();
+        if (winner?.user) {
+          lastSuccessfulRefreshAt = Date.now();
+          markAuthActivity();
+          return winner;
+        }
+        continue;
+      }
       // Definitive rejection of the stored refresh token — retrying cannot help.
-      if (refreshError && !isNetworkError(refreshError) && isExpectedNoSessionError(refreshError)) {
+      if (refreshError && !isNetworkError(refreshError) && isDefinitiveRefreshTokenDead(refreshError)) {
         return null;
       }
     } catch (e) {
-      if (!isNetworkError(e) && isExpectedNoSessionError(e)) return null;
+      if (isRefreshTokenReuseRaceError(e)) {
+        await sleep(baseDelayMs * (attempt + 1));
+        const { data: { session: winner } } = await supabase.auth.getSession();
+        if (winner?.user) return winner;
+        continue;
+      }
+      if (!isNetworkError(e) && isDefinitiveRefreshTokenDead(e)) return null;
     }
 
     if (attempt < attempts - 1) {
-      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+      await sleep(baseDelayMs * (attempt + 1));
     }
   }
 

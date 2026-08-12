@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { supabase, sessionManager, isAuthError, isExpectedNoSessionError, handleSessionExpiration } from '../lib/supabase';
+import { supabase, sessionManager, isAuthError, isExpectedNoSessionError, isRefreshTokenReuseRaceError, isDefinitiveRefreshTokenDead, handleSessionExpiration } from '../lib/supabase';
 import {
   startAuthActivityTracking,
   stopAuthActivityTracking,
@@ -7,6 +7,7 @@ import {
   wasRecentlyActive,
   refreshSessionIfNeeded,
   getAccessRefreshBufferSec,
+  resolveSessionWithRecovery,
 } from '../lib/authSessionKeepAlive';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 import {
@@ -448,6 +449,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
       } else if (event === 'SIGNED_OUT') {
+        // GoTrue can emit SIGNED_OUT on refresh-token reuse races even when another refresh
+        // already wrote a valid session. Recover from storage before clearing the UI.
+        if (hasAnySupabaseAuthKey()) {
+          try {
+            const recovered = await resolveSessionWithRecovery({ attempts: 3, baseDelayMs: 350 });
+            if (recovered?.user) {
+              debugLog('[AuthContext] Ignoring SIGNED_OUT — recovered session after reuse race');
+              updateAuthState(recovered, true);
+              setAuthState((prev) => ({
+                ...prev,
+                sessionCheckComplete: true,
+                sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+              }));
+              markSupabaseSessionReady(true);
+              return;
+            }
+          } catch (e) {
+            debugLog('[AuthContext] SIGNED_OUT recovery failed:', e);
+          }
+        }
         // Clear sessionStorage flag
         if (typeof window !== 'undefined') {
           sessionStorage.removeItem('user_signed_in');
@@ -492,7 +513,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         processingRef.current = false;
       }, 100);
     }
-  }, [updateAuthState]);
+  }, [updateAuthState, markSupabaseSessionReady]);
 
   // Single debounced visibility refresh (avoids duplicate work with Header; Chrome/Safari friendly)
   const visibilityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -525,10 +546,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Keep prior recovery path when keep-alive skipped/failed with no usable session.
         const { data: { session: current } } = await supabase.auth.getSession();
         if (!current?.user) {
-          const { data: { session }, error } = await supabase.auth.refreshSession();
-          if (!error && session?.user) {
-            updateAuthState(session, true);
-            await fetchUserDetails(session.user).catch(() => {});
+          const recovered = await resolveSessionWithRecovery({ attempts: 3, baseDelayMs: 400 });
+          if (recovered?.user) {
+            updateAuthState(recovered, true);
+            await fetchUserDetails(recovered.user).catch(() => {});
             setAuthState((prev) => ({
               ...prev,
               sessionRefreshNonce: prev.sessionRefreshNonce + 1,
@@ -605,43 +626,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       consecutiveAuthFailures += 1;
       if (consecutiveAuthFailures < failureLimit()) return;
       if (hasAnySupabaseAuthKey()) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
+        const recovered = await resolveSessionWithRecovery({ attempts: 3, baseDelayMs: 400 });
+        if (recovered?.user) {
           consecutiveAuthFailures = 0;
+          updateAuthState(recovered, true);
+          setAuthState((prev) => ({
+            ...prev,
+            sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+          }));
           return;
         }
-        if (wasRecentlyActive()) {
-          const recovered = await refreshSessionIfNeeded({ forceIfNearExpiry: true });
-          if (recovered === 'refreshed') {
-            consecutiveAuthFailures = 0;
-            const { data: { session: refreshed } } = await supabase.auth.getSession();
-            if (refreshed?.user) {
-              updateAuthState(refreshed, true);
-              setAuthState((prev) => ({
-                ...prev,
-                sessionRefreshNonce: prev.sessionRefreshNonce + 1,
-              }));
+        try {
+          const { error: refreshError } = await supabase.auth.refreshSession();
+          if (isRefreshTokenReuseRaceError(refreshError)) {
+            const winner = await resolveSessionWithRecovery({ attempts: 2, baseDelayMs: 500 });
+            if (winner?.user) {
+              consecutiveAuthFailures = 0;
+              updateAuthState(winner, true);
               return;
             }
           }
+          if (isDefinitiveRefreshTokenDead(refreshError)) {
+            await handleSessionExpiration();
+          }
+        } catch (e) {
+          if (isDefinitiveRefreshTokenDead(e)) {
+            await handleSessionExpiration();
+          }
         }
+        return;
       }
       await handleSessionExpiration();
     };
 
     const tryRecoverSession = async (): Promise<boolean> => {
-      const { data: { session }, error } = await supabase.auth.getSession();
-      if (!error && session?.user) {
-        consecutiveAuthFailures = 0;
-        return true;
-      }
-      if (error && isNetworkError(error)) return true;
-
-      if (!hasAnySupabaseAuthKey()) return false;
-
-      const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
-      if (!refreshError && refreshed?.user) {
-        updateAuthState(refreshed, true);
+      const recovered = await resolveSessionWithRecovery({ attempts: 3, baseDelayMs: 350 });
+      if (recovered?.user) {
+        updateAuthState(recovered, true);
         setAuthState((prev) => ({
           ...prev,
           sessionRefreshNonce: prev.sessionRefreshNonce + 1,
@@ -649,9 +670,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         consecutiveAuthFailures = 0;
         return true;
       }
-      if (refreshError && (isNetworkError(refreshError) || !isExpectedNoSessionError(refreshError))) {
-        return true;
-      }
+      if (hasAnySupabaseAuthKey()) return true; // keep trying later; don't expire yet
       return false;
     };
 
@@ -703,8 +722,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 consecutiveAuthFailures = 0;
                 return;
               }
-              if (refreshError && !isNetworkError(refreshError) && isExpectedNoSessionError(refreshError)) {
+              if (refreshError && !isNetworkError(refreshError) && isDefinitiveRefreshTokenDead(refreshError)) {
                 await maybeExpireSession();
+              } else if (isRefreshTokenReuseRaceError(refreshError)) {
+                const winner = await resolveSessionWithRecovery({ attempts: 2, baseDelayMs: 400 });
+                if (winner?.user) {
+                  updateAuthState(winner, true);
+                  consecutiveAuthFailures = 0;
+                }
               }
             }
           }

@@ -114,6 +114,54 @@ let handleSessionExpiredForFetch: (() => Promise<void>) | null = null;
 
 /** Coalesce parallel refresh attempts (e.g. many 401s on tab resume). */
 let refreshSessionInFlight: Promise<boolean> | null = null;
+/** Avoid stampeding wipe+redirect when several 401 recoveries fail together. */
+let lastForcedSignOutAttemptAt = 0;
+const FORCE_SIGNOUT_COOLDOWN_MS = 45_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function authErrorText(error: unknown): string {
+  if (!error) return '';
+  if (typeof error === 'string') return error;
+  const anyErr = error as { message?: unknown; code?: unknown; name?: unknown; error_description?: unknown };
+  return [anyErr.message, anyErr.code, anyErr.name, anyErr.error_description]
+    .filter((v) => v != null && String(v).length > 0)
+    .join(' ');
+}
+
+/**
+ * Refresh-token rotation race: another tab / autoRefresh / our own coalesced call already
+ * rotated the token. The loser sees "already used" even though storage may already hold the
+ * winner's new session — must NOT wipe localStorage or force /login.
+ */
+export function isRefreshTokenReuseRaceError(error: unknown): boolean {
+  if (!error) return false;
+  const msg = authErrorText(error).toLowerCase();
+  return (
+    msg.includes('already used') ||
+    msg.includes('refresh_token_already_used') ||
+    msg.includes('token has already been used')
+  );
+}
+
+/** Refresh token is gone for good (expired / not found) — not a reuse race, not network. */
+export function isDefinitiveRefreshTokenDead(error: unknown): boolean {
+  if (!error || isNetworkError(error) || isRefreshTokenReuseRaceError(error)) return false;
+  return isExpectedNoSessionError(error);
+}
+
+async function readSessionUserAfterSettle(settleMs = 400): Promise<boolean> {
+  if (settleMs > 0) await sleep(settleMs);
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.user) return true;
+  // Storage may have been updated by the winning refresh before GoTrue rehydrated memory.
+  const cached = hasAnySupabaseAuthKey();
+  if (!cached) return false;
+  const { data: { session: again } } = await supabase.auth.getSession();
+  return !!again?.user;
+}
 
 async function coalescedRefreshSession(): Promise<boolean> {
   if (refreshSessionInFlight) return refreshSessionInFlight;
@@ -122,12 +170,29 @@ async function coalescedRefreshSession(): Promise<boolean> {
     try {
       const { data: { session }, error } = await supabase.auth.refreshSession();
       if (!error && session?.access_token) return true;
+
+      // Winner of a rotation race may already have written the new session.
+      if (isRefreshTokenReuseRaceError(error)) {
+        if (DEBUG_AUTH) console.log('[AUTH-DEBUG] refresh already_used — waiting for winner session');
+        if (await readSessionUserAfterSettle(500)) return true;
+        if (await readSessionUserAfterSettle(800)) return true;
+        // Keys still present: keep treating as recoverable (do not force logout from here).
+        return hasAnySupabaseAuthKey();
+      }
+
       if (error && (isNetworkError(error) || !isExpectedNoSessionError(error))) {
         // Transient or unknown — don't treat as hard logout while tokens may still exist.
         return hasAnySupabaseAuthKey();
       }
+
+      // Definitive invalid/expired — still give storage one beat (autoRefresh may have won).
+      if (await readSessionUserAfterSettle(300)) return true;
       return false;
     } catch (e) {
+      if (isRefreshTokenReuseRaceError(e)) {
+        if (await readSessionUserAfterSettle(500)) return true;
+        return hasAnySupabaseAuthKey();
+      }
       if (isNetworkError(e)) return hasAnySupabaseAuthKey();
       return false;
     } finally {
@@ -138,17 +203,46 @@ async function coalescedRefreshSession(): Promise<boolean> {
   return refreshSessionInFlight;
 }
 
+/**
+ * Only force sign-out when we are sure the refresh token cannot be recovered.
+ * Reuse races, network blips, and "keys still in storage" must not wipe the phone session.
+ */
 async function shouldForceSignOutAfterRefreshFailure(): Promise<boolean> {
   if (!hasAnySupabaseAuthKey()) return true;
-  // Tokens still in storage — give Supabase another beat before signing out.
-  const { data: { session } } = await supabase.auth.getSession();
-  return !session?.user;
+
+  if (await readSessionUserAfterSettle(350)) return false;
+
+  try {
+    const { data: { session }, error } = await supabase.auth.refreshSession();
+    if (!error && session?.user) return false;
+    if (isRefreshTokenReuseRaceError(error)) {
+      if (await readSessionUserAfterSettle(700)) return false;
+      // Stale already-used token still in storage with no usable session → dead session.
+      // But only wipe if the error is clearly reuse AND getSession stays empty after settle.
+      return !(await readSessionUserAfterSettle(0));
+    }
+    if (isNetworkError(error)) return false;
+    if (!isDefinitiveRefreshTokenDead(error)) {
+      // Unknown / transient with keys still present — keep the user signed in.
+      return false;
+    }
+  } catch (e) {
+    if (isNetworkError(e) || isRefreshTokenReuseRaceError(e)) {
+      if (await readSessionUserAfterSettle(700)) return false;
+      if (isNetworkError(e)) return false;
+    }
+  }
+
+  // Final gate: if auth keys vanished, sign out; otherwise require empty session.
+  if (!hasAnySupabaseAuthKey()) return true;
+  const { data: { session: last } } = await supabase.auth.getSession();
+  return !last?.user;
 }
 
 /**
  * Global fetch for all Supabase HTTP traffic:
  * - On 401 from REST/Storage/Functions (user JWT), refresh once and retry with new access token.
- * - If refresh fails, sign out and redirect (via handleSessionExpiration).
+ * - If refresh fails, sign out only after confirmed unrecoverable auth (not reuse races / network).
  * - `/auth/v1/*` passes through untouched so refresh/token calls cannot recurse into this logic.
  */
 const supabaseGlobalFetch: typeof fetch = async (input, init) => {
@@ -320,19 +414,27 @@ const REDIRECTING_KEY = 'supabase_auth_redirecting';
 const REDIRECTING_TIMEOUT = 1000; // 1 second
 
 /**
- * Try to recover session via refresh; only redirect to login if refresh fails.
+ * Try to recover session via refresh; only redirect to login if refresh is unrecoverable.
  * Use this instead of handleSessionExpiration() when you get an auth error so the user
- * isn't logged out on a transient failure or while refresh is in progress.
+ * isn't logged out on a transient failure, reuse race, or while refresh is in progress.
  * @returns true if session was recovered (caller can retry), false if we're redirecting / session is gone
  */
 export const tryRefreshThenExpire = async (): Promise<boolean> => {
   try {
-    const { data: { session }, error } = await supabase.auth.refreshSession();
-    if (!error && session?.user) {
-      return true; // Session recovered - caller can retry the operation
+    const recovered = await coalescedRefreshSession();
+    if (recovered) {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) return true;
+    }
+    if (!(await shouldForceSignOutAfterRefreshFailure())) {
+      return hasAnySupabaseAuthKey();
     }
   } catch (e) {
     console.warn('Refresh session failed in tryRefreshThenExpire:', e);
+    if (isNetworkError(e) || isRefreshTokenReuseRaceError(e)) {
+      if (await readSessionUserAfterSettle(500)) return true;
+      return hasAnySupabaseAuthKey();
+    }
   }
   await handleSessionExpiration();
   return false;
@@ -341,8 +443,7 @@ export const tryRefreshThenExpire = async (): Promise<boolean> => {
 // Function to handle session expiration and redirect
 export const handleSessionExpiration = async () => {
   if (typeof window === 'undefined') return;
-  clearGlobalResponseCache();
-  
+
   // Check if another tab is already redirecting
   const redirectingUntil = localStorage.getItem(REDIRECTING_KEY);
   if (redirectingUntil) {
@@ -356,7 +457,43 @@ export const handleSessionExpiration = async () => {
       localStorage.removeItem(REDIRECTING_KEY);
     }
   }
-  
+
+  // Last-chance recovery before wiping phone/desktop sessions.
+  if (hasAnySupabaseAuthKey()) {
+    if (await readSessionUserAfterSettle(400)) {
+      if (DEBUG_AUTH) console.log('[AUTH-DEBUG] handleSessionExpiration aborted — session present');
+      return;
+    }
+    try {
+      const { data: { session }, error } = await supabase.auth.refreshSession();
+      if (!error && session?.user) return;
+      if (isRefreshTokenReuseRaceError(error) && (await readSessionUserAfterSettle(800))) return;
+      if (isNetworkError(error)) {
+        console.warn('Skipping forced sign-out after network error during session check');
+        return;
+      }
+      if (error && !isDefinitiveRefreshTokenDead(error) && !isRefreshTokenReuseRaceError(error)) {
+        console.warn('Skipping forced sign-out; refresh failed transiently with auth keys still present');
+        return;
+      }
+    } catch (e) {
+      if (isNetworkError(e)) {
+        console.warn('Skipping forced sign-out after network error', e);
+        return;
+      }
+      if (isRefreshTokenReuseRaceError(e) && (await readSessionUserAfterSettle(800))) return;
+    }
+  }
+
+  const now = Date.now();
+  if (now - lastForcedSignOutAttemptAt < FORCE_SIGNOUT_COOLDOWN_MS) {
+    if (DEBUG_AUTH) console.log('[AUTH-DEBUG] handleSessionExpiration cooldown — skip duplicate wipe');
+    return;
+  }
+  lastForcedSignOutAttemptAt = now;
+
+  clearGlobalResponseCache();
+
   // Set flag in localStorage to coordinate across tabs
   const redirectUntil = Date.now() + REDIRECTING_TIMEOUT;
   localStorage.setItem(REDIRECTING_KEY, redirectUntil.toString());
@@ -389,6 +526,35 @@ export const handleSessionExpiration = async () => {
     }
   }
 };
+
+export async function probePersistedAuthSession(): Promise<{
+  hasAuthKeys: boolean;
+  hasSessionUser: boolean;
+  refreshOk: boolean;
+  refreshError: string | null;
+}> {
+  const hasAuthKeys = hasAnySupabaseAuthKey();
+  const { data: { session } } = await supabase.auth.getSession();
+  let refreshOk = false;
+  let refreshError: string | null = null;
+  try {
+    const { data: { session: refreshed }, error } = await supabase.auth.refreshSession();
+    refreshOk = !error && !!refreshed?.user;
+    if (error) refreshError = authErrorText(error);
+  } catch (e) {
+    refreshError = authErrorText(e);
+  }
+  return {
+    hasAuthKeys,
+    hasSessionUser: !!session?.user,
+    refreshOk,
+    refreshError,
+  };
+}
+
+if (typeof window !== 'undefined' && DEBUG_AUTH) {
+  (window as any).probePersistedAuthSession = probePersistedAuthSession;
+}
 
 /** Wire global fetch 401 handler to the same sign-out flow */
 handleSessionExpiredForFetch = handleSessionExpiration;
@@ -448,8 +614,8 @@ export const isAuthError = (error: any): boolean => {
  */
 export const isExpectedNoSessionError = (error: any): boolean => {
   if (!error) return false;
-  const msg = String(error.message || error).toLowerCase();
-  const name = String(error.name || '').toLowerCase();
+  const msg = authErrorText(error).toLowerCase();
+  const name = String((error as { name?: string }).name || '').toLowerCase();
   return (
     name.includes('authsessionmissing') ||
     name.includes('auth_session_missing') ||
@@ -457,7 +623,8 @@ export const isExpectedNoSessionError = (error: any): boolean => {
     msg.includes('session missing') ||
     msg.includes('invalid refresh token') ||
     msg.includes('refresh token not found') ||
-    msg.includes('refresh token expired')
+    msg.includes('refresh token expired') ||
+    isRefreshTokenReuseRaceError(error)
   );
 };
 

@@ -43,7 +43,7 @@ import { useKioskImmersiveMode } from '../hooks/useKioskImmersiveMode';
 
 const QR_RENDER_SIZE = 720;
 /** Poll for welcome flash after a scan (was 1.4s — too aggressive with many tablets). */
-const EVENT_POLL_MS = 3_000;
+const EVENT_POLL_MS = 1_500;
 const DISPLAY_POLL_MS = 60_000;
 /** Device mode / pairing state (was 2s). */
 const KIOSK_STATE_POLL_MS = 5_000;

@@ -16,6 +16,10 @@ import {
   ChevronRightIcon,
   XMarkIcon,
   AdjustmentsHorizontalIcon,
+  TagIcon,
+  UserGroupIcon,
+  EllipsisHorizontalCircleIcon,
+  CheckBadgeIcon,
 } from '@heroicons/react/24/outline';
 import { Search, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -76,6 +80,327 @@ const MOBILE_FILTER_CHIPS = [
 ] as const;
 
 type MobileFilterKey = (typeof MOBILE_FILTER_CHIPS)[number]['key'];
+
+const MOBILE_FILTER_SECTIONS: {
+  title: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  keys: readonly MobileFilterKey[];
+}[] = [
+  {
+    title: 'Main filters',
+    icon: TagIcon,
+    keys: ['mainCategory', 'category', 'stage', 'source', 'topic'],
+  },
+  {
+    title: 'Roles',
+    icon: UserGroupIcon,
+    keys: ['scheduler', 'manager', 'lawyer', 'expert', 'closer', 'case_handler'],
+  },
+  {
+    title: 'Status',
+    icon: CheckBadgeIcon,
+    keys: ['flagTypes', 'tags', 'reason', 'expert_examination'],
+  },
+  {
+    title: 'Other',
+    icon: EllipsisHorizontalCircleIcon,
+    keys: ['fileId', 'language', 'country', 'content'],
+  },
+];
+
+const filterBoxClass =
+  'rounded-2xl bg-white p-4 sm:p-5 shadow-sm dark:bg-base-100';
+const filterBoxTitleClass =
+  'mb-2 flex items-center gap-2.5 text-base font-semibold uppercase tracking-wide text-base-content/55';
+const filterGridClass = 'grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5';
+const filterSectionsRowClass = 'grid grid-cols-1 lg:grid-cols-2 gap-4 items-start';
+const filterCellClass = 'min-w-0 [&>div]:!col-span-1';
+/** Cap list/card fetch — avoids pulling 10k+ oversized rows on every search */
+const LEAD_SEARCH_PAGE_LIMIT = 1200;
+/** Full row + joins so all filters/displays match prior behavior (new vs legacy schemas differ) */
+const NEW_LEADS_SEARCH_SELECT = `
+  *,
+  misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name)),
+  misc_leadsource!fk_leads_source_id(id, name),
+  misc_language!fk_leads_language_id(id, name)
+`;
+const LEGACY_LEADS_SEARCH_SELECT = `
+  *,
+  misc_language!leads_lead_language_id_fkey(id, name),
+  misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name)),
+  misc_leadsource!leads_lead_source_id_fkey(id, name),
+  scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+  manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+  lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
+  expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+  closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+  handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
+  reason_record:misc_reason!fk_leads_lead_reason_id(name)
+`;
+/** Softer placeholders so hints stay secondary to typed values */
+const filterInputClass =
+  'input w-full placeholder:!text-gray-300 dark:placeholder:!text-base-content/25';
+const filterInputBorderedClass =
+  'input input-bordered w-full placeholder:!text-gray-300 dark:placeholder:!text-base-content/25';
+
+/** Floating label: sits inside as placeholder, lifts to top when focused / has value / has selections.
+ * Always reserves top padding so focus never shifts layout (avoids dropdown/box shake). */
+function FloatingFilterLabel({ label, floated }: { label: string; floated: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={
+        floated
+          ? 'pointer-events-none absolute left-2.5 top-0 z-[1] max-w-[calc(100%-1.25rem)] -translate-y-1/2 truncate bg-white px-1 text-xs font-medium text-base-content/65 transition-[color,font-size,transform,top] duration-200 ease-out dark:bg-base-100'
+          : 'pointer-events-none absolute left-3 top-1/2 z-[1] max-w-[calc(100%-1.5rem)] -translate-y-1/2 truncate text-sm font-medium text-gray-500 transition-[color,font-size,transform,top] duration-200 ease-out dark:text-base-content/45'
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
+function FloatingFilterField({
+  label,
+  floated,
+  className = '',
+  children,
+}: {
+  label: string;
+  floated: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`relative pt-2 ${className}`}>
+      <div className="relative">
+        {children}
+        <FloatingFilterLabel label={label} floated={floated} />
+      </div>
+    </div>
+  );
+}
+
+function FilterSelectionMeta({
+  count,
+  onClearAll,
+}: {
+  count: number;
+  onClearAll?: () => void;
+}) {
+  if (count <= 0) return null;
+  return (
+    <div className="mt-1.5 flex items-center justify-end gap-2">
+      <span className="text-xs font-medium text-purple-600">{count} selected</span>
+      {onClearAll && (
+        <button
+          type="button"
+          className="text-xs font-semibold text-base-content/55 hover:text-error underline-offset-2 hover:underline"
+          onClick={(e) => {
+            e.preventDefault();
+            onClearAll();
+          }}
+        >
+          Unselect all
+        </button>
+      )}
+    </div>
+  );
+}
+
+const MAX_VISIBLE_SELECTED_CHIPS = 4;
+
+function SelectedFilterChips({
+  values,
+  onRemove,
+  getLabel,
+}: {
+  values: string[];
+  onRemove: (value: string) => void;
+  getLabel?: (value: string) => string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  React.useEffect(() => {
+    if (values.length <= MAX_VISIBLE_SELECTED_CHIPS) {
+      setExpanded(false);
+    }
+  }, [values.length]);
+
+  if (values.length === 0) return null;
+
+  const canCollapse = values.length > MAX_VISIBLE_SELECTED_CHIPS;
+  const visibleValues =
+    expanded || !canCollapse ? values : values.slice(0, MAX_VISIBLE_SELECTED_CHIPS);
+  const hiddenCount = values.length - MAX_VISIBLE_SELECTED_CHIPS;
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      {visibleValues.map((value, index) => {
+        const label = getLabel ? getLabel(value) : value;
+        return (
+          <span
+            key={`${value}-${index}`}
+            className="badge badge-primary badge-lg gap-1.5 py-3 pl-3 pr-1.5"
+          >
+            <span className="leading-none">{label}</span>
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-current transition-all duration-200 hover:bg-white/55 hover:text-base-content hover:shadow-sm hover:backdrop-blur-md hover:ring-1 hover:ring-white/70"
+              onClick={() => onRemove(value)}
+              aria-label={`Remove ${label}`}
+            >
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </span>
+        );
+      })}
+      {canCollapse && (
+        <button
+          type="button"
+          className="inline-flex h-auto cursor-pointer items-center rounded-full px-2.5 py-1 text-xs font-semibold text-purple-700 transition-colors hover:bg-purple-50 hover:text-purple-800 dark:text-purple-300 dark:hover:bg-purple-500/10"
+          onClick={() => setExpanded((prev) => !prev)}
+          aria-expanded={expanded}
+        >
+          {expanded ? 'Show less' : `+${hiddenCount} more`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function FilterSectionTitle({
+  title,
+  icon: Icon,
+  id,
+}: {
+  title: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  id?: string;
+}) {
+  return (
+    <h3 id={id} className={filterBoxTitleClass}>
+      <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#f7f7f8] text-purple-600 ring-1 ring-[#efefef] dark:bg-base-content/[0.04] dark:text-purple-300 dark:ring-base-content/10">
+        <Icon className="h-6 w-6" aria-hidden />
+      </span>
+      <span>{title}</span>
+    </h3>
+  );
+}
+
+/** Fixed-position menu under/over an input so filter dropdowns overlay neighbors (e.g. Columns). */
+function useAnchoredDropdownStyle(
+  open: boolean,
+  anchorRef: React.RefObject<HTMLElement | null>,
+  menuRef?: React.RefObject<HTMLElement | null>,
+  preferredMax = 240,
+): React.CSSProperties {
+  const [style, setStyle] = React.useState<React.CSSProperties>({
+    position: 'fixed',
+    visibility: 'hidden',
+    zIndex: 10040,
+  });
+  const directionRef = React.useRef<'up' | 'down' | null>(null);
+  const rafRef = React.useRef<number | null>(null);
+  const lastKeyRef = React.useRef('');
+
+  const update = React.useCallback(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const width = Math.max(rect.width, 200);
+    const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
+    const gap = 4;
+    const edge = 8;
+    const spaceBelow = window.innerHeight - rect.bottom - edge;
+    const spaceAbove = rect.top - edge;
+
+    if (!directionRef.current) {
+      directionRef.current =
+        spaceBelow < Math.min(preferredMax, 160) && spaceAbove > spaceBelow ? 'up' : 'down';
+    }
+    const openUpward = directionRef.current === 'up';
+    const maxHeight = Math.max(
+      120,
+      Math.min(preferredMax, openUpward ? spaceAbove - gap : spaceBelow - gap),
+    );
+
+    const next: React.CSSProperties = openUpward
+      ? {
+          position: 'fixed',
+          top: 'auto',
+          bottom: window.innerHeight - rect.top + gap,
+          left,
+          width,
+          maxHeight,
+          zIndex: 10040,
+          visibility: 'visible',
+        }
+      : {
+          position: 'fixed',
+          top: rect.bottom + gap,
+          bottom: 'auto',
+          left,
+          width,
+          maxHeight,
+          zIndex: 10040,
+          visibility: 'visible',
+        };
+
+    const key = `${next.top}|${next.bottom}|${next.left}|${next.width}|${next.maxHeight}`;
+    if (key === lastKeyRef.current) return;
+    lastKeyRef.current = key;
+    setStyle(next);
+  }, [anchorRef, preferredMax]);
+
+  const scheduleUpdate = React.useCallback(() => {
+    if (rafRef.current != null) return;
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      update();
+    });
+  }, [update]);
+
+  React.useEffect(() => {
+    if (!open) {
+      directionRef.current = null;
+      lastKeyRef.current = '';
+      setStyle({ position: 'fixed', visibility: 'hidden', zIndex: 10040 });
+      return;
+    }
+
+    update();
+    scheduleUpdate();
+
+    const onScrollOrResize = (event?: Event) => {
+      const target = event?.target;
+      if (
+        target &&
+        target instanceof Node &&
+        menuRef?.current &&
+        menuRef.current.contains(target)
+      ) {
+        return;
+      }
+      scheduleUpdate();
+    };
+
+    window.addEventListener('resize', onScrollOrResize);
+    window.addEventListener('scroll', onScrollOrResize, true);
+    return () => {
+      if (rafRef.current != null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      window.removeEventListener('resize', onScrollOrResize);
+      window.removeEventListener('scroll', onScrollOrResize, true);
+    };
+  }, [open, update, scheduleUpdate, menuRef]);
+
+  return style;
+}
 
 const stripHtmlForDisplay = (html: string | null | undefined): string => {
   if (html == null || typeof html !== 'string') return '';
@@ -269,7 +594,7 @@ const SearchableInput = ({
   label: string;
   field: string;
   value: string;
-  placeholder: string;
+  placeholder?: string;
   options: string[];
   showDropdown: boolean;
   onSelect: (value: string) => void;
@@ -282,8 +607,8 @@ const SearchableInput = ({
     <div className="relative">
       <input
         type="text"
-        className="input w-full"
-        placeholder={placeholder}
+        className={filterInputClass}
+        placeholder=""
         value={value}
         onChange={e => {
           onFilterChange(field, e.target.value);
@@ -335,7 +660,7 @@ const MultiSelectInput = ({
   label: string;
   field: string;
   values: string[] | any; // Allow any type and handle it safely inside
-  placeholder: string;
+  placeholder?: string;
   options: string[];
   showDropdown: boolean;
   onSelect: (field: string, value: string) => void;
@@ -348,14 +673,20 @@ const MultiSelectInput = ({
   sheetMode?: boolean;
 }) => {
   const [inputValue, setInputValue] = useState('');
+  const [focused, setFocused] = useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const menuStyle = useAnchoredDropdownStyle(showDropdown && !sheetMode, inputRef, menuRef);
 
   // Handle clicks outside the component to close dropdown
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        onHideDropdown(field);
+      const target = event.target as Node;
+      if (containerRef.current?.contains(target) || menuRef.current?.contains(target)) {
+        return;
       }
+      onHideDropdown(field);
     };
 
     if (showDropdown) {
@@ -431,35 +762,92 @@ const MultiSelectInput = ({
     !safeValues.includes(option)
   );
 
+  const useFloatingLabel = !sheetMode && !hideLabel;
+  const floated =
+    useFloatingLabel &&
+    (focused || showDropdown || inputValue.length > 0 || safeValues.length > 0);
+
+  const inputEl = (
+    <input
+      ref={inputRef}
+      type="text"
+      className={filterInputClass}
+      placeholder=""
+      aria-label={label}
+      value={inputValue}
+      onChange={handleInputChange}
+      onFocus={() => {
+        setFocused(true);
+        if (options.length > 0) {
+          onShowDropdown(field);
+        }
+      }}
+      onBlur={() => setFocused(false)}
+    />
+  );
+
+  const dropdownEl =
+    showDropdown &&
+    filteredOptions.length > 0 &&
+    (sheetMode ? (
+      <div className="mt-2 max-h-56 overflow-y-auto rounded-xl border border-base-200 bg-base-100">
+        {filteredOptions.map((option, index) => (
+          <div
+            key={index}
+            className="cursor-pointer text-sm flex items-center gap-2 px-4 py-3 hover:bg-base-200/60 active:bg-base-200 border-b border-base-200/60 last:border-0"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              handleSelect(option);
+            }}
+          >
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            {option}
+          </div>
+        ))}
+      </div>
+    ) : (
+      createPortal(
+        <div
+          ref={menuRef}
+          style={menuStyle}
+          className="overflow-y-auto rounded-md border border-gray-200 bg-white shadow-2xl"
+        >
+          {filteredOptions.map((option, index) => (
+            <div
+              key={index}
+              className="cursor-pointer text-sm flex items-center gap-2 px-4 py-2 hover:bg-gray-100"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                handleSelect(option);
+              }}
+            >
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+              {option}
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )
+    ));
+
   return (
     <div ref={containerRef} className={`form-control flex flex-col relative ${sheetMode ? '' : 'col-span-2 sm:col-span-1'}`}>
-      {!hideLabel && (
-        <label className="label mb-2">
-          <span className="label-text">{label}</span>
-          {safeValues.length > 0 && (
-            <span className="label-text-alt flex items-center gap-2">
-              <span className="text-purple-600 font-medium">
-                {safeValues.length} selected
-              </span>
-              {onClearAll && (
-                <button
-                  type="button"
-                  className="text-xs font-semibold text-base-content/55 hover:text-error underline-offset-2 hover:underline"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    onClearAll(field);
-                  }}
-                >
-                  Unselect all
-                </button>
-              )}
-            </span>
-          )}
-        </label>
+      {/* Input field */}
+      {useFloatingLabel ? (
+        <FloatingFilterField label={label} floated={floated}>
+          {inputEl}
+        </FloatingFilterField>
+      ) : (
+        <div className={sheetMode ? '' : 'relative'}>{inputEl}</div>
       )}
+      {dropdownEl}
 
       {hideLabel && safeValues.length > 0 && onClearAll && (
-        <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="mt-2 flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-purple-600">{safeValues.length} selected</span>
           <button
             type="button"
@@ -471,74 +859,13 @@ const MultiSelectInput = ({
         </div>
       )}
 
-      {/* Selected items */}
-      {safeValues.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-2">
-          {safeValues.map((value, index) => (
-            <span
-              key={index}
-              className="badge badge-primary badge-lg gap-2"
-            >
-              {value}
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs p-0 h-auto min-h-0"
-                onClick={() => handleRemove(value)}
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Input field */}
-      <div className={sheetMode ? '' : 'relative'}>
-        <input
-          type="text"
-          className="input w-full"
-          placeholder={safeValues.length === 0 ? placeholder : "Add more..."}
-          value={inputValue}
-          onChange={handleInputChange}
-          onFocus={() => {
-            if (options.length > 0) {
-              onShowDropdown(field);
-            }
-          }}
+      {useFloatingLabel && (
+        <FilterSelectionMeta
+          count={safeValues.length}
+          onClearAll={onClearAll ? () => onClearAll(field) : undefined}
         />
-        {showDropdown && filteredOptions.length > 0 && (
-          <div
-            className={
-              sheetMode
-                ? 'mt-2 max-h-56 overflow-y-auto rounded-xl border border-base-200 bg-base-100'
-                : 'absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto'
-            }
-          >
-            {filteredOptions.map((option, index) => (
-              <div
-                key={index}
-                className={`cursor-pointer text-sm flex items-center gap-2 ${
-                  sheetMode
-                    ? 'px-4 py-3 hover:bg-base-200/60 active:bg-base-200 border-b border-base-200/60 last:border-0'
-                    : 'px-4 py-2 hover:bg-gray-100'
-                }`}
-                onMouseDown={(e) => {
-                  // Prevent blur event from firing
-                  e.preventDefault();
-                  handleSelect(option);
-                }}
-              >
-                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                </svg>
-                {option}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
+      <SelectedFilterChips values={safeValues} onRemove={handleRemove} />
     </div>
   );
 };
@@ -561,22 +888,7 @@ const ColumnSelector = ({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const buttonRef = React.useRef<HTMLButtonElement>(null);
   const menuRef = React.useRef<HTMLDivElement>(null);
-  const [menuStyle, setMenuStyle] = React.useState<React.CSSProperties>({});
-
-  const updateMenuPosition = React.useCallback(() => {
-    const btn = buttonRef.current;
-    if (!btn) return;
-    const rect = btn.getBoundingClientRect();
-    const width = Math.max(rect.width, 280);
-    const left = Math.min(rect.left, window.innerWidth - width - 8);
-    setMenuStyle({
-      position: 'fixed',
-      top: rect.bottom + 4,
-      left: Math.max(8, left),
-      width,
-      zIndex: 200,
-    });
-  }, []);
+  const menuStyle = useAnchoredDropdownStyle(showDropdown, buttonRef, menuRef, 384);
 
   // Handle clicks outside the component to close dropdown
   React.useEffect(() => {
@@ -607,18 +919,6 @@ const ColumnSelector = ({
     };
   }, [showDropdown, onHideDropdown]);
 
-  React.useEffect(() => {
-    if (!showDropdown) return;
-    updateMenuPosition();
-    window.addEventListener('resize', updateMenuPosition);
-    // Capture scrolls from the layout main pane and nested scrollers
-    document.addEventListener('scroll', updateMenuPosition, true);
-    return () => {
-      window.removeEventListener('resize', updateMenuPosition);
-      document.removeEventListener('scroll', updateMenuPosition, true);
-    };
-  }, [showDropdown, updateMenuPosition, selectedColumns.length]);
-
   const groupedColumns = AVAILABLE_COLUMNS.reduce((acc, column) => {
     if (!acc[column.category]) {
       acc[column.category] = [];
@@ -638,15 +938,11 @@ const ColumnSelector = ({
   };
 
   return (
-    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative z-[40]">
-      <label className="label mb-2">
-        <span className="label-text">Table Columns</span>
-        <span className="label-text-alt text-purple-600 font-medium">
-          {selectedColumns.length} selected
-        </span>
-      </label>
-
-      <div className="relative">
+    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
+      <FloatingFilterField
+        label="Table Columns"
+        floated={showDropdown || selectedColumns.length > 0}
+      >
         <button
           ref={buttonRef}
           type="button"
@@ -654,51 +950,54 @@ const ColumnSelector = ({
           onClick={onShowDropdown}
           aria-expanded={showDropdown}
           aria-haspopup="listbox"
+          aria-label="Table Columns"
         >
-          <span>Select columns for table view...</span>
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <span className="text-sm text-base-content/70 truncate pr-2">
+            {selectedColumns.length > 0 ? `${selectedColumns.length} selected` : ''}
+          </span>
+          <svg className="w-4 h-4 shrink-0 transition-transform duration-200 ease-out" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
           </svg>
         </button>
+      </FloatingFilterField>
 
-        {showDropdown &&
-          createPortal(
-            <div
-              ref={menuRef}
-              style={menuStyle}
-              className="rounded-md border border-gray-200 bg-white shadow-xl max-h-96 overflow-y-auto"
-              role="listbox"
-              aria-label="Table columns"
-            >
-              <div className="p-2">
-                {Object.entries(groupedColumns).map(([category, columns]) => (
-                  <div key={category} className="mb-4 last:mb-0">
-                    <h4 className="font-semibold text-sm text-gray-700 mb-2 border-b pb-1">
-                      {category}
-                    </h4>
-                    <div className="space-y-1">
-                      {columns.map((column) => (
-                        <label
-                          key={column.key}
-                          className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-1 rounded"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedColumns.includes(column.key)}
-                            onChange={() => handleColumnToggle(column.key)}
-                            className="checkbox checkbox-sm"
-                          />
-                          <span className="text-sm">{column.label}</span>
-                        </label>
-                      ))}
-                    </div>
+      {showDropdown &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={menuStyle}
+            className="overflow-y-auto rounded-md border border-gray-200 bg-white shadow-2xl"
+            role="listbox"
+            aria-label="Table columns"
+          >
+            <div className="p-2">
+              {Object.entries(groupedColumns).map(([category, columns]) => (
+                <div key={category} className="mb-4 last:mb-0">
+                  <h4 className="font-semibold text-sm text-gray-700 mb-2 border-b pb-1">
+                    {category}
+                  </h4>
+                  <div className="space-y-1">
+                    {columns.map((column) => (
+                      <label
+                        key={column.key}
+                        className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-1 rounded"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedColumns.includes(column.key)}
+                          onChange={() => handleColumnToggle(column.key)}
+                          className="checkbox checkbox-sm"
+                        />
+                        <span className="text-sm">{column.label}</span>
+                      </label>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>,
-            document.body,
-          )}
-      </div>
+                </div>
+              ))}
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };
@@ -722,7 +1021,7 @@ const MainCategoryInput = ({
   label: string;
   field: string;
   values: string[] | any;
-  placeholder: string;
+  placeholder?: string;
   options: string[];
   showDropdown: boolean;
   onSelect: (field: string, value: string) => void;
@@ -735,14 +1034,20 @@ const MainCategoryInput = ({
   sheetMode?: boolean;
 }) => {
   const [inputValue, setInputValue] = useState('');
+  const [focused, setFocused] = useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const menuStyle = useAnchoredDropdownStyle(showDropdown && !sheetMode, inputRef, menuRef);
 
   // Handle clicks outside the component to close dropdown
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        onHideDropdown(field);
+      const target = event.target as Node;
+      if (containerRef.current?.contains(target) || menuRef.current?.contains(target)) {
+        return;
       }
+      onHideDropdown(field);
     };
 
     if (showDropdown) {
@@ -786,90 +1091,93 @@ const MainCategoryInput = ({
     !safeValues.includes(option)
   );
 
+  const useFloatingLabel = !sheetMode && !hideLabel;
+  const floated =
+    useFloatingLabel &&
+    (focused || showDropdown || inputValue.length > 0 || safeValues.length > 0);
+
+  const inputEl = (
+    <input
+      ref={inputRef}
+      type="text"
+      className={filterInputClass}
+      placeholder=""
+      aria-label={label}
+      value={inputValue}
+      onChange={handleInputChange}
+      onFocus={() => {
+        setFocused(true);
+        if (options.length > 0) {
+          onShowDropdown(field);
+        }
+      }}
+      onBlur={() => setFocused(false)}
+    />
+  );
+
+  const dropdownEl =
+    showDropdown &&
+    filteredOptions.length > 0 &&
+    (sheetMode ? (
+      <div className="mt-2 max-h-56 overflow-y-auto rounded-xl border border-base-200 bg-base-100">
+        {filteredOptions.map((option, index) => (
+          <div
+            key={index}
+            className="cursor-pointer text-sm flex items-center gap-2 px-4 py-3 hover:bg-base-200/60 active:bg-base-200 border-b border-base-200/60 last:border-0"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              handleSelect(option);
+            }}
+          >
+            <svg className="w-4 h-4 text-purple-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+            <span className="font-medium text-purple-700">{option}</span>
+          </div>
+        ))}
+      </div>
+    ) : (
+      createPortal(
+        <div
+          ref={menuRef}
+          style={menuStyle}
+          className="overflow-y-auto rounded-md border border-gray-200 bg-white shadow-2xl"
+        >
+          {filteredOptions.map((option, index) => (
+            <div
+              key={index}
+              className="cursor-pointer text-sm flex items-center gap-2 px-4 py-2 hover:bg-gray-100"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                handleSelect(option);
+              }}
+            >
+              <svg className="w-4 h-4 text-purple-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
+              <span className="font-medium text-purple-700">{option}</span>
+              <span className="text-xs text-gray-500 ml-auto">Auto-selects all subcategories</span>
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )
+    ));
+
   return (
     <div ref={containerRef} className={`form-control flex flex-col relative ${sheetMode ? '' : 'col-span-2 sm:col-span-1'}`}>
-      {!hideLabel && (
-        <label className="label mb-2">
-          <span className="label-text">{label}</span>
-          {safeValues.length > 0 && (
-            <span className="label-text-alt text-purple-600 font-medium">
-              {safeValues.length} selected
-            </span>
-          )}
-        </label>
-      )}
-
-      {/* Selected items */}
-      {safeValues.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-2">
-          {safeValues.map((value, index) => (
-            <span
-              key={index}
-              className="badge badge-primary badge-lg gap-2"
-            >
-              {value}
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs p-0 h-auto min-h-0"
-                onClick={() => handleRemove(value)}
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
       {/* Input field */}
-      <div className={sheetMode ? '' : 'relative'}>
-        <input
-          type="text"
-          className="input w-full"
-          placeholder={safeValues.length === 0 ? placeholder : "Add more..."}
-          value={inputValue}
-          onChange={handleInputChange}
-          onFocus={() => {
-            if (options.length > 0) {
-              onShowDropdown(field);
-            }
-          }}
-        />
-        {showDropdown && filteredOptions.length > 0 && (
-          <div
-            className={
-              sheetMode
-                ? 'mt-2 max-h-56 overflow-y-auto rounded-xl border border-base-200 bg-base-100'
-                : 'absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto'
-            }
-          >
-            {filteredOptions.map((option, index) => (
-              <div
-                key={index}
-                className={`cursor-pointer text-sm flex items-center gap-2 ${
-                  sheetMode
-                    ? 'px-4 py-3 hover:bg-base-200/60 active:bg-base-200 border-b border-base-200/60 last:border-0'
-                    : 'px-4 py-2 hover:bg-gray-100'
-                }`}
-                onMouseDown={(e) => {
-                  // Prevent blur event from firing
-                  e.preventDefault();
-                  handleSelect(option);
-                }}
-              >
-                <svg className="w-4 h-4 text-purple-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                </svg>
-                <span className="font-medium text-purple-700">{option}</span>
-                {!sheetMode && (
-                  <span className="text-xs text-gray-500 ml-auto">Auto-selects all subcategories</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {useFloatingLabel ? (
+        <FloatingFilterField label={label} floated={floated}>
+          {inputEl}
+        </FloatingFilterField>
+      ) : (
+        <div className={sheetMode ? '' : 'relative'}>{inputEl}</div>
+      )}
+      {dropdownEl}
+
+      {useFloatingLabel && <FilterSelectionMeta count={safeValues.length} />}
+      <SelectedFilterChips values={safeValues} onRemove={handleRemove} />
     </div>
   );
 };
@@ -1335,11 +1643,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
           background-color: transparent !important;
           background-image: none !important;
           border-bottom: none !important;
-        }
-
-        .lead-search-table-shell table.lead-search-results-table thead tr,
-        .lead-search-table-shell table.lead-search-results-table thead th {
-          background-color: #ececec !important;
+          box-shadow: none !important;
         }
       `}</style>
       </div>
@@ -1372,6 +1676,7 @@ const LeadSearchPage: React.FC = () => {
 
   // Ref for results section to scroll to after search
   const resultsRef = useRef<HTMLDivElement>(null);
+  const resultsCountRef = useRef<HTMLHeadingElement>(null);
   const cardsGridRef = useRef<HTMLDivElement>(null);
   const pageTopRef = useRef<HTMLDivElement>(null);
   const tableResultsRef = useRef<HTMLDivElement>(null);
@@ -1388,7 +1693,7 @@ const LeadSearchPage: React.FC = () => {
     reason: [] as string[],
     tags: [] as string[],
     fileId: '',
-    status: [] as string[],
+    status: ['Active'] as string[],
     source: [] as string[],
     eligibilityDeterminedOnly: false,
     stage: [] as string[],
@@ -1443,6 +1748,8 @@ const LeadSearchPage: React.FC = () => {
   const [countryOptions, setCountryOptions] = useState<string[]>([]);
   const [flagTypeRows, setFlagTypeRows] = useState<FlagTypeRow[]>([]);
   const [flagTypeSearch, setFlagTypeSearch] = useState('');
+  const [fileIdFocused, setFileIdFocused] = useState(false);
+  const [contentFocused, setContentFocused] = useState(false);
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
   const [filteredTopicOptions, setFilteredTopicOptions] = useState<string[]>([]);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
@@ -1480,13 +1787,18 @@ const LeadSearchPage: React.FC = () => {
     storage: 'sessionStorage',
   });
   const [showColumnSelector, setShowColumnSelector] = useState(false);
+  // After a search, filters collapse; reopen via bottom funnel.
   const [showFiltersPanel, setShowFiltersPanel] = useState(true);
-  const [quickBarOpen, setQuickBarOpen] = useState(true);
+  // Bottom quick bar starts collapsed to icons once a search has run.
+  const [quickBarOpen, setQuickBarOpen] = useState(false);
   const [activeMobileFilter, setActiveMobileFilter] = useState<MobileFilterKey | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (searchPerformed) setShowFiltersPanel(false);
+    if (searchPerformed) {
+      setShowFiltersPanel(false);
+      setQuickBarOpen(false);
+    }
   }, []);
 
   const appliedAdvancedFilterCount = useMemo(() => {
@@ -1505,13 +1817,15 @@ const LeadSearchPage: React.FC = () => {
     return count;
   }, [filters]);
 
-  const filtersPanelHidden = searchPerformed && !showFiltersPanel;
+  // Before first search: always show the filter box. After search: only when funnel is opened.
+  const showAdvancedFilters = !searchPerformed || showFiltersPanel;
 
   const toggleFiltersPanel = useCallback(() => {
     setShowFiltersPanel((prev) => {
       const next = !prev;
       if (next) {
-        // Scroll the layout main pane fully to top so "Leads Search" title + filters are visible.
+        // Move date/search back to the top header; collapse the bottom quick bar.
+        setQuickBarOpen(false);
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             const start = pageTopRef.current;
@@ -1535,15 +1849,15 @@ const LeadSearchPage: React.FC = () => {
     });
   }, []);
 
-  // After search finishes and DOM updates, scroll to cards grid or table (premium UX)
+  // After search finishes and DOM updates, scroll to the count heading (not the cards)
+  // so "Found N leads" stays visible below the sticky app header.
   useEffect(() => {
     if (isSearching || !scrollToResultsAfterSearchRef.current) return;
     scrollToResultsAfterSearchRef.current = false;
     if (results.length === 0) return;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const target =
-          viewMode === 'cards' ? cardsGridRef.current : tableResultsRef.current ?? resultsRef.current;
+        const target = resultsCountRef.current ?? resultsRef.current;
         target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
@@ -2137,6 +2451,16 @@ const LeadSearchPage: React.FC = () => {
     }));
   };
 
+  const isActiveStatusMode =
+    !(filters.status.length === 1 && filters.status[0] === 'Not active');
+
+  const setActiveStatusMode = (active: boolean) => {
+    setFilters((prev) => ({
+      ...prev,
+      status: active ? ['Active'] : ['Not active'],
+    }));
+  };
+
   const handleMultiClearAll = (field: string) => {
     setFilters((prev) => ({
       ...prev,
@@ -2319,29 +2643,6 @@ const LeadSearchPage: React.FC = () => {
 
   const renderFlagTypesFilterControl = (sheetMode = false) => (
     <div className={`relative ${sheetMode ? '' : 'form-control flex flex-col'}`}>
-      {!sheetMode && (
-        <label className="label mb-2">
-          <span className="label-text">Flagged</span>
-          {filters.flagTypes && filters.flagTypes.length > 0 && (
-            <span className="label-text-alt flex items-center gap-2">
-              <span className="text-purple-600 font-medium">
-                {filters.flagTypes.length} selected
-              </span>
-              <button
-                type="button"
-                className="text-xs font-semibold text-base-content/55 hover:text-error underline-offset-2 hover:underline"
-                onClick={(e) => {
-                  e.preventDefault();
-                  setFilters((prev) => ({ ...prev, flagTypes: [] }));
-                  setFlagTypeSearch('');
-                }}
-              >
-                Unselect all
-              </button>
-            </span>
-          )}
-        </label>
-      )}
       {sheetMode && filters.flagTypes && filters.flagTypes.length > 0 && (
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-purple-600">{filters.flagTypes.length} selected</span>
@@ -2357,61 +2658,40 @@ const LeadSearchPage: React.FC = () => {
           </button>
         </div>
       )}
-      <input
-        type="text"
-        className="input input-bordered w-full mb-2"
-        placeholder="Search flag types..."
-        value={flagTypeSearch}
-        onChange={(e) => {
-          setFlagTypeSearch(e.target.value);
-          if (!showFlagTypesDropdown) setShowFlagTypesDropdown(true);
-        }}
-        onFocus={() => setShowFlagTypesDropdown(true)}
-      />
-      <div
-        className="w-full min-h-[42px] px-3 py-2 border border-base-300 rounded-md cursor-text flex flex-wrap gap-2 items-center bg-base-100"
-        onClick={() => setShowFlagTypesDropdown(true)}
-      >
-        {filters.flagTypes && filters.flagTypes.length > 0 ? (
-          filters.flagTypes.map((flagTypeId) => {
-            const ft = flagTypeRows.find((t) => String(t.id) === String(flagTypeId));
-            if (!ft) {
-              return (
-                <div key={flagTypeId} className="badge badge-primary badge-sm flex items-center gap-1">
-                  <span>{flagTypeId}</span>
-                  <button
-                    type="button"
-                    className="ml-1 hover:text-red-200"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleFlagTypeSelection(String(flagTypeId));
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              );
-            }
-            return (
-              <div key={flagTypeId} className="badge badge-primary badge-sm flex items-center gap-1">
-                <span>{ft.label}</span>
-                <button
-                  type="button"
-                  className="ml-1 hover:text-red-200"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleFlagTypeSelection(String(flagTypeId));
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            );
-          })
-        ) : (
-          <span className="text-gray-400 text-sm">Click to select flag types...</span>
-        )}
-      </div>
+      {sheetMode ? (
+        <input
+          type="text"
+          className={filterInputBorderedClass}
+          value={flagTypeSearch}
+          onChange={(e) => {
+            setFlagTypeSearch(e.target.value);
+            if (!showFlagTypesDropdown) setShowFlagTypesDropdown(true);
+          }}
+          onFocus={() => setShowFlagTypesDropdown(true)}
+          aria-label="Flagged"
+        />
+      ) : (
+        <FloatingFilterField
+          label="Flagged"
+          floated={
+            showFlagTypesDropdown ||
+            flagTypeSearch.length > 0 ||
+            (filters.flagTypes?.length ?? 0) > 0
+          }
+        >
+          <input
+            type="text"
+            className={filterInputBorderedClass}
+            value={flagTypeSearch}
+            onChange={(e) => {
+              setFlagTypeSearch(e.target.value);
+              if (!showFlagTypesDropdown) setShowFlagTypesDropdown(true);
+            }}
+            onFocus={() => setShowFlagTypesDropdown(true)}
+            aria-label="Flagged"
+          />
+        </FloatingFilterField>
+      )}
       {showFlagTypesDropdown && (
         <>
           {!sheetMode && (
@@ -2453,6 +2733,23 @@ const LeadSearchPage: React.FC = () => {
           </div>
         </>
       )}
+      {!sheetMode && (
+        <FilterSelectionMeta
+          count={filters.flagTypes?.length ?? 0}
+          onClearAll={() => {
+            setFilters((prev) => ({ ...prev, flagTypes: [] }));
+            setFlagTypeSearch('');
+          }}
+        />
+      )}
+      <SelectedFilterChips
+        values={filters.flagTypes ?? []}
+        onRemove={(flagTypeId) => toggleFlagTypeSelection(String(flagTypeId))}
+        getLabel={(flagTypeId) => {
+          const ft = flagTypeRows.find((t) => String(t.id) === String(flagTypeId));
+          return ft?.label ?? String(flagTypeId);
+        }}
+      />
     </div>
   );
 
@@ -2466,7 +2763,6 @@ const LeadSearchPage: React.FC = () => {
             label="Main Category"
             field="mainCategory"
             values={[]}
-            placeholder="Select main category to auto-select all subcategories..."
             options={filteredMainCategoryOptions}
             showDropdown={showMainCategoryDropdown}
             onSelect={handleMultiSelect}
@@ -2484,7 +2780,6 @@ const LeadSearchPage: React.FC = () => {
             label="Category"
             field="category"
             values={filters.category}
-            placeholder="Type category or choose from suggestions..."
             options={filteredCategoryOptions}
             showDropdown={showCategoryDropdown}
             onSelect={handleMultiSelect}
@@ -2502,7 +2797,6 @@ const LeadSearchPage: React.FC = () => {
             label="Reason"
             field="reason"
             values={filters.reason}
-            placeholder="Type reason or choose from suggestions..."
             options={filteredReasonOptions}
             showDropdown={showReasonDropdown}
             onSelect={handleMultiSelect}
@@ -2518,8 +2812,7 @@ const LeadSearchPage: React.FC = () => {
         return (
           <input
             type="text"
-            className="input w-full"
-            placeholder="Enter file id..."
+            className={filterInputClass}
             value={filters.fileId}
             onChange={e => handleFilterChange('fileId', e.target.value)}
             autoFocus
@@ -2531,7 +2824,6 @@ const LeadSearchPage: React.FC = () => {
             label="Language"
             field="language"
             values={filters.language}
-            placeholder="Type language or choose from suggestions..."
             options={filteredLanguageOptions}
             showDropdown={showLanguageDropdown}
             onSelect={handleMultiSelect}
@@ -2549,7 +2841,6 @@ const LeadSearchPage: React.FC = () => {
             label="Tags"
             field="tags"
             values={filters.tags}
-            placeholder="Type tag or choose from suggestions..."
             options={filteredTagOptions}
             showDropdown={showTagDropdown}
             onSelect={handleMultiSelect}
@@ -2567,7 +2858,6 @@ const LeadSearchPage: React.FC = () => {
             label="Status"
             field="status"
             values={filters.status}
-            placeholder="Select status..."
             options={filteredStatusOptions}
             showDropdown={showStatusDropdown}
             onSelect={handleMultiSelect}
@@ -2585,7 +2875,6 @@ const LeadSearchPage: React.FC = () => {
             label="Expert examination"
             field="expert_examination"
             values={filters.expert_examination}
-            placeholder="Select expert examination result..."
             options={filteredExpertExaminationOptions}
             showDropdown={showExpertExaminationDropdown}
             onSelect={handleMultiSelect}
@@ -2603,7 +2892,6 @@ const LeadSearchPage: React.FC = () => {
             label="Source"
             field="source"
             values={filters.source}
-            placeholder="Type source or choose from suggestions..."
             options={filteredSourceOptions}
             showDropdown={showSourceDropdown}
             onSelect={handleMultiSelect}
@@ -2636,7 +2924,6 @@ const LeadSearchPage: React.FC = () => {
             label="Stage"
             field="stage"
             values={filters.stage}
-            placeholder="Type stage or choose from suggestions..."
             options={filteredStageOptions}
             showDropdown={showStageDropdown}
             onSelect={handleMultiSelect}
@@ -2654,7 +2941,6 @@ const LeadSearchPage: React.FC = () => {
             label="Topic"
             field="topic"
             values={filters.topic}
-            placeholder="Type topic or choose from suggestions..."
             options={filteredTopicOptions}
             showDropdown={showTopicDropdown}
             onSelect={handleMultiSelect}
@@ -2672,7 +2958,6 @@ const LeadSearchPage: React.FC = () => {
             label="Scheduler"
             field="scheduler"
             values={filters.scheduler}
-            placeholder="Type scheduler name or choose from suggestions..."
             options={filteredRoleOptions}
             showDropdown={showSchedulerDropdown}
             onSelect={handleMultiSelect}
@@ -2690,7 +2975,6 @@ const LeadSearchPage: React.FC = () => {
             label="Manager"
             field="manager"
             values={filters.manager}
-            placeholder="Type manager name or choose from suggestions..."
             options={filteredRoleOptions}
             showDropdown={showManagerDropdown}
             onSelect={handleMultiSelect}
@@ -2708,7 +2992,6 @@ const LeadSearchPage: React.FC = () => {
             label="Lawyer"
             field="lawyer"
             values={filters.lawyer}
-            placeholder="Type lawyer name or choose from suggestions..."
             options={filteredRoleOptions}
             showDropdown={showLawyerDropdown}
             onSelect={handleMultiSelect}
@@ -2726,7 +3009,6 @@ const LeadSearchPage: React.FC = () => {
             label="Expert"
             field="expert"
             values={filters.expert}
-            placeholder="Type expert name or choose from suggestions..."
             options={filteredRoleOptions}
             showDropdown={showExpertDropdown}
             onSelect={handleMultiSelect}
@@ -2744,7 +3026,6 @@ const LeadSearchPage: React.FC = () => {
             label="Closer"
             field="closer"
             values={filters.closer}
-            placeholder="Type closer name or choose from suggestions..."
             options={filteredRoleOptions}
             showDropdown={showCloserDropdown}
             onSelect={handleMultiSelect}
@@ -2762,7 +3043,6 @@ const LeadSearchPage: React.FC = () => {
             label="Case Handler"
             field="case_handler"
             values={filters.case_handler}
-            placeholder="Type case handler name or choose from suggestions..."
             options={filteredRoleOptions}
             showDropdown={showCaseHandlerDropdown}
             onSelect={handleMultiSelect}
@@ -2780,7 +3060,6 @@ const LeadSearchPage: React.FC = () => {
             label="Country"
             field="country"
             values={filters.country}
-            placeholder="Type country name or choose from suggestions..."
             options={filteredCountryOptions}
             showDropdown={showCountryDropdown}
             onSelect={handleMultiSelect}
@@ -2798,8 +3077,7 @@ const LeadSearchPage: React.FC = () => {
         return (
           <input
             type="text"
-            className="input w-full"
-            placeholder="Search in lead content..."
+            className={filterInputClass}
             value={filters.content}
             onChange={e => handleFilterChange('content', e.target.value)}
             autoFocus
@@ -2908,29 +3186,18 @@ const LeadSearchPage: React.FC = () => {
       }
     }
 
-    // Create employee mappings for role filters
+    // Lookup maps — filled in one parallel round-trip (no per-search debug probes)
     const nameToIdMapping = new Map<string, number>();
     const idToNameMapping = new Map<number, string>();
+    const categoryNameToIdMapping = new Map<string, number>();
+    const languageNameToIdMapping = new Map<string, number>();
+    const sourceMapping = new Map<number, string>();
+    const stageMapping = new Map<number | string, string>();
+    const categoryMapping = new Map<number, string>();
+    const languageIdToName = new Map<number, string>();
+    const countryNameToPhoneCodeMap = new Map<string, string>();
 
-    // Fetch countries with phone codes for phone number matching
-    const countryNameToPhoneCodeMap = new Map<string, string>(); // country name -> phone_code (e.g., "+1", "+44")
-    try {
-      const { data: countriesData, error: countriesError } = await supabase
-        .from('misc_country')
-        .select('id, name, phone_code')
-        .not('phone_code', 'is', null);
-
-      if (!countriesError && countriesData) {
-        countriesData.forEach((country: any) => {
-          if (country.name && country.phone_code) {
-            countryNameToPhoneCodeMap.set(country.name, country.phone_code);
-          }
-        });
-        console.log('✅ Loaded country phone code mapping:', countryNameToPhoneCodeMap.size, 'countries');
-      }
-    } catch (error) {
-      console.error('Error fetching country phone codes:', error);
-    }
+    const needsCountryPhoneCodes = (filters.country?.length ?? 0) > 0;
 
     // Helper function to extract country code from phone number
     const extractCountryCodeFromPhone = (phone: string | null | undefined): string | null => {
@@ -3013,196 +3280,88 @@ const LeadSearchPage: React.FC = () => {
       return null;
     };
 
-    // Fetch categories and create reverse mapping (formatted name -> category_id) for filtering
-    // This avoids using ilike/eq queries during filtering - we use the mapping directly
-    const categoryNameToIdMapping = new Map<string, number>();
     try {
-      console.log('🔍 [Category Mapping] Fetching categories for mapping...');
-      const { data: categoriesData, error: categoriesError } = await supabase
-        .from('misc_category')
-        .select('id, name, parent_id, misc_maincategory!parent_id(id, name)')
-        .order('name');
+      const [
+        countriesResult,
+        categoriesDataResult,
+        languagesDataResult,
+        employeesResult,
+        sourcesLookupResult,
+        stagesLookupResult,
+      ] = await Promise.all([
+        needsCountryPhoneCodes
+          ? supabase.from('misc_country').select('id, name, phone_code').not('phone_code', 'is', null)
+          : Promise.resolve({ data: [] as any[], error: null }),
+        supabase
+          .from('misc_category')
+          .select('id, name, parent_id, misc_maincategory!parent_id(id, name)')
+          .order('name'),
+        supabase.from('misc_language').select('id, name').order('name'),
+        supabase.from('tenants_employee').select('id, display_name').not('display_name', 'is', null),
+        supabase.from('misc_leadsource').select('id, name'),
+        supabase.from('lead_stages').select('id, name'),
+      ]);
 
-      console.log('🔍 [Category Mapping] Categories fetch result:', {
-        categoriesCount: categoriesData?.length || 0,
-        categoriesError,
-        sampleCategories: categoriesData?.slice(0, 5)
-      });
+      if (!countriesResult.error && countriesResult.data) {
+        countriesResult.data.forEach((country: any) => {
+          if (country.name && country.phone_code) {
+            countryNameToPhoneCodeMap.set(country.name, country.phone_code);
+          }
+        });
+      }
 
-      if (categoriesData) {
-        categoriesData.forEach((category: any) => {
+      if (categoriesDataResult.data) {
+        categoriesDataResult.data.forEach((category: any) => {
           const mainRel = category.misc_maincategory;
-          const mainCategory = Array.isArray(mainRel)
-            ? mainRel[0]?.name
-            : mainRel?.name;
+          const mainCategory = Array.isArray(mainRel) ? mainRel[0]?.name : mainRel?.name;
           const formattedName = mainCategory
             ? `${category.name} (${mainCategory})`
             : category.name;
           categoryNameToIdMapping.set(formattedName, category.id);
-          // Also index bare subcategory name (last-write-wins if duplicate names across mains).
-          // Used only as fallback when formatted lookup misses.
           if (category.name && !categoryNameToIdMapping.has(category.name)) {
             categoryNameToIdMapping.set(category.name, category.id);
           }
-
-          // Debug log for first few categories
-          if (categoryNameToIdMapping.size <= 5) {
-            console.log('🔍 [Category Mapping] Added mapping:', {
-              formattedName,
-              categoryId: category.id,
-              categoryName: category.name,
-              mainCategory
-            });
-          }
-        });
-        console.log('✅ [Category Mapping] Created category name to ID mapping:', {
-          totalMappings: categoryNameToIdMapping.size,
-          sampleMappings: Array.from(categoryNameToIdMapping.entries()).slice(0, 10)
+          categoryMapping.set(category.id, formattedName);
         });
       }
-    } catch (error) {
-      console.error('❌ [Category Mapping] Error fetching categories for mapping:', error);
-    }
 
-    // Fetch languages for language_id filter (name -> id)
-    const languageNameToIdMapping = new Map<string, number>();
-    try {
-      const { data: languagesData } = await supabase
-        .from('misc_language')
-        .select('id, name')
-        .order('name');
-      if (languagesData) {
-        languagesData.forEach((lang: { id: number; name: string }) => {
+      if (languagesDataResult.data) {
+        languagesDataResult.data.forEach((lang: { id: number; name: string }) => {
           languageNameToIdMapping.set(lang.name, lang.id);
           if (lang.name && lang.name.toUpperCase() !== lang.name) {
             languageNameToIdMapping.set(lang.name.toUpperCase(), lang.id);
           }
+          languageIdToName.set(lang.id, lang.name);
         });
-        console.log('✅ [Language Mapping] Created language name to ID mapping:', languageNameToIdMapping.size);
       }
-    } catch (error) {
-      console.error('❌ [Language Mapping] Error fetching languages:', error);
-    }
 
-    try {
-      // Fetch employee data for role filtering
-      const { data: employees, error: empError } = await supabase
-        .from('tenants_employee')
-        .select('id, display_name')
-        .not('display_name', 'is', null);
-
-      if (!empError && employees) {
-        employees.forEach(employee => {
+      if (!employeesResult.error && employeesResult.data) {
+        employeesResult.data.forEach((employee: { id: number; display_name: string }) => {
           nameToIdMapping.set(employee.display_name, employee.id);
           idToNameMapping.set(employee.id, employee.display_name);
         });
-        console.log('✅ Loaded employee mappings for role filters:', nameToIdMapping.size, 'employees');
       }
 
-      // First, let's test basic table access without joins
-      console.log('🧪 Testing basic table access...');
-
-      try {
-        const basicNewLeadsTest = await supabase.from('leads').select('id, name, category, created_at').limit(10);
-        console.log('✅ Basic new leads test:', {
-          data: basicNewLeadsTest.data,
-          error: basicNewLeadsTest.error,
-          count: basicNewLeadsTest.data?.length || 0,
-          sampleDates: basicNewLeadsTest.data?.map(lead => ({
-            id: lead.id,
-            name: lead.name,
-            category: lead.category,
-            created_at: lead.created_at
-          }))
+      if (sourcesLookupResult.data) {
+        sourcesLookupResult.data.forEach((source: { id: number; name: string }) => {
+          sourceMapping.set(source.id, source.name);
         });
-      } catch (testError) {
-        console.error('❌ Basic new leads test failed:', testError);
       }
 
-      try {
-        const basicLegacyLeadsTest = await supabase.from('leads_lead').select('id, name, category, cdate').limit(10);
-        console.log('✅ Basic legacy leads test:', {
-          data: basicLegacyLeadsTest.data,
-          error: basicLegacyLeadsTest.error,
-          count: basicLegacyLeadsTest.data?.length || 0,
-          sampleDates: basicLegacyLeadsTest.data?.map(lead => ({
-            id: lead.id,
-            name: lead.name,
-            category: lead.category,
-            cdate: lead.cdate,
-            cdate_date: lead.cdate ? new Date(lead.cdate).toISOString().split('T')[0] : null
-          }))
+      if (stagesLookupResult.data) {
+        stagesLookupResult.data.forEach((stage: { id: number | string; name: string }) => {
+          stageMapping.set(stage.id, stage.name);
+          stageMapping.set(String(stage.id), stage.name);
+          const asNum = typeof stage.id === 'string' ? parseInt(stage.id, 10) : stage.id;
+          if (Number.isFinite(asNum)) stageMapping.set(asNum, stage.name);
         });
-      } catch (testError) {
-        console.error('❌ Basic legacy leads test failed:', testError);
-      }
-
-      // Now try with category join
-      console.log('🧪 Testing category join access...');
-
-      try {
-        const categoryJoinTest = await supabase
-          .from('leads')
-          .select(`
-            id,
-            name,
-            category,
-            misc_category!category_id (
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id (
-                id,
-                name
-              )
-            )
-          `)
-          .limit(3);
-        console.log('✅ Category join test for new leads:', {
-          data: categoryJoinTest.data,
-          error: categoryJoinTest.error,
-          count: categoryJoinTest.data?.length || 0
-        });
-      } catch (testError) {
-        console.error('❌ Category join test for new leads failed:', testError);
-      }
-
-      try {
-        const legacyCategoryJoinTest = await supabase
-          .from('leads_lead')
-          .select(`
-            id,
-            name,
-            category,
-            misc_category!category_id (
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id (
-                id,
-                name
-              )
-            )
-          `)
-          .limit(3);
-        console.log('✅ Category join test for legacy leads:', {
-          data: legacyCategoryJoinTest.data,
-          error: legacyCategoryJoinTest.error,
-          count: legacyCategoryJoinTest.data?.length || 0
-        });
-      } catch (testError) {
-        console.error('❌ Category join test for legacy leads failed:', testError);
       }
 
       // Search new leads table with joins for category, source, language (no client-side mapping)
       let newLeadsQuery = supabase
         .from('leads')
-        .select(`
-          *,
-          misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name)),
-          misc_leadsource!fk_leads_source_id(id, name),
-          misc_language!fk_leads_language_id(id, name)
-        `);
+        .select(NEW_LEADS_SEARCH_SELECT);
+
 
       console.log('📋 New leads query base ready');
 
@@ -3653,19 +3812,7 @@ const LeadSearchPage: React.FC = () => {
       // Search legacy leads table with joins for language, category, source, employees
       let legacyLeadsQuery = supabase
         .from('leads_lead')
-        .select(`
-          *,
-          misc_language!leads_lead_language_id_fkey(id, name),
-          misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name)),
-          misc_leadsource!leads_lead_source_id_fkey(id, name),
-          scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
-          manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
-          lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
-          expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
-          closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
-          handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
-          reason_record:misc_reason!fk_leads_lead_reason_id(name)
-        `);
+        .select(LEGACY_LEADS_SEARCH_SELECT);
 
       console.log('📋 Legacy leads query base:', legacyLeadsQuery);
 
@@ -3973,7 +4120,7 @@ const LeadSearchPage: React.FC = () => {
               .from('leads_lead_tags')
               .select('lead_id, newlead_id, leadtag_id')
               .in('leadtag_id', tagIds)
-              .limit(10000);
+              .limit(LEAD_SEARCH_PAGE_LIMIT);
 
             if (linkError) throw linkError;
 
@@ -4069,7 +4216,7 @@ const LeadSearchPage: React.FC = () => {
       // Supabase default limit is 1000, but we'll set it explicitly to be safe
       console.log('🚀 [Query Execution] Executing queries with limits...');
       const [newLeadsResult, legacyLeadsResult] = await Promise.all([
-        newLeadsQuery.order('created_at', { ascending: false }).limit(10000),
+        newLeadsQuery.order('created_at', { ascending: false }).limit(LEAD_SEARCH_PAGE_LIMIT),
         (() => {
           let q = legacyLeadsQuery;
           if (flagFilterActive && flaggedLegacyLeadIds) {
@@ -4080,7 +4227,7 @@ const LeadSearchPage: React.FC = () => {
               q = q.in('id', legacyIds.slice(0, 500));
             }
           }
-          return q.order('cdate', { ascending: false }).limit(10000);
+          return q.order('cdate', { ascending: false }).limit(LEAD_SEARCH_PAGE_LIMIT);
         })(),
       ]);
 
@@ -4263,132 +4410,6 @@ const LeadSearchPage: React.FC = () => {
         throw legacyLeadsResult.error;
       }
 
-      // DEBUG: L224599 — why Main Category USA may miss this lead
-      try {
-        const DEBUG_LEAD_NUMBER = 'L224599';
-        const resolvedIds = resolvedCategories?.categoryIds || [];
-        const inNewResults = (newLeadsResult.data || []).some(
-          (l: any) => String(l.lead_number || '') === DEBUG_LEAD_NUMBER || String(l.manual_id || '') === DEBUG_LEAD_NUMBER
-        );
-        const inLegacyResults = (legacyLeadsResult.data || []).some(
-          (l: any) => String(l.id) === '224599' || String(l.manual_id || '') === DEBUG_LEAD_NUMBER
-        );
-
-        const { data: debugNewLead } = await supabase
-          .from('leads')
-          .select(`
-            id, lead_number, manual_id, name, created_at, category, category_id,
-            misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
-          `)
-          .or(`lead_number.eq.${DEBUG_LEAD_NUMBER},manual_id.eq.${DEBUG_LEAD_NUMBER}`)
-          .maybeSingle();
-
-        const { data: debugLegacyLead } = await supabase
-          .from('leads_lead')
-          .select(`
-            id, name, cdate, category, category_id,
-            misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))
-          `)
-          .or(`id.eq.224599,manual_id.eq.${DEBUG_LEAD_NUMBER}`)
-          .maybeSingle();
-
-        const describeCategory = (lead: any) => {
-          if (!lead) return null;
-          const cat = lead.misc_category;
-          const mainRel = cat?.misc_maincategory;
-          const main = Array.isArray(mainRel) ? mainRel[0] : mainRel;
-          return {
-            category_id: lead.category_id ?? null,
-            category_text: lead.category ?? null,
-            subcategory: cat?.name ?? null,
-            main_category: main?.name ?? null,
-            parent_id: cat?.parent_id ?? null,
-            formatted: cat?.name
-              ? (main?.name ? `${cat.name} (${main.name})` : cat.name)
-              : lead.category ?? null,
-            categoryIdInResolvedFilter:
-              lead.category_id != null ? resolvedIds.includes(Number(lead.category_id)) : false,
-          };
-        };
-
-        const createdAt = debugNewLead?.created_at ? String(debugNewLead.created_at) : null;
-        const createdDay = createdAt ? createdAt.split('T')[0] : null;
-        const legacyDay = debugLegacyLead?.cdate
-          ? String(debugLegacyLead.cdate).split('T')[0]
-          : null;
-        const datePassNew =
-          !createdDay ||
-          ((!filters.fromDate || createdDay >= filters.fromDate) &&
-            (!filters.toDate || createdDay <= filters.toDate));
-        const datePassLegacy =
-          !legacyDay ||
-          ((!filters.fromDate || legacyDay >= filters.fromDate) &&
-            (!filters.toDate || legacyDay <= filters.toDate));
-
-        console.log(`🔍 DEBUG ${DEBUG_LEAD_NUMBER}: Main Category / USA miss analysis`, {
-          filters: {
-            fromDate: filters.fromDate,
-            toDate: filters.toDate,
-            categorySelectedCount: filters.category?.length || 0,
-            categorySelectedSample: (filters.category || []).slice(0, 8),
-            resolvedCategoryIdsCount: resolvedIds.length,
-            mainCategoriesExpanded: resolvedCategories?.mainCategoriesExpanded || [],
-            unresolvedLabels: resolvedCategories?.unresolvedLabels || [],
-          },
-          inQueryResults: { new: inNewResults, legacy: inLegacyResults },
-          newLead: debugNewLead
-            ? {
-                id: debugNewLead.id,
-                lead_number: debugNewLead.lead_number,
-                created_at: debugNewLead.created_at,
-                createdDay,
-                dateFilterPass: datePassNew,
-                category: describeCategory(debugNewLead),
-              }
-            : null,
-          legacyLead: debugLegacyLead
-            ? {
-                id: debugLegacyLead.id,
-                cdate: debugLegacyLead.cdate,
-                legacyDay,
-                dateFilterPass: datePassLegacy,
-                category: describeCategory(debugLegacyLead),
-              }
-            : null,
-          likelyReasons: [
-            !debugNewLead && !debugLegacyLead
-              ? 'Lead not found in leads or leads_lead by L224599 / id 224599'
-              : null,
-            debugNewLead && !datePassNew
-              ? `NEW lead created_at day ${createdDay} outside date range ${filters.fromDate}..${filters.toDate}`
-              : null,
-            debugLegacyLead && !datePassLegacy
-              ? `LEGACY lead cdate day ${legacyDay} outside date range ${filters.fromDate}..${filters.toDate}`
-              : null,
-            debugNewLead &&
-            filters.category?.length > 0 &&
-            debugNewLead.category_id != null &&
-            !resolvedIds.includes(Number(debugNewLead.category_id))
-              ? `NEW lead category_id ${debugNewLead.category_id} NOT in resolved USA/main child ids (${resolvedIds.length} ids)`
-              : null,
-            debugLegacyLead &&
-            filters.category?.length > 0 &&
-            debugLegacyLead.category_id != null &&
-            !resolvedIds.includes(Number(debugLegacyLead.category_id))
-              ? `LEGACY lead category_id ${debugLegacyLead.category_id} NOT in resolved USA/main child ids (${resolvedIds.length} ids)`
-              : null,
-            debugNewLead && filters.category?.length > 0 && debugNewLead.category_id == null
-              ? 'NEW lead has null category_id (ID filter cannot match; needs text category fallback)'
-              : null,
-            debugLegacyLead && filters.category?.length > 0 && debugLegacyLead.category_id == null
-              ? 'LEGACY lead has null category_id (legacy filter is category_id-only)'
-              : null,
-          ].filter(Boolean),
-        });
-      } catch (debugErr) {
-        console.warn('🔍 DEBUG L224599: analysis failed', debugErr);
-      }
-
       // Format category display to show main and sub category together
       const formatCategoryDisplay = (lead: any) => {
         // Check if we have joined category data
@@ -4517,12 +4538,7 @@ const LeadSearchPage: React.FC = () => {
           // We need to apply all the same filters but skip the country_id filter
           let phoneCheckQuery = supabase
             .from('leads')
-            .select(`
-              *,
-              misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name)),
-              misc_leadsource!fk_leads_source_id(id, name),
-              misc_language!fk_leads_language_id(id, name)
-            `);
+            .select(NEW_LEADS_SEARCH_SELECT);
 
           // Apply all the same filters as newLeadsQuery, but skip country_id
           // Date filters
@@ -4766,7 +4782,7 @@ const LeadSearchPage: React.FC = () => {
           
           // Fetch new leads with all filters EXCEPT country_id to check for phone number matches
           const { data: filteredLeadsForPhoneCheck, error: filteredLeadsError } = await phoneCheckQuery
-            .limit(10000);
+            .limit(LEAD_SEARCH_PAGE_LIMIT);
 
           if (!filteredLeadsError && filteredLeadsForPhoneCheck) {
             // Find leads that match by phone but might not match by country_id
@@ -4893,67 +4909,7 @@ const LeadSearchPage: React.FC = () => {
         console.log('🔍 First legacy lead sample data:', legacyLeadsResult.data[0]);
       }
 
-      // Create source, stage, category, language, and employee mapping for legacy leads
-      const sourceMapping = new Map<number, string>();
-      const stageMapping = new Map<number, string>();
-      const categoryMapping = new Map<number, string>();
-      const languageIdToName = new Map<number, string>();
-
-      try {
-        const [sourcesResult, stagesResult, categoriesResult, languagesResult, employeesResult] = await Promise.all([
-          supabase.from('misc_leadsource').select('id, name'),
-          supabase.from('lead_stages').select('id, name'),
-          supabase.from('misc_category').select('id, name, parent_id, misc_maincategory!parent_id(id, name)'),
-          supabase.from('misc_language').select('id, name'),
-          supabase.from('tenants_employee').select('id, display_name').not('display_name', 'is', null)
-        ]);
-
-        if (sourcesResult.data) {
-          sourcesResult.data.forEach(source => {
-            sourceMapping.set(source.id, source.name);
-          });
-          console.log('✅ Loaded source mapping:', sourceMapping.size, 'sources');
-        }
-
-        if (stagesResult.data) {
-          stagesResult.data.forEach(stage => {
-            // Store both string and numeric keys to handle both cases
-            stageMapping.set(stage.id, stage.name);
-            stageMapping.set(stage.id.toString(), stage.name);
-            stageMapping.set(parseInt(stage.id), stage.name);
-          });
-          console.log('✅ Loaded stage mapping:', stageMapping.size, 'stages');
-          console.log('🔍 Sample stage mapping entries:', Array.from(stageMapping.entries()).slice(0, 5));
-        }
-
-        if (categoriesResult.data) {
-          categoriesResult.data.forEach(category => {
-            const mainRel = (category as any).misc_maincategory;
-            const mainCategory = Array.isArray(mainRel)
-              ? mainRel[0]?.name
-              : mainRel?.name;
-            const categoryName = mainCategory
-              ? `${category.name} (${mainCategory})`
-              : category.name;
-            categoryMapping.set(category.id, categoryName);
-          });
-          console.log('✅ Loaded category mapping:', categoryMapping.size, 'categories');
-        }
-
-        if (languagesResult.data) {
-          languagesResult.data.forEach((lang: { id: number; name: string }) => {
-            languageIdToName.set(lang.id, lang.name);
-          });
-          console.log('✅ Loaded language mapping:', languageIdToName.size, 'languages');
-        }
-
-        if (employeesResult.data) {
-          // Employee mapping already created at the beginning of search function
-          console.log('✅ Employee data available for mapping:', employeesResult.data.length, 'employees');
-        }
-      } catch (error) {
-        console.log('⚠️ Failed to load source/stage/category/employee mapping:', error);
-      }
+      // Lookup maps already loaded in the parallel prefetch above (no second round-trip)
 
       // If filtering for N/A only, filter out legacy leads with non-null language_id
       const hasNAFilterOnlyLegacy = filters.language &&
@@ -5348,23 +5304,6 @@ const LeadSearchPage: React.FC = () => {
         results: allResults
       });
 
-      const debugL224599Final = allResults.find(
-        (l: any) =>
-          String(l.lead_number || '') === 'L224599' ||
-          String(l.display_lead_number || '') === 'L224599' ||
-          String(l.manual_id || '') === 'L224599' ||
-          String(l.id || '') === '224599' ||
-          String(l.id || '') === 'legacy_224599'
-      );
-      console.log('🔍 DEBUG L224599: present in final results?', Boolean(debugL224599Final), debugL224599Final
-        ? {
-            id: (debugL224599Final as any).id,
-            lead_type: (debugL224599Final as any).lead_type,
-            category: (debugL224599Final as any).category,
-            created_at: (debugL224599Final as any).created_at,
-          }
-        : null);
-
       scrollToResultsAfterSearchRef.current = true;
       setResults(allResults);
     } catch (error) {
@@ -5436,7 +5375,7 @@ const LeadSearchPage: React.FC = () => {
       'cursor-pointer',
       'group',
       isMenuOpen ? 'relative z-30' : 'relative z-0',
-      isInactive ? 'bg-gray-100 border-0' : 'bg-white border border-gray-100',
+      isInactive ? 'bg-gray-100 border-0' : 'bg-white border-0',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -5537,7 +5476,8 @@ const LeadSearchPage: React.FC = () => {
 
   return (
     <div ref={pageTopRef} className="w-full max-w-full pt-4 pb-6 px-1.5 sm:px-4 md:px-8 md:py-8 min-w-0 bg-gray-100 dark:bg-base-300 min-h-full">
-      {/* Quick search + view toolbar — bottom-right */}
+      {/* After search (filters closed): date/search/view live in the bottom icon bar */}
+      {searchPerformed && !showFiltersPanel && (
       <div
         className="fixed right-1.5 md:right-3 z-[35] bottom-[max(4.5rem,calc(3.75rem+env(safe-area-inset-bottom,0px)+0.5rem))] md:bottom-8"
         role="toolbar"
@@ -5584,27 +5524,25 @@ const LeadSearchPage: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center justify-end gap-2 rounded-2xl border border-base-200/20 bg-base-100/15 px-3 py-2.5 shadow-md backdrop-blur-[2px] dark:border-base-content/5 dark:bg-base-300/15">
-                {searchPerformed && (
-                  <button
-                    type="button"
-                    className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
-                      showFiltersPanel
-                        ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
-                        : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
-                    }`}
-                    onClick={toggleFiltersPanel}
-                    title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
-                    aria-pressed={showFiltersPanel}
-                    aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
-                  >
-                    <FunnelIcon className="h-5 w-5" aria-hidden />
-                    {appliedAdvancedFilterCount > 0 && (
-                      <span className="absolute -top-1 -right-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
-                        {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
-                      </span>
-                    )}
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                    showFiltersPanel
+                      ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
+                      : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
+                  }`}
+                  onClick={toggleFiltersPanel}
+                  title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
+                  aria-pressed={showFiltersPanel}
+                  aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
+                >
+                  <FunnelIcon className="h-5 w-5" aria-hidden />
+                  {appliedAdvancedFilterCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                      {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
+                    </span>
+                  )}
+                </button>
                 <button
                   type="button"
                   className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
@@ -5698,27 +5636,25 @@ const LeadSearchPage: React.FC = () => {
                 onChange={e => handleFilterChange('toDate', e.target.value)}
                 title="To date"
               />
-              {searchPerformed && (
-                <button
-                  type="button"
-                  className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
-                    showFiltersPanel
-                      ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
-                      : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
-                  }`}
-                  onClick={toggleFiltersPanel}
-                  title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
-                  aria-pressed={showFiltersPanel}
-                  aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
-                >
-                  <FunnelIcon className="h-5 w-5" aria-hidden />
-                  {appliedAdvancedFilterCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
-                      {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
-                    </span>
-                  )}
-                </button>
-              )}
+              <button
+                type="button"
+                className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                  showFiltersPanel
+                    ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
+                    : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
+                }`}
+                onClick={toggleFiltersPanel}
+                title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
+                aria-pressed={showFiltersPanel}
+                aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
+              >
+                <FunnelIcon className="h-5 w-5" aria-hidden />
+                {appliedAdvancedFilterCount > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                    {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
+                  </span>
+                )}
+              </button>
               <button
                 type="button"
                 className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
@@ -5804,392 +5740,517 @@ const LeadSearchPage: React.FC = () => {
           )}
         </div>
       </div>
+      )}
 
-      <h1
-        className={`text-3xl font-bold mb-6 md:px-0 ${filtersPanelHidden ? 'hidden' : ''}`}
-      >
-        Leads Search
-      </h1>
-
-      {/* Search Form */}
-      <div
-        className={`mb-8 md:px-0 ${filtersPanelHidden ? 'hidden' : ''} ${isSearching ? 'max-md:hidden' : ''}`}
-      >
-        <div className="rounded-2xl border border-gray-200/80 bg-white p-4 sm:p-5 shadow-sm dark:border-base-content/10 dark:bg-base-100">
-        {/* Mobile: horizontal filter chips */}
-        <div className="md:hidden mb-4 -mx-1">
+      {/* Title + Status/Eligible toggles; dates/search before first search or when filters reopen from bottom */}
+      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between md:gap-6 md:px-0">
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-5">
+          <h1 className="text-3xl font-bold shrink-0">Leads Search</h1>
           <div
-            className="flex gap-2 overflow-x-auto pb-1 px-1 snap-x snap-mandatory [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-            role="toolbar"
-            aria-label="Lead search filters"
+            className="flex flex-wrap items-center gap-2.5"
+            role="group"
+            aria-label="Lead status toggles"
           >
-            {MOBILE_FILTER_CHIPS.map(({ key, label }) => {
-              const active = isMobileFilterActive(key);
-              const count = getMobileFilterCount(key);
-              const isOpen = activeMobileFilter === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => (isOpen ? closeMobileFilter() : openMobileFilter(key))}
-                  className={`shrink-0 snap-start inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors active:scale-[0.98] ${
-                    isOpen || active
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-gray-200 bg-gray-50 text-gray-700'
-                  }`}
-                  aria-expanded={isOpen}
-                >
-                  <span className="whitespace-nowrap">{label}</span>
-                  {count > 0 && (
-                    <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-bold text-primary-content">
-                      {count > 9 ? '9+' : count}
-                    </span>
-                  )}
-                  <ChevronDownIcon className={`h-4 w-4 shrink-0 opacity-60 transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden />
-                </button>
-              );
-            })}
+            <label className="inline-flex items-center gap-2.5 cursor-pointer select-none rounded-2xl bg-white px-3.5 py-2.5 shadow-sm dark:bg-base-100">
+              <span
+                className={`text-sm font-medium ${
+                  !isActiveStatusMode ? 'text-base-content/80' : 'text-base-content/40'
+                }`}
+              >
+                Not active
+              </span>
+              <input
+                type="checkbox"
+                className="toggle toggle-sm toggle-primary"
+                checked={isActiveStatusMode}
+                onChange={(e) => setActiveStatusMode(e.target.checked)}
+                aria-label={isActiveStatusMode ? 'Showing active leads' : 'Showing not active leads'}
+              />
+              <span
+                className={`text-sm font-medium ${
+                  isActiveStatusMode ? 'text-base-content/80' : 'text-base-content/40'
+                }`}
+              >
+                Active
+              </span>
+            </label>
+            <label className="inline-flex items-center gap-2.5 cursor-pointer select-none rounded-2xl bg-white px-3.5 py-2.5 shadow-sm dark:bg-base-100">
+              <input
+                type="checkbox"
+                className="toggle toggle-sm toggle-primary"
+                checked={filters.eligibilityDeterminedOnly}
+                onChange={(e) => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
+                aria-label="Eligible only"
+              />
+              <span className="text-sm font-medium text-base-content/80">Eligible</span>
+            </label>
           </div>
         </div>
 
-        <div className="hidden md:grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-          {/* Main Category and Category: full width on mobile */}
-          <div className="col-span-2 lg:col-span-1">
-            <MainCategoryInput
-              label="Main Category"
-              field="mainCategory"
-              values={[]} // Main categories don't get stored in filters, they auto-select subcategories
-              placeholder="Select main category to auto-select all subcategories..."
-              options={filteredMainCategoryOptions}
-              showDropdown={showMainCategoryDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-              onMainCategorySelect={handleMainCategorySelect}
-            />
-          </div>
-          <div className="col-span-2 lg:col-span-1">
-            <MultiSelectInput
-              label="Category"
-              field="category"
-              values={filters.category}
-              placeholder="Type category or choose from suggestions..."
-              options={filteredCategoryOptions}
-              showDropdown={showCategoryDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          {/* Rest: two columns on mobile */}
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Reason"
-              field="reason"
-              values={filters.reason}
-              placeholder="Type reason or choose from suggestions..."
-              options={filteredReasonOptions}
-              showDropdown={showReasonDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1">
-            <div className="form-control flex flex-col relative">
-              <label className="label mb-2"><span className="label-text">File id</span></label>
-              <input type="text" className="input" value={filters.fileId} onChange={e => handleFilterChange('fileId', e.target.value)} />
-            </div>
-          </div>
-
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Language"
-              field="language"
-              values={filters.language}
-              placeholder="Type language or choose from suggestions..."
-              options={filteredLanguageOptions}
-              showDropdown={showLanguageDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Tags"
-              field="tags"
-              values={filters.tags}
-              placeholder="Type tag or choose from suggestions..."
-              options={filteredTagOptions}
-              showDropdown={showTagDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Status"
-              field="status"
-              values={filters.status}
-              placeholder="Select status..."
-              options={filteredStatusOptions}
-              showDropdown={showStatusDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Expert examination"
-              field="expert_examination"
-              values={filters.expert_examination}
-              placeholder="Select expert examination result..."
-              options={filteredExpertExaminationOptions}
-              showDropdown={showExpertExaminationDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Source"
-              field="source"
-              values={filters.source}
-              placeholder="Type source or choose from suggestions..."
-              options={filteredSourceOptions}
-              showDropdown={showSourceDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1">
-            <div className="form-control flex flex-col">
-              <label className="label mb-2">
-                <span className="label-text">Eligible</span>
-              </label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  className="toggle toggle-primary"
-                  checked={filters.eligibilityDeterminedOnly}
-                  onChange={e => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
-                />
-                <span className="text-xs text-gray-500">
-                  Show only leads where eligibility is determined
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Stage"
-              field="stage"
-              values={filters.stage}
-              placeholder="Type stage or choose from suggestions..."
-              options={filteredStageOptions}
-              showDropdown={showStageDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Topic"
-              field="topic"
-              values={filters.topic}
-              placeholder="Type topic or choose from suggestions..."
-              options={filteredTopicOptions}
-              showDropdown={showTopicDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Scheduler"
-              field="scheduler"
-              values={filters.scheduler}
-              placeholder="Type scheduler name or choose from suggestions..."
-              options={filteredRoleOptions}
-              showDropdown={showSchedulerDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Manager"
-              field="manager"
-              values={filters.manager}
-              placeholder="Type manager name or choose from suggestions..."
-              options={filteredRoleOptions}
-              showDropdown={showManagerDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Lawyer"
-              field="lawyer"
-              values={filters.lawyer}
-              placeholder="Type lawyer name or choose from suggestions..."
-              options={filteredRoleOptions}
-              showDropdown={showLawyerDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Expert"
-              field="expert"
-              values={filters.expert}
-              placeholder="Type expert name or choose from suggestions..."
-              options={filteredRoleOptions}
-              showDropdown={showExpertDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Closer"
-              field="closer"
-              values={filters.closer}
-              placeholder="Type closer name or choose from suggestions..."
-              options={filteredRoleOptions}
-              showDropdown={showCloserDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Case Handler"
-              field="case_handler"
-              values={filters.case_handler}
-              placeholder="Type case handler name or choose from suggestions..."
-              options={filteredRoleOptions}
-              showDropdown={showCaseHandlerDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            <MultiSelectInput
-              label="Country"
-              field="country"
-              values={filters.country}
-              placeholder="Type country name or choose from suggestions..."
-              options={filteredCountryOptions}
-              showDropdown={showCountryDropdown}
-              onSelect={handleMultiSelect}
-              onRemove={handleMultiRemove}
-              onClearAll={handleMultiClearAll}
-              onFilterChange={handleFilterChange}
-              onShowDropdown={handleShowDropdown}
-              onHideDropdown={handleHideDropdown}
-            />
-          </div>
-          <div className="col-span-1 [&>div]:!col-span-1">
-            {renderFlagTypesFilterControl(false)}
-          </div>
-          <div className="col-span-1">
-            <div className="form-control flex flex-col">
-              <label className="label mb-2"><span className="label-text">Content</span></label>
-              <input type="text" className="input" value={filters.content} onChange={e => handleFilterChange('content', e.target.value)} />
-            </div>
-          </div>
-
-          {/* Column Selector + Excel export (table view) */}
-          {viewMode === 'table' && (
-            <div className="col-span-1 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-2 sm:gap-3 items-end">
-              <div className="min-w-0 [&>div]:!col-span-1">
-                <ColumnSelector
-                  selectedColumns={selectedColumns}
-                  onColumnsChange={setSelectedColumns}
-                  showDropdown={showColumnSelector}
-                  onShowDropdown={() => handleShowDropdown('columns')}
-                  onHideDropdown={() => handleHideDropdown('columns')}
-                />
-              </div>
+        {(!searchPerformed || showFiltersPanel) && (
+          <div
+            className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end md:w-auto md:justify-end"
+            role="search"
+            aria-label="Date range and search"
+          >
+            <label className="flex min-w-0 flex-1 flex-col gap-1 sm:max-w-[11rem]">
+              <span className="text-sm font-medium text-base-content/70">From</span>
+              <input
+                type="date"
+                className="input input-bordered h-11 min-h-[44px] w-full text-sm"
+                value={filters.fromDate}
+                onChange={e => handleFilterChange('fromDate', e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleSearch();
+                  }
+                }}
+                title="From date"
+              />
+            </label>
+            <label className="flex min-w-0 flex-1 flex-col gap-1 sm:max-w-[11rem]">
+              <span className="text-sm font-medium text-base-content/70">To</span>
+              <input
+                type="date"
+                className="input input-bordered h-11 min-h-[44px] w-full text-sm"
+                value={filters.toDate}
+                onChange={e => handleFilterChange('toDate', e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleSearch();
+                  }
+                }}
+                title="To date"
+              />
+            </label>
+            <button
+              type="button"
+              className={`btn h-11 min-h-[44px] gap-2 px-8 shrink-0 rounded-full border-0 shadow-sm ${
+                isAltTheme ? 'text-white hover:brightness-95' : 'btn-primary'
+              } ${isSearching ? 'cursor-wait' : ''}`}
+              style={isAltTheme ? { background: 'rgba(80, 93, 87, 0.92)' } : undefined}
+              onClick={handleSearch}
+              disabled={isSearching}
+              aria-busy={isSearching}
+            >
+              {isSearching ? (
+                <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+              ) : (
+                <Search className="h-5 w-5" strokeWidth={2.25} aria-hidden />
+              )}
+              {isSearching ? 'Searching…' : 'Search'}
+            </button>
+            {searchPerformed && showFiltersPanel && (
               <button
                 type="button"
-                className="btn btn-outline btn-primary gap-2 whitespace-nowrap w-full sm:w-auto shrink-0"
-                onClick={handleExportTableToExcel}
-                title="Download current results with the selected columns as Excel"
+                className="btn btn-ghost h-11 min-h-[44px] gap-2 px-4 rounded-full border border-base-300/60"
+                onClick={toggleFiltersPanel}
+                title="Hide filters"
+                aria-label="Hide filters"
               >
-                <ArrowDownTrayIcon className="w-4 h-4 shrink-0" aria-hidden />
-                Export Excel
+                <XMarkIcon className="h-5 w-5" aria-hidden />
+                <span className="hidden sm:inline">Hide filters</span>
               </button>
-            </div>
-          )}
+            )}
+          </div>
+        )}
+      </div>
 
-          {/* Search Buttons: Removed (now in fixed bar) */}
+      {/* Advanced filters — grouped white boxes; always before search; after search via bottom funnel */}
+      <div
+        className={`mb-8 space-y-4 md:px-0 ${!showAdvancedFilters ? 'hidden' : ''} ${isSearching ? 'max-md:hidden' : ''}`}
+      >
+        {/* Mobile: sectioned chip bars */}
+        <div className="md:hidden space-y-3">
+          {MOBILE_FILTER_SECTIONS.map((section) => (
+            <div key={section.title} className="space-y-2">
+              <FilterSectionTitle title={section.title} icon={section.icon} />
+              <div className={filterBoxClass}>
+              <div
+                className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 snap-x snap-mandatory [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                role="toolbar"
+                aria-label={`${section.title} filters`}
+              >
+                {section.keys.map((key) => {
+                  const chip = MOBILE_FILTER_CHIPS.find((c) => c.key === key);
+                  if (!chip) return null;
+                  const active = isMobileFilterActive(key);
+                  const count = getMobileFilterCount(key);
+                  const isOpen = activeMobileFilter === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => (isOpen ? closeMobileFilter() : openMobileFilter(key))}
+                      className={`shrink-0 snap-start inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors active:scale-[0.98] ${
+                        isOpen || active
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-gray-200 bg-gray-50 text-gray-700'
+                      }`}
+                      aria-expanded={isOpen}
+                    >
+                      <span className="whitespace-nowrap">{chip.label}</span>
+                      {count > 0 && (
+                        <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-bold text-primary-content">
+                          {count > 9 ? '9+' : count}
+                        </span>
+                      )}
+                      <ChevronDownIcon className={`h-4 w-4 shrink-0 opacity-60 transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden />
+                    </button>
+                  );
+                })}
+              </div>
+              </div>
+            </div>
+          ))}
         </div>
+
+        {/* Desktop: titled filter boxes */}
+        <div className="hidden md:block space-y-4">
+          <div className={filterSectionsRowClass}>
+          <section className="space-y-2 min-w-0" aria-labelledby="lead-search-filters-main">
+            <FilterSectionTitle
+              id="lead-search-filters-main"
+              title="Main filters"
+              icon={TagIcon}
+            />
+            <div className={filterBoxClass}>
+            <div className={filterGridClass}>
+              <div className={filterCellClass}>
+                <MainCategoryInput
+                  label="Main Category"
+                  field="mainCategory"
+                  values={[]}
+                  options={filteredMainCategoryOptions}
+                  showDropdown={showMainCategoryDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                  onMainCategorySelect={handleMainCategorySelect}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Category"
+                  field="category"
+                  values={filters.category}
+                  options={filteredCategoryOptions}
+                  showDropdown={showCategoryDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Stage"
+                  field="stage"
+                  values={filters.stage}
+                  options={filteredStageOptions}
+                  showDropdown={showStageDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Source"
+                  field="source"
+                  values={filters.source}
+                  options={filteredSourceOptions}
+                  showDropdown={showSourceDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Topic"
+                  field="topic"
+                  values={filters.topic}
+                  options={filteredTopicOptions}
+                  showDropdown={showTopicDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+            </div>
+            </div>
+          </section>
+
+          <section className="space-y-2 min-w-0" aria-labelledby="lead-search-filters-roles">
+            <FilterSectionTitle id="lead-search-filters-roles" title="Roles" icon={UserGroupIcon} />
+            <div className={filterBoxClass}>
+            <div className={filterGridClass}>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Scheduler"
+                  field="scheduler"
+                  values={filters.scheduler}
+                  options={filteredRoleOptions}
+                  showDropdown={showSchedulerDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Manager"
+                  field="manager"
+                  values={filters.manager}
+                  options={filteredRoleOptions}
+                  showDropdown={showManagerDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Lawyer"
+                  field="lawyer"
+                  values={filters.lawyer}
+                  options={filteredRoleOptions}
+                  showDropdown={showLawyerDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Expert"
+                  field="expert"
+                  values={filters.expert}
+                  options={filteredRoleOptions}
+                  showDropdown={showExpertDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Closer"
+                  field="closer"
+                  values={filters.closer}
+                  options={filteredRoleOptions}
+                  showDropdown={showCloserDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Case Handler"
+                  field="case_handler"
+                  values={filters.case_handler}
+                  options={filteredRoleOptions}
+                  showDropdown={showCaseHandlerDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+            </div>
+            </div>
+          </section>
+          </div>
+
+          <div className={filterSectionsRowClass}>
+          <section className="space-y-2 min-w-0" aria-labelledby="lead-search-filters-status">
+            <FilterSectionTitle
+              id="lead-search-filters-status"
+              title="Status"
+              icon={CheckBadgeIcon}
+            />
+            <div className={filterBoxClass}>
+            <div className={filterGridClass}>
+              <div className={filterCellClass}>
+                {renderFlagTypesFilterControl(false)}
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Tags"
+                  field="tags"
+                  values={filters.tags}
+                  options={filteredTagOptions}
+                  showDropdown={showTagDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Reason"
+                  field="reason"
+                  values={filters.reason}
+                  options={filteredReasonOptions}
+                  showDropdown={showReasonDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Expert examination"
+                  field="expert_examination"
+                  values={filters.expert_examination}
+                  options={filteredExpertExaminationOptions}
+                  showDropdown={showExpertExaminationDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+            </div>
+            </div>
+          </section>
+
+          <section className="space-y-2 min-w-0" aria-labelledby="lead-search-filters-other">
+            <FilterSectionTitle
+              id="lead-search-filters-other"
+              title="Other"
+              icon={EllipsisHorizontalCircleIcon}
+            />
+            <div className={filterBoxClass}>
+            <div className={filterGridClass}>
+              <div className={filterCellClass}>
+                <div className="form-control flex flex-col relative">
+                  <FloatingFilterField label="File id" floated={!!filters.fileId.trim() || fileIdFocused}>
+                    <input
+                      type="text"
+                      className={filterInputClass}
+                      value={filters.fileId}
+                      onChange={e => handleFilterChange('fileId', e.target.value)}
+                      onFocus={() => setFileIdFocused(true)}
+                      onBlur={() => setFileIdFocused(false)}
+                      aria-label="File id"
+                    />
+                  </FloatingFilterField>
+                </div>
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Language"
+                  field="language"
+                  values={filters.language}
+                  options={filteredLanguageOptions}
+                  showDropdown={showLanguageDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <MultiSelectInput
+                  label="Country"
+                  field="country"
+                  values={filters.country}
+                  options={filteredCountryOptions}
+                  showDropdown={showCountryDropdown}
+                  onSelect={handleMultiSelect}
+                  onRemove={handleMultiRemove}
+                  onClearAll={handleMultiClearAll}
+                  onFilterChange={handleFilterChange}
+                  onShowDropdown={handleShowDropdown}
+                  onHideDropdown={handleHideDropdown}
+                />
+              </div>
+              <div className={filterCellClass}>
+                <div className="form-control flex flex-col relative">
+                  <FloatingFilterField label="Content" floated={!!filters.content.trim() || contentFocused}>
+                    <input
+                      type="text"
+                      className={filterInputClass}
+                      value={filters.content}
+                      onChange={e => handleFilterChange('content', e.target.value)}
+                      onFocus={() => setContentFocused(true)}
+                      onBlur={() => setContentFocused(false)}
+                      aria-label="Content"
+                    />
+                  </FloatingFilterField>
+                </div>
+              </div>
+              {viewMode === 'table' && (
+                <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-2 sm:gap-3 items-end">
+                  <div className="min-w-0 [&>div]:!col-span-1">
+                    <ColumnSelector
+                      selectedColumns={selectedColumns}
+                      onColumnsChange={setSelectedColumns}
+                      showDropdown={showColumnSelector}
+                      onShowDropdown={() => handleShowDropdown('columns')}
+                      onHideDropdown={() => handleHideDropdown('columns')}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-primary gap-2 whitespace-nowrap w-full sm:w-auto shrink-0"
+                    onClick={handleExportTableToExcel}
+                    title="Download current results with the selected columns as Excel"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4 shrink-0" aria-hidden />
+                    Export Excel
+                  </button>
+                </div>
+              )}
+            </div>
+            </div>
+          </section>
+          </div>
         </div>
       </div>
 
@@ -6241,52 +6302,69 @@ const LeadSearchPage: React.FC = () => {
 
       {/* Results */}
       {searchPerformed && (
-        <div ref={resultsRef}>
-          {/* Mobile: dedicated loading surface — no filter fields, no stale "Found N" while fetching */}
-          {isSearching && (
+        <div ref={resultsRef} className="scroll-mt-28 md:scroll-mt-24">
+          {isSearching ? (
             <div
-              className="md:hidden flex flex-col items-center justify-center gap-4 py-16 px-6 min-h-[min(60vh,28rem)]"
+              className="flex flex-col items-center justify-center gap-6 px-6 py-20 min-h-[min(70vh,32rem)]"
               aria-busy="true"
               aria-live="polite"
             >
-              <Loader2 className="w-14 h-14 animate-spin text-primary shrink-0" aria-hidden />
-              <span className="text-sm font-medium text-base-content/60">Searching leads…</span>
+              <div className="relative flex h-28 w-28 items-center justify-center">
+                <span
+                  className={`absolute inset-0 rounded-full opacity-30 animate-ping ${
+                    isAltTheme ? 'bg-[#505d57]' : 'bg-primary'
+                  }`}
+                  aria-hidden
+                />
+                <span
+                  className={`absolute inset-2 rounded-full border-[3px] border-transparent animate-spin ${
+                    isAltTheme ? 'border-t-[#505d57] border-r-[#505d57]/40' : 'border-t-primary border-r-primary/40'
+                  }`}
+                  aria-hidden
+                />
+                <span
+                  className={`absolute inset-5 rounded-full border-2 border-transparent animate-spin [animation-direction:reverse] [animation-duration:1.1s] ${
+                    isAltTheme ? 'border-b-[#505d57]/70' : 'border-b-primary/70'
+                  }`}
+                  aria-hidden
+                />
+                <Search
+                  className={`relative h-9 w-9 ${isAltTheme ? 'text-[#505d57]' : 'text-primary'}`}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+              </div>
+              <div className="text-center space-y-1.5">
+                <p className="text-xl font-semibold tracking-tight text-base-content">Searching leads</p>
+                <p className="text-sm text-base-content/55">Matching your filters…</p>
+              </div>
+            </div>
+          ) : results.length > 0 ? (
+            <>
+              <h2
+                ref={resultsCountRef}
+                className="text-2xl font-bold mb-4 md:px-0 scroll-mt-28 md:scroll-mt-24"
+              >
+                Found {results.length} lead{results.length !== 1 && 's'}
+              </h2>
+              {viewMode === 'table' ? (
+                <div ref={tableResultsRef}>
+                  <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
+                </div>
+              ) : (
+                <div
+                  ref={cardsGridRef}
+                  className="grid w-full min-w-0 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4"
+                >
+                  {results.map(renderResultCard)}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-center p-8 bg-white rounded-lg md:mx-0 shadow-sm">
+              No leads found matching your criteria.
             </div>
           )}
-
-          <div className={isSearching ? 'hidden md:block' : ''}>
-            {results.length > 0 ? (
-              <>
-                <h2 className="text-2xl font-bold mb-4 md:px-0">
-                  Found {results.length} lead{results.length !== 1 && 's'}
-                </h2>
-                {isSearching ? (
-                  <div className="flex justify-center p-8">
-                    <Loader2 className="w-10 h-10 animate-spin text-primary" aria-hidden />
-                  </div>
-                ) : (
-                  viewMode === 'table' ? (
-                    <div ref={tableResultsRef}>
-                      <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
-                    </div>
-                  ) : (
-                    <div
-                      ref={cardsGridRef}
-                      className="grid w-full min-w-0 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4"
-                    >
-                      {results.map(renderResultCard)}
-                    </div>
-                  )
-                )}
-              </>
-            ) : (
-              !isSearching && (
-                <div className="text-center p-8 bg-white rounded-lg md:mx-0 shadow-sm">
-                  No leads found matching your criteria.
-                </div>
-              )
-            )}
-          </div>
         </div>
       )}
 
