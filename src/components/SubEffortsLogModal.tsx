@@ -651,7 +651,7 @@ function TimelineStepButton({
                 ? 'bg-sky-100 text-sky-700'
                 : progress === 'completed'
                   ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-gray-100 text-gray-500',
+                  : 'bg-white text-gray-500',
             ].join(' ')}
             aria-hidden
           >
@@ -679,10 +679,10 @@ function TimelineStepButton({
               isSelected
                 ? 'border-0 bg-primary/10 px-2 py-2 shadow-sm ring-1 ring-primary/15 sm:px-3 sm:py-2.5'
                 : progress === 'completed'
-                  ? 'border-0 bg-emerald-50/35 px-2 py-2 sm:px-3 sm:py-2.5'
+                  ? 'border-0 bg-white px-2 py-2 sm:px-3 sm:py-2.5'
                   : isPending
-                    ? 'px-2 py-2 opacity-80 hover:bg-gray-50/80 sm:px-3 sm:py-2.5'
-                    : 'px-2 py-2 hover:bg-gray-50/80 sm:px-3 sm:py-2.5',
+                    ? 'border-0 bg-white px-2 py-2 opacity-80 hover:bg-white sm:px-3 sm:py-2.5'
+                    : 'border-0 bg-white px-2 py-2 hover:bg-[#f8f8f8] sm:px-3 sm:py-2.5',
             ].join(' ')}
           >
             <div
@@ -2188,7 +2188,7 @@ export function SubEffortsLogModal({
       contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
     >
         <div className="flex flex-col min-h-0 h-full flex-1 overflow-hidden bg-[#f5f5f5]">
-        <div className="flex shrink-0 items-start justify-between gap-3 px-4 py-3 md:px-6 md:py-4">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-200/70 bg-white px-4 py-3 shadow-sm md:px-6 md:py-4">
           <div className="min-w-0 flex-1 flex items-start gap-3">
             {mobileStep === 'details' ? (
               <button
@@ -2202,12 +2202,11 @@ export function SubEffortsLogModal({
               </button>
             ) : null}
             <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:gap-3">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <div className="text-xl font-bold tracking-tight text-base-content/95">Sub efforts</div>
+                <div className="flex min-w-0 flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 md:hidden">
                   <button
                     type="button"
-                    className="inline-flex h-8 items-center gap-1 rounded-full bg-white px-2.5 text-xs font-semibold text-gray-600 shadow-sm transition-colors hover:bg-gray-50 md:hidden"
+                    className="inline-flex h-8 items-center gap-1 rounded-full bg-gray-100 px-2.5 text-xs font-semibold text-gray-600 shadow-none transition-colors hover:bg-gray-200"
                     onClick={() => setDocCategoryBoxesOpen((v) => !v)}
                     aria-expanded={docCategoryBoxesOpen}
                     aria-controls="sub-effort-doc-category-boxes"
@@ -2259,22 +2258,24 @@ export function SubEffortsLogModal({
                   </button>
                 </div>
               </div>
-              <div className="mt-0.5 text-xs text-base-content/50 truncate">
-                {rows?.length ? `${rows.length} step${rows.length === 1 ? '' : 's'} in this case` : 'No steps yet'}
-              </div>
             </div>
           </div>
-          <button
-            type="button"
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2.5">
+            <div className="text-xs text-base-content/50 whitespace-nowrap">
+              {rows?.length ? `${rows.length} step${rows.length === 1 ? '' : 's'} in this case` : 'No steps yet'}
+            </div>
+            <button
+              type="button"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-600 shadow-none transition-colors hover:bg-gray-200"
+              onClick={onClose}
+              aria-label="Close"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto scrollbar-hide px-4 pb-4 md:overflow-hidden md:px-6 md:pb-6">
+        <div className="min-h-0 flex-1 overflow-auto scrollbar-hide px-4 pb-4 pt-4 md:overflow-hidden md:px-6 md:pb-6 md:pt-5">
           <div className="grid grid-cols-1 gap-4 md:h-full md:min-h-0 md:grid-cols-[minmax(280px,340px)_1fr] lg:grid-cols-[minmax(300px,360px)_1fr]">
             {/* Workflow — independent scroll on desktop */}
             <div
@@ -2285,14 +2286,11 @@ export function SubEffortsLogModal({
               }
             >
               <div className="flex flex-col overflow-visible p-0 md:h-full md:min-h-0">
-                <div className="mb-3 flex shrink-0 items-center justify-between gap-2 px-0.5">
-                  <div>
-                    <span className="text-base font-semibold text-base-content/80 md:text-lg">Workflow</span>
-                  </div>
-                  {isSavingTimelineOrder ? (
+                {isSavingTimelineOrder ? (
+                  <div className="mb-3 flex shrink-0 justify-end px-0.5">
                     <span className="loading loading-spinner loading-xs text-base-content/40" />
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
                 {timelineRows.length ? (
                   <div className="min-h-0 scrollbar-hide md:flex-1 md:overflow-y-auto md:overscroll-y-contain">
                     {timelineRows.map((r: any, index: number) => {
