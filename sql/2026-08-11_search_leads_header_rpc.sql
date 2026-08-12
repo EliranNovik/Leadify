@@ -32,6 +32,18 @@ CREATE INDEX IF NOT EXISTS idx_leads_contact_mobile_digits
   ON public.leads_contact ((regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g')))
   WHERE mobile IS NOT NULL;
 
+-- Trigram indexes: make Hebrew / last-name / contains searches usable (not seq-scan).
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_leads_name_lower_trgm
+  ON public.leads USING gin (lower(name) gin_trgm_ops)
+  WHERE name IS NOT NULL AND btrim(name) <> '';
+CREATE INDEX IF NOT EXISTS idx_leads_lead_name_lower_trgm
+  ON public.leads_lead USING gin (lower(name) gin_trgm_ops)
+  WHERE name IS NOT NULL AND btrim(name) <> '';
+CREATE INDEX IF NOT EXISTS idx_leads_contact_name_lower_trgm
+  ON public.leads_contact USING gin (lower(name) gin_trgm_ops)
+  WHERE name IS NOT NULL AND btrim(name) <> '';
+
 DROP FUNCTION IF EXISTS public.search_leads_header(text, integer);
 DROP FUNCTION IF EXISTS public.search_leads_header(text, integer, text[]);
 
@@ -46,7 +58,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 SET row_security = off
-SET statement_timeout = '2s'
+SET statement_timeout = '2.5s'
 AS $$
 DECLARE
   v_raw text := btrim(COALESCE(p_query, ''));
@@ -59,9 +71,11 @@ DECLARE
   v_limit integer := LEAST(GREATEST(COALESCE(p_limit, 20), 1), 40);
   v_prefix text;
   v_phone_forms text[] := ARRAY[]::text[];
+  v_name_terms text[] := ARRAY[]::text[];
   v_name_prefixes text[] := ARRAY[]::text[];
   v_slash_parts text[];
   v_has_formatting boolean;
+  v_has_non_latin boolean := false;
   v_result jsonb;
 BEGIN
   IF length(v_raw) < 2 THEN
@@ -70,10 +84,10 @@ BEGIN
 
   v_lower := lower(v_raw);
   v_prefix := v_lower || '%';
-  -- Name prefixes: query + optional transliteration variants from client.
-  -- Also match word starts ("cohen" → "David Cohen") via '% ' || prefix.
-  v_name_prefixes := ARRAY(
-    SELECT DISTINCT lower(btrim(v)) || '%'
+  v_has_non_latin := v_raw ~ '[^[:ascii:]]';
+  -- Lean name terms only (client already caps fuzzy). Prefix match uses btree/trgm.
+  v_name_terms := ARRAY(
+    SELECT DISTINCT lower(btrim(v))
     FROM unnest(
       CASE
         WHEN p_variants IS NULL OR cardinality(p_variants) IS NULL OR cardinality(p_variants) = 0
@@ -82,11 +96,12 @@ BEGIN
       END
     ) AS v
     WHERE length(btrim(COALESCE(v, ''))) >= 2
-    LIMIT 8
+    LIMIT 4
   );
-  IF cardinality(v_name_prefixes) = 0 THEN
-    v_name_prefixes := ARRAY[v_prefix];
+  IF cardinality(v_name_terms) = 0 THEN
+    v_name_terms := ARRAY[v_lower];
   END IF;
+  v_name_prefixes := ARRAY(SELECT t || '%' FROM unnest(v_name_terms) AS t);
   v_raw_noprefix := regexp_replace(v_raw, '^[LC]', '', 'i');
   v_has_slash := position('/' in v_raw_noprefix) > 0;
   v_has_formatting := length(v_raw) > length(regexp_replace(v_raw, '\D', '', 'g'));
@@ -375,14 +390,17 @@ BEGIN
   END IF;
 
   /* ===================== PHONE ===================== */
+  -- Prefer equality on normalized digits (uses expression btree indexes).
+  -- Prefix LIKE only for short progressive queries (4–6 digits) — full-number
+  -- LIKE-after-regexp was seq-scanning and timing out, which made phones "disappear".
   IF v_digits <> ''
-     AND length(v_digits) >= 7
+     AND length(v_digits) >= 4
      AND (
        v_has_formatting
        OR v_digits LIKE '00972%'
        OR v_digits LIKE '972%'
        OR v_digits LIKE '0%'
-       OR v_digits LIKE '5%'
+       OR (v_digits LIKE '5%' AND length(v_digits) >= 5)
      )
   THEN
     v_phone_forms := ARRAY[
@@ -411,8 +429,8 @@ BEGIN
     ];
     v_phone_forms := ARRAY(
       SELECT DISTINCT f FROM unnest(v_phone_forms) AS f
-      WHERE f IS NOT NULL AND length(f) >= 7
-      LIMIT 8
+      WHERE f IS NOT NULL AND length(f) >= 4
+      LIMIT 10
     );
 
     IF cardinality(v_phone_forms) = 0 THEN
@@ -448,8 +466,24 @@ BEGIN
             NULL::text AS portal_profile_image_path,
             85 AS match_score
           FROM public.leads l
-          WHERE regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
-             OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+          WHERE
+            regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+            OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+            OR (
+              length(v_digits) BETWEEN 4 AND 6
+              AND (
+                regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') LIKE v_digits || '%'
+                OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') LIKE v_digits || '%'
+                OR (
+                  v_digits LIKE '0%'
+                  AND length(v_digits) > 1
+                  AND (
+                    regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                    OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                  )
+                )
+              )
+            )
           ORDER BY l.created_at DESC NULLS LAST
           LIMIT v_limit
         )
@@ -465,8 +499,24 @@ BEGIN
             ll.cdate, ll.status::text, ll.master_id::text, ll.category_id::text,
             'legacy', false, NULL::text, NULL::boolean, NULL::text, NULL::text, 85
           FROM public.leads_lead ll
-          WHERE regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
-             OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+          WHERE
+            regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+            OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+            OR (
+              length(v_digits) BETWEEN 4 AND 6
+              AND (
+                regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') LIKE v_digits || '%'
+                OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') LIKE v_digits || '%'
+                OR (
+                  v_digits LIKE '0%'
+                  AND length(v_digits) > 1
+                  AND (
+                    regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                    OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                  )
+                )
+              )
+            )
           ORDER BY ll.cdate DESC NULLS LAST
           LIMIT v_limit
         )
@@ -495,8 +545,24 @@ BEGIN
             80
           FROM (
             SELECT id FROM public.leads_contact
-            WHERE regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
-               OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+            WHERE
+              regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+              OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
+              OR (
+                length(v_digits) BETWEEN 4 AND 6
+                AND (
+                  regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') LIKE v_digits || '%'
+                  OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') LIKE v_digits || '%'
+                  OR (
+                    v_digits LIKE '0%'
+                    AND length(v_digits) > 1
+                    AND (
+                      regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                      OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                    )
+                  )
+                )
+              )
             LIMIT (v_limit * 2)
           ) hit
           JOIN public.leads_contact lc ON lc.id = hit.id
@@ -545,10 +611,10 @@ BEGIN
           70 AS match_score
         FROM public.leads l
         WHERE l.name IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM unnest(v_name_prefixes) AS p(prefix)
-            WHERE lower(l.name) LIKE p.prefix
-               OR lower(l.name) LIKE '% ' || p.prefix
+          AND (
+            lower(l.name) LIKE ANY (v_name_prefixes)
+            OR (length(v_lower) >= 3 AND lower(l.name) LIKE ('% ' || v_lower || '%'))
+            OR (v_has_non_latin AND lower(l.name) LIKE ('%' || v_lower || '%'))
           )
         ORDER BY l.created_at DESC NULLS LAST
         LIMIT v_limit
@@ -566,10 +632,10 @@ BEGIN
           'legacy', false, NULL::text, NULL::boolean, NULL::text, NULL::text, 70
         FROM public.leads_lead ll
         WHERE ll.name IS NOT NULL
-          AND EXISTS (
-            SELECT 1 FROM unnest(v_name_prefixes) AS p(prefix)
-            WHERE lower(ll.name) LIKE p.prefix
-               OR lower(ll.name) LIKE '% ' || p.prefix
+          AND (
+            lower(ll.name) LIKE ANY (v_name_prefixes)
+            OR (length(v_lower) >= 3 AND lower(ll.name) LIKE ('% ' || v_lower || '%'))
+            OR (v_has_non_latin AND lower(ll.name) LIKE ('%' || v_lower || '%'))
           )
         ORDER BY ll.cdate DESC NULLS LAST
         LIMIT v_limit
@@ -600,10 +666,10 @@ BEGIN
         FROM (
           SELECT id FROM public.leads_contact
           WHERE name IS NOT NULL
-            AND EXISTS (
-              SELECT 1 FROM unnest(v_name_prefixes) AS p(prefix)
-              WHERE lower(name) LIKE p.prefix
-                 OR lower(name) LIKE '% ' || p.prefix
+            AND (
+              lower(name) LIKE ANY (v_name_prefixes)
+              OR (length(v_lower) >= 3 AND lower(name) LIKE ('% ' || v_lower || '%'))
+              OR (v_has_non_latin AND lower(name) LIKE ('%' || v_lower || '%'))
             )
           LIMIT (v_limit * 2)
         ) hit

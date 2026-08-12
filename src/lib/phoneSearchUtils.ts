@@ -135,16 +135,17 @@ export function looksLikePhoneSearchQuery(raw: string): boolean {
   if (trimmed.includes('/')) return false;
 
   const d = phoneDigitsOnly(trimmed);
-  // Short prefixes (052, 050) are too broad for indexed equality search.
-  if (!d || d.length < 7) return false;
+  // Allow progressive typing: show phone hits from 4 digits for 0… / 5… prefixes
+  // (full numbers still preferred; short lead ids stay on the lead path).
+  if (!d || d.length < 4) return false;
 
   const hasFormatting = trimmed.length > d.length;
-  if (hasFormatting) return true;
-  if (d.startsWith('00972') && d.length >= 8) return true;
-  if (d.startsWith('972') && d.length >= 8) return true;
-  if (d.startsWith('0')) return true;
-  // Local mobile without leading 0 (52… / 5xxxxxxxx)
-  if (d.startsWith('5')) return true;
+  if (hasFormatting && d.length >= 4) return true;
+  if (d.startsWith('00972') && d.length >= 6) return true;
+  if (d.startsWith('972') && d.length >= 5) return true;
+  if (d.startsWith('0') && d.length >= 4) return true;
+  // Local mobile without leading 0 — wait until 5+ to avoid clashing with short lead ids
+  if (d.startsWith('5') && d.length >= 5) return true;
   return false;
 }
 

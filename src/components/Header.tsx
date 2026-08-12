@@ -12,6 +12,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useLeadContactSearch } from '../hooks/useLeadContactSearch';
+import { warmHeaderLeadSearch } from '../lib/legacyLeadsApi';
 import LeadContactSearchResults from './search/LeadContactSearchResults';
 import Siriwave from 'react-siriwave';
 import {
@@ -256,6 +257,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const { results: textSearchResults, loading: textSearchLoading } = useLeadContactSearch(searchValue, {
     enabled: supabaseSessionReady && searchValue.trim().length >= 2 && !hasAppliedFilters,
     limit: 20,
+    debounceMs: 80,
+    minLength: 2,
   });
   const activeSearchResults =
     searchValue.trim().length >= 2 && !hasAppliedFilters ? textSearchResults : searchResults;
@@ -1091,6 +1094,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setIsSearchActive(true);
     }
   }, [showFilterDropdown, isSearchActive]);
+
+  // Warm header search RPC after auth is ready (avoids cold first typed query)
+  useEffect(() => {
+    if (!supabaseSessionReady) return;
+    const t = window.setTimeout(() => {
+      void warmHeaderLeadSearch();
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [supabaseSessionReady, sessionRefreshNonce]);
 
   // Advanced search filter dropdowns — refetch when session hydrates or token refreshes (RLS + joins need JWT).
   useEffect(() => {
@@ -2574,7 +2586,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       window.removeEventListener('resize', measure);
       window.removeEventListener('scroll', measure, true);
     };
-  }, [isSearchActive, showFilterDropdown, activeSearchResults.length, searchValue, isMobile, isSearchAnimationDone]);
+  // Intentionally omit searchValue / results.length — remeasuring on every keystroke
+  // made the portaled dropdown jump (felt like open/close while typing).
+  }, [isSearchActive, showFilterDropdown, isMobile, isSearchAnimationDone]);
 
   // Animation effect for searchbar open/close (box appears early in expand)
   useEffect(() => {
@@ -2605,6 +2619,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const handleSearchFocus = () => {
     setIsSearchActive(true);
     searchInputRef.current?.focus();
+    // Re-warm on focus in case mount warm ran before JWT was fully usable
+    void warmHeaderLeadSearch();
   };
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {

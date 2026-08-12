@@ -412,9 +412,8 @@ function reverseTransliterateToArabic(english: string): string[] {
 }
 
 /**
- * Generate search variants for multilingual search
- * Returns array of search terms including original and transliterated versions
- * When searching in English, also includes Hebrew/Arabic equivalents
+ * Generate search variants for multilingual search.
+ * Fast path only: original + transliteration (no edit-distance explosion).
  */
 export function generateSearchVariants(query: string): string[] {
   const trimmed = query.trim();
@@ -424,7 +423,6 @@ export function generateSearchVariants(query: string): string[] {
   const variants: string[] = [lower];
   const isEnglish = !containsHebrew(trimmed) && !containsArabic(trimmed);
   
-  // If query contains Hebrew, add transliterated English version
   if (containsHebrew(trimmed)) {
     const transliterated = transliterateHebrew(trimmed);
     if (transliterated && transliterated !== lower) {
@@ -432,7 +430,6 @@ export function generateSearchVariants(query: string): string[] {
     }
   }
   
-  // If query contains Arabic, add transliterated English version
   if (containsArabic(trimmed)) {
     const transliterated = transliterateArabic(trimmed);
     if (transliterated && transliterated !== lower) {
@@ -440,26 +437,72 @@ export function generateSearchVariants(query: string): string[] {
     }
   }
   
-  // If query is English, add Hebrew and Arabic equivalents
+  // Common-name reverse maps only (capped) — not full fuzzy edits
   if (isEnglish && trimmed.length >= 2) {
-    // Add Hebrew equivalents for common names
-    const hebrewEquivalents = reverseTransliterateToHebrew(trimmed);
-    hebrewEquivalents.forEach(hebrew => {
-      if (hebrew && !variants.includes(hebrew)) {
-        variants.push(hebrew);
-      }
+    reverseTransliterateToHebrew(trimmed).slice(0, 2).forEach((hebrew) => {
+      if (hebrew && !variants.includes(hebrew)) variants.push(hebrew);
     });
-    
-    // Add Arabic equivalents for common names
-    const arabicEquivalents = reverseTransliterateToArabic(trimmed);
-    arabicEquivalents.forEach(arabic => {
-      if (arabic && !variants.includes(arabic)) {
-        variants.push(arabic);
-      }
+    reverseTransliterateToArabic(trimmed).slice(0, 1).forEach((arabic) => {
+      if (arabic && !variants.includes(arabic)) variants.push(arabic);
     });
   }
   
-  return [...new Set(variants)]; // Remove duplicates
+  return [...new Set(variants)].slice(0, 4);
+}
+
+/** Common Hebrew lookalike / mistype pairs. */
+const HEBREW_CONFUSABLES: Array<[string, string]> = [
+  ['ב', 'ו'],
+  ['כ', 'ח'],
+  ['כ', 'ק'],
+  ['ח', 'ה'],
+  ['ה', 'א'],
+  ['ע', 'א'],
+  ['י', 'ו'],
+  ['ש', 'ס'],
+  ['ת', 'ט'],
+  ['ם', 'ן'],
+  ['ך', 'ח'],
+];
+
+/**
+ * Lightweight fuzzy variants for misspelled names.
+ * Used only as a second-pass enrich when the fast search returns nothing.
+ */
+export function generateFuzzyNameVariants(query: string): string[] {
+  const term = query.trim().toLowerCase();
+  if (term.length < 4 || term.length > 18) return [];
+
+  const out = new Set<string>();
+  const hebrew = containsHebrew(term);
+  const latin = !hebrew && !containsArabic(term);
+
+  if (latin) {
+    // Only a few high-value spelling swaps (not every regex)
+    const swaps: Array<[RegExp, string]> = [
+      [/ph/g, 'f'],
+      [/ck/g, 'k'],
+      [/(.)\1+/g, '$1'],
+    ];
+    for (const [pattern, replacement] of swaps) {
+      pattern.lastIndex = 0;
+      const swapped = term.replace(pattern, replacement);
+      pattern.lastIndex = 0;
+      if (swapped !== term && swapped.length >= 3) out.add(swapped);
+    }
+  }
+
+  if (hebrew) {
+    // Cap Hebrew confusable swaps to 3
+    for (const [a, b] of HEBREW_CONFUSABLES.slice(0, 4)) {
+      if (term.includes(a)) out.add(term.split(a).join(b));
+      if (term.includes(b)) out.add(term.split(b).join(a));
+      if (out.size >= 3) break;
+    }
+  }
+
+  out.delete(term);
+  return Array.from(out).slice(0, 3);
 }
 
 /**

@@ -1,5 +1,5 @@
 import { supabase } from "./supabase";
-import { generateSearchVariants } from "./transliteration";
+import { containsArabic, containsHebrew, generateFuzzyNameVariants, generateSearchVariants } from "./transliteration";
 import {
   buildPhoneSearchOrClause,
   looksLikePhoneSearchQuery,
@@ -61,16 +61,25 @@ type SearchOptions = {
   contactsLimit?: number;
   leadsLimit?: number;
   legacyLimit?: number;
+  /** Single RPC budget (no stacked 1.8s + 3.2s retries). */
   timeoutMs?: number;
+  /** Abort in-flight PostgREST/RPC when the query changes. */
+  signal?: AbortSignal;
 };
 
-const DEFAULTS: Required<SearchOptions> = {
-  limit: 40, // Reduced from 60 for faster queries
-  contactsLimit: 30, // Reduced from 50 for faster queries
-  leadsLimit: 25, // Reduced from 40 for faster queries
-  legacyLimit: 25, // Reduced from 40 for faster queries
-  timeoutMs: 2000, // Increased to 2s for better reliability, especially for lead number searches
+const DEFAULTS: Required<Omit<SearchOptions, "signal">> = {
+  limit: 20,
+  contactsLimit: 20,
+  leadsLimit: 20,
+  legacyLimit: 20,
+  timeoutMs: 2500,
 };
+
+type ResolvedSearchOptions = Required<Omit<SearchOptions, "signal">> & {
+  signal?: AbortSignal;
+};
+
+const HEADER_RPC_BUDGET_MS = 2500;
 
 // -----------------------------------------------------
 // Helpers
@@ -83,9 +92,63 @@ const looksLikeEmail = (s: string) => s.includes("@");
 const hasLeadPrefix = (s: string) => /^[LC]/i.test(s.trim());
 const stripLeadPrefix = (s: string) => s.trim().replace(/^[LC]/i, "");
 
-/** Quote a PostgREST `.or()` filter value (needed for patterns like L1234%). */
+/** Quote a PostgREST `.or()` filter value (needed for patterns like L1234% and Hebrew). */
 function quoteFilterValue(value: string): string {
-  return `"${String(value).replace(/"/g, '')}"`;
+  return `"${String(value).replace(/"/g, "")}"`;
+}
+
+/**
+ * Fast name filters — prefer indexed prefix matches.
+ * MUST quote values (Hebrew/Arabic break unquoted PostgREST `.or()`).
+ */
+function buildNameSearchOrFilter(variants: string[], rawQuery: string): string {
+  const primary = lower(rawQuery).replace(/%/g, "");
+  const terms = Array.from(
+    new Set(
+      [primary, ...variants.map((v) => String(v || "").trim().toLowerCase().replace(/%/g, ""))]
+        .filter((v) => v.length >= 2),
+    ),
+  ).slice(0, 4);
+
+  if (terms.length === 0) return "";
+
+  const nonLatin = containsHebrew(rawQuery) || containsArabic(rawQuery);
+  const parts: string[] = [];
+
+  // Indexed prefix for every variant
+  for (const term of terms) {
+    parts.push(`name.ilike.${quoteFilterValue(`${term}%`)}`);
+  }
+
+  // One word-start on the typed term only (last-name: "cohen" → "David Cohen")
+  if (primary.length >= 3) {
+    parts.push(`name.ilike.${quoteFilterValue(`% ${primary}%`)}`);
+  }
+
+  // Contains only for Hebrew/Arabic primary (trigram-friendly, single pattern)
+  if (nonLatin && primary.length >= 2) {
+    parts.push(`name.ilike.${quoteFilterValue(`%${primary}%`)}`);
+  }
+
+  // Email only when query looks email-ish (not every name search)
+  const emailOr = buildProgressiveEmailOrFilter(rawQuery);
+  if (emailOr) parts.push(...emailOr.split(","));
+
+  return Array.from(new Set(parts)).join(",");
+}
+
+/** Match partial emails while typing — only when query has @ or domain-ish shape. */
+function buildProgressiveEmailOrFilter(rawQuery: string): string {
+  const q = lower(rawQuery).replace(/%/g, "").trim();
+  if (q.length < 3) return "";
+  if (!/[a-z0-9@._+-]/i.test(q)) return "";
+  // Require @ or a dot so plain names don't scan emails
+  if (!q.includes("@") && !q.includes(".")) return "";
+
+  return [
+    `email.ilike.${quoteFilterValue(`${q}%`)}`,
+    ...(q.includes("@") ? [`email.ilike.${quoteFilterValue(`%${q}%`)}`] : []),
+  ].join(",");
 }
 
 /**
@@ -174,6 +237,11 @@ function mergeRowsById<T extends { id?: string | number | null }>(primary: T[], 
 /**
  * Decide intent with stable rules and minimal ambiguity.
  */
+function intentQueryText(intent: SearchIntent): string {
+  if (intent.kind === "email") return intent.email;
+  return intent.raw;
+}
+
 function detectIntent(query: string): SearchIntent | null {
   const raw = normalize(query);
   if (!raw) return null;
@@ -200,7 +268,8 @@ function detectIntent(query: string): SearchIntent | null {
   const isInternationalPhone =
     d.startsWith("972") || d.startsWith("00972");
   // Prefer phone for local mobiles typed without the leading 0 (52xxxxxxx / 5xxxxxxxx).
-  const isLocalMobileWithoutZero = d.startsWith("5") && d.length >= 7 && d.length <= 10;
+  // Use progressive threshold (5+) so typing "052…" shows phone hits early.
+  const isLocalMobileWithoutZero = d.startsWith("5") && d.length >= 5 && d.length <= 10;
   const isLikelyLeadNumber =
     isPureNumeric &&
     d.length >= 3 &&
@@ -219,25 +288,76 @@ function detectIntent(query: string): SearchIntent | null {
     return { kind: "phone", digits: d, raw };
   }
 
-  // Phone intent triggers (fallback for formatted numbers):
+  // Phone intent triggers (fallback for formatted numbers / short progressive prefixes):
   const formatted = raw.length > d.length;
-  const phoneLike = formatted && d.length >= 4;
+  const phoneLike =
+    (formatted && d.length >= 4) ||
+    (d.startsWith("0") && d.length >= 4) ||
+    (d.startsWith("972") && d.length >= 5);
 
   if (phoneLike) {
     return { kind: "phone", digits: d, raw };
   }
 
-  // Default name intent
+  // Default name intent — lean variants only (fuzzy is a second pass if empty)
   const variants = generateSearchVariants(raw).map((v) => v.trim().toLowerCase()).filter(Boolean);
-  const uniqVariants = Array.from(new Set(variants.length ? variants : [lower(raw)]));
+  const uniqVariants = Array.from(new Set(variants.length ? variants : [lower(raw)])).slice(0, 4);
   return { kind: "name", raw, variants: uniqVariants };
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(msg)), ms)),
-  ]) as Promise<T>;
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  return name === "AbortError" || name === "AbortedError";
+}
+
+/**
+ * Race a promise against a timeout. When `signal` is provided and aborts (or we
+ * time out with a linked AbortController), the underlying fetch can be cancelled
+ * via supabase `.abortSignal()` — unlike a bare Promise.race which left ghosts.
+ */
+function withTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  msg: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+
+    const timer = setTimeout(() => reject(new Error(msg)), ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    p.then(
+      (value) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+function attachAbortSignal<T extends { abortSignal?: (signal: AbortSignal) => T }>(
+  builder: T,
+  signal?: AbortSignal,
+): T {
+  if (signal && typeof builder.abortSignal === "function") {
+    return builder.abortSignal(signal);
+  }
+  return builder;
 }
 
 function mapHeaderSearchRpcRow(row: any): CombinedLead | null {
@@ -284,25 +404,44 @@ function mapHeaderSearchRpcRow(row: any): CombinedLead | null {
 
 /**
  * Fast path: one SECURITY DEFINER RPC. Returns null on miss/error so caller can fall back.
+ * Aborts the HTTP request on timeout or external signal so ghost RPCs don't stack.
  */
 async function trySearchLeadsHeaderRpc(
   query: string,
   limit: number,
   timeoutMs: number,
   variants?: string[],
+  signal?: AbortSignal,
 ): Promise<CombinedLead[] | null> {
+  if (signal?.aborted) return null;
+
+  const localAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const budget = Math.min(Math.max(timeoutMs, 500), HEADER_RPC_BUDGET_MS);
+  const timer =
+    localAbort != null ? setTimeout(() => localAbort.abort(), budget) : null;
+
+  const onExternalAbort = () => localAbort?.abort();
+  signal?.addEventListener("abort", onExternalAbort, { once: true });
+
+  const combinedSignal = localAbort?.signal ?? signal;
+
   try {
     const payload: Record<string, unknown> = {
       p_query: query,
       p_limit: limit,
     };
     if (variants && variants.length > 0) {
-      payload.p_variants = variants.slice(0, 8);
+      payload.p_variants = variants.slice(0, 4);
     }
+
+    let rpcCall = supabase.rpc("search_leads_header", payload) as any;
+    rpcCall = attachAbortSignal(rpcCall, combinedSignal);
+
     const { data, error } = await withTimeout(
-      supabase.rpc("search_leads_header", payload),
-      Math.min(timeoutMs, 3500),
+      rpcCall,
+      budget + 50,
       "search_leads_header timeout",
+      combinedSignal,
     );
 
     if (error) return null;
@@ -327,9 +466,36 @@ async function trySearchLeadsHeaderRpc(
       .map(mapHeaderSearchRpcRow)
       .filter((r): r is CombinedLead => r != null);
     return mapped;
-  } catch {
+  } catch (err) {
+    if (isAbortError(err) && signal?.aborted) return null;
     return null;
+  } finally {
+    if (timer != null) clearTimeout(timer);
+    signal?.removeEventListener("abort", onExternalAbort);
   }
+}
+
+let headerSearchWarmPromise: Promise<void> | null = null;
+
+/**
+ * Warm TLS + PostgREST + RPC plan + name indexes so the first typed search isn't cold.
+ * Safe to call multiple times; only the first call does work.
+ */
+export function warmHeaderLeadSearch(): Promise<void> {
+  if (headerSearchWarmPromise) return headerSearchWarmPromise;
+  headerSearchWarmPromise = (async () => {
+    try {
+      // Intentional no-hit query: still executes the NAME branch and warms caches.
+      await supabase.rpc("search_leads_header", {
+        p_query: "zz",
+        p_limit: 1,
+      });
+    } catch {
+      // Best-effort — allow a later warm retry if this failed before auth was ready
+      headerSearchWarmPromise = null;
+    }
+  })();
+  return headerSearchWarmPromise;
 }
 
 // -----------------------------------------------------
@@ -353,7 +519,7 @@ function formatLeadCategoryFromRow(row: any): string {
   return row?.category || "";
 }
 
-async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+async function searchNewLeads(intent: SearchIntent, opts: ResolvedSearchOptions): Promise<any[]> {
   const queryStartTime = performance.now();
   const selectFields = NEW_LEAD_SEARCH_SELECT;
 
@@ -442,12 +608,9 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
     if (!cond) return [];
     qb = qb.or(cond);
   } else if (intent.kind === "name") {
-    // Starts-with is fast and avoids scanning everything
-    if (intent.variants.length > 1) {
-      qb = qb.or(intent.variants.map((v) => `name.ilike.${v}%`).join(","));
-    } else {
-      qb = qb.ilike("name", `${intent.variants[0]}%`);
-    }
+    const nameOr = buildNameSearchOrFilter(intent.variants, intent.raw);
+    if (!nameOr) return [];
+    qb = qb.or(nameOr);
   }
 
   const executeStartTime = performance.now();
@@ -473,7 +636,7 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
   return data;
 }
 
-async function searchLegacyLeads(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+async function searchLegacyLeads(intent: SearchIntent, opts: ResolvedSearchOptions): Promise<any[]> {
   if (intent.kind === "lead") return [];
 
   let qb = supabase.from("leads_lead").select(LEGACY_LEAD_SEARCH_SELECT);
@@ -495,10 +658,10 @@ async function searchLegacyLeads(intent: SearchIntent, opts: Required<SearchOpti
           `name.ilike.${quoteFilterValue(`${digits}%`)}`,
         ].filter(Boolean).join(","),
       );
-    } else if (intent.variants.length > 1) {
-      qb = qb.or(intent.variants.map((v) => `name.ilike.${v}%`).join(","));
     } else {
-      qb = qb.ilike("name", `${intent.variants[0]}%`);
+      const nameOr = buildNameSearchOrFilter(intent.variants, intent.raw);
+      if (!nameOr) return [];
+      qb = qb.or(nameOr);
     }
   }
 
@@ -512,7 +675,7 @@ async function searchLegacyLeads(intent: SearchIntent, opts: Required<SearchOpti
   return data;
 }
 
-async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+async function searchContacts(intent: SearchIntent, opts: ResolvedSearchOptions): Promise<any[]> {
   const queryStartTime = performance.now();
   // For very short name searches, contacts search is expensive and noisy.
   if (intent.kind === "name" && intent.raw.trim().length < 2) {
@@ -530,12 +693,9 @@ async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions
     if (!cond) return [];
     qb = qb.or(cond);
   } else if (intent.kind === "name") {
-    // Prefix match (index-friendly) — same as lead name search
-    if (intent.variants.length > 1) {
-      qb = qb.or(intent.variants.map((v) => `name.ilike.${v}%`).join(","));
-    } else {
-      qb = qb.ilike("name", `${intent.variants[0]}%`);
-    }
+    const nameOr = buildNameSearchOrFilter(intent.variants, intent.raw);
+    if (!nameOr) return [];
+    qb = qb.or(nameOr);
   } else if (intent.kind === "lead") {
     // When searching by lead number, contacts are obtained via junction,
     // so here we return empty and do the junction-based flow.
@@ -570,7 +730,7 @@ async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions
  */
 async function searchLegacyLeadsForLeadIntent(
   leadIntent: Extract<SearchIntent, { kind: "lead" }>,
-  opts: Required<SearchOptions>,
+  opts: ResolvedSearchOptions,
 ): Promise<any[]> {
   const legacyLeads: any[] = [];
 
@@ -675,7 +835,7 @@ async function searchLegacyLeadsForLeadIntent(
 async function fetchJunctionContactsForLeads(
   newLeadIds: string[],
   legacyLeadIds: number[],
-  opts: Required<SearchOptions>,
+  opts: ResolvedSearchOptions,
 ): Promise<{ rels: any[]; contacts: any[] }> {
   const rels: any[] = [];
   const contacts: any[] = [];
@@ -730,7 +890,7 @@ async function fetchJunctionContactsForLeads(
 async function findContactsForLeadSearch(
   leadIntent: Extract<SearchIntent, { kind: "lead" }>,
   newLeadRows: any[],
-  opts: Required<SearchOptions>,
+  opts: ResolvedSearchOptions,
   prefetchedLegacyLeads?: any[],
 ): Promise<{ rels: any[]; contacts: any[]; legacyLeads: any[] }> {
   const newLeadIds = newLeadRows.map((l) => l.id).filter(Boolean);
@@ -743,7 +903,7 @@ async function findContactsForLeadSearch(
   return { rels, contacts, legacyLeads };
 }
 
-async function fetchNewLeadsByIds(ids: string[], opts: Required<SearchOptions>): Promise<any[]> {
+async function fetchNewLeadsByIds(ids: string[], opts: ResolvedSearchOptions): Promise<any[]> {
   if (!ids.length) return [];
 
   const fetchStartTime = performance.now();
@@ -771,7 +931,7 @@ async function fetchNewLeadsByIds(ids: string[], opts: Required<SearchOptions>):
   return data;
 }
 
-async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions>): Promise<any[]> {
+async function fetchLegacyLeadsByIds(ids: number[], opts: ResolvedSearchOptions): Promise<any[]> {
   if (!ids.length) return [];
 
   const fetchStartTime = performance.now();
@@ -1023,9 +1183,29 @@ function scoreResult(intent: SearchIntent, r: CombinedLead): number {
     }
   } else {
     const q = lower(intent.raw);
-    if (name === q) s += 80;
-    else if (name.startsWith(q)) s += 55;
-    else if (name.includes(q)) s += 35;
+    const contactNm = lower(r.contactName || "");
+    if (name === q || contactNm === q) s += 80;
+    else if (name.startsWith(q) || contactNm.startsWith(q)) s += 55;
+    else if (name.includes(q) || contactNm.includes(q)) s += 35;
+    else {
+      // Word-start / transliteration variants
+      for (const variant of intent.variants) {
+        const v = lower(variant);
+        if (!v) continue;
+        if (name === v || contactNm === v) {
+          s += 75;
+          break;
+        }
+        if (name.startsWith(v) || contactNm.startsWith(v) || name.includes(` ${v}`) || contactNm.includes(` ${v}`)) {
+          s += 50;
+          break;
+        }
+        if (name.includes(v) || contactNm.includes(v)) {
+          s += 30;
+          break;
+        }
+      }
+    }
   }
 
   // Slight prefer newer leads if tie
@@ -1067,7 +1247,17 @@ function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
   if (intent.kind === "phone") {
     return !(qDigits && (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits)));
   }
-  return !(nm === q || nm.startsWith(q));
+  return !(
+    nm === q ||
+    nm.startsWith(q) ||
+    nm.includes(` ${q}`) ||
+    nm.includes(q) ||
+    (intent.kind === "name" &&
+      intent.variants.some((variant) => {
+        const v = lower(variant);
+        return Boolean(v) && (nm === v || nm.startsWith(v) || nm.includes(` ${v}`) || nm.includes(v));
+      }))
+  );
 }
 
 // -----------------------------------------------------
@@ -1075,9 +1265,12 @@ function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
 // -----------------------------------------------------
 
 export async function searchLeads(query: string, options: SearchOptions = {}): Promise<CombinedLead[]> {
-  const opts = { ...DEFAULTS, ...options };
+  const { signal, ...rest } = options;
+  const opts: ResolvedSearchOptions = { ...DEFAULTS, ...rest, signal };
 
   try {
+    if (signal?.aborted) return [];
+
     const intent = detectIntent(query);
 
     if (!intent) {
@@ -1092,24 +1285,80 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       return mapped.slice(0, opts.limit);
     }
 
-    // Fast path: single DB round-trip. Fall back to multi-query path if RPC missing/errors.
-    // Also fall back when an explicit sublead query (master/suffix) returns nothing —
-    // older RPC builds collapsed "209994/1" → "2099941" and missed slash matches.
-    const rpcRows = await trySearchLeadsHeaderRpc(
-      intent.raw,
+    // If a warm is already in flight, wait briefly so we don't race it (double cold hit).
+    // Do NOT kick a new warm here — Header/focus already warms on session ready.
+    if (headerSearchWarmPromise) {
+      await Promise.race([
+        headerSearchWarmPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 350)),
+      ]);
+    }
+
+    if (signal?.aborted) return [];
+
+    const rpcQuery = intentQueryText(intent);
+
+    // Fast path: single DB round-trip within one budget. Fall back to multi-query if RPC
+    // missing/errors. Phone/email timeouts fall through to PostgREST waterfall.
+    const rpcBudget = Math.min(opts.timeoutMs, HEADER_RPC_BUDGET_MS);
+    let rpcRows = await trySearchLeadsHeaderRpc(
+      rpcQuery,
       opts.limit,
-      opts.timeoutMs,
+      rpcBudget,
       intent.kind === "name" ? intent.variants : undefined,
+      signal,
     );
+
+    // One short retry only (same budget family) — not stacked 1.8s + 3.2s.
+    if (rpcRows == null && intent.kind !== "lead" && !signal?.aborted) {
+      rpcRows = await trySearchLeadsHeaderRpc(
+        rpcQuery,
+        opts.limit,
+        Math.min(rpcBudget, 1800),
+        intent.kind === "name" ? intent.variants : undefined,
+        signal,
+      );
+      if (rpcRows == null) {
+        // Phone/email: allow client PostgREST fallback. Name: prefer empty over cold waterfall.
+        if (intent.kind === "name") {
+          return [];
+        }
+      }
+    }
+
     const isSubleadQuery =
       intent.kind === "lead" && intent.raw.includes("/") && intent.master != null;
-    if (rpcRows != null && !(isSubleadQuery && rpcRows.length === 0)) {
-      rpcRows.forEach((r) => {
+
+    const finalize = (rows: CombinedLead[]) => {
+      rows.forEach((r) => {
         r.isFuzzyMatch = markFuzzy(intent, r);
       });
-      rpcRows.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
-      return rpcRows.slice(0, opts.limit);
+      rows.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
+      return rows.slice(0, opts.limit);
+    };
+
+    if (rpcRows != null && !(isSubleadQuery && rpcRows.length === 0)) {
+      // Fast hit — return immediately (including valid empty for non-name / short names)
+      if (rpcRows.length > 0 || intent.kind !== "name" || intent.raw.trim().length < 4) {
+        return finalize(rpcRows);
+      }
+
+      // Name miss: one cheap fuzzy retry (few spelling variants), then stop.
+      const fuzzyExtra = generateFuzzyNameVariants(intent.raw);
+      if (fuzzyExtra.length > 0) {
+        const fuzzyRows = await trySearchLeadsHeaderRpc(
+          rpcQuery,
+          opts.limit,
+          Math.min(opts.timeoutMs, 1200),
+          Array.from(new Set([...intent.variants, ...fuzzyExtra])).slice(0, 4),
+          signal,
+        );
+        if (fuzzyRows != null) return finalize(fuzzyRows);
+      }
+      return finalize([]);
     }
+
+    if (signal?.aborted) return [];
 
     // 1) Search new leads (always) - parallelize with contacts for non-lead searches
     let newRows: any[];

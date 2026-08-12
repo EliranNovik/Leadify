@@ -76,9 +76,13 @@ const LeadContactSearchResults: React.FC<Props> = ({
   const trimmed = query.trim();
   const [typeFilter, setTypeFilter] = useState<LeadContactSearchTypeFilterValue>('all');
 
+  // Reset type filter only when the query is cleared / too short — not on every
+  // keystroke (that remounted the filter bar and made the list feel like it blinked).
   useEffect(() => {
-    setTypeFilter('all');
-  }, [trimmed]);
+    if (trimmed.length < minLength) {
+      setTypeFilter('all');
+    }
+  }, [trimmed, minLength]);
 
   const leadCount = useMemo(
     () => results.filter((result) => !isLeadContactSearchResultContact(result)).length,
@@ -129,16 +133,12 @@ const LeadContactSearchResults: React.FC<Props> = ({
         />
       ) : null}
 
-      {loading && filteredResults.length === 0 ? (
-        <div className="flex justify-center px-4 py-8">
-          <span className="loading loading-spinner loading-md text-primary" />
-        </div>
-      ) : filteredResults.length === 0 ? (
-        <div className="px-4 py-8 text-center text-sm text-base-content/50">
-          {filteredEmptyMessage}
-        </div>
-      ) : (
-        <ul className="scrollbar-hide max-h-[min(24rem,60vh)] overflow-y-auto">
+      {filteredResults.length > 0 ? (
+        <ul
+          className={`scrollbar-hide max-h-[min(24rem,60vh)] overflow-y-auto ${
+            loading ? 'opacity-80' : ''
+          }`}
+        >
           {filteredResults.map((lead, index) => {
             const title = getLeadContactSearchResultTitle(lead);
             const isContact = isLeadContactSearchResultContact(lead);
@@ -234,6 +234,14 @@ const LeadContactSearchResults: React.FC<Props> = ({
             );
           })}
         </ul>
+      ) : loading ? (
+        <div className="flex justify-center px-4 py-8">
+          <span className="loading loading-spinner loading-md text-primary" />
+        </div>
+      ) : (
+        <div className="px-4 py-8 text-center text-sm text-base-content/50">
+          {filteredEmptyMessage}
+        </div>
       )}
     </div>
   );
