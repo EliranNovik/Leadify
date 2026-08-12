@@ -195,6 +195,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
   const isMouseOverSearchRef = useRef(false);
+  const isSearchActiveRef = useRef(false);
   /** Cleared on re-enter; prevents stacked timeouts when moving bar → portaled preview */
   const searchHoverCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -961,26 +962,33 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         clearTimeout(clickTimeout);
       }
 
-      // Add a small delay to prevent accidental closures during scrolling
+      // Small delay avoids fighting with in-dropdown clicks / scroll
       clickTimeout = setTimeout(() => {
-        if (
-          searchContainerRef.current &&
-          !searchContainerRef.current.contains(event.target as Node) &&
-          searchDropdownRef.current &&
-          !searchDropdownRef.current.contains(event.target as Node) &&
-          filterDropdownRef.current &&
-          !filterDropdownRef.current.contains(event.target as Node)
-        ) {
-          // Only close search bar if filter dropdown is not open, no search value/results, not searching, and mouse is not over search area
-          if (!showFilterDropdown && !searchValue.trim() && activeSearchResults.length === 0 && !activeSearchLoading && !isMouseOverSearchRef.current) {
-            setIsSearchActive(false);
-            setIsSearchOpen(false);
-            setSearchResults([]);
-            setSearchValue('');
-            setHasAppliedFilters(false);
-          }
+        const target = event.target as Node | null;
+        if (!target) return;
+
+        const insideSearch =
+          Boolean(searchContainerRef.current?.contains(target)) ||
+          Boolean(searchDropdownRef.current?.contains(target)) ||
+          Boolean(filterDropdownRef.current?.contains(target)) ||
+          Boolean((target as HTMLElement).closest?.('.search-dropdown')) ||
+          Boolean((target as HTMLElement).closest?.('.filter-dropdown'));
+
+        if (insideSearch || showFilterDropdown) return;
+
+        isMouseOverSearchRef.current = false;
+        if (searchHoverCloseTimeoutRef.current != null) {
+          clearTimeout(searchHoverCloseTimeoutRef.current);
+          searchHoverCloseTimeoutRef.current = null;
         }
-      }, 100); // Small delay to prevent accidental closures
+        isSearchActiveRef.current = false;
+        setIsSearchActive(false);
+        setIsSearchOpen(false);
+        setSearchResults([]);
+        setSearchValue('');
+        setHasAppliedFilters(false);
+        searchInputRef.current?.blur();
+      }, 100);
     };
 
     const handleDropdownClickOutside = (event: Event) => {
@@ -1026,8 +1034,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
 
-    // Use click events for all dropdowns
+    // Use click events for all dropdowns + search outside-close
     document.addEventListener('click', handleDropdownClickOutside);
+    document.addEventListener('mousedown', handleClickOutside);
     // Add scroll listener to prevent closing during scroll
     document.addEventListener('scroll', handleScroll, true);
 
@@ -1036,15 +1045,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         clearTimeout(clickTimeout);
       }
       document.removeEventListener('click', handleDropdownClickOutside);
+      document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('scroll', handleScroll, true);
     };
-  }, [showFilterDropdown, showQuickActionsDropdown, showProfileDropdown]);
+  }, [showFilterDropdown, showQuickActionsDropdown, showProfileDropdown, setIsSearchOpen]);
 
-  // Close quick actions and profile dropdown when route changes
+  // Close chrome overlays when route changes (prevents stuck search/recent-leads portal)
   useEffect(() => {
     setShowQuickActionsDropdown(false);
     setShowProfileDropdown(false);
-  }, [location.pathname]);
+    setShowNotifications(false);
+    setShowFilterDropdown(false);
+    isMouseOverSearchRef.current = false;
+    if (searchHoverCloseTimeoutRef.current != null) {
+      clearTimeout(searchHoverCloseTimeoutRef.current);
+      searchHoverCloseTimeoutRef.current = null;
+    }
+    isSearchActiveRef.current = false;
+    setIsSearchActive(false);
+    setIsSearchOpen(false);
+    setSearchResults([]);
+    setSearchValue('');
+    setHasAppliedFilters(false);
+    searchInputRef.current?.blur();
+  }, [location.pathname, setIsSearchOpen]);
 
   // Lock body scroll while mobile profile sheet is open
   useEffect(() => {
@@ -1063,7 +1087,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   }, [showQuickActionsDropdown]);
 
-  // Handle escape key to close dropdowns
+  // Handle escape key to close dropdowns + search
   useEffect(() => {
     const handleEscapeKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -1071,12 +1095,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         setShowNotifications(false);
         setShowFilterDropdown(false);
         setShowProfileDropdown(false);
+        isMouseOverSearchRef.current = false;
+        if (searchHoverCloseTimeoutRef.current != null) {
+          clearTimeout(searchHoverCloseTimeoutRef.current);
+          searchHoverCloseTimeoutRef.current = null;
+        }
+        isSearchActiveRef.current = false;
+        setIsSearchActive(false);
+        setIsSearchOpen(false);
+        setSearchResults([]);
+        setSearchValue('');
+        setHasAppliedFilters(false);
+        searchInputRef.current?.blur();
       }
     };
 
     document.addEventListener('keydown', handleEscapeKey);
     return () => document.removeEventListener('keydown', handleEscapeKey);
-  }, []);
+  }, [setIsSearchOpen]);
 
   // Cleanup function to close all dropdowns when component unmounts
   useEffect(() => {
@@ -1085,12 +1121,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setShowNotifications(false);
       setShowFilterDropdown(false);
       setShowProfileDropdown(false);
+      isMouseOverSearchRef.current = false;
+      if (searchHoverCloseTimeoutRef.current != null) {
+        clearTimeout(searchHoverCloseTimeoutRef.current);
+        searchHoverCloseTimeoutRef.current = null;
+      }
     };
   }, []);
 
   // Keep search active when filter dropdown is open
   useEffect(() => {
     if (showFilterDropdown && !isSearchActive) {
+      isSearchActiveRef.current = true;
       setIsSearchActive(true);
     }
   }, [showFilterDropdown, isSearchActive]);
@@ -2617,6 +2659,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [isSearchActive, isMobile]);
 
   const handleSearchFocus = () => {
+    isSearchActiveRef.current = true;
     setIsSearchActive(true);
     searchInputRef.current?.focus();
     // Re-warm on focus in case mount warm ran before JWT was fully usable
@@ -2664,6 +2707,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
     setSearchValue('');
     setSearchResults([]);
+    isSearchActiveRef.current = false;
     setIsSearchActive(false);
     setIsSearchOpen(false);
     setHasAppliedFilters(false);
@@ -2675,6 +2719,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       clearTimeout(searchHoverCloseTimeoutRef.current);
       searchHoverCloseTimeoutRef.current = null;
     }
+    isMouseOverSearchRef.current = false;
+    isSearchActiveRef.current = false;
     setIsSearchActive(false);
     setIsSearchOpen(false);
     setSearchResults([]);
@@ -2707,37 +2753,46 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const scheduleSearchHoverClose = useCallback(() => {
     clearSearchHoverCloseTimer();
-    // Only auto-close on hover-away when idle (no query, filters, or in-flight search)
-    if (
-      !showFilterDropdown &&
-      !searchValue.trim() &&
-      activeSearchResults.length === 0 &&
-      !activeSearchLoading &&
-      !hasAppliedFilters
-    ) {
-      searchHoverCloseTimeoutRef.current = setTimeout(() => {
-        searchHoverCloseTimeoutRef.current = null;
-        if (!isMouseOverSearchRef.current) {
-          setIsSearchActive(false);
-          setIsSearchOpen(false);
-        }
-      }, 280);
-    }
+    // Keep open while advanced filters panel is up
+    if (showFilterDropdown) return;
+    // If the user typed a query, do not close on hover-away — only click-away clears it
+    if (searchValue.trim() || hasAppliedFilters || activeSearchLoading) return;
+
+    searchHoverCloseTimeoutRef.current = setTimeout(() => {
+      searchHoverCloseTimeoutRef.current = null;
+      if (isMouseOverSearchRef.current) return;
+      isSearchActiveRef.current = false;
+      setIsSearchActive(false);
+      setIsSearchOpen(false);
+      setSearchValue('');
+      setSearchResults([]);
+      setHasAppliedFilters(false);
+      searchInputRef.current?.blur();
+    }, 280);
   }, [
     clearSearchHoverCloseTimer,
     showFilterDropdown,
     searchValue,
-    activeSearchResults.length,
-    activeSearchLoading,
     hasAppliedFilters,
+    activeSearchLoading,
+    setIsSearchOpen,
   ]);
 
   const handleDesktopSearchMouseEnter = useCallback(() => {
     isMouseOverSearchRef.current = true;
     clearSearchHoverCloseTimer();
+    const openingFromIdle = !isSearchActiveRef.current;
+    isSearchActiveRef.current = true;
     setIsSearchActive(true);
-    // Don't steal focus while the user is moving toward / clicking a result row.
-    // Refocusing the input mid-click can cancel the click on the portaled dropdown.
+    // Focus so the user can type immediately on hover-open.
+    // Skip when already open / focus is in the results panel (avoids canceling result clicks).
+    if (openingFromIdle) {
+      window.setTimeout(() => {
+        if (!isMouseOverSearchRef.current) return;
+        if (searchDropdownRef.current?.contains(document.activeElement)) return;
+        searchInputRef.current?.focus({ preventScroll: true });
+      }, 40);
+    }
   }, [clearSearchHoverCloseTimer]);
 
   const handleDesktopSearchMouseLeave = useCallback(() => {
@@ -4338,16 +4393,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             onMouseLeave={!isMobile ? handleDesktopSearchMouseLeave : undefined}
           >
             <div
-              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${
+              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out border-0 outline-none shadow-none ring-0 ${
                 isSearchActive
                   ? isMobile
-                    ? 'w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 shadow-none'
-                    : 'w-full overflow-hidden border border-base-300/60 dark:border-base-content/12 bg-base-200/60 dark:bg-base-300/20 shadow-inner'
+                    ? 'w-full overflow-hidden bg-gray-100 dark:bg-gray-800'
+                    : 'w-full overflow-hidden bg-gray-100 dark:bg-gray-800'
                   : isMobile
-                    ? 'w-full min-h-9 h-9 border-0 bg-transparent shadow-none box-border'
-                    : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:border md:border-base-300/60 dark:md:border-base-content/12 md:bg-base-200/60 dark:md:bg-base-300/20 md:shadow-inner'
+                    ? 'w-full min-h-9 h-9 bg-transparent box-border'
+                    : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:bg-gray-100 dark:md:bg-gray-800'
               }`}
-              style={isSearchActive && isDarkMode && isMobile ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
             >
               {/* Search icon left — mobile: always; desktop active: Siriwave; desktop idle: icon */}
               {isMobile ? (
@@ -4398,21 +4452,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   // On mobile, close search if no value, no results, and not searching
                   if (!searchValue.trim() && activeSearchResults.length === 0 && !activeSearchLoading) {
                     setTimeout(() => {
+                      isSearchActiveRef.current = false;
                       setIsSearchActive(false);
                       setIsSearchOpen(false);
                     }, 150);
                   }
                 } : undefined}
+                readOnly={!isSearchActive}
+                tabIndex={isSearchActive ? 0 : -1}
+                aria-disabled={!isSearchActive}
                 className={`
-                  w-full bg-transparent border-0 rounded-full text-gray-800 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-0 transition-all duration-300 search-input-placeholder
-                  ${isSearchActive ? 'opacity-100 visible pl-12' : isMobile ? 'opacity-100 visible pl-9 pr-2 text-sm' : 'opacity-100 visible pl-12'}
+                  w-full bg-transparent border-0 outline-none ring-0 rounded-full text-gray-800 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-0 focus:border-0 transition-all duration-300 search-input-placeholder
+                  ${isSearchActive ? 'opacity-100 visible pl-12 caret-current' : isMobile ? 'opacity-100 visible pl-9 pr-2 text-sm caret-transparent cursor-default' : 'opacity-100 visible pl-12 caret-transparent cursor-default'}
                   ${searchValue.trim() || activeSearchResults.length > 0 ? 'pr-12' : isMobile && !isSearchActive ? 'pr-2' : 'pr-4'}
                 `}
                 style={{
                   height: isMobile ? (isSearchActive ? 48 : 36) : 44,
                   fontSize: isMobile ? (isSearchActive ? 16 : 13) : 14,
                   fontWeight: 500,
-                  letterSpacing: '-0.01em'
+                  letterSpacing: '-0.01em',
+                  boxShadow: 'none',
+                  pointerEvents: isSearchActive ? 'auto' : 'none',
                 }}
               />
               {/* Clear search button - visible when search is active */}
@@ -4926,6 +4986,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg"
             aria-label="Search"
             onClick={() => {
+              isSearchActiveRef.current = true;
               setIsSearchOpen(true);
               setIsSearchActive(true);
               window.setTimeout(() => searchInputRef.current?.focus(), 0);

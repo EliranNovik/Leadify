@@ -5,6 +5,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { supabase } from '../lib/supabase';
 import { calculateEmployeeBonus, getRoleDisplayName as getBonusRoleDisplayName, fetchMonthlyBonusPool, getRoleConfig, getBonusConfig } from '../lib/bonusCalculation';
 import { usePersistedFilters } from '../hooks/usePersistedState';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 // Extend window object to include monthly bonus pools cache
 declare global {
@@ -79,29 +80,6 @@ const getInitials = (displayName: string): string => {
     .slice(0, 2);
 };
 
-// Helper function to map role codes to display names
-const getRoleDisplayName = (roleCode: string): string => {
-  const roleMap: { [key: string]: string } = {
-    'c': 'Closer',
-    's': 'Scheduler',
-    'h': 'Handler',
-    'n': 'No role',
-    'e': 'Expert',
-    'z': 'Manager',
-    'Z': 'Manager',
-    'ma': 'Marketing',
-    'p': 'Partner',
-    'helper-closer': 'Helper Closer',
-    'pm': 'Project Manager',
-    'se': 'Secretary',
-    'dv': 'Developer',
-    'dm': 'Department Manager',
-    'b': 'Book Keeper',
-    'f': 'Finance'
-  };
-
-  return roleMap[roleCode] || roleCode || 'No role';
-};
 
 // Closer Performance Chart Component
 function CloserPerformanceChart({ closerData, dateRange }: { closerData: any, dateRange: any }) {

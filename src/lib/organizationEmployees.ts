@@ -2,6 +2,19 @@ import { supabase } from './supabase';
 import { coerceEmployeeWorksFromHome } from './clockInLocations';
 import { normalizeEmployeeMinHours } from './employeeLeadReporting';
 import type { UnavailabilityType } from './employeeUnavailabilities';
+import {
+  getBonusesRoleDisplayName,
+  isDepartmentManagerBonusRole,
+  isPartnerBonusRole,
+} from './employeeRoles';
+
+export {
+  getBonusesRoleDisplayName,
+  getEmployeeRoleDisplayName,
+  isDepartmentManagerBonusRole,
+  isOfficeManagerBonusRole,
+  isPartnerBonusRole,
+} from './employeeRoles';
 
 export const CONTRIBUTION_DEPARTMENT_ROLES = ['Sales', 'Handlers', 'Partners', 'Marketing', 'Finance'] as const;
 
@@ -67,6 +80,10 @@ export interface OrganizationEmployee {
   works_from_home: boolean;
   is_superuser: boolean;
   date_of_birth: string | null;
+  fired: boolean;
+  fired_at: string | null;
+  fired_by_employee_id: number | null;
+  fired_by_name: string | null;
   fieldRoles: ContributionDepartmentRole[];
   chatUserId: string | null;
   isClockedIn: boolean;
@@ -87,52 +104,8 @@ export interface OrganizationData {
   allEmployees: OrganizationEmployee[];
 }
 
-export function getBonusesRoleDisplayName(roleCode: string | null | undefined): string {
-  if (!roleCode) return '';
-
-  const roleMap: Record<string, string> = {
-    c: 'Closer',
-    s: 'Scheduler',
-    h: 'Handler',
-    n: 'No role',
-    e: 'Expert',
-    z: 'Manager',
-    Z: 'Manager',
-    p: 'Partner',
-    m: 'Manager',
-    dm: 'Department Manager',
-    pm: 'Project Manager',
-    se: 'Secretary',
-    b: 'Book keeper',
-    partners: 'Partners',
-    dv: 'Developer',
-    ma: 'Marketing',
-    P: 'Partner',
-    M: 'Manager',
-    DM: 'Department Manager',
-    PM: 'Project Manager',
-    SE: 'Secretary',
-    B: 'Book keeper',
-    Partners: 'Partners',
-    d: 'Diverse',
-    f: 'Finance',
-    col: 'Collection',
-    lawyer: 'Helper Closer',
-  };
-
-  return roleMap[roleCode] || roleCode;
-}
-
 export function getEmployeeDisplayLabel(employee: OrganizationEmployee): string {
   return employee.official_name?.trim() || employee.display_name || 'Unknown';
-}
-
-export function isPartnerBonusRole(bonusesRole: string | null | undefined): boolean {
-  return bonusesRole?.trim().toLowerCase() === 'p';
-}
-
-export function isDepartmentManagerBonusRole(bonusesRole: string | null | undefined): boolean {
-  return bonusesRole?.trim().toLowerCase() === 'dm';
 }
 
 export function getLeadershipDepartment(bonusesRole: string | null | undefined): string | null {
@@ -277,6 +250,10 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
             min_hours,
             works_from_home,
             date_of_birth,
+            fired,
+            fired_at,
+            fired_by_employee_id,
+            fired_by_name,
             tenant_departement!department_id(
               id,
               name
@@ -359,6 +336,12 @@ export async function fetchOrganizationData(): Promise<OrganizationData> {
         works_from_home: coerceEmployeeWorksFromHome(employee.works_from_home),
         is_superuser: isSuperuser,
         date_of_birth: employee.date_of_birth || null,
+        fired: employee.fired === true || employee.fired === 'true' || employee.fired === 1,
+        fired_at: employee.fired_at || null,
+        fired_by_employee_id: employee.fired_by_employee_id != null
+          ? Number(employee.fired_by_employee_id)
+          : null,
+        fired_by_name: employee.fired_by_name || null,
         fieldRoles,
         chatUserId: user.id ? String(user.id) : null,
         isClockedIn: false,

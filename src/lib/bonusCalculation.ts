@@ -1,5 +1,10 @@
 import { supabase } from './supabase';
 import { convertToNIS } from './currencyConversion';
+import { EMPLOYEE_ROLE_DISPLAY_MAP } from './employeeRoles';
+
+export { getRoleDisplayName } from './employeeRoles';
+/** @deprecated Use EMPLOYEE_ROLE_DISPLAY_MAP from employeeRoles */
+export const ROLE_MAPPING = EMPLOYEE_ROLE_DISPLAY_MAP;
 
 // Bonus calculation interfaces
 export interface BonusRole {
@@ -97,20 +102,6 @@ export const BONUS_ROLES: { [key: string]: { groupPercentage: number; roles: Bon
       { role: 'p', percentage: 100, isPoolBased: true }, // Partners & Co - 100% of their group allocation
     ]
   },
-};
-
-// Role mapping for easier lookup
-export const ROLE_MAPPING: { [key: string]: string } = {
-  's': 'Scheduler',
-  'z': 'Manager',
-  'Z': 'Manager',
-  'c': 'Closer',
-  'lawyer': 'Helper Closer',
-  'e': 'Expert',
-  'h': 'Handler',
-  'ma': 'Marketing',
-  'col': 'Collection',
-  'p': 'Partner',
 };
 
 // Get bonus configuration for a role
@@ -768,11 +759,6 @@ export const calculateEmployeeBonus = async (
     roleBonuses,
     monthlyPoolBonus: roleBonuses.find(b => b.isPoolBased)?.bonusAmount,
   };
-};
-
-// Get role display name
-export const getRoleDisplayName = (roleCode: string): string => {
-  return ROLE_MAPPING[roleCode] || roleCode;
 };
 
 // Fetch monthly bonus pool for a specific month/year

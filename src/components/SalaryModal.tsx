@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { XMarkIcon, UserGroupIcon, MagnifyingGlassIcon, FunnelIcon, CurrencyDollarIcon, CalendarIcon, Squares2X2Icon, ListBulletIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 interface Employee {
   id: string;
@@ -42,38 +43,6 @@ const getInitials = (displayName: string): string => {
     .slice(0, 2);
 };
 
-// Helper function to map role codes to display names
-const getRoleDisplayName = (roleCode: string): string => {
-  const roleMap: { [key: string]: string } = {
-    'c': 'Closer',
-    's': 'Scheduler',
-    'h': 'Handler',
-    'n': 'No role',
-    'e': 'Expert',
-    'z': 'Manager',
-    'Z': 'Manager',
-    'p': 'Partner',
-    'm': 'Manager',
-    'dm': 'Department Manager',
-    'pm': 'Project Manager',
-    'se': 'Secretary',
-    'b': 'Book keeper',
-    'partners': 'Partners',
-    'dv': 'Developer',
-    'ma': 'Marketing',
-    'P': 'Partner',
-    'M': 'Manager',
-    'DM': 'Department Manager',
-    'PM': 'Project Manager',
-    'SE': 'Secretary',
-    'B': 'Book keeper',
-    'Partners': 'Partners',
-    'd': 'Diverse',
-    'f': 'Finance'
-  };
-  
-  return roleMap[roleCode] || roleCode || 'No role';
-};
 
 // Employee Salary Row Component
 interface EmployeeSalaryRowProps {

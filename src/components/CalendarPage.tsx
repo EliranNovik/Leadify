@@ -56,6 +56,7 @@ import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
 import PortalMeetingRequestsModal from './portal/PortalMeetingRequestsModal';
 import { usePortalMeetingRequests } from '../hooks/usePortalMeetingRequests';
 import * as XLSX from 'xlsx';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 const DEBUG_CALENDAR = String(import.meta.env.VITE_DEBUG_CALENDAR || '').toLowerCase() === 'true';
 const calDebug = (...args: any[]) => {
@@ -1616,41 +1617,7 @@ const CalendarPage: React.FC = () => {
   };
 
   // Helper function to get role display name
-  const getRoleDisplayName = (roleCode: string | null | undefined): string => {
-    if (!roleCode) return 'N/A';
-
-    const roleMap: { [key: string]: string } = {
-      'c': 'Closer',
-      's': 'Scheduler',
-      'h': 'Handler',
-      'n': 'No role',
-      'e': 'Expert',
-      'z': 'Manager',
-      'Z': 'Manager',
-      'p': 'Partner',
-      'm': 'Manager',
-      'dm': 'Department Manager',
-      'pm': 'Project Manager',
-      'se': 'Secretary',
-      'b': 'Book keeper',
-      'partners': 'Partners',
-      'dv': 'Developer',
-      'ma': 'Marketing',
-      'P': 'Partner',
-      'M': 'Manager',
-      'DM': 'Department Manager',
-      'PM': 'Project Manager',
-      'SE': 'Secretary',
-      'B': 'Book keeper',
-      'Partners': 'Partners',
-      'd': 'Diverse',
-      'f': 'Finance',
-      'col': 'Collection',
-      'lawyer': 'Helper Closer'
-    };
-
-    return roleMap[roleCode] || roleCode || 'N/A';
-  };
+  
 
   const handleStaffSelect = (name: string) => {
     setSelectedStaff(name);

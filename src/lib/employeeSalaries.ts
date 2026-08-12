@@ -1,6 +1,9 @@
 import { supabase } from './supabase';
 import { normalizeEmployeeMinHours } from './employeeLeadReporting';
 import { resolveEmployeePhotoUrl } from './employeePhotoUrl';
+import { getSalaryRoleDisplayName } from './employeeRoles';
+
+export { getSalaryRoleDisplayName } from './employeeRoles';
 
 export interface SalaryEntryRow {
   employee_id: number;
@@ -125,37 +128,6 @@ export async function fetchActiveStaffEmployeesWithDepartment(): Promise<ActiveS
     )
     .sort((a, b) => a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }));
 }
-
-const ROLE_DISPLAY: Record<string, string> = {
-  c: 'Closer',
-  s: 'Scheduler',
-  h: 'Handler',
-  n: 'No role',
-  e: 'Expert',
-  z: 'Manager',
-  Z: 'Manager',
-  p: 'Partner',
-  m: 'Manager',
-  dm: 'Department Manager',
-  pm: 'Project Manager',
-  se: 'Secretary',
-  b: 'Book keeper',
-  partners: 'Partners',
-  dv: 'Developer',
-  ma: 'Marketing',
-  P: 'Partner',
-  M: 'Manager',
-  DM: 'Department Manager',
-  PM: 'Project Manager',
-  SE: 'Secretary',
-  B: 'Book keeper',
-  Partners: 'Partners',
-  d: 'Diverse',
-  f: 'Finance',
-};
-
-export const getSalaryRoleDisplayName = (roleCode: string): string =>
-  ROLE_DISPLAY[roleCode] || roleCode || 'No role';
 
 export const getSalaryEmployeeInitials = (name: string): string =>
   name

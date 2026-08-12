@@ -15,6 +15,7 @@ import {
   syncEmployeeConnectedUser,
 } from '../../lib/employeeUserLink';
 import { buildApiUrl } from '../../lib/api';
+import { getEmployeeRoleDisplayName } from '../../lib/employeeRoles';
 
 /** Quote PostgREST `.or()` / filter values so spaces and commas don't break parsing. */
 function quotePostgrestFilterValue(value: string): string {
@@ -2501,38 +2502,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                                 return fkEntry;
                               })()
                             ) : field.name === 'bonuses_role' ? (
-                              // Special handling for bonuses_role to display mapped role names
-                              (() => {
-                                const roleMap: { [key: string]: string } = {
-                                  'c': 'Closer',
-                                  's': 'Scheduler',
-                                  'h': 'Handler',
-                                  'n': 'No role',
-                                  'e': 'Expert',
-                                  'z': 'Manager',
-                                  'Z': 'Manager',
-                                  'p': 'Partner',
-                                  'm': 'Manager',
-                                  'dm': 'Department Manager',
-                                  'pm': 'Project Manager',
-                                  'se': 'Secretary',
-                                  'b': 'Book keeper',
-                                  'partners': 'Partners',
-                                  'dv': 'Developer',
-                                  'ma': 'Marketing',
-                                  'P': 'Partner',
-                                  'M': 'Manager',
-                                  'DM': 'Department Manager',
-                                  'PM': 'Project Manager',
-                                  'SE': 'Secretary',
-                                  'B': 'Book keeper',
-                                  'Partners': 'Partners',
-                                  'd': 'Diverse',
-                                  'f': 'Finance'
-                                };
-                                const roleCode = record[field.name];
-                                return roleMap[roleCode] || roleCode || '-';
-                              })()
+                              getEmployeeRoleDisplayName(String(record[field.name] ?? ''), '-')
                             ) : field.name === 'preferred_category' && tableName === 'tenants_employee' ? (
                               // Display preferred categories from the separate table
                               preferredCategoryData[record.id]?.length

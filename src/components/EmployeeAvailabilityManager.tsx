@@ -11,6 +11,7 @@ import {
   DocumentArrowUpIcon
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 interface UnavailabilityReason {
   id: number;
@@ -27,33 +28,6 @@ interface UnavailabilityReason {
   created_at: string;
 }
 
-// Role mapping function to convert role codes to full names
-const getRoleDisplayName = (roleCode: string): string => {
-  const roleMap: { [key: string]: string } = {
-    'pm': 'Project Manager',
-    'dev': 'Developer',
-    'admin': 'Administrator',
-    'manager': 'Manager',
-    'closer': 'Closer',
-    'scheduler': 'Scheduler',
-    'expert': 'Expert',
-    'handler': 'Handler',
-    'analyst': 'Analyst',
-    'coordinator': 'Coordinator',
-    'supervisor': 'Supervisor',
-    'director': 'Director',
-    'lead': 'Team Lead',
-    'senior': 'Senior',
-    'junior': 'Junior',
-    'intern': 'Intern',
-    'consultant': 'Consultant',
-    'specialist': 'Specialist',
-    'assistant': 'Assistant',
-    'executive': 'Executive'
-  };
-  
-  return roleMap[roleCode?.toLowerCase()] || roleCode || 'Unknown Role';
-};
 
 interface Employee {
   id: string;

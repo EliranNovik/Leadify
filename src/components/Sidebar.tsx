@@ -36,6 +36,7 @@ import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { canAccessLeadTimeReport } from '../lib/employeeLeadReporting';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 interface SidebarProps {
   userName?: string;
@@ -311,35 +312,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, [userInitials, authUserInitials, userOfficialName, userName, userFullName, authUser?.email]);
 
   // Helper function to get role display name
-  const getRoleDisplayName = (role: string): string => {
-    const roleMap: { [key: string]: string } = {
-      'pm': 'Project Manager',
-      'se': 'Secretary',
-      'dv': 'Developer',
-      'dm': 'Department Manager',
-      'b': 'Book Keeper',
-      'f': 'Finance',
-      'h': 'Handler',
-      'e': 'Expert',
-      'm': 'Manager',
-      'l': 'Lawyer',
-      'a': 'Administrator',
-      's': 'Scheduler',
-      'c': 'Closer',
-      'p': 'Partner',
-      'P': 'Partner',
-      'adv': 'Advocate',
-      'advocate': 'Advocate',
-      'handler': 'Handler',
-      'expert': 'Expert',
-      'manager': 'Manager',
-      'lawyer': 'Lawyer',
-      'admin': 'Administrator',
-      'coordinator': 'Coordinator',
-      'scheduler': 'Scheduler'
-    };
-    return roleMap[role?.toLowerCase()] || role || 'User';
-  };
+  
 
   // Fetch user role and department from database using new employee relationship
   // DEFERRED: Run in background after initial render

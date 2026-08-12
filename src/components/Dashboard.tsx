@@ -73,6 +73,7 @@ import DashboardScoreboardDealsModal, {
   scoreboardDealsCellKey,
   type DashboardScoreboardDeal,
 } from './DashboardScoreboardDealsModal';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 import {
   applySubcontractorFeeTotalsToLeads,
   fetchSubcontractorFeeTotalsByLeadIds,
@@ -831,41 +832,7 @@ const Dashboard: React.FC = () => {
     });
   };
 
-  const getRoleDisplayName = (roleCode: string | null | undefined): string => {
-    if (!roleCode) return 'N/A';
-
-    const roleMap: { [key: string]: string } = {
-      'c': 'Closer',
-      's': 'Scheduler',
-      'h': 'Handler',
-      'n': 'No role',
-      'e': 'Expert',
-      'z': 'Manager',
-      'Z': 'Manager',
-      'p': 'Partner',
-      'm': 'Manager',
-      'dm': 'Department Manager',
-      'pm': 'Project Manager',
-      'se': 'Secretary',
-      'b': 'Book keeper',
-      'partners': 'Partners',
-      'dv': 'Developer',
-      'ma': 'Marketing',
-      'P': 'Partner',
-      'M': 'Manager',
-      'DM': 'Department Manager',
-      'PM': 'Project Manager',
-      'SE': 'Secretary',
-      'B': 'Book keeper',
-      'Partners': 'Partners',
-      'd': 'Diverse',
-      'f': 'Finance',
-      'col': 'Collection',
-      'lawyer': 'Helper Closer'
-    };
-
-    return roleMap[roleCode] || roleCode || 'N/A';
-  };
+  
 
   // Helper function to format time string to remove seconds (e.g., "09:00:00" -> "09:00")
   const formatTimeString = (timeStr: string): string => {

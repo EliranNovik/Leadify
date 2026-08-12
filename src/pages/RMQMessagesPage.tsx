@@ -61,6 +61,7 @@ import {
 } from '../lib/rmqMessageLeadFlags';
 import { fetchFlagTypes, flagTypeLabel, type FlagTypeRow } from '../lib/userContentFlags';
 import { useExternalUser } from '../hooks/useExternalUser';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 interface User {
   id: string;
@@ -245,6 +246,18 @@ const RMQ_CHAT = {
   image: 'w-full min-w-0 max-w-full',
   imageR: 'rounded-[10px]',
   /**
+   * Single image/video in thread — width follows bubble; height is natural (no max-h box /
+   * object-contain letterboxing that left empty white under media).
+   */
+  mediaImg: 'block h-auto w-auto max-w-full object-contain object-center bg-transparent',
+  mediaVideo:
+    'relative z-10 block h-auto w-auto max-w-full min-h-[100px] object-contain bg-transparent pointer-events-none',
+  /** Frosted glass chrome over the message thread (header + composer). */
+  chromeGlassTop:
+    'bg-white/50 backdrop-blur-xl supports-[backdrop-filter]:bg-white/35 border-b border-white/40 shadow-[0_8px_24px_rgba(15,23,42,0.06)]',
+  chromeGlassBottom:
+    'bg-white/50 backdrop-blur-xl supports-[backdrop-filter]:bg-white/35 border-t border-white/40 shadow-[0_-8px_24px_rgba(15,23,42,0.06)]',
+  /**
    * Reply-to snippet (inside bubbles) — sky palette, same family as “Leave a Comment”
    * (`text-sky-200` / `text-sky-600` in group footers).
    */
@@ -264,8 +277,11 @@ const RMQ_CHAT = {
 /** Group consecutive messages from the same sender (Slack-style) if within this gap. */
 const RMQ_GROUP_GAP_MS = 5 * 60 * 1000;
 
-/** Eager-load images for the last N messages so lazy decode does not resize the thread while scrolling. */
-const RMQ_EAGER_IMAGE_TAIL = 42;
+/** Eager-load images only for the visible tail (avoid dual-tree network storms). */
+const RMQ_EAGER_IMAGE_TAIL = 10;
+
+/** Background Image() preload — only newest URLs; <img loading> handles the rest. */
+const RMQ_PRELOAD_IMAGE_TAIL = 10;
 
 /** WhatsApp-style tick path — shared by chat bubbles and sidebar read previews. */
 const RMQ_READ_RECEIPT_CHECK_D =
@@ -345,8 +361,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   // Use a very long cache duration for persisted state (sessionStorage persists across modal close/open)
   const MESSAGE_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours - messages cache duration (persisted in sessionStorage)
   const CONVERSATION_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours - conversations cache duration
-  const MESSAGE_PAGE_SIZE = 80;
-  const MAX_PRELOAD_IMAGE_URLS = 300;
+  const MESSAGE_PAGE_SIZE = 40;
+  const MAX_PRELOAD_IMAGE_URLS = 80;
   const VIRTUAL_MSG_THRESHOLD = 60;
   const hasRestoredFromCacheRef = useRef<boolean>(false);
   const fetchMessagesInFlightRef = useRef<Map<number, Promise<void>>>(new Map());
@@ -579,6 +595,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   const mobileMessagesContainerRef = useRef<HTMLDivElement>(null);
   const mobileToolsRef = useRef<HTMLDivElement>(null);
   const desktopToolsRef = useRef<HTMLDivElement>(null);
+  const desktopChatTopChromeRef = useRef<HTMLDivElement>(null);
+  const desktopChatComposerRef = useRef<HTMLDivElement>(null);
+  const mobileChatHeaderRef = useRef<HTMLElement>(null);
+  const [desktopChatTopChromeHeight, setDesktopChatTopChromeHeight] = useState(64);
+  const [desktopChatComposerHeight, setDesktopChatComposerHeight] = useState(64);
+  const [mobileChatHeaderHeight, setMobileChatHeaderHeight] = useState(56);
+
+  // Keep message-thread padding in sync with overlay glass header/composer heights
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const observe = (el: HTMLElement | null, set: (n: number) => void, fallback: number) => {
+      if (!el) return () => {};
+      const update = () => set(Math.ceil(el.getBoundingClientRect().height) || fallback);
+      update();
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+    };
+    const cleanups = [
+      observe(desktopChatTopChromeRef.current, setDesktopChatTopChromeHeight, 64),
+      observe(desktopChatComposerRef.current, setDesktopChatComposerHeight, 64),
+      observe(mobileChatHeaderRef.current, setMobileChatHeaderHeight, 56),
+    ];
+    return () => cleanups.forEach((c) => c());
+  }, [selectedConversation?.id, rmqPinnedRows.length, isDesktopLayout, showMobileConversations]);
 
   /** Scroll the visible chat pane to a message. Must query inside the active container — both desktop and mobile trees render [data-message-id], and document.querySelector picks the hidden one first on phone. */
   const scrollToMessage = useCallback((messageId: number, behavior: 'smooth' | 'instant' = 'instant') => {
@@ -670,44 +711,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   }, [setLoadedVideosArray]);
 
   // Helper functions
-  const getRoleDisplayName = (role: string): string => {
-    const roleMap: { [key: string]: string } = {
-      'pm': 'Project Manager',
-      'p': 'Partner',
-      'se': 'Secretary',
-      'dv': 'Developer',
-      'dm': 'Department Manager',
-      'b': 'Book Keeper',
-      'f': 'Finance',
-      'h': 'Handler',
-      'e': 'Expert',
-      'm': 'Manager',
-      'l': 'Lawyer',
-      'a': 'Administrator',
-      's': 'Scheduler',
-      'c': 'Closer',
-      'adv': 'Advocate',
-      'advocate': 'Advocate',
-      'handler': 'Handler',
-      'expert': 'Expert',
-      'manager': 'Manager',
-      'lawyer': 'Lawyer',
-      'admin': 'Administrator',
-      'coordinator': 'Coordinator',
-      'scheduler': 'Scheduler',
-      'n': 'Employee', // Common abbreviation for 'No Role' or 'New'
-      'ma': 'Marketing Assistant', // Marketing Assistant
-      'department manager': 'Department Manager',
-      'book keeper': 'Book Keeper',
-      'marketing': 'Marketing',
-      'sales': 'Sales'
-    };
-
-    if (!role || role.trim() === '') return 'Employee';
-
-    const cleanRole = role.toLowerCase().trim();
-    return roleMap[cleanRole] || role || 'Employee';
-  };
+  
 
   const getInitials = (name: string | null | undefined): string => {
     if (!name || name.trim() === '') return 'U';
@@ -962,8 +966,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     return false;
   };
 
-  // Preload images for faster display when conversation opens
-  // Preload images in background (non-blocking)
+  // Preload only the newest few images (non-blocking). Browsers already fetch visible <img> tags.
   const preloadImages = useCallback(async (messages: any[], waitForCritical: boolean = false): Promise<void> => {
     const imageUrls: string[] = [];
     for (const m of messages) {
@@ -976,24 +979,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       }
     }
 
-    if (imageUrls.length === 0) {
-      return;
-    }
+    if (imageUrls.length === 0) return;
 
-    // Don't set loading state - this runs in background and shouldn't block UI
-    // Keep prior URL entries to avoid redundant network fetches when switching chats
     if (imagesLoadedRef.current.size > MAX_PRELOAD_IMAGE_URLS) {
       const urls = Array.from(imagesLoadedRef.current);
       imagesLoadedRef.current = new Set(urls.slice(-MAX_PRELOAD_IMAGE_URLS));
     }
 
-    // For critical loading, only wait for the last 5 images (most recent messages)
-    const criticalImages = waitForCritical ? imageUrls.slice(-5) : [];
-    const otherImages = waitForCritical ? imageUrls.slice(0, -5) : imageUrls;
+    const recentUrls = imageUrls.slice(-RMQ_PRELOAD_IMAGE_TAIL);
+    const criticalImages = waitForCritical ? recentUrls.slice(-5) : [];
+    const otherImages = waitForCritical ? recentUrls.slice(0, -5) : recentUrls;
 
-    // Preload critical images first and wait for them
-    const criticalPromises = criticalImages.map(url => {
-      return new Promise<void>((resolve) => {
+    const loadOne = (url: string) =>
+      new Promise<void>((resolve) => {
         if (imagesLoadedRef.current.has(url)) {
           resolve();
           return;
@@ -1004,31 +1002,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           resolve();
         };
         img.onerror = () => {
-          imagesLoadedRef.current.add(url); // Mark as attempted even if failed
+          imagesLoadedRef.current.add(url);
           resolve();
         };
         img.src = url;
       });
+
+    if (waitForCritical && criticalImages.length > 0) {
+      await Promise.all(criticalImages.map(loadOne));
+    }
+
+    otherImages.forEach((url) => {
+      if (!imagesLoadedRef.current.has(url)) {
+        const img = new Image();
+        img.onload = () => imagesLoadedRef.current.add(url);
+        img.onerror = () => imagesLoadedRef.current.add(url);
+        img.src = url;
+      }
     });
-
-    // Wait for critical images if needed
-    if (waitForCritical && criticalPromises.length > 0) {
-      await Promise.all(criticalPromises);
-    }
-
-    // Preload other images in background (don't wait)
-    const batchSize = 10;
-    for (let i = 0; i < otherImages.length; i += batchSize) {
-      const batch = otherImages.slice(i, i + batchSize);
-      batch.forEach(url => {
-        if (!imagesLoadedRef.current.has(url)) {
-          const img = new Image();
-          img.onload = () => imagesLoadedRef.current.add(url);
-          img.onerror = () => imagesLoadedRef.current.add(url);
-          img.src = url;
-        }
-      });
-    }
   }, []);
 
   const isVideoMessage = (message: Message): boolean => {
@@ -1346,39 +1337,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Mark messages as read for current user (when viewing conversation)
-  const markMessagesAsRead = async (messageIds: number[], conversationId: number) => {
+  // Mark messages as read for current user (when viewing conversation) — one batched lookup + insert
+  const markMessagesAsRead = async (messageIds: number[], _conversationId: number) => {
     if (!currentUser || messageIds.length === 0) return;
 
     try {
-      // For each message, check if we need to create read receipts
-      // This marks that the current user has read these messages
-      const receiptsToInsert = [];
+      const uniqueIds = [...new Set(messageIds.filter((id) => id != null))];
+      if (uniqueIds.length === 0) return;
 
-      for (const messageId of messageIds) {
-        // Check if read receipt already exists
-        const { data: existingReceipt } = await supabase
-          .from('message_read_receipts')
-          .select('id')
-          .eq('message_id', messageId)
-          .eq('user_id', currentUser.id)
-          .maybeSingle();
+      const { data: existingReceipts } = await supabase
+        .from('message_read_receipts')
+        .select('message_id')
+        .eq('user_id', currentUser.id)
+        .in('message_id', uniqueIds);
 
-        // Only create if it doesn't exist
-        if (!existingReceipt) {
-          receiptsToInsert.push({
-            message_id: messageId,
-            user_id: currentUser.id,
-            read_at: new Date().toISOString()
-          });
-        }
-      }
+      const existingSet = new Set((existingReceipts || []).map((r: { message_id: number }) => r.message_id));
+      const receiptsToInsert = uniqueIds
+        .filter((messageId) => !existingSet.has(messageId))
+        .map((message_id) => ({
+          message_id,
+          user_id: currentUser.id,
+          read_at: new Date().toISOString(),
+        }));
 
-      // Batch insert all new read receipts
       if (receiptsToInsert.length > 0) {
-        await supabase
-          .from('message_read_receipts')
-          .insert(receiptsToInsert);
+        await supabase.from('message_read_receipts').insert(receiptsToInsert);
       }
     } catch (error) {
     }
@@ -2035,13 +2018,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     const cellClass =
       'relative overflow-hidden bg-gray-100 dark:bg-gray-800 min-h-[64px] max-md:min-h-[56px] md:min-h-[72px]';
 
-    const cell = (item: RmqMediaAttachmentItem, i: number, extraClass: string) => {
+    const cell = (item: RmqMediaAttachmentItem, i: number, extraClass: string, cover = true) => {
       const isVid = item.type.startsWith('video/');
       return (
         <button
           type="button"
           key={`${message.id}-album-${i}`}
-          className={`${cellClass} ${extraClass} block w-full p-0 border-0 cursor-pointer`}
+          className={
+            cover
+              ? `${cellClass} ${extraClass} block w-full p-0 border-0 cursor-pointer`
+              : `relative max-w-full bg-transparent ${extraClass} inline-block w-fit p-0 border-0 cursor-pointer leading-none`
+          }
           onClick={(e) => {
             e.stopPropagation();
             openMediaModal(message, item.url);
@@ -2050,7 +2037,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           {isVid ? (
             <video
               src={item.url}
-              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              className={
+                cover
+                  ? 'absolute inset-0 w-full h-full object-cover pointer-events-none'
+                  : `${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaVideo}`
+              }
               muted
               playsInline
               preload="metadata"
@@ -2059,7 +2050,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             <img
               src={item.url}
               alt=""
-              className="absolute inset-0 w-full h-full object-cover"
+              className={
+                cover
+                  ? 'absolute inset-0 w-full h-full object-cover'
+                  : `${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaImg}`
+              }
               loading={messageListIndex >= messages.length - RMQ_EAGER_IMAGE_TAIL ? 'eager' : 'lazy'}
             />
           )}
@@ -2074,12 +2069,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
     if (n === 1) {
       return (
-        <div className="w-full max-w-full">
-          {cell(
-            items[0],
-            0,
-            'aspect-video max-h-[min(36vh,14rem)] md:max-h-80'
-          )}
+        <div className="w-fit max-w-full leading-none">
+          {cell(items[0], 0, 'w-fit max-w-full', false)}
         </div>
       );
     }
@@ -2169,12 +2160,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       return (
         <div className={`flex w-full ${isOwn ? 'justify-end' : 'justify-start'}`}>
           <div
-            className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden w-full max-w-full sm:max-w-md ${
-              isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
-            }`}
+            className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden max-w-full sm:max-w-md ${
+              message.media_attachments?.length === 1 ? 'w-fit' : 'w-full'
+            } ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}
           >
             {nameHeaderInMediaCard}
-            <div className="relative w-full">
+            <div className={`relative ${message.media_attachments?.length === 1 ? 'w-fit max-w-full' : 'w-full'}`}>
               {renderAlbumMessageContent(message, 0)}
               <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md pointer-events-none z-10">
                 {formatMessageTime(message.sent_at)}
@@ -2217,7 +2208,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               <img
                 src={message.attachment_url}
                 alt={message.attachment_name || ''}
-                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
+                className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaImg}`}
                 loading="lazy"
                 decoding="async"
               />
@@ -2253,7 +2244,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             >
               <video
                 src={message.attachment_url}
-                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none`}
+                className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaVideo}`}
                 muted
                 playsInline
                 preload="metadata"
@@ -3486,6 +3477,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       });
     }
     const readReceiptsData = receiptsResult.data || [];
+    const receiptsByMessage = new Map<number, Array<{ user_id: string; read_at: string }>>();
+    for (const rr of readReceiptsData as Array<{ message_id: number; user_id: string; read_at: string }>) {
+      const list = receiptsByMessage.get(rr.message_id);
+      if (list) list.push({ user_id: rr.user_id, read_at: rr.read_at });
+      else receiptsByMessage.set(rr.message_id, [{ user_id: rr.user_id, read_at: rr.read_at }]);
+    }
     const finalMessages = processedMessages.map((msg: any) => {
       let replyMessage = msg.reply_to_message;
       if (replyMessage && Array.isArray(replyMessage)) {
@@ -3503,7 +3500,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         ...msg,
         media_attachments: Array.isArray(media) ? media : msg.media_attachments,
         reply_to_message: replyMessage,
-        read_receipts: readReceiptsData.filter((rr: any) => rr.message_id === msg.id) || []
+        read_receipts: receiptsByMessage.get(msg.id) || []
       };
     });
     return finalMessages as unknown as Message[];
@@ -3703,12 +3700,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     [scrollToMessage]
   );
 
-  const loadRmqMessageCommentCounts = useCallback(async (conversationId: number) => {
+  const loadRmqMessageCommentCounts = useCallback(async (conversationId: number, messageIds?: number[]) => {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('rmq_message_comments')
         .select('message_id')
         .eq('conversation_id', conversationId);
+      if (messageIds && messageIds.length > 0) {
+        query = query.in('message_id', messageIds);
+      }
+      const { data, error } = await query;
       if (error) {
         if (error.code === '42P01' || String(error.message || '').includes('relation')) {
           setRmqMessageCommentCounts({});
@@ -4093,14 +4094,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       const isCacheValid = cachedData && cachedData.messages.length > 0 && (cacheAge < MESSAGE_CACHE_DURATION || !forceRefresh);
 
       if (isCacheValid && cachedData.messages.length > 0) {
-        // Restore from cache immediately
-        setMessages(cachedData.messages);
+        // Restore from cache immediately (newest page only)
+        const restored =
+          cachedData.messages.length > MESSAGE_PAGE_SIZE
+            ? cachedData.messages.slice(-MESSAGE_PAGE_SIZE)
+            : cachedData.messages;
+        setMessages(restored);
         setIsLoadingMessages(false);
-        setHasMoreOlderMessages(!!cachedData.hasMoreOlder);
-        console.log(`[RMQ] Restored ${cachedData.messages.length} messages from cache for conversation ${conversationId}`);
+        setHasMoreOlderMessages(
+          !!cachedData.hasMoreOlder || cachedData.messages.length > MESSAGE_PAGE_SIZE
+        );
+        console.log(`[RMQ] Restored ${restored.length} messages from cache for conversation ${conversationId}`);
 
         // Mark as read when entering chat (even when using cache) so read status and unread badge stay in sync
-        const cachedMessageIds = cachedData.messages.map((m: Message) => m.id).filter((id: number) => id != null);
+        const cachedMessageIds = restored
+          .filter((m: Message) => m.sender_id !== currentUser?.id && m.id != null)
+          .map((m: Message) => m.id);
         if (cachedMessageIds.length > 0 && currentUser) {
           markMessagesAsRead(cachedMessageIds, conversationId).catch(console.error);
         }
@@ -4121,17 +4130,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             if (!newError && newMessagesData && newMessagesData.length > 0) {
               const enrichedNew = await enrichRawMessages(newMessagesData as any[], conversationId);
               const allMessages = [...cachedData.messages, ...enrichedNew];
-              setMessages(allMessages);
+              const display =
+                allMessages.length > MESSAGE_PAGE_SIZE
+                  ? allMessages.slice(-MESSAGE_PAGE_SIZE)
+                  : allMessages;
+              setMessages(display);
+              setHasMoreOlderMessages(
+                !!cachedData.hasMoreOlder || allMessages.length > MESSAGE_PAGE_SIZE
+              );
 
               const lastMessage = allMessages[allMessages.length - 1];
               setPersistedMessages(prev => ({
                 ...prev,
                 [conversationId]: {
-                  messages: allMessages,
+                  messages: display,
                   lastFetched: Date.now(),
                   lastMessageId: lastMessage?.id || lastMessageId,
-                  oldestMessageId: cachedData.oldestMessageId ?? allMessages[0]?.id ?? null,
-                  hasMoreOlder: cachedData.hasMoreOlder
+                  oldestMessageId: display[0]?.id ?? cachedData.oldestMessageId,
+                  hasMoreOlder: !!cachedData.hasMoreOlder || allMessages.length > MESSAGE_PAGE_SIZE
                 }
               }));
               console.log(`[RMQ] Added ${newMessagesData.length} new messages to conversation ${conversationId}`);
@@ -4141,25 +4157,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           }
         }, 100);
 
-        // Preload images and videos in background
-        preloadImages(cachedData.messages, false);
-
-        // Load newest videos
-        setTimeout(() => {
-          const videoMessages = cachedData.messages.filter(m => isVideoMessage(m));
-          if (videoMessages.length > 0) {
-            const videosToLoad = videoMessages.slice(-5).reverse();
-            videosToLoad.forEach((msg, index) => {
-              setTimeout(() => {
-                const videoElement = document.querySelector(`video[data-message-id="${msg.id}"]`) as HTMLVideoElement;
-                // Only check readyState - never use persisted IDs as a gate for fresh DOM elements
-                if (videoElement && videoElement.readyState === 0) {
-                  videoElement.load();
-                }
-              }, index * 200);
-            });
-          }
-        }, 100);
+        // Preload images in background — do not force-load videos (CORS + bandwidth)
+        preloadImages(restored, false);
 
         return;
       }
@@ -4182,7 +4181,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       const ascRaw = (messagesDesc || []).slice().reverse();
       const hasMoreOlder = (messagesDesc?.length || 0) === MESSAGE_PAGE_SIZE;
       const finalMessages = await enrichRawMessages(ascRaw, conversationId);
-      const messageIds = finalMessages.map(m => m.id).filter(id => id != null && id !== undefined);
+      const messageIds = finalMessages
+        .filter((m) => m.sender_id !== currentUser?.id && m.id != null)
+        .map((m) => m.id);
 
       setMessages(finalMessages as unknown as Message[]);
       setIsLoadingMessages(false);
@@ -4202,26 +4203,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       }));
       console.log(`[RMQ] Updated messages cache for conversation ${conversationId}`);
 
-      // Preload images in background (non-blocking)
+      // Preload images in background (non-blocking) — videos load on demand only
       preloadImages(finalMessages, false);
-
-      // Load newest videos first (from bottom of chat)
-      setTimeout(() => {
-        const videoMessages = finalMessages.filter(m => isVideoMessage(m));
-        if (videoMessages.length > 0) {
-          // Start from the last (newest) videos and work backwards
-          const videosToLoad = videoMessages.slice(-5).reverse(); // Last 5 videos, newest first
-          videosToLoad.forEach((msg, index) => {
-            setTimeout(() => {
-              const videoElement = document.querySelector(`video[data-message-id="${msg.id}"]`) as HTMLVideoElement;
-              // Only check readyState - never use persisted IDs as a gate for fresh DOM elements
-              if (videoElement && videoElement.readyState === 0) {
-                videoElement.load();
-              }
-            }, index * 200); // Stagger loading by 200ms
-          });
-        }
-      }, 100);
 
       // Mark messages as read for current user when viewing conversation (async, don't wait)
       if (messageIds.length > 0) {
@@ -4381,6 +4364,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           )
         `)
         .not('employee_id', 'is', null)
+        .eq('is_active', true)
         .neq('id', currentUser.id);
 
       if (error) {
@@ -6890,11 +6874,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       // Check persisted state first - restore immediately if available
       const cachedData = persistedMessages[selectedConversation.id];
       if (cachedData && cachedData.messages.length > 0) {
-        // Restore messages immediately without showing loading
-        setMessages(cachedData.messages);
+        // Keep only the newest page in memory so opening a chat stays snappy
+        const restored =
+          cachedData.messages.length > MESSAGE_PAGE_SIZE
+            ? cachedData.messages.slice(-MESSAGE_PAGE_SIZE)
+            : cachedData.messages;
+        setMessages(restored);
         setIsLoadingMessages(false);
-        setHasMoreOlderMessages(!!cachedData.hasMoreOlder);
-        console.log(`[RMQ] Immediately restored ${cachedData.messages.length} messages from persisted state for conversation ${selectedConversation.id}`);
+        setHasMoreOlderMessages(
+          !!cachedData.hasMoreOlder || cachedData.messages.length > MESSAGE_PAGE_SIZE
+        );
+        console.log(`[RMQ] Immediately restored ${restored.length} messages from persisted state for conversation ${selectedConversation.id}`);
 
         // Fetch new messages in background (non-blocking)
         fetchMessages(selectedConversation.id, false);
@@ -6935,11 +6925,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     }
   }, [selectedConversation?.id, currentUser?.id, checkEmployeeAvailability]);
 
-  // Check availability for all contacts when they are loaded
+  // Check availability for all contacts when they are loaded (defer — not needed for first paint)
   useEffect(() => {
-    if (allUsers.length > 0) {
+    if (allUsers.length === 0) return;
+    const t = window.setTimeout(() => {
       checkAllContactsAvailability();
-    }
+    }, 800);
+    return () => window.clearTimeout(t);
   }, [allUsers.length, checkAllContactsAvailability]);
 
   // Cleanup audio when conversation changes or component unmounts
@@ -6980,15 +6972,29 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   // Request online status when both WebSocket is connected and users are loaded
   useEffect(() => {
     if (isOpen && websocketService.isSocketConnected() && allUsers.length > 0) {
-      // Add a small delay to ensure socket is fully ready
       const timeoutId = setTimeout(() => {
-        const userIds = allUsers.map(u => String(u.id));
-        websocketService.requestOnlineStatus(userIds);
-      }, 500);
+        // Prefer conversation peers first (sidebar), then fill in the rest
+        const peerIds = new Set<string>();
+        for (const conv of conversations) {
+          for (const p of conv.participants || []) {
+            if (p.user_id && p.user_id !== currentUser?.id) peerIds.add(String(p.user_id));
+          }
+        }
+        const peerList = [...peerIds];
+        if (peerList.length > 0) {
+          websocketService.requestOnlineStatus(peerList);
+        }
+        const remaining = allUsers
+          .map((u) => String(u.id))
+          .filter((id) => !peerIds.has(id));
+        if (remaining.length > 0) {
+          window.setTimeout(() => websocketService.requestOnlineStatus(remaining), 1200);
+        }
+      }, 400);
 
       return () => clearTimeout(timeoutId);
     }
-  }, [isOpen, allUsers.length]);
+  }, [isOpen, allUsers.length, conversations.length, currentUser?.id]);
 
   // Select initial conversation when modal opens
   useEffect(() => {
@@ -7630,17 +7636,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       .then(() => {}, console.error);
   }, [selectedConversation?.id, currentUser?.id]);
 
-  // Periodically refresh read receipts for messages in current conversation.
-  // Only call setMessages when at least one message's read_receipts actually changed, to avoid
-  // replacing the entire list with new object references every 3s (which caused blinking/flickering for some users).
+  // Periodically refresh read receipts for own messages in the open conversation (newest first).
   useEffect(() => {
     if (!selectedConversation || !currentUser || messages.length === 0) return;
 
     const refreshReadReceipts = async () => {
       const messageIds = messages
-        .filter(msg => msg.sender_id === currentUser.id && msg.id != null) // Only refresh for own messages with valid IDs
+        .filter(msg => msg.sender_id === currentUser.id && msg.id != null)
         .map(msg => msg.id)
-        .filter(id => id != null && id !== undefined); // Filter out any undefined/null values
+        .slice(-40);
 
       if (messageIds.length === 0) return;
 
@@ -7651,7 +7655,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
       if (!receipts || receipts.length === 0) return;
 
-      // Group receipts by message_id (key by number for message ids)
       const receiptsByMessage: Record<number, Array<{ user_id: string; read_at: string }>> = receipts.reduce((acc: Record<number, Array<{ user_id: string; read_at: string }>>, receipt: any) => {
         const mid = receipt.message_id as number;
         if (!acc[mid]) acc[mid] = [];
@@ -7675,11 +7678,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       });
     };
 
-    // Refresh immediately
     refreshReadReceipts();
-
-    // Refresh every 3 seconds
-    const interval = setInterval(refreshReadReceipts, 3000);
+    const interval = setInterval(refreshReadReceipts, 8000);
 
     return () => clearInterval(interval);
   }, [selectedConversation?.id, currentUser?.id, messages.length]);
@@ -7729,8 +7729,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   });
 
   const contactsWithLastMessage = useMemo(() => {
+    const directByPeerId = new Map<string, Conversation>();
+    if (currentUser) {
+      for (const conv of conversations) {
+        if (conv.type !== 'direct') continue;
+        const other = conv.participants?.find((p) => p.user_id !== currentUser.id);
+        if (other?.user_id) directByPeerId.set(other.user_id, conv);
+      }
+    }
+
+    // One pass over the open thread only — avoid O(contacts × messages) on every message update
+    let selectedOwnLast: Message | null = null;
+    if (currentUser && selectedConversation?.type === 'direct' && messages.length > 0) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (
+          msg.conversation_id === selectedConversation.id &&
+          msg.sender_id === currentUser.id &&
+          !msg.is_deleted
+        ) {
+          selectedOwnLast = msg;
+          break;
+        }
+      }
+    }
+
     return filteredUsers
-      .map(user => {
+      .map((user) => {
         if (!currentUser) {
           return {
             user,
@@ -7742,32 +7767,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           };
         }
 
-        const directConversation = conversations.find(conv =>
-          conv.type === 'direct' &&
-          conv.participants?.some(p => p.user_id === currentUser.id) &&
-          conv.participants?.some(p => p.user_id === user.id)
-        );
-
-        // Find the last message in this conversation that was sent by current user
-        // Sort messages by sent_at descending and find the first one sent by current user
-        const lastOwnMessage = messages
-          .filter(msg =>
-            msg.conversation_id === directConversation?.id &&
-            msg.sender_id === currentUser.id &&
-            !msg.is_deleted
-          )
-          .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
+        const directConversation = directByPeerId.get(user.id);
 
         let lastMessageReadStatus: 'sent' | 'delivered' | 'read' | null = null;
-        if (lastOwnMessage && directConversation) {
-          // Check read status for the last message
+        let lastMessageId: number | null = null;
+        if (
+          selectedOwnLast &&
+          directConversation &&
+          selectedConversation?.id === directConversation.id
+        ) {
+          lastMessageId = selectedOwnLast.id;
           const otherParticipant = directConversation.participants?.find(
-            p => p.user_id !== currentUser.id
+            (p) => p.user_id !== currentUser.id
           );
-
           if (otherParticipant) {
-            const hasRead = lastOwnMessage.read_receipts?.some(
-              rr => rr.user_id === otherParticipant.user_id
+            const hasRead = selectedOwnLast.read_receipts?.some(
+              (rr) => rr.user_id === otherParticipant.user_id
             );
             lastMessageReadStatus = hasRead ? 'read' : 'delivered';
           } else {
@@ -7779,7 +7794,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           user,
           lastMessageAt: directConversation?.last_message_at || null,
           lastMessagePreview: directConversation?.last_message_preview || '',
-          lastMessageId: lastOwnMessage?.id || null,
+          lastMessageId,
           lastMessageReadStatus,
           unreadCount: directConversation?.unread_count || 0,
         };
@@ -7792,7 +7807,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         if (b.lastMessageAt) return 1;
         return 0;
       });
-  }, [filteredUsers, conversations, currentUser, messages]);
+  }, [filteredUsers, conversations, currentUser, messages, selectedConversation?.id, selectedConversation?.type]);
 
   const displayMessages = useMemo(() => {
     const q = chatSearchQuery.trim().toLowerCase();
@@ -7866,7 +7881,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     }
     // Clear immediately so the strip does not show the previous chat’s pins while loading.
     setRmqPinnedRows([]);
-    loadRmqPinnedMessages(selectedConversation.id);
+    const convId = selectedConversation.id;
+    const t = window.setTimeout(() => {
+      loadRmqPinnedMessages(convId);
+    }, 0);
+    return () => window.clearTimeout(t);
   }, [selectedConversation?.id, currentUser?.id, loadRmqPinnedMessages]);
 
   useEffect(() => {
@@ -7874,7 +7893,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       setRmqMessageLeadFlags([]);
       return;
     }
-    void loadRmqMessageLeadFlags(selectedConversation.id);
+    const convId = selectedConversation.id;
+    const t = window.setTimeout(() => {
+      void loadRmqMessageLeadFlags(convId);
+    }, 50);
+    return () => window.clearTimeout(t);
   }, [selectedConversation?.id, loadRmqMessageLeadFlags]);
 
   useEffect(() => {
@@ -7882,8 +7905,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       setRmqMessageCommentCounts({});
       return;
     }
-    loadRmqMessageCommentCounts(selectedConversation.id);
-  }, [selectedConversation?.id, loadRmqMessageCommentCounts]);
+    const convId = selectedConversation.id;
+    const ids = messages
+      .map((m) => m.id)
+      .filter((id): id is number => id != null)
+      .slice(-MESSAGE_PAGE_SIZE);
+    const t = window.setTimeout(() => {
+      void loadRmqMessageCommentCounts(convId, ids.length > 0 ? ids : undefined);
+    }, 120);
+    return () => window.clearTimeout(t);
+  }, [selectedConversation?.id, loadRmqMessageCommentCounts, messages.length]);
 
   useEffect(() => {
     setRmqMessageCommentsModal(null);
@@ -8448,7 +8479,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         </div>
 
         {/* Content Area - boxes show only when ready */}
-        <div className="flex-1 overflow-y-auto bg-base-100">
+        <div className="flex-1 overflow-y-auto bg-base-100 scrollbar-hide">
           {!showSidebarList ? (
             <div className="p-6 flex flex-col items-center justify-center text-base-content/60 gap-3 min-h-[200px]">
               <span className="loading loading-spinner loading-md" />
@@ -8710,7 +8741,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto bg-base-100">
+        <div className="min-h-0 flex-1 overflow-y-auto bg-base-100 scrollbar-hide">
           <div
             className="border-b border-base-300/50 bg-base-100 px-4 pb-2 pt-2"
             role="tablist"
@@ -8980,13 +9011,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       </div>
 
       {/* Chat Area - Desktop Only - min-h-0 so messages area can shrink and scroll above input */}
-      <div className="hidden lg:flex flex-1 flex-col relative min-h-0">
+      {isDesktopLayout ? (
+      <div className="flex flex-1 flex-col relative min-h-0">
         {selectedConversation ? (
           <>
-            {/* Chat Header */}
+            {/* Chat Header + pinned — frosted glass overlay so the thread shows through */}
             {(() => {
               return (
-            <div className="relative z-20 w-full flex-shrink-0 border-b border-base-200/90 bg-base-100 py-1.5 px-2 shadow-sm">
+            <div ref={desktopChatTopChromeRef} className={`absolute top-0 inset-x-0 z-20 flex flex-col ${RMQ_CHAT.chromeGlassTop}`}>
+            <div className="relative w-full py-1.5 px-2">
               <div className="relative grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1">
                 <div className="flex items-center gap-2 min-w-0 justify-self-start">
                   <button
@@ -9301,23 +9334,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 </div>
               )}
             </div>
-            ); })()}
-
-            {/* Pinned messages sit directly under the header and do not scroll with the thread */}
             {hasPinnedMessagesStrip && (
-              <div className="flex-shrink-0 z-[19] border-b border-base-300/80 bg-base-100">
+              <div className="border-t border-white/30">
                 <div className="px-2 sm:px-4 py-2">{renderPinnedMessagesStrip()}</div>
               </div>
             )}
+            </div>
+            ); })()}
 
-            {/* Wrapper so messages scroll above input (input is flex sibling, not absolute) */}
-            <div className="flex-1 flex flex-col min-h-0">
+            {/* Wrapper so messages fill the pane; glass header/composer overlay on top */}
+            <div className="flex-1 flex flex-col min-h-0 relative">
             {/* Messages Area - min-h-0 so it scrolls and last message stays above input */}
             <div
               ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain p-2 sm:p-4 pb-4 space-y-2 relative rmq-messages-area"
+              className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain p-2 sm:p-4 space-y-2 relative rmq-messages-area scrollbar-hide"
               style={{
+                paddingTop: desktopChatTopChromeHeight + 8,
+                paddingBottom: desktopChatComposerHeight + 12,
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
                 backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#f3f4f6'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
@@ -9419,7 +9453,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                             <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} w-full min-w-0`}>
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative w-full`}>
                                 {renderDesktopMessageDropdown(message, isOwn)}
-                                <div className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden min-w-0 flex-1 max-w-full ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}>
+                                <div className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden min-w-0 max-w-full ${
+                                  message.media_attachments?.length === 1 ? 'w-fit' : 'flex-1 w-full'
+                                } ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}>
                                   {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                     <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
                                       <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
@@ -9427,7 +9463,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                       </span>
                                     </div>
                                   )}
-                                  <div className="relative w-full">
+                                  <div className={`relative ${message.media_attachments?.length === 1 ? 'w-fit max-w-full' : 'w-full'}`}>
                                     {renderAlbumMessageContent(message, index)}
                                     <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
                                       {formatMessageTime(message.sent_at)}
@@ -9489,7 +9525,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                   <img
                                     src={message.attachment_url}
                                     alt={message.attachment_name}
-                                    className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
+                                    className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaImg}`}
                                     loading={index >= displayMessages.length - RMQ_EAGER_IMAGE_TAIL ? 'eager' : 'lazy'}
                                     decoding="async"
                                     onLoad={(e) => {
@@ -9569,85 +9605,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               <video
                                 data-message-id={message.id}
                                 src={message.attachment_url}
-                                crossOrigin="anonymous"
-                                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] min-h-[100px] object-contain bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none`}
-                                preload="metadata"
+                                className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaVideo}`}
+                                preload="none"
+                                muted
                                 playsInline
                                 onLoadedMetadata={(e) => {
                                   const video = e.target as HTMLVideoElement;
                                   addLoadedVideo(message.id);
-                                  // Hide loading immediately
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
                                   video.setAttribute('data-ready', 'true');
-                                }}
-                                onLoadedData={(e) => {
-                                  const video = e.target as HTMLVideoElement;
-                                  addLoadedVideo(message.id);
-                                  setLoadingVideos(prev => {
+                                  setLoadingVideos((prev) => {
+                                    if (!prev.has(message.id)) return prev;
                                     const next = new Set(prev);
                                     next.delete(message.id);
                                     return next;
                                   });
                                 }}
-                                onCanPlay={(e) => {
-                                  addLoadedVideo(message.id);
-                                  setLoadingVideos(prev => {
+                                onError={() => {
+                                  setLoadingVideos((prev) => {
+                                    if (!prev.has(message.id)) return prev;
                                     const next = new Set(prev);
                                     next.delete(message.id);
                                     return next;
                                   });
-                                }}
-                                onPlay={(e) => {
-                                  // Hide loading immediately when play starts
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
-                                }}
-                                onPlaying={(e) => {
-                                  // Ensure loading is hidden
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
-                                }}
-                                onError={(e) => {
-                                  console.error('Video load error:', e);
-                                  const video = e.target as HTMLVideoElement;
-                                  video.style.display = 'none';
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
-                                }}
-                                onMouseEnter={(e) => {
-                                  // Start loading full video data on hover for instant playback (lazy videos only)
-                                  const video = e.target as HTMLVideoElement;
-                                  if (index < displayMessages.length - 3 && video.preload !== 'auto') {
-                                    video.preload = 'auto';
-                                    // Force reload to start downloading
-                                    if (video.readyState >= 1) {
-                                      video.load();
-                                    }
-                                  }
-                                }}
-                                onTouchStart={(e) => {
-                                  // Start loading full video data on touch for mobile (lazy videos only)
-                                  const video = e.target as HTMLVideoElement;
-                                  if (index < displayMessages.length - 3 && video.preload !== 'auto') {
-                                    video.preload = 'auto';
-                                    // Force reload to start downloading
-                                    if (video.readyState >= 1) {
-                                      video.load();
-                                    }
-                                  }
                                 }}
                               />
                               {loadingVideos.has(message.id) && (
@@ -10097,8 +10076,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Message Input - Desktop Only (flex sibling so messages area height = remaining space) */}
-            <div className="hidden lg:flex flex-shrink-0 z-10 border-t border-base-200/80 bg-base-100/95 p-2">
+            {/* Message Input - Desktop glass overlay */}
+            <div
+              ref={desktopChatComposerRef}
+              className={`hidden lg:flex absolute bottom-0 inset-x-0 z-10 p-2 ${RMQ_CHAT.chromeGlassBottom}`}
+            >
               <div className="flex w-full min-w-0 items-center gap-2 relative">
                 {/* Consolidated Tools Button */}
                 <div className="relative flex-shrink-0" ref={desktopToolsRef}>
@@ -10380,7 +10362,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           : 'Type a message...'
                     }
                     dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
-                    className="textarea w-full resize-none max-h-28 rounded-2xl border border-[#E5E7EB] bg-white text-sm text-[#111827] outline-none ring-0 transition-colors placeholder:text-gray-500 focus:border-gray-300 focus:outline-none focus:ring-0"
+                    className="textarea scrollbar-hide w-full resize-none max-h-28 rounded-2xl border border-[#E5E7EB] bg-white text-sm text-[#111827] outline-none ring-0 transition-colors placeholder:text-gray-500 focus:border-gray-300 focus:outline-none focus:ring-0"
                     rows={1}
                     disabled={isSending}
                     style={{
@@ -10523,12 +10505,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           </>
         )}
       </div>
+      ) : null}
 
-      {/* Mobile Full Screen Chat — solid fixed top bar + scrollable thread */}
-      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full fixed inset-0 z-40 overflow-hidden bg-base-100`}>
-        {selectedConversation && (
-          <>
-            <header className="flex-shrink-0 z-30 border-b border-base-300 bg-base-100 pt-[env(safe-area-inset-top)] shadow-sm">
+      {/* Mobile Full Screen Chat — frosted top bar + scrollable thread (mount only on mobile viewport) */}
+      {!isDesktopLayout && !showMobileConversations && selectedConversation ? (
+      <div className="flex flex-col w-full fixed inset-0 z-40 overflow-hidden bg-base-100">
+            <header
+              ref={mobileChatHeaderRef}
+              className={`absolute top-0 inset-x-0 z-30 pt-[env(safe-area-inset-top)] ${RMQ_CHAT.chromeGlassTop}`}
+            >
               <div className="w-full px-2 sm:px-3">
               {selectedConversation.type === 'direct' ? (
                 <div className="flex items-center gap-2 py-2 min-h-[3rem]">
@@ -10883,14 +10868,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               )}
             </div>
 
+            {hasPinnedMessagesStrip && (
+              <div className="border-t border-white/30 px-2 sm:px-3">
+                <div className="py-2">{renderPinnedMessagesStrip({ forMobile: true })}</div>
+              </div>
+            )}
             </header>
 
             <div
               ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 overscroll-contain relative rmq-messages-area pb-[calc(7.25rem+env(safe-area-inset-bottom,0px))] bg-gray-100 p-2 sm:p-4 space-y-2"
+              className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 overscroll-contain relative rmq-messages-area scrollbar-hide bg-gray-100 p-2 sm:p-4 space-y-2"
               style={{
                 WebkitOverflowScrolling: 'touch',
+                paddingTop: mobileChatHeaderHeight + 8,
+                paddingBottom: 'calc(7.25rem + env(safe-area-inset-bottom, 0px))',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
                 backgroundColor: chatBackgroundImageUrl ? 'transparent' : '#f3f4f6',
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
@@ -10899,11 +10891,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
               }}
             >
-            {hasPinnedMessagesStrip && (
-              <div className="sticky top-0 z-20 -mx-2 sm:-mx-4 mb-2 border-b border-base-300 bg-base-100/95 px-2 sm:px-4 backdrop-blur-sm">
-                <div className="py-2">{renderPinnedMessagesStrip({ forMobile: true })}</div>
-              </div>
-            )}
               {isLoadingMessages ? (
                 <div className={`absolute inset-0 flex flex-col items-center justify-center min-h-[200px] z-10 ${chatBackgroundImageUrl ? 'bg-base-100/80 dark:bg-base-300/50' : 'bg-white/95'}`}>
                   <div className="loading loading-spinner loading-lg mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }} />
@@ -11009,7 +10996,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               {...getMobileMessageActionHandlers(message)}
                             >
                               <div
-                                className={`w-full min-w-0 max-w-full ${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}
+                                className={`min-w-0 max-w-full ${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden ${
+                                  message.media_attachments?.length === 1 ? 'w-fit' : 'w-full'
+                                } ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}
                               >
                                 {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                   <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
@@ -11018,7 +11007,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     </span>
                                   </div>
                                 )}
-                                <div className="relative w-full">
+                                <div className={`relative ${message.media_attachments?.length === 1 ? 'w-fit max-w-full' : 'w-full'}`}>
                                   {renderAlbumMessageContent(message, index)}
                                   <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
                                     {formatMessageTime(message.sent_at)}
@@ -11088,7 +11077,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               <img
                                 src={message.attachment_url}
                                 alt={message.attachment_name}
-                                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
+                                className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaImg}`}
                                 loading={index >= displayMessages.length - RMQ_EAGER_IMAGE_TAIL ? 'eager' : 'lazy'}
                                 decoding="async"
                                 onLoad={(e) => {
@@ -11174,84 +11163,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               <video
                                 data-message-id={message.id}
                                 src={message.attachment_url}
-                                crossOrigin="anonymous"
-                                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] min-h-[100px] object-contain bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none`}
-                                preload="metadata"
+                                className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaVideo}`}
+                                preload="none"
+                                muted
                                 playsInline
                                 onLoadedMetadata={(e) => {
                                   const video = e.target as HTMLVideoElement;
                                   addLoadedVideo(message.id);
-                                  // Hide loading immediately
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
                                   video.setAttribute('data-ready', 'true');
-                                }}
-                                onLoadedData={() => {
-                                  addLoadedVideo(message.id);
-                                  setLoadingVideos(prev => {
+                                  setLoadingVideos((prev) => {
+                                    if (!prev.has(message.id)) return prev;
                                     const next = new Set(prev);
                                     next.delete(message.id);
                                     return next;
                                   });
                                 }}
-                                onCanPlay={(e) => {
-                                  addLoadedVideo(message.id);
-                                  setLoadingVideos(prev => {
+                                onError={() => {
+                                  setLoadingVideos((prev) => {
+                                    if (!prev.has(message.id)) return prev;
                                     const next = new Set(prev);
                                     next.delete(message.id);
                                     return next;
                                   });
-                                }}
-                                onPlay={(e) => {
-                                  // Hide loading immediately when play starts
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
-                                }}
-                                onPlaying={(e) => {
-                                  // Ensure loading is hidden
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
-                                }}
-                                onError={(e) => {
-                                  console.error('Video load error:', e);
-                                  const video = e.target as HTMLVideoElement;
-                                  video.style.display = 'none';
-                                  setLoadingVideos(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(message.id);
-                                    return next;
-                                  });
-                                }}
-                                onMouseEnter={(e) => {
-                                  // Start loading full video data on hover for instant playback (lazy videos only)
-                                  const video = e.target as HTMLVideoElement;
-                                  if (index < displayMessages.length - 3 && video.preload !== 'auto') {
-                                    video.preload = 'auto';
-                                    // Force reload to start downloading
-                                    if (video.readyState >= 1) {
-                                      video.load();
-                                    }
-                                  }
-                                }}
-                                onTouchStart={(e) => {
-                                  // Start loading full video data on touch for mobile (lazy videos only)
-                                  const video = e.target as HTMLVideoElement;
-                                  if (index < displayMessages.length - 3 && video.preload !== 'auto') {
-                                    video.preload = 'auto';
-                                    // Force reload to start downloading
-                                    if (video.readyState >= 1) {
-                                      video.load();
-                                    }
-                                  }
                                 }}
                               />
                               {loadingVideos.has(message.id) && (
@@ -11686,8 +11619,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Mobile composer: fixed bar, unified with input (WhatsApp-style) */}
-            <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 pointer-events-none pb-[env(safe-area-inset-bottom,0px)] bg-white border-t border-gray-200 shadow-[0_-4px_20px_rgba(0,0,0,0.08)]">
+            {/* Mobile composer: fixed frosted glass bar */}
+            <div className={`lg:hidden fixed bottom-0 left-0 right-0 z-40 pointer-events-none pb-[env(safe-area-inset-bottom,0px)] ${RMQ_CHAT.chromeGlassBottom}`}>
               <div className="relative px-2 pt-2 pb-2 pointer-events-auto space-y-1.5 max-w-[100vw]">
                 <div className="flex items-end gap-1.5">
                   <div className="relative flex-shrink-0" ref={mobileToolsRef}>
@@ -11859,7 +11792,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               : 'Type a message...'
                         }
                         dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
-                        className="textarea w-full resize-none max-h-32 rounded-2xl border border-[#E5E7EB] bg-white text-sm text-[#111827] placeholder:text-gray-400 focus:border-gray-300 focus:outline-none focus:ring-0"
+                        className="textarea scrollbar-hide w-full resize-none max-h-32 rounded-2xl border border-[#E5E7EB] bg-white text-sm text-[#111827] placeholder:text-gray-400 focus:border-gray-300 focus:outline-none focus:ring-0"
                         rows={1}
                         disabled={isSending}
                         style={{
@@ -12055,9 +11988,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 )}
               </div>
             </div>
-          </>
-        )}
       </div>
+      ) : null}
 
 
       {/* Create Group Modal */}
@@ -12920,11 +12852,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               }}>
                 <video
                   src={conversationMedia[selectedMediaIndex]?.attachment_url}
-                  crossOrigin="anonymous"
                   controls={true}
                   autoPlay={true}
                   playsInline={true}
-                  preload="auto"
+                  preload="metadata"
                   style={{
                     objectFit: 'contain',
                     width: '100%',

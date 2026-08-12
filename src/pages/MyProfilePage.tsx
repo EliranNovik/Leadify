@@ -20,6 +20,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FaLinkedin } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 import WorkingHoursTab from '../components/profile/WorkingHoursTab';
 import MyDocumentsTab from '../components/profile/MyDocumentsTab';
 import MyContribution from '../components/MyContribution';
@@ -286,16 +287,7 @@ const MyProfilePage: React.FC = () => {
         }
     };
 
-    const getRoleDisplay = (role: string) => {
-        const roleMap: Record<string, string> = {
-            'c': 'Closer', 's': 'Scheduler', 'h': 'Handler', 'n': 'No role',
-            'e': 'Expert', 'z': 'Manager', 'Z': 'Manager', 'ma': 'Marketing',
-            'p': 'Partner', 'helper-closer': 'Helper Closer', 'pm': 'Project Manager',
-            'se': 'Secretary', 'dv': 'Developer', 'dm': 'Department Manager',
-            'b': 'Book Keeper', 'f': 'Finance'
-        };
-        return roleMap[role] || role;
-    };
+    const getRoleDisplay = (role: string) => getRoleDisplayName(role);
 
     if (loading) {
         return (

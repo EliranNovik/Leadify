@@ -17,6 +17,7 @@ import { FaWhatsapp } from 'react-icons/fa';
 import { fetchLegacyInteractions } from '../lib/legacyInteractionsApi';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, Area, AreaChart } from 'recharts';
 import EmployeeMessagesModal from './EmployeeMessagesModal';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 interface EmployeeStatsModalProps {
   isOpen: boolean;
@@ -42,31 +43,6 @@ interface FullEmployeeData {
   department?: string | null;
 }
 
-// Helper function to map role codes to display names
-const getRoleDisplayName = (roleCode: string | null | undefined): string => {
-  if (!roleCode) return 'No role';
-  
-  const roleMap: { [key: string]: string } = {
-    'c': 'Closer',
-    's': 'Scheduler', 
-    'h': 'Handler',
-    'n': 'No role',
-    'e': 'Expert',
-    'z': 'Manager',
-    'Z': 'Manager',
-    'ma': 'Marketing',
-    'p': 'Partner',
-    'helper-closer': 'Helper Closer',
-    'pm': 'Project Manager',
-    'se': 'Secretary',
-    'dv': 'Developer',
-    'dm': 'Department Manager',
-    'b': 'Book Keeper',
-    'f': 'Finance'
-  };
-  
-  return roleMap[roleCode.toLowerCase()] || roleCode || 'No role';
-};
 
 interface CallStatusStats {
   answered: number;

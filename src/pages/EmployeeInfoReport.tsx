@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { CheckCircleIcon, XCircleIcon, UserIcon, IdentificationIcon, XMarkIcon, PhoneIcon, DevicePhoneMobileIcon, BriefcaseIcon } from '@heroicons/react/24/outline';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 interface EmployeeInfo {
   id: number;
@@ -29,42 +30,6 @@ const getInitials = (name: string): string => {
     .slice(0, 2);
 };
 
-// Helper function to map role codes to display names
-const getRoleDisplayName = (roleCode: string | null | undefined): string => {
-  if (!roleCode) return '---';
-
-  const roleMap: { [key: string]: string } = {
-    'c': 'Closer',
-    's': 'Scheduler',
-    'h': 'Handler',
-    'n': 'No role',
-    'e': 'Expert',
-    'z': 'Manager',
-    'Z': 'Manager',
-    'p': 'Partner',
-    'm': 'Manager',
-    'dm': 'Department Manager',
-    'pm': 'Project Manager',
-    'se': 'Secretary',
-    'b': 'Book keeper',
-    'partners': 'Partners',
-    'dv': 'Developer',
-    'ma': 'Marketing',
-    'P': 'Partner',
-    'M': 'Manager',
-    'DM': 'Department Manager',
-    'PM': 'Project Manager',
-    'SE': 'Secretary',
-    'B': 'Book keeper',
-    'Partners': 'Partners',
-    'd': 'Diverse',
-    'f': 'Finance',
-    'col': 'Collection',
-    'lawyer': 'Helper Closer'
-  };
-
-  return roleMap[roleCode] || roleCode || '---';
-};
 
 const EmployeeInfoReport = () => {
   const navigate = useNavigate();

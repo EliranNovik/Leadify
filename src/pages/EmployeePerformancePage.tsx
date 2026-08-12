@@ -8,6 +8,7 @@ import BonusPoolModal from '../components/BonusPoolModal';
 import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
 import { calculateEmployeeBonus, EmployeeBonus, RoleBonus } from '../lib/bonusCalculation';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, PieChart, Pie, Cell, Legend } from 'recharts';
+import { getRoleDisplayName, isPartnersAndCoRole } from '../lib/employeeRoles';
 
 interface Employee {
   id: string;
@@ -88,37 +89,7 @@ const getInitials = (displayName: string): string => {
 
 
 // Helper function to map role codes to display names
-  const getRoleDisplayName = (roleCode: string): string => {
-    const roleMap: { [key: string]: string } = {
-      'c': 'Closer',
-      's': 'Scheduler',
-      'h': 'Handler',
-      'n': 'No role',
-      'e': 'Expert',
-      'z': 'Manager',
-      'Z': 'Manager',
-      'p': 'Partner',
-      'm': 'Manager',
-      'dm': 'Department Manager',
-      'pm': 'Project Manager',
-      'se': 'Secretary',
-      'b': 'Book keeper',
-      'partners': 'Partners',
-      'dv': 'Developer',
-      'ma': 'Marketing',
-      'P': 'Partner',
-      'M': 'Manager',
-      'DM': 'Department Manager',
-      'PM': 'Project Manager',
-      'SE': 'Secretary',
-      'B': 'Book keeper',
-      'Partners': 'Partners',
-      'd': 'Diverse',
-      'f': 'Finance'
-    };
-    
-    return roleMap[roleCode] || roleCode || 'No role';
-  };
+  
 
 // Employee Performance Box Component for grid view
 interface EmployeePerformanceBoxProps {
@@ -1717,7 +1688,7 @@ const EmployeePerformancePage: React.FC = () => {
             name: 'Partners & Co',
             bonus_percentage: 20,
             employees: employeesWithMetrics.filter(emp => 
-              ['p', 'm', 'dm', 'pm', 'se', 'b', 'partners', 'dv'].includes(emp.bonuses_role)
+              isPartnersAndCoRole(emp.bonuses_role)
             ),
             total_meetings: 0,
             total_revenue: 0,

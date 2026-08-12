@@ -12,6 +12,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FaLinkedin, FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 
 // Default images if none provided
 const DEFAULT_BANNER = 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80';
@@ -45,16 +46,7 @@ const PublicProfilePage: React.FC = () => {
         }
     }, [employeeId]);
 
-    const getRoleDisplay = (role: string) => {
-        const roleMap: Record<string, string> = {
-            'c': 'Closer', 's': 'Scheduler', 'h': 'Handler', 'n': 'No role',
-            'e': 'Expert', 'z': 'Manager', 'Z': 'Manager', 'ma': 'Marketing',
-            'p': 'Partner', 'helper-closer': 'Helper Closer', 'pm': 'Project Manager',
-            'se': 'Secretary', 'dv': 'Developer', 'dm': 'Department Manager',
-            'b': 'Book Keeper', 'f': 'Finance'
-        };
-        return roleMap[role] || role;
-    };
+    const getRoleDisplay = (role: string) => getRoleDisplayName(role);
 
     const handleShare = async () => {
         if (!profile || !employeeId) return;

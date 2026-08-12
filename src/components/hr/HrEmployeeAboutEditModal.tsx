@@ -2,35 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import { CameraIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
+import { useAuthContext } from '../../contexts/AuthContext';
 import {
   getEmployeeDisplayLabel,
   type OrganizationEmployee,
 } from '../../lib/organizationEmployees';
+import { EMPLOYEE_ROLE_HR_OPTIONS } from '../../lib/employeeRoles';
 import HrEmployeeAvatar from './HrEmployeeAvatar';
 
 const PROFILE_PHOTO_BUCKET = 'My-Profile';
-
-const BONUSES_ROLE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'c', label: 'Closer' },
-  { value: 's', label: 'Scheduler' },
-  { value: 'h', label: 'Handler' },
-  { value: 'e', label: 'Expert' },
-  { value: 'p', label: 'Partner' },
-  { value: 'dm', label: 'Department Manager' },
-  { value: 'pm', label: 'Project Manager' },
-  { value: 'm', label: 'Manager' },
-  { value: 'z', label: 'Manager' },
-  { value: 'se', label: 'Secretary' },
-  { value: 'b', label: 'Book keeper' },
-  { value: 'dv', label: 'Developer' },
-  { value: 'ma', label: 'Marketing' },
-  { value: 'f', label: 'Finance' },
-  { value: 'col', label: 'Collection' },
-  { value: 'd', label: 'Diverse' },
-  { value: 'lawyer', label: 'Helper Closer' },
-  { value: 'n', label: 'No role' },
-  { value: 'partners', label: 'Partners' },
-];
 
 export type HrEmployeeAboutForm = {
   display_name: string;
@@ -78,17 +58,25 @@ type Props = {
 };
 
 export default function HrEmployeeAboutEditModal({ open, employee, onClose, onSaved }: Props) {
+  const { user, userFullName } = useAuthContext();
   const [form, setForm] = useState<HrEmployeeAboutForm>(() => formFromEmployee(employee));
   const [departments, setDepartments] = useState<Array<{ value: string; label: string }>>([]);
   const [saving, setSaving] = useState(false);
   const [photoUrl, setPhotoUrl] = useState<string | null>(employee.photo_url);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [togglingEmployment, setTogglingEmployment] = useState(false);
+  const [fired, setFired] = useState(Boolean(employee.fired));
+  const [firedAt, setFiredAt] = useState<string | null>(employee.fired_at);
+  const [firedByName, setFiredByName] = useState<string | null>(employee.fired_by_name);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setForm(formFromEmployee(employee));
     setPhotoUrl(employee.photo_url);
+    setFired(Boolean(employee.fired));
+    setFiredAt(employee.fired_at);
+    setFiredByName(employee.fired_by_name);
   }, [open, employee]);
 
   useEffect(() => {
@@ -161,7 +149,7 @@ export default function HrEmployeeAboutEditModal({ open, employee, onClose, onSa
   };
 
   const roleOptions = (() => {
-    const opts = [...BONUSES_ROLE_OPTIONS];
+    const opts = [...EMPLOYEE_ROLE_HR_OPTIONS];
     if (form.bonuses_role && !opts.some((o) => o.value === form.bonuses_role)) {
       opts.unshift({ value: form.bonuses_role, label: form.bonuses_role });
     }
@@ -229,13 +217,156 @@ export default function HrEmployeeAboutEditModal({ open, employee, onClose, onSa
     }
   };
 
+  const resolveActingEmployee = async (): Promise<{ id: number | null; name: string }> => {
+    const fallbackName =
+      (userFullName || '').trim() ||
+      (user?.email || '').trim() ||
+      'Unknown';
+
+    if (!user?.id && !user?.email) {
+      return { id: null, name: fallbackName };
+    }
+
+    let query = supabase
+      .from('users')
+      .select('employee_id, full_name, email, tenants_employee!employee_id(id, display_name, official_name)')
+      .limit(1);
+
+    if (user?.id) {
+      query = query.eq('auth_id', user.id);
+    } else if (user?.email) {
+      query = query.eq('email', user.email);
+    }
+
+    const { data, error } = await query.maybeSingle();
+    if (error || !data) {
+      if (user?.email && user?.id) {
+        const { data: byEmail } = await supabase
+          .from('users')
+          .select('employee_id, full_name, email, tenants_employee!employee_id(id, display_name, official_name)')
+          .eq('email', user.email)
+          .maybeSingle();
+        if (byEmail) {
+          const emp = Array.isArray(byEmail.tenants_employee)
+            ? byEmail.tenants_employee[0]
+            : byEmail.tenants_employee;
+          const name =
+            String(emp?.official_name || emp?.display_name || byEmail.full_name || fallbackName).trim() ||
+            fallbackName;
+          return {
+            id: byEmail.employee_id != null ? Number(byEmail.employee_id) : null,
+            name,
+          };
+        }
+      }
+      return { id: null, name: fallbackName };
+    }
+
+    const emp = Array.isArray(data.tenants_employee)
+      ? data.tenants_employee[0]
+      : data.tenants_employee;
+    const name =
+      String(emp?.official_name || emp?.display_name || data.full_name || fallbackName).trim() ||
+      fallbackName;
+    return {
+      id: data.employee_id != null ? Number(data.employee_id) : null,
+      name,
+    };
+  };
+
+  const handleToggleEmployment = async () => {
+    setTogglingEmployment(true);
+    try {
+      if (fired) {
+        const { error } = await supabase
+          .from('tenants_employee')
+          .update({
+            fired: false,
+            fired_at: null,
+            fired_by_employee_id: null,
+            fired_by_name: null,
+          })
+          .eq('id', employee.id);
+        if (error) throw error;
+        setFired(false);
+        setFiredAt(null);
+        setFiredByName(null);
+        toast.success('Employment reinstated');
+      } else {
+        const actor = await resolveActingEmployee();
+        const nowIso = new Date().toISOString();
+        const { error } = await supabase
+          .from('tenants_employee')
+          .update({
+            fired: true,
+            fired_at: nowIso,
+            fired_by_employee_id: actor.id,
+            fired_by_name: actor.name,
+          })
+          .eq('id', employee.id);
+        if (error) throw error;
+        setFired(true);
+        setFiredAt(nowIso);
+        setFiredByName(actor.name);
+        toast.success('Employment ended');
+      }
+      onSaved();
+    } catch (err) {
+      console.error('HrEmployeeAboutEditModal employment:', err);
+      toast.error('Failed to update employment status');
+    } finally {
+      setTogglingEmployment(false);
+    }
+  };
+
+  const firedAtLabel = (() => {
+    if (!firedAt) return null;
+    const d = new Date(firedAt);
+    if (Number.isNaN(d.getTime())) return firedAt;
+    return d.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  })();
+
   return (
     <div className="modal modal-open">
       <div className="modal-box w-11/12 max-w-3xl max-h-[90vh] overflow-y-auto">
-        <h3 className="font-bold text-lg text-gray-900">Edit employee</h3>
-        <p className="text-sm text-gray-500 mt-1 mb-5">
-          Update details shown on the About tab. Hour rate and total cost stay salary-based.
-        </p>
+        <div className="flex items-start justify-between gap-4 mb-5">
+          <div className="min-w-0">
+            <h3 className="font-bold text-lg text-gray-900">Edit employee</h3>
+            <p className="text-sm text-gray-500 mt-1">
+              Update details shown on the About tab. Hour rate and total cost stay salary-based.
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0 text-right max-w-[14rem]">
+            <button
+              type="button"
+              className={`btn btn-sm ${fired ? 'btn-outline btn-success' : 'btn-error btn-outline'}`}
+              onClick={() => void handleToggleEmployment()}
+              disabled={togglingEmployment || saving || uploadingPhoto}
+            >
+              {togglingEmployment
+                ? 'Updating…'
+                : fired
+                  ? 'Reinstate Employment'
+                  : 'End Employment'}
+            </button>
+            {fired && (
+              <div className="text-xs leading-snug">
+                <p className="font-medium text-red-700">
+                  Employee terminated by {firedByName || 'Unknown'}
+                </p>
+                {firedAtLabel && (
+                  <p className="text-gray-500 mt-0.5">{firedAtLabel}</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
 
         <div className="space-y-6">
           <section>

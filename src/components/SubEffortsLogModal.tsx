@@ -2284,7 +2284,7 @@ export function SubEffortsLogModal({
                   : 'block md:flex md:h-full md:min-h-0 md:flex-col'
               }
             >
-              <div className="flex flex-col overflow-visible rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:h-full md:min-h-0 md:p-5">
+              <div className="flex flex-col overflow-visible p-0 md:h-full md:min-h-0">
                 <div className="mb-3 flex shrink-0 items-center justify-between gap-2 px-0.5">
                   <div>
                     <span className="text-base font-semibold text-base-content/80 md:text-lg">Workflow</span>

@@ -74,6 +74,33 @@ const SCOREBOARD_HANDLERS_SALES_ROLES = new Set(['Sales', 'Handlers']);
 const SCOREBOARD_OVERHEAD_ROLES = new Set(['Partners', 'Marketing', 'Finance']);
 const SCOREBOARD_COST_ROLES = ['Sales', 'Handlers', 'Partners', 'Marketing', 'Finance'] as const;
 
+function isEmployeeFiredFlag(value: unknown): boolean {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+/** Employees with `fired = true` are excluded from Agreement signed / Invoiced cost targets. */
+async function fetchFiredEmployeeIdSet(employeeIds: number[]): Promise<Set<number>> {
+  const fired = new Set<number>();
+  if (employeeIds.length === 0) return fired;
+
+  const { data, error } = await supabase
+    .from('tenants_employee')
+    .select('id, fired')
+    .in('id', employeeIds);
+
+  if (error) {
+    console.error('[dashboardDepartmentCostTargets] fired employees fetch failed:', error);
+    return fired;
+  }
+
+  for (const row of data || []) {
+    if (!isEmployeeFiredFlag(row.fired)) continue;
+    const id = Number(row.id);
+    if (Number.isFinite(id) && id > 0) fired.add(id);
+  }
+  return fired;
+}
+
 function assignmentSliceKey(employeeId: number, fieldId: number, role: string): string {
   return `${employeeId}:${fieldId}:${role}`;
 }
@@ -101,6 +128,7 @@ export type DashboardDepartmentCostTargetsResult = {
  * Each slice: (effective% / 100) × 6-month avg gross, mapped
  * field → misc_maincategory.department_id → scoreboard column.
  * No home-department remainder — only contribution-role field costs.
+ * Employees with `tenants_employee.fired = true` are excluded from cost.
  */
 export async function fetchDashboardDepartmentCostTargets(
   scoreboardDepartments: ScoreboardDepartmentRef[],
@@ -300,10 +328,20 @@ export async function fetchDashboardDepartmentCostTargets(
 
   if (fieldSlices.length === 0) return emptyResult();
 
-  const salaryMap = await fetchAverageGrossSalaryLastMonths(Array.from(employeeIds), 6, ref);
+  const employeeIdList = Array.from(employeeIds);
+  const firedEmployeeIds = await fetchFiredEmployeeIdSet(employeeIdList);
+  const activeFieldSlices =
+    firedEmployeeIds.size === 0
+      ? fieldSlices
+      : fieldSlices.filter((slice) => !firedEmployeeIds.has(slice.employeeId));
+
+  if (activeFieldSlices.length === 0) return emptyResult();
+
+  const activeEmployeeIds = Array.from(new Set(activeFieldSlices.map((s) => s.employeeId)));
+  const salaryMap = await fetchAverageGrossSalaryLastMonths(activeEmployeeIds, 6, ref);
 
   const slicesByEmployee = new Map<number, FieldSlice[]>();
-  for (const slice of fieldSlices) {
+  for (const slice of activeFieldSlices) {
     const list = slicesByEmployee.get(slice.employeeId) ?? [];
     list.push(slice);
     slicesByEmployee.set(slice.employeeId, list);
@@ -429,7 +467,7 @@ export async function fetchDashboardOtherColumnCostTarget(
 
   const { data: homeEmployees, error: homeError } = await supabase
     .from('tenants_employee')
-    .select('id, department_id')
+    .select('id, department_id, fired')
     .in('department_id', Array.from(otherDeptIds));
 
   if (homeError) {
@@ -440,6 +478,7 @@ export async function fetchDashboardOtherColumnCostTarget(
   const employeeIds = Array.from(
     new Set(
       (homeEmployees || [])
+        .filter((emp) => !isEmployeeFiredFlag(emp.fired))
         .map((emp) => Number(emp.id))
         .filter((id) => Number.isFinite(id) && id > 0),
     ),

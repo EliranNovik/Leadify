@@ -27,6 +27,7 @@ import AccessLogsManager from './AccessLogsManager';
 import CurrenciesManager from './CurrenciesManager';
 import DepartmentsManager from './DepartmentsManager';
 import EmployeesManager from './EmployeesManager';
+import EmployeeRolesManager from './EmployeeRolesManager';
 import SourcesManager from './SourcesManager';
 import BankAccountsManager from './BankAccountsManager';
 import MeetingLocationsManager from './MeetingLocationsManager';
@@ -150,6 +151,7 @@ const ADMIN_TABS: AdminTab[] = [
       'Bank accounts',
       'Departements',
       'Employees',
+      'Employee roles',
       'Employee Field Assignments',
       'HR document types',
       'Firm types',
@@ -858,34 +860,7 @@ const AdminPage: React.FC<AdminPageProps> = ({
   }
 
   // Helper to get role display name
-  const getRoleDisplayName = (role: string | undefined): string => {
-    if (!role) return '';
-    const roleMap: { [key: string]: string } = {
-      'pm': 'Project Manager',
-      'se': 'Secretary',
-      'dv': 'Developer',
-      'dm': 'Department Manager',
-      'b': 'Book Keeper',
-      'f': 'Finance',
-      'h': 'Handler',
-      'e': 'Expert',
-      'm': 'Manager',
-      'l': 'Lawyer',
-      'a': 'Administrator',
-      's': 'Scheduler',
-      'c': 'Closer',
-      'p': 'Partner',
-      'adv': 'Advocate',
-      'advocate': 'Advocate',
-      'handler': 'Handler',
-      'expert': 'Expert',
-      'manager': 'Manager',
-      'lawyer': 'Lawyer',
-      'admin': 'Administrator',
-      'scheduler': 'Scheduler'
-    };
-    return roleMap[role.toLowerCase()] || role;
-  };
+  
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -1738,6 +1713,9 @@ const AdminPage: React.FC<AdminPageProps> = ({
                 ) : selectedTab?.label === 'Tenants' &&
                   selectedTab?.subcategories[selected.sub] === 'Employees' ? (
                   <div className="w-full"><EmployeesManager /></div>
+                ) : selectedTab?.label === 'Tenants' &&
+                  selectedTab?.subcategories[selected.sub] === 'Employee roles' ? (
+                  <div className="w-full"><EmployeeRolesManager /></div>
                 ) : selectedTab?.label === 'Tenants' &&
                   selectedTab?.subcategories[selected.sub] === 'Employee Field Assignments' ? (
                   <div className="w-full"><EmployeeFieldAssignmentsManager /></div>

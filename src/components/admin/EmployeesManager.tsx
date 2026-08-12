@@ -10,6 +10,7 @@ import {
   normalizeLeadTimeReportingExcludedDates,
   normalizeLeadTimeReportingWeekdays,
 } from '../../lib/employeeLeadReporting';
+import { getEmployeeRoleDisplayName } from '../../lib/employeeRoles';
 
 const EmployeeTableDisplayName: React.FC<{ value: unknown; record: Record<string, unknown> }> = ({
   value,
@@ -48,39 +49,6 @@ const EmployeeTableDisplayName: React.FC<{ value: unknown; record: Record<string
       <span className="truncate font-medium">{displayName}</span>
     </div>
   );
-};
-
-// Helper function to map role codes to display names (same as EmployeePerformancePage)
-const getRoleDisplayName = (roleCode: string): string => {
-  const roleMap: { [key: string]: string } = {
-    'c': 'Closer',
-    's': 'Scheduler',
-    'h': 'Handler',
-    'n': 'No role',
-    'e': 'Expert',
-    'z': 'Manager',
-    'Z': 'Manager',
-    'p': 'Partner',
-    'm': 'Manager',
-    'dm': 'Department Manager',
-    'pm': 'Project Manager',
-    'se': 'Secretary',
-    'b': 'Book keeper',
-    'partners': 'Partners',
-    'dv': 'Developer',
-    'ma': 'Marketing',
-    'P': 'Partner',
-    'M': 'Manager',
-    'DM': 'Department Manager',
-    'PM': 'Project Manager',
-    'SE': 'Secretary',
-    'B': 'Book keeper',
-    'Partners': 'Partners',
-    'd': 'Diverse',
-    'f': 'Finance'
-  };
-  
-  return roleMap[roleCode] || roleCode || 'No role';
 };
 
 const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
@@ -412,39 +380,27 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
         ),
     },
     {
-      name: 'bonuses_role',
+      name: 'bonuses_role_id',
       label: 'Bonuses Role',
       type: 'select' as const,
       required: false,
-      options: [
-        { value: 'One-time bonus (temporary)', label: 'One-time bonus (temporary)' },
-        { value: 'No bonuses', label: 'No bonuses' },
-        { value: 'c', label: 'Closer' },
-        { value: 's', label: 'Scheduler' },
-        { value: 'h', label: 'Handler' },
-        { value: 'e', label: 'Expert' },
-        { value: 'z', label: 'Manager' },
-        { value: 'Z', label: 'Manager' },
-        { value: 'p', label: 'Partner' },
-        { value: 'm', label: 'Manager' },
-        { value: 'dm', label: 'Department Manager' },
-        { value: 'pm', label: 'Project Manager' },
-        { value: 'se', label: 'Secretary' },
-        { value: 'b', label: 'Book keeper' },
-        { value: 'partners', label: 'Partners' },
-        { value: 'dv', label: 'Developer' },
-        { value: 'ma', label: 'Marketing' },
-        { value: 'P', label: 'Partner' },
-        { value: 'M', label: 'Manager' },
-        { value: 'DM', label: 'Department Manager' },
-        { value: 'PM', label: 'Project Manager' },
-        { value: 'SE', label: 'Secretary' },
-        { value: 'B', label: 'Book keeper' },
-        { value: 'Partners', label: 'Partners' },
-        { value: 'd', label: 'Diverse' },
-        { value: 'f', label: 'Finance' },
-        { value: 'n', label: 'No role' }
-      ]
+      searchableSelect: true,
+      foreignKey: {
+        table: 'employee_roles',
+        valueField: 'id',
+        displayField: 'name',
+      },
+    },
+    {
+      name: 'bonuses_role',
+      label: 'Role code',
+      type: 'text' as const,
+      required: false,
+      readOnly: true,
+      hideInAdd: true,
+      hideInEdit: true,
+      hideInTable: true,
+      formatValue: (value: unknown) => getEmployeeRoleDisplayName(String(value ?? ''), '-'),
     },
     {
       name: 'date_of_birth',

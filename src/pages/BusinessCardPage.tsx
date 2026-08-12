@@ -15,6 +15,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FaEnvelope, FaLinkedin, FaWhatsapp } from 'react-icons/fa';
 import MobileBottomSheet from '../components/MobileBottomSheet';
+import { getRoleDisplayName } from '../lib/employeeRoles';
 import {
   addBusinessCardToContacts,
   detectWalletPlatform,
@@ -109,25 +110,7 @@ function buildWhatsAppUrl(mobile: string): string {
 }
 
 function getRoleDisplay(role: string): string {
-  const roleMap: Record<string, string> = {
-    c: 'Closer',
-    s: 'Scheduler',
-    h: 'Handler',
-    n: 'No role',
-    e: 'Expert',
-    z: 'Manager',
-    Z: 'Manager',
-    ma: 'Marketing',
-    p: 'Partner',
-    'helper-closer': 'Helper Closer',
-    pm: 'Project Manager',
-    se: 'Secretary',
-    dv: 'Developer',
-    dm: 'Department Manager',
-    b: 'Book Keeper',
-    f: 'Finance',
-  };
-  return roleMap[role] || role;
+  return getRoleDisplayName(role);
 }
 
 function ContactRow({

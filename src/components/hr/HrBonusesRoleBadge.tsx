@@ -5,6 +5,7 @@ import {
   BanknotesIcon,
   BriefcaseIcon,
   BuildingOffice2Icon,
+  BuildingOfficeIcon,
   CalculatorIcon,
   CalendarDaysIcon,
   ClipboardDocumentCheckIcon,
@@ -21,7 +22,7 @@ import {
   UserGroupIcon,
   UsersIcon,
 } from '@heroicons/react/24/outline';
-import { getBonusesRoleDisplayName } from '../../lib/organizationEmployees';
+import { getBonusesRoleDisplayName } from '../../lib/employeeRoles';
 
 type IconType = React.ElementType;
 
@@ -42,6 +43,8 @@ function roleIconForCode(roleCode: string | null | undefined): IconType {
       return BriefcaseIcon;
     case 'dm':
       return BuildingOffice2Icon;
+    case 'om':
+      return BuildingOfficeIcon;
     case 'pm':
       return ClipboardDocumentCheckIcon;
     case 'p':
