@@ -28,6 +28,12 @@ import {
   toSignCalendarDateKey,
 } from '../lib/stage60SignDate';
 import {
+  getEmployeeRolesFromLeadRow,
+  NEW_LEAD_ROLE_SELECT_COLUMNS,
+  LEGACY_LEAD_ROLE_SELECT_COLUMNS,
+  SIGNED_DEAL_ATTRIBUTION_ROLE_IDS,
+} from '../lib/leadEmployeeRoles';
+import {
   applyDashboardCostTargetsToDepartments,
   departmentScoreboardCostBase,
   departmentScoreboardExpected,
@@ -3284,7 +3290,7 @@ const Dashboard: React.FC = () => {
       if (contractsError) {
       }
 
-      // Process contracts to determine which belong to current user
+      // Process contracts to determine which belong to current user (any of closer/expert/manager/scheduler/helper)
       const userContractsByDate: Record<string, number> = {};
       const allContractsByDate: Record<string, number> = {};
 
@@ -3295,46 +3301,80 @@ const Dashboard: React.FC = () => {
         allContractsByDate[dateStr] = 0;
       });
 
-      // Process each contract
+      const employeeIdNum =
+        userEmployeeId != null && Number.isFinite(Number(userEmployeeId))
+          ? Number(userEmployeeId)
+          : null;
+
+      const newLeadIds = [
+        ...new Set(
+          (contractsData || [])
+            .map((c: any) => c.newlead_id)
+            .filter(Boolean)
+            .map((id: any) => String(id)),
+        ),
+      ];
+      const legacyLeadIds = [
+        ...new Set(
+          (contractsData || [])
+            .map((c: any) => c.lead_id)
+            .filter((id: any) => id != null && Number.isFinite(Number(id)))
+            .map((id: any) => Number(id)),
+        ),
+      ];
+
+      const newLeadById = new Map<string, Record<string, unknown>>();
+      const legacyLeadById = new Map<number, Record<string, unknown>>();
+
+      if (employeeIdNum != null && newLeadIds.length > 0) {
+        const { data: newLeads } = await supabase
+          .from('leads')
+          .select(`id, ${NEW_LEAD_ROLE_SELECT_COLUMNS}`)
+          .in('id', newLeadIds);
+        (newLeads || []).forEach((row: any) => {
+          newLeadById.set(String(row.id), row as Record<string, unknown>);
+        });
+      }
+      if (employeeIdNum != null && legacyLeadIds.length > 0) {
+        const { data: legacyLeads } = await supabase
+          .from('leads_lead')
+          .select(`id, ${LEGACY_LEAD_ROLE_SELECT_COLUMNS}`)
+          .in('id', legacyLeadIds);
+        (legacyLeads || []).forEach((row: any) => {
+          legacyLeadById.set(Number(row.id), row as Record<string, unknown>);
+        });
+      }
+
       for (const contract of contractsData || []) {
         if (!contract.date) continue;
 
         const contractDate = new Date(contract.date);
         const dateStr = contractDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
 
-        // Count all contracts for team average
         allContractsByDate[dateStr] = (allContractsByDate[dateStr] || 0) + 1;
 
-        // Check if this contract belongs to current user
+        if (employeeIdNum == null) continue;
+
         let belongsToUser = false;
-
-        if (contract.creator_id) {
-          // Use creator_id if available
-          belongsToUser = contract.creator_id === userEmployeeId;
-        } else {
-          // If creator_id is NULL, get closer from the lead
-          if (contract.newlead_id) {
-            // New lead - get closer (string) from leads table
-            const { data: newLead } = await supabase
-              .from('leads')
-              .select('closer')
-              .eq('id', contract.newlead_id)
-              .maybeSingle();
-
-            if (newLead?.closer === userFullName) {
-              belongsToUser = true;
-            }
-          } else if (contract.lead_id) {
-            // Legacy lead - get closer_id (bigint) from leads_lead table
-            const { data: legacyLead } = await supabase
-              .from('leads_lead')
-              .select('closer_id')
-              .eq('id', contract.lead_id)
-              .maybeSingle();
-
-            if (legacyLead?.closer_id === userEmployeeId) {
-              belongsToUser = true;
-            }
+        if (contract.newlead_id) {
+          const lead = newLeadById.get(String(contract.newlead_id));
+          if (lead) {
+            belongsToUser = getEmployeeRolesFromLeadRow(
+              'new',
+              lead,
+              employeeIdNum,
+              userFullName || '',
+            ).some((r) => SIGNED_DEAL_ATTRIBUTION_ROLE_IDS.has(r.id));
+          }
+        } else if (contract.lead_id) {
+          const lead = legacyLeadById.get(Number(contract.lead_id));
+          if (lead) {
+            belongsToUser = getEmployeeRolesFromLeadRow(
+              'legacy',
+              lead,
+              employeeIdNum,
+              userFullName || '',
+            ).some((r) => SIGNED_DEAL_ATTRIBUTION_ROLE_IDS.has(r.id));
           }
         }
 
@@ -6632,64 +6672,48 @@ const Dashboard: React.FC = () => {
           .eq('auth_id', user.id)
           .maybeSingle();
 
-        const userFullName = (userData?.tenants_employee as any)?.display_name || userData?.full_name;
-        const userEmployeeId = userData?.employee_id;
+        const userFullName = String(
+          (userData?.tenants_employee as any)?.display_name || userData?.full_name || '',
+        ).trim();
+        const userEmployeeIdRaw = userData?.employee_id;
+        const userEmployeeId =
+          userEmployeeIdRaw != null && Number.isFinite(Number(userEmployeeIdRaw))
+            ? Number(userEmployeeIdRaw)
+            : null;
 
-        // Filter contracts that belong to current user and deduplicate by lead
-        const userContractsMap = new Map<string, any>();
+        if (userEmployeeId == null) {
+          setRealSignedLeads([]);
+          setRealLeadsLoading(false);
+          return;
+        }
 
+        // Deduplicate stage-60 rows by lead (keep most recent sign event)
+        const contractsByLead = new Map<string, any>();
         for (const contract of contractsData || []) {
-          let belongsToUser = false;
-
-          if (contract.creator_id) {
-            belongsToUser = contract.creator_id === userEmployeeId;
-          } else {
-            // If creator_id is NULL, get closer from the lead
-            if (contract.newlead_id) {
-              const { data: newLead } = await supabase
-                .from('leads')
-                .select('closer')
-                .eq('id', contract.newlead_id)
-                .maybeSingle();
-
-              if (newLead?.closer === userFullName) {
-                belongsToUser = true;
-              }
-            } else if (contract.lead_id) {
-              const { data: legacyLead } = await supabase
-                .from('leads_lead')
-                .select('closer_id')
-                .eq('id', contract.lead_id)
-                .maybeSingle();
-
-              if (legacyLead?.closer_id === userEmployeeId) {
-                belongsToUser = true;
-              }
-            }
-          }
-
-          if (belongsToUser) {
-            // Deduplicate by lead_id/newlead_id - keep only the first (most recent) contract per lead
-            const leadKey = contract.newlead_id ? `new_${contract.newlead_id}` : `legacy_${contract.lead_id}`;
-            if (!userContractsMap.has(leadKey)) {
-              userContractsMap.set(leadKey, contract);
-            }
+          if (!contract?.newlead_id && !contract?.lead_id) continue;
+          const leadKey = contract.newlead_id
+            ? `new_${contract.newlead_id}`
+            : `legacy_${contract.lead_id}`;
+          if (!contractsByLead.has(leadKey)) {
+            contractsByLead.set(leadKey, contract);
           }
         }
 
-        // Convert map to array
-        const userContracts = Array.from(userContractsMap.values());
+        const newLeadIds = [...contractsByLead.keys()]
+          .filter((k) => k.startsWith('new_'))
+          .map((k) => k.slice(4));
+        const legacyLeadIds = [...contractsByLead.keys()]
+          .filter((k) => k.startsWith('legacy_'))
+          .map((k) => Number(k.slice(7)))
+          .filter((id) => Number.isFinite(id));
 
-        // Get unique lead IDs (both new and legacy) - already deduplicated
-        const newLeadIds = [...new Set(userContracts.map(c => c.newlead_id).filter(Boolean))];
-        const legacyLeadIds = [...new Set(userContracts.map(c => c.lead_id).filter(Boolean))];
-
-        // Fetch new leads data
+        // Batch-load leads with role fields so we can attribute beyond Closer's only
         let newLeadsData: any[] = [];
         if (newLeadIds.length > 0) {
           const { data: newLeads, error: newLeadsError } = await supabase
             .from('leads')
-            .select(`
+            .select(
+              `
               id,
               lead_number,
               name,
@@ -6700,8 +6724,10 @@ const Dashboard: React.FC = () => {
               balance,
               balance_currency,
               proposal_total,
-              proposal_currency
-            `)
+              proposal_currency,
+              ${NEW_LEAD_ROLE_SELECT_COLUMNS}
+            `,
+            )
             .in('id', newLeadIds);
 
           if (!newLeadsError && newLeads) {
@@ -6709,53 +6735,119 @@ const Dashboard: React.FC = () => {
           }
         }
 
-        // Fetch legacy leads data
         let legacyLeadsData: any[] = [];
         if (legacyLeadIds.length > 0) {
           const { data: legacyLeads, error: legacyLeadsError } = await supabase
             .from('leads_lead')
-            .select(`
+            .select(
+              `
               id,
+              lead_number,
+              master_id,
               name,
               category_id,
               no_of_applicants,
               total,
-              currency_id
-            `)
+              currency_id,
+              ${LEGACY_LEAD_ROLE_SELECT_COLUMNS}
+            `,
+            )
             .in('id', legacyLeadIds);
 
           if (!legacyLeadsError && legacyLeads) {
-            // Fetch currency codes
-            const currencyIds = legacyLeads.map(l => l.currency_id).filter(Boolean);
+            const currencyIds = legacyLeads.map((l) => l.currency_id).filter(Boolean);
             let currencyMap: Record<number, string> = {};
 
             if (currencyIds.length > 0) {
               const { data: currencies } = await supabase
                 .from('accounting_currencies')
-                .select('id, iso_code')
+                .select('id, name, iso_code')
                 .in('id', currencyIds);
 
               if (currencies) {
                 currencyMap = currencies.reduce((acc, curr) => {
-                  acc[curr.id] = curr.iso_code;
+                  // Prefer symbol icon (name is often ₪/$/€ like Clients balance badge)
+                  const raw = curr.name || curr.iso_code || '';
+                  const upper = String(raw).toUpperCase();
+                  let icon = String(raw).trim();
+                  if (['₪', '$', '€', '£'].includes(icon)) {
+                    // keep
+                  } else if (upper === 'NIS' || upper === 'ILS' || upper.includes('SHEKEL')) {
+                    icon = '₪';
+                  } else if (upper === 'USD' || upper.includes('DOLLAR')) {
+                    icon = '$';
+                  } else if (upper === 'EUR' || upper.includes('EURO')) {
+                    icon = '€';
+                  } else if (upper === 'GBP' || upper.includes('POUND')) {
+                    icon = '£';
+                  } else if (icon.length > 2) {
+                    icon = '₪';
+                  }
+                  acc[curr.id] = icon || '₪';
                   return acc;
                 }, {} as Record<number, string>);
               }
             }
 
-            legacyLeadsData = legacyLeads.map(lead => ({
+            // Clients.tsx: `${master_id}/${suffix}` among siblings ordered by id (suffix starts at 2)
+            const masterIds = [
+              ...new Set(
+                legacyLeads
+                  .map((l: any) =>
+                    l.master_id != null && String(l.master_id).trim() !== ''
+                      ? Number(l.master_id)
+                      : null,
+                  )
+                  .filter((id: number | null): id is number => id != null && Number.isFinite(id)),
+              ),
+            ];
+            const siblingsByMaster = new Map<number, number[]>();
+            if (masterIds.length > 0) {
+              const { data: allSubs } = await supabase
+                .from('leads_lead')
+                .select('id, master_id')
+                .in('master_id', masterIds)
+                .order('id', { ascending: true });
+              (allSubs || []).forEach((sub: any) => {
+                const masterId = Number(sub.master_id);
+                const subId = Number(sub.id);
+                if (!Number.isFinite(masterId) || !Number.isFinite(subId)) return;
+                const list = siblingsByMaster.get(masterId) || [];
+                list.push(subId);
+                siblingsByMaster.set(masterId, list);
+              });
+            }
+
+            const formatLegacySignedLeadNumber = (lead: any): string => {
+              const masterRaw = lead.master_id;
+              if (masterRaw == null || String(masterRaw).trim() === '') {
+                return String(lead.id);
+              }
+              const masterId = Number(masterRaw);
+              if (!Number.isFinite(masterId)) return String(lead.id);
+              const siblings = siblingsByMaster.get(masterId) || [];
+              const idx = siblings.findIndex((sid) => sid === Number(lead.id));
+              const suffix = idx >= 0 ? idx + 2 : siblings.length + 2;
+              return `${masterId}/${suffix}`;
+            };
+
+            legacyLeadsData = legacyLeads.map((lead) => ({
               ...lead,
-              currency_code: currencyMap[lead.currency_id] || '₪'
+              currency_code: currencyMap[lead.currency_id] || '₪',
+              display_lead_number: formatLegacySignedLeadNumber(lead),
             }));
           }
         }
 
+        const newLeadById = new Map(newLeadsData.map((l) => [String(l.id), l]));
+        const legacyLeadById = new Map(legacyLeadsData.map((l) => [Number(l.id), l]));
+
         // Fetch categories with main categories for category names
         const allCategoryIds = [
           ...new Set([
-            ...newLeadsData.map(l => l.category_id).filter(Boolean),
-            ...legacyLeadsData.map(l => l.category_id).filter(Boolean)
-          ])
+            ...newLeadsData.map((l) => l.category_id).filter(Boolean),
+            ...legacyLeadsData.map((l) => l.category_id).filter(Boolean),
+          ]),
         ];
 
         let categoryMap: Record<number, string> = {};
@@ -6777,7 +6869,6 @@ const Dashboard: React.FC = () => {
 
           if (categories) {
             categoryMap = categories.reduce((acc, cat: any) => {
-              // Format as "subcategory (main category)" or just "category" if no main category
               const mainCategory = Array.isArray(cat.misc_maincategory)
                 ? cat.misc_maincategory[0]
                 : cat.misc_maincategory;
@@ -6792,45 +6883,72 @@ const Dashboard: React.FC = () => {
           }
         }
 
-        // Combine and map contracts to leads with signed date
-        const signedLeadsWithDate = userContracts.map(contract => {
-          if (contract.newlead_id) {
-            const lead = newLeadsData.find(l => l.id === contract.newlead_id);
-            if (lead) {
-              return {
-                id: lead.id,
-                lead_number: lead.lead_number,
-                name: lead.name,
-                category: categoryMap[lead.category_id] || lead.category || 'N/A',
-                signed_date: contract.date,
-                applicants: lead.number_of_applicants_meeting || 'N/A',
-                value: lead.balance || lead.proposal_total || 0,
-                currency: lead.balance_currency || lead.proposal_currency || '₪',
-                lead_type: 'new'
-              };
-            }
-          } else if (contract.lead_id) {
-            const lead = legacyLeadsData.find(l => l.id === contract.lead_id);
-            if (lead) {
-              return {
-                id: `legacy_${lead.id}`,
-                lead_number: lead.id.toString(),
-                name: lead.name,
-                category: categoryMap[lead.category_id] || 'N/A',
-                signed_date: contract.date,
-                applicants: lead.no_of_applicants || 'N/A',
-                value: lead.total || 0,
-                currency: lead.currency_code || '₪',
-                lead_type: 'legacy'
-              };
-            }
+        const signedLeadsWithDate: any[] = [];
+        const toSignedDealCurrencyIcon = (raw?: string | null): string => {
+          if (!raw) return '₪';
+          const s = String(raw).trim();
+          if (['₪', '$', '€', '£'].includes(s)) return s;
+          const upper = s.toUpperCase();
+          if (upper === 'NIS' || upper === 'ILS' || upper.includes('SHEKEL')) return '₪';
+          if (upper === 'USD' || upper === 'US$' || upper.includes('DOLLAR')) return '$';
+          if (upper === 'EUR' || upper.includes('EURO')) return '€';
+          if (upper === 'GBP' || upper.includes('POUND')) return '£';
+          if (s.length <= 2) return s;
+          return '₪';
+        };
+
+        for (const [leadKey, contract] of contractsByLead.entries()) {
+          if (leadKey.startsWith('new_')) {
+            const lead = newLeadById.get(String(contract.newlead_id));
+            if (!lead) continue;
+            const roles = getEmployeeRolesFromLeadRow(
+              'new',
+              lead as Record<string, unknown>,
+              userEmployeeId,
+              userFullName,
+            ).filter((r) => SIGNED_DEAL_ATTRIBUTION_ROLE_IDS.has(r.id));
+            if (roles.length === 0) continue;
+            signedLeadsWithDate.push({
+              id: lead.id,
+              lead_number: lead.lead_number,
+              name: lead.name,
+              category: categoryMap[lead.category_id] || lead.category || 'N/A',
+              signed_date: contract.date,
+              applicants: lead.number_of_applicants_meeting || 'N/A',
+              value: lead.balance || lead.proposal_total || 0,
+              currency: toSignedDealCurrencyIcon(
+                lead.balance_currency || lead.proposal_currency || '₪',
+              ),
+              lead_type: 'new',
+              roles: roles.map((r) => r.title),
+            });
+          } else {
+            const lead = legacyLeadById.get(Number(contract.lead_id));
+            if (!lead) continue;
+            const roles = getEmployeeRolesFromLeadRow(
+              'legacy',
+              lead as Record<string, unknown>,
+              userEmployeeId,
+              userFullName,
+            ).filter((r) => SIGNED_DEAL_ATTRIBUTION_ROLE_IDS.has(r.id));
+            if (roles.length === 0) continue;
+            signedLeadsWithDate.push({
+              id: `legacy_${lead.id}`,
+              lead_number: lead.display_lead_number || lead.lead_number || lead.id.toString(),
+              name: lead.name,
+              category: categoryMap[lead.category_id] || 'N/A',
+              signed_date: contract.date,
+              applicants: lead.no_of_applicants || 'N/A',
+              value: lead.total || 0,
+              currency: toSignedDealCurrencyIcon(lead.currency_code || '₪'),
+              lead_type: 'legacy',
+              roles: roles.map((r) => r.title),
+            });
           }
-          return null;
-        }).filter(Boolean);
+        }
 
         // Sort by signed date (most recent first)
         signedLeadsWithDate.sort((a, b) => {
-          if (!a || !b) return 0;
           const dateA = new Date(a.signed_date).getTime();
           const dateB = new Date(b.signed_date).getTime();
           return dateB - dateA;
@@ -9527,6 +9645,7 @@ const Dashboard: React.FC = () => {
                       <tr>
                         <th>Lead Number + Client Name</th>
                         <th>Category</th>
+                        <th>Role</th>
                         <th>Signed Agreement Date</th>
                         <th>Applicants</th>
                         <th>Value (Amount)</th>
@@ -9537,7 +9656,7 @@ const Dashboard: React.FC = () => {
                         <tr
                           key={lead.id}
                           className="hover:bg-gray-50 cursor-pointer"
-                          onClick={() => window.location.href = `/clients/${lead.lead_number}`}
+                          onClick={() => window.location.href = buildClientRoute(lead)}
                         >
                           <td>
                             <div className="flex items-center gap-2">
@@ -9547,10 +9666,15 @@ const Dashboard: React.FC = () => {
                             </div>
                           </td>
                           <td>{lead.category}</td>
+                          <td className="text-sm text-gray-700">
+                            {(lead.roles || []).length > 0
+                              ? (lead.roles as string[]).join(', ')
+                              : '—'}
+                          </td>
                           <td>{lead.signed_date ? new Date(lead.signed_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
                           <td>{lead.applicants}</td>
                           <td className="font-semibold text-green-600">
-                            {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
+                            {(lead.currency || '₪')}{lead.value ? Number(lead.value).toLocaleString() : '0'}
                           </td>
                         </tr>
                       ))}
@@ -9563,7 +9687,7 @@ const Dashboard: React.FC = () => {
                     <div
                       key={lead.id}
                       className="bg-white rounded-xl p-4 shadow-md border border-gray-100 cursor-pointer hover:shadow-lg transition-shadow"
-                      onClick={() => window.location.href = `/clients/${lead.lead_number}`}
+                      onClick={() => window.location.href = buildClientRoute(lead)}
                     >
                       <div className="flex items-center gap-2 mb-3">
                         <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
@@ -9571,6 +9695,14 @@ const Dashboard: React.FC = () => {
                         <span className="font-semibold text-gray-900 flex-1">{lead.name}</span>
                       </div>
                       <div className="space-y-2 text-sm">
+                        <div className="flex justify-between gap-3">
+                          <span className="text-gray-500 shrink-0">Role:</span>
+                          <span className="font-semibold text-right">
+                            {(lead.roles || []).length > 0
+                              ? (lead.roles as string[]).join(', ')
+                              : '—'}
+                          </span>
+                        </div>
                         <div className="flex justify-between">
                           <span className="text-gray-500">Category:</span>
                           <span className="font-semibold">{lead.category}</span>
@@ -9586,7 +9718,7 @@ const Dashboard: React.FC = () => {
                         <div className="flex justify-between">
                           <span className="text-gray-500">Value:</span>
                           <span className="font-semibold text-green-600">
-                            {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
+                            {(lead.currency || '₪')}{lead.value ? Number(lead.value).toLocaleString() : '0'}
                           </span>
                         </div>
                       </div>

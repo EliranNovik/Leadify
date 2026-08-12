@@ -191,6 +191,34 @@ function rolesFromLegacyLeadRow(
   return roles;
 }
 
+/** Public: resolve Roles-tab roles for an employee from an already-fetched lead row. */
+export function getEmployeeRolesFromLeadRow(
+  kind: 'new' | 'legacy',
+  row: Record<string, unknown>,
+  employeeId: number,
+  employeeName: string,
+): LeadEmployeeRole[] {
+  return kind === 'legacy'
+    ? rolesFromLegacyLeadRow(row, employeeId, employeeName)
+    : rolesFromNewLeadRow(row, employeeId, employeeName);
+}
+
+/** Select list for batch-loading new-lead role fields (Dashboard signed deals, etc.). */
+export const NEW_LEAD_ROLE_SELECT_COLUMNS = NEW_LEAD_ROLE_SELECT;
+
+/** Select list for batch-loading legacy-lead role fields. */
+export const LEGACY_LEAD_ROLE_SELECT_COLUMNS = LEGACY_LEAD_ROLE_SELECT;
+
+/** Roles that count toward “My Signed Leads / My Performance” attribution. */
+export const SIGNED_DEAL_ATTRIBUTION_ROLE_IDS = new Set([
+  'closer',
+  'expert',
+  'manager',
+  'scheduler',
+  'helper',
+]);
+
+
 async function resolveNewLeadId(params: {
   newLeadId: string | null;
   leadNumber: string;

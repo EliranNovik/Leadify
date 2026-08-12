@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, Fragment, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, Fragment, useMemo, useRef } from 'react';
 import { ClientTabProps, ClientInteractionsCache } from '../../types/client';
 import EmojiPicker from 'emoji-picker-react';
 import {
@@ -72,16 +72,19 @@ import { fetchWhatsAppTemplates, type WhatsAppTemplate } from '../../lib/whatsap
 import { interactionsDevLog, interactionsDevWarn } from '../../lib/interactions/devLog';
 import {
   fileAttachmentsForUi,
-  formatEmailHtmlForDisplay,
-  formatEmailHtmlForReadingPane,
   formatEmailBodyForTimeline,
   formatPlainBodyForTimeline,
   isOfficeEmail,
   parseEmailAttachmentsFromDb,
   processEmailHtmlWithInlineImages,
-  sanitizeEmailHtml,
+  ensureFormattedEmailHtml,
+  mergeEmailBodyPreferRicher,
+  isTimelinePrewrapHtml,
+  emailBodyPlainTextLength,
+  countEmailBreakSignals,
+  emailBodyLooksStableForReading,
 } from './interactionsEmailViewUtils';
-import { InteractionsEmailModal } from './InteractionsEmailModal';
+import { InteractionsEmailModal, resolveOutgoingSenderLabel } from './InteractionsEmailModal';
 import { EmailMessageActionsDropdown } from './EmailMessageActionsDropdown';
 import { EmailMessageComments } from './EmailMessageComments';
 import type { EmailComment } from '../../lib/interactions/emailComments';
@@ -94,7 +97,6 @@ import {
   stableEmailRowId,
   dedupeEmailsForSidepanel,
   emailInteractionVisibleOnTimeline,
-  EMAIL_MODAL_SELECT,
   EMAIL_LIST_SELECT,
 } from '../../lib/interactions/emailFilters';
 import {
@@ -257,6 +259,82 @@ interface Attachment {
   sizeInBytes: number;
   isInline: boolean;
   contentUrl?: string; // For download
+}
+
+type EmailAttachmentDocType =
+  | 'PDF'
+  | 'Word'
+  | 'Excel'
+  | 'Image'
+  | 'Archive'
+  | 'Other';
+
+const EMAIL_ATTACHMENT_DOC_TYPE_ORDER: EmailAttachmentDocType[] = [
+  'PDF',
+  'Word',
+  'Excel',
+  'Image',
+  'Archive',
+  'Other',
+];
+
+type LeadEmailAttachmentItem = {
+  key: string;
+  emailId: string;
+  emailSubject: string;
+  emailDate: string | null;
+  attachment: Attachment & Record<string, any>;
+  docType: EmailAttachmentDocType;
+};
+
+function classifyEmailAttachmentDocType(
+  name?: string | null,
+  contentType?: string | null,
+): EmailAttachmentDocType {
+  const n = String(name || '').toLowerCase();
+  const ct = String(contentType || '').toLowerCase();
+  const ext = n.includes('.') ? n.slice(n.lastIndexOf('.') + 1) : '';
+
+  if (ext === 'pdf' || ct.includes('pdf')) return 'PDF';
+  if (
+    ['doc', 'docx', 'rtf', 'odt'].includes(ext) ||
+    ct.includes('msword') ||
+    ct.includes('wordprocessingml') ||
+    ct.includes('rtf')
+  ) {
+    return 'Word';
+  }
+  if (
+    ['xls', 'xlsx', 'csv', 'ods'].includes(ext) ||
+    ct.includes('spreadsheet') ||
+    ct.includes('excel') ||
+    ct === 'text/csv'
+  ) {
+    return 'Excel';
+  }
+  if (
+    ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'tiff', 'tif'].includes(ext) ||
+    ct.startsWith('image/')
+  ) {
+    return 'Image';
+  }
+  if (
+    ['zip', 'rar', '7z', 'tar', 'gz'].includes(ext) ||
+    ct.includes('zip') ||
+    ct.includes('compressed') ||
+    ct.includes('rar')
+  ) {
+    return 'Archive';
+  }
+  return 'Other';
+}
+
+function formatAttachmentBytes(bytes?: number | null): string {
+  const n = Number(bytes) || 0;
+  if (n <= 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 interface CallLog {
@@ -444,7 +522,7 @@ const convertBodyToHtml = (text: string) => {
   const urlRegex = /(https?:\/\/[^\s<>]+)/gi;
   const escaped = textWithPlaceholders.replace(urlRegex, url => {
     const safeUrl = url.replace(/"/g, '&quot;');
-    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline" style="color:#2563eb;text-decoration:underline;">${url}</a>`;
   });
   
   // Restore original anchor tags
@@ -518,7 +596,7 @@ const renderTextWithLinksAsHtml = (text: string): string => {
       }
       
       const target = href.startsWith('mailto:') ? '' : ' target="_blank" rel="noopener noreferrer"';
-      result += `<a href="${escapeHtml(href)}"${target} class="hover:underline" style="color: #3b82f6;">${displayText}</a>`;
+      result += `<a href="${escapeHtml(href)}"${target} class="text-blue-600 underline underline-offset-2 hover:text-blue-800" style="color:#2563eb;text-decoration:underline;">${displayText}</a>`;
       
       lastIndex = match.index + match[0].length;
     }
@@ -763,8 +841,8 @@ const TruncatedContent: React.FC<{
         </div>
       )}
       <div 
-        className="max-w-none overflow-visible whitespace-pre-wrap break-words"
-        style={{ lineHeight: 1.55, maxHeight: 'none', whiteSpace: 'pre-wrap' }}
+        className="email-content max-w-none overflow-visible break-words [&_.timeline-prewrap]:whitespace-normal [&_a]:!text-blue-600 [&_a]:!underline [&_a]:underline-offset-2 hover:[&_a]:!text-blue-800"
+        style={{ lineHeight: 1.55, maxHeight: 'none', whiteSpace: 'normal' }}
         dir={direction || 'auto'}
         dangerouslySetInnerHTML={{ 
           __html: isExpanded ? content : truncatedContent
@@ -829,6 +907,11 @@ function countTimelineChannelRows(interactions: Interaction[], kind: 'whatsapp' 
     if (kind === 'email' && id.startsWith('manual_')) return false;
     return true;
   }).length;
+}
+
+/** Timeline is "rich" enough to show immediately (has real emails). Incomplete caches cause a late reorder. */
+function timelineHasEmailRows(items: Interaction[]): boolean {
+  return countTimelineChannelRows(items, 'email') > 0;
 }
 
 /** Prefer the snapshot with more DB-sourced emails/WhatsApp, then total rows. */
@@ -1001,12 +1084,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Determine if this is a legacy lead
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
   
-  // Use local state for interactions - initialize from sessionStorage, parent cache, or empty
-  // sessionStorage is written on every timeline change (incl. manual adds); parent cache may lag
-  // until fetchInteractions completes — prefer session when it is at least as complete as cache.
-  const [interactions, setInteractions] = useState<Interaction[]>(() =>
-    readInitialInteractionsFromStorage(client?.id, interactionsCache, (client as any)?.manual_interactions)
-  );
+  // Prefer a rich cached timeline (with emails). Incomplete session/manual-only snapshots cause a
+  // late reorder when emails arrive ~1s later — hold spinner until the full server merge instead.
+  const [interactions, setInteractions] = useState<Interaction[]>(() => {
+    const initial = readInitialInteractionsFromStorage(
+      client?.id,
+      interactionsCache,
+      (client as any)?.manual_interactions,
+    );
+    if (initial.length === 0) return [];
+    // Only paint immediately when the cache already includes emails (settled timeline).
+    if (timelineHasEmailRows(initial)) return initial;
+    return [];
+  });
+  const [timelineAwaitingEmails, setTimelineAwaitingEmails] = useState(() => {
+    const initial = readInitialInteractionsFromStorage(
+      client?.id,
+      interactionsCache,
+      (client as any)?.manual_interactions,
+    );
+    // No data yet, or data without emails → wait for full merge before treating timeline as settled
+    return initial.length === 0 || !timelineHasEmailRows(initial);
+  });
   
   // Apply parent cache only when it is strictly more complete than local state (never downgrade
   // after a manual add that updated sessionStorage but not yet the parent's cache).
@@ -1014,6 +1113,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     if (!interactionsCache || interactionsCache.leadId !== client?.id) return;
     if (interactionsCache.hydratedFromServer === false) return;
     const cachedInteractions = (interactionsCache.interactions || []) as Interaction[];
+    // Never inject WhatsApp/manual-only caches — that paints then reshuffles when emails arrive.
+    if (!timelineHasEmailRows(cachedInteractions)) return;
 
     setInteractions((prev) => {
       if (cachedInteractions.length === 0) return prev;
@@ -1079,6 +1180,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
       timelineHydratedFromServerRef.current = false;
       previousHydrationClientIdRef.current = id;
+      const initial = readInitialInteractionsFromStorage(
+        client?.id,
+        interactionsCache,
+        (client as any)?.manual_interactions,
+      );
+      const awaiting = initial.length === 0 || !timelineHasEmailRows(initial);
+      setTimelineAwaitingEmails(awaiting);
+      setInteractionsLoading(awaiting);
+      if (awaiting) {
+        setInteractions(timelineHasEmailRows(initial) ? initial : []);
+      } else if (timelineHasEmailRows(initial)) {
+        setInteractions(initial);
+      }
     }
   }, [client?.id]);
   
@@ -1227,6 +1341,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
   const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
   const [flaggedItemsModalOpen, setFlaggedItemsModalOpen] = useState(false);
+  const [attachmentsModalOpen, setAttachmentsModalOpen] = useState(false);
   const [pendingFlagDelete, setPendingFlagDelete] = useState<
     | null
     | { kind: 'lead_field'; leadFieldKey: string; label: string }
@@ -1410,12 +1525,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState('');
   const [interactionsLoading, setInteractionsLoading] = useState(
-    () =>
-      readInitialInteractionsFromStorage(
+    () => {
+      const initial = readInitialInteractionsFromStorage(
         client?.id,
         interactionsCache,
-        (client as any)?.manual_interactions
-      ).length === 0
+        (client as any)?.manual_interactions,
+      );
+      // Show spinner until we have a settled timeline that already includes emails
+      return initial.length === 0 || !timelineHasEmailRows(initial);
+    }
   );
   const [showCompose, setShowCompose] = useState(false);
   const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
@@ -1506,20 +1624,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
   const userFullNameLoadedRef = useRef(false);
 
-  // Paint manual interactions from client prop before first paint when nothing else is cached yet
-  useLayoutEffect(() => {
-    if (!client?.id) return;
-    if (isLegacyLead) return;
-    const manual = (client as any)?.manual_interactions;
-    if (!Array.isArray(manual) || manual.length === 0) return;
-    if (interactions.length > 0) return;
-    const quick = mapManualInteractionsQuick(manual, client.name, currentUserFullName);
-    if (quick.length > 0) {
-      setInteractions(quick);
-      setInteractionsLoading(false);
-    }
-  }, [client?.id, client?.name, isLegacyLead, (client as any)?.manual_interactions, interactions.length, currentUserFullName]);
-  
   // Track optimistic updates for manual interactions to prevent overwrites
   const optimisticUpdatesRef = useRef<Map<string | number, {
     date: string;
@@ -2202,64 +2306,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     const filtered = interactions.filter((interaction: any) =>
       emailInteractionVisibleOnTimeline(interaction),
     );
-    
-    // Helper function to get timestamp from interaction date/time (same logic as display)
-    const getInteractionTimestamp = (interaction: Interaction): number => {
-      // Use date and time fields first (same as drawer and timeline display)
-      if (interaction.date && interaction.time) {
-        try {
-          const dateStr = interaction.date;
-          const timeStr = interaction.time;
-          
-          let parsedDate: Date | null = null;
-          
-          // Try DD/MM/YYYY or DD.MM.YY format first (common in en-GB)
-          if (dateStr.includes('/') || dateStr.includes('.')) {
-            const separator = dateStr.includes('/') ? '/' : '.';
-            const parts = dateStr.split(separator);
-            if (parts.length === 3) {
-              const [day, month, year] = parts;
-              const fullYear = year.length === 2 ? `20${year}` : year;
-              parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
-            }
-          } else if (dateStr.includes('-')) {
-            // Try YYYY-MM-DD format
-            parsedDate = new Date(`${dateStr}T${timeStr}`);
-          } else {
-            // Try to parse as-is
-            parsedDate = new Date(`${dateStr} ${timeStr}`);
-          }
-          
-          if (parsedDate && !isNaN(parsedDate.getTime())) {
-            return parsedDate.getTime();
-          }
-        } catch (error) {
-          // Fall through to raw_date fallback
-        }
-      }
-      
-      // Fallback to raw_date if date/time parsing fails
-      if (interaction.raw_date) {
-        const rawDate = new Date(interaction.raw_date);
-        if (!isNaN(rawDate.getTime())) {
-          return rawDate.getTime();
-        }
-      }
-      
-      // Last resort: use 0 (will sort to bottom)
-      return 0;
-    };
-    
-    // Sort by actual interaction date/time (newest first)
-    return filtered.sort((a, b) => getInteractionTimestamp(b) - getInteractionTimestamp(a));
+    // Always sort by raw_date (same key used when merging) — date/time string parsing caused a
+    // second reorder ~1s after enter when emails arrived with different display fields.
+    return sortInteractionsByDate(filtered);
   }, [interactions]);
 
   useEffect(() => {
-    const nextCount = client.id
-      ? Math.min(INITIAL_VISIBLE_INTERACTIONS, sortedInteractions.length || 0)
-      : INITIAL_VISIBLE_INTERACTIONS;
-    setVisibleInteractionsCount(nextCount);
-  }, [client.id, sortedInteractions.length]);
+    setVisibleInteractionsCount(INITIAL_VISIBLE_INTERACTIONS);
+  }, [client.id]);
 
   const visibleInteractions = useMemo(
     () => sortedInteractions.slice(0, visibleInteractionsCount),
@@ -2310,9 +2364,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const originalContent =
           typeof row.content === 'string' ? row.content : row.content != null ? String(row.content) : '';
 
-        // Don't strip signatures/quoted text - show full content
-        // The user requested to remove content truncation
-        const sanitizedBase = sanitizeEmailHtml(originalContent);
+        // Format once for stable line breaks (idempotent for already-wrapped bodies).
+        const sanitizedBase = ensureFormattedEmailHtml(originalContent);
 
         let sanitizedWithoutSubject = sanitizedBase;
         if (row.subject) {
@@ -2321,7 +2374,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             const subjectPattern = new RegExp(`^${escapeRegExp(row.subject)}\\s*:?\\s*[\\-–—]*`, 'i');
             const withoutSubjectSource = originalContent.replace(subjectPattern, '').trim();
             if (withoutSubjectSource && withoutSubjectSource !== originalContent) {
-              const sanitizedCandidate = sanitizeEmailHtml(withoutSubjectSource);
+              const sanitizedCandidate = ensureFormattedEmailHtml(withoutSubjectSource);
               if (sanitizedCandidate) {
                 sanitizedWithoutSubject = sanitizedCandidate;
               }
@@ -2385,6 +2438,67 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const totalFlaggedCount = flaggedInteractionCount + flaggedLeadFieldCount;
   /** Includes RMQ message flags (ClientHeader badge adds the same count via RPC — keep modal + tab button in sync). */
   const totalFlaggedCountWithRmq = totalFlaggedCount + rmqLeadMessageFlags.length;
+
+  const leadEmailAttachments = useMemo(() => {
+    const items: LeadEmailAttachmentItem[] = [];
+    const seen = new Set<string>();
+
+    for (const email of emails) {
+      const emailId = email?.id != null ? String(email.id) : '';
+      if (!emailId) continue;
+      const fileAtt = fileAttachmentsForUi(parseEmailAttachmentsFromDb(email.attachments));
+      for (let idx = 0; idx < fileAtt.length; idx++) {
+        const att = fileAtt[idx];
+        if (!att) continue;
+        const attId = att.id != null ? String(att.id) : '';
+        const attName = String(att.name || `Attachment ${idx + 1}`);
+        const dedupeKey = attId
+          ? `${emailId}:${attId}`
+          : `${emailId}:${attName}:${att.sizeInBytes || att.size || 0}:${idx}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        items.push({
+          key: dedupeKey,
+          emailId,
+          emailSubject: String(email.subject || '(no subject)'),
+          emailDate: email.date || email.sent_at || null,
+          attachment: {
+            ...att,
+            id: attId,
+            name: attName,
+            contentType: att.contentType || att.content_type || att.mimeType || '',
+            sizeInBytes: Number(att.sizeInBytes || att.size || 0),
+            isInline: false,
+          },
+          docType: classifyEmailAttachmentDocType(
+            attName,
+            att.contentType || att.content_type || att.mimeType,
+          ),
+        });
+      }
+    }
+
+    items.sort((a, b) => {
+      const da = a.emailDate ? new Date(a.emailDate).getTime() : 0;
+      const db = b.emailDate ? new Date(b.emailDate).getTime() : 0;
+      return db - da;
+    });
+    return items;
+  }, [emails]);
+
+  const leadEmailAttachmentsByType = useMemo(() => {
+    const groups = new Map<EmailAttachmentDocType, LeadEmailAttachmentItem[]>();
+    for (const type of EMAIL_ATTACHMENT_DOC_TYPE_ORDER) groups.set(type, []);
+    for (const item of leadEmailAttachments) {
+      groups.get(item.docType)!.push(item);
+    }
+    return EMAIL_ATTACHMENT_DOC_TYPE_ORDER.map((type) => ({
+      type,
+      items: groups.get(type) || [],
+    })).filter((g) => g.items.length > 0);
+  }, [leadEmailAttachments]);
+
+  const totalLeadEmailAttachmentCount = leadEmailAttachments.length;
 
   useEffect(() => {
     onFlaggedConversationCountUpdate?.(totalFlaggedCount);
@@ -2763,81 +2877,58 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [client.id, interactions.length, emails.length, lastEmailIdx, sortedInteractions]); // Include necessary dependencies
 
-  // Modal fetch can succeed while timeline interactions were restored from stale cache/session
-  // (cache.emails populated but no kind === 'email' rows). Merge modal emails into the timeline.
+  // Modal emails: upgrade bodies in place. Do NOT inject brand-new email rows here during the
+  // initial settle — that was reshuffling the timeline ~1s after enter. New rows come from
+  // fetchInteractions' full merge (or a later quiet refresh).
   useEffect(() => {
     if (!client?.id || emails.length === 0) return;
+    if (timelineAwaitingEmails) return;
+    if (!timelineHydratedFromServerRef.current) return;
 
     setInteractions((prev) => {
-      const existingKeys = new Set<string>();
-      for (const row of prev) {
-        if (row.kind !== 'email') continue;
-        if (row.id != null && String(row.id) !== '') existingKeys.add(String(row.id));
-        const mid = (row as any).message_id;
-        if (mid != null && String(mid).trim() !== '') existingKeys.add(String(mid));
-      }
-
-      const additions: Interaction[] = [];
-      for (const e of emails) {
-        const stableId = e.id != null ? String(e.id) : '';
-        if (!stableId || existingKeys.has(stableId)) continue;
-        if (e.message_id && existingKeys.has(String(e.message_id))) continue;
-
-        const sentAt = e.date || e.sent_at;
-        if (!sentAt) continue;
-        const emailDate = new Date(sentAt);
-        if (Number.isNaN(emailDate.getTime())) continue;
-
-        const dir =
-          e.direction === 'outgoing' || e.direction === 'out' ? 'out' : 'in';
-        const content =
-          e.bodyPreview || e.body_html || e.body_preview || e.subject || '';
-
+      let changed = false;
+      const next = prev.map((row) => {
+        if (row.kind !== 'email') return row;
+        const match =
+          emails.find(
+            (e) =>
+              String(e.id) === String(row.id) ||
+              (e.message_id != null &&
+                String(e.message_id) === String((row as any).message_id || row.id)),
+          ) || null;
+        if (!match) return row;
+        const incoming = ensureFormattedEmailHtml(
+          match.body_html || match.bodyPreview || match.body_preview || '',
+        );
+        if (!incoming) return row;
+        const currentLen = emailBodyPlainTextLength(row.content);
+        const incomingLen = emailBodyPlainTextLength(incoming);
+        const currentBreaks = countEmailBreakSignals(row.content);
+        const incomingBreaks = countEmailBreakSignals(incoming);
+        const currentDensity = currentBreaks / Math.max(currentLen, 1);
+        const incomingDensity = incomingBreaks / Math.max(incomingLen, 1);
         if (
-          !emailInteractionVisibleOnTimeline({
-            kind: 'email',
-            subject: e.subject,
-            content,
-          })
+          currentBreaks >= 2 &&
+          (incomingBreaks < currentBreaks || incomingDensity < currentDensity * 0.45)
         ) {
-          continue;
+          return row;
         }
+        const shouldUpgrade =
+          incomingLen > currentLen + 40 ||
+          (isTimelinePrewrapHtml(incoming) && !isTimelinePrewrapHtml(String(row.content || '')));
+        if (!shouldUpgrade) return row;
+        changed = true;
+        return {
+          ...row,
+          content: incoming,
+          body_html: match.body_html || incoming,
+          body_preview: match.body_preview || match.bodyPreview || incoming,
+        };
+      });
 
-        additions.push({
-          id: stableId,
-          message_id: e.message_id ?? null,
-          date: emailDate.toLocaleDateString('en-GB', {
-            day: '2-digit',
-            month: '2-digit',
-            year: '2-digit',
-          }),
-          time: emailDate.toLocaleTimeString('en-GB', {
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-          raw_date: sentAt,
-          employee:
-            dir === 'out'
-              ? e.sender_display_name || currentUserFullName || 'Team'
-              : client.name || 'Client',
-          direction: dir,
-          kind: 'email',
-          length: '',
-          content,
-          subject: e.subject || '',
-          observation: '',
-          editable: false,
-          body_html: e.body_html || null,
-          body_preview: e.body_preview || e.bodyPreview || null,
-        } as Interaction);
-        existingKeys.add(stableId);
-        if (e.message_id) existingKeys.add(String(e.message_id));
-      }
-
-      if (additions.length === 0) return prev;
-      return sortInteractionsByDate([...prev, ...additions]);
+      return changed ? next : prev;
     });
-  }, [emails, client?.id, client?.name, currentUserFullName]);
+  }, [emails, client?.id, timelineAwaitingEmails]);
 
   // Handle WhatsApp modal opening from localStorage flag
   useEffect(() => {
@@ -3381,14 +3472,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
       const startTime = performance.now();
       interactionsDevLog('🚀 Starting InteractionsTab fetch...');
-      const hasLocalTimeline =
-        interactionsRef.current.length > 0 ||
-        (Array.isArray((client as any)?.manual_interactions) &&
-          (client as any).manual_interactions.length > 0);
+      const hasLocalTimeline = timelineHasEmailRows(interactionsRef.current);
       const clientKey = String(client.id);
 
       if (isMountedRef.current && !skipLoadingSpinner && !hasLocalTimeline) {
         setInteractionsLoading(true);
+        setTimelineAwaitingEmails(true);
       }
       try {
         const contactsForFetch = leadContactsRef.current;
@@ -3591,59 +3680,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             : Promise.resolve({ data: [], error: null }),
         ]);
 
-        if (
-          fetchGenerationAtStart === interactionsFetchGenerationRef.current &&
-          (manualInteractionsSource.length > 0 || (whatsAppResult.data?.length ?? 0) > 0)
-        ) {
-          const quickManual = mapManualInteractionsQuick(
-            manualInteractionsSource,
-            client.name,
-            userFullName
-          );
-          const quickWhatsApp = (whatsAppResult.data || [])
-            .map((msg: any) => {
-              const sentAt = msg.sent_at || msg.created_at || new Date().toISOString();
-              const sentAtDate = new Date(sentAt);
-              if (isNaN(sentAtDate.getTime())) return null;
-              const processedContent = processWhatsAppTemplateMessage(msg, whatsAppTemplates);
-              return {
-                id: msg.id,
-                date: sentAtDate.toLocaleDateString('en-GB', {
-                  day: '2-digit',
-                  month: '2-digit',
-                  year: '2-digit',
-                }),
-                time: sentAtDate.toLocaleTimeString('en-GB', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                }),
-                raw_date: sentAt,
-                employee: msg.sender_name || 'You',
-                direction: msg.direction || 'in',
-                kind: 'whatsapp',
-                length: '',
-                content: processedContent,
-                observation: msg.error_message || '',
-                editable: false,
-                status: msg.whatsapp_status || 'sent',
-                error_message: msg.error_message,
-                contact_id: msg.contact_id || null,
-                phone_number: msg.phone_number || null,
-                template_id: msg.template_id || null,
-              };
-            })
-            .filter(Boolean) as Interaction[];
-          const quickTimeline = sortInteractionsByDate([...quickManual, ...quickWhatsApp]);
-          if (quickTimeline.length > 0) {
-            // Don't wipe a richer cached timeline (emails/calls) with phase-1-only rows.
-            const existing = interactionsRef.current;
-            if (existing.length === 0 || !shouldKeepExistingTimeline(existing, quickTimeline)) {
-              setInteractions(quickTimeline);
-            }
-            setInteractionsLoading(false);
-            interactionsClientIdRef.current = client?.id?.toString() || null;
-          }
-        }
+        // Phase-1 WhatsApp/manual paint removed: it caused a ~1s timeline reorder when emails
+        // arrived in the full merge below. Spinner stays until merged is set.
 
         const [callLogsResult, legacyResult, emailsResult] = await slowSourcesPromise;
 
@@ -4241,11 +4279,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           let employeeRecipientName: string | null = null; // For incoming emails, store who received it
           
           if (isOutgoing) {
-            // For team/user emails: use employee display_name from cache if available, otherwise fallback
-            employeeName = senderDisplayName 
-              || userFullName 
-              || senderEmail 
-              || 'Team';
+            // Prefer map / DB sender_name / email — never invent the logged-in user as sender.
+            employeeName = resolveOutgoingSenderLabel(
+              {
+                sender_display_name: senderDisplayName,
+                sender_name: e.sender_name,
+                from: senderEmail,
+                sender_email: senderEmail,
+              },
+              { currentUserFullName: userFullName, currentUserEmail: userEmail },
+            );
           } else {
             let contactName: string | null = null;
             if (e.contact_id && contactsForFetch.length > 0) {
@@ -4697,23 +4740,34 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
           const previewSource = e.body_html || e.body_preview || e.subject || '';
           const sanitizedPreview = previewSource
-            ? sanitizeEmailHtml(formatEmailHtmlForReadingPane(previewSource))
-            : sanitizeEmailHtml(formatEmailHtmlForReadingPane(e.subject || ''));
+            ? ensureFormattedEmailHtml(previewSource)
+            : ensureFormattedEmailHtml(e.subject || '');
+
+          const senderEmail = e.sender_email || '';
+          const isFromOffice = isOfficeEmail(senderEmail);
+          let correctedDirection = e.direction;
+          if (isFromOffice) correctedDirection = 'outgoing';
+          const senderDisplayName = isFromOffice
+            ? employeeEmailMap.get(senderEmail.toLowerCase()) || e.sender_name || null
+            : null;
 
           return {
             id: stableEmailRowId(e),
             message_id: e.message_id ?? null,
             subject: e.subject,
-            from: e.sender_email,
+            from: senderEmail,
             to: e.recipient_list,
             date: e.sent_at,
             bodyPreview: sanitizedPreview,
             body_html: e.body_html
-              ? sanitizeEmailHtml(formatEmailHtmlForReadingPane(e.body_html))
+              ? ensureFormattedEmailHtml(e.body_html)
               : sanitizedPreview,
             body_preview: sanitizedPreview,
-            direction: e.direction,
+            direction: correctedDirection,
             attachments: parseEmailAttachmentsFromDb(e.attachments),
+            sender_name: e.sender_name || null,
+            sender_display_name: senderDisplayName,
+            contact_id: e.contact_id ?? null,
           };
         });
         // Always set interactions - React will handle unmounted components gracefully
@@ -4731,16 +4785,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           return;
         }
 
-        setInteractions((prev) =>
-          shouldKeepExistingTimeline(prev, merged as Interaction[])
+        setInteractions((prev) => {
+          // First settle: always take the full merge so we don't flash a partial timeline.
+          if (!timelineHasEmailRows(prev) && timelineHasEmailRows(merged as Interaction[])) {
+            return merged as Interaction[];
+          }
+          return shouldKeepExistingTimeline(prev, merged as Interaction[])
             ? prev
-            : (merged as Interaction[]),
-        );
+            : (merged as Interaction[]);
+        });
         interactionsClientIdRef.current = client?.id?.toString() || null; // Track that these interactions belong to this client
         lastClientIdRef.current = String(client.id);
         moduleLastInteractionsLeadId = String(client.id);
         timelineHydratedFromServerRef.current = true;
         serverTimelineHydratedClients.add(clientKey);
+        setTimelineAwaitingEmails(false);
+        setInteractionsLoading(false);
 
         if (client?.id && merged.length > 0) {
           try {
@@ -4790,6 +4850,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       } finally {
         isFetchingInteractionsRef.current = false;
         if (isMountedRef.current && !skipLoadingSpinner) {
+          setTimelineAwaitingEmails(false);
           setInteractionsLoading(false);
         }
       }
@@ -4798,6 +4859,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       client?.id, // Only depend on client.id, not the whole client object
       interactionsCache,
       currentUserFullName,
+      userEmail,
       onInteractionCountUpdate,
       onInteractionsCacheUpdate,
       // Removed whatsAppTemplates and employeePhoneMap from dependencies - they're used directly in the function
@@ -4845,6 +4907,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     ) {
       lastClientIdRef.current = currentClientId;
       interactionsClientIdRef.current = currentClientId;
+      setTimelineAwaitingEmails(false);
       setInteractionsLoading(false);
       return;
     }
@@ -4865,17 +4928,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     isFetchingRef.current = true;
     interactionsClientIdRef.current = currentClientId;
 
-    const hasInitialTimeline =
-      readInitialInteractionsFromStorage(
-        currentClientId,
-        interactionsCache,
-        (client as any)?.manual_interactions,
-      ).length > 0;
+    const initialTimeline = readInitialInteractionsFromStorage(
+      currentClientId,
+      interactionsCache,
+      (client as any)?.manual_interactions,
+    );
+    // Only skip the spinner when cache already includes emails (settled). Manual/WA-only
+    // snapshots must not quiet-fetch — that paints incomplete then reshuffles.
+    const hasSettledTimeline = timelineHasEmailRows(initialTimeline);
 
     interactionsFetchInFlight.delete(currentClientId);
     interactionsFetchInFlight.delete(`${currentClientId}:quiet`);
     runInteractionsFetchOnce(currentClientId, () =>
-      fetchInteractions({ bypassCache: true, quiet: hasInitialTimeline }),
+      fetchInteractions({ bypassCache: true, quiet: hasSettledTimeline }),
     )
       .catch((err) => console.error('Interactions timeline fetch failed:', err))
       .finally(() => {
@@ -5287,6 +5352,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       
       // ALWAYS hydrate if body_html is missing or empty (this is the main issue)
       const hasBodyHtml = message.body_html && message.body_html.trim() !== '';
+      if (hasBodyHtml && emailBodyLooksStableForReading(message.body_html)) {
+        // Already a stable reading-pane body — do not refetch/overwrite (avoids ~2s format flash).
+        return false;
+      }
       if (!hasBodyHtml) {
         interactionsDevLog(`📧 Email ${message.id} missing body_html, will hydrate`);
         return true;
@@ -5334,11 +5403,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
             // Format for reading pane immediately so line breaks are correct on first paint
             // (not after a late hydrate re-render).
-            const formattedHtml = sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawContent));
+            const formattedHtml = ensureFormattedEmailHtml(rawContent);
             const previewHtml =
               formattedHtml && formattedHtml.trim()
                 ? formattedHtml
-                : sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawContent));
+                : ensureFormattedEmailHtml(rawContent);
 
             updates[message.id] = {
               html: formattedHtml,
@@ -5346,25 +5415,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               attachments: Array.isArray(attachments) ? attachments : undefined,
             };
 
-            // Skip database update for "offer_" emails (they're already stored correctly)
-            // Also skip if we don't have permission (403 errors) - the backend will handle updates
-            if (!message.id.startsWith('offer_')) {
-              try {
-                const patch: Record<string, unknown> = {
-                  body_html: rawContent,
-                  body_preview: rawContent,
-                };
-                if (Array.isArray(attachments) && attachments.length > 0) {
-                  patch.attachments = attachments;
-                }
-                await supabase.from('emails').update(patch).eq('message_id', message.id);
-              } catch (dbErr: any) {
-                // Silently fail - backend will handle updates, and we don't want to spam errors
-                if (dbErr?.code !== 'PGRST116') { // PGRST116 is "no rows updated", which is fine
-                  interactionsDevWarn('Could not update email body in database (backend will handle it):', dbErr);
-                }
-              }
-            }
+            // Do not write the body back to Supabase from the client.
+            // That fires realtime → refetch → list select (no body_html) and used to wipe
+            // the hydrated formatted body ("breaks show, then suddenly go away").
+            // Backend / sync owns persisting full bodies.
           } catch (err) {
             const status = Number((err as any)?.statusCode || 0);
             const msg = String((err as any)?.message || err || '');
@@ -5388,29 +5442,94 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       if (Object.keys(updates).length > 0) {
         setEmails(prev =>
           prev.map(email => {
-            const update = updates[email.id];
+            const update = updates[email.id] || (email.message_id ? updates[email.message_id] : undefined);
             if (!update) return email;
+            const current = email.body_html || email.bodyPreview || email.body_preview || '';
+            // Keep a stable on-screen body unless hydrate is substantially richer (avoids format flash).
+            if (
+              emailBodyLooksStableForReading(current) &&
+              emailBodyPlainTextLength(update.html) <= emailBodyPlainTextLength(current) + 40
+            ) {
+              return {
+                ...email,
+                ...(update.attachments && update.attachments.length > 0
+                  ? { attachments: update.attachments }
+                  : {}),
+              };
+            }
             return {
               ...email,
-              body_html: update.html, // Update body_html with full content
-              bodyPreview: update.preview, // Keep bodyPreview for backward compatibility
-              body_preview: update.preview, // Also update body_preview
-              ...(update.attachments && update.attachments.length > 0 ? { attachments: update.attachments } : {}),
+              body_html: update.html,
+              bodyPreview: update.preview,
+              body_preview: update.preview,
+              ...(update.attachments && update.attachments.length > 0
+                ? { attachments: update.attachments }
+                : {}),
             };
           })
+        );
+
+        // Keep timeline cards in sync — but never replace a better-broken body with a flatter hydrate.
+        setInteractions((prev) =>
+          prev.map((row) => {
+            if (row.kind !== 'email') return row;
+            const update =
+              updates[String(row.id)] ||
+              ((row as any).message_id ? updates[String((row as any).message_id)] : undefined);
+            if (!update) return row;
+            const incoming = update.html;
+            const currentBreaks = countEmailBreakSignals(row.content);
+            const incomingBreaks = countEmailBreakSignals(incoming);
+            const currentLen = emailBodyPlainTextLength(row.content);
+            const incomingLen = emailBodyPlainTextLength(incoming);
+            const currentDensity = currentBreaks / Math.max(currentLen, 1);
+            const incomingDensity = incomingBreaks / Math.max(incomingLen, 1);
+            if (
+              currentBreaks >= 2 &&
+              (incomingBreaks < currentBreaks || incomingDensity < currentDensity * 0.45)
+            ) {
+              return row;
+            }
+            if (
+              emailBodyLooksStableForReading(row.content) &&
+              incomingLen <= currentLen + 40
+            ) {
+              return row;
+            }
+            return {
+              ...row,
+              content: incoming,
+              body_html: incoming,
+              body_preview: update.preview,
+            };
+          }),
         );
         
         // Also update selectedEmailForView if it's one of the hydrated emails
         setSelectedEmailForView((prev: any) => {
           if (!prev) return prev;
-          const update = updates[prev.id];
+          const update = updates[prev.id] || (prev.message_id ? updates[prev.message_id] : undefined);
           if (!update) return prev;
+          const current = prev.body_html || prev.bodyPreview || prev.body_preview || '';
+          if (
+            emailBodyLooksStableForReading(current) &&
+            emailBodyPlainTextLength(update.html) <= emailBodyPlainTextLength(current) + 40
+          ) {
+            return {
+              ...prev,
+              ...(update.attachments && update.attachments.length > 0
+                ? { attachments: update.attachments }
+                : {}),
+            };
+          }
           return {
             ...prev,
-            body_html: update.html, // Update body_html with full content
-            bodyPreview: update.preview, // Keep bodyPreview for backward compatibility
-            body_preview: update.preview, // Also update body_preview
-            ...(update.attachments && update.attachments.length > 0 ? { attachments: update.attachments } : {}),
+            body_html: update.html,
+            bodyPreview: update.preview,
+            body_preview: update.preview,
+            ...(update.attachments && update.attachments.length > 0
+              ? { attachments: update.attachments }
+              : {}),
           };
         });
       }
@@ -5419,41 +5538,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [userId]);
 
-  /** When body is already loaded but attachment metadata was missing, one GET /body fills DB + returns attachments */
+  /** When body is already loaded but attachment metadata was missing, one GET /body fills attachments.
+   * Do NOT replace body_html here — that caused a ~2s format flash in the email modal on open. */
   const ensureAttachmentsIfNeeded = useCallback(
     async (message: { id?: string; attachments?: unknown }) => {
       if (!userId || !message?.id || String(message.id).startsWith('offer_')) return;
       if (fileAttachmentsForUi(parseEmailAttachmentsFromDb(message.attachments)).length > 0) return;
       try {
-        const { body, attachments } = await fetchEmailBodyFromBackend(userId, message.id);
+        const { attachments } = await fetchEmailBodyFromBackend(userId, message.id);
         if (!attachments?.length) return;
         setEmails((prev) =>
           prev.map((e) => {
             if (e.id !== message.id) return e;
-            const next: any = { ...e, attachments };
-            if (body) {
-              const prevLen = String(e.body_html || e.bodyPreview || e.body_preview || '').length;
-              if (body.length > prevLen) {
-                const formatted = sanitizeEmailHtml(formatEmailHtmlForReadingPane(body));
-                next.body_html = formatted;
-                next.bodyPreview = formatted;
-                next.body_preview = formatted;
-              }
-            }
-            return next;
+            return { ...e, attachments };
           })
         );
         setSelectedEmailForView((prev: any) => {
           if (!prev || prev.id !== message.id) return prev;
-          const next = { ...prev, attachments };
-          const prevLen = String(prev.body_html || prev.bodyPreview || prev.body_preview || '').length;
-          if (body && body.length > prevLen) {
-            const formatted = sanitizeEmailHtml(formatEmailHtmlForReadingPane(body));
-            next.body_html = formatted;
-            next.bodyPreview = formatted;
-            next.body_preview = formatted;
-          }
-          return next;
+          return { ...prev, attachments };
         });
       } catch {
         /* ignore */
@@ -5461,6 +5563,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     },
     [userId]
   );
+
+  // When opening the attachments modal, try to fill missing attachment metadata for loaded emails.
+  useEffect(() => {
+    if (!attachmentsModalOpen || !userId || emails.length === 0) return;
+    const needing = emails
+      .filter(
+        (e) =>
+          e?.id &&
+          fileAttachmentsForUi(parseEmailAttachmentsFromDb(e.attachments)).length === 0,
+      )
+      .slice(0, 20);
+    needing.forEach((e, i) => {
+      window.setTimeout(() => {
+        void ensureAttachmentsIfNeeded(e);
+      }, i * 200);
+    });
+  }, [attachmentsModalOpen, userId, emails, ensureAttachmentsIfNeeded]);
 
   const fetchEmailsForModal = useCallback(async () => {
     if (!client.id) return;
@@ -5471,8 +5590,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // Re-apply reading-pane formatting so cached bodies don't flash unformatted then snap.
       const normalized = dedupeEmailsForSidepanel(cached).map((e: any) => {
         const raw = e.body_html || e.bodyPreview || e.body_preview || '';
-        if (!raw || /timeline-prewrap/i.test(String(raw))) return e;
-        const formatted = sanitizeEmailHtml(formatEmailHtmlForReadingPane(raw));
+        if (!raw) return e;
+        if (isTimelinePrewrapHtml(raw)) return e;
+        const formatted = ensureFormattedEmailHtml(raw);
         return {
           ...e,
           body_html: formatted,
@@ -5480,7 +5600,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           body_preview: formatted,
         };
       });
-      setEmails(normalized);
+      setEmails((prev) => {
+        if (!prev.length) return normalized;
+        const byId = new Map(prev.map((e) => [String(e.id), e]));
+        return normalized.map((e) => mergeEmailBodyPreferRicher(e, byId.get(String(e.id))));
+      });
       setEmailsLoading(false);
     } else {
       setEmailsLoading(true);
@@ -5588,12 +5712,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           
           let cleanedHtml = null;
           if (rawHtml) {
-            cleanedHtml = sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawHtml));
+            cleanedHtml = ensureFormattedEmailHtml(rawHtml);
           }
           
           let cleanedPreview = null;
           if (rawPreview) {
-            cleanedPreview = sanitizeEmailHtml(formatEmailHtmlForReadingPane(rawPreview));
+            cleanedPreview = ensureFormattedEmailHtml(rawPreview);
           } else if (cleanedHtml) {
             cleanedPreview = cleanedHtml;
           }
@@ -5603,7 +5727,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const sanitizedHtml = cleanedHtml;
           const sanitizedPreview = cleanedPreview
             ? cleanedPreview
-            : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(formatEmailHtmlForReadingPane(fallbackText)) : null);
+            : sanitizedHtml ?? (fallbackText ? ensureFormattedEmailHtml(fallbackText) : null);
           
           // Determine if email is from team/user based on sender email domain
           // Emails from @lawoffice.org.il are ALWAYS team/user, never client
@@ -5641,26 +5765,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             direction: correctedDirection,
             attachments: parseEmailAttachmentsFromDb(e.attachments),
             contact_id: e.contact_id,
+            sender_name: e.sender_name || null,
             sender_display_name: senderDisplayName,
           };
         });
         
         const finalUniqueEmails = dedupeEmailsForSidepanel(formattedEmailsForModal);
         
-        setEmails(finalUniqueEmails);
-        writeEmailSidepanelCache(cacheKey, finalUniqueEmails);
+        let mergedForUi = finalUniqueEmails;
+        setEmails((prev) => {
+          const byId = new Map(prev.map((e) => [String(e.id), e]));
+          mergedForUi = finalUniqueEmails.map((e) =>
+            mergeEmailBodyPreferRicher(e, byId.get(String(e.id))),
+          );
+          writeEmailSidepanelCache(cacheKey, mergedForUi);
+          return mergedForUi;
+        });
         
-        // Check which emails need hydration (missing body_html)
-        const emailsNeedingHydration = finalUniqueEmails.filter((e: any) => 
-          !e.body_html || e.body_html.trim() === ''
-        );
+        // Hydrate only when the merged UI body is still missing/short (don't re-fetch wiped full bodies).
+        const emailsNeedingHydration = mergedForUi.filter((e: any) => {
+          const html = e.body_html || e.bodyPreview || e.body_preview || '';
+          if (!html || String(html).trim() === '') return true;
+          // Already reading-pane formatted with real content — skip.
+          if (isTimelinePrewrapHtml(html) && emailBodyPlainTextLength(html) >= 100) return false;
+          return !e.body_html || e.body_html.trim() === '';
+        });
 
         const pendingJumpId = activeEmailIdRef.current;
         const currentSelected = selectedEmailForViewRef.current;
 
         // Timeline click sets activeEmailId — must win over "pick latest" (use refs: callback deps omit these)
-        if (finalUniqueEmails.length > 0 && pendingJumpId) {
-          const emailToSelect = finalUniqueEmails.find(
+        if (mergedForUi.length > 0 && pendingJumpId) {
+          const emailToSelect = mergedForUi.find(
             (e: any) =>
               e.id === pendingJumpId ||
               e.message_id === pendingJumpId ||
@@ -5677,8 +5813,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           } else {
             interactionsDevLog('⚠️ Email not found in fetchEmailsForModal:', pendingJumpId);
           }
-        } else if (finalUniqueEmails.length > 0 && !currentSelected) {
-          const sortedEmails = [...finalUniqueEmails].sort(
+        } else if (mergedForUi.length > 0 && !currentSelected) {
+          const sortedEmails = [...mergedForUi].sort(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
           );
           const latestEmail = sortedEmails[0];
@@ -5687,6 +5823,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             hydrateEmailBodies([latestEmail]);
           }
           void ensureAttachmentsIfNeeded(latestEmail);
+        } else if (currentSelected && mergedForUi.length > 0) {
+          // Refresh selection with merged richer body if available
+          const refreshed = mergedForUi.find((e: any) => String(e.id) === String(currentSelected.id));
+          if (refreshed) {
+            setSelectedEmailForView((prev: any) =>
+              prev ? mergeEmailBodyPreferRicher(refreshed, prev) : refreshed,
+            );
+          }
         }
         
         // Hydrate ALL emails that are missing body_html (batch process in background)
@@ -6074,7 +6218,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           body_html: message.body || message.body_html,
           body_preview: message.bodyPreview || message.body_preview,
           sender_email: message.from,
-          sender_name: message.sender_display_name,
+          sender_name: message.sender_display_name || message.sender_name,
           recipient_list: message.to,
           sent_at: message.date,
           direction: message.direction,
@@ -6159,8 +6303,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, []);
 
   const interactionRowToComposeMessage = useCallback((row: Interaction) => {
-    const direction =
-      row.direction === 'out' || row.direction === 'outgoing' ? 'outgoing' : 'incoming';
+    const direction = row.direction === 'out' ? 'outgoing' : 'incoming';
     return {
       id: row.id,
       message_id: (row as any).message_id || row.id,
@@ -7407,9 +7550,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   return (
     <div className="px-1 py-2 md:p-3 lg:p-4 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen w-full">
+      <style>{`
+        .email-content a,
+        .email-content a:link,
+        .email-content a:visited {
+          color: #2563eb !important;
+          text-decoration: underline !important;
+          text-underline-offset: 2px;
+        }
+        .email-content a:hover {
+          color: #1d4ed8 !important;
+        }
+      `}</style>
       <div className="relative w-full flex-1 min-w-0">
-        {/* Loading indicator — only block UI when timeline is completely empty */}
-        {interactionsLoading && sortedInteractions.length === 0 ? (
+        {/* Hold the timeline until emails are merged — avoids a ~1s reorder after enter */}
+        {interactionsLoading || timelineAwaitingEmails ? (
           <div className="flex items-center justify-center py-12">
             <div className="loading loading-spinner loading-lg text-primary"></div>
             <span className="ml-3 text-lg">Loading interactions...</span>
@@ -7423,21 +7578,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               title="Interactions"
               subtitle="Emails, calls, WhatsApp, and manual contact history"
               actions={
-                <button
-                  type="button"
-                  className="btn btn-outline gap-2 border-amber-200 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:border-amber-700 dark:hover:bg-amber-900/30 relative"
-                  onClick={() => setFlaggedItemsModalOpen(true)}
-                  disabled={!publicUserId || interactionsLoading}
-                  title={publicUserId ? 'View flagged items on this lead (all users)' : 'Sign in to use flags'}
-                >
-                  <FlagIcon className="w-5 h-5" />
-                  <span className="hidden sm:inline">Flagged</span>
-                  {totalFlaggedCountWithRmq > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
-                      {totalFlaggedCountWithRmq > 99 ? '99+' : totalFlaggedCountWithRmq}
-                    </span>
-                  )}
-                </button>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-outline gap-2 border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-base-300 dark:text-base-content dark:hover:bg-base-200 relative"
+                    onClick={() => setAttachmentsModalOpen(true)}
+                    disabled={interactionsLoading}
+                    title="View email attachments on this lead"
+                  >
+                    <PaperClipIcon className="w-5 h-5" />
+                    <span className="hidden sm:inline">Attachments</span>
+                    {totalLeadEmailAttachmentCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-slate-700 px-1 text-[11px] font-bold text-white">
+                        {totalLeadEmailAttachmentCount > 99 ? '99+' : totalLeadEmailAttachmentCount}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline gap-2 border-amber-200 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:border-amber-700 dark:hover:bg-amber-900/30 relative"
+                    onClick={() => setFlaggedItemsModalOpen(true)}
+                    disabled={!publicUserId || interactionsLoading}
+                    title={publicUserId ? 'View flagged items on this lead (all users)' : 'Sign in to use flags'}
+                  >
+                    <FlagIcon className="w-5 h-5" />
+                    <span className="hidden sm:inline">Flagged</span>
+                    {totalFlaggedCountWithRmq > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
+                        {totalFlaggedCountWithRmq > 99 ? '99+' : totalFlaggedCountWithRmq}
+                      </span>
+                    )}
+                  </button>
+                </div>
               }
             />
             <div
@@ -8067,12 +8239,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     row.renderedContentFallback ||
                                     row.content ||
                                     '';
-                                  return formatEmailBodyForTimeline(
-                                    String(raw)
-                                      .replace(/^<div[^>]*>/i, '')
-                                      .replace(/<\/div>$/i, '')
-                                      .replace(/<br\s*\/?>/gi, '\n'),
-                                  );
+                                  // renderedContent is already ensureFormattedEmailHtml'd
+                                  return ensureFormattedEmailHtml(raw);
                                 }
 
                                 // WhatsApp / SMS / manual: keep real newlines (incl. blank lines)
@@ -8082,8 +8250,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   row.content ||
                                   '';
                                 const plain = formatPlainBodyForTimeline(String(raw));
-                                const withLinksAndBold = renderTextWithLinksAsHtml(plain);
-                                return `<div dir="auto" class="timeline-prewrap" style="white-space:pre-wrap;line-height:1.55;">${withLinksAndBold}</div>`;
+                                const withLinksAndBold = renderTextWithLinksAsHtml(plain).replace(
+                                  /\n/g,
+                                  '<br />',
+                                );
+                                return `<div dir="auto" class="timeline-prewrap" style="white-space:normal;line-height:1.55;">${withLinksAndBold}</div>`;
                               })()}
                               maxCharacters={500}
                               direction={getTextDirection(row.content)}
@@ -8238,6 +8409,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           hydrateEmailBodies={hydrateEmailBodies}
           ensureAttachmentsIfNeeded={ensureAttachmentsIfNeeded}
           currentUserFullName={currentUserFullName}
+          currentUserEmail={userEmail}
           formatTime={formatTime}
           downloadingAttachments={downloadingAttachments}
           handleDownloadAttachment={handleDownloadAttachment}
@@ -8245,9 +8417,191 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           onReplyMessage={(message) => openComposeForEmailMessage(message, 'reply')}
           onForwardMessage={(message) => openComposeForEmailMessage(message, 'forward')}
           onDeleteMessage={(message) => void deleteEmailMessage(message)}
+          floatingActions={
+            !showCompose ? (
+              <div className="flex w-full flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
+                      const draft = buildComposeDraft(
+                        selectedEmailForView
+                          ? {
+                              id: selectedEmailForView.id,
+                              message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                              subject: selectedEmailForView.subject,
+                              body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+                              body_preview:
+                                selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+                              sender_email: selectedEmailForView.from,
+                              sender_name:
+                                selectedEmailForView.sender_display_name ||
+                                selectedEmailForView.sender_name,
+                              recipient_list: selectedEmailForView.to,
+                              sent_at: selectedEmailForView.date,
+                              direction: selectedEmailForView.direction,
+                            }
+                          : null,
+                        'reply',
+                        { userEmail, fallbackTo: emailToUse },
+                      );
+                      setComposeToRecipients(
+                        draft.to.length > 0 ? draft.to : normaliseAddressList(emailToUse),
+                      );
+                      setComposeCcRecipients(draft.cc);
+                      setComposeToInput('');
+                      setComposeCcInput('');
+                      setComposeRecipientError(null);
+                      setShowComposeLinkForm(false);
+                      setComposeLinkLabel('');
+                      setComposeLinkUrl('');
+                      setSelectedComposeTemplateId(null);
+                      setComposeTemplateSearch('');
+                      setComposeTemplateLanguageFilter(null);
+                      setComposeTemplatePlacementFilter(null);
+                      setComposeSubject(
+                        draft.subject ||
+                          `[${client.lead_number}] - ${
+                            selectedContactForEmail?.contact.name || client.name
+                          } - ${client.topic || ''}`,
+                      );
+                      setComposeBody(draft.body);
+                      setComposeAttachments([]);
+                      setShowCompose(true);
+                    }}
+                    className="btn btn-primary btn-sm gap-1.5 border-0"
+                  >
+                    <ArrowUturnLeftIcon className="h-4 w-4" />
+                    Reply
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedEmailForView) {
+                        toast.error('Select an email first');
+                        return;
+                      }
+                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
+                      const draft = buildComposeDraft(
+                        {
+                          id: selectedEmailForView.id,
+                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                          subject: selectedEmailForView.subject,
+                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+                          body_preview:
+                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+                          sender_email: selectedEmailForView.from,
+                          recipient_list: selectedEmailForView.to,
+                          sent_at: selectedEmailForView.date,
+                          direction: selectedEmailForView.direction,
+                        },
+                        'reply_all',
+                        { userEmail, fallbackTo: emailToUse },
+                      );
+                      setComposeToRecipients(draft.to);
+                      setComposeCcRecipients(draft.cc);
+                      setComposeToInput('');
+                      setComposeCcInput('');
+                      setComposeRecipientError(null);
+                      setComposeSubject(draft.subject);
+                      setComposeBody(draft.body);
+                      setComposeAttachments([]);
+                      setShowCompose(true);
+                    }}
+                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
+                    disabled={!selectedEmailForView}
+                  >
+                    <ArrowUturnLeftIcon className="h-4 w-4" />
+                    Reply all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedEmailForView) {
+                        toast.error('Select an email first');
+                        return;
+                      }
+                      const draft = buildComposeDraft(
+                        {
+                          id: selectedEmailForView.id,
+                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                          subject: selectedEmailForView.subject,
+                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+                          body_preview:
+                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+                          sender_email: selectedEmailForView.from,
+                          recipient_list: selectedEmailForView.to,
+                          sent_at: selectedEmailForView.date,
+                          direction: selectedEmailForView.direction,
+                        },
+                        'forward',
+                        { userEmail },
+                      );
+                      setComposeToRecipients([]);
+                      setComposeCcRecipients([]);
+                      setComposeToInput('');
+                      setComposeCcInput('');
+                      setComposeRecipientError(null);
+                      setComposeSubject(draft.subject);
+                      setComposeBody(draft.body);
+                      setComposeAttachments([]);
+                      setShowCompose(true);
+                    }}
+                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
+                    disabled={!selectedEmailForView}
+                  >
+                    <ArrowUturnRightIcon className="h-4 w-4" />
+                    Forward
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!selectedEmailForView) {
+                        toast.error('Select an email to delete');
+                        return;
+                      }
+                      if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) {
+                        return;
+                      }
+                      const filter = resolveEmailDeleteFilter({
+                        id: selectedEmailForView.id,
+                        message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+                      });
+                      if (!filter) {
+                        toast.error('Could not resolve email id for delete');
+                        return;
+                      }
+                      try {
+                        let query = supabase.from('emails').delete();
+                        query =
+                          filter.by === 'id'
+                            ? query.eq('id', filter.value)
+                            : query.eq('message_id', filter.value);
+                        const { error } = await query;
+                        if (error) throw error;
+                        setEmails((prev) =>
+                          prev.filter((m) => String(m.id) !== String(selectedEmailForView.id)),
+                        );
+                        setSelectedEmailForView(null);
+                        toast.success('Email deleted');
+                      } catch (error) {
+                        console.error('Error deleting email:', error);
+                        toast.error(
+                          error instanceof Error ? error.message : 'Failed to delete email',
+                        );
+                      }
+                    }}
+                    className="btn btn-ghost btn-sm ml-auto gap-1.5 border-0 text-error hover:bg-error/10"
+                    disabled={!selectedEmailForView}
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                    Delete
+                  </button>
+              </div>
+            ) : null
+          }
         >
-            {/* Compose Area — border-top on parent in InteractionsEmailModal */}
-            <div className="p-3 md:px-6 md:pb-6 md:pt-4">
+            <>
               {showCompose && createPortal(
                 <div className="fixed inset-0 z-[10002] flex overflow-hidden">
                   <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
@@ -8314,9 +8668,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   .replace(/\s+/g, ' ')
                                   .trim();
                                 const displayName = outgoing
-                                  ? (message as any).sender_display_name ||
-                                    currentUserFullName ||
-                                    'Team'
+                                  ? resolveOutgoingSenderLabel(message, {
+                                      currentUserFullName,
+                                      currentUserEmail: userEmail,
+                                    })
                                   : selectedContactForEmail?.contact.name ||
                                     client.name ||
                                     'Client';
@@ -8886,187 +9241,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </div>,
                 document.body
               )}
-              
-              {!showCompose && (
-                <div className="flex w-full flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
-                      const draft = buildComposeDraft(
-                        selectedEmailForView
-                          ? {
-                              id: selectedEmailForView.id,
-                              message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                              subject: selectedEmailForView.subject,
-                              body_html: selectedEmailForView.body || selectedEmailForView.body_html,
-                              body_preview:
-                                selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
-                              sender_email: selectedEmailForView.from,
-                              sender_name: selectedEmailForView.sender_display_name,
-                              recipient_list: selectedEmailForView.to,
-                              sent_at: selectedEmailForView.date,
-                              direction: selectedEmailForView.direction,
-                            }
-                          : null,
-                        'reply',
-                        { userEmail, fallbackTo: emailToUse },
-                      );
-                      setComposeToRecipients(
-                        draft.to.length > 0 ? draft.to : normaliseAddressList(emailToUse),
-                      );
-                      setComposeCcRecipients(draft.cc);
-                      setComposeToInput('');
-                      setComposeCcInput('');
-                      setComposeRecipientError(null);
-                      setShowComposeLinkForm(false);
-                      setComposeLinkLabel('');
-                      setComposeLinkUrl('');
-                      setSelectedComposeTemplateId(null);
-                      setComposeTemplateSearch('');
-                      setComposeTemplateLanguageFilter(null);
-                      setComposeTemplatePlacementFilter(null);
-                      setComposeSubject(
-                        draft.subject ||
-                          `[${client.lead_number}] - ${
-                            selectedContactForEmail?.contact.name || client.name
-                          } - ${client.topic || ''}`,
-                      );
-                      setComposeBody(draft.body);
-                      setComposeAttachments([]);
-                      setShowCompose(true);
-                    }}
-                    className="btn btn-primary btn-sm gap-1.5 border-0"
-                  >
-                    <ArrowUturnLeftIcon className="h-4 w-4" />
-                    Reply
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!selectedEmailForView) {
-                        toast.error('Select an email first');
-                        return;
-                      }
-                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
-                      const draft = buildComposeDraft(
-                        {
-                          id: selectedEmailForView.id,
-                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                          subject: selectedEmailForView.subject,
-                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
-                          body_preview:
-                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
-                          sender_email: selectedEmailForView.from,
-                          recipient_list: selectedEmailForView.to,
-                          sent_at: selectedEmailForView.date,
-                          direction: selectedEmailForView.direction,
-                        },
-                        'reply_all',
-                        { userEmail, fallbackTo: emailToUse },
-                      );
-                      setComposeToRecipients(draft.to);
-                      setComposeCcRecipients(draft.cc);
-                      setComposeToInput('');
-                      setComposeCcInput('');
-                      setComposeRecipientError(null);
-                      setComposeSubject(draft.subject);
-                      setComposeBody(draft.body);
-                      setComposeAttachments([]);
-                      setShowCompose(true);
-                    }}
-                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
-                    disabled={!selectedEmailForView}
-                  >
-                    <ArrowUturnLeftIcon className="h-4 w-4" />
-                    Reply all
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!selectedEmailForView) {
-                        toast.error('Select an email first');
-                        return;
-                      }
-                      const draft = buildComposeDraft(
-                        {
-                          id: selectedEmailForView.id,
-                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                          subject: selectedEmailForView.subject,
-                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
-                          body_preview:
-                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
-                          sender_email: selectedEmailForView.from,
-                          recipient_list: selectedEmailForView.to,
-                          sent_at: selectedEmailForView.date,
-                          direction: selectedEmailForView.direction,
-                        },
-                        'forward',
-                        { userEmail },
-                      );
-                      setComposeToRecipients([]);
-                      setComposeCcRecipients([]);
-                      setComposeToInput('');
-                      setComposeCcInput('');
-                      setComposeRecipientError(null);
-                      setComposeSubject(draft.subject);
-                      setComposeBody(draft.body);
-                      setComposeAttachments([]);
-                      setShowCompose(true);
-                    }}
-                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
-                    disabled={!selectedEmailForView}
-                  >
-                    <ArrowUturnRightIcon className="h-4 w-4" />
-                    Forward
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!selectedEmailForView) {
-                        toast.error('Select an email to delete');
-                        return;
-                      }
-                      if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) {
-                        return;
-                      }
-                      const filter = resolveEmailDeleteFilter({
-                        id: selectedEmailForView.id,
-                        message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                      });
-                      if (!filter) {
-                        toast.error('Could not resolve email id for delete');
-                        return;
-                      }
-                      try {
-                        let query = supabase.from('emails').delete();
-                        query =
-                          filter.by === 'id'
-                            ? query.eq('id', filter.value)
-                            : query.eq('message_id', filter.value);
-                        const { error } = await query;
-                        if (error) throw error;
-                        setEmails((prev) =>
-                          prev.filter((m) => String(m.id) !== String(selectedEmailForView.id)),
-                        );
-                        setSelectedEmailForView(null);
-                        toast.success('Email deleted');
-                      } catch (error) {
-                        console.error('Error deleting email:', error);
-                        toast.error(
-                          error instanceof Error ? error.message : 'Failed to delete email',
-                        );
-                      }
-                    }}
-                    className="btn btn-ghost btn-sm ml-auto gap-1.5 border-0 text-error hover:bg-error/10"
-                    disabled={!selectedEmailForView}
-                  >
-                    <TrashIcon className="h-4 w-4" />
-                    Delete
-                  </button>
-                </div>
-              )}
-            </div>
+            </>
         </InteractionsEmailModal>,
         document.body
       )}
@@ -9346,6 +9521,117 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         </div>,
         document.body
       )}
+      {attachmentsModalOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setAttachmentsModalOpen(false)}
+              aria-hidden
+            />
+            <div
+              className="relative z-[1001] flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl border border-base-300 bg-base-100 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="lead-attachments-modal-title"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3 sm:px-5 sm:py-4">
+                <div className="flex min-w-0 items-center gap-2">
+                  <PaperClipIcon className="h-6 w-6 shrink-0 text-slate-700" />
+                  <div className="min-w-0">
+                    <h2 id="lead-attachments-modal-title" className="truncate text-lg font-semibold">
+                      Email attachments
+                    </h2>
+                    <p className="text-xs text-base-content/60">
+                      {totalLeadEmailAttachmentCount === 0
+                        ? 'No file attachments found on this lead yet'
+                        : `${totalLeadEmailAttachmentCount} file${totalLeadEmailAttachmentCount === 1 ? '' : 's'} from emails`}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-circle btn-ghost btn-sm"
+                  onClick={() => setAttachmentsModalOpen(false)}
+                  aria-label="Close"
+                >
+                  <XMarkIcon className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {leadEmailAttachmentsByType.length === 0 ? (
+                  <p className="text-sm text-base-content/70">
+                    No non-inline attachments were found on loaded emails for this lead.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-5">
+                    {leadEmailAttachmentsByType.map((group) => (
+                      <section key={group.type} className="min-w-0">
+                        <div className="mb-2 flex items-center gap-2">
+                          <h3 className="text-sm font-semibold text-base-content">{group.type}</h3>
+                          <span className="rounded-full bg-base-200 px-2 py-0.5 text-[11px] font-semibold text-base-content/70">
+                            {group.items.length}
+                          </span>
+                        </div>
+                        <ul className="flex flex-col gap-2">
+                          {group.items.map((item) => {
+                            const sizeLabel = formatAttachmentBytes(item.attachment.sizeInBytes);
+                            const isDownloading = Boolean(
+                              item.attachment.id && downloadingAttachments[item.attachment.id],
+                            );
+                            const dateLabel = item.emailDate
+                              ? new Date(item.emailDate).toLocaleString('en-GB', {
+                                  day: '2-digit',
+                                  month: 'short',
+                                  year: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })
+                              : null;
+                            return (
+                              <li key={item.key}>
+                                <button
+                                  type="button"
+                                  className="flex w-full items-center gap-3 rounded-xl border border-base-200 bg-base-200/20 p-3 text-left transition hover:border-base-300 hover:bg-base-200/40 disabled:opacity-60"
+                                  onClick={() =>
+                                    void handleDownloadAttachment(item.emailId, item.attachment)
+                                  }
+                                  disabled={isDownloading || !item.attachment.id}
+                                  title={
+                                    item.attachment.id
+                                      ? `Download ${item.attachment.name}`
+                                      : 'Attachment id missing — open the email to download'
+                                  }
+                                >
+                                  {isDownloading ? (
+                                    <span className="loading loading-spinner loading-sm text-primary" />
+                                  ) : (
+                                    <DocumentTextIcon className="h-5 w-5 shrink-0 text-blue-600" />
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate text-sm font-medium text-base-content">
+                                      {item.attachment.name}
+                                    </div>
+                                    <div className="mt-0.5 truncate text-xs text-base-content/60">
+                                      {item.emailSubject}
+                                      {dateLabel ? ` · ${dateLabel}` : ''}
+                                      {sizeLabel ? ` · ${sizeLabel}` : ''}
+                                    </div>
+                                  </div>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
       {flaggedItemsModalOpen &&
         createPortal(
           <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">

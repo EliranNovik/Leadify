@@ -18,12 +18,13 @@ import {
 } from '../../lib/interactions/emailFilters';
 import {
   EmailContentWithErrorHandling,
+  ensureFormattedEmailHtml,
+  emailBodyLooksStableForReading,
   fileAttachmentsForUi,
-  formatEmailHtmlForReadingPane,
   isOfficeEmail,
+  isTimelinePrewrapHtml,
   parseEmailAttachmentsFromDb,
   processEmailHtmlWithInlineImages,
-  sanitizeEmailHtml,
 } from './interactionsEmailViewUtils';
 import { EmailMessageActionsDropdown } from './EmailMessageActionsDropdown';
 import { EmailMessageComments } from './EmailMessageComments';
@@ -72,12 +73,44 @@ function initialsFromName(name: string): string {
   return t.slice(0, 2).toUpperCase();
 }
 
+/**
+ * Label for an outgoing/office email sender.
+ * Never attribute another employee's mail to the logged-in user just because
+ * sender_display_name is missing — that caused every "Sent by" to flip to "me".
+ */
+export function resolveOutgoingSenderLabel(
+  message: {
+    sender_display_name?: string | null;
+    sender_name?: string | null;
+    from?: string | null;
+    sender_email?: string | null;
+  },
+  opts?: { currentUserFullName?: string | null; currentUserEmail?: string | null },
+): string {
+  const display = String(message.sender_display_name || '').trim();
+  if (display) return display;
+  const senderName = String(message.sender_name || '').trim();
+  if (senderName) return senderName;
+
+  const email = String(message.from || message.sender_email || '').trim();
+  const myEmail = String(opts?.currentUserEmail || '').trim().toLowerCase();
+  if (email && myEmail && email.toLowerCase() === myEmail) {
+    const me = String(opts?.currentUserFullName || '').trim();
+    if (me) return me;
+  }
+  if (email) return email;
+  return 'Team';
+}
+
 function resolveEmployeePhotoUrl(
   photoMap: Map<string, string> | undefined,
   displayName: string,
   senderEmail?: string | null
 ): string | null {
   if (!photoMap) return null;
+  // Prefer email key first so a wrong/fallback display name cannot steal another user's photo.
+  const em = senderEmail?.trim().toLowerCase();
+  if (em && photoMap.has(em)) return photoMap.get(em)!;
   if (displayName?.trim()) {
     const t = displayName.trim();
     if (photoMap.has(t)) return photoMap.get(t)!;
@@ -87,8 +120,6 @@ function resolveEmployeePhotoUrl(
       if (name.trim().toLowerCase() === lower) return url;
     }
   }
-  const em = senderEmail?.trim().toLowerCase();
-  if (em && photoMap.has(em)) return photoMap.get(em)!;
   return null;
 }
 
@@ -146,6 +177,7 @@ function collectConversationParticipants(
   messages: any[],
   opts: {
     currentUserFullName: string | null;
+    currentUserEmail?: string | null;
     clientName: string;
     contactName?: string | null;
   },
@@ -158,9 +190,10 @@ function collectConversationParticipants(
     if (!email) continue;
     const isOutgoing = isOfficeEmail(email) || message.direction === 'outgoing';
     const name = isOutgoing
-      ? String(
-          message.sender_display_name || opts.currentUserFullName || message.sender_name || 'Team',
-        ).trim()
+      ? resolveOutgoingSenderLabel(message, {
+          currentUserFullName: opts.currentUserFullName,
+          currentUserEmail: opts.currentUserEmail,
+        })
       : String(opts.contactName || opts.clientName || message.sender_name || email).trim();
     if (!byKey.has(email)) {
       byKey.set(email, { key: email, name: name || email, email, isOutgoing });
@@ -202,6 +235,8 @@ export type InteractionsEmailModalProps = {
   hydrateEmailBodies: (messages: any[]) => void;
   ensureAttachmentsIfNeeded: (message: any) => void;
   currentUserFullName: string | null;
+  /** Used only to label messages that were actually sent by the logged-in user */
+  currentUserEmail?: string | null;
   formatTime: (date: string) => string;
   downloadingAttachments: Record<string, boolean>;
   handleDownloadAttachment: (emailId: string, attachment: any) => void;
@@ -210,7 +245,10 @@ export type InteractionsEmailModalProps = {
   onReplyMessage?: (message: any) => void;
   onForwardMessage?: (message: any) => void;
   onDeleteMessage?: (message: any) => void;
-  children: React.ReactNode;
+  /** Hovering reply/forward/delete actions over the reading pane (no bottom bar). */
+  floatingActions?: React.ReactNode;
+  /** Optional portals / overlays (compose UI) — not shown in the floating pill. */
+  children?: React.ReactNode;
 };
 
 export function InteractionsEmailModal({
@@ -235,6 +273,7 @@ export function InteractionsEmailModal({
   hydrateEmailBodies,
   ensureAttachmentsIfNeeded,
   currentUserFullName,
+  currentUserEmail = null,
   formatTime,
   downloadingAttachments,
   handleDownloadAttachment,
@@ -242,6 +281,7 @@ export function InteractionsEmailModal({
   onReplyMessage,
   onForwardMessage,
   onDeleteMessage,
+  floatingActions,
   children,
 }: InteractionsEmailModalProps) {
   const [listFilter, setListFilter] = React.useState<'all' | 'incoming' | 'outgoing'>('all');
@@ -351,6 +391,13 @@ export function InteractionsEmailModal({
             .email-content div, 
             .email-content span {
               word-wrap: break-word !important;
+            }
+            .email-content .timeline-prewrap {
+              white-space: normal !important;
+              line-height: 1.55 !important;
+            }
+            .email-content .timeline-prewrap br {
+              display: inline !important;
             }
             .email-content [dir] {
             }
@@ -463,7 +510,10 @@ export function InteractionsEmailModal({
 
                     const isTeamEmail = isFromOffice || message.direction === 'outgoing';
                     const senderName = isTeamEmail
-                      ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                      ? resolveOutgoingSenderLabel(message, {
+                          currentUserFullName,
+                          currentUserEmail,
+                        })
                       : selectedContactForEmail?.contact.name || client.name || 'Client';
                     if (senderName.toLowerCase().includes(searchTerm)) return true;
 
@@ -548,7 +598,10 @@ export function InteractionsEmailModal({
                           const isFromOffice = isOfficeEmail(senderEmail);
                           const isOutgoing = isFromOffice ? true : message.direction === 'outgoing';
                           const senderDisplayName = isOutgoing
-                            ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                            ? resolveOutgoingSenderLabel(message, {
+                                currentUserFullName,
+                                currentUserEmail,
+                              })
                             : selectedContactForEmail?.contact.name || client.name || 'Client';
                           const selectedKey = selectedEmailForView
                             ? normalizeEmailSubjectKey(selectedEmailForView.subject) ||
@@ -581,7 +634,7 @@ export function InteractionsEmailModal({
                           const avatarColorKey = `${senderDisplayName}|${senderEmail}|${message.contact_id ?? ''}`;
                           const avatarBg = getClientAvatarBgClass(avatarColorKey);
                           const teamPhotoUrl = isOutgoing
-                            ? resolveEmployeePhotoUrl(employeePhotoMap, (message as any).sender_display_name || senderDisplayName, senderEmail)
+                            ? resolveEmployeePhotoUrl(employeePhotoMap, senderDisplayName, senderEmail)
                             : null;
 
                           return (
@@ -652,7 +705,7 @@ export function InteractionsEmailModal({
                                   <p className="mt-0.5 max-w-[11rem] truncate text-sm font-bold text-slate-800 sm:max-w-[13rem] md:max-w-[14rem]" dir="auto">
                                     {subjectLine}
                                   </p>
-                                  <p className="mt-0.5 truncate text-xs leading-snug text-slate-500" dir="auto">
+                                  <p className="mt-0.5 line-clamp-2 text-sm leading-snug text-slate-500" dir="auto">
                                     {previewOneLine}
                                   </p>
                                 </div>
@@ -740,6 +793,7 @@ export function InteractionsEmailModal({
                         <span className="min-w-0 truncate font-medium text-slate-700" dir="auto">
                           {collectConversationParticipants(conversationEmails, {
                             currentUserFullName,
+                            currentUserEmail,
                             clientName: client.name,
                             contactName: selectedContactForEmail?.contact.name,
                           })
@@ -846,7 +900,7 @@ export function InteractionsEmailModal({
               </div>
             </header>
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100 px-3 pb-24 pt-[5.5rem] sm:px-4 md:px-5 md:pb-28 md:pt-[6.25rem]">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100 px-3 pb-20 pt-[5.5rem] sm:px-4 md:px-5 md:pb-24 md:pt-[6.25rem]">
               {selectedEmailForView ? (
                 <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
                   {visibleConversationEmails.length === 0 ? (
@@ -859,7 +913,10 @@ export function InteractionsEmailModal({
                       const isOutgoing =
                         isOfficeEmail(message.from) || message.direction === 'outgoing';
                       const personName = isOutgoing
-                        ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                        ? resolveOutgoingSenderLabel(message, {
+                            currentUserFullName,
+                            currentUserEmail,
+                          })
                         : selectedContactForEmail?.contact.name || client.name || 'Client';
                       const personEmail = isOutgoing
                         ? message.from
@@ -868,7 +925,7 @@ export function InteractionsEmailModal({
                       const teamPhotoUrl = isOutgoing
                         ? resolveEmployeePhotoUrl(
                             employeePhotoMap,
-                            (message as any).sender_display_name || personName,
+                            personName,
                             message.from,
                           )
                         : null;
@@ -878,15 +935,16 @@ export function InteractionsEmailModal({
 
                       let emailContent =
                         message.body_html || message.bodyPreview || message.body_preview;
-                      if (emailContent) {
+                      const bodyReady = emailBodyLooksStableForReading(emailContent);
+                      if (emailContent && bodyReady) {
                         const attachments = parseEmailAttachmentsFromDb(message.attachments);
                         emailContent = processEmailHtmlWithInlineImages(emailContent, attachments);
-                        // Bodies are stored reading-pane-formatted; only reformat raw/unprocessed HTML.
-                        const alreadyFormatted = /timeline-prewrap/i.test(String(emailContent));
-                        if (!alreadyFormatted) {
-                          emailContent = formatEmailHtmlForReadingPane(emailContent);
-                          emailContent = sanitizeEmailHtml(emailContent);
+                        // Already formatted reading bodies — don't rebuild (avoids format snap).
+                        if (!isTimelinePrewrapHtml(emailContent)) {
+                          emailContent = ensureFormattedEmailHtml(emailContent);
                         }
+                      } else {
+                        emailContent = '';
                       }
                       const fileAtt = fileAttachmentsForUi(
                         parseEmailAttachmentsFromDb(message.attachments),
@@ -1098,11 +1156,16 @@ export function InteractionsEmailModal({
                 </div>
               )}
             </div>
-            <div className="absolute inset-x-0 bottom-0 z-20 shrink-0 border-t border-white/40 bg-white/55 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/40">
-              {children}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-end px-3 pb-3 pt-2 md:px-5 md:pb-4">
+              {floatingActions ? (
+                <div className="pointer-events-auto max-w-full rounded-2xl border border-slate-200/80 bg-white/90 px-2 py-2 shadow-[0_8px_30px_rgba(15,23,42,0.12)] backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/75">
+                  {floatingActions}
+                </div>
+              ) : null}
             </div>
           </section>
       </div>
+      {children}
     </div>
   );
 }

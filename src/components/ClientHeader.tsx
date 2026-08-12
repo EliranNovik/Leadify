@@ -3391,15 +3391,406 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         );
     };
 
+
+    const needsDesktopStagePaymentBanner =
+        !!showHandlerPaymentBanner &&
+        !!selectedClient &&
+        (((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
+            shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment));
+
+    const renderDesktopStageLogicButtons = (opts?: { inline?: boolean }) => {
+        const inline = opts?.inline === true;
+
+                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                        const isUnactivated = isLegacy
+                                            ? selectedClient?.status === 10
+                                            : selectedClient?.status === 'inactive';
+                                        if (isUnactivated) {
+                                            return (
+                                        <div className={`text-sm text-gray-600 ${inline ? 'px-1 py-0' : 'px-4 py-2'}`}>
+                                            Please activate lead in actions first to see the stage buttons.
+                                        </div>
+                                            );
+                                        }
+                                        return (
+                                        <>
+                                            {/* Closed state check */}
+                                            {selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200)) ? (
+                                                ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) ? (
+                                                    null
+                                                ) : (
+                                                    <div className={`text-sm text-gray-600 ${inline ? 'px-1 py-0' : 'px-4 py-2'}`}>
+                                                        No action available
+                                                    </div>
+                                                )
+                                            ) : (
+                                                <>
+                                                    {/* Stage 105 payment banners stay on the dedicated row (not cramped into meta) */}
+                                                    {!inline && showHandlerPaymentBanner &&
+                                                    (((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
+                                                        shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment)) ? (
+                                                        <div className="w-full flex justify-center">
+                                                            {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
+                                                                <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
+                                                                    <div className="flex items-center justify-between gap-3">
+                                                                        <div className="flex items-center gap-2 text-sm font-semibold">
+                                                                            <ExclamationTriangleIcon className="h-5 w-5" />
+                                                                            Missing payment plan
+                                                                        </div>
+                                                                        <div className="text-xs text-slate-500 whitespace-nowrap">
+                                                                            Finances → payment plan
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
+                                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                                                        <div className="text-sm font-semibold">Next payment due</div>
+                                                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
+                                                                            <div className="text-sm tabular-nums text-right whitespace-nowrap">
+                                                                                {(() => {
+                                                                                    const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                                                    const base = Number((nextDuePayment as any)?.value ?? 0);
+                                                                                    const vat = Number(
+                                                                                        isLegacy
+                                                                                            ? (nextDuePayment as any)?.vat_value ?? 0
+                                                                                            : (nextDuePayment as any)?.value_vat ?? 0
+                                                                                    );
+                                                                                    const gross =
+                                                                                        (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+                                                                                    const currency =
+                                                                                        (nextDuePayment as any)?.currency ??
+                                                                                        (nextDuePayment as any)?.accounting_currencies?.iso_code ??
+                                                                                        (nextDuePayment as any)?.accounting_currencies?.name ??
+                                                                                        '';
+                                                                                    const dateRaw =
+                                                                                        (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
+                                                                                    const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
+                                                                                    const amountLabel = Number.isFinite(gross)
+                                                                                        ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                                                                        : '0';
+                                                                                    return (
+                                                                                        <span>
+                                                                                            <span className="font-semibold">
+                                                                                                {currency ? `${currency} ` : ''}
+                                                                                                {amountLabel}
+                                                                                            </span>
+                                                                                            {' · '}
+                                                                                            <span className="opacity-80">{dateLabel}</span>
+                                                                                        </span>
+                                                                                    );
+                                                                                })()}
+                                                                            </div>
+                                                                            {(() => {
+                                                                                const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                                                const ready =
+                                                                                    (nextDuePayment as any)?.ready_to_pay === true ||
+                                                                                    ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
+                                                                                if (!ready) return null;
+                                                                                const by =
+                                                                                    (nextDuePayment as any)?.ready_to_pay_by_display_name ??
+                                                                                    (nextDuePayment as any)?.tenants_employee?.display_name ??
+                                                                                    (nextDuePayment as any)?.updated_by ??
+                                                                                    (nextDuePayment as any)?.paid_by ??
+                                                                                    '—';
+                                                                                return (
+                                                                                    <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                                                                                        <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
+                                                                                            <CheckCircleIcon className="h-4 w-4" />
+                                                                                            Sent to finance
+                                                                                        </span>
+                                                                                        <span className="text-xs text-slate-500 whitespace-nowrap">
+                                                                                            by <span className="font-semibold">{String(by)}</span>
+                                                                                        </span>
+                                                                                    </div>
+                                                                                );
+                                                                            })()}
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : null}
+
+                                                    {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
+                                                    {subEffortsStageFlags.showPickerLogAndModal && (
+                                                        <>
+                                                            <div className="flex items-center justify-end gap-3 flex-wrap">
+                                                                {(onMeetingScheduleClick || onMeetingRescheduleClick) && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            if (hasScheduledMeetings && onMeetingRescheduleClick) {
+                                                                                onMeetingRescheduleClick();
+                                                                            } else if (onMeetingScheduleClick) {
+                                                                                onMeetingScheduleClick();
+                                                                            }
+                                                                        }}
+                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    >
+                                                                        {hasScheduledMeetings ? (
+                                                                            <ArrowPathIcon className="w-5 h-5" />
+                                                                        ) : (
+                                                                            <CalendarDaysIcon className="w-5 h-5" />
+                                                                        )}
+                                                                        {hasScheduledMeetings ? 'Reschedule Meeting' : 'Schedule Meeting'}
+                                                                    </button>
+                                                                )}
+                                                                {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
+                                                                    <button
+                                                                        onClick={() => updateLeadStage(200)}
+                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    >
+                                                                        <CheckCircleIcon className="w-5 h-5" />
+                                                                        Finalize Case
+                                                                    </button>
+                                                                )}
+                                                                <button
+                                                                    type="button"
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    onClick={() => openSubEffortsModal(null)}
+                                                                    disabled={isLoadingLeadSubEfforts || isLoadingSubEfforts}
+                                                                    title={
+                                                                        !leadMiscCategoryId
+                                                                            ? 'Set case type on the lead to load sub efforts'
+                                                                            : undefined
+                                                                    }
+                                                                >
+                                                                    <DocumentCheckIcon className="w-5 h-5" />
+                                                                    Sub efforts
+                                                                    {(leadSubEfforts?.length ?? 0) > 0 ? (
+                                                                        <span className="badge badge-sm badge-primary min-h-5 h-5 shrink-0 px-1.5">
+                                                                            {leadSubEfforts.length}
+                                                                        </span>
+                                                                    ) : null}
+                                                                </button>
+                                                            </div>
+                                                        </>
+                                                    )}
+
+                                                    {/* Payment request sent Stage */}
+                                                    {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
+                                                        <button
+                                                            onClick={handlePaymentReceivedNewClient}
+                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                        >
+                                                            <CheckCircleIcon className="w-5 h-5" />
+                                                            Payment Received - new Client !!!
+                                                        </button>
+                                                    )}
+
+                                                    {/* Another meeting Stage */}
+                                                    {areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) && (
+                                                        <>
+                                                            {setShowRescheduleDrawer && (
+                                                                <button
+                                                                    onClick={() => setShowRescheduleDrawer(true)}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <ArrowPathIcon className="w-5 h-5" />
+                                                                    Meeting ReScheduling
+                                                                </button>
+                                                            )}
+                                                            {handleStageUpdate && (
+                                                                <button
+                                                                    onClick={() => handleStageUpdate('Meeting Ended')}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <CheckCircleIcon className="w-5 h-5" />
+                                                                    Meeting Ended
+                                                                </button>
+                                                            )}
+                                                        </>
+                                                    )}
+
+                                                    {/* Meeting scheduled / Meeting rescheduling Stages */}
+                                                    {!areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                        (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
+                                                            areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+                                                            (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
+                                                            <>
+                                                                {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                                                    !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                                                    handleScheduleMenuClick &&
+                                                                    scheduleMenuLabel && (
+                                                                        <button
+                                                                            onClick={handleScheduleMenuClick}
+                                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                        >
+                                                                            <CalendarDaysIcon className="w-5 h-5" />
+                                                                            {scheduleMenuLabel}
+                                                                        </button>
+                                                                    )}
+                                                                {setShowRescheduleDrawer && (
+                                                                    <button
+                                                                        onClick={() => setShowRescheduleDrawer(true)}
+                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    >
+                                                                        <ArrowPathIcon className="w-5 h-5" />
+                                                                        Meeting ReScheduling
+                                                                    </button>
+                                                                )}
+                                                                {handleStageUpdate &&
+                                                                    !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                                    (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
+                                                                        <button
+                                                                            onClick={() => handleStageUpdate('Meeting Ended')}
+                                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                        >
+                                                                            <CheckCircleIcon className="w-5 h-5" />
+                                                                            Meeting Ended
+                                                                        </button>
+                                                                    )}
+                                                            </>
+                                                        )}
+
+                                                    {/* Waiting for meeting summary Stage */}
+                                                    {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
+                                                        <button
+                                                            onClick={openSendOfferModal}
+                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                        >
+                                                            <DocumentCheckIcon className="w-5 h-5" />
+                                                            Send Price Offer
+                                                        </button>
+                                                    )}
+
+                                                    {/* Communication Started Stage */}
+                                                    {areStagesEquivalent(currentStageName, 'Communication started') &&
+                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) && (
+                                                        <>
+                                                            {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                                <button
+                                                                    onClick={handleScheduleMenuClick}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                                    {scheduleMenuLabel}
+                                                                </button>
+                                                            )}
+                                                            {handleStageUpdate && (
+                                                                <button
+                                                                    onClick={() => handleStageUpdate('Communication Started')}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                                    {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
+                                                                </button>
+                                                            )}
+                                                        </>
+                                                    )}
+
+                                                    {/* Meeting summary + Agreement sent Stage */}
+                                                    {areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') && (
+                                                        <>
+                                                            {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                                <button
+                                                                    onClick={handleScheduleMenuClick}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                                    {scheduleMenuLabel}
+                                                                </button>
+                                                            )}
+                                                            {handleOpenSignedDrawer && (
+                                                                <button
+                                                                    onClick={handleOpenSignedDrawer}
+                                                                    className={CLIENT_SIGNED_STAGE_BTN_COMPACT}
+                                                                >
+                                                                    <HandThumbUpIcon className="w-5 h-5" />
+                                                                    Client signed
+                                                                </button>
+                                                            )}
+                                                            {handleOpenDeclinedDrawer && (
+                                                                <button
+                                                                    onClick={handleOpenDeclinedDrawer}
+                                                                    className={CLIENT_DECLINED_STAGE_BTN_COMPACT}
+                                                                >
+                                                                    <HandThumbDownIcon className="w-5 h-5" />
+                                                                    Client declined
+                                                                </button>
+                                                            )}
+                                                            {openSendOfferModal && (
+                                                                <button
+                                                                    onClick={openSendOfferModal}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <PencilSquareIcon className="w-5 h-5" />
+                                                                    Revised price offer
+                                                                </button>
+                                                            )}
+                                                        </>
+                                                    )}
+
+                                                    {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
+
+                                                    {/* Created / Precommunication — assign scheduler instead of stage buttons */}
+                                                    {showAssignSchedulerInHeader && assignSchedulerContent ? (
+                                                        <div className={`${inline ? 'shrink-0' : 'ml-auto shrink-0'} ${HEADER_ROLE_ASSIGN_WIDTH_CLASS}`}>
+                                                            {assignSchedulerContent}
+                                                        </div>
+                                                    ) : null}
+
+                                                    {/* General stages - Schedule Meeting and Communication Started */}
+                                                    {selectedClient &&
+                                                        !showAssignSchedulerInHeader &&
+                                                        !areStagesEquivalent(currentStageName, 'Handler Set') &&
+                                                        !areStagesEquivalent(currentStageName, 'Handler Started') &&
+                                                        !areStagesEquivalent(currentStageName, 'Application submitted') &&
+                                                        !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
+                                                        !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                        !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                                        !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                                        !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                                                        !areStagesEquivalent(currentStageName, 'Communication started') &&
+                                                        !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
+                                                        !areStagesEquivalent(currentStageName, 'Success') &&
+                                                        !areStagesEquivalent(currentStageName, 'handler_assigned') &&
+                                                        !areStagesEquivalent(currentStageName, 'client_signed') &&
+                                                        !areStagesEquivalent(currentStageName, 'client signed agreement') &&
+                                                        !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
+                                                        !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
+                                                            <>
+                                                                {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                                    <button
+                                                                        onClick={handleScheduleMenuClick}
+                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    >
+                                                                        <CalendarDaysIcon className="w-5 h-5" />
+                                                                        {scheduleMenuLabel}
+                                                                    </button>
+                                                                )}
+                                                                {handleStageUpdate && (
+                                                                    <button
+                                                                        onClick={() => handleStageUpdate('Communication Started')}
+                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    >
+                                                                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                                        Communication Started
+                                                                    </button>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                </>
+                                            )}
+                                        </>
+                                        );
+    };
+
     const renderMetaBadgesRow = (
         variant: 'floating' | 'connected' = 'floating',
         options?: { deferActionsPanel?: boolean },
     ) => (
-        <div className="relative z-30 flex w-full min-w-0 items-start gap-2 sm:gap-2.5">
+        <div className="relative z-30 flex w-full min-w-0 items-center gap-2 sm:gap-2.5">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
                 {renderClientMetaBadges(variant)}
             </div>
-            <div className="flex shrink-0 items-start pt-0.5">
+            <div className="hidden max-w-[min(50%,40rem)] shrink-0 flex-wrap items-center justify-end gap-2 xl:flex">
+                {!needsDesktopStagePaymentBanner ? renderDesktopStageLogicButtons({ inline: true }) : null}
+            </div>
+            <div className="flex shrink-0 items-center">
                 {renderHeaderActionsMenuTrigger(variant, {
                     withPanel: !options?.deferActionsPanel,
                 })}
@@ -4437,10 +4828,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         const getSchedulerDisplay = (): string => {
                             if (isLegacyLead) {
                               const fromJoin = (selectedClient as any).scheduler;
-                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') {
+                                const joined = String(fromJoin).trim();
+                                // Partner booking may leave a numeric id here — resolve to name
+                                if (/^\d+$/.test(joined)) {
+                                  return getEmployeeDisplayNameFromId(joined) || joined;
+                                }
+                                return joined;
+                              }
                               return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
                             }
-                            return selectedClient.scheduler || '---';
+                            const schedulerValue = selectedClient.scheduler;
+                            if (!schedulerValue || schedulerValue === '---' || schedulerValue === '--') return '---';
+                            // Automated booking stores tenants_employee.id (e.g. "177") — show display_name
+                            if (
+                              typeof schedulerValue === 'number' ||
+                              (typeof schedulerValue === 'string' && /^\d+$/.test(schedulerValue.trim()))
+                            ) {
+                              return getEmployeeDisplayNameFromId(schedulerValue) || String(schedulerValue);
+                            }
+                            return String(schedulerValue);
                         };
 
                         /** tenants_employee.id is numeric — never pass display names into avatar / batch id queries. */
@@ -4744,390 +5151,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <div
                         className={
                             connectToAppHeader
-                                ? `${navRail ? 'mt-0 pt-3' : 'mt-3'} hidden w-full flex-col items-stretch gap-2 md:flex ${sidebarPadClass} ${pagePadClass}`
-                                : 'mt-3 hidden w-full flex-col items-stretch gap-2 md:flex'
+                                ? `${navRail ? 'mt-0 pt-3' : 'mt-3'} hidden w-full flex-col items-stretch gap-2 md:flex ${
+                                      needsDesktopStagePaymentBanner || dropdownsContent ? '' : 'xl:hidden'
+                                  } ${sidebarPadClass} ${pagePadClass}`
+                                : `mt-3 hidden w-full flex-col items-stretch gap-2 md:flex ${
+                                      needsDesktopStagePaymentBanner || dropdownsContent ? '' : 'xl:hidden'
+                                  }`
                         }
                     >
-                        <div className="flex w-full flex-wrap items-center gap-2">
+                        <div className={`flex w-full flex-wrap items-center gap-2 ${needsDesktopStagePaymentBanner ? '' : 'xl:hidden'}`}>
                             <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-                                    {(() => {
-                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                        const isUnactivated = isLegacy
-                                            ? selectedClient?.status === 10
-                                            : selectedClient?.status === 'inactive';
-                                        if (isUnactivated) {
-                                            return (
-                                        <div className="px-4 py-2 text-sm text-gray-600">
-                                            Please activate lead in actions first to see the stage buttons.
-                                        </div>
-                                            );
-                                        }
-                                        return (
-                                        <>
-                                            {/* Closed state check */}
-                                            {selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200)) ? (
-                                                ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) ? (
-                                                    null
-                                                ) : (
-                                                    <div className="px-4 py-2 text-sm text-gray-600">
-                                                        No action available
-                                                    </div>
-                                                )
-                                            ) : (
-                                                <>
-                                                    {/* Stage 105 (Handler Nominated): show missing plan or next payment banner */}
-                                                    {showHandlerPaymentBanner &&
-                                                    (((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
-                                                        shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment)) ? (
-                                                        <div className="w-full flex justify-center">
-                                                            {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
-                                                                <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
-                                                                    <div className="flex items-center justify-between gap-3">
-                                                                        <div className="flex items-center gap-2 text-sm font-semibold">
-                                                                            <ExclamationTriangleIcon className="h-5 w-5" />
-                                                                            Missing payment plan
-                                                                        </div>
-                                                                        <div className="text-xs text-slate-500 whitespace-nowrap">
-                                                                            Finances → payment plan
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            ) : (
-                                                                <div className="w-full max-w-xl rounded-2xl border-0 bg-gray-50 px-4 py-3 text-slate-800">
-                                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-                                                                        <div className="text-sm font-semibold">Next payment due</div>
-                                                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
-                                                                            <div className="text-sm tabular-nums text-right whitespace-nowrap">
-                                                                                {(() => {
-                                                                                    const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                                                    const base = Number((nextDuePayment as any)?.value ?? 0);
-                                                                                    const vat = Number(
-                                                                                        isLegacy
-                                                                                            ? (nextDuePayment as any)?.vat_value ?? 0
-                                                                                            : (nextDuePayment as any)?.value_vat ?? 0
-                                                                                    );
-                                                                                    const gross =
-                                                                                        (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
-                                                                                    const currency =
-                                                                                        (nextDuePayment as any)?.currency ??
-                                                                                        (nextDuePayment as any)?.accounting_currencies?.iso_code ??
-                                                                                        (nextDuePayment as any)?.accounting_currencies?.name ??
-                                                                                        '';
-                                                                                    const dateRaw =
-                                                                                        (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
-                                                                                    const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
-                                                                                    const amountLabel = Number.isFinite(gross)
-                                                                                        ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
-                                                                                        : '0';
-                                                                                    return (
-                                                                                        <span>
-                                                                                            <span className="font-semibold">
-                                                                                                {currency ? `${currency} ` : ''}
-                                                                                                {amountLabel}
-                                                                                            </span>
-                                                                                            {' · '}
-                                                                                            <span className="opacity-80">{dateLabel}</span>
-                                                                                        </span>
-                                                                                    );
-                                                                                })()}
-                                                                            </div>
-                                                                            {(() => {
-                                                                                const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                                                const ready =
-                                                                                    (nextDuePayment as any)?.ready_to_pay === true ||
-                                                                                    ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
-                                                                                if (!ready) return null;
-                                                                                const by =
-                                                                                    (nextDuePayment as any)?.ready_to_pay_by_display_name ??
-                                                                                    (nextDuePayment as any)?.tenants_employee?.display_name ??
-                                                                                    (nextDuePayment as any)?.updated_by ??
-                                                                                    (nextDuePayment as any)?.paid_by ??
-                                                                                    '—';
-                                                                                return (
-                                                                                    <div className="flex items-center justify-end gap-2 whitespace-nowrap">
-                                                                                        <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
-                                                                                            <CheckCircleIcon className="h-4 w-4" />
-                                                                                            Sent to finance
-                                                                                        </span>
-                                                                                        <span className="text-xs text-slate-500 whitespace-nowrap">
-                                                                                            by <span className="font-semibold">{String(by)}</span>
-                                                                                        </span>
-                                                                                    </div>
-                                                                                );
-                                                                            })()}
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    ) : null}
-
-                                                    {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
-                                                    {subEffortsStageFlags.showPickerLogAndModal && (
-                                                        <>
-                                                            <div className="flex items-center justify-end gap-3 flex-wrap">
-                                                                {(onMeetingScheduleClick || onMeetingRescheduleClick) && (
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => {
-                                                                            if (hasScheduledMeetings && onMeetingRescheduleClick) {
-                                                                                onMeetingRescheduleClick();
-                                                                            } else if (onMeetingScheduleClick) {
-                                                                                onMeetingScheduleClick();
-                                                                            }
-                                                                        }}
-                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                    >
-                                                                        {hasScheduledMeetings ? (
-                                                                            <ArrowPathIcon className="w-5 h-5" />
-                                                                        ) : (
-                                                                            <CalendarDaysIcon className="w-5 h-5" />
-                                                                        )}
-                                                                        {hasScheduledMeetings ? 'Reschedule Meeting' : 'Schedule Meeting'}
-                                                                    </button>
-                                                                )}
-                                                                {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
-                                                                    <button
-                                                                        onClick={() => updateLeadStage(200)}
-                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                    >
-                                                                        <CheckCircleIcon className="w-5 h-5" />
-                                                                        Finalize Case
-                                                                    </button>
-                                                                )}
-                                                                <button
-                                                                    type="button"
-                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                    onClick={() => openSubEffortsModal(null)}
-                                                                    disabled={isLoadingLeadSubEfforts || isLoadingSubEfforts}
-                                                                    title={
-                                                                        !leadMiscCategoryId
-                                                                            ? 'Set case type on the lead to load sub efforts'
-                                                                            : undefined
-                                                                    }
-                                                                >
-                                                                    <DocumentCheckIcon className="w-5 h-5" />
-                                                                    Sub efforts
-                                                                    {(leadSubEfforts?.length ?? 0) > 0 ? (
-                                                                        <span className="badge badge-sm badge-primary min-h-5 h-5 shrink-0 px-1.5">
-                                                                            {leadSubEfforts.length}
-                                                                        </span>
-                                                                    ) : null}
-                                                                </button>
-                                                            </div>
-                                                        </>
-                                                    )}
-
-                                                    {/* Payment request sent Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
-                                                        <button
-                                                            onClick={handlePaymentReceivedNewClient}
-                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                        >
-                                                            <CheckCircleIcon className="w-5 h-5" />
-                                                            Payment Received - new Client !!!
-                                                        </button>
-                                                    )}
-
-                                                    {/* Another meeting Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) && (
-                                                        <>
-                                                            {setShowRescheduleDrawer && (
-                                                                <button
-                                                                    onClick={() => setShowRescheduleDrawer(true)}
-                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                >
-                                                                    <ArrowPathIcon className="w-5 h-5" />
-                                                                    Meeting ReScheduling
-                                                                </button>
-                                                            )}
-                                                            {handleStageUpdate && (
-                                                                <button
-                                                                    onClick={() => handleStageUpdate('Meeting Ended')}
-                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                >
-                                                                    <CheckCircleIcon className="w-5 h-5" />
-                                                                    Meeting Ended
-                                                                </button>
-                                                            )}
-                                                        </>
-                                                    )}
-
-                                                    {/* Meeting scheduled / Meeting rescheduling Stages */}
-                                                    {!areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                                        (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
-                                                            areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
-                                                            (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
-                                                            <>
-                                                                {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                                                                    !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                                                    handleScheduleMenuClick &&
-                                                                    scheduleMenuLabel && (
-                                                                        <button
-                                                                            onClick={handleScheduleMenuClick}
-                                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                        >
-                                                                            <CalendarDaysIcon className="w-5 h-5" />
-                                                                            {scheduleMenuLabel}
-                                                                        </button>
-                                                                    )}
-                                                                {setShowRescheduleDrawer && (
-                                                                    <button
-                                                                        onClick={() => setShowRescheduleDrawer(true)}
-                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                    >
-                                                                        <ArrowPathIcon className="w-5 h-5" />
-                                                                        Meeting ReScheduling
-                                                                    </button>
-                                                                )}
-                                                                {handleStageUpdate &&
-                                                                    !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                                                    (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
-                                                                        <button
-                                                                            onClick={() => handleStageUpdate('Meeting Ended')}
-                                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                        >
-                                                                            <CheckCircleIcon className="w-5 h-5" />
-                                                                            Meeting Ended
-                                                                        </button>
-                                                                    )}
-                                                            </>
-                                                        )}
-
-                                                    {/* Waiting for meeting summary Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
-                                                        <button
-                                                            onClick={openSendOfferModal}
-                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                        >
-                                                            <DocumentCheckIcon className="w-5 h-5" />
-                                                            Send Price Offer
-                                                        </button>
-                                                    )}
-
-                                                    {/* Communication Started Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'Communication started') &&
-                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) && (
-                                                        <>
-                                                            {handleScheduleMenuClick && scheduleMenuLabel && (
-                                                                <button
-                                                                    onClick={handleScheduleMenuClick}
-                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                >
-                                                                    <CalendarDaysIcon className="w-5 h-5" />
-                                                                    {scheduleMenuLabel}
-                                                                </button>
-                                                            )}
-                                                            {handleStageUpdate && (
-                                                                <button
-                                                                    onClick={() => handleStageUpdate('Communication Started')}
-                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                >
-                                                                    <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                                                                    {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
-                                                                </button>
-                                                            )}
-                                                        </>
-                                                    )}
-
-                                                    {/* Meeting summary + Agreement sent Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') && (
-                                                        <>
-                                                            {handleScheduleMenuClick && scheduleMenuLabel && (
-                                                                <button
-                                                                    onClick={handleScheduleMenuClick}
-                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                >
-                                                                    <CalendarDaysIcon className="w-5 h-5" />
-                                                                    {scheduleMenuLabel}
-                                                                </button>
-                                                            )}
-                                                            {handleOpenSignedDrawer && (
-                                                                <button
-                                                                    onClick={handleOpenSignedDrawer}
-                                                                    className={CLIENT_SIGNED_STAGE_BTN_COMPACT}
-                                                                >
-                                                                    <HandThumbUpIcon className="w-5 h-5" />
-                                                                    Client signed
-                                                                </button>
-                                                            )}
-                                                            {handleOpenDeclinedDrawer && (
-                                                                <button
-                                                                    onClick={handleOpenDeclinedDrawer}
-                                                                    className={CLIENT_DECLINED_STAGE_BTN_COMPACT}
-                                                                >
-                                                                    <HandThumbDownIcon className="w-5 h-5" />
-                                                                    Client declined
-                                                                </button>
-                                                            )}
-                                                            {openSendOfferModal && (
-                                                                <button
-                                                                    onClick={openSendOfferModal}
-                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                >
-                                                                    <PencilSquareIcon className="w-5 h-5" />
-                                                                    Revised price offer
-                                                                </button>
-                                                            )}
-                                                        </>
-                                                    )}
-
-                                                    {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
-
-                                                    {/* Created / Precommunication — assign scheduler instead of stage buttons */}
-                                                    {showAssignSchedulerInHeader && assignSchedulerContent ? (
-                                                        <div className={`ml-auto shrink-0 ${HEADER_ROLE_ASSIGN_WIDTH_CLASS}`}>
-                                                            {assignSchedulerContent}
-                                                        </div>
-                                                    ) : null}
-
-                                                    {/* General stages - Schedule Meeting and Communication Started */}
-                                                    {selectedClient &&
-                                                        !showAssignSchedulerInHeader &&
-                                                        !areStagesEquivalent(currentStageName, 'Handler Set') &&
-                                                        !areStagesEquivalent(currentStageName, 'Handler Started') &&
-                                                        !areStagesEquivalent(currentStageName, 'Application submitted') &&
-                                                        !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
-                                                        !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                                        !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                                                        !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                                        !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
-                                                        !areStagesEquivalent(currentStageName, 'Communication started') &&
-                                                        !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
-                                                        !areStagesEquivalent(currentStageName, 'Success') &&
-                                                        !areStagesEquivalent(currentStageName, 'handler_assigned') &&
-                                                        !areStagesEquivalent(currentStageName, 'client_signed') &&
-                                                        !areStagesEquivalent(currentStageName, 'client signed agreement') &&
-                                                        !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
-                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
-                                                        !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
-                                                            <>
-                                                                {handleScheduleMenuClick && scheduleMenuLabel && (
-                                                                    <button
-                                                                        onClick={handleScheduleMenuClick}
-                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                    >
-                                                                        <CalendarDaysIcon className="w-5 h-5" />
-                                                                        {scheduleMenuLabel}
-                                                                    </button>
-                                                                )}
-                                                                {handleStageUpdate && (
-                                                                    <button
-                                                                        onClick={() => handleStageUpdate('Communication Started')}
-                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                    >
-                                                                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                                                                        Communication Started
-                                                                    </button>
-                                                                )}
-                                                            </>
-                                                        )}
-                                                </>
-                                            )}
-                                        </>
-                                        );
-                                    })()}
+                                    {renderDesktopStageLogicButtons()}
                             </div>
                         </div>
                         {dropdownsContent ? (
@@ -5696,10 +5730,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         const getSchedulerDisplay = (): string => {
                             if (isLegacyLead) {
                               const fromJoin = (selectedClient as any).scheduler;
-                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') {
+                                const joined = String(fromJoin).trim();
+                                // Partner booking may leave a numeric id here — resolve to name
+                                if (/^\d+$/.test(joined)) {
+                                  return getEmployeeDisplayNameFromId(joined) || joined;
+                                }
+                                return joined;
+                              }
                               return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
                             }
-                            return selectedClient.scheduler || '---';
+                            const schedulerValue = selectedClient.scheduler;
+                            if (!schedulerValue || schedulerValue === '---' || schedulerValue === '--') return '---';
+                            // Automated booking stores tenants_employee.id (e.g. "177") — show display_name
+                            if (
+                              typeof schedulerValue === 'number' ||
+                              (typeof schedulerValue === 'string' && /^\d+$/.test(schedulerValue.trim()))
+                            ) {
+                              return getEmployeeDisplayNameFromId(schedulerValue) || String(schedulerValue);
+                            }
+                            return String(schedulerValue);
                         };
 
                         const resolveNumericEmployeeId = (value: unknown): number | null => {

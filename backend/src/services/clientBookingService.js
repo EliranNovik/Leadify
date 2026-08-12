@@ -466,18 +466,155 @@ async function invokeExpressHandler(handler, body) {
   });
 }
 
-async function fetchEventJoinUrl(accessToken, calendarType, eventId) {
-  if (!eventId) return '';
-  const calendarEmail = calendarMailbox(calendarType);
-  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events/${encodeURIComponent(eventId)}?$select=onlineMeeting,webLink`;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+/** Outlook web calendar item URLs — never valid as Teams join links. */
+function isOutlookCalendarItemLink(link) {
+  if (!link) return false;
+  const lower = String(link).toLowerCase();
+  return (
+    lower.includes('outlook.office365.com/owa/')
+    || lower.includes('outlook.office.com/owa/')
+    || lower.includes('outlook.live.com/owa/')
+    || (lower.includes('outlook.office') && lower.includes('path=/calendar/item'))
+    || (lower.includes('outlook.office') && lower.includes('itemid='))
+  );
+}
+
+function isTeamsJoinUrl(link) {
+  if (!link || !/^https?:\/\//i.test(link)) return false;
+  if (isOutlookCalendarItemLink(link)) return false;
+  const lower = String(link).toLowerCase();
+  return (
+    lower.includes('teams.microsoft.com')
+    || lower.includes('teams.live.com')
+    || lower.includes('microsoft.com/teams')
+    || lower.includes('teams.office.com')
+  );
+}
+
+/** Prefer onlineMeeting.joinUrl / joinWebUrl. Never returns Outlook webLink. */
+function extractTeamsJoinUrlFromGraphPayload(data) {
+  if (!data || typeof data !== 'object') return '';
+  const onlineMeeting =
+    data.onlineMeeting && typeof data.onlineMeeting === 'object'
+      ? data.onlineMeeting
+      : null;
+  const candidates = [
+    onlineMeeting?.joinWebUrl,
+    onlineMeeting?.joinUrl,
+    data.joinWebUrl,
+    data.joinUrl,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && isTeamsJoinUrl(candidate)) {
+      return candidate.trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * Create a Teams online meeting via Online Meetings API (more reliable joinWebUrl
+ * than calendar event create on shared mailboxes).
+ */
+async function createOnlineMeetingJoinUrl(accessToken, meetingDetails, mailboxEmail) {
+  const path = mailboxEmail
+    ? `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailboxEmail)}/onlineMeetings`
+    : 'https://graph.microsoft.com/v1.0/me/onlineMeetings';
+
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      startDateTime: meetingDetails.startDateTime,
+      endDateTime: meetingDetails.endDateTime,
+      subject: meetingDetails.subject,
+    }),
   });
 
-  if (!response.ok) return '';
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    console.warn('onlineMeetings create failed:', mailboxEmail || 'me', error);
+    return '';
+  }
+
   const data = await response.json();
-  return data.onlineMeeting?.joinUrl || data.webLink || '';
+  return extractTeamsJoinUrlFromGraphPayload(data);
+}
+
+/**
+ * After creating a calendar event with isOnlineMeeting, Graph often returns onlineMeeting: null.
+ * Poll GET, then fall back to Online Meetings API. Never returns Outlook webLink.
+ */
+async function resolveTeamsJoinUrlForEvent(accessToken, options) {
+  let joinUrl = extractTeamsJoinUrlFromGraphPayload(options.eventData);
+  const calendarEmail = options.calendarUserEmail;
+
+  if (!joinUrl && options.eventId && calendarEmail) {
+    const getUrl =
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/events/${encodeURIComponent(options.eventId)}`
+      + '?$select=id,isOnlineMeeting,onlineMeetingProvider,onlineMeeting';
+
+    for (let attempt = 0; attempt < 4 && !joinUrl; attempt += 1) {
+      await sleep(400 * (attempt + 1));
+      try {
+        const res = await fetch(getUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) continue;
+        const refreshed = await res.json();
+        joinUrl = extractTeamsJoinUrlFromGraphPayload(refreshed);
+      } catch (err) {
+        console.warn('Failed to refresh event for Teams join URL:', err);
+      }
+    }
+  }
+
+  if (!joinUrl) {
+    joinUrl =
+      (await createOnlineMeetingJoinUrl(
+        accessToken,
+        {
+          subject: options.subject,
+          startDateTime: options.startDateTime,
+          endDateTime: options.endDateTime,
+        },
+        calendarEmail,
+      ))
+      || (await createOnlineMeetingJoinUrl(accessToken, {
+        subject: options.subject,
+        startDateTime: options.startDateTime,
+        endDateTime: options.endDateTime,
+      }));
+  }
+
+  if (!joinUrl) {
+    console.warn(
+      'Teams join URL could not be resolved; refusing to use Outlook webLink as a meeting link.',
+    );
+  }
+
+  return joinUrl;
+}
+
+async function fetchEventJoinUrl(accessToken, calendarType, eventId, meetingDetails = {}) {
+  if (!eventId) return '';
+  const calendarEmail = calendarMailbox(calendarType);
+  return resolveTeamsJoinUrlForEvent(accessToken, {
+    calendarUserEmail: calendarEmail,
+    eventId,
+    eventData: null,
+    subject: meetingDetails.subject || 'Meeting',
+    startDateTime: meetingDetails.startDateTime || new Date().toISOString(),
+    endDateTime: meetingDetails.endDateTime
+      || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  });
 }
 
 async function getBookingContext(token) {
@@ -831,9 +968,16 @@ async function createSharedCalendarEvent(accessToken, params) {
   }
 
   const data = await response.json();
-  let joinUrl = data.onlineMeeting?.joinUrl || data.webLink || '';
-  if (teamsMeeting && !joinUrl && data.id) {
-    joinUrl = await fetchEventJoinUrl(accessToken, params.calendarType, data.id);
+  let joinUrl = '';
+  if (teamsMeeting) {
+    joinUrl = await resolveTeamsJoinUrlForEvent(accessToken, {
+      calendarUserEmail: calendarEmail,
+      eventId: data.id,
+      eventData: data,
+      subject: params.subject,
+      startDateTime: params.startDateTime,
+      endDateTime: params.endDateTime,
+    });
   }
 
   return {
@@ -1278,7 +1422,15 @@ async function bookMeeting(token, payload) {
     calendarEventId = calendarResult.id;
     teamsMeetingUrl = isTeamsLocation(locationName) ? calendarResult.joinUrl || '' : '';
     if (isTeamsLocation(locationName) && !teamsMeetingUrl && calendarEventId) {
-      teamsMeetingUrl = await fetchEventJoinUrl(graphToken, calendarType, calendarEventId);
+      teamsMeetingUrl = await fetchEventJoinUrl(graphToken, calendarType, calendarEventId, {
+        subject: meetingSubject,
+        startDateTime: startIso,
+        endDateTime: endIso,
+      });
+    }
+    if (teamsMeetingUrl && !isTeamsJoinUrl(teamsMeetingUrl)) {
+      console.warn('Discarding non-Teams meeting URL from calendar create:', teamsMeetingUrl);
+      teamsMeetingUrl = '';
     }
   } catch (err) {
     console.error('Calendar sync failed for client booking:', err.message);
@@ -1669,7 +1821,8 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee, externa
     .from('leads')
     .update({
       stage: stageId,
-      scheduler: String(schedulerEmployee.id),
+      // Store display name (UI convention for new-lead text roles); fall back to id string
+      scheduler: schedulerEmployee.display_name || String(schedulerEmployee.id),
       external_firm_id: externalFirmId,
       stage_changed_by: stageChangedBy,
       stage_changed_at: now,
@@ -1807,7 +1960,15 @@ async function createPartnerMeeting(payload) {
     calendarEventId = calendarResult.id;
     teamsMeetingUrl = isTeamsLocation(locationName) ? calendarResult.joinUrl || '' : '';
     if (isTeamsLocation(locationName) && !teamsMeetingUrl && calendarEventId) {
-      teamsMeetingUrl = await fetchEventJoinUrl(graphToken, calendarType, calendarEventId);
+      teamsMeetingUrl = await fetchEventJoinUrl(graphToken, calendarType, calendarEventId, {
+        subject: meetingSubject,
+        startDateTime: startIso,
+        endDateTime: endIso,
+      });
+    }
+    if (teamsMeetingUrl && !isTeamsJoinUrl(teamsMeetingUrl)) {
+      console.warn('Discarding non-Teams meeting URL from calendar create:', teamsMeetingUrl);
+      teamsMeetingUrl = '';
     }
   } catch (err) {
     console.error('Calendar sync failed for partner meeting webhook:', err.message);
@@ -1827,7 +1988,7 @@ async function createPartnerMeeting(payload) {
     teams_meeting_url: teamsMeetingUrl,
     helper: '---',
     expert: '---',
-    scheduler: String(schedulerEmployee.id),
+    scheduler: schedulerEmployee.display_name || String(schedulerEmployee.id),
     calendar_type: calendarType,
     status: 'scheduled',
     client_booking_timezone: clientTimezone,

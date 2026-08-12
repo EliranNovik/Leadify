@@ -1,14 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ChatBubbleLeftEllipsisIcon,
   PaperAirplaneIcon,
   TrashIcon,
 } from '@heroicons/react/24/outline';
+import { ChatBubbleOvalLeftEllipsisIcon as ChatBubbleOvalLeftEllipsisSolidIcon } from '@heroicons/react/24/solid';
 import { toast } from 'react-hot-toast';
 import type { EmailComment } from '../../lib/interactions/emailComments';
 import { createEmailComment, deleteEmailComment } from '../../lib/interactions/emailComments';
-import { fetchStageActorInfo } from '../../lib/leadStageManager';
-import { supabase } from '../../lib/supabase';
 
 function formatCommentWhen(iso: string): string {
   try {
@@ -24,23 +22,15 @@ function formatCommentWhen(iso: string): string {
   }
 }
 
-function initialsFromName(name: string): string {
-  const parts = String(name || '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return '?';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
-}
-
 type Props = {
   emailId: string;
   comments: EmailComment[];
   onCommentsChange: (emailId: string, next: EmailComment[]) => void;
   composerOpen: boolean;
   onComposerClose?: () => void;
+  /** @deprecated Kept for call-site compatibility; no longer shown in the composer. */
   currentUserName?: string | null;
+  /** @deprecated Kept for call-site compatibility; no longer shown in the composer. */
   currentUserPhotoUrl?: string | null;
 };
 
@@ -50,55 +40,12 @@ export function EmailMessageComments({
   onCommentsChange,
   composerOpen,
   onComposerClose,
-  currentUserName,
-  currentUserPhotoUrl,
 }: Props) {
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showComposer, setShowComposer] = useState(composerOpen);
-  const [actorName, setActorName] = useState(currentUserName || 'You');
-  const [actorPhotoUrl, setActorPhotoUrl] = useState<string | null>(currentUserPhotoUrl || null);
-  const [photoError, setPhotoError] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (currentUserName) setActorName(currentUserName);
-  }, [currentUserName]);
-
-  useEffect(() => {
-    setActorPhotoUrl(currentUserPhotoUrl || null);
-    setPhotoError(false);
-  }, [currentUserPhotoUrl]);
-
-  useEffect(() => {
-    if (!showComposer) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const actor = await fetchStageActorInfo();
-        if (cancelled) return;
-        if (actor.fullName) setActorName(actor.fullName);
-        if (!currentUserPhotoUrl && actor.employeeId != null) {
-          const { data: emp } = await supabase
-            .from('tenants_employee')
-            .select('photo_url, photo')
-            .eq('id', actor.employeeId)
-            .maybeSingle();
-          const url = String((emp as any)?.photo_url || (emp as any)?.photo || '').trim();
-          if (url && !cancelled) {
-            setActorPhotoUrl(url);
-            setPhotoError(false);
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [showComposer, currentUserPhotoUrl]);
 
   useEffect(() => {
     if (composerOpen) {
@@ -110,7 +57,12 @@ export function EmailMessageComments({
     }
   }, [composerOpen]);
 
-  if (!showComposer && comments.length === 0) return null;
+  const openComposer = () => {
+    setShowComposer(true);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  };
 
   const submit = async () => {
     if (saving) return;
@@ -153,136 +105,125 @@ export function EmailMessageComments({
     }
   };
 
-  const initials = initialsFromName(actorName);
+  const commentCount = comments.length;
+  const panelOpen = showComposer || commentCount > 0;
 
   return (
-    <div className="mt-4 border-t border-slate-100 pt-3">
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-        <ChatBubbleLeftEllipsisIcon className="h-4 w-4" />
-        Internal comments
-        {comments.length > 0 ? (
-          <span className="rounded-full bg-slate-50 px-1.5 py-0.5 text-[10px] font-bold tabular-nums normal-case tracking-normal text-slate-500">
-            {comments.length}
+    <div className="mt-3">
+      {/* Badge sits above comments / input when those are visible */}
+      <div className={`flex justify-end ${panelOpen ? 'mb-2' : ''}`}>
+        <button
+          type="button"
+          className="relative inline-flex h-10 w-10 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-500"
+          title={
+            commentCount > 0
+              ? `${commentCount} internal comment${commentCount === 1 ? '' : 's'} — click to add`
+              : 'Add internal comment'
+          }
+          aria-label={
+            commentCount > 0 ? `${commentCount} comments, add comment` : 'Add comment'
+          }
+          onClick={openComposer}
+        >
+          <ChatBubbleOvalLeftEllipsisSolidIcon className="h-5 w-5 text-slate-400" />
+          <span className="absolute -right-0.5 -top-0.5 flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-slate-200 px-1 text-[10px] font-semibold tabular-nums leading-none text-slate-600 ring-2 ring-white">
+            {commentCount}
           </span>
-        ) : null}
+        </button>
       </div>
 
-      {comments.length > 0 ? (
-        <ul className="mb-3 space-y-2">
-          {comments.map((comment) => (
-            <li
-              key={comment.id}
-              className="rounded-lg border border-slate-100/80 bg-slate-50/40 px-3 py-2"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                    <span className="text-sm font-semibold text-slate-800">{comment.created_by}</span>
-                    <span className="text-[11px] tabular-nums text-slate-500">
-                      {formatCommentWhen(comment.created_at)}
-                    </span>
+      {panelOpen ? (
+        <div className="border-t border-slate-100 pt-3">
+          {commentCount > 0 ? (
+            <ul className={`${showComposer ? 'mb-3' : ''} space-y-2`}>
+              {comments.map((comment) => (
+                <li
+                  key={comment.id}
+                  className="rounded-lg border border-slate-100/80 bg-slate-50/40 px-3 py-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <span className="text-sm font-semibold text-slate-800">{comment.created_by}</span>
+                        <span className="text-[11px] tabular-nums text-slate-500">
+                          {formatCommentWhen(comment.created_at)}
+                        </span>
+                      </div>
+                      <p
+                        className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-700"
+                        dir="auto"
+                      >
+                        {comment.body}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs btn-square shrink-0 text-slate-400 hover:text-red-600"
+                      title="Delete comment"
+                      disabled={deletingId === comment.id}
+                      onClick={() => void remove(comment)}
+                    >
+                      {deletingId === comment.id ? (
+                        <span className="loading loading-spinner loading-xs" />
+                      ) : (
+                        <TrashIcon className="h-4 w-4" />
+                      )}
+                    </button>
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-700" dir="auto">
-                    {comment.body}
-                  </p>
-                </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {showComposer ? (
+            <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={3}
+                placeholder="Add an internal comment…"
+                className="textarea min-h-[5.5rem] w-full resize-y border-0 bg-transparent pb-14 pl-3 pr-14 pt-3 text-sm leading-relaxed focus:outline-none focus:ring-0"
+                dir="auto"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+
+              <div className="absolute bottom-2 right-2 z-10 flex items-center gap-2">
                 <button
                   type="button"
-                  className="btn btn-ghost btn-xs btn-square shrink-0 text-slate-400 hover:text-red-600"
-                  title="Delete comment"
-                  disabled={deletingId === comment.id}
-                  onClick={() => void remove(comment)}
+                  className="btn btn-ghost btn-sm h-10 min-h-0 px-3 text-slate-500"
+                  onClick={() => {
+                    setShowComposer(false);
+                    setDraft('');
+                    onComposerClose?.();
+                  }}
                 >
-                  {deletingId === comment.id ? (
-                    <span className="loading loading-spinner loading-xs" />
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-[#4218CC] text-white shadow-md transition hover:bg-[#3514a8] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={saving || !draft.trim()}
+                  onClick={() => void submit()}
+                  title="Send comment"
+                  aria-label="Send comment"
+                >
+                  {saving ? (
+                    <span className="loading loading-spinner loading-sm text-white" />
                   ) : (
-                    <TrashIcon className="h-4 w-4" />
+                    <PaperAirplaneIcon className="h-6 w-6" />
                   )}
                 </button>
               </div>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {showComposer ? (
-        <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="pointer-events-none absolute inset-y-0 left-0 z-10 flex max-w-[42%] items-start p-2.5 sm:max-w-[38%]">
-            <div className="pointer-events-none flex max-w-full items-center gap-2 rounded-full border border-white/70 bg-white/75 py-1 pl-1 pr-2.5 shadow-sm backdrop-blur-md backdrop-saturate-150">
-              {actorPhotoUrl && !photoError ? (
-                <img
-                  src={actorPhotoUrl}
-                  alt={actorName}
-                  className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-white/90"
-                  onError={() => setPhotoError(true)}
-                />
-              ) : (
-                <div
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#4218CC] text-[0.6rem] font-bold uppercase tracking-wide text-white ring-1 ring-white/90"
-                  aria-hidden
-                >
-                  {initials}
-                </div>
-              )}
-              <span className="truncate text-xs font-semibold text-slate-800" dir="auto">
-                {actorName}
-              </span>
             </div>
-          </div>
-
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={3}
-            placeholder="Add an internal comment…"
-            className="textarea min-h-[5.5rem] w-full resize-y border-0 bg-transparent pb-14 pl-[min(42%,11.5rem)] pr-14 pt-3 text-sm leading-relaxed focus:outline-none focus:ring-0 sm:pl-[min(38%,13rem)]"
-            dir="auto"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                void submit();
-              }
-            }}
-          />
-
-          <div className="absolute bottom-2 right-2 z-10 flex items-center gap-2">
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm h-10 min-h-0 px-3 text-slate-500"
-              onClick={() => {
-                setShowComposer(false);
-                setDraft('');
-                onComposerClose?.();
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-[#4218CC] text-white shadow-md transition hover:bg-[#3514a8] disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={saving || !draft.trim()}
-              onClick={() => void submit()}
-              title="Send comment"
-              aria-label="Send comment"
-            >
-              {saving ? (
-                <span className="loading loading-spinner loading-sm text-white" />
-              ) : (
-                <PaperAirplaneIcon className="h-6 w-6" />
-              )}
-            </button>
-          </div>
+          ) : null}
         </div>
-      ) : (
-        <button
-          type="button"
-          className="text-xs font-medium text-[#4218CC] hover:underline"
-          onClick={() => setShowComposer(true)}
-        >
-          Add comment
-        </button>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -308,7 +308,28 @@ const RolesTab: React.FC<ClientTabProps> = ({
       {
         id: 'scheduler',
         title: 'Scheduler',
-        assignee: isLegacyLead ? (legacyDisplay('scheduler') ?? getEmployeeDisplayName((client as any).meeting_scheduler_id, employeesToUse)) : client.scheduler || '---',
+        assignee: (() => {
+          if (isLegacyLead) {
+            const fromJoin = legacyDisplay('scheduler');
+            if (fromJoin) {
+              if (/^\d+$/.test(fromJoin)) {
+                return getEmployeeDisplayName(fromJoin, employeesToUse);
+              }
+              return fromJoin;
+            }
+            return getEmployeeDisplayName((client as any).meeting_scheduler_id, employeesToUse);
+          }
+          const schedulerValue = client.scheduler;
+          if (!schedulerValue || schedulerValue === '---' || schedulerValue === '--') return '---';
+          // Partner/automated booking stores employee id (e.g. "177") — resolve to display_name
+          if (
+            typeof schedulerValue === 'number' ||
+            (typeof schedulerValue === 'string' && /^\d+$/.test(String(schedulerValue).trim()))
+          ) {
+            return getEmployeeDisplayName(schedulerValue, employeesToUse);
+          }
+          return String(schedulerValue);
+        })(),
         fieldName: 'scheduler',
         legacyFieldName: 'meeting_scheduler_id'
       },

@@ -8,7 +8,7 @@ import {
   normalizeEmailSubjectKey,
   type EmailSidepanelListMode,
 } from '../lib/interactions/emailFilters';
-import { formatEmailHtmlForReadingPane, sanitizeEmailHtml } from './client-tabs/interactionsEmailViewUtils';
+import { ensureFormattedEmailHtml } from './client-tabs/interactionsEmailViewUtils';
 import { EmailMessageActionsDropdown } from './client-tabs/EmailMessageActionsDropdown';
 import { EmailMessageComments } from './client-tabs/EmailMessageComments';
 import { EmailSidepanelListMenu } from './client-tabs/EmailSidepanelListMenu';
@@ -498,15 +498,9 @@ export default function EmailGmailSplitPane({
                   ? message.sender_name || message.sender_email || 'Team'
                   : contactName || message.sender_name || message.sender_email || 'Client';
                 const initials = initialsFromName(personName);
-                const bodyHtml = message.body_html
-                  ? /timeline-prewrap/i.test(message.body_html)
-                    ? message.body_html
-                    : sanitizeEmailHtml(formatEmailHtmlForReadingPane(message.body_html))
-                  : message.body_preview
-                    ? /timeline-prewrap/i.test(message.body_preview)
-                      ? message.body_preview
-                      : sanitizeEmailHtml(formatEmailHtmlForReadingPane(message.body_preview))
-                    : '';
+                const bodyHtml = ensureFormattedEmailHtml(
+                  message.body_html || message.body_preview || '',
+                );
 
                 return (
                   <article
@@ -601,7 +595,7 @@ export default function EmailGmailSplitPane({
                     {bodyHtml ? (
                       <div
                         dangerouslySetInnerHTML={{ __html: bodyHtml }}
-                        className="prose prose-sm email-content mt-4 max-w-none break-words whitespace-pre-wrap text-slate-700 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-pre-wrap"
+                        className="email-content mt-4 max-w-none break-words text-slate-700 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-normal"
                         style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}
                         dir="auto"
                       />

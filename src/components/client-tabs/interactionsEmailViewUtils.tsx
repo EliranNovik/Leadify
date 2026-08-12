@@ -165,6 +165,8 @@ export function formatEmailBodyForTimeline(htmlOrText: string | null | undefined
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<!--[\s\S]*?-->/g, '')
       .replace(/<br\s*\/?>/gi, '\n')
+      // Opening block tags also imply a line break (Gmail often uses <div>per line</div>).
+      .replace(/<(div|p|tr|li|h[1-6]|blockquote|hr)(\s[^>]*)?>/gi, '\n')
       .replace(/<\/p>/gi, '\n\n')
       .replace(/<\/h[1-6]>/gi, '\n\n')
       .replace(/<\/(div|li|tr|table|section|header|footer|blockquote)>/gi, '\n')
@@ -194,14 +196,28 @@ export function formatEmailBodyForTimeline(htmlOrText: string | null | undefined
   content = content.replace(/\n{3,}/g, '\n\n').trim();
 
   content = restoreFlattenedEmailLineBreaks(content);
+  content = stripEmailQuoteMarkers(content);
 
   const escaped = content
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  // Keep literal newlines — TruncatedContent / reading pane use white-space: pre-wrap.
-  return `<div dir="auto" class="timeline-prewrap" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif; white-space: pre-wrap; line-height: 1.55;">${escaped}</div>`;
+  // Use real <br> tags (not only pre-wrap + \n). pre-wrap was flashing then collapsing when
+  // parent CSS / re-renders reset white-space. <br> survives those races.
+  const withBreaks = escaped.replace(/\n/g, '<br />');
+
+  return `<div dir="auto" class="timeline-prewrap" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif; white-space: normal; line-height: 1.55;">${withBreaks}</div>`;
+}
+
+/** Remove leading `>` / `>>` quote markers from each line (keep the quoted text). */
+function stripEmailQuoteMarkers(text: string): string {
+  return String(text || '')
+    .split('\n')
+    .map((line) => line.replace(/^(?:[ \t]*>[ \t]*)+/, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** Restore breaks when Graph/HTML flattened an email into one run-on line. */
@@ -235,6 +251,8 @@ function restoreFlattenedEmailLineBreaks(text: string): string {
     'אנא עדכנו',
     'Please (?:update|let us know|find|see)',
     'Attached',
+    '-----Original Message-----',
+    'Begin forwarded message:',
   ];
   const lineLabels = [
     'Time:',
@@ -251,7 +269,22 @@ function restoreFlattenedEmailLineBreaks(text: string): string {
     'SWIFT:?',
     'IBAN:?',
     'משרד עורכי דין',
+    'From:',
+    'Sent:',
+    'To:',
+    'Cc:',
+    'Subject:',
   ];
+
+  // Always restore Gmail/Outlook quote markers — these are the lines that "flash then flatten".
+  content = content
+    .replace(/\s+(On\s+.+?wrote:)/gi, '\n\n$1')
+    .replace(/\s+(-----Original Message-----)/gi, '\n\n$1')
+    .replace(/\s+(Begin forwarded message:)/gi, '\n\n$1')
+    // " > quoted" / " > > quoted" markers that got smashed onto one line
+    .replace(/([^\n])[ \t]+(>+)(?=[ \t]|[A-Za-zא-ת"']|$)/g, '$1\n$2');
+  // Split stacked quote markers: "> > Hi" → ">\n> Hi" (spaces/tabs only — not newlines)
+  content = content.replace(/(>)[ \t]+(?=>)/g, '$1\n');
 
   if (!hadNewlines && content.length > 80) {
     content = applyLabeledBreaks(content, '\\s+', paragraphLabels, lineLabels);
@@ -266,17 +299,35 @@ function restoreFlattenedEmailLineBreaks(text: string): string {
   } else {
     // Keep paragraph spacing for known section starts on their own lines…
     content = applyLabeledBreaks(content, '\\n', paragraphLabels, []);
-    // …and still split flattened inline labels (bank details often stay on one line).
-    content = applyLabeledBreaks(content, '\\s+', ['שם החשבון:?', 'בברכה,?', 'ניתן לשלם', 'מצורף', 'אנא עדכנו'], [
-      'מספר בנק:?',
-      'סניף:?',
-      'מספר חשבון:?',
-      'Bank(?:\\s+number)?:?',
-      'Branch:?',
-      'Account(?:\\s+number)?:?',
-      'SWIFT:?',
-      'IBAN:?',
-    ]);
+    // …and still split flattened inline labels (bank details / quote headers often stay on one line).
+    content = applyLabeledBreaks(
+      content,
+      '\\s+',
+      [
+        'שם החשבון:?',
+        'בברכה,?',
+        'ניתן לשלם',
+        'מצורף',
+        'אנא עדכנו',
+        '-----Original Message-----',
+        'Begin forwarded message:',
+      ],
+      [
+        'מספר בנק:?',
+        'סניף:?',
+        'מספר חשבון:?',
+        'Bank(?:\\s+number)?:?',
+        'Branch:?',
+        'Account(?:\\s+number)?:?',
+        'SWIFT:?',
+        'IBAN:?',
+        'From:',
+        'Sent:',
+        'To:',
+        'Cc:',
+        'Subject:',
+      ],
+    );
   }
 
   return content.replace(/\n{3,}/g, '\n\n').trim();
@@ -286,6 +337,144 @@ function restoreFlattenedEmailLineBreaks(text: string): string {
 export function formatEmailHtmlForReadingPane(htmlOrText: string | null | undefined): string {
   if (!htmlOrText) return '';
   return linkifyEmailHtml(formatEmailBodyForTimeline(htmlOrText));
+}
+
+/** True when HTML is already our pre-wrap reading/timeline wrapper. */
+export function isTimelinePrewrapHtml(html: string | null | undefined): boolean {
+  return /class=["'][^"']*\btimeline-prewrap\b/i.test(String(html || ''));
+}
+
+/** Extract plain text (+ newlines) from an existing timeline-prewrap body. */
+export function extractTimelinePrewrapText(html: string): string {
+  let content = String(html || '');
+  content = content
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n');
+  // Drop the wrapper / remaining tags
+  content = content.replace(/<[^>]+>/g, '');
+  if (typeof document !== 'undefined') {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = content;
+    content = textarea.value;
+  } else {
+    content = content
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'");
+  }
+  return content.replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Count visual line breaks — used to avoid replacing a well-broken body with a flatter one. */
+export function countEmailBreakSignals(htmlOrText: string | null | undefined): number {
+  const s = String(htmlOrText || '');
+  return (s.match(/<br\s*\/?>/gi) || []).length + (s.match(/\n/g) || []).length;
+}
+
+/**
+ * Idempotent display formatter. Always rebuilds from text so we never keep a
+ * "timeline-prewrap" wrapper that lost its breaks after a state race.
+ */
+export function ensureFormattedEmailHtml(htmlOrText: string | null | undefined): string {
+  if (!htmlOrText) return '';
+  const raw = String(htmlOrText);
+  const source = isTimelinePrewrapHtml(raw) ? extractTimelinePrewrapText(raw) : raw;
+  if (!source.trim()) return '';
+  return sanitizeEmailHtml(formatEmailHtmlForReadingPane(source));
+}
+
+/** Visible plain-text length — used to prefer hydrated full bodies over short list previews. */
+export function emailBodyPlainTextLength(htmlOrText: string | null | undefined): number {
+  if (!htmlOrText) return 0;
+  return String(htmlOrText)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim().length;
+}
+
+/**
+ * Body is stable enough to show in the reading pane without a late reformat flash.
+ * Short list previews are NOT stable — wait for hydrate so formatting does not snap ~2s later.
+ */
+export function emailBodyLooksStableForReading(htmlOrText: string | null | undefined): boolean {
+  const raw = String(htmlOrText || '').trim();
+  if (!raw) return false;
+  const len = emailBodyPlainTextLength(raw);
+  const plain = raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // List/Graph truncations — never treat as final reading body
+  if (/…|\.\.\.\s*$/.test(plain)) return false;
+  if (len < 12) return false;
+
+  const breaks = countEmailBreakSignals(raw);
+  // Full-ish bodies
+  if (len >= 200) return true;
+  if (isTimelinePrewrapHtml(raw) && breaks >= 1 && len >= 100) return true;
+  if (breaks >= 2 && len >= 120) return true;
+  // Short complete replies ("Thanks!", "OK") already formatted — OK to show immediately
+  if (isTimelinePrewrapHtml(raw) && len < 80 && breaks <= 4) return true;
+  return false;
+}
+
+/**
+ * When refetching the email list (no/short body), keep a richer hydrated body already in state.
+ * Prefer bodies with more line-break signals so formatting does not "flash then disappear".
+ */
+export function mergeEmailBodyPreferRicher<T extends Record<string, any>>(
+  incoming: T,
+  existing: T | undefined | null,
+): T {
+  if (!existing) return incoming;
+
+  const incomingHtml = incoming.body_html || incoming.bodyPreview || incoming.body_preview || '';
+  const existingHtml = existing.body_html || existing.bodyPreview || existing.body_preview || '';
+  const incomingLen = emailBodyPlainTextLength(incomingHtml);
+  const existingLen = emailBodyPlainTextLength(existingHtml);
+  const incomingBreaks = countEmailBreakSignals(incomingHtml);
+  const existingBreaks = countEmailBreakSignals(existingHtml);
+
+  const existingIsFormatted = isTimelinePrewrapHtml(existingHtml);
+  const incomingIsFormatted = isTimelinePrewrapHtml(incomingHtml);
+  const existingRicher = existingLen > incomingLen + 40;
+  const existingDensity = existingBreaks / Math.max(existingLen, 1);
+  const incomingDensity = incomingBreaks / Math.max(incomingLen, 1);
+  const existingBetterBroken =
+    existingIsFormatted &&
+    existingBreaks >= 2 &&
+    (existingBreaks > incomingBreaks || existingDensity > incomingDensity * 1.8);
+  const keepExistingBody =
+    existingRicher ||
+    existingBetterBroken ||
+    (!incomingHtml && !!existingHtml) ||
+    (existingIsFormatted && !incomingIsFormatted && existingLen >= incomingLen);
+
+  if (!keepExistingBody) return incoming;
+
+  return {
+    ...incoming,
+    body_html: existing.body_html || incoming.body_html || null,
+    bodyPreview:
+      existing.bodyPreview || existing.body_preview || incoming.bodyPreview || incoming.body_preview,
+    body_preview:
+      existing.body_preview || existing.bodyPreview || incoming.body_preview || incoming.bodyPreview,
+    attachments:
+      fileAttachmentsForUi(parseEmailAttachmentsFromDb(existing.attachments)).length >
+      fileAttachmentsForUi(parseEmailAttachmentsFromDb(incoming.attachments)).length
+        ? existing.attachments
+        : incoming.attachments ?? existing.attachments,
+  };
 }
 
 /** Format WhatsApp / plain timeline text while preserving blank lines. */
@@ -430,11 +619,11 @@ export const EmailContentWithErrorHandling: React.FC<{ html: string; emailId: st
     <div
       ref={contentRef}
       dangerouslySetInnerHTML={{ __html: html }}
-      className="prose prose-lg email-content max-w-none break-words text-gray-800 whitespace-pre-wrap [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-pre-wrap"
+      className="email-content max-w-none break-words text-gray-800 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-normal [&_.timeline-prewrap_br]:content-['']"
       style={{
         wordBreak: 'break-word',
         overflowWrap: 'anywhere',
-        whiteSpace: 'pre-wrap',
+        whiteSpace: 'normal',
         lineHeight: '1.8',
         fontSize: '15px',
       }}

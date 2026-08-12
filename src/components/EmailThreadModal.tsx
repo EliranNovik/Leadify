@@ -4386,7 +4386,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           .replace(/\s+/g, ' ')
                           .trim();
                         const displayName = outgoing
-                          ? message.sender_name || 'You'
+                          ? message.sender_name || message.sender_email || 'Team'
                           : message.sender_name || selectedContact?.name || 'Sender';
                         const initials = String(displayName)
                           .trim()
