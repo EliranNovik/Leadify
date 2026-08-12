@@ -54,31 +54,33 @@ const EmployeeFieldAssignmentsManager: React.FC = () => {
         .order('created_at', { ascending: false });
 
       if (searchTerm) {
-        const searchNum = parseInt(searchTerm);
-        const isNumeric = !isNaN(searchNum);
+        const trimmed = searchTerm.trim();
+        const searchNum = parseInt(trimmed, 10);
+        const isNumeric = /^\d+$/.test(trimmed) && !Number.isNaN(searchNum);
+        const escapeIlike = (value: string) => value.replace(/\\/g, '\\\\').replace(/[%_]/g, '\\$&');
 
         if (isNumeric) {
           // Search by employee_id or field_id if it's a number
           query = query.or(`employee_id.eq.${searchNum},field_id.eq.${searchNum}`);
         } else {
           // Search by employee display_name or field name
-          // First, find employees matching the search term
+          const pattern = `%${escapeIlike(trimmed)}%`;
           const { data: matchingEmployees } = await supabase
             .from('tenants_employee')
             .select('id')
-            .ilike('display_name', `%${searchTerm}%`);
+            .ilike('display_name', pattern)
+            .limit(80);
 
-          // Find fields matching the search term
           const { data: matchingFields } = await supabase
             .from('misc_maincategory')
             .select('id')
-            .ilike('name', `%${searchTerm}%`);
+            .ilike('name', pattern)
+            .limit(80);
 
           const employeeIds = matchingEmployees?.map(e => e.id) || [];
           const fieldIds = matchingFields?.map(f => f.id) || [];
 
           if (employeeIds.length > 0 || fieldIds.length > 0) {
-            // Build OR condition for Supabase
             const orConditions: string[] = [];
             if (employeeIds.length > 0) {
               orConditions.push(`employee_id.in.(${employeeIds.join(',')})`);

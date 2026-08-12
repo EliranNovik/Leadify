@@ -34,6 +34,9 @@ import {
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
   WHATSAPP_OUTGOING_TEXT_COLOR,
   WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS,
+  WHATSAPP_CHAT_HEADER_GLASS_CLASS,
+  WHATSAPP_READ_RECEIPT_COLOR,
+  WHATSAPP_SENT_RECEIPT_COLOR,
   type WhatsAppMessageLinkStyle,
   whatsAppMessageLinkColor,
   whatsAppMessageLinkFontWeight,
@@ -949,19 +952,19 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     switch (effectiveStatus) {
       case 'sent':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_SENT_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'delivered':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_SENT_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#b3e5fc' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -2022,7 +2025,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         )}
       <div className="h-full flex-1 min-w-0 flex flex-col relative bg-gray-50">
         {/* Header */}
-        <div className="flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+        <div className={`absolute top-0 inset-x-0 z-40 flex items-center justify-between p-4 md:p-6 ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}>
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
             <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
             {client && (
@@ -2065,7 +2068,16 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         </div>
 
         {/* Messages - Scrollable */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0 overscroll-contain" style={{ paddingBottom: isLocked ? '200px' : '120px', WebkitOverflowScrolling: 'touch', overflowX: 'hidden', maxWidth: '100%' }}>
+        <div
+          className="flex-1 overflow-y-auto px-4 pb-4 space-y-6 min-h-0 overscroll-contain"
+          style={{
+            paddingTop: 88,
+            paddingBottom: isLocked ? '200px' : '120px',
+            WebkitOverflowScrolling: 'touch',
+            overflowX: 'hidden',
+            maxWidth: '100%',
+          }}
+        >
           {messages.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />

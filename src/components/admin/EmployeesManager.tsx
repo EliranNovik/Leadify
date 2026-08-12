@@ -287,7 +287,8 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       required: false,
       placeholder: 'Base64 encoded photo data',
       hideInTable: true,
-      hideInEdit: true // Hide in edit drawer only
+      hideInEdit: true, // Hide in edit drawer only
+      searchable: false,
     },
     {
       name: 'is_lawyer',

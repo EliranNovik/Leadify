@@ -51,14 +51,17 @@ const WhatsAppAvatar: React.FC<WhatsAppAvatarProps> = ({
             if (parent) {
               const span = document.createElement('span');
               span.className =
-                'flex items-center justify-center w-full h-full font-bold text-white';
+                'flex items-center justify-center w-full h-full font-bold leading-none select-none';
+              span.style.color = 'inherit';
               span.textContent = initial;
               parent.appendChild(span);
             }
           }}
         />
       ) : (
-        <span className="text-white font-bold leading-none select-none">{initial}</span>
+        <span className="font-bold leading-none select-none" style={{ color: 'inherit' }}>
+          {initial}
+        </span>
       )}
     </div>
   );

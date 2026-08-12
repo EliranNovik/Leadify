@@ -538,6 +538,28 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     clientStageId != null && clientStageId >= CLIENT_SIGNED_STAGE_ID;
   const defaultScheduleCalendar = allowActiveAndExternalCalendars ? 'active_client' : 'current';
 
+  /**
+   * Map form calendar value → meetings.calendar_type.
+   * Stage ≥60 forms can still hold a stale `current` (initial state / select mismatch);
+   * never persist potential_client for signed clients unless they chose External (staff path).
+   */
+  const resolveStoredCalendarType = (
+    formCalendar: string | undefined,
+  ): 'active_client' | 'potential_client' => {
+    if (formCalendar === 'active_client') return 'active_client';
+    if (formCalendar === 'external') return 'potential_client'; // unused for external IM branch
+    // `current` or empty
+    if (allowActiveAndExternalCalendars) return 'active_client';
+    return 'potential_client';
+  };
+
+  /** Keep the controlled <select> value in sync with the options actually rendered. */
+  const normalizeFormCalendarValue = (formCalendar: string | undefined): string => {
+    if (!allowActiveAndExternalCalendars) return 'current';
+    if (formCalendar === 'external') return 'external';
+    return 'active_client';
+  };
+
   // Holds the latest silent meetings reload so the realtime subscription can call it regardless of
   // where fetchMeetings is declared below.
   const fetchMeetingsRef = useRef<(() => Promise<void> | void) | null>(null);
@@ -730,7 +752,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     attendance_probability: 'Medium',
     complexity: 'Simple',
     car_number: '',
-    calendar: 'current', // 'current' (potential) | 'active_client' | 'external'
+    calendar: defaultScheduleCalendar, // 'current' (potential) | 'active_client' | 'external'
     custom_link: '',
     custom_address: '',
   });
@@ -839,7 +861,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     time: '09:00',
     duration: DEFAULT_MEETING_DURATION_MINUTES,
     location: 'Teams',
-    calendar: 'current',
+    calendar: defaultScheduleCalendar,
     manager: '',
     helper: '',
     brief: '',
@@ -1779,8 +1801,22 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   }, [showScheduleDrawer, selectableMeetingLocations, defaultScheduleCalendar]);
 
   // Keep calendar selection valid for the lead's stage (pre-60 = potential only).
+  // Also upgrade stale `current` → `active_client` when stage ≥ 60 (select options no longer
+  // include Potential, but controlled value can still be stuck on `current` and save wrong).
   useEffect(() => {
-    if (allowActiveAndExternalCalendars) return;
+    if (allowActiveAndExternalCalendars) {
+      setScheduleMeetingFormData((prev) =>
+        prev.calendar === 'current' || !prev.calendar
+          ? { ...prev, calendar: 'active_client' }
+          : prev,
+      );
+      setRescheduleFormData((prev: any) =>
+        prev.calendar === 'current' || !prev.calendar
+          ? { ...prev, calendar: 'active_client' }
+          : prev,
+      );
+      return;
+    }
     setScheduleMeetingFormData((prev) =>
       prev.calendar === 'current' ? prev : { ...prev, calendar: 'current' },
     );
@@ -4308,7 +4344,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         const meetingDurationMinutes = normalizeMeetingDurationMinutes(scheduleMeetingFormData.duration);
         const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
 
-        const calendarEmail = scheduleMeetingFormData.calendar === 'active_client'
+        const calendarEmail = resolveStoredCalendarType(scheduleMeetingFormData.calendar) === 'active_client'
           ? 'shared-newclients@lawoffice.org.il'
           : 'shared-potentialclients@lawoffice.org.il';
 
@@ -4370,9 +4406,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
 
       // Auto-assign creator as lead scheduler only for Potential Client meetings
+      const storedCalendarType = resolveStoredCalendarType(scheduleMeetingFormData.calendar);
       const isPotentialMeeting =
-        scheduleMeetingFormData.calendar !== 'active_client' &&
-        scheduleMeetingFormData.calendar !== 'external';
+        scheduleMeetingFormData.calendar !== 'external' &&
+        storedCalendarType === 'potential_client';
       const actor = await resolveCurrentUserActor();
       const editorDisplayName = actor.displayName;
 
@@ -4413,7 +4450,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         scheduler: meetingSchedulerDisplayName,
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: editorDisplayName,
-        calendar_type: scheduleMeetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+        calendar_type: storedCalendarType,
         custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
         custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
       };
@@ -5122,7 +5159,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         const meetingDurationMinutes = normalizeMeetingDurationMinutes(rescheduleFormData.duration);
         const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
 
-        const calendarEmail = rescheduleFormData.calendar === 'active_client'
+        const calendarEmail = resolveStoredCalendarType(rescheduleFormData.calendar) === 'active_client'
           ? 'shared-newclients@lawoffice.org.il'
           : 'shared-potentialclients@lawoffice.org.il';
 
@@ -5179,9 +5216,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
       // Use the isLegacyLead and legacyId already declared at the start of the function (line 2605-2606)
       // Auto-assign creator as lead scheduler only for Potential Client meetings
+      const storedCalendarType = resolveStoredCalendarType(rescheduleFormData.calendar);
       const isPotentialMeeting =
-        rescheduleFormData.calendar !== 'active_client' &&
-        rescheduleFormData.calendar !== 'external';
+        rescheduleFormData.calendar !== 'external' &&
+        storedCalendarType === 'potential_client';
       const actor = await resolveCurrentUserActor();
 
       let meetingSchedulerDisplayName = '---';
@@ -5219,7 +5257,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         scheduler: meetingSchedulerDisplayName,
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: editorDisplayName,
-        calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+        calendar_type: storedCalendarType,
         custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
         custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
         status: 'scheduled',
@@ -8639,7 +8677,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   <MeetingFormFieldLabel icon={CalendarIcon}>Calendar</MeetingFormFieldLabel>
                   <select
                     className="select select-bordered w-full"
-                    value={scheduleMeetingFormData.calendar}
+                    value={normalizeFormCalendarValue(scheduleMeetingFormData.calendar)}
                     onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
                   >
                     {!allowActiveAndExternalCalendars ? (
@@ -8678,8 +8716,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                 />
 
                 {/* Manager / Helper — Potential Client meetings only */}
-                {scheduleMeetingFormData.calendar !== 'active_client' &&
-                  scheduleMeetingFormData.calendar !== 'external' && (
+                {normalizeFormCalendarValue(scheduleMeetingFormData.calendar) === 'current' && (
                   <>
                     <div className="relative" ref={managerDropdownRef}>
                       <MeetingFormFieldLabel icon={UserIcon}>Manager (Optional)</MeetingFormFieldLabel>
@@ -9477,7 +9514,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                       <MeetingFormFieldLabel icon={CalendarIcon}>Calendar</MeetingFormFieldLabel>
                       <select
                         className="select select-bordered w-full"
-                        value={rescheduleFormData.calendar}
+                        value={normalizeFormCalendarValue(rescheduleFormData.calendar)}
                         onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
                       >
                         {!allowActiveAndExternalCalendars ? (
@@ -9516,8 +9553,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                     />
 
                     {/* Manager / Helper — Potential Client meetings only */}
-                    {rescheduleFormData.calendar !== 'active_client' &&
-                      rescheduleFormData.calendar !== 'external' && (
+                    {normalizeFormCalendarValue(rescheduleFormData.calendar) === 'current' && (
                       <>
                         <div className="relative" ref={rescheduleManagerDropdownRef}>
                           <MeetingFormFieldLabel icon={UserIcon}>Manager (Optional)</MeetingFormFieldLabel>

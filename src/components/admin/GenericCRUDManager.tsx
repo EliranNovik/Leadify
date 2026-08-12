@@ -16,6 +16,39 @@ import {
 } from '../../lib/employeeUserLink';
 import { buildApiUrl } from '../../lib/api';
 
+/** Quote PostgREST `.or()` / filter values so spaces and commas don't break parsing. */
+function quotePostgrestFilterValue(value: string): string {
+  return `"${String(value).replace(/"/g, '')}"`;
+}
+
+/** Escape LIKE wildcards for ilike patterns. */
+function escapeIlikePattern(value: string): string {
+  return String(value).replace(/\\/g, '\\\\').replace(/[%_]/g, '\\$&');
+}
+
+/** Columns that must never be searched with ilike (huge / binary / non-text). */
+const NON_SEARCHABLE_COLUMN_NAMES = new Set([
+  'photo',
+  'photo_url',
+  'password',
+  'auth_id',
+  'user_id',
+  'updated_by',
+  'created_by',
+  'groups',
+  'user_permissions',
+  'lead_time_reporting_schedule',
+  'lead_time_reporting_excluded_dates',
+  'lead_time_reporting_weekdays',
+  'param_mapping',
+  'params',
+  'content',
+  'body_html',
+  'body_text',
+  'html',
+  'template_html',
+]);
+
 interface Field {
   name: string;
   label: string;
@@ -28,6 +61,8 @@ interface Field {
   hideInEdit?: boolean;
   readOnly?: boolean;
   defaultValue?: any;
+  /** When false, exclude from table search. Defaults true for text/email/textarea. */
+  searchable?: boolean;
   maxLength?: number; // Maximum length for text fields
   formatValue?: (value: any, record: Record) => React.ReactNode;
   prepareValueForForm?: (value: any, record?: Record | null) => any;
@@ -163,6 +198,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [isActiveFilter, setIsActiveFilter] = useState<string>('all'); // Filter for is_active field
   const [userActiveFilter, setUserActiveFilter] = useState<string>('all'); // Filter for user is_active status (for tenants_employee)
   const [showAllRecords, setShowAllRecords] = useState(true); // Show all records by default
@@ -171,6 +207,15 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const [preferredCategoryData, setPreferredCategoryData] = useState<{[employeeId: string]: string[]}>({}); // For employees preferred category
   const [searchTerms, setSearchTerms] = useState<{[key: string]: string}>({});
   const [searchDropdownOpen, setSearchDropdownOpen] = useState<{[key: string]: boolean}>({});
+
+  // Debounce table search so we don't spam PostgREST / FK refetch on every keystroke.
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm.trim());
+      setCurrentPage(1);
+    }, 280);
+    return () => window.clearTimeout(handle);
+  }, [searchTerm]);
 
   // Fetch records
   const fetchRecords = async () => {
@@ -186,20 +231,77 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         .select(needsUserJoin && hasUserIdField ? '*, users!user_id(is_active)' : '*', { count: 'exact' });
 
       // Add search functionality if search term exists
-      if (searchTerm) {
-        // Search in all text fields, but exclude UUID fields and array fields that cause issues
-        const uuidFields = ['id', 'auth_id', 'user_id', 'employee_id', 'updated_by'];
-        const arrayFields = ['groups', 'user_permissions']; // Array fields that don't support ilike
-        const textFields = fields.filter(f => 
-          (f.type === 'text' || f.type === 'email' || f.type === 'textarea') && 
-          !uuidFields.includes(f.name) &&
-          !arrayFields.includes(f.name)
-        );
-        if (textFields.length > 0) {
-          // Escape any % characters in the search term to prevent PostgREST parsing errors
-          const escapedSearchTerm = searchTerm.replace(/%/g, '\\%');
-          const searchConditions = textFields.map(field => `${field.name}.ilike.%${escapedSearchTerm}%`);
+      if (debouncedSearchTerm) {
+        const term = debouncedSearchTerm;
+        const escaped = escapeIlikePattern(term);
+        const quotedContains = quotePostgrestFilterValue(`%${escaped}%`);
+        const searchConditions: string[] = [];
+
+        const textFields = fields.filter((f) => {
+          if (f.searchable === false) return false;
+          if (f.type !== 'text' && f.type !== 'email' && f.type !== 'textarea') return false;
+          if (NON_SEARCHABLE_COLUMN_NAMES.has(f.name)) return false;
+          // Prefer columns visible in the table (skip giant hideInTable blobs like photo).
+          if (f.hideInTable && f.searchable !== true) return false;
+          return true;
+        });
+
+        for (const field of textFields) {
+          searchConditions.push(`${field.name}.ilike.${quotedContains}`);
+        }
+
+        // Resolve employee name → ids for FK / employee_id columns (common across admin managers).
+        const employeeFkFields = fields.filter((f) => {
+          if (f.searchable === false) return false;
+          if (f.name === 'employee_id') return true;
+          return f.foreignKey?.table === 'tenants_employee';
+        });
+
+        if (employeeFkFields.length > 0) {
+          const { data: matchingEmployees, error: empSearchError } = await supabase
+            .from('tenants_employee')
+            .select('id')
+            .ilike('display_name', `%${escaped}%`)
+            .limit(80);
+
+          if (empSearchError) {
+            console.error('Employee name search failed:', empSearchError);
+          } else if (matchingEmployees && matchingEmployees.length > 0) {
+            const ids = matchingEmployees
+              .map((e: { id: number | string }) => e.id)
+              .filter((id) => id != null && id !== '')
+              .join(',');
+            if (ids) {
+              for (const field of employeeFkFields) {
+                searchConditions.push(`${field.name}.in.(${ids})`);
+              }
+            }
+          }
+        }
+
+        // Also resolve firm name for firm_id FKs when searching.
+        const firmFkFields = fields.filter((f) => f.foreignKey?.table === 'firms' && f.searchable !== false);
+        if (firmFkFields.length > 0) {
+          const { data: matchingFirms } = await supabase
+            .from('firms')
+            .select('id')
+            .ilike('name', `%${escaped}%`)
+            .limit(80);
+          if (matchingFirms && matchingFirms.length > 0) {
+            const ids = matchingFirms.map((f: { id: number | string }) => f.id).join(',');
+            if (ids) {
+              for (const field of firmFkFields) {
+                searchConditions.push(`${field.name}.in.(${ids})`);
+              }
+            }
+          }
+        }
+
+        if (searchConditions.length > 0) {
           query = query.or(searchConditions.join(','));
+        } else {
+          // No searchable columns and no FK name hits — force empty result instead of full scan.
+          query = query.eq('id', -1);
         }
       }
 
@@ -758,9 +860,15 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   };
 
   useEffect(() => {
-    fetchRecords();
-    fetchAllForeignKeyOptions();
-  }, [currentPage, searchTerm, isActiveFilter, userActiveFilter, showAllRecords, refreshKey, sortColumn, sortAscending, queryModifierKey]);
+    void fetchRecords();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchRecords closes over latest filters/fields
+  }, [currentPage, debouncedSearchTerm, isActiveFilter, userActiveFilter, showAllRecords, refreshKey, sortColumn, sortAscending, queryModifierKey]);
+
+  // FK dropdown options only when table/fields change — not on every search keystroke.
+  useEffect(() => {
+    void fetchAllForeignKeyOptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey, tableName]);
 
   // Handle boolean toggle changes
   const handleToggleBoolean = async (record: Record, fieldName: string, newValue: boolean) => {

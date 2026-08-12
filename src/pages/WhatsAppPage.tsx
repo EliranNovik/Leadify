@@ -46,8 +46,12 @@ import {
 } from '../lib/whatsappChatMessages';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
+  WHATSAPP_OUTGOING_EDIT_TEXTAREA_CLASS,
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
   WHATSAPP_OUTGOING_TEXT_COLOR,
+  WHATSAPP_CHAT_HEADER_GLASS_CLASS,
+  WHATSAPP_READ_RECEIPT_COLOR,
+  WHATSAPP_SENT_RECEIPT_COLOR,
   type WhatsAppMessageLinkStyle,
   whatsAppMessageLinkColor,
   whatsAppMessageLinkFontWeight,
@@ -88,7 +92,7 @@ import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
 import WhatsAppShareLeadRmqModal from '../components/whatsapp/WhatsAppShareLeadRmqModal';
 import WhatsAppDoubleCheckIcon from '../components/whatsapp/WhatsAppDoubleCheckIcon';
 import WhatsAppClientInfoPanel from '../components/whatsapp/WhatsAppClientInfoPanel';
-import { getStageColour, getStageName } from '../lib/stageUtils';
+import { getSoftStageBadgeStyle, getStageColour, getStageName } from '../lib/stageUtils';
 import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
 import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
 
@@ -419,8 +423,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [isSearchHiddenMobile, setIsSearchHiddenMobile] = useState(false);
   const lastScrollTopRef = useRef(0);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const chatHeaderRef = useRef<HTMLDivElement>(null);
+  const [chatHeaderHeight, setChatHeaderHeight] = useState(64);
   const pendingInstantScrollRef = useRef(false);
-  const [isChatHeaderGlass, setIsChatHeaderGlass] = useState(false);
   const [isChatFooterGlass, setIsChatFooterGlass] = useState(false);
 
   // Emoji picker state
@@ -1309,19 +1314,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     switch (effectiveStatus) {
       case 'sent':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_SENT_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'delivered':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_SENT_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || '#b3e5fc' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -1369,17 +1374,27 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  // Keep chat header overlay padding in sync with measured header height
+  useEffect(() => {
+    const el = chatHeaderRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const update = () => setChatHeaderHeight(Math.ceil(el.getBoundingClientRect().height) || 64);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selectedClient?.id, isMobile]);
+
   // Handle scroll to hide on scroll down, reveal on scroll up (mobile only)
   const handleContactListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (!isMobile) return;
     lastScrollTopRef.current = e.currentTarget.scrollTop;
   };
 
-  // Chat messages scroll: toggle glass headers/footers on mobile
+  // Chat messages scroll: toggle glass footer on mobile; load older near top
   const handleChatMessagesScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const top = e.currentTarget.scrollTop;
     if (isMobile) {
-      setIsChatHeaderGlass(top > 0);
       setIsChatFooterGlass(top > 0);
     }
     if (top < 80 && hasMoreOlderMessagesRef.current && !loadingOlderMessages) {
@@ -5292,29 +5307,24 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   };
 
-  const getContrastingTextColor = (hexColor: string) => {
-    const hex = hexColor.replace('#', '');
-    if (hex.length !== 6) return '#ffffff';
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.55 ? '#111827' : '#ffffff';
-  };
-
   const renderLeadStageBadge = (stage?: string | null) => {
     const stageStr = stage != null ? String(stage).trim() : '';
     if (!stageStr) return null;
     const stageName = /^\d+$/.test(stageStr) ? getStageName(stageStr) : stageStr;
-    const backgroundColor = /^\d+$/.test(stageStr) ? getStageColour(stageStr) : '#391BC8';
-    const textColor =
-      stageName === 'Scheduler assigned' || stageStr === '10'
-        ? '#ffffff'
-        : getContrastingTextColor(backgroundColor);
+    const stageColour = /^\d+$/.test(stageStr) ? getStageColour(stageStr) : '#391BC8';
+    const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
     return (
       <span
-        className="badge badge-sm text-xs px-2 py-1 font-semibold border-none whitespace-nowrap"
-        style={{ backgroundColor, color: textColor }}
+        className="badge stage-badge rounded-full shrink-0 border-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full"
+        style={{
+          backgroundColor: softBadgeStyle.backgroundColor,
+          color: softBadgeStyle.color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+        }}
+        title={stageName}
       >
         {stageName}
       </span>
@@ -5931,12 +5941,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   showClientInfoPanel && !isMobile ? 'overflow-visible' : ''
                 }`}
               >
-                <div className="flex flex-col flex-1 min-h-0 min-w-0">
+                <div className="flex flex-col flex-1 min-h-0 min-w-0 relative">
               <>
                 {/* Desktop chat header: lead data + identity (WhatsApp Web layout) */}
                 {!isMobile && (
                   <div
-                    className={`flex-none flex flex-col ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}
+                    ref={chatHeaderRef}
+                    className={`absolute top-0 inset-x-0 z-40 flex flex-col ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}
                   >
                     <div className="flex items-center justify-between gap-3 px-4 py-3 min-w-0">
                       <div className="flex items-center min-w-0 flex-1 overflow-x-auto">
@@ -5963,7 +5974,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           />
                         </button>
                         <div
-                          className="flex items-center min-w-0 cursor-pointer hover:opacity-80 transition-opacity rounded-lg px-2 py-1 hover:bg-gray-50"
+                          className="flex items-center min-w-0 cursor-pointer hover:opacity-80 transition-opacity rounded-lg px-2 py-1 hover:bg-white/40"
                           onClick={() => handleNavigateToClient(selectedClient)}
                           title="View Client Page"
                         >
@@ -5998,7 +6009,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <div className={`flex-none flex flex-col ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={{ zIndex: 40 }}>
+                  <div
+                    ref={chatHeaderRef}
+                    className={`absolute top-0 inset-x-0 z-40 flex flex-col ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}
+                  >
                     <div className="flex items-center px-2 py-3 relative">
                       {/* Left Side - Back Button, Avatar, and Name */}
                       <div className="flex items-center gap-2 flex-shrink-0 z-10">
@@ -6083,7 +6097,26 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 )}
 
                 {/* Messages - Scrollable */}
-                <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain relative" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'), WebkitOverflowScrolling: 'touch', overflowX: 'hidden', maxWidth: '100%' } : { paddingBottom: isLocked ? '200px' : '120px', overflowX: 'hidden', maxWidth: '100%' }}>
+                <div
+                  ref={chatMessagesRef}
+                  onScroll={handleChatMessagesScroll}
+                  className="flex-1 overflow-y-auto px-4 pb-4 space-y-4 min-h-0 overscroll-contain relative"
+                  style={isMobile
+                    ? {
+                        flex: '1 1 auto',
+                        paddingTop: chatHeaderHeight + 16,
+                        paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'),
+                        WebkitOverflowScrolling: 'touch',
+                        overflowX: 'hidden',
+                        maxWidth: '100%',
+                      }
+                    : {
+                        paddingTop: chatHeaderHeight + 16,
+                        paddingBottom: isLocked ? '200px' : '120px',
+                        overflowX: 'hidden',
+                        maxWidth: '100%',
+                      }}
+                >
                   {messages.length === 0 ? (
                     <div className="text-center py-8 text-gray-500">
                       <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -6241,7 +6274,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
                                       }}
                                       className={`w-full bg-transparent border-none outline-none resize-none overflow-y-auto ${message.direction === 'out'
-                                        ? 'text-white placeholder-white/70'
+                                        ? WHATSAPP_OUTGOING_EDIT_TEXTAREA_CLASS
                                         : 'text-gray-900 placeholder-gray-500'
                                         }`}
                                       autoFocus
