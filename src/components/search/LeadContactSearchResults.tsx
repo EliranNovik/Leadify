@@ -23,6 +23,8 @@ type Props = {
   minLength?: number;
   className?: string;
   showTypeFilter?: boolean;
+  /** When true, list grows with content (parent scrolls) — use for mobile full-page search. */
+  unboundedList?: boolean;
 };
 
 const RESULT_ROW_BASE_CLASS =
@@ -72,6 +74,7 @@ const LeadContactSearchResults: React.FC<Props> = ({
   minLength = 2,
   className = '',
   showTypeFilter = true,
+  unboundedList = false,
 }) => {
   const trimmed = query.trim();
   const [typeFilter, setTypeFilter] = useState<LeadContactSearchTypeFilterValue>('all');
@@ -135,9 +138,9 @@ const LeadContactSearchResults: React.FC<Props> = ({
 
       {filteredResults.length > 0 ? (
         <ul
-          className={`scrollbar-hide max-h-[min(32rem,70vh)] overflow-y-auto ${
-            loading ? 'opacity-80' : ''
-          }`}
+          className={`scrollbar-hide ${
+            unboundedList ? '' : 'max-h-[min(32rem,70vh)] overflow-y-auto'
+          } ${loading ? 'opacity-80' : ''}`}
         >
           {filteredResults.map((lead, index) => {
             const title = getLeadContactSearchResultTitle(lead);

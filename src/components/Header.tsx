@@ -202,6 +202,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const mobileSearchOpenButtonRef = useRef<HTMLButtonElement>(null);
   const HEADER_SEARCH_INPUT_ID = 'header-search-input';
   const notificationsRef = useRef<HTMLDivElement>(null);
   const searchDropdownRef = useRef<HTMLDivElement>(null);
@@ -971,6 +972,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           Boolean(searchContainerRef.current?.contains(target)) ||
           Boolean(searchDropdownRef.current?.contains(target)) ||
           Boolean(filterDropdownRef.current?.contains(target)) ||
+          Boolean(mobileSearchOpenButtonRef.current?.contains(target)) ||
+          Boolean((target as HTMLElement).closest?.('[data-mobile-search-open]')) ||
           Boolean((target as HTMLElement).closest?.('.search-dropdown')) ||
           Boolean((target as HTMLElement).closest?.('.filter-dropdown'));
 
@@ -2735,12 +2738,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   /** Shared search results UI — used in desktop dropdown and inline on mobile overlay */
-  const renderHeaderSearchDropdownBody = () => (
+  const renderHeaderSearchDropdownBody = (opts?: { unboundedList?: boolean }) => (
     <LeadContactSearchResults
       results={activeSearchResults}
       loading={activeSearchLoading}
       query={searchValue}
       onSelect={handleSearchResultClick}
+      unboundedList={opts?.unboundedList}
     />
   );
 
@@ -4450,16 +4454,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 value={searchValue}
                 onChange={handleSearchChange}
                 onFocus={handleSearchFocus}
-                onBlur={isMobile ? () => {
-                  // On mobile, close search if no value, no results, and not searching
-                  if (!searchValue.trim() && activeSearchResults.length === 0 && !activeSearchLoading) {
-                    setTimeout(() => {
-                      isSearchActiveRef.current = false;
-                      setIsSearchActive(false);
-                      setIsSearchOpen(false);
-                    }, 150);
-                  }
-                } : undefined}
+                onBlur={undefined}
                 readOnly={!isSearchActive}
                 tabIndex={isSearchActive ? 0 : -1}
                 aria-disabled={!isSearchActive}
@@ -4532,7 +4527,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   <div className="max-w-xl mx-auto space-y-6">
                     {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) ? (
                       <div className="text-base-content">
-                        {renderHeaderSearchDropdownBody()}
+                        {renderHeaderSearchDropdownBody({ unboundedList: true })}
                       </div>
                     ) : getRecentLeads().length > 0 ? (
                       <div>
@@ -4985,13 +4980,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           {/* Mobile: search opens from icon only (sits next to bell); desktop search stays in center */}
           <button
             type="button"
+            ref={mobileSearchOpenButtonRef}
+            data-mobile-search-open
             className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg"
             aria-label="Search"
-            onClick={() => {
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
               isSearchActiveRef.current = true;
               setIsSearchOpen(true);
               setIsSearchActive(true);
-              window.setTimeout(() => searchInputRef.current?.focus(), 0);
+              void warmHeaderLeadSearch();
+              // Focus after the bar mounts / expands (input is hidden until active).
+              window.setTimeout(() => {
+                searchInputRef.current?.focus({ preventScroll: true });
+              }, 50);
+              window.setTimeout(() => {
+                searchInputRef.current?.focus({ preventScroll: true });
+              }, 480);
             }}
           >
             <MagnifyingGlassIcon className="w-7 h-7" />
