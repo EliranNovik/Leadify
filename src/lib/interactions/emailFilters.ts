@@ -614,6 +614,28 @@ export async function fetchLeadEmailsForTimeline(
     } catch {
       /* ignore */
     }
+    try {
+      const junction = await withQueryTimeout(
+        supabaseClient
+          .from('email_contacts')
+          .select('email_id')
+          .in('contact_id', normalizedContactIds)
+          .limit(limit),
+        EMAIL_ADDRESS_MATCH_TIMEOUT_MS,
+      );
+      const emailIds = [...new Set((junction.data || []).map((r: { email_id?: string }) => r.email_id).filter(Boolean))];
+      if (emailIds.length > 0) {
+        const linked = await withQueryTimeout(
+          supabaseClient.from('emails').select(select).in('id', emailIds).order('sent_at', { ascending: false }).limit(limit),
+          EMAIL_ADDRESS_MATCH_TIMEOUT_MS,
+        );
+        if (!linked.error) {
+          fastRows = mergeEmailRowsById(fastRows, linked.data || [], limit);
+        }
+      }
+    } catch {
+      /* ignore if email_contacts is not migrated yet */
+    }
   }
 
   if (fastRows.length > 0 || !matchByAddress) {

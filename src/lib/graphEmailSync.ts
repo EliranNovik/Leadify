@@ -93,6 +93,63 @@ export interface GraphClientSyncResult {
   matched: number;
 }
 
+/**
+ * Insert new Graph messages; never steal client_id/legacy_id/contact_id from an existing row.
+ * One emails row per message_id — extra leads see the message via contacts / timeline RPC.
+ */
+export async function upsertEmailsKeepExistingLeadLinks(
+  rows: Array<Record<string, unknown>>,
+): Promise<void> {
+  const messageIds = [...new Set(rows.map((r) => r.message_id).filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  if (!messageIds.length) return;
+
+  const existingByMessageId = new Map<
+    string,
+    { id: string | number; client_id: unknown; legacy_id: unknown; contact_id: unknown }
+  >();
+  for (let i = 0; i < messageIds.length; i += 200) {
+    const chunk = messageIds.slice(i, i + 200);
+    const { data, error } = await supabase
+      .from('emails')
+      .select('id, message_id, client_id, legacy_id, contact_id')
+      .in('message_id', chunk);
+    if (error) {
+      throw new Error(`Failed to load existing emails: ${error.message}`);
+    }
+    (data || []).forEach((row: any) => {
+      if (row?.message_id && !existingByMessageId.has(row.message_id)) {
+        existingByMessageId.set(row.message_id, row);
+      }
+    });
+  }
+
+  const toInsert: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const messageId = typeof row.message_id === 'string' ? row.message_id : '';
+    if (!messageId) continue;
+    const existing = existingByMessageId.get(messageId);
+    if (!existing) {
+      toInsert.push(row);
+      continue;
+    }
+    const patch: Record<string, unknown> = {};
+    if (existing.client_id == null && row.client_id != null) patch.client_id = row.client_id;
+    if (existing.legacy_id == null && row.legacy_id != null) patch.legacy_id = row.legacy_id;
+    if (existing.contact_id == null && row.contact_id != null) patch.contact_id = row.contact_id;
+    if (Object.keys(patch).length === 0) continue;
+    const { error } = await supabase.from('emails').update(patch).eq('id', existing.id);
+    if (error) {
+      console.warn('upsertEmailsKeepExistingLeadLinks: fill-empty FKs failed', error.message);
+    }
+  }
+
+  if (!toInsert.length) return;
+  const { error } = await supabase.from('emails').insert(toInsert);
+  if (error && error.code !== '23505') {
+    throw new Error(`Failed to sync emails to database: ${error.message}`);
+  }
+}
+
 export const syncEmailsForClient = async (
   token: string,
   client: GraphSyncClient,
@@ -230,13 +287,7 @@ export const syncEmailsForClient = async (
     return { processed: messages.length, matched: 0 };
   }
 
-  const { error } = await supabase
-    .from('emails')
-    .upsert(emailsToUpsert, { onConflict: 'message_id' });
-
-  if (error) {
-    throw new Error(`Failed to sync emails to database: ${error.message}`);
-  }
+  await upsertEmailsKeepExistingLeadLinks(emailsToUpsert);
 
   return { processed: messages.length, matched: emailsToUpsert.length };
 };

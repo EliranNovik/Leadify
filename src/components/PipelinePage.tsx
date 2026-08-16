@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { upsertEmailsKeepExistingLeadLinks } from '../lib/graphEmailSync';
 import { Link, useNavigate } from 'react-router-dom';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
@@ -3224,7 +3225,7 @@ const PipelinePage: React.FC = () => {
       direction: msg.from?.emailAddress?.address.toLowerCase().includes('lawoffice.org.il') ? 'outgoing' : 'incoming',
       attachments: null,
     }));
-    await supabase.from('emails').upsert(emailsToUpsert, { onConflict: 'message_id' });
+    await upsertEmailsKeepExistingLeadLinks(emailsToUpsert);
   };
 
   // Set default subject when opening compose drawer

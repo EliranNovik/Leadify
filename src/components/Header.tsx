@@ -61,6 +61,7 @@ import { EXTERNAL_USER_HEADER_PADDING } from '../lib/externalUserLayout';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import { useSignOutWithClockOut } from '../hooks/useSignOutWithClockOut';
 import { useAuthContext } from '../contexts/AuthContext';
+import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import { useAdminProfileBypass } from '../hooks/useAdminProfileBypass';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import { useUpcomingMeetingReminder } from '../hooks/useUpcomingMeetingReminder';
@@ -217,6 +218,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     supabaseSessionReady,
     isSuperUser,
   } = useAuthContext();
+  const { mailboxConnectPending, isModalOpen: isMailboxReconnectModalOpen, showReconnectModal } =
+    useMailboxReconnect();
   const { bypass: adminProfileBypass, clearBypass: clearAdminBypass } = useAdminProfileBypass();
   const clockInGate = useOptionalClockInGate();
   const showAdminBypassBadge = Boolean(adminProfileBypass && clockInGate?.adminBypassActive);
@@ -3692,6 +3695,29 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const mobileBackButtonClass =
     'md:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#3b28c7] text-white shadow-md ring-2 ring-white/25 hover:bg-[#3224b0] active:scale-95 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3b28c7]/40 focus-visible:ring-offset-2';
 
+  const renderMailboxReconnectButton = (className = '') =>
+    mailboxConnectPending && !isMailboxReconnectModalOpen && !isExternalUser && !isLoadingExternal ? (
+      <div className={`relative ${className}`}>
+        <button
+          type="button"
+          className="btn btn-ghost border-0 min-h-0 h-9 w-9 p-0 rounded-lg flex items-center justify-center hover:bg-base-200/70"
+          title="Reconnect Outlook mailbox"
+          aria-label="Reconnect Outlook mailbox"
+          onClick={() => showReconnectModal()}
+        >
+          <svg className="h-5 w-5 shrink-0" viewBox="0 0 23 23" aria-hidden="true">
+            <rect width="11" height="11" fill="#F25022" />
+            <rect x="12" width="11" height="11" fill="#7FBA00" />
+            <rect y="12" width="11" height="11" fill="#00A4EF" />
+            <rect x="12" y="12" width="11" height="11" fill="#FFB900" />
+          </svg>
+        </button>
+        <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">
+          !
+        </span>
+      </div>
+    ) : null;
+
   return (
     <>
       <div
@@ -3950,6 +3976,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               document.body
             )}
           </div>
+          {renderMailboxReconnectButton('md:hidden ml-1 shrink-0')}
 
           {renderAdminBypassControls('md:hidden ml-1 shrink-0')}
 
@@ -4373,6 +4400,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             </>,
             document.body
           )}
+            {renderMailboxReconnectButton('hidden md:block ml-1 shrink-0')}
             {renderAdminBypassControls('hidden md:flex ml-2 shrink-0')}
         </div>
 

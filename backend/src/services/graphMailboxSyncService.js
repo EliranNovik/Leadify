@@ -5,6 +5,7 @@ const supabase = require('../config/supabase');
 const pushNotificationService = require('./pushNotificationService');
 
 const EMAIL_HEADERS_TABLE = process.env.EMAIL_HEADERS_TABLE || 'emails';
+const EMAIL_CONTACTS_TABLE = process.env.EMAIL_CONTACTS_TABLE || 'email_contacts';
 const EMAIL_BODIES_TABLE = process.env.EMAIL_BODIES_TABLE || 'email_bodies';
 const EMAIL_ATTACHMENTS_TABLE = process.env.EMAIL_ATTACHMENTS_TABLE || 'email_attachments';
 const ALLOWLIST_TABLE = process.env.CLIENT_ALLOWLIST_TABLE || 'client_email_allowlist';
@@ -290,34 +291,49 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
               leadId: contact.newlead_id,
             });
           }
-
-          // Get leads associated with this contact (legacy leads via lead_leadcontact)
-          const { data: legacyContactRels, error: legacyRelError } = await supabase
-            .from('lead_leadcontact')
-            .select('lead_id,newlead_id')
-            .eq('contact_id', contact.id);
-
-          if (!legacyRelError && legacyContactRels) {
-            legacyContactRels.forEach((rel) => {
-              if (rel.lead_id) {
-                addMapping(contact.email, {
-                  clientId: null,
-                  legacyId: rel.lead_id,
-                  contactId: contact.id,
-                  leadId: rel.lead_id,
-                });
-              }
-              if (rel.newlead_id) {
-                addMapping(contact.email, {
-                  clientId: rel.newlead_id,
-                  legacyId: null,
-                  contactId: contact.id,
-                  leadId: rel.newlead_id,
-                });
-              }
-            });
-          }
         }
+
+        const contactIds = (contactMatches || [])
+          .filter((c) => c?.id && c?.email && !shouldFilterEmail(c.email))
+          .map((c) => c.id);
+        const relByContact = new Map();
+        for (const relChunk of chunkArray(contactIds, 200)) {
+          const { data: rels, error: relError } = await supabase
+            .from('lead_leadcontact')
+            .select('contact_id,lead_id,newlead_id')
+            .in('contact_id', relChunk);
+          if (relError) {
+            console.error('❌ Failed to resolve lead_leadcontact for email addresses:', relError.message || relError);
+            continue;
+          }
+          (rels || []).forEach((rel) => {
+            const list = relByContact.get(rel.contact_id) || [];
+            list.push(rel);
+            relByContact.set(rel.contact_id, list);
+          });
+        }
+
+        (contactMatches || []).forEach((contact) => {
+          if (!contact?.email || shouldFilterEmail(contact.email)) return;
+          (relByContact.get(contact.id) || []).forEach((rel) => {
+            if (rel.lead_id) {
+              addMapping(contact.email, {
+                clientId: null,
+                legacyId: rel.lead_id,
+                contactId: contact.id,
+                leadId: rel.lead_id,
+              });
+            }
+            if (rel.newlead_id) {
+              addMapping(contact.email, {
+                clientId: rel.newlead_id,
+                legacyId: null,
+                contactId: contact.id,
+                leadId: rel.newlead_id,
+              });
+            }
+          });
+        });
       }
     }
   } catch (error) {
@@ -326,6 +342,96 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
 
   return mapping;
 };
+
+const uniqueMatches = (matches = []) => {
+  const map = new Map();
+  matches.forEach((match) => {
+    if (!match) return;
+    const key = `${match.clientId || 'null'}|${match.legacyId || 'null'}|${match.contactId || 'null'}`;
+    if (!map.has(key)) map.set(key, match);
+  });
+  return Array.from(map.values());
+};
+
+const preferContactMatches = (matches = []) => {
+  const withContact = matches.filter((m) => m.contactId);
+  const covered = new Set();
+  withContact.forEach((m) => {
+    if (m.clientId) covered.add(`c:${m.clientId}`);
+    if (m.legacyId) covered.add(`l:${m.legacyId}`);
+  });
+  const without = matches.filter((m) => {
+    if (m.contactId) return false;
+    const leadKey = m.clientId ? `c:${m.clientId}` : m.legacyId ? `l:${m.legacyId}` : null;
+    return leadKey ? !covered.has(leadKey) : true;
+  });
+  return [...withContact, ...without];
+};
+
+const contactIdsFromMatches = (matches = []) =>
+  [...new Set(matches.map((m) => m.contactId).filter((id) => id != null && Number(id) > 0).map(Number))];
+
+const primaryMatchFrom = (matches = []) => preferContactMatches(matches)[0] || null;
+
+const collectMatchesForEmailRow = (row, leadMappings) => {
+  const recipientAddresses = row.recipient_list
+    ? row.recipient_list.split(',').map((addr) => normalise(addr)).filter(Boolean)
+    : [];
+  const senderEmail = row.sender_email ? normalise(row.sender_email) : null;
+  const isOutgoing = row.direction === 'outgoing';
+  const collected = [];
+
+  const addFromAddress = (addr) => {
+    (leadMappings[addr] || []).forEach((match) => collected.push(match));
+  };
+
+  if (isOutgoing) {
+    recipientAddresses.forEach(addFromAddress);
+  } else {
+    if (senderEmail) addFromAddress(senderEmail);
+    // Client on To/Cc of an employee-received thread (sender may be another lawyer)
+    recipientAddresses.filter((addr) => addr && !isLawofficeDomain(addr)).forEach(addFromAddress);
+  }
+
+  return uniqueMatches(collected);
+};
+
+async function linkEmailContacts(emailId, contactIds) {
+  const ids = [...new Set((contactIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))];
+  if (!emailId || !ids.length) return;
+  const rows = ids.map((contact_id) => ({
+    email_id: String(emailId),
+    contact_id,
+  }));
+  const { error } = await supabase.from(EMAIL_CONTACTS_TABLE).upsert(rows, {
+    onConflict: 'email_id,contact_id',
+    ignoreDuplicates: true,
+  });
+  if (error) {
+    console.warn(`⚠️ email_contacts link failed for email ${emailId}:`, error.message || error);
+  }
+}
+
+async function loadExistingEmailsByMessageId(messageIds) {
+  const existingByMessageId = new Map();
+  const ids = [...new Set((messageIds || []).filter(Boolean))];
+  for (const chunk of chunkArray(ids, 200)) {
+    const { data, error } = await supabase
+      .from(EMAIL_HEADERS_TABLE)
+      .select('id, message_id, contact_id, client_id, legacy_id')
+      .in('message_id', chunk);
+    if (error) {
+      console.error('❌ Failed to load existing emails by message_id:', error.message || error);
+      continue;
+    }
+    (data || []).forEach((row) => {
+      if (row?.message_id && !existingByMessageId.has(row.message_id)) {
+        existingByMessageId.set(row.message_id, row);
+      }
+    });
+  }
+  return existingByMessageId;
+}
 
 const fetchRecentMessagesSnapshot = async ({ accessToken, mailboxAddress, top = 25 }) => {
   try {
@@ -452,46 +558,20 @@ class GraphMailboxSyncService {
     if (!tokenRecord) {
       throw new Error('Mailbox is not connected for this user');
     }
+    if (tokenRecord.status === 'needs_reconnect') {
+      const err = new Error('Your mailbox connection has expired. Please reconnect your mailbox to continue syncing emails.');
+      err.code = 'EXPIRED_REFRESH_TOKEN';
+      throw err;
+    }
 
     const resolvedUserId = tokenRecord.user_id;
     if (!resolvedUserId) {
       throw new Error('Mailbox token is missing CRM user reference');
     }
 
-    const account = {
-      homeAccountId: tokenRecord.home_account_id,
-      environment: tokenRecord.environment,
-      tenantId: tokenRecord.tenant_id,
-      username: tokenRecord.mailbox_address,
-    };
-
-    let tokenResponse;
-    try {
-      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, account);
-    } catch (error) {
-      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
-        // Clear the expired token so user can reconnect
-        await mailboxTokenService.removeToken(userId);
-        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to continue syncing emails.');
-      }
-      throw error;
-    }
-    
-    if (!tokenResponse?.accessToken) {
+    const { accessToken } = await graphAuthService.getAccessTokenForUser(userId);
+    if (!accessToken) {
       throw new Error('Unable to acquire Microsoft Graph access token');
-    }
-
-    if (tokenResponse.refreshToken && tokenResponse.refreshToken !== tokenRecord.refresh_token) {
-      await mailboxTokenService.upsertToken({
-        userId,
-        mailboxAddress: tokenRecord.mailbox_address,
-        msUserId: tokenRecord.ms_user_id,
-        tenantId: tokenRecord.tenant_id,
-        homeAccountId: tokenResponse.account?.homeAccountId || tokenRecord.home_account_id,
-        environment: tokenResponse.account?.environment || tokenRecord.environment,
-        refreshToken: tokenResponse.refreshToken,
-        expiresOn: tokenResponse.expiresOn?.toISOString?.() || null,
-      });
     }
 
     const state = await mailboxStateService.getState(resolvedUserId);
@@ -505,7 +585,7 @@ class GraphMailboxSyncService {
     );
 
     let { messages, nextDeltaLink } = await this.fetchDeltaMessages({
-      accessToken: tokenResponse.accessToken,
+      accessToken,
       mailboxAddress,
       deltaLink,
     });
@@ -517,7 +597,7 @@ class GraphMailboxSyncService {
       // Upsert on message_id keeps this idempotent and also recovers from
       // any missed delta pages or invalid delta links.
       const snapshotMessages = await fetchRecentMessagesSnapshot({
-        accessToken: tokenResponse.accessToken,
+        accessToken,
         mailboxAddress,
         top: DEFAULT_SYNC_BATCH,
       });
@@ -532,7 +612,7 @@ class GraphMailboxSyncService {
 
     console.log(`📬 Graph sync: fetched ${messages.length} messages for ${mailboxAddress}${deltaLink ? ' (delta)' : ''}`);
 
-    const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages, tokenResponse.accessToken);
+    const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages, accessToken);
 
     await mailboxStateService.upsertState(resolvedUserId, {
       delta_link: nextDeltaLink || deltaLink || null,
@@ -540,7 +620,7 @@ class GraphMailboxSyncService {
     });
 
     try {
-      await this.ensureInboxMailSubscription(resolvedUserId, tokenResponse.accessToken, mailboxAddress);
+      await this.ensureInboxMailSubscription(resolvedUserId, accessToken, mailboxAddress);
     } catch (subErr) {
       console.warn(`⚠️ Graph mail subscription ensure failed (sync still succeeded):`, subErr.message || subErr);
     }
@@ -708,22 +788,13 @@ class GraphMailboxSyncService {
     if (!resolvedUserId) {
       throw new Error('Mailbox token is missing CRM user reference');
     }
-    const account = {
-      homeAccountId: tokenRecord.home_account_id,
-      environment: tokenRecord.environment,
-      tenantId: tokenRecord.tenant_id,
-      username: tokenRecord.mailbox_address,
-    };
-    const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(
-      tokenRecord.refresh_token,
-      account
-    );
-    if (!tokenResponse?.accessToken) {
+    const { accessToken } = await graphAuthService.getAccessTokenForUser(userId);
+    if (!accessToken) {
       throw new Error('Unable to acquire Microsoft Graph access token');
     }
     return this.ensureInboxMailSubscription(
       resolvedUserId,
-      tokenResponse.accessToken,
+      accessToken,
       tokenRecord.mailbox_address
     );
   }
@@ -738,6 +809,15 @@ class GraphMailboxSyncService {
       async (promise, token) => {
         const acc = await promise;
         if (!token?.user_id) {
+          return acc;
+        }
+        if (token.status === 'needs_reconnect') {
+          acc.failed += 1;
+          acc.details.push({
+            userId: token.user_id,
+            mailbox: token.mailbox_address,
+            error: 'needs_reconnect',
+          });
           return acc;
         }
 
@@ -827,24 +907,25 @@ class GraphMailboxSyncService {
           });
           continue;
         }
+        if (tokenRecord.status === 'needs_reconnect') {
+          acc.skipped += 1;
+          acc.details.push({
+            userId: token.user_id,
+            mailbox: token.mailbox_address,
+            status: 'skipped',
+            reason: 'needs_reconnect',
+          });
+          continue;
+        }
 
-        const account = {
-          homeAccountId: tokenRecord.home_account_id,
-          environment: tokenRecord.environment,
-          tenantId: tokenRecord.tenant_id,
-          username: tokenRecord.mailbox_address,
-        };
-        const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(
-          tokenRecord.refresh_token,
-          account
-        );
-        if (!tokenResponse?.accessToken) {
+        const { accessToken } = await graphAuthService.getAccessTokenForUser(token.user_id);
+        if (!accessToken) {
           throw new Error('No access token');
         }
 
         const result = await this.ensureInboxMailSubscription(
           token.user_id,
-          tokenResponse.accessToken,
+          accessToken,
           tokenRecord.mailbox_address
         );
         acc.successful += 1;
@@ -1004,10 +1085,11 @@ class GraphMailboxSyncService {
         body_preview: msg.bodyPreview || '', // Truncated preview from Graph API
         sent_at: sentAt,
         direction,
-        // Filled after insert by fetchFullBodiesForMessages (Graph list attachments); avoid storing [] forever
+        thread_id: msg.conversationId || null,
         attachments: null,
         client_id: null,
         legacy_id: null,
+        contact_id: null,
         body_cached: false, // Flag to indicate full body needs to be fetched
       };
     });
@@ -1031,408 +1113,168 @@ class GraphMailboxSyncService {
       leadMappings = await fetchLeadMappingsForAddresses(Array.from(addressSet));
     }
 
-    // Process rows and create multiple email records - one for each matching lead/contact
-    // This ensures emails appear in all leads where the email address matches
-    const expandedRows = [];
-    
-    for (const row of rows) {
-      const recipientAddresses = row.recipient_list
-        ? row.recipient_list
-            .split(',')
-            .map((addr) => normalise(addr))
-            .filter(Boolean)
-        : [];
-
-      const senderEmail = row.sender_email ? normalise(row.sender_email) : null;
-      // Outgoing = synced mailbox is the sender — match To/Cc to leads/contacts (not blocked-sender list).
-      const isOutgoing = row.direction === 'outgoing';
-
-      // Collect matches based on sender vs recipient logic
-      const allMatches = new Set();
-      const matchKeys = new Set(); // Track unique match keys to avoid duplicates
-
-      if (isOutgoing) {
-        // Outgoing: match leads/contacts by recipient addresses
-        recipientAddresses.forEach((addr) => {
-          const recipientMatches = leadMappings[addr] || [];
-          recipientMatches.forEach((match) => {
-            const key = `${match.clientId || 'null'}_${match.legacyId || 'null'}_${match.contactId || 'null'}`;
-            if (!matchKeys.has(key)) {
-              matchKeys.add(key);
-              allMatches.add(match);
-            }
-          });
-        });
-      } else {
-        // Incoming: match by sender only (avoid attaching to wrong lead via other recipients)
-        if (senderEmail) {
-          const senderMatches = leadMappings[senderEmail] || [];
-          senderMatches.forEach((match) => {
-            // Only include matches where the sender email matches a contact in the lead
-            // This means we only keep matches that have a contactId (sender matched a contact)
-            // OR matches where the sender email matches the lead's main email directly
-            const key = `${match.clientId || 'null'}_${match.legacyId || 'null'}_${match.contactId || 'null'}`;
-            if (!matchKeys.has(key)) {
-              matchKeys.add(key);
-              allMatches.add(match);
-            }
-          });
-        }
-        // Do NOT match based on recipients when sender is a client email
-        // This prevents incorrect matching when recipient list contains emails from other leads
-      }
-
-      if (allMatches.size > 0) {
-        // Filter out matches where lead/contact email is from @lawoffice.org.il domain
-        // Fetch lead/contact emails to verify they're not internal office emails
-        const leadIdsToCheck = new Set();
-        const contactIdsToCheck = new Set();
-        allMatches.forEach((match) => {
-          if (match.clientId) {
-            leadIdsToCheck.add({ type: 'new', id: match.clientId });
-          }
-          if (match.legacyId) {
-            leadIdsToCheck.add({ type: 'legacy', id: match.legacyId });
-          }
-          if (match.contactId) {
-            contactIdsToCheck.add(match.contactId);
-          }
-        });
-
-        // Fetch lead emails to check for @lawoffice.org.il domain
-        const leadEmailsMap = new Map();
-        if (leadIdsToCheck.size > 0) {
-          const newLeadIds = Array.from(leadIdsToCheck).filter(l => l.type === 'new').map(l => l.id);
-          const legacyLeadIds = Array.from(leadIdsToCheck).filter(l => l.type === 'legacy').map(l => l.id);
-
-          if (newLeadIds.length > 0) {
-            const { data: newLeads } = await supabase
-              .from('leads')
-              .select('id,email')
-              .in('id', newLeadIds);
-            (newLeads || []).forEach((lead) => {
-              leadEmailsMap.set(`new_${lead.id}`, lead.email);
-            });
-          }
-
-          if (legacyLeadIds.length > 0) {
-            const { data: legacyLeads } = await supabase
-              .from('leads_lead')
-              .select('id,email')
-              .in('id', legacyLeadIds);
-            (legacyLeads || []).forEach((lead) => {
-              leadEmailsMap.set(`legacy_${lead.id}`, lead.email);
-            });
-          }
-        }
-
-        // Fetch contact emails to check for @lawoffice.org.il domain
-        const contactEmailsMap = new Map();
-        if (contactIdsToCheck.size > 0) {
-          const { data: contacts } = await supabase
-            .from('leads_contact')
-            .select('id,email')
-            .in('id', Array.from(contactIdsToCheck));
-          (contacts || []).forEach((contact) => {
-            contactEmailsMap.set(contact.id, contact.email);
-          });
-        }
-
-        // Filter out matches where lead or contact email should be filtered
-        // Outgoing: do not drop matches based on lead/contact stored email domain (handled elsewhere on sender).
-        const filteredMatches = Array.from(allMatches).filter((match) => {
-          if (isOutgoing) {
-            return true;
-          }
-          
-          // For incoming emails, we should NOT filter based on lead/contact email domain
-          // A client might send from their personal email (e.g., client@gmail.com) even if
-          // the lead/contact record has an office email. We should save the email because
-          // the sender is a legitimate client (not from @lawoffice.org.il).
-          // The sender email domain filtering is handled elsewhere (in the main filter at line ~947).
-          // 
-          // REMOVED: Filtering based on lead/contact email domain for incoming emails
-          // This was too aggressive and was blocking legitimate client emails
-          
-          return true;
-        });
-
-        if (filteredMatches.length === 0) {
-          console.log(
-            `🚫 Skipping email ${row.message_id.substring(0, 20)}... - all matched leads/contacts have filtered emails | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
-          );
-        } else {
-          // Deduplicate: Ensure each message_id is saved only once per unique client_id, legacy_id, or contact_id
-          // Priority: If we have both a match with contact_id and without contact_id for the same lead, prefer the one with contact_id
-          const deduplicatedMatches = new Map();
-          const leadsWithContacts = new Set(); // Track leads that already have a match with contact_id
-          
-          // First pass: Add all matches with contact_id
-          filteredMatches.forEach((match) => {
-            if (match.contactId) {
-              const contactKey = `contact_${match.contactId}`;
-              if (!deduplicatedMatches.has(contactKey)) {
-                deduplicatedMatches.set(contactKey, match);
-                // Mark this lead as having a contact match
-                if (match.clientId) {
-                  leadsWithContacts.add(`client_${match.clientId}`);
-                }
-                if (match.legacyId) {
-                  leadsWithContacts.add(`legacy_${match.legacyId}`);
-                }
-              }
-            }
-          });
-          
-          // Second pass: Add matches without contact_id, but only if the lead doesn't already have a contact match
-          filteredMatches.forEach((match) => {
-            if (!match.contactId) {
-              const leadKey = match.clientId ? `client_${match.clientId}` : (match.legacyId ? `legacy_${match.legacyId}` : null);
-              if (leadKey && !leadsWithContacts.has(leadKey) && !deduplicatedMatches.has(leadKey)) {
-                deduplicatedMatches.set(leadKey, match);
-              }
-            }
-          });
-          
-          // Create one row for each deduplicated match
-          deduplicatedMatches.forEach((match) => {
-            const emailRow = {
-              ...row,
-              client_id: match.clientId || null,
-              legacy_id: match.legacyId || null,
-              contact_id: match.contactId || null,
-            };
-            expandedRows.push(emailRow);
-          });
-          console.log(
-            `✅ Created ${deduplicatedMatches.size} email record(s) for message ${row.message_id.substring(0, 20)}... (deduplicated from ${filteredMatches.length} filtered matches, ${allMatches.size} total matches) | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
-          );
-        }
-      } else {
-        // No matches found - check if it's an office email
-        const OFFICE_EMAIL = 'office@lawoffice.org.il';
-        const recipientList = (row.recipient_list || '').toLowerCase();
-        const hasOfficeRecipient = recipientList.includes(OFFICE_EMAIL.toLowerCase());
-        
-        if (hasOfficeRecipient) {
-          // Save office emails even without lead/contact match
-          expandedRows.push({
-            ...row,
-            client_id: null,
-            legacy_id: null,
-            contact_id: null,
-          });
-          console.log(
-            `✅ Created email record for office email ${row.message_id.substring(0, 20)}... (office@lawoffice.org.il recipient)`
-          );
-        } else {
-          console.log(
-            `📭 No lead/contact match for message ${row.message_id.substring(0, 20)}... | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
-          );
-        }
-      }
-    }
-    
-    // Use expanded rows (all rows already have matches or are office emails)
-    // Filter rows: only save emails that match client_id, contact_id, or office@lawoffice.org.il recipient
     const OFFICE_EMAIL = 'office@lawoffice.org.il';
-    const LEADS_EMAIL = 'leads@lawoffice.org.il'; // Ignore emails sent to this address
-    const filteredRows = expandedRows.filter((row) => {
+    const LEADS_EMAIL = 'leads@lawoffice.org.il';
+    const prepared = [];
+    let filteredOut = 0;
+
+    for (const row of rows) {
       const senderEmail = row.sender_email ? normalise(row.sender_email) : null;
       const recipientList = row.recipient_list || '';
-      
-      // Skip emails from blocked senders (specific addresses in BLOCKED_SENDER_EMAILS)
+      const recipientListLower = recipientList.toLowerCase();
+
       if (senderEmail && shouldFilterEmail(senderEmail)) {
         console.log(
           `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - sender is blocked | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
         );
-        return false;
+        filteredOut += 1;
+        continue;
       }
-      
-      // Skip internal-to-internal emails (@lawoffice.org.il to @lawoffice.org.il)
+
       if (shouldFilterInternalEmail(senderEmail, recipientList)) {
         console.log(
           `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - internal to internal email | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
         );
-        return false;
+        filteredOut += 1;
+        continue;
       }
-      
-      // Skip emails sent to leads@lawoffice.org.il
-      const recipientListLower = recipientList.toLowerCase();
-      if (recipientListLower.includes(LEADS_EMAIL.toLowerCase())) {
-        console.log(
-          `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - recipient is leads@lawoffice.org.il (filtered) | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
-        );
-        return false;
-      }
-      
-      // Check if recipient email is office@lawoffice.org.il
-      const hasOfficeRecipient = recipientList.includes(OFFICE_EMAIL.toLowerCase());
-      
-      // Check if email has client_id or legacy_id (matched to a lead)
-      const hasLeadMatch = !!(row.client_id || row.legacy_id);
-      
-      // Check if email has contact_id (matched to a contact)
-      const hasContactMatch = !!row.contact_id;
-      
-      // Save email if ANY of these conditions are met:
-      const shouldSave = hasOfficeRecipient || hasLeadMatch || hasContactMatch;
-      
-      if (shouldSave) {
-        const reasons = [];
-        if (hasOfficeRecipient) reasons.push('office@lawoffice.org.il recipient');
-        if (hasLeadMatch) reasons.push(`lead match (client_id=${row.client_id || 'null'}, legacy_id=${row.legacy_id || 'null'})`);
-        if (hasContactMatch) reasons.push(`contact match (contact_id=${row.contact_id})`);
-        console.log(
-          `✅ Saving email ${row.message_id.substring(0, 20)}... - reason: ${reasons.join(', ')} | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
-        );
-      } else {
-        console.log(
-          `📭 Skipping email ${row.message_id.substring(0, 20)}... - no match: sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'} | client_id=${row.client_id || 'null'} | legacy_id=${row.legacy_id || 'null'} | contact_id=${row.contact_id || 'null'}`
-        );
-      }
-      
-      return shouldSave;
-    });
 
-    if (!filteredRows.length) {
+      const matches = preferContactMatches(collectMatchesForEmailRow(row, leadMappings));
+      const hasOfficeRecipient = recipientListLower.includes(OFFICE_EMAIL);
+      // Only drop leads@ mail when it did not match a client contact/lead.
+      if (recipientListLower.includes(LEADS_EMAIL) && matches.length === 0 && !hasOfficeRecipient) {
+        console.log(
+          `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - recipient is leads@lawoffice.org.il with no client match | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
+        );
+        filteredOut += 1;
+        continue;
+      }
+
+      if (matches.length === 0 && !hasOfficeRecipient) {
+        console.log(
+          `📭 No lead/contact match for message ${row.message_id.substring(0, 20)}... | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
+        );
+        filteredOut += 1;
+        continue;
+      }
+
+      const primary = primaryMatchFrom(matches);
+      prepared.push({
+        row: {
+          ...row,
+          client_id: primary?.clientId || null,
+          legacy_id: primary?.legacyId || null,
+          contact_id: primary?.contactId || null,
+        },
+        contactIds: contactIdsFromMatches(matches),
+      });
+    }
+
+    if (!prepared.length) {
       console.log(`📭 No emails to save after filtering (${rows.length} processed, 0 matched criteria)`);
       return { processed: messages.length, inserted: 0, skipped: rows.length, trackedCount: 0 };
     }
 
-    // Check for duplicates before upserting
-    // Since we now allow multiple rows with same message_id (different client_id/legacy_id/contact_id),
-    // we need to check for exact duplicates: same message_id + same client_id + same legacy_id + same contact_id
-    const messageIds = [...new Set(filteredRows.map(row => row.message_id).filter(Boolean))];
-    let existingEmailKeys = new Set();
-    /** message_ids that already had at least one row before this sync (used for lead push dedupe) */
-    const existingMessageIds = new Set();
+    const existingByMessageId = await loadExistingEmailsByMessageId(prepared.map((p) => p.row.message_id));
+    const toInsert = [];
+    let duplicatesSkipped = 0;
 
-    const MESSAGE_ID_CHUNK = 200;
-    if (messageIds.length > 0) {
-      for (let i = 0; i < messageIds.length; i += MESSAGE_ID_CHUNK) {
-        const chunk = messageIds.slice(i, i + MESSAGE_ID_CHUNK);
-        const { data: existingEmails, error: checkError } = await supabase
-          .from(EMAIL_HEADERS_TABLE)
-          .select('message_id, client_id, legacy_id, contact_id')
-          .in('message_id', chunk);
-
-        if (!checkError && existingEmails) {
-          existingEmails.forEach((e) => {
-            const key = `${e.message_id}_${e.client_id || 'null'}_${e.legacy_id || 'null'}_${e.contact_id || 'null'}`;
-            existingEmailKeys.add(key);
-            if (e.message_id) {
-              existingMessageIds.add(e.message_id);
-            }
-          });
+    for (const item of prepared) {
+      if (!item.row.message_id) {
+        filteredOut += 1;
+        continue;
+      }
+      const existing = existingByMessageId.get(item.row.message_id);
+      if (!existing) {
+        toInsert.push(item);
+        continue;
+      }
+      duplicatesSkipped += 1;
+      const patch = {};
+      if (!existing.contact_id && item.row.contact_id) patch.contact_id = item.row.contact_id;
+      if (!existing.client_id && item.row.client_id) patch.client_id = item.row.client_id;
+      if (!existing.legacy_id && item.row.legacy_id) patch.legacy_id = item.row.legacy_id;
+      if (Object.keys(patch).length) {
+        const { error: patchError } = await supabase.from(EMAIL_HEADERS_TABLE).update(patch).eq('id', existing.id);
+        if (patchError) {
+          console.warn(`⚠️ Failed to backfill lead/contact on existing email ${existing.id}:`, patchError.message || patchError);
         }
       }
+      await linkEmailContacts(existing.id, item.contactIds);
     }
 
-    // Filter out emails that already exist (exact duplicates: same message_id + client_id + legacy_id + contact_id)
-    const newEmailsToSave = filteredRows.filter((row) => {
-      if (!row.message_id) {
-        console.warn(`⚠️  Skipping email without message_id: ${JSON.stringify(row).substring(0, 100)}`);
-        return false;
-      }
-      
-      // Check for message_id duplicates
-      const key = `${row.message_id}_${row.client_id || 'null'}_${row.legacy_id || 'null'}_${row.contact_id || 'null'}`;
-      const isMessageIdDuplicate = existingEmailKeys.has(key);
-      if (isMessageIdDuplicate) {
-        console.log(`🔄 Skipping duplicate email record ${row.message_id.substring(0, 20)}... (client_id=${row.client_id || 'null'}, legacy_id=${row.legacy_id || 'null'}, contact_id=${row.contact_id || 'null'}) already exists`);
-        return false;
-      }
-
-      return true;
-    });
-
-    if (!newEmailsToSave.length) {
-      console.log(`📭 No new email records to save (all ${filteredRows.length} matched email records already exist in database)`);
-      return { processed: messages.length, inserted: 0, skipped: filteredRows.length, trackedCount: 0 };
-    }
-
-    console.log(`💾 Saving ${newEmailsToSave.length} new email record(s) out of ${filteredRows.length} matched (${filteredRows.length - newEmailsToSave.length} duplicates skipped, ${messages.length - filteredRows.length} filtered out)`);
-
-    // Use insert (not upsert) since we allow multiple rows with same message_id
-    // (different client_id/legacy_id/contact_id combinations)
-    // We've already checked for duplicates above
-    // Insert in batches to avoid timeout issues
-    const BATCH_SIZE = 50; // Insert 50 records at a time
     let insertedCount = 0;
     let errorCount = 0;
-    
-    for (let i = 0; i < newEmailsToSave.length; i += BATCH_SIZE) {
-      const batch = newEmailsToSave.slice(i, i + BATCH_SIZE);
-      try {
-        const { error } = await supabase
-          .from(EMAIL_HEADERS_TABLE)
-          .insert(batch);
-        
-        if (error) {
-          // If error is due to unique constraint violation, log but continue
-          if (error.code === '23505') {
-            console.warn(`⚠️ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Some email records may have duplicate key violations (race condition), continuing...`);
-            errorCount += batch.length;
-          } else if (error.message && error.message.includes('timeout')) {
-            console.warn(`⚠️ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Timeout error, retrying with smaller batch...`);
-            // Retry with smaller batches (10 at a time)
-            for (let j = 0; j < batch.length; j += 10) {
-              const smallBatch = batch.slice(j, j + 10);
-              const { error: retryError } = await supabase
-                .from(EMAIL_HEADERS_TABLE)
-                .insert(smallBatch);
-              if (retryError) {
-                console.error(`❌ Failed to store small batch ${Math.floor(j / 10) + 1}:`, retryError.message || retryError);
-                errorCount += smallBatch.length;
-              } else {
-                insertedCount += smallBatch.length;
-              }
-            }
-          } else {
-            console.error(`❌ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Failed to store email headers:`, error.message || error);
-            errorCount += batch.length;
+    const insertedForBodies = [];
+    const BATCH_SIZE = 50;
+
+    for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
+      const batch = toInsert.slice(i, i + BATCH_SIZE);
+      const payload = batch.map((b) => b.row);
+      const { data, error } = await supabase.from(EMAIL_HEADERS_TABLE).insert(payload).select('id, message_id');
+      if (!error) {
+        insertedCount += (data || []).length;
+        const idByMessage = new Map((data || []).map((d) => [d.message_id, d.id]));
+        for (const item of batch) {
+          const id = idByMessage.get(item.row.message_id);
+          if (id) {
+            insertedForBodies.push(item.row);
+            await linkEmailContacts(id, item.contactIds);
           }
-        } else {
-          insertedCount += batch.length;
         }
-      } catch (err) {
-        console.error(`❌ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Exception while inserting emails:`, err.message || err);
-        errorCount += batch.length;
+        continue;
       }
-    }
-    
-    if (errorCount > 0) {
-      console.warn(`⚠️ Completed with ${insertedCount} inserted, ${errorCount} failed out of ${newEmailsToSave.length} total`);
-    } else {
-      console.log(`✅ Successfully inserted ${insertedCount} email record(s)`);
+
+      if (error.code === '23505') {
+        console.warn(`⚠️ Batch ${Math.floor(i / BATCH_SIZE) + 1}: unique message_id conflict, retrying row-by-row`);
+      } else {
+        console.error(`❌ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Failed to store email headers:`, error.message || error);
+      }
+
+      for (const item of batch) {
+        const { data: one, error: oneErr } = await supabase
+          .from(EMAIL_HEADERS_TABLE)
+          .insert([item.row])
+          .select('id, message_id')
+          .maybeSingle();
+        if (!oneErr && one?.id) {
+          insertedCount += 1;
+          insertedForBodies.push(item.row);
+          await linkEmailContacts(one.id, item.contactIds);
+          continue;
+        }
+        if (oneErr?.code === '23505') {
+          const again = await loadExistingEmailsByMessageId([item.row.message_id]);
+          const ex = again.get(item.row.message_id);
+          if (ex) await linkEmailContacts(ex.id, item.contactIds);
+          duplicatesSkipped += 1;
+        } else {
+          console.error(
+            `❌ Failed to store email ${item.row.message_id?.substring(0, 20) || 'unknown'}...:`,
+            (oneErr && (oneErr.message || oneErr)) || error.message || error
+          );
+          errorCount += 1;
+        }
+      }
     }
 
-    // Check which emails are actually new (not already in database)
-    // This prevents sending duplicate notifications for emails that were already synced
-    // Note: existingMessageIds was already populated above, so we can reuse it
-    const newLeadEmails = newEmailsToSave.filter((row) => {
-      // Only include emails that are NEW (not already in database)
-      if (existingMessageIds.has(row.message_id)) {
-        return false; // Skip emails that already exist
-      }
-      
-      // Only include emails that are new leads (no client_id or legacy_id)
-      if (row.client_id || row.legacy_id) return false;
-      
-      // Only send push notification if recipient email is office@lawoffice.org.il
-      const recipientList = (row.recipient_list || '').toLowerCase();
-      const targetEmail = 'office@lawoffice.org.il';
-      return recipientList.includes(targetEmail.toLowerCase());
-    });
-    
+    if (errorCount > 0) {
+      console.warn(`⚠️ Completed with ${insertedCount} inserted, ${errorCount} failed out of ${toInsert.length} new`);
+    } else {
+      console.log(`✅ Successfully inserted ${insertedCount} email record(s); linked contacts on ${prepared.length} matched message(s)`);
+    }
+
+    const newLeadEmails = toInsert
+      .filter((item) => !item.row.client_id && !item.row.legacy_id)
+      .filter((item) => (item.row.recipient_list || '').toLowerCase().includes(OFFICE_EMAIL))
+      .map((item) => item.row);
+
     if (newLeadEmails.length) {
       console.log(`📧 Sending push notifications for ${newLeadEmails.length} new email lead(s)`);
       await Promise.all(
         newLeadEmails.map(async (emailRow) => {
           const senderLabel = emailRow.sender_name || emailRow.sender_email || 'Email lead';
           const preview = stripHtml(emailRow.body_preview || emailRow.body_html || '').substring(0, 120);
-
           try {
             await pushNotificationService.sendNotificationToAll({
               title: '✉️ New Email Lead',
@@ -1440,7 +1282,7 @@ class GraphMailboxSyncService {
               icon: '/icon-192x192.png',
               badge: '/icon-72x72.png',
               url: '/email-leads',
-              tag: `email-lead-${emailRow.message_id}`, // Browser will deduplicate by tag
+              tag: `email-lead-${emailRow.message_id}`,
               id: emailRow.message_id,
               type: 'notification',
               vibrate: [200, 100, 200],
@@ -1451,29 +1293,24 @@ class GraphMailboxSyncService {
         })
       );
     } else {
-      console.log(`ℹ️  No new email leads to notify (${newEmailsToSave.length} new emails processed)`);
+      console.log(`ℹ️  No new email leads to notify (${insertedCount} new emails processed)`);
     }
 
-    // After storing headers, fetch full bodies for messages that need them
-    // This runs asynchronously so it doesn't block the sync
     if (accessToken) {
-      this.fetchFullBodiesForMessages(userId, mailboxAddress, newEmailsToSave, accessToken).catch(err => {
+      this.fetchFullBodiesForMessages(userId, mailboxAddress, insertedForBodies, accessToken).catch((err) => {
         console.error('⚠️  Error fetching full email bodies:', err.message || err);
-        // Don't throw - this is a background operation
       });
       this.backfillAttachmentMetadata(userId, mailboxAddress, accessToken, { limit: 40 }).catch((err) => {
         console.error('⚠️  Error backfilling attachment metadata:', err.message || err);
       });
     }
 
-    const duplicatesSkipped = filteredRows.length - newEmailsToSave.length;
-    const filteredOut = rows.length - filteredRows.length;
-    console.log(`📥 Stored ${newEmailsToSave.length} new emails (processed ${messages.length}, ${duplicatesSkipped} duplicates skipped, ${filteredOut} filtered out)`);
+    console.log(`📥 Stored ${insertedCount} new emails (processed ${messages.length}, ${duplicatesSkipped} already saved, ${filteredOut} filtered out)`);
 
     return {
       processed: messages.length,
       inserted: insertedCount,
-      skipped: filteredOut + duplicatesSkipped + (newEmailsToSave.length - insertedCount),
+      skipped: filteredOut + duplicatesSkipped + errorCount,
       trackedCount: 0,
     };
   }
@@ -1539,7 +1376,7 @@ class GraphMailboxSyncService {
       }
 
       if (Object.keys(patch).length > 0) {
-        // One Graph message → identical body for all lead/contact rows; update in a single query.
+        // One Graph message is one emails row; update that message_id.
         const { error: updateError } = await supabase
           .from(EMAIL_HEADERS_TABLE)
           .update(patch)
@@ -1785,22 +1622,17 @@ class GraphMailboxSyncService {
     const tokenRecord = await mailboxTokenService.getTokenByUserId(emailOwnerId);
     if (!tokenRecord?.mailbox_address) return [];
 
-    let tokenResponse;
+    let accessToken;
     try {
-      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
-        homeAccountId: tokenRecord.home_account_id,
-        environment: tokenRecord.environment,
-        tenantId: tokenRecord.tenant_id,
-        username: tokenRecord.mailbox_address,
-      });
+      ({ accessToken } = await graphAuthService.getAccessTokenForUser(emailOwnerId));
     } catch {
       return [];
     }
-    if (!tokenResponse?.accessToken) return [];
+    if (!accessToken) return [];
 
     try {
       const list = await fetchMessageAttachmentsMetadata(
-        tokenResponse.accessToken,
+        accessToken,
         tokenRecord.mailbox_address,
         header.message_id
       );
@@ -1870,29 +1702,14 @@ class GraphMailboxSyncService {
       throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
     }
 
-    let tokenResponse;
-    try {
-      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
-        homeAccountId: tokenRecord.home_account_id,
-        environment: tokenRecord.environment,
-        tenantId: tokenRecord.tenant_id,
-        username: tokenRecord.mailbox_address,
-      });
-    } catch (error) {
-      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
-        // Clear the expired token so user can reconnect
-        await mailboxTokenService.removeToken(emailOwnerId);
-        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to view email content.');
-      }
-      throw error;
-    }
-    if (!tokenResponse?.accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
+    const { accessToken } = await graphAuthService.getAccessTokenForUser(emailOwnerId);
+    if (!accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
 
     const message = await fetchJson(
       `${GRAPH_BASE_URL}/users/${tokenRecord.mailbox_address}/messages/${header.message_id}?$select=body`,
       {
         headers: {
-          Authorization: `Bearer ${tokenResponse.accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
         },
       }
     );
@@ -1909,7 +1726,7 @@ class GraphMailboxSyncService {
     let attachmentsOk = false;
     try {
       const list = await fetchMessageAttachmentsMetadata(
-        tokenResponse.accessToken,
+        accessToken,
         tokenRecord.mailbox_address,
         header.message_id
       );
@@ -1943,29 +1760,14 @@ class GraphMailboxSyncService {
       throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
     }
 
-    let tokenResponse;
-    try {
-      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
-        homeAccountId: tokenRecord.home_account_id,
-        environment: tokenRecord.environment,
-        tenantId: tokenRecord.tenant_id,
-        username: tokenRecord.mailbox_address,
-      });
-    } catch (error) {
-      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
-        // Clear the expired token so user can reconnect
-        await mailboxTokenService.removeToken(emailOwnerId);
-        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to view email content.');
-      }
-      throw error;
-    }
-    if (!tokenResponse?.accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
+    const { accessToken } = await graphAuthService.getAccessTokenForUser(emailOwnerId);
+    if (!accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
 
     const attachment = await fetchJson(
       `${GRAPH_BASE_URL}/users/${tokenRecord.mailbox_address}/messages/${header.message_id}/attachments/${attachmentId}`,
       {
         headers: {
-          Authorization: `Bearer ${tokenResponse.accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
         },
       }
     );
@@ -2006,24 +1808,8 @@ class GraphMailboxSyncService {
       throw new Error('Mailbox is not connected for this user');
     }
 
-    let tokenResponse;
-    try {
-      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
-        homeAccountId: tokenRecord.home_account_id,
-        environment: tokenRecord.environment,
-        tenantId: tokenRecord.tenant_id,
-        username: tokenRecord.mailbox_address,
-      });
-    } catch (error) {
-      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
-        // Clear the expired token so user can reconnect
-        await mailboxTokenService.removeToken(userId);
-        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to send emails.');
-      }
-      throw error;
-    }
-
-    if (!tokenResponse?.accessToken) {
+    const { accessToken } = await graphAuthService.getAccessTokenForUser(userId);
+    if (!accessToken) {
       throw new Error('Unable to acquire Microsoft Graph access token');
     }
 
@@ -2081,7 +1867,7 @@ class GraphMailboxSyncService {
     const createDraftResponse = await fetch(`${GRAPH_BASE_URL}/users/${encodeURIComponent(mailboxAddress)}/messages`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${tokenResponse.accessToken}`,
+        Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(message),
@@ -2103,7 +1889,7 @@ class GraphMailboxSyncService {
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${tokenResponse.accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
         },
       }
     );
@@ -2128,22 +1914,16 @@ class GraphMailboxSyncService {
       result: sendResult,
     };
 
-    // Save the originating lead/contact immediately so the sender sees the email
-    // without waiting for every other matching lead to be copied.
     try {
-      await this.recordOutgoingEmail({ ...recordArgs, fanOutMode: 'originating-only' });
+      await this.recordOutgoingEmail(recordArgs);
     } catch (error) {
-      console.error('⚠️  Unable to record originating outgoing email:', error.message || error);
+      console.error('⚠️  Unable to record outgoing email:', error.message || error);
     }
-
-    void this.recordOutgoingEmail(recordArgs).catch((error) => {
-      console.error('⚠️  Unable to fan-out outgoing email to matching leads:', error.message || error);
-    });
 
     return sendResult;
   }
 
-  async recordOutgoingEmail({ userId, userInternalId, mailboxAddress, payload = {}, result, fanOutMode = 'all' }) {
+  async recordOutgoingEmail({ userId, userInternalId, mailboxAddress, payload = {}, result }) {
     try {
       const context = payload.context || {};
       const legacyIdRaw =
@@ -2161,30 +1941,24 @@ class GraphMailboxSyncService {
       const recipients = buildRecipientList(payload);
       const senderEmail = normalise(mailboxAddress);
       const recipientListStr = recipients.join(', ');
-      
-      // Check if we have a lead context (client_id or legacy_id) - if so, always save the email
-      // even if it's internal-to-internal, because it's relevant to that lead
-      const hasLeadContext = !!(clientId || legacyId || context.contactId);
-      
-      // Skip internal-to-internal emails (@lawoffice.org.il to @lawoffice.org.il)
-      // BUT only if we don't have a lead context (emails sent from a lead's context should be saved)
+      const contextContactId = context.contactId || context.contact_id || null;
+      const hasLeadContext = !!(clientId || legacyId || contextContactId);
+
       if (!hasLeadContext && shouldFilterInternalEmail(senderEmail, recipientListStr)) {
         console.log(
           `🚫 Skipping outgoing email record - internal to internal email (no lead context) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
         );
-        return; // Don't save this email
+        return;
       }
-      
-      // Skip emails sent to leads@lawoffice.org.il (unless we have lead context)
+
       const LEADS_EMAIL = 'leads@lawoffice.org.il';
-      const recipientListStrLower = recipientListStr.toLowerCase();
-      if (!hasLeadContext && recipientListStrLower.includes(LEADS_EMAIL.toLowerCase())) {
+      if (!hasLeadContext && recipientListStr.toLowerCase().includes(LEADS_EMAIL)) {
         console.log(
-          `🚫 Skipping outgoing email record - recipient is leads@lawoffice.org.il (filtered, no lead context) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
+          `🚫 Skipping outgoing email record - recipient is leads@lawoffice.org.il (no client match) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
         );
-        return; // Don't save this email
+        return;
       }
-      
+
       const attachmentsMeta = Array.isArray(payload.attachments)
         ? payload.attachments.map((attachment) => ({
             name: attachment?.name || 'attachment',
@@ -2194,234 +1968,36 @@ class GraphMailboxSyncService {
 
       const htmlBody = payload.bodyHtml || '';
       const bodyPreview = stripHtml(htmlBody) || payload.bodyText || '';
-
       const resolvedUserId = context.userInternalId ?? userInternalId ?? userId;
 
-      const buildOutgoingRecord = (match = {}) => ({
-        message_id: result.id,
-        user_id: resolvedUserId,
-        client_id: match.clientId ?? null,
-        legacy_id: match.legacyId ?? null,
-        contact_id: match.contactId ?? null,
-        thread_id: result.conversationId,
-        sender_name: context.senderName || null,
-        sender_email: mailboxAddress,
-        recipient_list: recipients.join(', '),
-        subject: payload.subject || '(no subject)',
-        body_html: htmlBody || payload.bodyText || '',
-        body_preview: bodyPreview,
-        sent_at: result.sentAt || new Date().toISOString(),
-        direction: 'outgoing',
-        attachments: attachmentsMeta,
-      });
-
-      if (fanOutMode === 'originating-only') {
-        const originatingRecord = buildOutgoingRecord({
-          clientId,
-          legacyId,
-          contactId: context.contactId || context.contact_id || null,
-        });
-        const { error } = await supabase.from(EMAIL_HEADERS_TABLE).insert([originatingRecord]);
-        if (error && error.code !== '23505') {
-          console.error('❌ Failed to persist originating outgoing email:', error.message || error);
-        } else if (!error) {
-          console.log(
-            `💾 Saved originating outgoing email ${result.id?.substring(0, 20) || 'unknown'}... | client_id=${originatingRecord.client_id || 'null'} | legacy_id=${originatingRecord.legacy_id || 'null'} | contact_id=${originatingRecord.contact_id || 'null'}`
-          );
-        }
-        return;
-      }
-
-      // Find ALL leads/contacts that match the recipient email addresses
-      // This ensures the email appears in all leads where any recipient email matches
       const normalizedRecipients = recipients.map((addr) => normalise(addr)).filter(Boolean);
       const recipientMappings = await fetchLeadMappingsForAddresses(normalizedRecipients);
-
-      // Collect all unique matches
-      const allMatches = new Set();
-      const matchKeys = new Set();
-
-      // Add the original lead/contact from context (the one the email was sent from)
-      if (clientId || legacyId) {
-        const originalMatch = {
-          clientId: clientId,
-          legacyId: legacyId,
-          contactId: context.contactId || context.contact_id || null,
-        };
-        const key = `${clientId || 'null'}_${legacyId || 'null'}_${originalMatch.contactId || 'null'}`;
-        if (!matchKeys.has(key)) {
-          matchKeys.add(key);
-          allMatches.add(originalMatch);
-        }
-      }
-
-      // Add all matches from recipient email addresses
-      normalizedRecipients.forEach((recipientEmail) => {
-        const recipientMatches = recipientMappings[recipientEmail] || [];
-        recipientMatches.forEach((match) => {
-          const key = `${match.clientId || 'null'}_${match.legacyId || 'null'}_${match.contactId || 'null'}`;
-          if (!matchKeys.has(key)) {
-            matchKeys.add(key);
-            allMatches.add({
-              clientId: match.clientId,
-              legacyId: match.legacyId,
-              contactId: match.contactId,
-            });
-          }
-        });
-      });
-
-      // Filter out matches where lead/contact email is from @lawoffice.org.il domain
-      // Fetch lead/contact emails to verify they're not internal office emails
-      const leadIdsToCheck = new Set();
-      const contactIdsToCheck = new Set();
-      allMatches.forEach((match) => {
-        if (match.clientId) {
-          leadIdsToCheck.add({ type: 'new', id: match.clientId });
-        }
-        if (match.legacyId) {
-          leadIdsToCheck.add({ type: 'legacy', id: match.legacyId });
-        }
-        if (match.contactId) {
-          contactIdsToCheck.add(match.contactId);
-        }
-      });
-
-      // Fetch lead emails to check for @lawoffice.org.il domain
-      const leadEmailsMap = new Map();
-      if (leadIdsToCheck.size > 0) {
-        const newLeadIds = Array.from(leadIdsToCheck).filter(l => l.type === 'new').map(l => l.id);
-        const legacyLeadIds = Array.from(leadIdsToCheck).filter(l => l.type === 'legacy').map(l => l.id);
-
-        if (newLeadIds.length > 0) {
-          const { data: newLeads } = await supabase
-            .from('leads')
-            .select('id,email')
-            .in('id', newLeadIds);
-          (newLeads || []).forEach((lead) => {
-            leadEmailsMap.set(`new_${lead.id}`, lead.email);
-          });
-        }
-
-        if (legacyLeadIds.length > 0) {
-          const { data: legacyLeads } = await supabase
-            .from('leads_lead')
-            .select('id,email')
-            .in('id', legacyLeadIds);
-          (legacyLeads || []).forEach((lead) => {
-            leadEmailsMap.set(`legacy_${lead.id}`, lead.email);
-          });
-        }
-      }
-
-      // Fetch contact emails to check for @lawoffice.org.il domain
-      const contactEmailsMap = new Map();
-      if (contactIdsToCheck.size > 0) {
-        const { data: contacts } = await supabase
-          .from('leads_contact')
-          .select('id,email')
-          .in('id', Array.from(contactIdsToCheck));
-        (contacts || []).forEach((contact) => {
-          contactEmailsMap.set(contact.id, contact.email);
+      const collected = [];
+      if (clientId || legacyId || contextContactId) {
+        collected.push({
+          clientId: clientId || null,
+          legacyId: legacyId || null,
+          contactId: contextContactId || null,
         });
       }
-
-      // Filter out matches where lead or contact email should be filtered
-      // BUT: If we have explicit lead context (clientId, legacyId, or contactId from context),
-      // we should NOT filter based on email domain - these are system-sent emails that should always be saved
-      const originalContextMatch = {
-        clientId: clientId,
-        legacyId: legacyId,
-        contactId: context.contactId || context.contact_id || null,
+      normalizedRecipients.forEach((addr) => {
+        (recipientMappings[addr] || []).forEach((match) => collected.push(match));
+      });
+      const matches = preferContactMatches(uniqueMatches(collected));
+      const primary = primaryMatchFrom(matches) || {
+        clientId: clientId || null,
+        legacyId: legacyId || null,
+        contactId: contextContactId || null,
       };
-      
-      const filteredMatches = Array.from(allMatches).filter((match) => {
-        // If this match is the original context match (the lead/contact the email was sent from),
-        // always include it regardless of email domain - it's a system-sent email
-        const isOriginalContext = 
-          (match.clientId && match.clientId === originalContextMatch.clientId) ||
-          (match.legacyId && match.legacyId === originalContextMatch.legacyId) ||
-          (match.contactId && match.contactId === originalContextMatch.contactId);
-        
-        if (isOriginalContext) {
-          return true; // Always include original context match
-        }
-        
-        // For other matches (found by recipient email), filter based on email domain
-        // Check contact email if contact_id exists
-        if (match.contactId) {
-          const contactEmail = contactEmailsMap.get(match.contactId);
-          if (contactEmail && shouldFilterEmail(contactEmail)) {
-            console.log(`🚫 Skipping outgoing email record for contact ${match.contactId} (${contactEmail}) - filtered email`);
-            return false;
-          }
-        }
+      const contactIds = contactIdsFromMatches(matches);
+      if (contextContactId) contactIds.push(Number(contextContactId));
 
-        // Check lead email
-        if (match.clientId) {
-          const leadEmail = leadEmailsMap.get(`new_${match.clientId}`);
-          if (leadEmail && shouldFilterEmail(leadEmail)) {
-            console.log(`🚫 Skipping outgoing email record for new lead ${match.clientId} (${leadEmail}) - filtered email`);
-            return false;
-          }
-        }
-        if (match.legacyId) {
-          const leadEmail = leadEmailsMap.get(`legacy_${match.legacyId}`);
-          if (leadEmail && shouldFilterEmail(leadEmail)) {
-            console.log(`🚫 Skipping outgoing email record for legacy lead ${match.legacyId} (${leadEmail}) - filtered email`);
-            return false;
-          }
-        }
-
-        return true;
-      });
-
-      if (filteredMatches.length === 0) {
-        console.log(
-          `🚫 Skipping outgoing email ${result.id?.substring(0, 20) || 'unknown'}... - all matched leads/contacts have filtered emails | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
-        );
-        return; // Don't save any email records
-      }
-
-      // Deduplicate: Ensure each message_id is saved only once per unique client_id, legacy_id, or contact_id
-      // Priority: If we have both a match with contact_id and without contact_id for the same lead, prefer the one with contact_id
-      const deduplicatedMatches = new Map();
-      const leadsWithContacts = new Set(); // Track leads that already have a match with contact_id
-      
-      // First pass: Add all matches with contact_id
-      filteredMatches.forEach((match) => {
-        if (match.contactId) {
-          const contactKey = `contact_${match.contactId}`;
-          if (!deduplicatedMatches.has(contactKey)) {
-            deduplicatedMatches.set(contactKey, match);
-            // Mark this lead as having a contact match
-            if (match.clientId) {
-              leadsWithContacts.add(`client_${match.clientId}`);
-            }
-            if (match.legacyId) {
-              leadsWithContacts.add(`legacy_${match.legacyId}`);
-            }
-          }
-        }
-      });
-      
-      // Second pass: Add matches without contact_id, but only if the lead doesn't already have a contact match
-      filteredMatches.forEach((match) => {
-        if (!match.contactId) {
-          const leadKey = match.clientId ? `client_${match.clientId}` : (match.legacyId ? `legacy_${match.legacyId}` : null);
-          if (leadKey && !leadsWithContacts.has(leadKey) && !deduplicatedMatches.has(leadKey)) {
-            deduplicatedMatches.set(leadKey, match);
-          }
-        }
-      });
-
-      // Create one email record for each deduplicated match
-      const emailRecords = Array.from(deduplicatedMatches.values()).map((match) => ({
+      const record = {
         message_id: result.id,
         user_id: resolvedUserId,
-        client_id: match.clientId,
-        legacy_id: match.legacyId,
-        contact_id: match.contactId,
+        client_id: primary.clientId ?? null,
+        legacy_id: primary.legacyId ?? null,
+        contact_id: primary.contactId ?? null,
         thread_id: result.conversationId,
         sender_name: context.senderName || null,
         sender_email: mailboxAddress,
@@ -2432,105 +2008,35 @@ class GraphMailboxSyncService {
         sent_at: result.sentAt || new Date().toISOString(),
         direction: 'outgoing',
         attachments: attachmentsMeta,
-      }));
+      };
 
-      if (emailRecords.length === 0) {
-        // No matches found - save one record without lead/contact association (for office emails, etc.)
-        emailRecords.push({
-          message_id: result.id,
-          user_id: resolvedUserId,
-          client_id: null,
-          legacy_id: null,
-          contact_id: null,
-          thread_id: result.conversationId,
-          sender_name: context.senderName || null,
-          sender_email: mailboxAddress,
-          recipient_list: recipients.join(', '),
-          subject: payload.subject || '(no subject)',
-          body_html: htmlBody || payload.bodyText || '',
-          body_preview: bodyPreview,
-          sent_at: result.sentAt || new Date().toISOString(),
-          direction: 'outgoing',
-          attachments: attachmentsMeta,
-        });
-      }
-
-      // Check for duplicates before insert (message_id + client_id + legacy_id + contact_id)
-      let existingOutgoingKeys = new Set();
-      const outgoingMessageIds = [...new Set(emailRecords.map((r) => r.message_id).filter(Boolean))];
-      if (outgoingMessageIds.length > 0) {
-        const { data: existingOutgoing, error: outgoingCheckError } = await supabase
-          .from(EMAIL_HEADERS_TABLE)
-          .select('message_id, client_id, legacy_id, contact_id')
-          .in('message_id', outgoingMessageIds);
-
-        if (!outgoingCheckError && existingOutgoing) {
-          existingOutgoing.forEach((e) => {
-            existingOutgoingKeys.add(
-              `${e.message_id}_${e.client_id || 'null'}_${e.legacy_id || 'null'}_${e.contact_id || 'null'}`
-            );
-          });
-        }
-      }
-
-      const uniqueEmailRecords = emailRecords.filter((record) => {
-        const key = `${record.message_id}_${record.client_id || 'null'}_${record.legacy_id || 'null'}_${record.contact_id || 'null'}`;
-        if (existingOutgoingKeys.has(key)) {
-          console.log(
-            `🔄 Skipping duplicate outgoing email record ${result.id?.substring(0, 20) || 'unknown'}... (client_id=${record.client_id || 'null'}, legacy_id=${record.legacy_id || 'null'}, contact_id=${record.contact_id || 'null'}) already exists`
-          );
-          return false;
-        }
-        return true;
-      });
-
-      if (uniqueEmailRecords.length === 0) {
-        console.log(`📭 No new outgoing email records to save (all ${emailRecords.length} records already exist)`);
+      const existingByMessageId = await loadExistingEmailsByMessageId([record.message_id]);
+      const existing = existingByMessageId.get(record.message_id);
+      if (existing?.id) {
+        await linkEmailContacts(existing.id, contactIds);
+        console.log(
+          `💾 Linked outgoing email ${result.id?.substring(0, 20) || 'unknown'}... to ${contactIds.length} contact(s) (already saved)`
+        );
         return;
       }
 
-      console.log(`💾 Saving ${uniqueEmailRecords.length} email record(s) for outgoing email ${result.id.substring(0, 20)}... (${emailRecords.length - uniqueEmailRecords.length} duplicates filtered)`);
-
-      // Use insert (not upsert) since we allow multiple rows with same message_id
-      // Insert in batches to avoid timeout issues
-      const BATCH_SIZE = 50;
-      let insertedCount = 0;
-      
-      for (let i = 0; i < uniqueEmailRecords.length; i += BATCH_SIZE) {
-        const batch = uniqueEmailRecords.slice(i, i + BATCH_SIZE);
-        try {
-          const { error } = await supabase.from(EMAIL_HEADERS_TABLE).insert(batch);
-          
-          if (error) {
-            // If error is due to unique constraint violation, log but continue
-            if (error.code === '23505') {
-              console.warn(`⚠️ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Some outgoing email records may have duplicate key violations (race condition), continuing...`);
-            } else if (error.message && error.message.includes('timeout')) {
-              console.warn(`⚠️ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Timeout error, retrying with smaller batch...`);
-              // Retry with smaller batches (10 at a time)
-              for (let j = 0; j < batch.length; j += 10) {
-                const smallBatch = batch.slice(j, j + 10);
-                const { error: retryError } = await supabase.from(EMAIL_HEADERS_TABLE).insert(smallBatch);
-                if (retryError) {
-                  console.error(`❌ Failed to store small batch ${Math.floor(j / 10) + 1}:`, retryError.message || retryError);
-                } else {
-                  insertedCount += smallBatch.length;
-                }
-              }
-            } else {
-              console.error(`❌ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Failed to persist outgoing email:`, error.message || error);
-            }
-          } else {
-            insertedCount += batch.length;
-          }
-        } catch (err) {
-          console.error(`❌ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Exception while inserting outgoing emails:`, err.message || err);
-        }
+      const { data, error } = await supabase.from(EMAIL_HEADERS_TABLE).insert([record]).select('id').maybeSingle();
+      if (error && error.code === '23505') {
+        const again = await loadExistingEmailsByMessageId([record.message_id]);
+        const ex = again.get(record.message_id);
+        if (ex) await linkEmailContacts(ex.id, contactIds);
+        return;
       }
-      
-      if (insertedCount < uniqueEmailRecords.length) {
-        console.warn(`⚠️ Inserted ${insertedCount} out of ${uniqueEmailRecords.length} outgoing email record(s)`);
+      if (error) {
+        console.error('❌ Failed to persist outgoing email:', error.message || error);
+        return;
       }
+      if (data?.id) {
+        await linkEmailContacts(data.id, contactIds);
+      }
+      console.log(
+        `💾 Saved outgoing email ${result.id?.substring(0, 20) || 'unknown'}... | client_id=${record.client_id || 'null'} | legacy_id=${record.legacy_id || 'null'} | contact_id=${record.contact_id || 'null'} | contacts=${contactIds.length}`
+      );
     } catch (error) {
       console.error('⚠️  Unable to record outgoing email:', error.message || error);
     }

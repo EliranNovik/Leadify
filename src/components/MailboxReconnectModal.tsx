@@ -31,7 +31,9 @@ const MailboxReconnectModal: React.FC = () => {
     try {
       setIsConnecting(true);
       const redirectTo = `${window.location.origin}${location.pathname}${location.search}`;
-      const url = await getMailboxLoginUrl(user.id, redirectTo);
+      const url = await getMailboxLoginUrl(user.id, redirectTo, {
+        loginHint: user.email || undefined,
+      });
       const popup = window.open(url, '_blank', 'width=640,height=780');
       if (!popup) {
         window.location.href = url;
@@ -99,7 +101,9 @@ const MailboxReconnectModal: React.FC = () => {
             </div>
 
             <h2 className="text-2xl font-bold text-center mb-2 text-gray-900 dark:text-white">
-              Mailbox Connection Expired
+              {errorMessage?.toLowerCase().includes('connect your outlook')
+                ? 'Connect your mailbox'
+                : 'Mailbox connection needed'}
             </h2>
 
             <p className="text-gray-600 dark:text-gray-300 text-center mb-6">
@@ -107,11 +111,11 @@ const MailboxReconnectModal: React.FC = () => {
                 'Your mailbox connection has expired. Please reconnect to continue sending and receiving emails.'}
             </p>
 
-            <div className="flex gap-3">
-              <button onClick={hideReconnectModal} className="btn btn-outline flex-1" disabled={isConnecting}>
+            <div className="flex gap-3 items-center">
+              <button onClick={hideReconnectModal} className="btn btn-ghost flex-1 border-0" disabled={isConnecting}>
                 Cancel
               </button>
-              <button onClick={handleReconnect} className="btn btn-primary flex-1" disabled={isConnecting}>
+              <button onClick={handleReconnect} className="btn btn-primary flex-1 rounded-full" disabled={isConnecting}>
                 {isConnecting ? (
                   <>
                     <span className="loading loading-spinner loading-sm"></span>

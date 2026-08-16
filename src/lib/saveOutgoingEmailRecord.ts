@@ -113,6 +113,18 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
     return supabase.from('emails').insert([record]).select();
   };
 
+  const linkContact = async (emailId: unknown, contactIdValue: unknown) => {
+    const idNum = typeof contactIdValue === 'number' ? contactIdValue : Number(contactIdValue);
+    if (!emailId || !Number.isFinite(idNum) || idNum <= 0) return;
+    const { error } = await supabase.from('email_contacts').upsert(
+      { email_id: String(emailId), contact_id: idNum },
+      { onConflict: 'email_id,contact_id', ignoreDuplicates: true },
+    );
+    if (error) {
+      console.warn('saveOutgoingEmailRecord: email_contacts link failed', error.message);
+    }
+  };
+
   try {
     let { data: insertedData, error: insertError } = await tryInsert(emailRecord);
 
@@ -131,6 +143,8 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
     if (!insertError) {
       if (!insertedData?.length) {
         console.warn('saveOutgoingEmailRecord: insert ok but no rows returned', logContext);
+      } else {
+        await linkContact(insertedData[0]?.id, emailRecord.contact_id);
       }
       notifyTimeline();
       return true;
@@ -149,11 +163,12 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
       insertError.message?.includes('unique') ||
       insertError.message?.includes('duplicate')
     ) {
-      const { error: upsertError } = await supabase
+      const { data: upserted, error: upsertError } = await supabase
         .from('emails')
         .upsert([emailRecord], { onConflict: 'message_id', ignoreDuplicates: false })
         .select();
       if (!upsertError) {
+        await linkContact(upserted?.[0]?.id, emailRecord.contact_id);
         notifyTimeline();
         return true;
       }

@@ -361,20 +361,11 @@ async function getDelegatedAccessTokenForUserId(userId) {
   if (!tokenRecord?.refresh_token) return null;
 
   try {
-    const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(
-      tokenRecord.refresh_token,
-      {
-        homeAccountId: tokenRecord.home_account_id,
-        environment: tokenRecord.environment || 'login.windows.net',
-        tenantId: tokenRecord.tenant_id,
-        username: tokenRecord.mailbox_address,
-      },
-      BOOKING_GRAPH_SCOPES,
-    );
-    return tokenResponse?.accessToken || null;
+    const { accessToken } = await graphAuthService.getAccessTokenForUser(userId, BOOKING_GRAPH_SCOPES);
+    return accessToken || null;
   } catch (err) {
-    if (err?.code === 'EXPIRED_REFRESH_TOKEN') {
-      console.warn(`Booking mailbox token expired for user ${userId}`);
+    if (err?.code === 'EXPIRED_REFRESH_TOKEN' || err?.code === 'MAILBOX_NOT_CONNECTED') {
+      console.warn(`Booking mailbox token unavailable for user ${userId}: ${err.code}`);
       return null;
     }
     throw err;

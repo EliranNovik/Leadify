@@ -46,12 +46,22 @@ export const getMailboxStatus = async (userId: string) => {
   return payload?.data || { connected: false };
 };
 
-export const getMailboxLoginUrl = async (userId: string, redirectTo?: string) => {
+export const getMailboxLoginUrl = async (
+  userId: string,
+  redirectTo?: string,
+  options?: { silent?: boolean; loginHint?: string },
+) => {
   if (!userId) throw new Error('userId is required');
   const url = buildBackendApiUrlObject('/api/auth/login');
   url.searchParams.set('userId', userId);
   if (redirectTo) {
     url.searchParams.set('redirectTo', redirectTo);
+  }
+  if (options?.silent) {
+    url.searchParams.set('silent', 'true');
+  }
+  if (options?.loginHint) {
+    url.searchParams.set('loginHint', options.loginHint);
   }
   const response = await fetch(url.toString());
   const payload = await parseJsonResponse(response);

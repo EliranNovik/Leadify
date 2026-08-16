@@ -2,15 +2,28 @@ const graphAuthService = require('../services/graphAuthService');
 
 const FRONTEND_SUCCESS_URL = process.env.FRONTEND_AUTH_REDIRECT || process.env.FRONTEND_URL || 'http://localhost:5173';
 
+const toRedirectUrl = (target, params = {}) => {
+  const redirectUrl = new URL(target || FRONTEND_SUCCESS_URL);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value != null && value !== '') {
+      redirectUrl.searchParams.set(key, String(value));
+    }
+  });
+  return redirectUrl.toString();
+};
+
 const authController = {
   async login(req, res) {
     try {
-      const { userId, redirectTo } = req.query;
+      const { userId, redirectTo, silent, loginHint } = req.query;
       if (!userId) {
         return res.status(400).json({ success: false, error: 'userId is required' });
       }
 
-      const url = await graphAuthService.createAuthUrl(userId, redirectTo);
+      const url = await graphAuthService.createAuthUrl(userId, redirectTo, {
+        silent: silent === 'true' || silent === '1',
+        loginHint,
+      });
       return res.status(200).json({ success: true, url });
     } catch (error) {
       console.error('❌ Auth login error:', error);
@@ -19,21 +32,50 @@ const authController = {
   },
 
   async callback(req, res) {
+    const fallbackTarget = FRONTEND_SUCCESS_URL;
     try {
-      const { code, state } = req.query;
-      if (!code || !state) {
-        return res.status(400).send('Missing code or state');
+      const { code, state, error, error_description } = req.query;
+      if (error || !code || !state) {
+        const stored = state ? graphAuthService.consumeAuthRedirectState(state) : null;
+        const redirectTarget = stored?.redirectTo || fallbackTarget;
+        const msal =
+          error === 'login_required' || error === 'interaction_required' || error === 'consent_required'
+            ? 'mailbox_needed'
+            : 'error';
+        return res.redirect(
+          toRedirectUrl(redirectTarget, {
+            msal,
+            mailbox_error: error_description || error || 'Missing code or state',
+          })
+        );
       }
 
       const result = await graphAuthService.handleAuthCode(code, state);
-      const redirectTarget = result.redirectTo || FRONTEND_SUCCESS_URL;
-      const redirectUrl = new URL(redirectTarget);
-      redirectUrl.searchParams.set('msal', 'success');
-      redirectUrl.searchParams.set('mailbox', result.mailbox || '');
-      res.redirect(redirectUrl.toString());
+      const redirectTarget = result.redirectTo || fallbackTarget;
+      return res.redirect(
+        toRedirectUrl(redirectTarget, {
+          msal: 'success',
+          mailbox: result.mailbox || '',
+        })
+      );
     } catch (error) {
       console.error('❌ Auth callback error:', error);
-      res.status(500).send(error.message || 'Authentication failed');
+      const redirectTarget = error?.redirectTo || fallbackTarget;
+      if (error?.code === 'MAILBOX_ACCOUNT_MISMATCH') {
+        return res.redirect(
+          toRedirectUrl(redirectTarget, {
+            msal: 'mismatch',
+            mailbox: error.mailbox || '',
+            expected: error.expectedEmail || '',
+          })
+        );
+      }
+      return res.redirect(
+        toRedirectUrl(redirectTarget, {
+          msal: 'error',
+          mailbox_error: error.message || 'Authentication failed',
+        })
+      );
     }
   },
 
@@ -68,5 +110,3 @@ const authController = {
 };
 
 module.exports = authController;
-
-

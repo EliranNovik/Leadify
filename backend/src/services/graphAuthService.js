@@ -78,13 +78,14 @@ class GraphAuthService {
       },
     });
     this.cryptoProvider = new CryptoProvider();
+    this.accessTokenLocks = new Map();
   }
 
   getMsalClient() {
     return this.msalClient;
   }
 
-  async createAuthUrl(userId, redirectTo) {
+  async createAuthUrl(userId, redirectTo, options = {}) {
     if (!userId) {
       throw new Error('userId is required to initiate Microsoft login');
     }
@@ -94,6 +95,11 @@ class GraphAuthService {
 
     cleanupExpiredStates();
 
+    const loginHint =
+      (typeof options.loginHint === 'string' && options.loginHint.trim()) ||
+      (await mailboxTokenService.getUserEmail(userId)) ||
+      '';
+
     const state = crypto.randomUUID();
     const { verifier, challenge } = await this.cryptoProvider.generatePkceCodes();
     const authUrl = await this.msalClient.getAuthCodeUrl({
@@ -102,7 +108,8 @@ class GraphAuthService {
       state,
       codeChallenge: challenge,
       codeChallengeMethod: 'S256',
-      prompt: 'select_account',
+      prompt: options.silent ? 'none' : 'select_account',
+      ...(loginHint ? { loginHint } : {}),
     });
 
     stateStore.set(state, {
@@ -113,6 +120,13 @@ class GraphAuthService {
     });
 
     return authUrl;
+  }
+
+  consumeAuthRedirectState(state) {
+    if (!state || !stateStore.has(state)) return null;
+    const value = stateStore.get(state);
+    stateStore.delete(state);
+    return value;
   }
 
   async handleAuthCode(code, state) {
@@ -133,7 +147,9 @@ class GraphAuthService {
       });
     } catch (error) {
       console.error('❌ MSAL acquireTokenByCode failed:', error);
-      throw new Error(error?.message || 'Failed to acquire tokens from Microsoft Graph');
+      const wrapped = new Error(error?.message || 'Failed to acquire tokens from Microsoft Graph');
+      wrapped.redirectTo = redirectTo;
+      throw wrapped;
     }
 
     if (!tokenResponse?.accessToken) {
@@ -155,6 +171,24 @@ class GraphAuthService {
     }
 
     const profile = await this.fetchProfile(tokenResponse.accessToken);
+    const connectedMailbox = String(profile.mail || profile.userPrincipalName || '')
+      .trim()
+      .toLowerCase();
+    const crmEmail = await mailboxTokenService.getUserEmail(userId);
+    if (crmEmail) {
+      const graphMail = String(profile.mail || '').trim().toLowerCase();
+      const graphUpn = String(profile.userPrincipalName || '').trim().toLowerCase();
+      if (graphMail !== crmEmail && graphUpn !== crmEmail) {
+        const mismatch = new Error(
+          `Microsoft account ${connectedMailbox || 'unknown'} does not match CRM user ${crmEmail}. Sign in as ${crmEmail}.`
+        );
+        mismatch.code = 'MAILBOX_ACCOUNT_MISMATCH';
+        mismatch.mailbox = connectedMailbox;
+        mismatch.expectedEmail = crmEmail;
+        mismatch.redirectTo = redirectTo;
+        throw mismatch;
+      }
+    }
 
     await mailboxTokenService.upsertToken({
       userId,
@@ -165,6 +199,7 @@ class GraphAuthService {
       environment: tokenResponse.account?.environment,
       refreshToken,
       expiresOn: tokenResponse.expiresOn?.toISOString?.() || null,
+      status: 'connected',
     });
 
     try {
@@ -205,14 +240,12 @@ class GraphAuthService {
 
   async getConnectionStatus(userId) {
     const tokenRecord = await mailboxTokenService.getTokenByUserId(userId).catch(() => null);
-    
-    // If no token exists, definitely not connected
+
     if (!tokenRecord) {
-      return { connected: false };
+      return { connected: false, needsReconnect: true };
     }
-    
-    // If token exists, mailbox is connected (state might not exist yet if never synced)
-    // State is created on first sync, but connection exists as soon as token is present
+
+    const needsReconnect = tokenRecord.status === 'needs_reconnect';
     const state = await mailboxStateService.getState(userId).catch(() => null);
     const webhookConfigured = Boolean(process.env.GRAPH_WEBHOOK_NOTIFICATION_URL);
     const staleAfterMs = Math.max(
@@ -225,10 +258,11 @@ class GraphAuthService {
     const subscriptionMissingOrExpired =
       webhookConfigured &&
       (!state?.subscription_id || !subExpMs || subExpMs < Date.now());
-    const needsMailboxSync = syncStale || subscriptionMissingOrExpired;
+    const needsMailboxSync = !needsReconnect && (syncStale || subscriptionMissingOrExpired);
 
     return {
-      connected: true,
+      connected: !needsReconnect,
+      needsReconnect,
       mailbox: state?.mailbox_address || tokenRecord.mailbox_address,
       displayName: state?.display_name || null,
       lastSyncedAt: state?.last_synced_at || null,
@@ -247,6 +281,94 @@ class GraphAuthService {
       subscription_id: null,
       subscription_expiry: null,
       last_synced_at: null,
+    });
+  }
+
+  async withUserLock(userId, fn) {
+    const key = String(userId);
+    const previous = this.accessTokenLocks.get(key) || Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => {}).then(() => gate);
+    this.accessTokenLocks.set(key, queued);
+    await previous.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.accessTokenLocks.get(key) === queued) {
+        this.accessTokenLocks.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Refresh Graph access token for a CRM user. Serialised per user so rotating
+   * refresh tokens cannot race and wipe the stored connection.
+   */
+  async getAccessTokenForUser(userId, scopes = GRAPH_SCOPES) {
+    if (!userId) {
+      throw new Error('userId is required');
+    }
+
+    return this.withUserLock(userId, async () => {
+      const tokenRecord = await mailboxTokenService.getTokenByUserId(userId);
+      if (!tokenRecord) {
+        const err = new Error('Mailbox is not connected for this user');
+        err.code = 'MAILBOX_NOT_CONNECTED';
+        throw err;
+      }
+      if (tokenRecord.status === 'needs_reconnect') {
+        const err = new Error('Your mailbox connection has expired. Please reconnect your mailbox.');
+        err.code = 'EXPIRED_REFRESH_TOKEN';
+        err.statusCode = 401;
+        throw err;
+      }
+
+      const account = {
+        homeAccountId: tokenRecord.home_account_id,
+        environment: tokenRecord.environment,
+        tenantId: tokenRecord.tenant_id,
+        username: tokenRecord.mailbox_address,
+      };
+
+      let tokenResponse;
+      try {
+        tokenResponse = await this.acquireTokenByRefreshToken(tokenRecord.refresh_token, account, scopes);
+      } catch (error) {
+        if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
+          await mailboxTokenService.markNeedsReconnect(userId, error.message);
+        }
+        throw error;
+      }
+
+      if (!tokenResponse?.accessToken) {
+        throw new Error('Unable to acquire Microsoft Graph access token');
+      }
+
+      if (tokenResponse.refreshToken && tokenResponse.refreshToken !== tokenRecord.refresh_token) {
+        await mailboxTokenService.upsertToken({
+          userId,
+          mailboxAddress: tokenRecord.mailbox_address,
+          msUserId: tokenRecord.ms_user_id,
+          tenantId: tokenRecord.tenant_id,
+          homeAccountId: tokenResponse.account?.homeAccountId || tokenRecord.home_account_id,
+          environment: tokenResponse.account?.environment || tokenRecord.environment,
+          refreshToken: tokenResponse.refreshToken,
+          expiresOn: tokenResponse.expiresOn?.toISOString?.() || null,
+          status: 'connected',
+        });
+      } else {
+        await mailboxTokenService.markRefreshed(userId);
+      }
+
+      return {
+        accessToken: tokenResponse.accessToken,
+        tokenRecord,
+        tokenResponse,
+      };
     });
   }
 

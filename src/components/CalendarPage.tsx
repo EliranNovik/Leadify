@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { supabase, tryRefreshThenExpire } from '../lib/supabase';
+import { upsertEmailsKeepExistingLeadLinks } from '../lib/graphEmailSync';
 import { useAuthContext } from '../contexts/AuthContext';
 import { resolveSessionUser } from '../lib/resolveSessionUser';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
@@ -278,8 +279,7 @@ async function syncClientEmails(token: string, client: any) {
     };
   });
 
-  // 5. Upsert into our database
-  await supabase.from('emails').upsert(emailsToUpsert, { onConflict: 'message_id' });
+  await upsertEmailsKeepExistingLeadLinks(emailsToUpsert);
 }
 
 // Helper function to strip signatures and quoted text from emails
