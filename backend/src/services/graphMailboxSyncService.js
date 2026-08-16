@@ -165,43 +165,34 @@ const chunkArray = (arr, size = 100) => {
   return chunks;
 };
 
-/** PostgREST `.or()` filter: case-insensitive exact email match (quoted value so `@` / `.` parse correctly). */
-const emailIlikeOrFilter = (column, emails) =>
-  emails
-    .map((e) => {
-      if (!e) return null;
-      const esc = e
-        .replace(/\\/g, '\\\\')
-        .replace(/%/g, '\\%')
-        .replace(/_/g, '\\_')
-        .replace(/"/g, '\\"');
-      return `${column}.ilike."${esc}"`;
-    })
-    .filter(Boolean)
-    .join(',');
-
-/** Smaller chunks keep `.or()` query strings under proxy/PostgREST limits. Override with GRAPH_EMAIL_MAPPING_CHUNK (10–99). */
+/** Chunk size for lead/contact email `.in()` lookups. Override with GRAPH_EMAIL_MAPPING_CHUNK (10–99). */
 const _emailChunkEnv = parseInt(process.env.GRAPH_EMAIL_MAPPING_CHUNK || '40', 10);
 const EMAIL_MAPPING_CHUNK = Math.min(99, Math.max(10, Number.isFinite(_emailChunkEnv) ? _emailChunkEnv : 40));
 
-/** Try case-insensitive `.or(ilike…)`; on failure fall back to exact `.in()` (still normalized addresses from Graph). */
+/** Exact `.in()` only — `.or(ilike…)` seq-scans large lead/contact tables and hits 57014. */
 const selectRowsMatchingEmailChunk = async (table, selectFields, chunk) => {
   if (!chunk.length) {
     return { data: [], error: null };
   }
-  const emailOr = emailIlikeOrFilter('email', chunk);
-  let res = await supabase.from(table).select(selectFields).or(emailOr);
-  if (res.error) {
-    console.warn(
-      `⚠️ ${table} email lookup .or() failed (${res.error.code || ''} ${res.error.message || res.error}); using .in() fallback`
-    );
-    res = await supabase.from(table).select(selectFields).in('email', chunk);
-  }
-  return res;
+  return supabase.from(table).select(selectFields).in('email', chunk);
 };
 
 // Fetch ALL leads and contacts that match email addresses
 // Returns: { email: [{ clientId, legacyId, contactId, leadId }] }
+const applyAddressMatches = (addMapping, leadMatches, legacyMatches, contactMatches) => {
+  (leadMatches || []).forEach((lead) => {
+    if (lead?.email && !shouldFilterEmail(lead.email)) {
+      addMapping(lead.email, { clientId: lead.id, legacyId: null, contactId: null, leadId: lead.id });
+    }
+  });
+  (legacyMatches || []).forEach((lead) => {
+    if (lead?.email && !shouldFilterEmail(lead.email)) {
+      addMapping(lead.email, { clientId: null, legacyId: lead.id, contactId: null, leadId: lead.id });
+    }
+  });
+  return (contactMatches || []).filter((c) => c?.id && c?.email && !shouldFilterEmail(c.email));
+};
+
 const fetchLeadMappingsForAddresses = async (addresses) => {
   const unique = Array.from(new Set(addresses.map((addr) => normalise(addr)).filter(Boolean)));
   if (!unique.length) {
@@ -209,8 +200,6 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
   }
 
   const mapping = {};
-
-  // Initialize arrays for each email
   unique.forEach((email) => {
     mapping[email] = [];
   });
@@ -218,7 +207,6 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
   const addMapping = (email, value) => {
     const key = normalise(email);
     if (!key || !mapping[key]) return;
-    // Check if this exact mapping already exists (avoid duplicates)
     const exists = mapping[key].some(
       (m) => m.clientId === value.clientId && m.legacyId === value.legacyId && m.contactId === value.contactId
     );
@@ -228,13 +216,78 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
   };
 
   try {
-    for (const chunk of chunkArray(unique, 99)) {
-      const emailOr = emailIlikeOrFilter('email', chunk);
-      // Fetch new leads that match email addresses (case-insensitive)
+    let usedRpc = false;
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('sync_lookup_addresses', {
+        p_emails: unique,
+      });
+      if (rpcError) {
+        console.warn('⚠️ sync_lookup_addresses RPC unavailable:', rpcError.message || rpcError);
+      } else if (rpcData && typeof rpcData === 'object') {
+        usedRpc = true;
+        const parsed = typeof rpcData === 'string' ? JSON.parse(rpcData) : rpcData;
+        const contactMatches = applyAddressMatches(
+          addMapping,
+          parsed.leads,
+          parsed.legacy,
+          parsed.contacts
+        );
+        const contactIds = contactMatches.map((c) => c.id);
+        const relByContact = new Map();
+        for (const relChunk of chunkArray(contactIds, 200)) {
+          const { data: rels, error: relError } = await supabase
+            .from('lead_leadcontact')
+            .select('contact_id,lead_id,newlead_id')
+            .in('contact_id', relChunk);
+          if (relError) {
+            console.error('❌ Failed to resolve lead_leadcontact for email addresses:', relError.message || relError);
+            continue;
+          }
+          (rels || []).forEach((rel) => {
+            const list = relByContact.get(rel.contact_id) || [];
+            list.push(rel);
+            relByContact.set(rel.contact_id, list);
+          });
+        }
+        contactMatches.forEach((contact) => {
+          if (contact.newlead_id) {
+            addMapping(contact.email, {
+              clientId: contact.newlead_id,
+              legacyId: null,
+              contactId: contact.id,
+              leadId: contact.newlead_id,
+            });
+          }
+          (relByContact.get(contact.id) || []).forEach((rel) => {
+            if (rel.lead_id) {
+              addMapping(contact.email, {
+                clientId: null,
+                legacyId: rel.lead_id,
+                contactId: contact.id,
+                leadId: rel.lead_id,
+              });
+            }
+            if (rel.newlead_id) {
+              addMapping(contact.email, {
+                clientId: rel.newlead_id,
+                legacyId: null,
+                contactId: contact.id,
+                leadId: rel.newlead_id,
+              });
+            }
+          });
+        });
+      }
+    } catch (rpcErr) {
+      console.warn('⚠️ sync_lookup_addresses RPC failed, using .in() fallback:', rpcErr.message || rpcErr);
+    }
+
+    if (!usedRpc) {
+    for (const chunk of chunkArray(unique, EMAIL_MAPPING_CHUNK)) {
       const { data: leadMatches, error: leadError } = await supabase
         .from('leads')
         .select('id,email')
-        .or(emailOr);
+        .in('email', chunk);
 
       if (leadError) {
         console.error('❌ Failed to resolve leads for email addresses:', leadError.message || leadError);
@@ -336,12 +389,82 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
         });
       }
     }
+    }
+
+    const unmatchedExternal = unique.filter(
+      (email) => (!mapping[email] || mapping[email].length === 0) && !isLawofficeDomain(email)
+    );
+    if (unmatchedExternal.length) {
+      await fillUnmatchedAddressesCaseInsensitive(unmatchedExternal, addMapping);
+    }
   } catch (error) {
     console.error('❌ Error while resolving lead mappings for emails:', error.message || error);
   }
 
   return mapping;
 };
+
+const escapeIlikeExact = (value) =>
+  String(value || '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+
+async function fillUnmatchedAddressesCaseInsensitive(addresses, addMapping) {
+  for (const addr of addresses) {
+    const pattern = escapeIlikeExact(addr);
+    const [{ data: leads }, { data: legacy }, { data: contacts }] = await Promise.all([
+      supabase.from('leads').select('id,email').ilike('email', pattern).limit(5),
+      supabase.from('leads_lead').select('id,email').ilike('email', pattern).limit(5),
+      supabase.from('leads_contact').select('id,email,newlead_id').ilike('email', pattern).limit(5),
+    ]);
+    const contactMatches = applyAddressMatches(addMapping, leads, legacy, contacts);
+    if (!contactMatches.length) continue;
+
+    const relByContact = new Map();
+    for (const relChunk of chunkArray(contactMatches.map((c) => c.id), 200)) {
+      const { data: rels, error: relError } = await supabase
+        .from('lead_leadcontact')
+        .select('contact_id,lead_id,newlead_id')
+        .in('contact_id', relChunk);
+      if (relError) {
+        console.error('❌ Failed to resolve lead_leadcontact for email addresses:', relError.message || relError);
+        continue;
+      }
+      (rels || []).forEach((rel) => {
+        const list = relByContact.get(rel.contact_id) || [];
+        list.push(rel);
+        relByContact.set(rel.contact_id, list);
+      });
+    }
+
+    contactMatches.forEach((contact) => {
+      if (contact.newlead_id) {
+        addMapping(contact.email, {
+          clientId: contact.newlead_id,
+          legacyId: null,
+          contactId: contact.id,
+          leadId: contact.newlead_id,
+        });
+      }
+      (relByContact.get(contact.id) || []).forEach((rel) => {
+        if (rel.lead_id) {
+          addMapping(contact.email, {
+            clientId: null,
+            legacyId: rel.lead_id,
+            contactId: contact.id,
+            leadId: rel.lead_id,
+          });
+        }
+        if (rel.newlead_id) {
+          addMapping(contact.email, {
+            clientId: rel.newlead_id,
+            legacyId: null,
+            contactId: contact.id,
+            leadId: rel.newlead_id,
+          });
+        }
+      });
+    });
+  }
+}
 
 const uniqueMatches = (matches = []) => {
   const map = new Map();
@@ -412,25 +535,144 @@ async function linkEmailContacts(emailId, contactIds) {
   }
 }
 
-async function loadExistingEmailsByMessageId(messageIds) {
-  const existingByMessageId = new Map();
-  const ids = [...new Set((messageIds || []).filter(Boolean))];
-  for (const chunk of chunkArray(ids, 200)) {
+let warnedEmailsWriteTimeout = false;
+let mailboxWriteRpcsAvailable = true;
+let emailRowRpcAvailable = true;
+/** After one seq-scan timeout, skip further message_id lookups this process. */
+let skipMessageIdLookups = false;
+
+function isStatementTimeout(error) {
+  const msg = String(error?.message || error || '');
+  return error?.code === '57014' || /statement timeout/i.test(msg);
+}
+
+function isMissingRpc(error) {
+  return /could not find the function|schema cache|PGRST202/i.test(String(error?.message || error || ''));
+}
+
+function warnEmailsWriteTimeout(context, message) {
+  console.error(`❌ ${context}:`, message);
+  if (!warnedEmailsWriteTimeout && /timeout|57014/i.test(String(message || ''))) {
+    warnedEmailsWriteTimeout = true;
+    console.error(
+      '❌ emails writes are timing out. Re-run sql/2026-08-16_emails_sync_lookup_and_drop_mv_trigger.sql (do not DROP TRIGGER while sync is running).'
+    );
+  }
+}
+
+function disableMessageIdLookups(reason) {
+  if (skipMessageIdLookups) return;
+  skipMessageIdLookups = true;
+  console.warn(
+    `⚠️ Skipping further emails.message_id lookups (${reason}). Inserts will proceed without a pre-check.`
+  );
+}
+
+async function findEmailRowByMessageId(messageId) {
+  if (!messageId || skipMessageIdLookups) return null;
+  if (emailRowRpcAvailable) {
+    const { data, error } = await supabase.rpc('email_row_for_message', { p_message_id: messageId });
+    if (!error) {
+      const row = Array.isArray(data) ? data[0] : data;
+      return row?.id ? row : null;
+    }
+    if (isMissingRpc(error)) {
+      emailRowRpcAvailable = false;
+    } else {
+      if (isStatementTimeout(error)) disableMessageIdLookups('statement timeout');
+      warnEmailsWriteTimeout('Failed to load existing emails by message_id', error.message || error);
+      return null;
+    }
+  }
+
+  const { data, error } = await supabase
+    .from(EMAIL_HEADERS_TABLE)
+    .select('id, message_id, contact_id, client_id, legacy_id')
+    .eq('message_id', messageId)
+    .order('id', { ascending: true })
+    .limit(1);
+  if (error) {
+    if (isStatementTimeout(error)) disableMessageIdLookups('statement timeout');
+    warnEmailsWriteTimeout('Failed to load existing emails by message_id', error.message || error);
+    return null;
+  }
+  return data?.[0] || null;
+}
+
+async function insertMailboxEmailRow(row) {
+  if (mailboxWriteRpcsAvailable) {
+    const { data, error } = await supabase.rpc('insert_mailbox_email', { p_row: row });
+    if (!error && data) {
+      return { id: data, error: null };
+    }
+    if (error && isMissingRpc(error)) {
+      mailboxWriteRpcsAvailable = false;
+      console.warn(
+        '⚠️ insert_mailbox_email RPC missing; falling back to table insert. Run sql/2026-08-16_emails_sync_lookup_and_drop_mv_trigger.sql'
+      );
+    } else if (error) {
+      if (isStatementTimeout(error)) {
+        warnEmailsWriteTimeout(
+          `Failed to store email ${row.message_id?.substring(0, 20) || 'unknown'}...`,
+          error.message || error
+        );
+        return { id: null, error };
+      }
+      console.warn('⚠️ insert_mailbox_email RPC error, trying table insert:', error.message || error);
+    }
+  }
+
+  const attempts = [row];
+  if (row.client_id || row.legacy_id) {
+    attempts.push({ ...row, client_id: null, legacy_id: null });
+  }
+  let lastError = null;
+  for (const attempt of attempts) {
     const { data, error } = await supabase
       .from(EMAIL_HEADERS_TABLE)
-      .select('id, message_id, contact_id, client_id, legacy_id')
-      .in('message_id', chunk);
-    if (error) {
-      console.error('❌ Failed to load existing emails by message_id:', error.message || error);
-      continue;
+      .insert([attempt])
+      .select('id, message_id')
+      .maybeSingle();
+    if (!error && data?.id) return { id: data.id, error: null };
+    if (error?.code === '23505') {
+      const existing = await findEmailRowByMessageId(row.message_id);
+      return { id: existing?.id || null, error: null, duplicate: true };
     }
-    (data || []).forEach((row) => {
-      if (row?.message_id && !existingByMessageId.has(row.message_id)) {
-        existingByMessageId.set(row.message_id, row);
-      }
-    });
+    lastError = error;
+    if (!isStatementTimeout(error)) break;
   }
-  return existingByMessageId;
+  warnEmailsWriteTimeout(
+    `Failed to store email ${row.message_id?.substring(0, 20) || 'unknown'}...`,
+    (lastError && (lastError.message || lastError)) || 'insert failed'
+  );
+  return { id: null, error: lastError };
+}
+
+async function patchMailboxEmailBody(id, patch) {
+  if (!id || !patch || !Object.keys(patch).length) return;
+  const hasAttachments = Object.prototype.hasOwnProperty.call(patch, 'attachments');
+  if (mailboxWriteRpcsAvailable) {
+    const { error } = await supabase.rpc('update_mailbox_email_body', {
+      p_id: id,
+      p_body_html: patch.body_html ?? null,
+      p_body_preview: patch.body_preview ?? null,
+      p_body_cached: patch.body_cached ?? null,
+      p_attachments: hasAttachments ? patch.attachments : null,
+      p_has_attachments: hasAttachments,
+    });
+    if (!error) return;
+    if (isMissingRpc(error)) {
+      mailboxWriteRpcsAvailable = false;
+    } else {
+      warnEmailsWriteTimeout(`Failed to update email rows for id ${id}`, error.message || error);
+      return;
+    }
+  }
+
+  const { error } = await supabase.from(EMAIL_HEADERS_TABLE).update(patch).eq('id', id);
+  if (error) {
+    warnEmailsWriteTimeout(`Failed to update email rows for id ${id}`, error.message || error);
+  }
 }
 
 const fetchRecentMessagesSnapshot = async ({ accessToken, mailboxAddress, top = 25 }) => {
@@ -1123,7 +1365,13 @@ class GraphMailboxSyncService {
       const recipientList = row.recipient_list || '';
       const recipientListLower = recipientList.toLowerCase();
 
-      if (senderEmail && shouldFilterEmail(senderEmail)) {
+      const recipientAddresses = row.recipient_list
+        ? row.recipient_list.split(',').map((addr) => normalise(addr)).filter(Boolean)
+        : [];
+      const hasExternalRecipient = recipientAddresses.some((addr) => addr && !isLawofficeDomain(addr));
+
+      // Keep website/newsletter blocks unless a non-office client is on To/Cc.
+      if (senderEmail && shouldFilterEmail(senderEmail) && !hasExternalRecipient) {
         console.log(
           `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - sender is blocked | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
         );
@@ -1175,7 +1423,8 @@ class GraphMailboxSyncService {
       return { processed: messages.length, inserted: 0, skipped: rows.length, trackedCount: 0 };
     }
 
-    const existingByMessageId = await loadExistingEmailsByMessageId(prepared.map((p) => p.row.message_id));
+    // Do not SELECT emails by message_id first — that seq-scans ~5M rows and times out.
+    // insert_mailbox_email returns the existing id on unique_violation when an index exists.
     const toInsert = [];
     let duplicatesSkipped = 0;
 
@@ -1184,78 +1433,26 @@ class GraphMailboxSyncService {
         filteredOut += 1;
         continue;
       }
-      const existing = existingByMessageId.get(item.row.message_id);
-      if (!existing) {
-        toInsert.push(item);
-        continue;
-      }
-      duplicatesSkipped += 1;
-      const patch = {};
-      if (!existing.contact_id && item.row.contact_id) patch.contact_id = item.row.contact_id;
-      if (!existing.client_id && item.row.client_id) patch.client_id = item.row.client_id;
-      if (!existing.legacy_id && item.row.legacy_id) patch.legacy_id = item.row.legacy_id;
-      if (Object.keys(patch).length) {
-        const { error: patchError } = await supabase.from(EMAIL_HEADERS_TABLE).update(patch).eq('id', existing.id);
-        if (patchError) {
-          console.warn(`⚠️ Failed to backfill lead/contact on existing email ${existing.id}:`, patchError.message || patchError);
-        }
-      }
-      await linkEmailContacts(existing.id, item.contactIds);
+      toInsert.push(item);
     }
 
     let insertedCount = 0;
     let errorCount = 0;
     const insertedForBodies = [];
-    const BATCH_SIZE = 50;
 
-    for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
-      const batch = toInsert.slice(i, i + BATCH_SIZE);
-      const payload = batch.map((b) => b.row);
-      const { data, error } = await supabase.from(EMAIL_HEADERS_TABLE).insert(payload).select('id, message_id');
-      if (!error) {
-        insertedCount += (data || []).length;
-        const idByMessage = new Map((data || []).map((d) => [d.message_id, d.id]));
-        for (const item of batch) {
-          const id = idByMessage.get(item.row.message_id);
-          if (id) {
-            insertedForBodies.push(item.row);
-            await linkEmailContacts(id, item.contactIds);
-          }
-        }
-        continue;
-      }
-
-      if (error.code === '23505') {
-        console.warn(`⚠️ Batch ${Math.floor(i / BATCH_SIZE) + 1}: unique message_id conflict, retrying row-by-row`);
-      } else {
-        console.error(`❌ Batch ${Math.floor(i / BATCH_SIZE) + 1}: Failed to store email headers:`, error.message || error);
-      }
-
-      for (const item of batch) {
-        const { data: one, error: oneErr } = await supabase
-          .from(EMAIL_HEADERS_TABLE)
-          .insert([item.row])
-          .select('id, message_id')
-          .maybeSingle();
-        if (!oneErr && one?.id) {
-          insertedCount += 1;
-          insertedForBodies.push(item.row);
-          await linkEmailContacts(one.id, item.contactIds);
-          continue;
-        }
-        if (oneErr?.code === '23505') {
-          const again = await loadExistingEmailsByMessageId([item.row.message_id]);
-          const ex = again.get(item.row.message_id);
-          if (ex) await linkEmailContacts(ex.id, item.contactIds);
+    for (const item of toInsert) {
+      const result = await insertMailboxEmailRow(item.row);
+      if (result.id && !result.error) {
+        if (result.duplicate) {
           duplicatesSkipped += 1;
         } else {
-          console.error(
-            `❌ Failed to store email ${item.row.message_id?.substring(0, 20) || 'unknown'}...:`,
-            (oneErr && (oneErr.message || oneErr)) || error.message || error
-          );
-          errorCount += 1;
+          insertedCount += 1;
+          insertedForBodies.push({ ...item.row, id: result.id });
         }
+        await linkEmailContacts(result.id, item.contactIds);
+        continue;
       }
+      errorCount += 1;
     }
 
     if (errorCount > 0) {
@@ -1296,12 +1493,9 @@ class GraphMailboxSyncService {
       console.log(`ℹ️  No new email leads to notify (${insertedCount} new emails processed)`);
     }
 
-    if (accessToken) {
+    if (accessToken && insertedForBodies.length) {
       this.fetchFullBodiesForMessages(userId, mailboxAddress, insertedForBodies, accessToken).catch((err) => {
         console.error('⚠️  Error fetching full email bodies:', err.message || err);
-      });
-      this.backfillAttachmentMetadata(userId, mailboxAddress, accessToken, { limit: 40 }).catch((err) => {
-        console.error('⚠️  Error backfilling attachment metadata:', err.message || err);
       });
     }
 
@@ -1325,6 +1519,12 @@ class GraphMailboxSyncService {
     );
 
     const uniqueMessageIds = [...new Set(emailRows.map((r) => r.message_id).filter(Boolean))];
+    const idByMessageId = new Map();
+    emailRows.forEach((row) => {
+      if (row?.message_id && row?.id && !idByMessageId.has(row.message_id)) {
+        idByMessageId.set(row.message_id, row.id);
+      }
+    });
     console.log(
       `📧 Fetching full bodies + attachment metadata: ${uniqueMessageIds.length} unique Graph message(s) for ${emailRows.length} DB row(s) (serial + 429 backoff; avoids MailboxConcurrency)`
     );
@@ -1375,37 +1575,25 @@ class GraphMailboxSyncService {
         patch.attachments = attachmentsMeta.length ? attachmentsMeta : null;
       }
 
+      const dbId = idByMessageId.get(messageId);
       if (Object.keys(patch).length > 0) {
-        // One Graph message is one emails row; update that message_id.
-        const { error: updateError } = await supabase
-          .from(EMAIL_HEADERS_TABLE)
-          .update(patch)
-          .eq('message_id', messageId)
-          .or('body_cached.is.null,body_cached.eq.false');
-
-        if (updateError) {
-          console.error(`⚠️  Failed to update email rows for ${messageId.substring(0, 24)}...:`, updateError.message);
+        if (dbId) {
+          await patchMailboxEmailBody(dbId, patch);
+        } else {
+          console.warn(
+            `⚠️  Skipping emails body patch for ${messageId.substring(0, 24)}... (no row id; avoiding message_id scan)`
+          );
         }
       }
 
-      if (hasBody) {
-        const { data: headerRow } = await supabase
-          .from(EMAIL_HEADERS_TABLE)
-          .select('id')
-          .eq('message_id', messageId)
-          .order('id', { ascending: true })
-          .limit(1)
-          .maybeSingle();
-
-        if (headerRow?.id) {
-          const { error: bodyUpsertError } = await supabase.from(EMAIL_BODIES_TABLE).upsert({
-            email_id: headerRow.id,
-            body_html: fullBody,
-            updated_at: new Date().toISOString(),
-          });
-          if (bodyUpsertError) {
-            console.warn(`⚠️  email_bodies upsert skipped for message ${messageId.substring(0, 20)}...:`, bodyUpsertError.message);
-          }
+      if (hasBody && dbId) {
+        const { error: bodyUpsertError } = await supabase.from(EMAIL_BODIES_TABLE).upsert({
+          email_id: dbId,
+          body_html: fullBody,
+          updated_at: new Date().toISOString(),
+        });
+        if (bodyUpsertError) {
+          console.warn(`⚠️  email_bodies upsert skipped for message ${messageId.substring(0, 20)}...:`, bodyUpsertError.message);
         }
       }
 
@@ -1429,12 +1617,14 @@ class GraphMailboxSyncService {
       parseInt(process.env.GRAPH_EMAIL_BODY_GRAPH_DELAY_MS || '500', 10) || 500
     );
 
-    const take = Math.min(200, Math.max(5, limit * 5));
+    const sinceIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const take = Math.min(80, Math.max(5, limit * 2));
     const { data: rows, error } = await supabase
       .from(EMAIL_HEADERS_TABLE)
-      .select('message_id, attachments')
+      .select('id, message_id, attachments')
       .eq('user_id', userId)
       .eq('body_cached', true)
+      .gte('sent_at', sinceIso)
       .order('sent_at', { ascending: false })
       .limit(take);
 
@@ -1456,18 +1646,25 @@ class GraphMailboxSyncService {
 
     console.log(`📎 Backfilling attachment metadata for up to ${uniqueIds.length} message(s)`);
 
+    const idByMessageId = new Map();
+    needsMeta.forEach((row) => {
+      if (row?.message_id && row?.id && !idByMessageId.has(row.message_id)) {
+        idByMessageId.set(row.message_id, row.id);
+      }
+    });
+
     for (let i = 0; i < uniqueIds.length; i++) {
       const messageId = uniqueIds[i];
       try {
         const attachmentsMeta = await fetchMessageAttachmentsMetadata(accessToken, mailboxAddress, messageId);
         const payload = attachmentsMeta.length ? attachmentsMeta : null;
-        const { error: upErr } = await supabase
-          .from(EMAIL_HEADERS_TABLE)
-          .update({ attachments: payload })
-          .eq('user_id', userId)
-          .eq('message_id', messageId);
-        if (upErr) {
-          console.warn(`⚠️  Failed to backfill attachments for ${messageId?.substring(0, 24)}...:`, upErr.message);
+        const dbId = idByMessageId.get(messageId);
+        if (dbId) {
+          await patchMailboxEmailBody(dbId, { attachments: payload });
+        } else {
+          console.warn(
+            `⚠️  Skipping attachment backfill for ${messageId?.substring(0, 24)}... (no row id; avoiding message_id scan)`
+          );
         }
       } catch (err) {
         if (!isGraphMessageNotFound(err)) {
@@ -2010,29 +2207,12 @@ class GraphMailboxSyncService {
         attachments: attachmentsMeta,
       };
 
-      const existingByMessageId = await loadExistingEmailsByMessageId([record.message_id]);
-      const existing = existingByMessageId.get(record.message_id);
-      if (existing?.id) {
-        await linkEmailContacts(existing.id, contactIds);
-        console.log(
-          `💾 Linked outgoing email ${result.id?.substring(0, 20) || 'unknown'}... to ${contactIds.length} contact(s) (already saved)`
-        );
+      const inserted = await insertMailboxEmailRow(record);
+      if (inserted.error) {
         return;
       }
-
-      const { data, error } = await supabase.from(EMAIL_HEADERS_TABLE).insert([record]).select('id').maybeSingle();
-      if (error && error.code === '23505') {
-        const again = await loadExistingEmailsByMessageId([record.message_id]);
-        const ex = again.get(record.message_id);
-        if (ex) await linkEmailContacts(ex.id, contactIds);
-        return;
-      }
-      if (error) {
-        console.error('❌ Failed to persist outgoing email:', error.message || error);
-        return;
-      }
-      if (data?.id) {
-        await linkEmailContacts(data.id, contactIds);
+      if (inserted.id) {
+        await linkEmailContacts(inserted.id, contactIds);
       }
       console.log(
         `💾 Saved outgoing email ${result.id?.substring(0, 20) || 'unknown'}... | client_id=${record.client_id || 'null'} | legacy_id=${record.legacy_id || 'null'} | contact_id=${record.contact_id || 'null'} | contacts=${contactIds.length}`
