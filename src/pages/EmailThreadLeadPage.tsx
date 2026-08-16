@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { toast } from 'react-hot-toast';
-import { appendEmailSignature } from '../lib/emailSignature';
+import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import { sendEmailViaBackend, downloadAttachmentFromBackend, fetchEmailBodyFromBackend } from '../lib/mailboxApi';
+import EmailSentSuccessModal from '../components/EmailSentSuccessModal';
+import { ComposeSignaturePreview } from '../components/signature/ComposeSignaturePreview';
+import { ComposeAttachmentPreviews } from '../components/signature/ComposeAttachmentPreviews';
 import { fetchHeaderOfficeInboxUnreadEmails } from '../lib/headerEmailNotifications';
 import { isUsableEmployeePhotoUrl, resolveEmployeePhotoUrl } from '../lib/employeePhotoUrl';
 import { usePersistedState } from '../hooks/usePersistedState';
@@ -510,6 +515,7 @@ const EmailThreadLeadPage: React.FC = () => {
   const [composeToRecipients, setComposeToRecipients] = useState<string[]>([]);
   const [composeCcRecipients, setComposeCcRecipients] = useState<string[]>([]);
   const [isSending, setIsSending] = useState(false);
+  const [showEmailSentModal, setShowEmailSentModal] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [threadLoadingMore, setThreadLoadingMore] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -1934,31 +1940,18 @@ const EmailThreadLeadPage: React.FC = () => {
     setIsLoadingAI(true);
     setShowAISuggestions(true);
     try {
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          currentMessage: newMessage.trim(),
-          conversationHistory: messages.map((msg) => ({
-            id: msg.id,
-            direction: msg.direction === 'outgoing' ? 'out' : 'in',
-            message: msg.body_preview || msg.body_html || '',
-            sent_at: msg.sent_at,
-            sender_name: msg.sender_name || msg.sender_email,
-          })),
-          clientName: selectedLead.sender_name,
-          requestType: newMessage.trim() ? 'improve' : 'suggest',
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: newMessage.trim(),
+        conversationHistory: messages.map((msg) => ({
+          id: msg.id,
+          direction: msg.direction === 'outgoing' ? 'out' : 'in',
+          message: msg.body_preview || msg.body_html || '',
+          sent_at: msg.sent_at,
+          sender_name: msg.sender_name || msg.sender_email,
+        })),
+        clientName: selectedLead.sender_name,
+        requestType: newMessage.trim() ? 'improve' : 'suggest',
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
       if (result.success) {
         setAiSuggestions(result.suggestion ? [result.suggestion.trim()] : []);
       } else {
@@ -1998,9 +1991,13 @@ const EmailThreadLeadPage: React.FC = () => {
       setIsSending(true);
       const finalSubject =
         subject.trim() || (selectedLead.last_subject ? `Re: ${selectedLead.last_subject}` : 'Email Response');
-      const baseHtml = newMessage.replace(/\n/g, '<br>');
-      const htmlWithSignature = await appendEmailSignature(baseHtml);
-      const backendAttachments = attachments.length ? await mapAttachmentsForBackend(attachments) : undefined;
+      const baseHtml = convertBodyToHtml(newMessage);
+      const { html: htmlWithSignature, inlineAttachments } =
+        await buildOutgoingHtmlWithSignature(baseHtml);
+      const backendAttachments = [
+        ...(attachments.length ? await mapAttachmentsForBackend(attachments) : []),
+        ...inlineAttachments,
+      ];
 
       await sendEmailViaBackend({
         userId,
@@ -2008,7 +2005,7 @@ const EmailThreadLeadPage: React.FC = () => {
         bodyHtml: htmlWithSignature,
         to,
         cc: composeCcRecipients.length > 0 ? composeCcRecipients : undefined,
-        attachments: backendAttachments,
+        attachments: backendAttachments.length ? backendAttachments : undefined,
         context: {
           contactEmail: selectedLead.sender_email,
           contactName: selectedLead.sender_name,
@@ -2043,7 +2040,7 @@ const EmailThreadLeadPage: React.FC = () => {
       setComposeToRecipients([selectedLead.sender_email].filter(Boolean));
       setComposeCcRecipients([]);
       stickToBottomRef.current = true;
-      toast.success('Email sent');
+      setShowEmailSentModal(true);
       // Refresh in background but keep the optimistic sent bubble visible
       void fetchMessages({ quiet: true, bypassCache: true });
     } catch (error) {
@@ -3485,11 +3482,7 @@ const EmailThreadLeadPage: React.FC = () => {
                                     ? renderableEmailHtml(body)
                                     : plainTextToSafeHtml(htmlOrTextToPlainLines(body));
                                 const signatureHtml = signature
-                                  ? isOutgoing || !looksLikeEmailHtml(signature)
-                                    ? plainTextToSafeHtml(
-                                        isOutgoing ? signature : htmlOrTextToPlainLines(signature),
-                                      )
-                                    : renderableEmailHtml(signature)
+                                  ? plainTextToSafeHtml(htmlOrTextToPlainLines(signature))
                                   : '';
 
                                 if (!bodyHtml && !signatureHtml) {
@@ -3637,25 +3630,7 @@ const EmailThreadLeadPage: React.FC = () => {
                       </div>
                     )}
 
-                    {attachments.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {attachments.map((file, index) => (
-                          <div
-                            key={`${file.name}-${index}`}
-                            className="flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-full px-3 py-1 text-sm"
-                          >
-                            <PaperClipIcon className="w-4 h-4 text-gray-500" />
-                            <span className="max-w-[140px] truncate">{file.name}</span>
-                            <button
-                              className="text-gray-400 hover:text-gray-600"
-                              onClick={() => removeAttachment(index)}
-                            >
-                              <XMarkIcon className="w-4 h-4" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    <ComposeAttachmentPreviews files={attachments} onRemove={removeAttachment} />
 
                     <div className="flex items-end gap-2">
                       <div className="relative shrink-0 self-end pb-0.5">
@@ -3763,6 +3738,9 @@ const EmailThreadLeadPage: React.FC = () => {
                         <PaperAirplaneIcon className="h-5 w-5" />
                         <span className="sr-only">Send</span>
                       </button>
+                    </div>
+                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+                      <ComposeSignaturePreview compact />
                     </div>
                   </div>
                   <input
@@ -3887,6 +3865,11 @@ const EmailThreadLeadPage: React.FC = () => {
           </div>
         </div>
       )}
+      <EmailSentSuccessModal
+        open={showEmailSentModal}
+        onClose={() => setShowEmailSentModal(false)}
+        recipient={selectedLead?.sender_email}
+      />
     </div>
   );
 };

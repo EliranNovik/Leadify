@@ -87,6 +87,7 @@ Conversation context:
 ${conversationContext}
 
 Client name: ${clientName || 'Client'}
+${currentMessage ? `\nThe previous draft was:\n"${currentMessage}"\nWrite a NEW alternative message with different wording. Do not repeat the previous draft.` : ''}
 
 Return ONLY one message suggestion that would be appropriate as the next message from the legal firm. Do not include any explanations, numbering, or extra text.`;
 

@@ -6,6 +6,8 @@ import { supabase } from './supabase';
 import { buildApiUrl } from './api';
 import { fetchLeadContacts, type ContactInfo } from './contactHelpers';
 import { getMailboxStatus, sendEmailViaBackend } from './mailboxApi';
+import { convertBodyToHtml } from './emailBodyHtml';
+import { buildOutgoingHtmlWithSignature } from './emailSignature';
 import {
   generateParamsFromDefinitions,
   getTemplateParamDefinitions,
@@ -227,25 +229,6 @@ async function fetchEmailTemplate(templateId: number): Promise<{ name: string; c
   };
 }
 
-function containsRTL(text?: string | null): boolean {
-  if (!text) return false;
-  return /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F]/.test(text);
-}
-
-function formatEmailHtml(plainBody: string): string {
-  if (!plainBody) return '';
-  let htmlBody = plainBody;
-  const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
-  if (!hasHtmlTags) {
-    htmlBody = htmlBody.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
-  }
-  const isRTL = containsRTL(htmlBody);
-  if (isRTL) {
-    return `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, sans-serif;">${htmlBody}</div>`;
-  }
-  return `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, sans-serif;">${htmlBody}</div>`;
-}
-
 function resolveContactPhone(contact: PortalSendCodeContact): string | null {
   const raw = pickWhatsAppPhoneFromContactFields(contact.phone, contact.mobile);
   if (!raw) return null;
@@ -419,7 +402,9 @@ async function sendPortalEmail(
     accessCode: input.accessCode,
   });
 
-  const bodyHtml = formatEmailHtml(plainBody);
+  const { html: bodyHtml, inlineAttachments } = await buildOutgoingHtmlWithSignature(
+    convertBodyToHtml(plainBody),
+  );
   const subject =
     (await replaceEmailTemplateParams(template.name, {
       clientName: contact.name || 'Client',
@@ -435,6 +420,7 @@ async function sendPortalEmail(
     bodyHtml,
     bodyContentType: 'HTML',
     to: [to],
+    attachments: inlineAttachments.length > 0 ? inlineAttachments : undefined,
     context: {
       clientId: input.isLegacyLead ? null : rawLeadId,
       legacyLeadId:

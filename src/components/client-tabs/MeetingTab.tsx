@@ -104,6 +104,7 @@ import MeetingSummaryComponent from '../MeetingSummary';
 import MeetingSummaryNotesModal from './MeetingSummaryNotesModal';
 import { replaceEmailTemplateParams, replaceEmailTemplateParamsSync } from '../../lib/emailTemplateParams';
 import { saveOutgoingEmailRecord } from '../../lib/saveOutgoingEmailRecord';
+import { convertBodyToHtml } from '../../lib/emailBodyHtml';
 import {
   fetchInternalMeetingWhatsAppTemplateNames,
   fillWhatsAppTemplateContent,
@@ -463,42 +464,6 @@ async function fetchMeetingParticipantContacts(meetingId: number): Promise<Notif
   }
 
   return recipients;
-}
-
-/**
- * Wrap bare http(s) and mailto URLs in anchor tags for outgoing HTML emails.
- * Preserves existing <a>...</a> blocks and skips URLs inside HTML tags (e.g. href/src attributes).
- */
-function linkifyPlainUrlsInEmailHtml(html: string): string {
-  if (!html) return html;
-  if (!/\bhttps?:\/\//i.test(html) && !/\bmailto:/i.test(html)) return html;
-
-  const preserved: string[] = [];
-  let s = html.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, (block) => {
-    const i = preserved.length;
-    preserved.push(block);
-    return `@@MEETINGTAB_LINKIFY_A_${i}@@`;
-  });
-
-  const parts = s.split(/(<[^>]+>)/g);
-  s = parts
-    .map((part) => {
-      if (!part || part.startsWith('<')) return part;
-      return part.replace(
-        /\b(https?:\/\/[^\s<>"']+|mailto:[^\s<>"']+)/gi,
-        (url) => {
-          const safeHref = url.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-          return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-        }
-      );
-    })
-    .join('');
-
-  preserved.forEach((block, i) => {
-    s = s.replace(`@@MEETINGTAB_LINKIFY_A_${i}@@`, block);
-  });
-
-  return s;
 }
 
 function OutlookIcon({ className = 'w-5 h-5' }: { className?: string }) {
@@ -1350,14 +1315,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     }
   };
 
-  // Helper function to detect Hebrew/RTL text
-  const containsRTL = (text?: string | null): boolean => {
-    if (!text) return false;
-    // Remove HTML tags to check only text content
-    const textOnly = text.replace(/<[^>]*>/g, '');
-    return /[\u0590-\u05FF]/.test(textOnly);
-  };
-
   // Parse template content from database (handles various formats)
   const parseTemplateContent = (rawContent: string | null | undefined): string => {
     if (!rawContent) return '';
@@ -1510,39 +1467,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
     }
 
-    // Preserve line breaks: convert \n to <br> if not already in HTML
-    // Check if content already has HTML structure
-    const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
-
-    if (!hasHtmlTags) {
-      // Plain text: convert line breaks to <br> and preserve spacing
-      htmlBody = htmlBody
-        .replace(/\r\n/g, '\n')  // Normalize line endings
-        .replace(/\r/g, '\n')    // Handle old Mac line endings
-        .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-    } else {
-      // Has HTML: ensure <br> tags are preserved, convert remaining \n
-      htmlBody = htmlBody
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
-        .replace(/\n/g, '<br>'); // Convert any remaining newlines
-    }
-
-    // Make any remaining plain URLs clickable (templates often inject raw links via placeholders)
-    htmlBody = linkifyPlainUrlsInEmailHtml(htmlBody);
-
-    // Detect if content contains Hebrew/RTL text
-    const isRTL = containsRTL(htmlBody);
-
-    // Wrap in div with proper direction and styling
-    if (isRTL) {
-      htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-    } else {
-      htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-    }
-
-    return htmlBody;
+    return convertBodyToHtml(htmlBody);
   };
 
   // Fetch all employees and meeting locations

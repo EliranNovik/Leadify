@@ -3,6 +3,7 @@
 
 import { IPublicClientApplication, InteractionRequiredAuthError } from '@azure/msal-browser';
 import { extractTeamsJoinUrlFromGraphPayload } from './meetingJoinLink';
+import { convertBodyToHtml } from './emailBodyHtml';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -745,25 +746,31 @@ export const sendEmail = async (accessToken: string, email: {
     name: string;
     contentBytes: string; // Base64 encoded content
     contentType?: string;
+    contentId?: string;
+    isInline?: boolean;
   }>;
 }) => {
   // Get the user's email signature from the database
-  const { getCurrentUserEmailSignature } = await import('./emailSignature');
+  const { getCurrentUserEmailSignature, inlineSignatureImagesForSend } = await import('./emailSignature');
   const userSignature = await getCurrentUserEmailSignature();
   
-  let fullBody = email.body;
+  let fullBody = convertBodyToHtml(email.body);
+  const inlineAttachments: Array<{
+    name: string;
+    contentBytes: string;
+    contentType: string;
+    contentId: string;
+    isInline: true;
+  }> = [];
   
-  // If we have a database signature, use it (unless explicitly skipped)
-  if (!email.skipSignature && userSignature) {
-    // Signature is already sanitized by getCurrentUserEmailSignature
-    // Check if signature is already HTML
+  // Company signature is generated at send time for every employee.
+  if (userSignature) {
     if (userSignature.includes('<') && userSignature.includes('>')) {
-      // Wrap signature in a div for better email client compatibility
-      fullBody = email.body + `<div style="margin-top: 1em;">${userSignature}</div>`;
+      const inlined = await inlineSignatureImagesForSend(userSignature);
+      fullBody = fullBody + `<div><br></div><div><br></div><div data-email-signature="1">${inlined.html}</div>`;
+      inlineAttachments.push(...inlined.inlineAttachments);
     } else {
-      // Convert plain text to HTML
-      const signatureHtml = `<div style="margin-top: 1em;">${userSignature.replace(/\n/g, '<br>')}</div>`;
-      fullBody = email.body + signatureHtml;
+      fullBody = fullBody + convertBodyToHtml(userSignature);
     }
   }
   // If no database signature and not skipped, let Outlook add its automatic signature
@@ -785,6 +792,8 @@ export const sendEmail = async (accessToken: string, email: {
 
   const ccRecipients = normaliseRecipients(email.cc);
 
+  const allAttachments = [...(email.attachments || []), ...inlineAttachments];
+
   const emailToSend: any = {
     message: {
       subject: email.subject,
@@ -802,13 +811,15 @@ export const sendEmail = async (accessToken: string, email: {
             })),
           }
         : {}),
-      ...(email.attachments && email.attachments.length > 0
+      ...(allAttachments.length > 0
         ? {
-            attachments: email.attachments.map(att => ({
+            attachments: allAttachments.map(att => ({
               '@odata.type': '#microsoft.graph.fileAttachment',
               name: att.name,
               contentBytes: att.contentBytes,
               contentType: att.contentType || 'application/octet-stream',
+              ...(att.contentId ? { contentId: att.contentId } : {}),
+              ...(att.isInline ? { isInline: true } : {}),
             })),
           }
         : {}),

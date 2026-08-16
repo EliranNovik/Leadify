@@ -31,6 +31,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
+import { fetchAiMessageSuggestion } from '../../lib/aiMessageSuggestion';
 import { isUsableEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
 import { toast } from 'react-hot-toast';
 import { createPortal } from 'react-dom';
@@ -41,10 +42,16 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import sanitizeHtml from '../../lib/sanitizeHtml';
 import { buildApiUrl } from '../../lib/api';
 import { fetchLegacyInteractions } from '../../lib/legacyInteractionsApi';
-import { appendEmailSignature } from '../../lib/emailSignature';
+import { buildOutgoingHtmlWithSignature } from '../../lib/emailSignature';
+import { convertBodyToHtml } from '../../lib/emailBodyHtml';
+import { ensureFormattedEmailHtml } from '../client-tabs/interactionsEmailViewUtils';
 import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
 import ContactSelectorModal from '../ContactSelectorModal';
 import EmailThreadModal from '../EmailThreadModal';
+import EmailSentSuccessModal from '../EmailSentSuccessModal';
+import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from '../signature/ComposeSignaturePreview';
+import { ComposeAttachmentPreviews } from '../signature/ComposeAttachmentPreviews';
+import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from '../signature/ComposeAiEmptyPrompt';
 import { stripSignatureAndQuotedTextPreserveHtml } from '../../lib/graphEmailSync';
 import {
   sendEmailViaBackend,
@@ -382,71 +389,7 @@ const processEmailHtmlWithInlineImages = (html: string, attachments: any[] = [])
 };
 
 const formatEmailHtmlForDisplay = (html: string | null | undefined): string => {
-  if (!html) return '';
-  
-  // First extract body content if wrapped in body tags
-  let content = extractHtmlBody(html);
-  
-  // Normalize line endings first
-  content = content
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n');
-  
-  // Normalize multiple consecutive line breaks (collapse 3+ to 2 for paragraph spacing)
-  content = content.replace(/\n{3,}/g, '\n\n');
-  
-  // CRITICAL: Always convert \n to <br> tags, regardless of HTML structure
-  // Strategy: 
-  // 1. Protect existing <br> tags with a placeholder
-  // 2. Convert all newlines to <br> tags (even inside HTML tags - we'll handle this properly)
-  // 3. Restore original <br> tags
-  // 4. Clean up any <br> tags that ended up inside HTML tags
-  
-  const brPlaceholder = '__BR_PLACEHOLDER__';
-  
-  // Protect existing <br> tags (including self-closing variants)
-  content = content.replace(/<br\s*\/?>/gi, brPlaceholder);
-  
-  // Now convert ALL newlines to <br> tags, even those inside or between HTML tags
-  // Handle double newlines (paragraph breaks) separately
-  content = content.replace(/\n\n/g, '__PARA_BREAK__');
-  content = content.replace(/\n/g, '<br>');
-  content = content.replace(/__PARA_BREAK__/g, '<br><br>');
-  
-  // Restore the original <br> tags
-  content = content.replace(new RegExp(brPlaceholder, 'g'), '<br>');
-  
-  // Clean up <br> tags that ended up inside HTML tags (between < and >)
-  // This regex finds <br> tags that are inside HTML tag boundaries and removes them
-  content = content.replace(/<([^>]+)<br>([^>]*)>/gi, '<$1 $2>');
-  content = content.replace(/<([^>]*)<br>([^>]+)>/gi, '<$1 $2>');
-  
-  // Normalize whitespace around HTML tags (but preserve intentional spacing)
-  content = content.replace(/>\s+/g, '>');
-  content = content.replace(/\s+</g, '<');
-  
-  // Collapse 3+ consecutive <br> tags (with optional whitespace) to exactly 2
-  content = content.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
-  
-  // Remove any remaining newlines (shouldn't be any, but just in case)
-  content = content.replace(/\n/g, ' ');
-  
-  // Clean up excessive whitespace between tags
-  content = content.replace(/(>)\s{2,}(<)/g, '$1 $2');
-  
-  // Remove leading/trailing whitespace
-  content = content.trim();
-  
-  // If content doesn't already have a wrapper div with direction, add one with auto direction
-  const hasDirection = /dir\s*=\s*["'](rtl|ltr|auto)["']/i.test(content);
-  const hasWrapperDiv = /^<div[^>]*dir/i.test(content.trim());
-  
-  if (!hasDirection && !hasWrapperDiv) {
-    // Wrap with auto direction - let browser determine based on content
-    content = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${content}</div>`;
-  }
-  
-  return content;
+  return ensureFormattedEmailHtml(html);
 };
 
 const parseTemplateContent = (rawContent: string | null | undefined): string => {
@@ -545,42 +488,6 @@ const normaliseAddressList = (value: string | null | undefined) => {
     .split(/[;,]+/)
     .map(item => item.trim())
     .filter(item => item.length > 0);
-};
-
-const convertBodyToHtml = (text: string) => {
-  if (!text) return '';
-  // First, protect existing anchor tags by replacing them with placeholders
-  const anchorPlaceholders: string[] = [];
-  let placeholderIndex = 0;
-  const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi;
-  const textWithPlaceholders = text.replace(anchorRegex, (match) => {
-    anchorPlaceholders.push(match);
-    return `__ANCHOR_PLACEHOLDER_${placeholderIndex++}__`;
-  });
-  
-  // Convert plain URLs to links (but skip those already in anchor tags)
-  const urlRegex = /(https?:\/\/[^\s<>]+)/gi;
-  const escaped = textWithPlaceholders.replace(urlRegex, url => {
-    const safeUrl = url.replace(/"/g, '&quot;');
-    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-  });
-  
-  // Restore original anchor tags
-  let result = escaped;
-  anchorPlaceholders.forEach((anchor, index) => {
-    result = result.replace(`__ANCHOR_PLACEHOLDER_${index}__`, anchor);
-  });
-  
-  // Preserve line breaks: convert \n to <br>
-  result = result
-    .replace(/\r\n/g, '\n')  // Normalize line endings
-    .replace(/\r/g, '\n')    // Handle old Mac line endings
-    .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-  
-  // Wrap with auto direction - let the browser determine based on content
-  result = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
-  
-  return result;
 };
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1175,11 +1082,13 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
   const [isSearchBarOpen, setIsSearchBarOpen] = useState(false);
   const [interactionsLoading, setInteractionsLoading] = useState(true);
   const [showCompose, setShowCompose] = useState(false);
+  const [showEmailSentModal, setShowEmailSentModal] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBody] = useState('');
   const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
   const [composeToRecipients, setComposeToRecipients] = useState<string[]>([]);
   const [composeCcRecipients, setComposeCcRecipients] = useState<string[]>([]);
+  const [showComposeCcField, setShowComposeCcField] = useState(false);
   const [composeToInput, setComposeToInput] = useState('');
   const [composeCcInput, setComposeCcInput] = useState('');
   const [composeRecipientError, setComposeRecipientError] = useState<string | null>(null);
@@ -1192,6 +1101,10 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
   const [showComposeCcSuggestions, setShowComposeCcSuggestions] = useState(false);
   const composeToSuggestionsRef = useRef<HTMLDivElement>(null);
   const composeCcSuggestionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showCompose) setShowComposeCcField(false);
+  }, [showCompose]);
   
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
@@ -1264,6 +1177,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
+  const [aiDraftActive, setAiDraftActive] = useState(false);
   const formattedLastSync = useMemo(() => {
     if (!mailboxStatus.lastSyncedAt) return null;
     try {
@@ -1491,7 +1405,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
 
     return (
       <div className="relative">
-        <div className="border border-base-300 rounded-lg px-3 py-2 flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-0 py-2">
           {items.map(email => (
             <span key={`${type}-${email}`} className="bg-primary/10 text-primary px-2 py-1 rounded-full text-sm flex items-center gap-1">
               {email}
@@ -1568,6 +1482,15 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
           >
             <PlusIcon className="w-3 h-3" />
           </button>
+          {type === 'to' && !showComposeCcField && composeCcRecipients.length === 0 && (
+            <button
+              type="button"
+              className={`${COMPOSE_CC_TOGGLE_CLASS} ml-auto`}
+              onClick={() => setShowComposeCcField(true)}
+            >
+              Cc
+            </button>
+          )}
         </div>
         
         {/* Autocomplete Suggestions Dropdown */}
@@ -1696,6 +1619,11 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
   const containsHebrew = (text: string): boolean => {
     return /[\u0590-\u05FF]/.test(text);
   };
+
+  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(
+    setComposeBody,
+    setComposeBodyIsRTL,
+  );
 
   // Helper function to check if language is Hebrew
   const isHebrewLanguage = (languageId: string | null, languageName: string | null): boolean => {
@@ -2034,7 +1962,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
 
         // Don't strip signatures/quoted text - show full content
         // The user requested to remove content truncation
-        const sanitizedBase = sanitizeEmailHtml(originalContent);
+        const sanitizedBase = ensureFormattedEmailHtml(originalContent);
 
         let sanitizedWithoutSubject = sanitizedBase;
         if (row.subject) {
@@ -2043,7 +1971,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
             const subjectPattern = new RegExp(`^${escapeRegExp(row.subject)}\\s*:?\\s*[\\-–—]*`, 'i');
             const withoutSubjectSource = originalContent.replace(subjectPattern, '').trim();
             if (withoutSubjectSource && withoutSubjectSource !== originalContent) {
-              const sanitizedCandidate = sanitizeEmailHtml(withoutSubjectSource);
+              const sanitizedCandidate = ensureFormattedEmailHtml(withoutSubjectSource);
               if (sanitizedCandidate) {
                 sanitizedWithoutSubject = sanitizedCandidate;
               }
@@ -5335,50 +5263,51 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
   }, [client.id]);
 
   // Handle AI suggestions for email compose
-  const handleAISuggestions = async () => {
+  const handleAISuggestions = async (options?: { redo?: boolean }) => {
     if (!client || isLoadingAI) return;
 
+    const previousDraft = composeBody.trim();
+    const createNew = Boolean(options?.redo) || !previousDraft;
+    if (options?.redo) {
+      cancelComposeAiTypewrite();
+      setComposeBody('');
+      setAiDraftActive(false);
+    }
     setIsLoadingAI(true);
-    setShowAISuggestions(true);
+    if (!createNew) setShowAISuggestions(true);
     
     try {
-      const requestType = composeBody.trim() ? 'improve' : 'suggest';
+      const requestType = createNew ? 'suggest' : 'improve';
       
       // Get email conversation history from interactions
       const emailInteractions = interactions.filter(interaction => 
         interaction.kind === 'email' && interaction.content
       );
       
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          currentMessage: composeBody.trim(),
-          conversationHistory: emailInteractions.map(interaction => ({
-            id: interaction.id,
-            direction: interaction.direction === 'out' ? 'out' : 'in',
-            message: interaction.content || '',
-            sent_at: interaction.date + ' ' + interaction.time,
-            sender_name: interaction.employee || 'Unknown'
-          })),
-          clientName: client.name,
-          requestType
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: previousDraft,
+        conversationHistory: emailInteractions.map(interaction => ({
+          id: interaction.id,
+          direction: interaction.direction === 'out' ? 'out' : 'in',
+          message: interaction.content || '',
+          sent_at: interaction.date + ' ' + interaction.time,
+          sender_name: interaction.employee || 'Unknown'
+        })),
+        clientName: client.name,
+        requestType
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
       
       if (result.success) {
         // Get the single suggestion and clean it
         const suggestion = result.suggestion.trim();
-        setAiSuggestions([suggestion]);
+        if (createNew && isUsableAiDraft(suggestion)) {
+          setShowAISuggestions(false);
+          setAiSuggestions([]);
+          typewriteComposeAi(suggestion);
+          setAiDraftActive(true);
+        } else {
+          setAiSuggestions([suggestion]);
+        }
       } else {
         if (result.code === 'OPENAI_QUOTA') {
           toast.error('AI quota exceeded. Please check plan/billing or try again later.');
@@ -5454,7 +5383,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
 
     try {
       const bodyHtml = convertBodyToHtml(composeBody);
-      const emailContentWithSignature = await appendEmailSignature(bodyHtml);
+      const { html: emailContentWithSignature, inlineAttachments } =
+        await buildOutgoingHtmlWithSignature(bodyHtml);
       const subject = composeSubject && composeSubject.trim()
         ? composeSubject
         : `[${client.lead_number}] - ${client.name}`;
@@ -5477,13 +5407,13 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
         }
       }
 
-      const sendResult = await sendEmailViaBackend({
+      await sendEmailViaBackend({
         userId,
         subject,
         bodyHtml: emailContentWithSignature,
         to: finalToRecipients,
         cc: finalCcRecipients,
-        attachments: composeAttachments,
+        attachments: [...composeAttachments, ...inlineAttachments],
         context: {
           clientId: !isLegacyLead ? client.id : null,
           legacyLeadId: isLegacyLead ? legacyId : null,
@@ -5497,73 +5427,20 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
         },
       });
 
-      const messageId = sendResult?.id || sendResult?.messageId || `temp_${Date.now()}`;
-      const conversationId = sendResult?.conversationId || null;
-      const sentAt = sendResult?.sentAt || new Date().toISOString();
-      
-      // Optimistic insert to emails table to ensure email appears immediately
-      // The backend will also save it, but this ensures it shows up right away
-      const emailRecord: any = {
-        message_id: messageId,
-        thread_id: conversationId,
-        sender_name: senderName,
-        sender_email: userEmail || null,
-        recipient_list: finalToRecipients.join(', ') + (finalCcRecipients.length > 0 ? `, ${finalCcRecipients.join(', ')}` : ''),
-        subject,
-        body_html: emailContentWithSignature,
-        body_preview: emailContentWithSignature.substring(0, 500), // First 500 chars as preview
-        sent_at: sentAt,
-        direction: 'outgoing',
-        attachments: composeAttachments.length > 0 ? composeAttachments.map(att => ({
-          name: att.name,
-          contentType: att.contentType || 'application/octet-stream',
-        })) : null,
-      };
-      
-      // Set either client_id OR legacy_id, not both
-      if (isLegacyLead) {
-        emailRecord.legacy_id = legacyId;
-        emailRecord.client_id = null;
-      } else {
-        emailRecord.client_id = client.id;
-        emailRecord.legacy_id = null;
-      }
-      
-      // Add contact_id if available
-      if (contactId) {
-        emailRecord.contact_id = contactId;
-      }
-      
-      try {
-        await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
-      } catch (dbError) {
-        console.warn('Optimistic email insert failed (backend will save it):', dbError);
-        // Don't throw - backend will save it
-      }
-      
-      toast.success('Email sent!');
-      
-      // Remove optimistic emails (those with temp_ IDs) before fetching fresh emails
-      setEmails((prev) => {
-        return prev.filter((email: any) => {
-          const msgId = email.id;
-          return !(typeof msgId === 'string' && msgId.startsWith('temp_'));
-        });
-      });
-      
-      await fetchInteractions({ bypassCache: true });
-      await fetchEmailsForModal();
-
-      if (onClientUpdate) {
-        await onClientUpdate();
-      }
-
+      setShowEmailSentModal(true);
+      setShowCompose(false);
       setComposeBody('');
+      setAiDraftActive(false);
       setComposeAttachments([]);
       setShowComposeLinkForm(false);
       setComposeLinkLabel('');
       setComposeLinkUrl('');
-      setShowCompose(false);
+
+      void fetchInteractions({ bypassCache: true });
+      void fetchEmailsForModal();
+      if (onClientUpdate) {
+        void onClientUpdate();
+      }
     } catch (e) {
       console.error('Error in handleSendEmail:', e);
       toast.error(e instanceof Error ? e.message : 'Failed to send email.');
@@ -7194,6 +7071,19 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
               width: 100% !important;
               border-collapse: collapse !important;
             }
+            .email-content .email-signature-block {
+              overflow-x: auto;
+              max-width: 100%;
+            }
+            .email-content .email-signature-block table {
+              width: auto !important;
+              max-width: none !important;
+              table-layout: auto !important;
+            }
+            .email-content .email-signature-block img {
+              max-width: none !important;
+              height: auto !important;
+            }
             .email-content p, 
             .email-content div, 
             .email-content span {
@@ -7691,24 +7581,31 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
               {showCompose && createPortal(
                 <div className="fixed inset-0 z-[10002]">
                   <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
-                  <div className="relative z-[10003] flex h-full w-full flex-col bg-white shadow-2xl">
-                    <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 md:px-6 lg:px-10">
-                      <h2 className="text-lg font-semibold md:text-xl">Compose Email</h2>
-                      <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
+                  <div className="relative z-[10003] flex h-full w-full flex-col bg-slate-100 shadow-2xl">
+                    <div className="flex items-center justify-end px-4 pt-3 pb-0 md:px-6">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm btn-circle"
+                        onClick={() => setShowCompose(false)}
+                        aria-label="Close compose"
+                      >
                         <XMarkIcon className="w-5 h-5" />
                       </button>
                     </div>
-                    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 md:px-6 lg:px-10">
+                    <div className="m-4 mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                    <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 md:px-6">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <label className="font-semibold text-sm">To</label>
                           </div>
                           {renderComposeRecipients('to')}
                         </div>
+                        {(showComposeCcField || composeCcRecipients.length > 0) && (
                         <div className="space-y-2">
                           <label className="font-semibold text-sm">CC</label>
                           {renderComposeRecipients('cc')}
                         </div>
+                        )}
                         {composeRecipientError && <p className="text-sm text-error">{composeRecipientError}</p>}
 
                   <input
@@ -7716,10 +7613,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                     placeholder="Subject"
                     value={composeSubject}
                     onChange={(e) => setComposeSubject(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full border-0 border-b border-gray-200 px-0 py-2 outline-none ring-0 focus:outline-none focus:ring-0"
                   />
-
-                        <label className="font-semibold text-sm">Body</label>
 
                         {showComposeLinkForm && (
                           <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
@@ -7796,10 +7691,22 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                           </div>
                         )}
 
+                  <ComposeBodyWithSignature
+                    afterSignature={
+                      <ComposeAttachmentPreviews
+                        files={composeAttachments}
+                        onRemove={(index) =>
+                          setComposeAttachments((prev) => prev.filter((_, i) => i !== index))
+                        }
+                      />
+                    }
+                  >
+                  <div className="relative">
                   <textarea
-                    placeholder="Type your message..."
+                    placeholder={composeBody.trim() || isLoadingAI ? '' : 'Type your message...'}
                     value={composeBody}
                     onChange={(e) => {
+                      cancelComposeAiTypewrite();
                       setComposeBody(e.target.value);
                       // Dynamically detect Hebrew as user types
                       setComposeBodyIsRTL(containsHebrew(e.target.value));
@@ -7809,26 +7716,23 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                       textAlign: composeBodyIsRTL ? 'right' : 'left',
                       direction: composeBodyIsRTL ? 'rtl' : 'ltr'
                     }}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
+                    className="w-full px-4 py-3 resize-y min-h-[240px]"
                     rows={10}
                   />
-                  
-                  {composeAttachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {composeAttachments.map((file, index) => (
-                        <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
-                          <PaperClipIcon className="w-4 h-4 text-gray-500" />
-                          <span className="text-sm">{file.name}</span>
-                          <button
-                            onClick={() => setComposeAttachments(prev => prev.filter((_, i) => i !== index))}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <ComposeAiEmptyPrompt
+                    visible={!composeBody.trim() && !isLoadingAI}
+                    loading={isLoadingAI && !composeBody.trim()}
+                    disabled={isLoadingAI || !client}
+                    onClick={handleAISuggestions}
+                  />
+                  </div>
+                  {aiDraftActive && composeBody.trim() && !isLoadingAI ? (
+                    <ComposeAiRedoButton
+                      disabled={isLoadingAI || !client}
+                      onClick={() => void handleAISuggestions({ redo: true })}
+                    />
+                  ) : null}
+                  </ComposeBodyWithSignature>
                   
                   </div>
                     <div className="px-4 py-4 border-t border-gray-200 flex items-center justify-between gap-4 md:px-6 lg:px-10">
@@ -7836,15 +7740,26 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                       <div className="flex items-center gap-4 flex-wrap">
                         {/* Circle action buttons */}
                         <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={handleSendEmail}
+                            disabled={sending || !composeBody.trim()}
+                            className={COMPOSE_SEND_BUTTON_CLASS}
+                          >
+                            {sending ? (
+                              <span className="loading loading-spinner loading-sm" />
+                            ) : (
+                              <>
+                                <PaperAirplaneIcon className="h-6 w-6" />
+                                Send
+                              </>
+                            )}
+                          </button>
                           {/* Attach Files Button */}
                           <button
                             type="button"
-                            className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            className={COMPOSE_ACTION_BUTTON_CLASS}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             onClick={() => fileInputRef.current?.click()}
                             disabled={sending}
                             title="Attach files"
@@ -7864,12 +7779,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                             type="button"
                             onClick={handleAISuggestions}
                             disabled={isLoadingAI || !client}
-                            className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            className={COMPOSE_ACTION_BUTTON_CLASS}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             title={composeBody.trim() ? "Improve message with AI" : "Get AI suggestions"}
                           >
                             {isLoadingAI ? (
@@ -7882,14 +7793,10 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                           {/* Add Link Button */}
                           <button
                             type="button"
-                            className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                            className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                               showComposeLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                             }`}
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             onClick={() => setShowComposeLinkForm(prev => !prev)}
                             disabled={sending}
                             title={showComposeLinkForm ? 'Hide link form' : 'Add link'}
@@ -7900,14 +7807,10 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                           {/* Add Contacts from Lead Button */}
                           <button
                             type="button"
-                            className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                            className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                               showComposeContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                             }`}
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             onClick={handleOpenComposeContactsModal}
                             disabled={sending || !client}
                             title="Add contacts from lead"
@@ -8028,22 +7931,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                           )}
                         </div>
                       </div>
-                      
-                      {/* Right side - Send button only */}
-                      <button
-                        onClick={handleSendEmail}
-                        disabled={sending || !composeBody.trim()}
-                        className="btn btn-primary min-w-[100px] flex items-center gap-2"
-                      >
-                        {sending ? (
-                          <span className="loading loading-spinner loading-sm" />
-                        ) : (
-                          <>
-                            <PaperAirplaneIcon className="w-4 h-4" />
-                            Send
-                          </>
-                        )}
-                      </button>
+                    </div>
                     </div>
                   </div>
                 </div>,
@@ -8494,6 +8382,11 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
         </div>,
         document.body
       )} */}
+      <EmailSentSuccessModal
+        open={showEmailSentModal}
+        onClose={() => setShowEmailSentModal(false)}
+        recipient={client?.email}
+      />
     </div>
   );
 };

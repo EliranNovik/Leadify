@@ -22,7 +22,6 @@ import {
   emailBodyLooksStableForReading,
   fileAttachmentsForUi,
   isOfficeEmail,
-  isTimelinePrewrapHtml,
   parseEmailAttachmentsFromDb,
   processEmailHtmlWithInlineImages,
 } from './interactionsEmailViewUtils';
@@ -31,6 +30,7 @@ import { EmailMessageComments } from './EmailMessageComments';
 import { EmailSidepanelListMenu } from './EmailSidepanelListMenu';
 import type { EmailComment } from '../../lib/interactions/emailComments';
 import { fetchEmailCommentsByEmailIds } from '../../lib/interactions/emailComments';
+import { lookupEmployeePhotoFromMap } from '../../lib/employeePhotoUrl';
 
 /** Stable palette — looks varied but does not flicker on re-render */
 const CLIENT_AVATAR_BACKGROUNDS = [
@@ -102,28 +102,7 @@ export function resolveOutgoingSenderLabel(
   return 'Team';
 }
 
-function resolveEmployeePhotoUrl(
-  photoMap: Map<string, string> | undefined,
-  displayName: string,
-  senderEmail?: string | null
-): string | null {
-  if (!photoMap) return null;
-  // Prefer email key first so a wrong/fallback display name cannot steal another user's photo.
-  const em = senderEmail?.trim().toLowerCase();
-  if (em && photoMap.has(em)) return photoMap.get(em)!;
-  if (displayName?.trim()) {
-    const t = displayName.trim();
-    if (photoMap.has(t)) return photoMap.get(t)!;
-    const lower = t.toLowerCase();
-    for (const [name, url] of photoMap) {
-      if (name.includes('@')) continue;
-      if (name.trim().toLowerCase() === lower) return url;
-    }
-  }
-  return null;
-}
-
-function TeamAvatar({
+export function TeamAvatar({
   photoUrl,
   initials,
   name,
@@ -135,6 +114,9 @@ function TeamAvatar({
   size?: 'sm' | 'md' | 'lg';
 }) {
   const [imgError, setImgError] = React.useState(false);
+  React.useEffect(() => {
+    setImgError(false);
+  }, [photoUrl]);
   const sizeClass =
     size === 'lg'
       ? 'h-10 w-10 text-[0.7rem]'
@@ -387,6 +369,20 @@ export function InteractionsEmailModal({
               width: 100% !important;
               border-collapse: collapse !important;
             }
+            .email-content .email-signature-block {
+              overflow-x: auto;
+              max-width: 100%;
+            }
+            .email-content .email-signature-block table {
+              width: auto !important;
+              max-width: none !important;
+              table-layout: auto !important;
+              border-collapse: collapse !important;
+            }
+            .email-content .email-signature-block img {
+              max-width: none !important;
+              height: auto;
+            }
             .email-content p, 
             .email-content div, 
             .email-content span {
@@ -413,10 +409,10 @@ export function InteractionsEmailModal({
           `}</style>
       <div className="flex h-full min-h-0 overflow-hidden">
           <aside
-            className={`${isMobile && showEmailDetail ? 'hidden' : isMobile ? 'w-full' : 'w-[22rem] md:w-96'} flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-slate-200/90 bg-white`}
+            className={`${isMobile && showEmailDetail ? 'hidden' : isMobile ? 'w-full' : 'w-[22rem] md:w-96'} flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-slate-100`}
           >
-            <div className="shrink-0 bg-white px-3 py-2">
-              <div className="flex items-center gap-1.5">
+            <div className="shrink-0 px-3 pt-3 pb-2">
+              <div className="flex items-center gap-1.5 rounded-xl bg-white p-1.5 shadow-sm">
                 <EmailSidepanelListMenu value={listMode} onChange={setListMode} />
                 <div className="relative min-w-0 flex-1">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
@@ -424,7 +420,7 @@ export function InteractionsEmailModal({
                   </div>
                   <input
                     type="text"
-                    className="block w-full rounded-full border border-gray-300 bg-white py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:border-[#4218CC] focus:outline-none focus:ring-1 focus:ring-[#4218CC]"
+                    className="block w-full rounded-lg border-0 bg-transparent py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:outline-none focus:ring-0"
                     placeholder="Search emails…"
                     value={emailSearchQuery}
                     onChange={(e) => setEmailSearchQuery(e.target.value)}
@@ -442,7 +438,7 @@ export function InteractionsEmailModal({
                 </div>
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2">
               {emailsLoading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="loading loading-spinner loading-lg text-purple-500"></div>
@@ -591,7 +587,7 @@ export function InteractionsEmailModal({
                   }
 
                   return (
-                    <ul className="divide-y divide-slate-200/80">
+                    <ul className="flex flex-col gap-2">
                       {conversationGroups.map((group) => {
                           const message = group.latest;
                           const senderEmail = message.from || '';
@@ -634,7 +630,7 @@ export function InteractionsEmailModal({
                           const avatarColorKey = `${senderDisplayName}|${senderEmail}|${message.contact_id ?? ''}`;
                           const avatarBg = getClientAvatarBgClass(avatarColorKey);
                           const teamPhotoUrl = isOutgoing
-                            ? resolveEmployeePhotoUrl(employeePhotoMap, senderDisplayName, senderEmail)
+                            ? lookupEmployeePhotoFromMap(employeePhotoMap, senderDisplayName, senderEmail)
                             : null;
 
                           return (
@@ -651,10 +647,10 @@ export function InteractionsEmailModal({
                                     setShowEmailDetail(true);
                                   }
                                 }}
-                                className={`group relative flex w-full gap-2 px-3 pb-8 pt-2.5 text-left transition-colors md:px-3.5 ${
+                                className={`group relative flex w-full gap-2 rounded-xl bg-white px-3 pb-8 pt-2.5 text-left shadow-sm transition-colors md:px-3.5 ${
                                   isSelected
-                                    ? 'border-l-[3px] border-l-[#4218CC] bg-[#4218CC]/12 shadow-[inset_0_0_0_1px_rgba(66,24,204,0.12)]'
-                                    : 'border-l-[3px] border-l-transparent hover:bg-slate-50 active:bg-slate-100'
+                                    ? 'ring-2 ring-[#4218CC]/35'
+                                    : 'hover:shadow-md active:bg-slate-50'
                                 }`}
                               >
                                 {isOutgoing ? (
@@ -731,8 +727,8 @@ export function InteractionsEmailModal({
                 })()
               )}
             </div>
-            <div className="shrink-0 bg-white p-2">
-              <div className="flex gap-1">
+            <div className="shrink-0 px-3 pb-3 pt-1">
+              <div className="flex gap-1 rounded-xl bg-white p-1.5 shadow-sm">
                 {(
                   [
                     ['all', 'All', EnvelopeIcon],
@@ -923,7 +919,7 @@ export function InteractionsEmailModal({
                         : selectedContactForEmail?.contact.email || message.from;
                       const initials = initialsFromName(personName);
                       const teamPhotoUrl = isOutgoing
-                        ? resolveEmployeePhotoUrl(
+                        ? lookupEmployeePhotoFromMap(
                             employeePhotoMap,
                             personName,
                             message.from,
@@ -939,10 +935,7 @@ export function InteractionsEmailModal({
                       if (emailContent && bodyReady) {
                         const attachments = parseEmailAttachmentsFromDb(message.attachments);
                         emailContent = processEmailHtmlWithInlineImages(emailContent, attachments);
-                        // Already formatted reading bodies — don't rebuild (avoids format snap).
-                        if (!isTimelinePrewrapHtml(emailContent)) {
-                          emailContent = ensureFormattedEmailHtml(emailContent);
-                        }
+                        emailContent = ensureFormattedEmailHtml(emailContent);
                       } else {
                         emailContent = '';
                       }

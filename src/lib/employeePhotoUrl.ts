@@ -47,3 +47,27 @@ export function resolveEmployeePhotoUrl(
 
   return null;
 }
+
+/** Look up a saved employee photo by work email first, then display name. */
+export function lookupEmployeePhotoFromMap(
+  photoMap: Map<string, string> | undefined,
+  displayName: string,
+  senderEmail?: string | null,
+): string | null {
+  if (!photoMap || photoMap.size === 0) return null;
+  const em = senderEmail?.trim().toLowerCase();
+  if (em && photoMap.has(em)) {
+    const url = photoMap.get(em);
+    if (url) return url;
+  }
+  if (displayName?.trim()) {
+    const t = displayName.trim();
+    if (photoMap.has(t)) return photoMap.get(t) || null;
+    const lower = t.toLowerCase();
+    for (const [name, url] of photoMap) {
+      if (name.includes('@')) continue;
+      if (name.trim().toLowerCase() === lower) return url;
+    }
+  }
+  return null;
+}

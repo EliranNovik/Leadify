@@ -1,12 +1,84 @@
 import React from 'react';
 import sanitizeHtml from '../../lib/sanitizeHtml';
 import { interactionsDevLog } from '../../lib/interactions/devLog';
+import { isCrmComposeEmailHtml, splitEmailBodyAndSignature, escapeHtml } from '../../lib/emailBodyHtml';
 
 const extractHtmlBody = (html: string) => {
   if (!html) return html;
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   return bodyMatch ? bodyMatch[1] : html;
 };
+
+const EMAIL_SIGNATURE_SPLIT_HTML =
+  '<div class="email-signature-split" style="margin:16px 0 14px;border-top:1px solid #E5E7EB;padding-top:14px;"><div style="width:48px;height:4px;background-color:#C4A574;border-radius:2px;"></div></div>';
+
+export function isAssembledEmailDisplayHtml(html: string | null | undefined): boolean {
+  return /class=["'][^"']*\bemail-signature-block\b/i.test(String(html || ''));
+}
+
+function decodeDisplayEntities(text: string): string {
+  if (typeof document !== 'undefined') {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    return textarea.value;
+  }
+  return text
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+/** Strip photos/logos/tables from a company signature for CRM cards and modals. */
+function signatureHtmlToPlainLines(signatureHtml: string): string[] {
+  let content = String(signatureHtml || '');
+  content = content
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|tr|h[1-6]|li|table|blockquote)>/gi, '\n')
+    .replace(/<\/td>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+  content = decodeDisplayEntities(content).replace(/\u00a0/g, ' ');
+
+  const lines: string[] = [];
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.replace(/[ \t]+/g, ' ').trim();
+    if (!line) continue;
+    if (lines[lines.length - 1] === line) continue;
+    lines.push(line);
+  }
+  return lines;
+}
+
+function wrapSignatureHtml(signatureHtml: string): string {
+  const lines = signatureHtmlToPlainLines(signatureHtml);
+  if (lines.length === 0) return '';
+  const inner = linkifyEmailHtml(
+    lines.map((line) => `<div>${escapeHtml(line)}</div>`).join(''),
+  );
+  return `${EMAIL_SIGNATURE_SPLIT_HTML}<div class="email-signature-block email-signature-plain" style="font-family:'Segoe UI',Arial,'Helvetica Neue',sans-serif;color:#4B5563;font-size:13px;line-height:1.55;">${inner}</div>`;
+}
+
+function flattenAssembledSignature(html: string): string {
+  const source = String(html || '');
+  const splitAt = source.search(
+    /<div\b[^>]*class=["'][^"']*\bemail-signature-(?:split|block)\b/i,
+  );
+  if (splitAt < 0) return source;
+  const signaturePart = source.slice(splitAt);
+  if (!/<table\b/i.test(signaturePart) && !/<img\b/i.test(signaturePart)) {
+    return source;
+  }
+  const blockMatch = signaturePart.match(
+    /<div\b[^>]*class=["'][^"']*\bemail-signature-block\b[^>]*>([\s\S]*)<\/div>\s*$/i,
+  );
+  const signatureHtml = blockMatch ? blockMatch[1] : signaturePart;
+  return `${source.slice(0, splitAt)}${wrapSignatureHtml(signatureHtml)}`;
+}
 
 /** Normalise emails.attachments (jsonb / string / Graph shape) to an array */
 export function parseEmailAttachmentsFromDb(raw: unknown): any[] {
@@ -149,6 +221,17 @@ export function formatEmailPlainTextPreview(
  */
 export function formatEmailBodyForTimeline(htmlOrText: string | null | undefined): string {
   if (!htmlOrText) return '';
+  const raw = extractHtmlBody(String(htmlOrText));
+  if (isAssembledEmailDisplayHtml(raw)) return flattenAssembledSignature(raw);
+
+  const { body, signature } = splitEmailBodyAndSignature(raw);
+  const formattedBody = formatEmailBodyInner(body);
+  if (!signature.trim()) return formattedBody;
+  return `${formattedBody}${wrapSignatureHtml(signature)}`;
+}
+
+function formatEmailBodyInner(htmlOrText: string | null | undefined): string {
+  if (!htmlOrText) return '';
 
   let content = extractHtmlBody(htmlOrText);
   // Real newlines + escaped sequences sometimes stored in DB / Graph payloads
@@ -283,6 +366,12 @@ function restoreFlattenedEmailLineBreaks(text: string): string {
     .replace(/\s+(Begin forwarded message:)/gi, '\n\n$1')
     // " > quoted" / " > > quoted" markers that got smashed onto one line
     .replace(/([^\n])[ \t]+(>+)(?=[ \t]|[A-Za-zא-ת"']|$)/g, '$1\n$2');
+  // Company signature fields mashed into one preview line
+  content = content
+    .replace(/\s+(\+?972[\d\s\-]+|\b0\d[\d\s\-]{7,}\d)\b/g, '\n$1')
+    .replace(/\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g, '\n$1')
+    .replace(/\s+(https?:\/\/[^\s]+)/gi, '\n$1')
+    .replace(/\s+(www\.[^\s]+)/gi, '\n$1');
   // Split stacked quote markers: "> > Hi" → ">\n> Hi" (spaces/tabs only — not newlines)
   content = content.replace(/(>)[ \t]+(?=>)/g, '$1\n');
 
@@ -372,7 +461,11 @@ export function extractTimelinePrewrapText(html: string): string {
 /** Count visual line breaks — used to avoid replacing a well-broken body with a flatter one. */
 export function countEmailBreakSignals(htmlOrText: string | null | undefined): number {
   const s = String(htmlOrText || '');
-  return (s.match(/<br\s*\/?>/gi) || []).length + (s.match(/\n/g) || []).length;
+  return (
+    (s.match(/<br\s*\/?>/gi) || []).length +
+    (s.match(/\n/g) || []).length +
+    (s.match(/<\/div>/gi) || []).length
+  );
 }
 
 /**
@@ -382,6 +475,11 @@ export function countEmailBreakSignals(htmlOrText: string | null | undefined): n
 export function ensureFormattedEmailHtml(htmlOrText: string | null | undefined): string {
   if (!htmlOrText) return '';
   const raw = String(htmlOrText);
+  // Keep already-assembled timeline HTML (body + signature table). Re-extracting
+  // tags here used to flatten the signature back into one paragraph.
+  if (isAssembledEmailDisplayHtml(raw)) {
+    return sanitizeEmailHtml(flattenAssembledSignature(raw));
+  }
   const source = isTimelinePrewrapHtml(raw) ? extractTimelinePrewrapText(raw) : raw;
   if (!source.trim()) return '';
   return sanitizeEmailHtml(formatEmailHtmlForReadingPane(source));
@@ -408,6 +506,9 @@ export function emailBodyPlainTextLength(htmlOrText: string | null | undefined):
 export function emailBodyLooksStableForReading(htmlOrText: string | null | undefined): boolean {
   const raw = String(htmlOrText || '').trim();
   if (!raw) return false;
+  // CRM compose HTML is the full body we generated — show it; do not wait for Graph hydrate.
+  if (isCrmComposeEmailHtml(raw)) return true;
+  if (isAssembledEmailDisplayHtml(raw)) return true;
   const len = emailBodyPlainTextLength(raw);
   const plain = raw
     .replace(/<br\s*\/?>/gi, '\n')
@@ -619,7 +720,7 @@ export const EmailContentWithErrorHandling: React.FC<{ html: string; emailId: st
     <div
       ref={contentRef}
       dangerouslySetInnerHTML={{ __html: html }}
-      className="email-content max-w-none break-words text-gray-800 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-normal [&_.timeline-prewrap_br]:content-['']"
+      className="email-content max-w-none break-words text-gray-800 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-normal [&_.email-signature-block]:overflow-x-auto [&_.email-signature-block_table]:w-auto [&_.email-signature-block_img]:max-w-none"
       style={{
         wordBreak: 'break-word',
         overflowWrap: 'anywhere',
@@ -666,17 +767,39 @@ export function sanitizeEmailHtml(html: string): string {
     allowedAttributes: {
       a: ['href', 'target', 'rel', 'style'],
       span: ['style', 'dir', 'class', 'data-icon'],
-      div: ['style', 'dir', 'class'],
+      div: ['style', 'dir', 'class', 'data-email-signature'],
       p: ['style', 'dir', 'class'],
       body: ['style', 'dir'],
-      img: ['src', 'alt', 'style', 'width', 'height', 'crossorigin', 'class'],
-      td: ['style', 'dir', 'colspan', 'rowspan', 'align'],
-      th: ['style', 'dir', 'colspan', 'rowspan', 'align'],
+      img: ['src', 'alt', 'style', 'width', 'height', 'border', 'crossorigin', 'class'],
+      td: [
+        'style',
+        'dir',
+        'colspan',
+        'rowspan',
+        'align',
+        'valign',
+        'width',
+        'height',
+        'bgcolor',
+        'data-signature-gold',
+      ],
+      th: ['style', 'dir', 'colspan', 'rowspan', 'align', 'valign', 'width', 'height', 'bgcolor'],
       tr: ['style'],
-      table: ['style', 'width', 'border', 'cellpadding', 'cellspacing'],
+      table: [
+        'style',
+        'width',
+        'height',
+        'border',
+        'cellpadding',
+        'cellspacing',
+        'role',
+        'align',
+        'bgcolor',
+        'data-email-signature',
+      ],
       '*': ['style', 'dir'],
     },
-    allowedSchemes: ['http', 'https', 'mailto', 'data'],
+    allowedSchemes: ['http', 'https', 'mailto', 'data', 'cid'],
     disallowedTagsMode: 'discard',
     textFilter: (text) => text,
   });

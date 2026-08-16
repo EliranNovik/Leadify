@@ -34,6 +34,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
+import { fetchAiMessageSuggestion } from '../../lib/aiMessageSuggestion';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { toast } from 'react-hot-toast';
 import { createPortal } from 'react-dom';
@@ -45,10 +46,15 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { buildApiUrl } from '../../lib/api';
 // Legacy interactions use employee join (creator_employee / employee_employee) in legacyInteractionsApi for display names
 import { fetchLegacyInteractions } from '../../lib/legacyInteractionsApi';
-import { appendEmailSignature } from '../../lib/emailSignature';
+import { buildOutgoingHtmlWithSignature } from '../../lib/emailSignature';
+import { convertBodyToHtml } from '../../lib/emailBodyHtml';
 import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
 import ContactSelectorModal from '../ContactSelectorModal';
 import EmailThreadModal from '../EmailThreadModal';
+import EmailSentSuccessModal from '../EmailSentSuccessModal';
+import { ComposeBodyWithSignature } from '../signature/ComposeSignaturePreview';
+import { ComposeAttachmentPreviews } from '../signature/ComposeAttachmentPreviews';
+import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from '../signature/ComposeAiEmptyPrompt';
 import { stripSignatureAndQuotedTextPreserveHtml } from '../../lib/graphEmailSync';
 import {
   sendEmailViaBackend,
@@ -84,7 +90,9 @@ import {
   countEmailBreakSignals,
   emailBodyLooksStableForReading,
 } from './interactionsEmailViewUtils';
-import { InteractionsEmailModal, resolveOutgoingSenderLabel } from './InteractionsEmailModal';
+import { InteractionsEmailModal, resolveOutgoingSenderLabel, TeamAvatar } from './InteractionsEmailModal';
+import { lookupEmployeePhotoFromMap, resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
+import { COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from '../signature/ComposeSignaturePreview';
 import { EmailMessageActionsDropdown } from './EmailMessageActionsDropdown';
 import { EmailMessageComments } from './EmailMessageComments';
 import type { EmailComment } from '../../lib/interactions/emailComments';
@@ -94,8 +102,11 @@ import {
   buildEmailFilterClauses,
   normalizeEmailForFilter,
   fetchLeadEmailsForTimeline,
+  fetchEmailBodiesByIds,
   stableEmailRowId,
   dedupeEmailsForSidepanel,
+  groupEmailsIntoSubjectConversations,
+  displayConversationSubject,
   emailInteractionVisibleOnTimeline,
   EMAIL_LIST_SELECT,
 } from '../../lib/interactions/emailFilters';
@@ -507,42 +518,6 @@ const normaliseAddressList = (value: string | null | undefined) => {
     .filter(item => item.length > 0);
 };
 
-const convertBodyToHtml = (text: string) => {
-  if (!text) return '';
-  // First, protect existing anchor tags by replacing them with placeholders
-  const anchorPlaceholders: string[] = [];
-  let placeholderIndex = 0;
-  const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi;
-  const textWithPlaceholders = text.replace(anchorRegex, (match) => {
-    anchorPlaceholders.push(match);
-    return `__ANCHOR_PLACEHOLDER_${placeholderIndex++}__`;
-  });
-  
-  // Convert plain URLs to links (but skip those already in anchor tags)
-  const urlRegex = /(https?:\/\/[^\s<>]+)/gi;
-  const escaped = textWithPlaceholders.replace(urlRegex, url => {
-    const safeUrl = url.replace(/"/g, '&quot;');
-    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline" style="color:#2563eb;text-decoration:underline;">${url}</a>`;
-  });
-  
-  // Restore original anchor tags
-  let result = escaped;
-  anchorPlaceholders.forEach((anchor, index) => {
-    result = result.replace(`__ANCHOR_PLACEHOLDER_${index}__`, anchor);
-  });
-  
-  // Preserve line breaks: convert \n to <br>
-  result = result
-    .replace(/\r\n/g, '\n')  // Normalize line endings
-    .replace(/\r/g, '\n')    // Handle old Mac line endings
-    .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-  
-  // Wrap with auto direction - let the browser determine based on content
-  result = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
-  
-  return result;
-};
-
 // Helper function to convert URLs, email addresses, and bold formatting in text to HTML
 const renderTextWithLinksAsHtml = (text: string): string => {
   if (!text) return text;
@@ -779,9 +754,13 @@ const TruncatedContent: React.FC<{
   // Helper function to truncate HTML content by character count (text only)
   const truncateHtmlByChars = (html: string, maxChars: number): { truncated: string; isTruncated: boolean } => {
     if (!html) return { truncated: '', isTruncated: false };
+
+    const splitAt = html.search(/<div\b[^>]*class=["'][^"']*\bemail-signature-split\b/i);
+    const bodyHtml = splitAt >= 0 ? html.slice(0, splitAt) : html;
+    const signatureHtml = splitAt >= 0 ? html.slice(splitAt) : '';
     
     // Remove HTML tags to count actual text characters
-    const textContent = html.replace(/<[^>]*>/g, '');
+    const textContent = bodyHtml.replace(/<[^>]*>/g, '');
     if (textContent.length <= maxChars) {
       return { truncated: html, isTruncated: false };
     }
@@ -792,8 +771,8 @@ const TruncatedContent: React.FC<{
     let inTag = false;
     let tagBuffer = '';
     
-    for (let i = 0; i < html.length; i++) {
-      const char = html[i];
+    for (let i = 0; i < bodyHtml.length; i++) {
+      const char = bodyHtml[i];
       
       if (char === '<') {
         inTag = true;
@@ -818,7 +797,7 @@ const TruncatedContent: React.FC<{
     
     // Close any open tags and add ellipsis
     truncatedHtml += '...';
-    return { truncated: truncatedHtml, isTruncated: true };
+    return { truncated: `${truncatedHtml}${signatureHtml}`, isTruncated: true };
   };
   
   const { truncated: truncatedContent, isTruncated } = truncateHtmlByChars(content, maxCharacters);
@@ -841,7 +820,7 @@ const TruncatedContent: React.FC<{
         </div>
       )}
       <div 
-        className="email-content max-w-none overflow-visible break-words [&_.timeline-prewrap]:whitespace-normal [&_a]:!text-blue-600 [&_a]:!underline [&_a]:underline-offset-2 hover:[&_a]:!text-blue-800"
+        className="email-content max-w-none overflow-visible break-words [&_.timeline-prewrap]:whitespace-normal [&_.email-signature-block]:overflow-x-auto [&_.email-signature-block_table]:!w-auto [&_.email-signature-block_img]:!max-w-none [&_a]:!text-blue-600 [&_a]:!underline [&_a]:underline-offset-2 hover:[&_a]:!text-blue-800"
         style={{ lineHeight: 1.55, maxHeight: 'none', whiteSpace: 'normal' }}
         dir={direction || 'auto'}
         dangerouslySetInnerHTML={{ 
@@ -927,6 +906,69 @@ function shouldKeepExistingTimeline(prev: Interaction[], next: Interaction[]): b
   if (nextEmail > prevEmail) return false;
 
   return prev.length > next.length;
+}
+
+function isOptimisticEmailRow(row: Interaction): boolean {
+  const id = String(row.id ?? '');
+  const messageId = String(row.message_id ?? '');
+  return (
+    row.kind === 'email' &&
+    (id.startsWith('temp_') || messageId.startsWith('temp_') || id.startsWith('optimistic_'))
+  );
+}
+
+function mergeEmailInteractionPreferRicher(incoming: Interaction, existing: Interaction): Interaction {
+  const incomingHtml = incoming.body_html || incoming.content || '';
+  const existingHtml = existing.body_html || existing.content || '';
+  const merged = mergeEmailBodyPreferRicher(
+    { ...incoming, body_html: incomingHtml },
+    { ...existing, body_html: existingHtml },
+  );
+  const html = merged.body_html || incoming.content;
+  return {
+    ...incoming,
+    content: html,
+    body_html: html,
+    renderedContent: existing.renderedContent || incoming.renderedContent,
+    renderedContentFallback: existing.renderedContentFallback || incoming.renderedContentFallback,
+  };
+}
+
+function reconcileOptimisticEmailRows(prev: Interaction[], next: Interaction[]): Interaction[] {
+  const temps = prev.filter(isOptimisticEmailRow);
+  const usedTempIds = new Set<string>();
+
+  const merged = next.map((row) => {
+    if (row.kind !== 'email') return row;
+    const existing =
+      prev.find(
+        (p) =>
+          p.kind === 'email' &&
+          (String(p.id) === String(row.id) ||
+            (p.message_id && row.message_id && String(p.message_id) === String(row.message_id))),
+      ) || null;
+    if (existing && !isOptimisticEmailRow(existing)) {
+      return mergeEmailInteractionPreferRicher(row, existing);
+    }
+
+    const temp = temps.find((t) => {
+      if (usedTempIds.has(String(t.id))) return false;
+      if (t.direction !== row.direction) return false;
+      if ((t.subject || '') !== (row.subject || '')) return false;
+      const tempTime = new Date(t.raw_date).getTime();
+      const rowTime = new Date(row.raw_date).getTime();
+      return Number.isFinite(tempTime) && Number.isFinite(rowTime) && Math.abs(tempTime - rowTime) < 3 * 60 * 1000;
+    });
+    if (temp) {
+      usedTempIds.add(String(temp.id));
+      return mergeEmailInteractionPreferRicher(row, temp);
+    }
+    return existing ? mergeEmailInteractionPreferRicher(row, existing) : row;
+  });
+
+  const leftover = temps.filter((t) => !usedTempIds.has(String(t.id)));
+  if (leftover.length === 0) return merged;
+  return [...leftover, ...merged].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
 }
 
 function runInteractionsFetchOnce(key: string, run: () => Promise<void>): Promise<void> {
@@ -1536,6 +1578,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   );
   const [showCompose, setShowCompose] = useState(false);
+  const [showEmailSentModal, setShowEmailSentModal] = useState(false);
   const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
   const [composeSideSearch, setComposeSideSearch] = useState('');
   const [composeSubject, setComposeSubject] = useState('');
@@ -1543,6 +1586,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
   const [composeToRecipients, setComposeToRecipients] = useState<string[]>([]);
   const [composeCcRecipients, setComposeCcRecipients] = useState<string[]>([]);
+  const [showComposeCcField, setShowComposeCcField] = useState(false);
   const [composeToInput, setComposeToInput] = useState('');
   const [composeCcInput, setComposeCcInput] = useState('');
   const [composeRecipientError, setComposeRecipientError] = useState<string | null>(null);
@@ -1555,6 +1599,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [showComposeCcSuggestions, setShowComposeCcSuggestions] = useState(false);
   const composeToSuggestionsRef = useRef<HTMLDivElement>(null);
   const composeCcSuggestionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showCompose) setShowComposeCcField(false);
+  }, [showCompose]);
   
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
@@ -1645,6 +1693,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
+  const [aiDraftActive, setAiDraftActive] = useState(false);
   const formattedLastSync = useMemo(() => {
     if (!mailboxStatus.lastSyncedAt) return null;
     try {
@@ -1898,7 +1947,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
     return (
       <div className="relative">
-        <div className="border border-base-300 rounded-lg px-3 py-2 flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-0 py-2">
           {items.map(email => (
             <span key={`${type}-${email}`} className="bg-primary/10 text-primary px-2 py-1 rounded-full text-sm flex items-center gap-1">
               {email}
@@ -1975,6 +2024,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           >
             <PlusIcon className="w-3 h-3" />
           </button>
+          {type === 'to' && !showComposeCcField && composeCcRecipients.length === 0 && (
+            <button
+              type="button"
+              className={`${COMPOSE_CC_TOGGLE_CLASS} ml-auto`}
+              onClick={() => setShowComposeCcField(true)}
+            >
+              Cc
+            </button>
+          )}
         </div>
         
         {/* Autocomplete Suggestions Dropdown */}
@@ -2103,6 +2161,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const containsHebrew = (text: string): boolean => {
     return /[\u0590-\u05FF]/.test(text);
   };
+
+  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(
+    setComposeBody,
+    setComposeBodyIsRTL,
+  );
 
   // Helper function to check if language is Hebrew
   const isHebrewLanguage = (languageId: string | null, languageName: string | null): boolean => {
@@ -4209,6 +4272,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const bDate = new Date(b.sent_at || 0).getTime();
           return bDate - aDate;
         });
+
+        const missingBodyIds = sortedEmails
+          .filter((e: any) => !(e.body_html && String(e.body_html).trim()))
+          .map((e: any) => e.id);
+        if (missingBodyIds.length > 0) {
+          const bodiesById = await fetchEmailBodiesByIds(supabase, missingBodyIds, 40);
+          if (bodiesById.size > 0) {
+            sortedEmails.forEach((e: any) => {
+              const html = e?.id != null ? bodiesById.get(String(e.id)) : undefined;
+              if (html && !(e.body_html && String(e.body_html).trim())) {
+                e.body_html = html;
+              }
+            });
+          }
+        }
         
         const emailPlainText = (htmlOrText: string) =>
           htmlOrText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -4240,9 +4318,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               return null;
             }
 
-            const hasLoadedBody =
-              (e.body_html && String(e.body_html).trim() !== '') ||
-              (e.body_preview && String(e.body_preview).trim() !== '');
+            const hasLoadedBody = e.body_html && String(e.body_html).trim() !== '';
             if (!hasLoadedBody && userId) {
               emailsNeedingHydration.push(e);
             }
@@ -4786,13 +4862,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
 
         setInteractions((prev) => {
+          const incoming = merged as Interaction[];
+          const reconciled = reconcileOptimisticEmailRows(prev, incoming);
           // First settle: always take the full merge so we don't flash a partial timeline.
-          if (!timelineHasEmailRows(prev) && timelineHasEmailRows(merged as Interaction[])) {
-            return merged as Interaction[];
+          if (!timelineHasEmailRows(prev) && timelineHasEmailRows(reconciled)) {
+            return reconciled;
           }
-          return shouldKeepExistingTimeline(prev, merged as Interaction[])
-            ? prev
-            : (merged as Interaction[]);
+          return shouldKeepExistingTimeline(prev, reconciled) ? prev : reconciled;
         });
         interactionsClientIdRef.current = client?.id?.toString() || null; // Track that these interactions belong to this client
         lastClientIdRef.current = String(client.id);
@@ -5053,7 +5129,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         employees?.forEach((emp: any) => {
           if (!emp.display_name) return;
 
-          const photoUrl = emp.photo_url || emp.photo || null;
+          const photoUrl = resolveEmployeePhotoUrl(emp.photo_url, emp.photo);
           if (photoUrl) {
             photoMap.set(emp.display_name, photoUrl);
             if (typeof (emp as any).official_name === 'string' && (emp as any).official_name.trim()) {
@@ -5704,6 +5780,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         // Deduplicate: Graph message_id, else DB id, then sender+subject+timestamp fingerprint
         const uniqueClientEmails = dedupeEmailsForSidepanel(clientEmails);
+        const missingModalBodyIds = uniqueClientEmails
+          .filter((e: any) => !(e.body_html && String(e.body_html).trim()))
+          .map((e: any) => e.id);
+        if (missingModalBodyIds.length > 0) {
+          const bodiesById = await fetchEmailBodiesByIds(supabase, missingModalBodyIds, 40);
+          if (bodiesById.size > 0) {
+            uniqueClientEmails.forEach((e: any) => {
+              const html = e?.id != null ? bodiesById.get(String(e.id)) : undefined;
+              if (html && !(e.body_html && String(e.body_html).trim())) {
+                e.body_html = html;
+              }
+            });
+          }
+        }
         
         // Format emails for modal display — reading-pane formatter so breaks are correct immediately
         const formattedEmailsForModal = uniqueClientEmails.map((e: any) => {
@@ -5904,50 +5994,51 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [client.id]);
 
   // Handle AI suggestions for email compose
-  const handleAISuggestions = async () => {
+  const handleAISuggestions = async (options?: { redo?: boolean }) => {
     if (!client || isLoadingAI) return;
 
+    const previousDraft = composeBody.trim();
+    const createNew = Boolean(options?.redo) || !previousDraft;
+    if (options?.redo) {
+      cancelComposeAiTypewrite();
+      setComposeBody('');
+      setAiDraftActive(false);
+    }
     setIsLoadingAI(true);
-    setShowAISuggestions(true);
+    if (!createNew) setShowAISuggestions(true);
     
     try {
-      const requestType = composeBody.trim() ? 'improve' : 'suggest';
+      const requestType = createNew ? 'suggest' : 'improve';
       
       // Get email conversation history from interactions
       const emailInteractions = interactions.filter(interaction => 
         interaction.kind === 'email' && interaction.content
       );
       
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          currentMessage: composeBody.trim(),
-          conversationHistory: emailInteractions.map(interaction => ({
-            id: interaction.id,
-            direction: interaction.direction === 'out' ? 'out' : 'in',
-            message: interaction.content || '',
-            sent_at: interaction.date + ' ' + interaction.time,
-            sender_name: interaction.employee || 'Unknown'
-          })),
-          clientName: client.name,
-          requestType
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: previousDraft,
+        conversationHistory: emailInteractions.map(interaction => ({
+          id: interaction.id,
+          direction: interaction.direction === 'out' ? 'out' : 'in',
+          message: interaction.content || '',
+          sent_at: interaction.date + ' ' + interaction.time,
+          sender_name: interaction.employee || 'Unknown'
+        })),
+        clientName: client.name,
+        requestType
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
       
       if (result.success) {
         // Get the single suggestion and clean it
         const suggestion = result.suggestion.trim();
-        setAiSuggestions([suggestion]);
+        if (createNew && isUsableAiDraft(suggestion)) {
+          setShowAISuggestions(false);
+          setAiSuggestions([]);
+          typewriteComposeAi(suggestion);
+          setAiDraftActive(true);
+        } else {
+          setAiSuggestions([suggestion]);
+        }
       } else {
         if (result.code === 'OPENAI_QUOTA') {
           toast.error('AI quota exceeded. Please check plan/billing or try again later.');
@@ -6020,10 +6111,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
     setComposeRecipientError(null);
     setSending(true);
+    let optimisticId: string | null = null;
 
     try {
       const bodyHtml = convertBodyToHtml(composeBody);
-      const emailContentWithSignature = await appendEmailSignature(bodyHtml);
+      const { html: emailContentWithSignature, inlineAttachments } =
+        await buildOutgoingHtmlWithSignature(bodyHtml);
       const subject = composeSubject && composeSubject.trim()
         ? composeSubject
         : `[${client.lead_number}] - ${client.name}`;
@@ -6035,16 +6128,70 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           })()
         : null;
       const senderName = currentUserFullName || userEmail || 'Your Team';
-
-      // Find the contact_id from the selected contact or the first recipient
       let contactId: number | null = selectedContactId;
       if (!contactId && finalToRecipients.length > 0) {
-        // Try to find contact by email
         const contactByEmail = leadContacts.find(c => c.email === finalToRecipients[0]);
         if (contactByEmail) {
           contactId = contactByEmail.id;
         }
       }
+      const optimisticIdValue = `temp_${Date.now()}`;
+      optimisticId = optimisticIdValue;
+      const optimisticSentAt = new Date().toISOString();
+      const formattedOptimisticHtml = formatEmailBodyForTimeline(emailContentWithSignature);
+      const recipientList =
+        finalToRecipients.join(', ') +
+        (finalCcRecipients.length > 0 ? `, ${finalCcRecipients.join(', ')}` : '');
+      const optimisticDate = new Date(optimisticSentAt);
+
+      setInteractions((prev) => [
+        {
+          id: optimisticIdValue,
+          message_id: optimisticIdValue,
+          date: optimisticDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+          time: optimisticDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+          raw_date: optimisticSentAt,
+          employee: senderName,
+          direction: 'out',
+          kind: 'email',
+          length: '',
+          content: formattedOptimisticHtml,
+          subject,
+          observation: '',
+          editable: false,
+          body_html: formattedOptimisticHtml,
+          sender_email: userEmail || null,
+          recipient_list: recipientList,
+          contact_id: contactId || null,
+        },
+        ...prev,
+      ]);
+      setEmails((prev) => [
+        {
+          id: optimisticIdValue,
+          message_id: optimisticIdValue,
+          subject,
+          from: userEmail || '',
+          to: recipientList,
+          date: optimisticSentAt,
+          bodyPreview: formattedOptimisticHtml,
+          body_html: formattedOptimisticHtml,
+          body_preview: formattedOptimisticHtml,
+          direction: 'outgoing',
+          attachments: composeAttachments,
+          sender_name: senderName,
+          contact_id: contactId || null,
+        } as any,
+        ...prev,
+      ]);
+      setShowCompose(false);
+      const attachmentsForSend = [...composeAttachments, ...inlineAttachments];
+      setComposeBody('');
+      setAiDraftActive(false);
+      setComposeAttachments([]);
+      setShowComposeLinkForm(false);
+      setComposeLinkLabel('');
+      setComposeLinkUrl('');
 
       const sendResult = await sendEmailViaBackend({
         userId,
@@ -6052,7 +6199,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         bodyHtml: emailContentWithSignature,
         to: finalToRecipients,
         cc: finalCcRecipients,
-        attachments: composeAttachments,
+        attachments: attachmentsForSend,
         context: {
           clientId: !isLegacyLead ? client.id : null,
           legacyLeadId: isLegacyLead ? legacyId : null,
@@ -6066,74 +6213,33 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         },
       });
 
-      const messageId = sendResult?.id || sendResult?.messageId || `temp_${Date.now()}`;
-      const conversationId = sendResult?.conversationId || null;
-      const sentAt = sendResult?.sentAt || new Date().toISOString();
-      
-      // Optimistic insert to emails table to ensure email appears immediately
-      // The backend will also save it, but this ensures it shows up right away
-      const emailRecord: any = {
-        message_id: messageId,
-        thread_id: conversationId,
-        sender_name: senderName,
-        sender_email: userEmail || null,
-        recipient_list: finalToRecipients.join(', ') + (finalCcRecipients.length > 0 ? `, ${finalCcRecipients.join(', ')}` : ''),
-        subject,
-        body_html: emailContentWithSignature,
-        body_preview: emailContentWithSignature.substring(0, 500), // First 500 chars as preview
-        sent_at: sentAt,
-        direction: 'outgoing',
-        attachments: composeAttachments.length > 0 ? composeAttachments.map(att => ({
-          name: att.name,
-          contentType: att.contentType || 'application/octet-stream',
-        })) : null,
-      };
-      
-      // Set either client_id OR legacy_id, not both
-      if (isLegacyLead) {
-        emailRecord.legacy_id = legacyId;
-        emailRecord.client_id = null;
-      } else {
-        emailRecord.client_id = client.id;
-        emailRecord.legacy_id = null;
-      }
-      
-      // Add contact_id if available
-      if (contactId) {
-        emailRecord.contact_id = contactId;
-      }
-      
-      try {
-        await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
-      } catch (dbError) {
-        interactionsDevWarn('Optimistic email insert failed (backend will save it):', dbError);
-        // Don't throw - backend will save it
-      }
-      
-      toast.success('Email sent!');
-      
-      // Remove optimistic emails (those with temp_ IDs) before fetching fresh emails
-      setEmails((prev) => {
-        return prev.filter((email: any) => {
-          const msgId = email.id;
-          return !(typeof msgId === 'string' && msgId.startsWith('temp_'));
-        });
-      });
-      
-      await fetchInteractions({ bypassCache: true });
-      await fetchEmailsForModal();
+      setShowEmailSentModal(true);
 
+      const realMessageId = sendResult?.id || sendResult?.messageId || optimisticIdValue;
+      if (realMessageId !== optimisticIdValue) {
+        setInteractions((prev) =>
+          prev.map((row) =>
+            String(row.id) === optimisticIdValue ? { ...row, message_id: realMessageId } : row,
+          ),
+        );
+        setEmails((prev) =>
+          prev.map((email: any) =>
+            String(email.id) === optimisticIdValue ? { ...email, message_id: realMessageId } : email,
+          ),
+        );
+      }
+
+      void fetchInteractions({ bypassCache: true });
+      void fetchEmailsForModal();
       if (onClientUpdate) {
-        await onClientUpdate();
+        void onClientUpdate();
       }
-
-      setComposeBody('');
-      setComposeAttachments([]);
-      setShowComposeLinkForm(false);
-      setComposeLinkLabel('');
-      setComposeLinkUrl('');
-      setShowCompose(false);
     } catch (e) {
+      if (optimisticId) {
+        const failedId = optimisticId;
+        setInteractions((prev) => prev.filter((row) => String(row.id) !== failedId));
+        setEmails((prev) => prev.filter((email: any) => String(email.id) !== failedId));
+      }
       console.error('Error in handleSendEmail:', e);
       const error = e instanceof Error ? e : new Error('Failed to send email.');
       const errorMessage = error.message;
@@ -8607,15 +8713,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
                   <div className="relative z-[10003] flex h-full w-full overflow-hidden bg-white shadow-2xl">
                     {/* Left: email list sidepanel — match main email modal */}
-                    <aside className="hidden md:flex w-[22rem] xl:w-96 shrink-0 flex-col overflow-hidden border-r border-slate-200/90 bg-white">
-                      <div className="shrink-0 bg-white px-3 py-2">
-                        <div className="relative w-full">
+                    <aside className="hidden md:flex w-[22rem] xl:w-96 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-slate-100">
+                      <div className="shrink-0 px-3 pt-3 pb-2">
+                        <div className="relative w-full rounded-xl bg-white shadow-sm">
                           <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
                             <MagnifyingGlassIcon className="h-4 w-4 text-gray-400" />
                           </div>
                           <input
                             type="text"
-                            className="block w-full rounded-full border border-gray-300 bg-white py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:border-[#4218CC] focus:outline-none focus:ring-1 focus:ring-[#4218CC]"
+                            className="block w-full rounded-xl border-0 bg-transparent py-2 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:outline-none focus:ring-0"
                             placeholder="Search emails…"
                             value={composeSideSearch}
                             onChange={(e) => setComposeSideSearch(e.target.value)}
@@ -8632,13 +8738,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           )}
                         </div>
                       </div>
-                      <div className="min-h-0 flex-1 overflow-y-auto">
+                      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
                         {emails.length === 0 ? (
                           <div className="p-4 text-center text-sm text-slate-400">No emails</div>
                         ) : (
-                          <ul className="divide-y divide-slate-200/80">
-                            {dedupeEmailsForSidepanel([...emails])
-                              .filter((message) => {
+                          <ul className="flex flex-col gap-2">
+                            {groupEmailsIntoSubjectConversations(
+                              dedupeEmailsForSidepanel([...emails]).filter((message) => {
                                 const outgoing =
                                   isOfficeEmail(message.from) || message.direction === 'outgoing';
                                 if (composeSideFilter === 'incoming' && outgoing) return false;
@@ -8656,9 +8762,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   .join(' ')
                                   .toLowerCase();
                                 return hay.includes(q);
-                              })
-                              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                              .map((message) => {
+                              }),
+                              {
+                                getSubject: (e) => e.subject,
+                                getDate: (e) => e.date,
+                              },
+                            ).map((group) => {
+                                const message = group.latest;
                                 const outgoing =
                                   isOfficeEmail(message.from) || message.direction === 'outgoing';
                                 const preview = String(
@@ -8683,41 +8793,78 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   .map((p: string) => p[0] || '')
                                   .join('')
                                   .toUpperCase() || '?';
+                                const employeePhotoUrl = outgoing
+                                  ? lookupEmployeePhotoFromMap(
+                                      employeePhotoMap,
+                                      displayName,
+                                      message.from,
+                                    )
+                                  : null;
+                                const isSelected = Boolean(
+                                  selectedEmailForView &&
+                                    group.messages.some(
+                                      (m) => String(m.id) === String(selectedEmailForView.id),
+                                    ),
+                                );
                                 return (
-                                  <li key={message.id}>
+                                  <li key={group.key}>
                                     <button
                                       type="button"
-                                      className={`relative flex w-full gap-2 border-l-[3px] px-3 pb-8 pt-2.5 text-left transition ${
-                                        String(selectedEmailForView?.id) === String(message.id)
-                                          ? 'border-l-[#4218CC] bg-[#4218CC]/12 shadow-[inset_0_0_0_1px_rgba(66,24,204,0.12)]'
-                                          : 'border-l-transparent hover:bg-slate-50'
+                                      className={`relative flex w-full gap-2 rounded-xl bg-white px-3 pb-8 pt-2.5 text-left shadow-sm transition ${
+                                        isSelected
+                                          ? 'ring-2 ring-[#4218CC]/35'
+                                          : 'hover:shadow-md'
                                       }`}
                                       onClick={() => {
                                         setShowCompose(false);
                                         setSelectedEmailForView(message);
-                                        hydrateEmailBodies([message]);
-                                        void ensureAttachmentsIfNeeded(message);
+                                        hydrateEmailBodies(group.messages);
+                                        group.messages.forEach((m) => {
+                                          void ensureAttachmentsIfNeeded(m);
+                                        });
                                       }}
                                     >
-                                      <div
-                                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[0.6rem] font-bold uppercase tracking-wide text-white ${
-                                          outgoing ? 'bg-[#4218CC]' : 'bg-emerald-600'
-                                        }`}
-                                        aria-hidden
-                                      >
-                                        {initials}
-                                      </div>
+                                      {outgoing ? (
+                                        <TeamAvatar
+                                          photoUrl={employeePhotoUrl}
+                                          initials={initials}
+                                          name={displayName}
+                                          size="md"
+                                        />
+                                      ) : (
+                                        <div
+                                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[0.6rem] font-bold uppercase tracking-wide text-white"
+                                          aria-hidden
+                                        >
+                                          {initials}
+                                        </div>
+                                      )}
                                       <div className="min-w-0 flex-1">
-                                        <div className="flex items-center justify-between gap-2">
-                                          <span className="truncate text-sm font-semibold text-slate-900">
+                                        <div className="flex items-center gap-2">
+                                          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">
                                             {displayName}
                                           </span>
                                           <time className="shrink-0 text-[11px] text-slate-400">
                                             {formatTime(message.date)}
                                           </time>
+                                          <span
+                                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold tabular-nums ${
+                                              group.count > 1
+                                                ? 'bg-slate-100 text-slate-600'
+                                                : 'invisible'
+                                            }`}
+                                            title={
+                                              group.count > 1
+                                                ? `${group.count} messages in this conversation`
+                                                : undefined
+                                            }
+                                            aria-hidden={group.count <= 1}
+                                          >
+                                            {group.count > 1 ? group.count : 0}
+                                          </span>
                                         </div>
-                                        <p className="mt-0.5 truncate text-sm font-medium text-slate-800">
-                                          {message.subject || '(no subject)'}
+                                        <p className="mt-0.5 truncate text-sm font-bold text-slate-800">
+                                          {displayConversationSubject(message.subject)}
                                         </p>
                                         <p className="mt-0.5 truncate text-xs text-slate-500">
                                           {preview || '—'}
@@ -8743,8 +8890,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           </ul>
                         )}
                       </div>
-                      <div className="shrink-0 bg-white p-2">
-                        <div className="flex gap-1">
+                      <div className="shrink-0 px-3 pb-3 pt-1">
+                        <div className="flex gap-1 rounded-xl bg-white p-1.5 shadow-sm">
                           {(
                             [
                               ['all', 'All', EnvelopeIcon],
@@ -8770,25 +8917,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       </div>
                     </aside>
 
-                    {/* Right: compose form */}
-                    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                    <div className="flex items-center justify-between border-b border-white/40 bg-white/55 px-4 py-4 shadow-sm backdrop-blur-xl backdrop-saturate-150 md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
-                      <h2 className="text-lg font-semibold md:text-xl">Compose Email</h2>
-                      <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
+                    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-slate-100">
+                    <div className="absolute right-3 top-3 z-10 md:right-4">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm btn-circle"
+                        onClick={() => setShowCompose(false)}
+                        aria-label="Close compose"
+                      >
                         <XMarkIcon className="w-5 h-5" />
                       </button>
                     </div>
-                    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 md:px-6 lg:px-10">
+                    <div className="m-4 mt-12 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                    <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 md:px-6">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <label className="font-semibold text-sm">To</label>
                           </div>
                           {renderComposeRecipients('to')}
                         </div>
+                        {(showComposeCcField || composeCcRecipients.length > 0) && (
                         <div className="space-y-2">
                           <label className="font-semibold text-sm">CC</label>
                           {renderComposeRecipients('cc')}
                         </div>
+                        )}
                         {composeRecipientError && <p className="text-sm text-error">{composeRecipientError}</p>}
 
                   <input
@@ -8796,10 +8949,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     placeholder="Subject"
                     value={composeSubject}
                     onChange={(e) => setComposeSubject(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    className="w-full border-0 border-b border-gray-200 px-0 py-2 outline-none ring-0 focus:outline-none focus:ring-0"
                   />
-
-                        <label className="font-semibold text-sm">Body</label>
 
                         {showComposeLinkForm && (
                           <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
@@ -8876,10 +9027,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           </div>
                         )}
 
+                  <ComposeBodyWithSignature
+                    afterSignature={
+                      <ComposeAttachmentPreviews
+                        files={composeAttachments}
+                        onRemove={(index) =>
+                          setComposeAttachments((prev) => prev.filter((_, i) => i !== index))
+                        }
+                      />
+                    }
+                  >
+                  <div className="relative">
                   <textarea
-                    placeholder="Type your message..."
+                    placeholder={composeBody.trim() || isLoadingAI ? '' : 'Type your message...'}
                     value={composeBody}
                     onChange={(e) => {
+                      cancelComposeAiTypewrite();
                       setComposeBody(e.target.value);
                       // Dynamically detect Hebrew as user types
                       setComposeBodyIsRTL(containsHebrew(e.target.value));
@@ -8889,26 +9052,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       textAlign: composeBodyIsRTL ? 'right' : 'left',
                       direction: composeBodyIsRTL ? 'rtl' : 'ltr'
                     }}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
+                    className="w-full px-4 py-3 resize-y min-h-[240px]"
                     rows={10}
                   />
-                  
-                  {composeAttachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {composeAttachments.map((file, index) => (
-                        <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
-                          <PaperClipIcon className="w-4 h-4 text-gray-500" />
-                          <span className="text-sm">{file.name}</span>
-                          <button
-                            onClick={() => setComposeAttachments(prev => prev.filter((_, i) => i !== index))}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <ComposeAiEmptyPrompt
+                    visible={!composeBody.trim() && !isLoadingAI}
+                    loading={isLoadingAI && !composeBody.trim()}
+                    disabled={isLoadingAI || !client}
+                    onClick={handleAISuggestions}
+                  />
+                  </div>
+                  {aiDraftActive && composeBody.trim() && !isLoadingAI ? (
+                    <ComposeAiRedoButton
+                      disabled={isLoadingAI || !client}
+                      onClick={() => void handleAISuggestions({ redo: true })}
+                    />
+                  ) : null}
+                  </ComposeBodyWithSignature>
                   
                   </div>
                     <div className="flex items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-4 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
@@ -8916,15 +9076,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       <div className="flex items-center gap-4 flex-wrap">
                         {/* Circle action buttons */}
                         <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={handleSendEmail}
+                            disabled={sending || !composeBody.trim()}
+                            className={COMPOSE_SEND_BUTTON_CLASS}
+                          >
+                            {sending ? (
+                              <span className="loading loading-spinner loading-sm" />
+                            ) : (
+                              <>
+                                <PaperAirplaneIcon className="h-6 w-6" />
+                                Send
+                              </>
+                            )}
+                          </button>
                           {/* Attach Files Button */}
                           <button
                             type="button"
-                            className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            className={COMPOSE_ACTION_BUTTON_CLASS}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             onClick={() => fileInputRef.current?.click()}
                             disabled={sending}
                             title="Attach files"
@@ -8944,12 +9115,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             type="button"
                             onClick={handleAISuggestions}
                             disabled={isLoadingAI || !client}
-                            className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            className={COMPOSE_ACTION_BUTTON_CLASS}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             title={composeBody.trim() ? "Improve message with AI" : "Get AI suggestions"}
                           >
                             {isLoadingAI ? (
@@ -8962,14 +9129,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           {/* Add Link Button */}
                           <button
                             type="button"
-                            className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                            className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                               showComposeLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                             }`}
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             onClick={() => setShowComposeLinkForm(prev => !prev)}
                             disabled={sending}
                             title={showComposeLinkForm ? 'Hide link form' : 'Add link'}
@@ -8980,14 +9143,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           {/* Add Contacts from Lead Button */}
                           <button
                             type="button"
-                            className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                            className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                               showComposeContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                             }`}
-                            style={{ 
-                              backgroundColor: '#4218CC', 
-                              width: '44px', 
-                              height: '44px'
-                            }}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
                             onClick={handleOpenComposeContactsModal}
                             disabled={sending || !client}
                             title="Add contacts from lead"
@@ -9108,22 +9267,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           )}
                         </div>
                       </div>
-                      
-                      {/* Right side - Send button only */}
-                      <button
-                        onClick={handleSendEmail}
-                        disabled={sending || !composeBody.trim()}
-                        className="btn btn-primary min-w-[100px] flex items-center gap-2"
-                      >
-                        {sending ? (
-                          <span className="loading loading-spinner loading-sm" />
-                        ) : (
-                          <>
-                            <PaperAirplaneIcon className="w-4 h-4" />
-                            Send
-                          </>
-                        )}
-                      </button>
+                    </div>
                     </div>
                     </div>
                   </div>
@@ -9990,6 +10134,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         </div>,
         document.body
       )} */}
+      <EmailSentSuccessModal
+        open={showEmailSentModal}
+        onClose={() => setShowEmailSentModal(false)}
+        recipient={client?.email}
+      />
     </div>
   );
 };

@@ -137,8 +137,14 @@ const stripHtml = (html = '') =>
   html
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|tr|h[1-6]|li|table|blockquote)>/gi, '\n')
+    .replace(/<\/td>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 
 const buildRecipientList = (payload = {}) => {
@@ -2037,6 +2043,8 @@ class GraphMailboxSyncService {
             name: item.name || 'attachment',
             contentType: item.contentType || 'application/octet-stream',
             contentBytes: item.contentBytes,
+            ...(item.contentId ? { contentId: String(item.contentId) } : {}),
+            ...(item.isInline ? { isInline: true } : {}),
           }))
       : [];
 
@@ -2112,18 +2120,30 @@ class GraphMailboxSyncService {
       sentAt: draft?.sentDateTime || draft?.createdDateTime || new Date().toISOString(),
     };
 
-    await this.recordOutgoingEmail({
+    const recordArgs = {
       userId: tokenRecord.user_id,
       userInternalId: tokenRecord.user_id,
       mailboxAddress,
       payload,
       result: sendResult,
+    };
+
+    // Save the originating lead/contact immediately so the sender sees the email
+    // without waiting for every other matching lead to be copied.
+    try {
+      await this.recordOutgoingEmail({ ...recordArgs, fanOutMode: 'originating-only' });
+    } catch (error) {
+      console.error('⚠️  Unable to record originating outgoing email:', error.message || error);
+    }
+
+    void this.recordOutgoingEmail(recordArgs).catch((error) => {
+      console.error('⚠️  Unable to fan-out outgoing email to matching leads:', error.message || error);
     });
 
     return sendResult;
   }
 
-  async recordOutgoingEmail({ userId, userInternalId, mailboxAddress, payload = {}, result }) {
+  async recordOutgoingEmail({ userId, userInternalId, mailboxAddress, payload = {}, result, fanOutMode = 'all' }) {
     try {
       const context = payload.context || {};
       const legacyIdRaw =
@@ -2176,6 +2196,41 @@ class GraphMailboxSyncService {
       const bodyPreview = stripHtml(htmlBody) || payload.bodyText || '';
 
       const resolvedUserId = context.userInternalId ?? userInternalId ?? userId;
+
+      const buildOutgoingRecord = (match = {}) => ({
+        message_id: result.id,
+        user_id: resolvedUserId,
+        client_id: match.clientId ?? null,
+        legacy_id: match.legacyId ?? null,
+        contact_id: match.contactId ?? null,
+        thread_id: result.conversationId,
+        sender_name: context.senderName || null,
+        sender_email: mailboxAddress,
+        recipient_list: recipients.join(', '),
+        subject: payload.subject || '(no subject)',
+        body_html: htmlBody || payload.bodyText || '',
+        body_preview: bodyPreview,
+        sent_at: result.sentAt || new Date().toISOString(),
+        direction: 'outgoing',
+        attachments: attachmentsMeta,
+      });
+
+      if (fanOutMode === 'originating-only') {
+        const originatingRecord = buildOutgoingRecord({
+          clientId,
+          legacyId,
+          contactId: context.contactId || context.contact_id || null,
+        });
+        const { error } = await supabase.from(EMAIL_HEADERS_TABLE).insert([originatingRecord]);
+        if (error && error.code !== '23505') {
+          console.error('❌ Failed to persist originating outgoing email:', error.message || error);
+        } else if (!error) {
+          console.log(
+            `💾 Saved originating outgoing email ${result.id?.substring(0, 20) || 'unknown'}... | client_id=${originatingRecord.client_id || 'null'} | legacy_id=${originatingRecord.legacy_id || 'null'} | contact_id=${originatingRecord.contact_id || 'null'}`
+          );
+        }
+        return;
+      }
 
       // Find ALL leads/contacts that match the recipient email addresses
       // This ensures the email appears in all leads where any recipient email matches

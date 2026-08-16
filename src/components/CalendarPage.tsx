@@ -37,6 +37,7 @@ import { toast } from 'react-hot-toast';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import sanitizeHtml from '../lib/sanitizeHtml';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import { buildApiUrl } from '../lib/api';
 import { fetchLeadActionPanelData } from '../lib/leadActionCounts';
 import CalendarLeadRecentInteractions from './calendar/CalendarLeadRecentInteractions';
@@ -117,32 +118,50 @@ const acquireToken = async (instance: any, account: any) => {
 // Microsoft Graph API: Send email
 async function sendClientEmail(token: string, subject: string, body: string, client: any, senderName: string, attachments: { name: string; contentType: string; contentBytes: string }[]) {
   // Get the user's email signature from the database
-  const { getCurrentUserEmailSignature } = await import('../lib/emailSignature');
+  const { getCurrentUserEmailSignature, inlineSignatureImagesForSend } = await import('../lib/emailSignature');
   const userSignature = await getCurrentUserEmailSignature();
+
+  const htmlBody = convertBodyToHtml(body);
 
   // Handle signature (HTML or plain text)
   let signatureHtml = '';
+  const inlineAttachments: Array<{
+    name: string;
+    contentType: string;
+    contentBytes: string;
+    contentId: string;
+    isInline: true;
+  }> = [];
   if (userSignature) {
-    // Check if signature is already HTML
     if (userSignature.includes('<') && userSignature.includes('>')) {
-      signatureHtml = `<br><br>${userSignature}`;
+      const inlined = await inlineSignatureImagesForSend(userSignature);
+      signatureHtml = `<div><br></div><div><br></div>${inlined.html}`;
+      inlineAttachments.push(...inlined.inlineAttachments);
     } else {
-      // Convert plain text to HTML
-      signatureHtml = `<br><br>${userSignature.replace(/\n/g, '<br>')}`;
+      signatureHtml = convertBodyToHtml(userSignature);
     }
   } else {
-    // Fallback to default signature
-    signatureHtml = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
+    signatureHtml = convertBodyToHtml(`Best regards,\n${senderName}\nDecker Pex Levi Law Offices`);
   }
 
-  const fullBody = body + signatureHtml;
+  const fullBody = htmlBody + signatureHtml;
 
-  const messageAttachments = attachments.map(att => ({
-    '@odata.type': '#microsoft.graph.fileAttachment',
-    name: att.name,
-    contentType: att.contentType,
-    contentBytes: att.contentBytes,
-  }));
+  const messageAttachments = [
+    ...attachments.map(att => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: att.name,
+      contentType: att.contentType,
+      contentBytes: att.contentBytes,
+    })),
+    ...inlineAttachments.map(att => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: att.name,
+      contentType: att.contentType,
+      contentBytes: att.contentBytes,
+      contentId: att.contentId,
+      isInline: true,
+    })),
+  ];
 
   const message = {
     subject: subject,

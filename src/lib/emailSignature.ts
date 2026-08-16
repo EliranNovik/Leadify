@@ -1,4 +1,168 @@
 import { supabase } from './supabase';
+import { convertBodyToHtml } from './emailBodyHtml';
+import {
+  buildSignaturePerson,
+  emptySignatureProfile,
+  fetchCompanySignatureSettings,
+  fetchCurrentUserSignatureContext,
+  fetchSignatureEmployee,
+  fetchUserSignatureProfile,
+} from './companyEmailSignature';
+import { generateEmailSignatureHtml } from './generateEmailSignatureHtml';
+
+export type InlineEmailAttachment = {
+  name: string;
+  contentType: string;
+  contentBytes: string;
+  contentId: string;
+  isInline: true;
+};
+
+/** Collapse newlines/spaces inside <img> tags so data-URIs stay one attribute. */
+function flattenImgTags(html: string): string {
+  return html.replace(/<img\b[\s\S]*?>/gi, (tag) => tag.replace(/\s+/g, ' '));
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function resolveImageSrc(src: string, pageOrigin: string): string {
+  const trimmed = src.trim();
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('data:') || trimmed.startsWith('cid:')) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('/') && pageOrigin) return `${pageOrigin}${trimmed}`;
+  return trimmed;
+}
+
+/** Local CRM assets (signature icons, /DPLOGO1.png) cannot be loaded by Gmail/Outlook. */
+function shouldEmbedImageForEmailClients(src: string, pageOrigin: string): boolean {
+  const trimmed = src.trim();
+  if (!trimmed || trimmed.startsWith('cid:') || trimmed.startsWith('data:')) return false;
+  if (/\/signature-icons\//i.test(trimmed)) return true;
+  if (trimmed.startsWith('/')) return true;
+  try {
+    const url = new URL(trimmed, pageOrigin || 'http://localhost');
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return true;
+    if (pageOrigin && url.origin === pageOrigin) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Gmail and Microsoft Graph do not reliably render data:image URIs — they often
+ * show the raw <img> markup as text. Convert them to cid: inline attachments.
+ */
+export function inlineDataImagesInHtml(html: string): {
+  html: string;
+  inlineAttachments: InlineEmailAttachment[];
+} {
+  if (!html) return { html: '', inlineAttachments: [] };
+
+  let next = flattenImgTags(html);
+  const inlineAttachments: InlineEmailAttachment[] = [];
+  let index = 0;
+
+  next = next.replace(
+    /<img\b([^>]*?)src\s*=\s*(["'])data:image\/([a-zA-Z0-9.+-]+);base64,([\s\S]*?)\2([^>]*)>/gi,
+    (_match, before, _quote, subtype, rawB64, after) => {
+      const contentBytes = String(rawB64).replace(/\s+/g, '');
+      if (!contentBytes) return _match;
+      const safeType = String(subtype).toLowerCase().replace(/[^a-z0-9.+-]/g, '') || 'png';
+      const ext =
+        safeType.includes('jpeg') || safeType === 'jpg' ? 'jpg' : safeType.split('+')[0] || 'png';
+      const contentId = `signature-image-${Date.now()}-${index}`;
+      inlineAttachments.push({
+        name: `signature-${index + 1}.${ext}`,
+        contentType: `image/${safeType}`,
+        contentBytes,
+        contentId,
+        isInline: true,
+      });
+      index += 1;
+      return `<img${before}src="cid:${contentId}"${after}>`;
+    },
+  );
+
+  return { html: next, inlineAttachments };
+}
+
+/**
+ * Embed CRM-hosted signature images (icons, local logos) as CID attachments so
+ * Gmail/Outlook do not have to fetch localhost or app-origin URLs.
+ */
+export async function inlineSignatureImagesForSend(html: string): Promise<{
+  html: string;
+  inlineAttachments: InlineEmailAttachment[];
+}> {
+  const dataInlined = inlineDataImagesInHtml(html);
+  let next = dataInlined.html;
+  const inlineAttachments = [...dataInlined.inlineAttachments];
+  const pageOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const cidBySrc = new Map<string, string>();
+  let index = inlineAttachments.length;
+
+  const imgRe = /<img\b([^>]*?)src\s*=\s*(["'])([^"']+)\2([^>]*)>/gi;
+  const matches = [...next.matchAll(imgRe)];
+
+  for (const match of matches) {
+    const src = match[3];
+    if (!shouldEmbedImageForEmailClients(src, pageOrigin)) continue;
+
+    const absolute = resolveImageSrc(src, pageOrigin);
+    let contentId = cidBySrc.get(absolute);
+    if (!contentId) {
+      try {
+        const response = await fetch(absolute);
+        if (!response.ok) continue;
+        const blob = await response.blob();
+        const contentBytes = await blobToBase64(blob);
+        if (!contentBytes) continue;
+        const mime = (blob.type || 'image/png').split(';')[0].trim() || 'image/png';
+        const safeType = mime.replace(/^image\//i, '').toLowerCase().replace(/[^a-z0-9.+-]/g, '') || 'png';
+        const ext =
+          safeType.includes('jpeg') || safeType === 'jpg' ? 'jpg' : safeType.split('+')[0] || 'png';
+        contentId = `signature-icon-${Date.now()}-${index}`;
+        inlineAttachments.push({
+          name: `signature-icon-${index + 1}.${ext}`,
+          contentType: mime.startsWith('image/') ? mime : `image/${safeType}`,
+          contentBytes,
+          contentId,
+          isInline: true,
+        });
+        cidBySrc.set(absolute, contentId);
+        index += 1;
+      } catch (error) {
+        console.warn('Could not embed signature image', absolute, error);
+        continue;
+      }
+    }
+
+    next = next.replace(match[0], `<img${match[1]}src="cid:${contentId}"${match[4]}>`);
+  }
+
+  return { html: next, inlineAttachments };
+}
+
+export async function buildOutgoingHtmlWithSignature(emailContent: string): Promise<{
+  html: string;
+  inlineAttachments: InlineEmailAttachment[];
+}> {
+  const withSignature = await appendEmailSignature(emailContent);
+  return inlineSignatureImagesForSend(withSignature);
+}
 
 /**
  * Sanitize HTML signature for email clients (especially Gmail)
@@ -174,55 +338,74 @@ const sanitizeEmailSignature = (html: string): string => {
   return cleaned;
 };
 
+async function generateCompanySignatureHtml(employeeId?: number): Promise<string> {
+  const origin = typeof window !== 'undefined' ? window.location.origin : undefined;
+
+  if (!employeeId) {
+    const context = await fetchCurrentUserSignatureContext();
+    if (!context) return '';
+    if (!context.settings.signature_enabled) return '';
+    if (context.profile.signature_enabled === false) return '';
+    const html = generateEmailSignatureHtml(
+      buildSignaturePerson(
+        context.employee,
+        context.profile.employee_id ? context.profile : emptySignatureProfile(context.employee.id),
+      ),
+      context.settings,
+      { origin },
+    );
+    return html ? flattenImgTags(html) : '';
+  }
+
+  const [settings, employee, profile] = await Promise.all([
+    fetchCompanySignatureSettings(),
+    fetchSignatureEmployee(employeeId),
+    fetchUserSignatureProfile(employeeId),
+  ]);
+  if (!settings.signature_enabled || !employee) return '';
+  if (profile.signature_enabled === false) return '';
+
+  const html = generateEmailSignatureHtml(
+    buildSignaturePerson(employee, profile.employee_id ? profile : emptySignatureProfile(employee.id)),
+    settings,
+    { origin },
+  );
+  return html ? flattenImgTags(html) : '';
+}
+
+let currentUserSignatureCache: Promise<string> | null = null;
+
+export function invalidateCurrentUserEmailSignatureCache(): void {
+  currentUserSignatureCache = null;
+}
+
 /**
- * Get the current user's email signature from the database
- * @returns Promise<string> - The user's email signature or empty string if not found
+ * Build the current user's email signature at send time from company branding
+ * + employee profile data. Does not persist HTML onto templates.
  */
 export const getCurrentUserEmailSignature = async (): Promise<string> => {
-  try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user?.id) {
-      console.warn('No authenticated user found');
-      return '';
-    }
-
-    // Get the user's full_name from users table
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('full_name')
-      .eq('auth_id', user.id)
-      .single();
-
-    if (userError || !userData?.full_name) {
-      console.warn('Could not get user full name:', userError);
-      return '';
-    }
-
-    // Get the employee's email signature
-    const { data: employeeData, error } = await supabase
-      .from('tenants_employee')
-      .select('email_signature')
-      .eq('display_name', userData.full_name)
-      .single();
-
-    if (error) {
-      console.warn('Error fetching email signature:', error);
-      return '';
-    }
-
-    const signature = employeeData?.email_signature || '';
-    
-    // Sanitize the signature to remove non-email-safe attributes
-    if (signature) {
-      return sanitizeEmailSignature(signature);
-    }
-    
-    return '';
-  } catch (error) {
-    console.error('Error getting email signature:', error);
-    return '';
+  if (!currentUserSignatureCache) {
+    currentUserSignatureCache = (async () => {
+      try {
+        const html = await generateCompanySignatureHtml();
+        // Empty can mean auth session is not ready yet — do not cache that miss.
+        if (!html) currentUserSignatureCache = null;
+        return html;
+      } catch (error) {
+        console.error('Error getting email signature:', error);
+        currentUserSignatureCache = null;
+        return '';
+      }
+    })();
   }
+  return currentUserSignatureCache;
 };
+
+export function prefetchCurrentUserEmailSignature(): void {
+  void supabase.auth.getSession().then(({ data }) => {
+    if (data.session?.user?.id) void getCurrentUserEmailSignature();
+  });
+}
 
 /**
  * Append the user's email signature to email content
@@ -241,10 +424,10 @@ export const appendEmailSignature = async (emailContent: string): Promise<string
   
   if (isHtml) {
     // Marker div lets the reading pane keep free text and signature on separate rows
-    return `${emailContent}<br><br><div data-email-signature="1">${signature}</div>`;
-  } else {
-    return `${emailContent}\n\n--\n${signature}`;
+    return `${emailContent}<div><br></div><div><br></div><div data-email-signature="1">${signature}</div>`;
   }
+
+  return `${emailContent}${convertBodyToHtml(`--\n${signature}`)}`;
 };
 
 /**
@@ -254,25 +437,21 @@ export const appendEmailSignature = async (emailContent: string): Promise<string
  */
 export const getEmailSignatureByDisplayName = async (displayName: string): Promise<string> => {
   try {
+    const trimmed = displayName.trim();
+    if (!trimmed) return '';
+
     const { data: employeeData, error } = await supabase
       .from('tenants_employee')
-      .select('email_signature')
-      .eq('display_name', displayName)
-      .single();
+      .select('id')
+      .eq('display_name', trimmed)
+      .maybeSingle();
 
-    if (error) {
+    if (error || !employeeData?.id) {
       console.warn('Error fetching email signature for user:', displayName, error);
       return '';
     }
 
-    const signature = employeeData?.email_signature || '';
-    
-    // Sanitize the signature to remove non-email-safe attributes
-    if (signature) {
-      return sanitizeEmailSignature(signature);
-    }
-    
-    return '';
+    return await generateCompanySignatureHtml(Number(employeeData.id));
   } catch (error) {
     console.error('Error getting email signature for user:', displayName, error);
     return '';

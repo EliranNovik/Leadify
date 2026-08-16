@@ -24,6 +24,7 @@ import { getRoleDisplayName } from '../lib/employeeRoles';
 import WorkingHoursTab from '../components/profile/WorkingHoursTab';
 import MyDocumentsTab from '../components/profile/MyDocumentsTab';
 import MyContribution from '../components/MyContribution';
+import SignatureProfileForm from '../components/signature/SignatureProfileForm';
 
 // Default images if none provided
 const DEFAULT_BANNER = 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80';
@@ -407,7 +408,7 @@ const MyProfilePage: React.FC = () => {
             {/* Navigation Tabs (Floating Glassy Badges) - Right below banner */}
             <div className="px-4 md:px-8 max-w-5xl mx-auto -mt-6">
                 <div className="flex gap-2 md:gap-4 overflow-x-auto pb-2">
-                    {['About', 'Working Hours', 'Contribution', 'Documents'].map((tab) => (
+                    {['About', 'Working Hours', 'Contribution', 'Documents', 'Email Signature'].map((tab) => (
                         <button
                             key={tab}
                             type="button"
@@ -426,7 +427,7 @@ const MyProfilePage: React.FC = () => {
             {/* Main Content Area */}
             <div
               className={`flex-1 w-full py-6 md:py-8 mt-12 md:mt-16 px-4 md:px-6 ${
-                activeTab === 'Working Hours' || activeTab === 'Documents' || activeTab === 'Contribution' ? '' : 'max-w-5xl mx-auto'
+                activeTab === 'Working Hours' || activeTab === 'Documents' || activeTab === 'Contribution' || activeTab === 'Email Signature' ? '' : 'max-w-5xl mx-auto'
               }`}
             >
                 {activeTab === 'About' && (
@@ -572,13 +573,19 @@ const MyProfilePage: React.FC = () => {
                       employeeName={profile.official_name || profile.display_name}
                     />
                 )}
+                {activeTab === 'Email Signature' && profile?.id && (
+                    <SignatureProfileForm
+                      employeeId={profile.id}
+                      employeeEmail={profile.email}
+                    />
+                )}
                 {activeTab === 'Contribution' && profile?.id && (
                     <MyContribution
                       employeeId={profile.id}
                       employeeName={profile.official_name || profile.display_name}
                     />
                 )}
-                {activeTab !== 'About' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && activeTab !== 'Contribution' && (
+                {activeTab !== 'About' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && activeTab !== 'Contribution' && activeTab !== 'Email Signature' && (
                     <div className="rounded-[18px] bg-white py-20 text-center text-gray-400 shadow-sm">
                         <HashtagIcon className="w-16 h-16 mx-auto mb-4 opacity-20" />
                         <p>This tab is a placeholder for visual demonstration.</p>

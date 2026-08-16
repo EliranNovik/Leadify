@@ -44,7 +44,7 @@ export function EmailSidepanelListMenu({ value, onChange }: Props) {
         className={`inline-flex h-9 w-9 items-center justify-center rounded-full border transition ${
           open || isActive
             ? 'border-[#4218CC] bg-[#4218CC]/10 text-[#4218CC]'
-            : 'border-gray-300 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+            : 'border-transparent bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700'
         }`}
         aria-label="Filter emails"
         aria-haspopup="menu"

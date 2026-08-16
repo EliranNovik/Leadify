@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, TrashIcon, InboxIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
-import { appendEmailSignature } from '../lib/emailSignature';
+import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import sanitizeHtml from '../lib/sanitizeHtml';
 import { createPortal } from 'react-dom';
 import {
@@ -20,6 +22,12 @@ import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { generateSearchVariants } from '../lib/transliteration';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import EmailGmailSplitPane from './EmailGmailSplitPane';
+import EmailSentSuccessModal from './EmailSentSuccessModal';
+import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
+import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
+import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
+import { TeamAvatar } from './client-tabs/InteractionsEmailModal';
+import { lookupEmployeePhotoFromMap, resolveEmployeePhotoUrl } from '../lib/employeePhotoUrl';
 import {
   buildEmailFilterClauses,
   collectClientEmails,
@@ -28,7 +36,10 @@ import {
   fetchLeadEmailsForTimeline,
   normalizeEmailForFilter as normalizeEmailForFilterShared,
   dedupeEmailsForSidepanel,
+  groupEmailsIntoSubjectConversations,
+  displayConversationSubject,
 } from '../lib/interactions/emailFilters';
+import { mergeEmailBodyPreferRicher } from './client-tabs/interactionsEmailViewUtils';
 import {
   readEmailSidepanelCache,
   writeEmailSidepanelCache,
@@ -292,43 +303,6 @@ const containsRTLText = (text?: string | null): boolean => {
   return /[\u0590-\u05FF]/.test(textOnly);
 };
 
-const convertBodyToHtml = (text: string) => {
-  if (!text) return '';
-  // First, protect existing anchor tags by replacing them with placeholders
-  const anchorPlaceholders: string[] = [];
-  let placeholderIndex = 0;
-  const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi;
-  const textWithPlaceholders = text.replace(anchorRegex, (match) => {
-    anchorPlaceholders.push(match);
-    return `__ANCHOR_PLACEHOLDER_${placeholderIndex++}__`;
-  });
-
-  // Convert plain URLs to links (but skip those already in anchor tags)
-  const urlRegex = /(https?:\/\/[^\s<>]+)/gi;
-  const escaped = textWithPlaceholders.replace(urlRegex, url => {
-    const safeUrl = url.replace(/"/g, '&quot;');
-    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-  });
-
-  // Restore original anchor tags
-  let result = escaped;
-  anchorPlaceholders.forEach((anchor, index) => {
-    result = result.replace(`__ANCHOR_PLACEHOLDER_${index}__`, anchor);
-  });
-
-  // Preserve line breaks: convert \n to <br>
-  result = result
-    .replace(/\r\n/g, '\n')  // Normalize line endings
-    .replace(/\r/g, '\n')    // Handle old Mac line endings
-    .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-
-  // Use dir="auto" to let the browser automatically detect text direction
-  // This handles mixed content (English + Hebrew) correctly
-  result = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
-
-  return result;
-};
-
 // Filter out problematic image URLs that are known to be blocked by CORS
 const filterProblematicImages = (html: string): string => {
   if (!html) return html;
@@ -373,16 +347,23 @@ const sanitizeEmailHtml = (html: string): string => {
   const filteredHtml = filterProblematicImages(html);
 
   return sanitizeHtml(filteredHtml, {
-    allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img'],
+    allowedTags: [
+      'p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img',
+      'table', 'tbody', 'thead', 'tr', 'td', 'th',
+    ],
     allowedAttributes: {
-      a: ['href', 'target', 'rel'],
-      span: ['style', 'dir'],
-      div: ['style', 'dir'],
+      a: ['href', 'target', 'rel', 'style'],
+      span: ['style', 'dir', 'class'],
+      div: ['style', 'dir', 'class', 'data-email-signature'],
       p: ['style', 'dir'],
       body: ['style', 'dir'],
-      img: ['src', 'alt', 'style', 'width', 'height', 'crossorigin'],
+      img: ['src', 'alt', 'style', 'width', 'height', 'border', 'crossorigin'],
+      table: ['style', 'width', 'height', 'border', 'cellpadding', 'cellspacing', 'role', 'align', 'bgcolor', 'data-email-signature'],
+      td: ['style', 'dir', 'colspan', 'rowspan', 'align', 'valign', 'width', 'height', 'bgcolor', 'data-signature-gold'],
+      th: ['style', 'dir', 'colspan', 'rowspan', 'align', 'valign', 'width', 'height', 'bgcolor'],
+      tr: ['style'],
     },
-    allowedSchemes: ['http', 'https', 'mailto'],
+    allowedSchemes: ['http', 'https', 'mailto', 'data', 'cid'],
     disallowedTagsMode: 'discard',
   });
 };
@@ -517,6 +498,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [showEmailSentModal, setShowEmailSentModal] = useState(false);
   const [newMessage, setNewMessage] = useState('');
   const [newMessageIsRTL, setNewMessageIsRTL] = useState(false);
   const [subject, setSubject] = useState('');
@@ -574,18 +556,24 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [searchAllContacts, setSearchAllContacts] = useState('');
   const [toRecipients, setToRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  const [showCcField, setShowCcField] = useState(false);
   const [toInput, setToInput] = useState('');
   const [ccInput, setCcInput] = useState('');
   const [recipientError, setRecipientError] = useState<string | null>(null);
 
   // Employee autocomplete state
   const [employees, setEmployees] = useState<Array<{ email: string; name: string }>>([]);
+  const [employeePhotoMap, setEmployeePhotoMap] = useState<Map<string, string>>(new Map());
   const [toSuggestions, setToSuggestions] = useState<Array<{ email: string; name: string }>>([]);
   const [ccSuggestions, setCcSuggestions] = useState<Array<{ email: string; name: string }>>([]);
   const [showToSuggestions, setShowToSuggestions] = useState(false);
   const [showCcSuggestions, setShowCcSuggestions] = useState(false);
   const toSuggestionsRef = useRef<HTMLDivElement>(null);
   const ccSuggestionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showCompose) setShowCcField(false);
+  }, [showCompose]);
   const [showLinkForm, setShowLinkForm] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
@@ -605,6 +593,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
+  const [aiDraftActive, setAiDraftActive] = useState(false);
 
   // Lead contacts modal state (for adding contacts to recipients)
   const [showContactsModal, setShowContactsModal] = useState(false);
@@ -891,7 +880,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         const [employeesResult, usersResult] = await Promise.all([
           supabase
             .from('tenants_employee')
-            .select('id, display_name')
+            .select('id, display_name, official_name, photo_url, photo')
             .not('display_name', 'is', null),
           supabase
             .from('users')
@@ -936,7 +925,27 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           new Map(employeeList.map(emp => [emp.email, emp])).values()
         );
 
+        const photoMap = new Map<string, string>();
+        const photoByEmployeeId = new Map<number, string>();
+        employeesResult.data?.forEach((emp: any) => {
+          const photoUrl = resolveEmployeePhotoUrl(emp.photo_url, emp.photo);
+          if (!photoUrl) return;
+          if (emp.display_name) photoMap.set(emp.display_name, photoUrl);
+          if (typeof emp.official_name === 'string' && emp.official_name.trim()) {
+            photoMap.set(emp.official_name.trim(), photoUrl);
+          }
+          if (emp.id != null && !Number.isNaN(Number(emp.id))) {
+            photoByEmployeeId.set(Number(emp.id), photoUrl);
+          }
+        });
+        usersResult.data?.forEach((user: any) => {
+          const url = photoByEmployeeId.get(Number(user.employee_id));
+          const mail = typeof user.email === 'string' ? user.email.trim().toLowerCase() : '';
+          if (url && mail) photoMap.set(mail, url);
+        });
+
         setEmployees(uniqueEmployees);
+        setEmployeePhotoMap(photoMap);
       } catch (error) {
         console.error('Error fetching employees:', error);
       }
@@ -1056,7 +1065,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
     return (
       <div className="relative">
-        <div className="border border-base-300 rounded-lg px-3 py-2 flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-0 py-2">
           {items.map(email => (
             <span key={`${type}-${email}`} className="bg-primary/10 text-primary px-2 py-1 rounded-full text-sm flex items-center gap-1">
               {email}
@@ -1133,6 +1142,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           >
             <PlusIcon className="w-3 h-3" />
           </button>
+          {type === 'to' && !showCcField && ccRecipients.length === 0 && (
+            <button
+              type="button"
+              className={`${COMPOSE_CC_TOGGLE_CLASS} ml-auto`}
+              onClick={() => setShowCcField(true)}
+            >
+              Cc
+            </button>
+          )}
         </div>
 
         {/* Autocomplete Suggestions Dropdown */}
@@ -1208,6 +1226,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const containsHebrew = (text: string): boolean => {
     return /[\u0590-\u05FF]/.test(text);
   };
+
+  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(
+    setNewMessage,
+    setNewMessageIsRTL,
+  );
 
   // Helper function to check if language is Hebrew
   const isHebrewLanguage = (languageId: string | null, languageName: string | null): boolean => {
@@ -2749,7 +2772,27 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Deduplicate emails by message_id / content fingerprint before setting state
         const uniqueEmails = dedupeEmailsForSidepanel(formattedThread);
 
-        setEmailThread(uniqueEmails);
+        setEmailThread((prev) => {
+          const temps = prev.filter((email) => String(email.id).startsWith('temp_'));
+          const usedTempIds = new Set<string>();
+          const merged = uniqueEmails.map((row) => {
+            const existing = prev.find(
+              (p) => String(p.id) === String(row.id) || (p as any).db_id === (row as any).db_id,
+            );
+            const temp = temps.find((t) => {
+              if (usedTempIds.has(String(t.id))) return false;
+              if ((t.subject || '') !== (row.subject || '')) return false;
+              const tempTime = new Date(t.sent_at).getTime();
+              const rowTime = new Date(row.sent_at).getTime();
+              return Number.isFinite(tempTime) && Number.isFinite(rowTime) && Math.abs(tempTime - rowTime) < 3 * 60 * 1000;
+            });
+            if (temp) usedTempIds.add(String(temp.id));
+            const richer = temp || existing;
+            return richer ? mergeEmailBodyPreferRicher(row, richer) : row;
+          });
+          const leftover = temps.filter((t) => !usedTempIds.has(String(t.id)));
+          return leftover.length > 0 ? [...merged, ...leftover] : merged;
+        });
         writeEmailSidepanelCache(cacheKey, uniqueEmails);
         hydrateEmailThreadBodies(uniqueEmails);
 
@@ -2999,6 +3042,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setShowCompose(false);
     setNewMessage('');
     setNewMessageIsRTL(false);
+    setAiDraftActive(false);
 
     // Set default subject format: Lead number - client name - Category
     const category = contact.topic || 'General';
@@ -3136,6 +3180,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     // Clear compose form
     setNewMessage('');
     setNewMessageIsRTL(false);
+    setAiDraftActive(false);
     setAttachments([]);
     const initialRecipients = normaliseAddressList(contact.email);
     setToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
@@ -3190,45 +3235,46 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   };
 
   // Handle AI suggestions
-  const handleAISuggestions = async () => {
+  const handleAISuggestions = async (options?: { redo?: boolean }) => {
     if (!selectedContact || isLoadingAI) return;
 
+    const previousDraft = newMessage.trim();
+    const createNew = Boolean(options?.redo) || !previousDraft;
+    if (options?.redo) {
+      cancelComposeAiTypewrite();
+      setNewMessage('');
+      setAiDraftActive(false);
+    }
     setIsLoadingAI(true);
-    setShowAISuggestions(true);
+    if (!createNew) setShowAISuggestions(true);
 
     try {
-      const requestType = newMessage.trim() ? 'improve' : 'suggest';
+      const requestType = createNew ? 'suggest' : 'improve';
 
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          currentMessage: newMessage.trim(),
-          conversationHistory: emailThread.map(msg => ({
-            id: msg.id,
-            direction: msg.direction === 'outgoing' ? 'out' : 'in',
-            message: msg.body_preview || msg.body_html || '',
-            sent_at: msg.sent_at,
-            sender_name: msg.sender_name || msg.sender_email
-          })),
-          clientName: selectedContact.name,
-          requestType
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: previousDraft,
+        conversationHistory: emailThread.map(msg => ({
+          id: msg.id,
+          direction: msg.direction === 'outgoing' ? 'out' : 'in',
+          message: msg.body_preview || msg.body_html || '',
+          sent_at: msg.sent_at,
+          sender_name: msg.sender_name || msg.sender_email
+        })),
+        clientName: selectedContact.name,
+        requestType
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
 
       if (result.success) {
         // Get the single suggestion and clean it
         const suggestion = result.suggestion.trim();
-        setAiSuggestions([suggestion]);
+        if (createNew && isUsableAiDraft(suggestion)) {
+          setShowAISuggestions(false);
+          setAiSuggestions([]);
+          typewriteComposeAi(suggestion);
+          setAiDraftActive(true);
+        } else {
+          setAiSuggestions([suggestion]);
+        }
       } else {
         if (result.code === 'OPENAI_QUOTA') {
           toast.error('AI quota exceeded. Please check plan/billing or try again later.');
@@ -3489,9 +3535,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setEmailThread((prev) => [...prev, optimisticMessage]);
 
     // Reset compose UI immediately for a snappy experience
-    toast.success('Email queued to send');
     setNewMessage('');
     setNewMessageIsRTL(false);
+    setAiDraftActive(false);
     if (selectedContact) {
       const category = selectedContact.topic || 'General';
       setSubject(`${selectedContact.lead_number} - ${selectedContact.name} - ${category}`);
@@ -3508,9 +3554,20 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     (async () => {
       try {
         const baseEmailContent = convertBodyToHtml(messageSnapshot);
-        const emailContentWithSignature = await appendEmailSignature(baseEmailContent);
+        const { html: emailContentWithSignature, inlineAttachments } =
+          await buildOutgoingHtmlWithSignature(baseEmailContent);
         const cleanedHtmlBody = extractHtmlBody(emailContentWithSignature);
-        const backendAttachments = await mapAttachmentsForBackend(attachmentsSnapshot);
+        setEmailThread((prev) =>
+          prev.map((email) =>
+            email.id === optimisticId
+              ? { ...email, body_html: cleanedHtmlBody, body_preview: cleanedHtmlBody }
+              : email,
+          ),
+        );
+        const backendAttachments = [
+          ...(await mapAttachmentsForBackend(attachmentsSnapshot)),
+          ...inlineAttachments,
+        ];
 
         const isLegacyLead =
           selectedContact.lead_type === 'legacy' ||
@@ -3569,7 +3626,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           },
         });
 
-        console.log('📧 Email sent successfully, waiting before refresh...');
+        setShowEmailSentModal(true);
 
         // Update contact's last_message_time optimistically in contacts list
         const now = new Date().toISOString();
@@ -3580,30 +3637,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           return contact;
         }));
 
-        // Force refresh the thread by clearing fetch flags
         isFetchingRef.current = false;
         lastFetchedKeyRef.current = null;
-
-        // Remove optimistic email first to avoid duplicates, then fetch fresh emails
-        setEmailThread((prev) => {
-          // Remove optimistic emails by filtering out temp IDs
-          const filtered = prev.filter(email => {
-            const msgId = email.id;
-            return !(typeof msgId === 'string' && msgId.startsWith('temp_'));
-          });
-          return filtered;
-        });
-
-        // Add a delay to ensure the email is saved in the database
-        // Increase delay to 2 seconds to allow backend processing
-        console.log('📧 Waiting 2 seconds for email to be saved...');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        console.log('📧 Refreshing email thread...');
-        // Refresh the thread in the background to replace any optimistic
-        // messages with the final stored versions.
-        await fetchEmailThread();
-        console.log('📧 Email thread refresh completed');
+        void fetchEmailThread();
 
         // Also refresh contacts list to ensure it's sorted correctly
         // This will update last_message_time from the database
@@ -3947,6 +3983,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         .email-content table {
           width: 100% !important;
           border-collapse: collapse !important;
+        }
+        .email-content .email-signature-block {
+          overflow-x: auto;
+          max-width: 100%;
+        }
+        .email-content .email-signature-block table {
+          width: auto !important;
+          max-width: none !important;
+          table-layout: auto !important;
+        }
+        .email-content .email-signature-block img {
+          max-width: none !important;
+          height: auto !important;
         }
         .email-content p, 
         .email-content div, 
@@ -4325,15 +4374,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           <div className="fixed inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
           <div className="relative flex h-full w-full overflow-hidden bg-white shadow-2xl">
             {/* Left: email list sidepanel — match main thread list */}
-            <aside className="hidden md:flex w-[22rem] xl:w-96 shrink-0 flex-col overflow-hidden border-r border-slate-200/90 bg-white">
-              <div className="shrink-0 bg-white px-3 py-2">
-                <div className="relative w-full">
+            <aside className="hidden md:flex w-[22rem] xl:w-96 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-slate-100">
+              <div className="shrink-0 px-3 pt-3 pb-2">
+                <div className="relative w-full rounded-xl bg-white shadow-sm">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
                     <MagnifyingGlassIcon className="h-4 w-4 text-gray-400" />
                   </div>
                   <input
                     type="text"
-                    className="block w-full rounded-full border border-gray-300 bg-white py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:border-[#4218CC] focus:outline-none focus:ring-1 focus:ring-[#4218CC]"
+                    className="block w-full rounded-xl border-0 bg-transparent py-2 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:outline-none focus:ring-0"
                     placeholder="Search emails…"
                     value={composeSideSearch}
                     onChange={(e) => setComposeSideSearch(e.target.value)}
@@ -4350,13 +4399,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   )}
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
                 {emailThread.length === 0 ? (
                   <div className="p-4 text-center text-sm text-slate-400">No emails</div>
                 ) : (
-                  <ul className="divide-y divide-slate-200/80">
-                    {dedupeEmailsForSidepanel([...emailThread])
-                      .filter((message) => {
+                  <ul className="flex flex-col gap-2">
+                    {groupEmailsIntoSubjectConversations(
+                      dedupeEmailsForSidepanel([...emailThread]).filter((message) => {
                         const sender = (message.sender_email || '').toLowerCase();
                         const outgoing =
                           sender.endsWith('@lawoffice.org.il') || message.direction === 'outgoing';
@@ -4375,9 +4424,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           .join(' ')
                           .toLowerCase();
                         return hay.includes(q);
-                      })
-                      .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())
-                      .map((message) => {
+                      }),
+                      {
+                        getSubject: (e) => e.subject,
+                        getDate: (e) => e.sent_at,
+                      },
+                    ).map((group) => {
+                        const message = group.latest;
                         const sender = (message.sender_email || '').toLowerCase();
                         const outgoing =
                           sender.endsWith('@lawoffice.org.il') || message.direction === 'outgoing';
@@ -4396,14 +4449,25 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           .map((p) => p[0] || '')
                           .join('')
                           .toUpperCase() || '?';
+                        const employeePhotoUrl = outgoing
+                          ? lookupEmployeePhotoFromMap(
+                              employeePhotoMap,
+                              displayName,
+                              message.sender_email,
+                            )
+                          : null;
+                        const isSelected = Boolean(
+                          selectedThreadEmailId &&
+                            group.messages.some((m) => String(m.id) === String(selectedThreadEmailId)),
+                        );
                         return (
-                          <li key={message.id}>
+                          <li key={group.key}>
                             <button
                               type="button"
-                              className={`relative flex w-full gap-2 border-l-[3px] px-3 pb-8 pt-2.5 text-left transition ${
-                                String(selectedThreadEmailId) === String(message.id)
-                                  ? 'border-l-[#4218CC] bg-[#4218CC]/12 shadow-[inset_0_0_0_1px_rgba(66,24,204,0.12)]'
-                                  : 'border-l-transparent hover:bg-slate-50'
+                              className={`relative flex w-full gap-2 rounded-xl bg-white px-3 pb-8 pt-2.5 text-left shadow-sm transition ${
+                                isSelected
+                                  ? 'ring-2 ring-[#4218CC]/35'
+                                  : 'hover:shadow-md'
                               }`}
                               onClick={() => {
                                 setShowCompose(false);
@@ -4411,25 +4475,47 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                 if (isMobile) setShowThreadReadingPane(true);
                               }}
                             >
-                              <div
-                                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[0.6rem] font-bold uppercase tracking-wide text-white ${
-                                  outgoing ? 'bg-[#4218CC]' : 'bg-emerald-600'
-                                }`}
-                                aria-hidden
-                              >
-                                {initials}
-                              </div>
+                              {outgoing ? (
+                                <TeamAvatar
+                                  photoUrl={employeePhotoUrl}
+                                  initials={initials}
+                                  name={displayName}
+                                  size="md"
+                                />
+                              ) : (
+                                <div
+                                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[0.6rem] font-bold uppercase tracking-wide text-white"
+                                  aria-hidden
+                                >
+                                  {initials}
+                                </div>
+                              )}
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="truncate text-sm font-semibold text-slate-900">
+                                <div className="flex items-center gap-2">
+                                  <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">
                                     {displayName}
                                   </span>
                                   <time className="shrink-0 text-[11px] text-slate-400">
                                     {formatTime(message.sent_at)}
                                   </time>
+                                  <span
+                                    className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold tabular-nums ${
+                                      group.count > 1
+                                        ? 'bg-slate-100 text-slate-600'
+                                        : 'invisible'
+                                    }`}
+                                    title={
+                                      group.count > 1
+                                        ? `${group.count} messages in this conversation`
+                                        : undefined
+                                    }
+                                    aria-hidden={group.count <= 1}
+                                  >
+                                    {group.count > 1 ? group.count : 0}
+                                  </span>
                                 </div>
-                                <p className="mt-0.5 truncate text-sm font-medium text-slate-800">
-                                  {message.subject || '(no subject)'}
+                                <p className="mt-0.5 truncate text-sm font-bold text-slate-800">
+                                  {displayConversationSubject(message.subject)}
                                 </p>
                                 <p className="mt-0.5 truncate text-xs text-slate-500">{preview || '—'}</p>
                               </div>
@@ -4453,8 +4539,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   </ul>
                 )}
               </div>
-              <div className="shrink-0 bg-white p-2">
-                <div className="flex gap-1">
+              <div className="shrink-0 px-3 pb-3 pt-1">
+                <div className="flex gap-1 rounded-xl bg-white p-1.5 shadow-sm">
                   {(
                     [
                       ['all', 'All', EnvelopeIcon],
@@ -4480,15 +4566,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               </div>
             </aside>
 
-            {/* Right: compose form — header only here */}
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="flex flex-none items-center justify-between border-b border-white/40 bg-white/55 px-6 py-4 shadow-sm backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/40">
-              <h2 className="text-xl font-semibold">Compose Email</h2>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-100">
+            <div className="absolute right-3 top-3 z-10 md:right-4">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={() => setShowCompose(false)}
+                aria-label="Close compose"
+              >
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
+            <div className="m-4 mt-12 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+            <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 min-h-0 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="font-semibold text-sm">To</label>
@@ -4521,10 +4611,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 </div>
                 {renderRecipients('to')}
               </div>
+              {(showCcField || ccRecipients.length > 0) && (
               <div className="space-y-2">
                 <label className="font-semibold text-sm">CC</label>
                 {renderRecipients('cc')}
               </div>
+              )}
               {recipientError && <p className="text-sm text-error">{recipientError}</p>}
 
               <input
@@ -4532,10 +4624,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 placeholder="Subject"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border-0 border-b border-gray-200 px-0 py-2 outline-none ring-0 focus:outline-none focus:ring-0"
               />
-
-              <label className="font-semibold text-sm">Body</label>
 
               {showLinkForm && (
                 <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
@@ -4612,10 +4702,17 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 </div>
               )}
 
+              <ComposeBodyWithSignature
+                afterSignature={
+                  <ComposeAttachmentPreviews files={attachments} onRemove={removeAttachment} />
+                }
+              >
+              <div className="relative">
               <textarea
-                placeholder="Type your message..."
+                placeholder={newMessage.trim() || isLoadingAI ? '' : 'Type your message...'}
                 value={newMessage}
                 onChange={(e) => {
+                  cancelComposeAiTypewrite();
                   setNewMessage(e.target.value);
                   // Dynamically detect Hebrew as user types
                   setNewMessageIsRTL(containsHebrew(e.target.value));
@@ -4625,40 +4722,48 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   textAlign: newMessageIsRTL ? 'right' : 'left',
                   direction: newMessageIsRTL ? 'rtl' : 'ltr'
                 }}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y min-h-[320px]"
+                className="w-full px-4 py-3 resize-y min-h-[240px]"
               />
-
-              {attachments.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {attachments.map((file, index) => (
-                    <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
-                      <PaperClipIcon className="w-4 h-4 text-gray-500" />
-                      <span className="text-sm">{file.name}</span>
-                      <button
-                        onClick={() => removeAttachment(index)}
-                        className="text-red-500 hover:text-red-700"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <ComposeAiEmptyPrompt
+                visible={!newMessage.trim() && !isLoadingAI}
+                loading={isLoadingAI && !newMessage.trim()}
+                disabled={isLoadingAI || !selectedContact}
+                onClick={handleAISuggestions}
+              />
+              </div>
+              {aiDraftActive && newMessage.trim() && !isLoadingAI ? (
+                <ComposeAiRedoButton
+                  disabled={isLoadingAI || !selectedContact}
+                  onClick={() => void handleAISuggestions({ redo: true })}
+                />
+              ) : null}
+              </ComposeBodyWithSignature>
             </div>
             <div className="flex flex-none items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-6 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/40" style={{ position: 'sticky', bottom: 0, zIndex: 10 }}>
               {/* Left side - Buttons and Template Filters */}
               <div className="flex items-center gap-4 flex-wrap">
                 {/* Circle action buttons */}
                 <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSendEmail}
+                    disabled={isSending || !newMessage.trim()}
+                    className={COMPOSE_SEND_BUTTON_CLASS}
+                  >
+                    {isSending ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <>
+                        <PaperAirplaneIcon className="h-6 w-6" />
+                        Send
+                      </>
+                    )}
+                  </button>
                   {/* Attach Files Button */}
                   <button
                     type="button"
-                    className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                    style={{
-                      backgroundColor: '#4218CC',
-                      width: '44px',
-                      height: '44px'
-                    }}
+                    className={COMPOSE_ACTION_BUTTON_CLASS}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isSending}
                     title="Attach files"
@@ -4678,12 +4783,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     type="button"
                     onClick={handleAISuggestions}
                     disabled={isLoadingAI || !selectedContact}
-                    className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                    style={{
-                      backgroundColor: '#4218CC',
-                      width: '44px',
-                      height: '44px'
-                    }}
+                    className={COMPOSE_ACTION_BUTTON_CLASS}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     title={newMessage.trim() ? "Improve message with AI" : "Get AI suggestions"}
                   >
                     {isLoadingAI ? (
@@ -4696,13 +4797,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   {/* Add Link Button */}
                   <button
                     type="button"
-                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                    className={`${COMPOSE_ACTION_BUTTON_CLASS} ${showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                       }`}
-                    style={{
-                      backgroundColor: '#4218CC',
-                      width: '44px',
-                      height: '44px'
-                    }}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     onClick={() => setShowLinkForm(prev => !prev)}
                     disabled={isSending}
                     title={showLinkForm ? 'Hide link form' : 'Add link'}
@@ -4713,13 +4810,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   {/* Add Contacts from Lead Button */}
                   <button
                     type="button"
-                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                    className={`${COMPOSE_ACTION_BUTTON_CLASS} ${showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                       }`}
-                    style={{
-                      backgroundColor: '#4218CC',
-                      width: '44px',
-                      height: '44px'
-                    }}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     onClick={handleOpenContactsModal}
                     disabled={isSending || !selectedContact}
                     title="Add contacts from lead"
@@ -4842,21 +4935,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 </div>
               </div>
 
-              {/* Right side - Send button only */}
-              <button
-                onClick={handleSendEmail}
-                disabled={isSending || !newMessage.trim()}
-                className="btn btn-primary min-w-[100px] flex items-center gap-2"
-              >
-                {isSending ? (
-                  <span className="loading loading-spinner loading-sm" />
-                ) : (
-                  <>
-                    <PaperAirplaneIcon className="w-4 h-4" />
-                    Send
-                  </>
-                )}
-              </button>
+            </div>
             </div>
             </div>
           </div>
@@ -5215,6 +5294,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         </div>,
         document.body
       )}
+      <EmailSentSuccessModal
+        open={showEmailSentModal}
+        onClose={() => setShowEmailSentModal(false)}
+        recipient={selectedContact?.email}
+      />
     </div>
   );
 };

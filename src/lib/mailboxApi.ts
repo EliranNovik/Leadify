@@ -100,6 +100,8 @@ interface BackendAttachmentPayload {
   name: string;
   contentType?: string;
   contentBytes: string;
+  contentId?: string;
+  isInline?: boolean;
 }
 
 export interface BackendSendEmailPayload {

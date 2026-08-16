@@ -3,7 +3,10 @@ import { createPortal } from 'react-dom';
 import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, DocumentTextIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
-import { appendEmailSignature } from '../lib/emailSignature';
+import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
+import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
+import { ensureFormattedEmailHtml } from './client-tabs/interactionsEmailViewUtils';
 import sanitizeHtml from '../lib/sanitizeHtml';
 import {
   getMailboxStatus,
@@ -14,6 +17,10 @@ import {
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
+import EmailSentSuccessModal from './EmailSentSuccessModal';
+import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
+import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
+import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -207,35 +214,6 @@ const normaliseAddressList = (value: string | null | undefined) => {
     .filter(item => item.length > 0);
 };
 
-const convertBodyToHtml = (text: string) => {
-  if (!text) return '';
-  const urlRegex = /(https?:\/\/[^\s]+)/gi;
-  const escaped = text.replace(urlRegex, url => {
-    const safeUrl = url.replace(/"/g, '&quot;');
-    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-  });
-  
-  // Preserve line breaks: convert \n to <br>
-  let html = escaped
-    .replace(/\r\n/g, '\n')  // Normalize line endings
-    .replace(/\r/g, '\n')    // Handle old Mac line endings
-    .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-  
-  // Check if content contains Hebrew/RTL text using helper function (defined later in component)
-  // For now, use inline check to avoid dependency issues
-  const textOnly = html.replace(/<[^>]*>/g, '');
-  const isRTL = /[\u0590-\u05FF]/.test(textOnly);
-  
-  // Wrap with proper direction and styling
-  if (isRTL) {
-    html = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${html}</div>`;
-  } else {
-    html = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${html}</div>`;
-  }
-  
-  return html;
-};
-
 // Filter out problematic image URLs that are known to be blocked by CORS
 const filterProblematicImages = (html: string): string => {
   if (!html) return html;
@@ -396,11 +374,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
   const [composeAttachments, setComposeAttachments] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
+  const [showEmailSentModal, setShowEmailSentModal] = useState(false);
   const [currentUserFullName, setCurrentUserFullName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [toRecipients, setToRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  const [showCcField, setShowCcField] = useState(false);
   const [toInput, setToInput] = useState('');
   const [ccInput, setCcInput] = useState('');
   const [recipientError, setRecipientError] = useState<string | null>(null);
@@ -413,6 +393,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [showCcSuggestions, setShowCcSuggestions] = useState(false);
   const toSuggestionsRef = useRef<HTMLDivElement>(null);
   const ccSuggestionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showCompose) setShowCcField(false);
+  }, [showCompose]);
   const [showLinkForm, setShowLinkForm] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
@@ -427,6 +411,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
+  const [aiDraftActive, setAiDraftActive] = useState(false);
   
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [templateSearch, setTemplateSearch] = useState('');
@@ -475,44 +460,45 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
 
   // Handle AI suggestions
-  const handleAISuggestions = async () => {
+  const handleAISuggestions = async (options?: { redo?: boolean }) => {
     if (!client || isLoadingAI) return;
 
+    const previousDraft = composeBody.trim();
+    const createNew = Boolean(options?.redo) || !previousDraft;
+    if (options?.redo) {
+      cancelComposeAiTypewrite();
+      setComposeBody('');
+      setAiDraftActive(false);
+    }
     setIsLoadingAI(true);
-    setShowAISuggestions(true);
+    if (!createNew) setShowAISuggestions(true);
     
     try {
-      const requestType = composeBody.trim() ? 'improve' : 'suggest';
+      const requestType = createNew ? 'suggest' : 'improve';
       
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          currentMessage: composeBody.trim(),
-          conversationHistory: emails.map(msg => ({
-            id: msg.id,
-            direction: msg.direction === 'outgoing' ? 'out' : 'in',
-            message: msg.body_preview || msg.body_html || '',
-            sent_at: msg.date,
-            sender_name: msg.sender_name || msg.from
-          })),
-          clientName: client.name,
-          requestType
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: previousDraft,
+        conversationHistory: emails.map(msg => ({
+          id: msg.id,
+          direction: msg.direction === 'outgoing' ? 'out' : 'in',
+          message: msg.body_preview || msg.body_html || '',
+          sent_at: msg.date,
+          sender_name: msg.sender_name || msg.from
+        })),
+        clientName: client.name,
+        requestType
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
       
       if (result.success) {
         const suggestion = result.suggestion.trim();
-        setAiSuggestions([suggestion]);
+        if (createNew && isUsableAiDraft(suggestion)) {
+          setShowAISuggestions(false);
+          setAiSuggestions([]);
+          typewriteComposeAi(suggestion);
+          setAiDraftActive(true);
+        } else {
+          setAiSuggestions([suggestion]);
+        }
       } else {
         if (result.code === 'OPENAI_QUOTA') {
           toast.error('AI quota exceeded. Please check plan/billing or try again later.');
@@ -1337,9 +1323,9 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     setEmails((prev) => [...prev, optimisticEmail]);
 
     // Reset compose UI immediately
-    toast.success('Email queued to send');
     setComposeBody('');
     setComposeBodyIsRTL(false);
+    setAiDraftActive(false);
     setComposeAttachments([]);
     const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
     setComposeSubject(defaultSubject);
@@ -1353,14 +1339,25 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     (async () => {
       try {
         const bodyHtml = convertBodyToHtml(bodySnapshot);
-        const emailContentWithSignature = await appendEmailSignature(bodyHtml);
-        const attachmentsPayload = await Promise.all(
+        const { html: emailContentWithSignature, inlineAttachments } =
+          await buildOutgoingHtmlWithSignature(bodyHtml);
+        setEmails((prev) =>
+          prev.map((email) =>
+            String(email.id) === optimisticId || String(email.message_id) === optimisticId
+              ? { ...email, body_html: emailContentWithSignature, body_preview: emailContentWithSignature }
+              : email,
+          ),
+        );
+        const attachmentsPayload = [
+          ...(await Promise.all(
           attachmentsSnapshot.map(async (file) => ({
             name: file.name,
             contentType: file.type || 'application/octet-stream',
             contentBytes: await fileToBase64(file),
           }))
-        );
+          )),
+          ...inlineAttachments,
+        ];
 
         const isLegacyLead =
           client?.lead_type === 'legacy' || client?.id.toString().startsWith('legacy_');
@@ -1401,63 +1398,22 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
           },
         });
 
-        // Optimistic insert to emails table to ensure email appears immediately
-        // The backend will also save it, but this ensures it shows up right away
-        const messageId = sendResult?.id || sendResult?.messageId || `temp_${Date.now()}`;
-        const conversationId = sendResult?.conversationId || null;
-        const sentAt = sendResult?.sentAt || new Date().toISOString();
-        
-        const emailRecord: any = {
-          message_id: messageId,
-          thread_id: conversationId,
-          sender_name: currentUserFullName || userEmail || 'Team',
-          sender_email: userEmail || null,
-          recipient_list: toSnapshot.join(', ') + (ccSnapshot.length > 0 ? `, ${ccSnapshot.join(', ')}` : ''),
-          subject: subjectSnapshot,
-          body_html: emailContentWithSignature,
-          body_preview: emailContentWithSignature.substring(0, 500), // First 500 chars as preview
-          sent_at: sentAt,
-          direction: 'outgoing',
-          attachments: attachmentsPayload.length > 0 ? attachmentsPayload.map(att => ({
-            name: att.name,
-            contentType: att.contentType || 'application/octet-stream',
-          })) : null,
-        };
-        
-        // Set either client_id OR legacy_id, not both
-        if (isLegacyLead) {
-          emailRecord.legacy_id = legacyId;
-          emailRecord.client_id = null;
-        } else {
-          emailRecord.client_id = client.id;
-          emailRecord.legacy_id = null;
-        }
-        
-        // Add contact_id if available
-        if (contactId) {
-          emailRecord.contact_id = contactId;
-        }
-        
-        try {
-          await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
-        } catch (dbError) {
-          console.warn('Optimistic email insert failed (backend will save it):', dbError);
-          // Don't throw - backend will save it
-        }
-
-        // Refresh from DB so optimistic email is replaced with stored one.
-        // Remove optimistic email first to avoid duplicates, then fetch fresh emails
-        setEmails((prev) => {
-          // Remove optimistic email by filtering out temp IDs
-          const filtered = prev.filter(email => {
-            const msgId = email.message_id || email.id;
-            return !(typeof msgId === 'string' && msgId.startsWith('temp_'));
-          });
-          return filtered;
-        });
-        // Small delay to ensure state update, then fetch fresh emails
-        await new Promise(resolve => setTimeout(resolve, 100));
-        await fetchEmailsForModal();
+        setShowEmailSentModal(true);
+        const messageId = sendResult?.id || sendResult?.messageId || optimisticId;
+        setEmails((prev) =>
+          prev.map((email) =>
+            String(email.id) === optimisticId || String(email.message_id) === optimisticId
+              ? {
+                  ...email,
+                  id: messageId,
+                  message_id: messageId,
+                  body_html: emailContentWithSignature,
+                  body_preview: emailContentWithSignature,
+                }
+              : email,
+          ),
+        );
+        void fetchEmailsForModal();
       } catch (error) {
         console.error('Error sending email (background):', error);
         toast.error(error instanceof Error ? error.message : 'Failed to send email');
@@ -1517,10 +1473,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
     return (
       <div className="relative">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2 border-b border-gray-200">
           <input
             type="text"
-            className="input input-bordered w-full"
+            className="min-w-0 flex-1 border-0 bg-transparent px-0 py-2 outline-none ring-0 focus:outline-none focus:ring-0"
             placeholder={`Add ${type} recipient (e.g., name@example.com)`}
             value={inputValue}
             onChange={event => {
@@ -1594,6 +1550,15 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
               }
             }}
           />
+          {type === 'to' && !showCcField && ccRecipients.length === 0 && (
+            <button
+              type="button"
+              className={COMPOSE_CC_TOGGLE_CLASS}
+              onClick={() => setShowCcField(true)}
+            >
+              Cc
+            </button>
+          )}
         </div>
         
         {/* Recipient tags */}
@@ -1644,6 +1609,11 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const containsHebrew = (text: string): boolean => {
     return /[\u0590-\u05FF]/.test(text);
   };
+
+  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(
+    setComposeBody,
+    setComposeBodyIsRTL,
+  );
 
   // Helper function to check if language is Hebrew
   const isHebrewLanguage = (languageId: string | null, languageName: string | null): boolean => {
@@ -1790,6 +1760,19 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
             .email-content table {
               width: 100% !important;
               border-collapse: collapse !important;
+            }
+            .email-content .email-signature-block {
+              overflow-x: auto;
+              max-width: 100%;
+            }
+            .email-content .email-signature-block table {
+              width: auto !important;
+              max-width: none !important;
+              table-layout: auto !important;
+            }
+            .email-content .email-signature-block img {
+              max-width: none !important;
+              height: auto !important;
             }
             .email-content p, 
             .email-content div, 
@@ -2069,7 +2052,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                               
                               {message.body_html ? (
                                 <div
-                                  dangerouslySetInnerHTML={{ __html: message.body_html }}
+                                  dangerouslySetInnerHTML={{ __html: ensureFormattedEmailHtml(message.body_html) }}
                                   className="prose prose-sm max-w-none text-gray-700 break-words email-content"
                                   style={{ 
                                     wordBreak: 'break-word', 
@@ -2080,7 +2063,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                               ) : message.body_preview ? (
                                 // body_preview is sanitized HTML, so always render it as HTML
                                 <div
-                                  dangerouslySetInnerHTML={{ __html: message.body_preview }}
+                                  dangerouslySetInnerHTML={{ __html: ensureFormattedEmailHtml(message.body_preview) }}
                                   className="prose prose-sm max-w-none text-gray-700 break-words email-content"
                                   style={{ 
                                     wordBreak: 'break-word', 
@@ -2166,14 +2149,19 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
       {showCompose && createPortal(
         <div className="fixed inset-0 z-[10001] flex">
           <div className="fixed inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
-          <div className="relative w-full h-full bg-white shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-              <h2 className="text-xl font-semibold">Compose Email</h2>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
+          <div className="relative w-full h-full bg-slate-100 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-end px-4 pt-3 pb-0">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={() => setShowCompose(false)}
+                aria-label="Close compose"
+              >
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <div className="m-4 mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+            <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="font-semibold text-sm">To</label>
@@ -2206,10 +2194,12 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 </div>
                 {renderRecipients('to')}
               </div>
+              {(showCcField || ccRecipients.length > 0) && (
               <div className="space-y-2">
                 <label className="font-semibold text-sm">CC</label>
                 {renderRecipients('cc')}
               </div>
+              )}
               {recipientError && <p className="text-sm text-error">{recipientError}</p>}
 
               <input
@@ -2217,10 +2207,8 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 placeholder="Subject"
                 value={composeSubject}
                 onChange={(e) => setComposeSubject(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                className="w-full border-0 border-b border-gray-200 px-0 py-2 outline-none ring-0 focus:outline-none focus:ring-0"
               />
-
-              <label className="font-semibold text-sm">Body</label>
 
               {showLinkForm && (
                 <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
@@ -2297,10 +2285,22 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 </div>
               )}
 
+              <ComposeBodyWithSignature
+                afterSignature={
+                  <ComposeAttachmentPreviews
+                    files={composeAttachments}
+                    onRemove={(index) =>
+                      setComposeAttachments((prev) => prev.filter((_, i) => i !== index))
+                    }
+                  />
+                }
+              >
+              <div className="relative">
               <textarea
-                placeholder="Type your message..."
+                placeholder={composeBody.trim() || isLoadingAI ? '' : 'Type your message...'}
                 value={composeBody}
                 onChange={(e) => {
+                  cancelComposeAiTypewrite();
                   setComposeBody(e.target.value);
                   // Dynamically detect Hebrew as user types
                   setComposeBodyIsRTL(containsHebrew(e.target.value));
@@ -2310,40 +2310,48 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                   textAlign: composeBodyIsRTL ? 'right' : 'left',
                   direction: composeBodyIsRTL ? 'rtl' : 'ltr'
                 }}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
+                className="w-full px-4 py-3 resize-y min-h-[240px]"
               />
-
-              {composeAttachments.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {composeAttachments.map((file, index) => (
-                    <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
-                      <PaperClipIcon className="w-4 h-4 text-gray-500" />
-                      <span className="text-sm">{file.name}</span>
-                      <button
-                        onClick={() => setComposeAttachments(prev => prev.filter((_, i) => i !== index))}
-                        className="text-red-500 hover:text-red-700"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <ComposeAiEmptyPrompt
+                visible={!composeBody.trim() && !isLoadingAI}
+                loading={isLoadingAI && !composeBody.trim()}
+                disabled={isLoadingAI || !client}
+                onClick={handleAISuggestions}
+              />
+              </div>
+              {aiDraftActive && composeBody.trim() && !isLoadingAI ? (
+                <ComposeAiRedoButton
+                  disabled={isLoadingAI || !client}
+                  onClick={() => void handleAISuggestions({ redo: true })}
+                />
+              ) : null}
+              </ComposeBodyWithSignature>
             </div>
             <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between gap-4">
               {/* Left side - Buttons and Template Filters */}
               <div className="flex items-center gap-4 flex-wrap">
                 {/* Circle action buttons */}
                 <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSendEmail}
+                    disabled={sending || !composeBody.trim()}
+                    className={COMPOSE_SEND_BUTTON_CLASS}
+                  >
+                    {sending ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <>
+                        <PaperAirplaneIcon className="h-6 w-6" />
+                        Send
+                      </>
+                    )}
+                  </button>
                   {/* Attach Files Button */}
                   <button
                     type="button"
-                    className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
-                      height: '44px'
-                    }}
+                    className={COMPOSE_ACTION_BUTTON_CLASS}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     onClick={() => fileInputRef.current?.click()}
                     disabled={sending}
                     title="Attach files"
@@ -2363,12 +2371,8 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                     type="button"
                     onClick={handleAISuggestions}
                     disabled={isLoadingAI || !client}
-                    className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
-                      height: '44px'
-                    }}
+                    className={COMPOSE_ACTION_BUTTON_CLASS}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     title={composeBody.trim() ? "Improve message with AI" : "Get AI suggestions"}
                   >
                     {isLoadingAI ? (
@@ -2381,14 +2385,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                   {/* Add Link Button */}
                   <button
                     type="button"
-                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                    className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                       showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                     }`}
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
-                      height: '44px'
-                    }}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     onClick={() => setShowLinkForm(prev => !prev)}
                     disabled={sending}
                     title={showLinkForm ? 'Hide link form' : 'Add link'}
@@ -2399,14 +2399,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                   {/* Add Contacts from Lead Button */}
                   <button
                     type="button"
-                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                    className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                       showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                     }`}
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
-                      height: '44px'
-                    }}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
                     onClick={handleOpenContactsModal}
                     disabled={sending || !client}
                     title="Add contacts from lead"
@@ -2527,22 +2523,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                   )}
                 </div>
               </div>
-              
-              {/* Right side - Send button only */}
-              <button
-                onClick={handleSendEmail}
-                disabled={sending || !composeBody.trim()}
-                className="btn btn-primary min-w-[100px] flex items-center gap-2"
-              >
-                {sending ? (
-                  <span className="loading loading-spinner loading-sm" />
-                ) : (
-                  <>
-                    <PaperAirplaneIcon className="w-4 h-4" />
-                    Send
-                  </>
-                )}
-              </button>
+            </div>
             </div>
           </div>
         </div>,
@@ -2659,6 +2640,11 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         </div>,
         document.body
       )}
+      <EmailSentSuccessModal
+        open={showEmailSentModal}
+        onClose={() => setShowEmailSentModal(false)}
+        recipient={client?.email}
+      />
     </>
   );
 };

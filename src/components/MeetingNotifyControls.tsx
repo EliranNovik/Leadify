@@ -18,6 +18,7 @@ import {
 } from '../lib/emailTemplatesAutomation';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import { sendEmail } from '../lib/graph';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import { generateICSFromDateTime, stripHtmlForIcs } from '../lib/icsGenerator';
 import { getLinkType, resolveMeetingJoinLink } from '../lib/meetingJoinLink';
 import {
@@ -173,40 +174,6 @@ const sortNotifyRecipients = (items: NotifyRecipient[]) => {
     if (orderDiff !== 0) return orderDiff;
     return a.name.localeCompare(b.name);
   });
-};
-
-const containsRTL = (text?: string | null): boolean => {
-  if (!text) return false;
-  const textOnly = text.replace(/<[^>]*>/g, '');
-  return /[\u0590-\u05FF]/.test(textOnly);
-};
-
-const linkifyPlainUrlsInEmailHtml = (html: string): string => {
-  if (!html) return html;
-  if (!/\bhttps?:\/\//i.test(html) && !/\bmailto:/i.test(html)) return html;
-
-  const preserved: string[] = [];
-  let s = html.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, (block) => {
-    const i = preserved.length;
-    preserved.push(block);
-    return `@@MEETING_NOTIFY_LINK_${i}@@`;
-  });
-
-  s = s
-    .split(/(<[^>]+>)/g)
-    .map((part) => {
-      if (!part || part.startsWith('<')) return part;
-      return part.replace(/\b(https?:\/\/[^\s<>"']+|mailto:[^\s<>"']+)/gi, (url) => {
-        const safeHref = url.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-        return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-      });
-    })
-    .join('');
-
-  preserved.forEach((block, i) => {
-    s = s.replace(`@@MEETING_NOTIFY_LINK_${i}@@`, block);
-  });
-  return s;
 };
 
 const parseTemplateContent = (rawContent: string | null | undefined): string => {
@@ -536,23 +503,7 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
       htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
     }
 
-    const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
-    if (!hasHtmlTags) {
-      htmlBody = htmlBody.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
-    } else {
-      htmlBody = htmlBody
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .replace(/(<br\s*\/?>|\n)/gi, '<br>')
-        .replace(/\n/g, '<br>');
-    }
-
-    htmlBody = linkifyPlainUrlsInEmailHtml(htmlBody);
-
-    if (containsRTL(htmlBody)) {
-      return `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-    }
-    return `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+    return convertBodyToHtml(htmlBody);
   };
 
   const loadNotifyRecipients = async (): Promise<NotifyRecipient[]> => {

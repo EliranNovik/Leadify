@@ -11,6 +11,8 @@ import {
 } from './proformaPublicLink';
 import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
 import { getMailboxStatus, sendEmailViaBackend } from './mailboxApi';
+import { convertBodyToHtml } from './emailBodyHtml';
+import { buildOutgoingHtmlWithSignature } from './emailSignature';
 import {
   getProformaEmailTemplateId,
   getProformaInvoiceLinkLabel,
@@ -116,40 +118,12 @@ const parseTemplateContent = (rawContent: string | null | undefined): string => 
   return sanitizeTemplateText(cleanHtml(rawContent));
 };
 
-const containsRTL = (text?: string | null): boolean => {
-  if (!text) return false;
-  return /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F]/.test(text);
-};
-
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function formatProformaEmailHtml(plainBody: string): string {
-  if (!plainBody) return '';
-
-  let htmlBody = plainBody;
-  const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
-
-  if (!hasHtmlTags) {
-    htmlBody = htmlBody.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
-  } else {
-    htmlBody = htmlBody
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .replace(/(<br\s*\/?>|\n)/gi, '<br>')
-      .replace(/\n/g, '<br>');
-  }
-
-  const isRTL = containsRTL(htmlBody);
-  if (isRTL) {
-    return `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-  }
-  return `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
 }
 
 /** Remove any leftover {placeholder} / {{placeholder}} tokens from the final email text. */
@@ -324,7 +298,9 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
   };
 
   const plainBody = applyProformaPlaceholders(template.content, vars, { language });
-  const bodyHtml = formatProformaEmailHtml(plainBody);
+  const { html: bodyHtml, inlineAttachments } = await buildOutgoingHtmlWithSignature(
+    convertBodyToHtml(plainBody),
+  );
   const subject = buildProformaEmailSubject(template.name, vars, language);
 
   const contactIdNum =
@@ -338,6 +314,7 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
     bodyHtml,
     bodyContentType: 'HTML',
     to: [to],
+    attachments: inlineAttachments.length > 0 ? inlineAttachments : undefined,
     context: {
       clientId: input.isLegacyLead ? null : input.leadId ?? null,
       legacyLeadId:

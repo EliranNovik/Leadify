@@ -2,11 +2,17 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { InteractionRequiredAuthError, IPublicClientApplication } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
 import { sendEmailViaBackend } from '../lib/mailboxApi';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
+import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
 import { supabase } from '../lib/supabase';
+import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { updateLeadStageWithHistory } from '../lib/leadStageManager';
 import { PaperAirplaneIcon, PlusIcon, XMarkIcon, ChevronDownIcon, PaperClipIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
 import { fetchLeadContacts, ContactInfo } from '../lib/contactHelpers';
 import { fetchStageNames, normalizeStageName } from '../lib/stageUtils';
+import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
+import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
+import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
 
 interface SendPriceOfferModalProps {
   isOpen: boolean;
@@ -276,6 +282,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
+  const [aiDraftActive, setAiDraftActive] = useState(false);
   
   // Lead contacts modal state
   const [showContactsModal, setShowContactsModal] = useState(false);
@@ -307,6 +314,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
   const [toRecipients, setToRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  const [showCcField, setShowCcField] = useState(false);
   const [toInput, setToInput] = useState('');
   const [ccInput, setCcInput] = useState('');
   const [recipientError, setRecipientError] = useState<string | null>(null);
@@ -328,6 +336,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     const initialRecipients = normaliseAddressList(client.email);
     setToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
     setCcRecipients([]);
+    setShowCcField(false);
     setToInput('');
     setCcInput('');
     setRecipientError(null);
@@ -337,6 +346,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
     setSubject(defaultSubject);
     setBody('');
+    setAiDraftActive(false);
     setTotal(
       client?.proposal_total !== null && client?.proposal_total !== undefined
         ? String(client.proposal_total)
@@ -597,32 +607,6 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     handleCancelLink();
   };
 
-  const convertBodyToHtml = (text: string) => {
-    if (!text) return '';
-    
-    // First, convert markdown-style links [label](url) to HTML
-    // Using a more permissive regex that handles various URL formats
-    let result = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
-      // Ensure the URL is valid
-      let finalUrl = url.trim();
-      if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
-        finalUrl = 'https://' + finalUrl;
-      }
-      const safeUrl = finalUrl.replace(/"/g, '&quot;');
-      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-    });
-    
-    // Then convert standalone URLs (not already in an anchor tag)
-    // Match URLs that aren't preceded by href=" or ">
-    const urlPattern = /(?<![">])(https?:\/\/[^\s<]+)/g;
-    result = result.replace(urlPattern, url => {
-      const safeUrl = url.replace(/"/g, '&quot;');
-      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
-    });
-    
-    return result.replace(/\n/g, '<br>');
-  };
-
   const addRecipient = (type: RecipientType, rawValue: string) => {
     const value = rawValue.trim().replace(/[;,]+$/, '');
     if (!value) return;
@@ -690,39 +674,42 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     setAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
+  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(setBody);
+
   // Handle AI suggestions
-  const handleAISuggestions = async () => {
+  const handleAISuggestions = async (options?: { redo?: boolean }) => {
     if (!client || isLoadingAI) return;
 
+    const previousDraft = body.trim();
+    const createNew = Boolean(options?.redo) || !previousDraft;
+    if (options?.redo) {
+      cancelComposeAiTypewrite();
+      setBody('');
+      setAiDraftActive(false);
+    }
     setIsLoadingAI(true);
-    setShowAISuggestions(true);
+    if (!createNew) setShowAISuggestions(true);
     
     try {
-      const requestType = body.trim() ? 'improve' : 'suggest';
+      const requestType = createNew ? 'suggest' : 'improve';
       
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          currentMessage: body.trim(),
-          conversationHistory: [],
-          clientName: client?.name || 'Client',
-          requestType
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: previousDraft,
+        conversationHistory: [],
+        clientName: client?.name || 'Client',
+        requestType
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
       
       if (result.success) {
         const suggestion = result.suggestion.trim();
-        setAiSuggestions([suggestion]);
+        if (createNew && isUsableAiDraft(suggestion)) {
+          setShowAISuggestions(false);
+          setAiSuggestions([]);
+          typewriteComposeAi(suggestion);
+          setAiDraftActive(true);
+        } else {
+          setAiSuggestions([suggestion]);
+        }
       } else {
         if (result.code === 'OPENAI_QUOTA') {
           toast.error('AI quota exceeded. Please try again later.');
@@ -920,12 +907,14 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
       const closerName = (await fetchCurrentUserFullName()) || 'Current User';
 
-      const htmlBody = convertBodyToHtml(body);
+      const htmlBody = convertBodyToHtml(body, { markdownLinks: true });
+      const { html: htmlWithSignature, inlineAttachments } = await buildOutgoingHtmlWithSignature(htmlBody);
       
       // Prepare attachments if any
-      const emailAttachments = attachments.length > 0 
-        ? await mapAttachmentsForBackend(attachments)
-        : undefined;
+      const emailAttachments = [
+        ...(attachments.length > 0 ? await mapAttachmentsForBackend(attachments) : []),
+        ...inlineAttachments,
+      ];
 
       const isLegacyLead = typeof client?.id === 'string' && client.id.startsWith('legacy_');
       const legacyId = isLegacyLead
@@ -936,10 +925,10 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       await sendEmailViaBackend({
         userId,
         subject,
-        bodyHtml: htmlBody,
+        bodyHtml: htmlWithSignature,
         to: finalToRecipients,
         cc: finalCcRecipients,
-        attachments: emailAttachments,
+        attachments: emailAttachments.length > 0 ? emailAttachments : undefined,
         context: {
           clientId: !isLegacyLead ? client.id : null,
           legacyLeadId: isLegacyLead ? legacyId : null,
@@ -1124,7 +1113,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
     return (
       <div className="relative">
-        <div className="border border-base-300 rounded-lg px-3 py-2 flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-0 py-2">
           {items.map(email => (
             <span
               key={`${type}-${email}`}
@@ -1204,6 +1193,15 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
           >
             <PlusIcon className="w-3 h-3" />
           </button>
+          {type === 'to' && !showCcField && ccRecipients.length === 0 && (
+            <button
+              type="button"
+              className={`${COMPOSE_CC_TOGGLE_CLASS} ml-auto`}
+              onClick={() => setShowCcField(true)}
+            >
+              Cc
+            </button>
+          )}
         </div>
         
         {/* Autocomplete Suggestions Dropdown */}
@@ -1252,10 +1250,12 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
             {renderRecipients('to')}
           </section>
 
+          {(showCcField || ccRecipients.length > 0) && (
           <section className="space-y-2">
             <label className="font-semibold text-sm">CC</label>
             {renderRecipients('cc')}
           </section>
+          )}
 
           {recipientError && <p className="text-sm text-error">{recipientError}</p>}
 
@@ -1263,17 +1263,13 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
             <label className="font-semibold text-sm">Subject</label>
             <input
               type="text"
-              className="input input-bordered w-full"
+              className="w-full border-0 border-b border-gray-200 px-0 py-2 outline-none ring-0 focus:outline-none focus:ring-0"
               value={subject}
               onChange={event => setSubject(event.target.value)}
             />
           </section>
 
           <section className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="font-semibold text-sm">Body</label>
-            </div>
-            
             {/* Hidden file input */}
             <input
               ref={fileInputRef}
@@ -1316,24 +1312,6 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
               </div>
             )}
 
-            {/* Attachments Display */}
-            {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {attachments.map((file, index) => (
-                  <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
-                    <PaperClipIcon className="w-4 h-4 text-gray-500" />
-                    <span className="text-sm">{file.name}</span>
-                    <button
-                      onClick={() => removeAttachment(index)}
-                      className="text-gray-500 hover:text-red-500"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
             {showLinkForm && (
               <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
                 <div className="flex-1 flex flex-col gap-2 md:flex-row md:items-center">
@@ -1373,11 +1351,35 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
               </div>
             )}
 
+            <ComposeBodyWithSignature
+              afterSignature={
+                <ComposeAttachmentPreviews files={attachments} onRemove={removeAttachment} />
+              }
+            >
+            <div className="relative">
             <textarea
-              className="textarea textarea-bordered w-full min-h-[240px]"
+              className="textarea w-full min-h-[240px]"
               value={body}
-              onChange={event => setBody(event.target.value)}
+              placeholder={body.trim() || isLoadingAI ? '' : 'Type your message...'}
+              onChange={event => {
+                cancelComposeAiTypewrite();
+                setBody(event.target.value);
+              }}
             />
+            <ComposeAiEmptyPrompt
+              visible={!body.trim() && !isLoadingAI}
+              loading={isLoadingAI && !body.trim()}
+              disabled={isLoadingAI || !client}
+              onClick={handleAISuggestions}
+            />
+            </div>
+            {aiDraftActive && body.trim() && !isLoadingAI ? (
+              <ComposeAiRedoButton
+                disabled={isLoadingAI || !client}
+                onClick={() => void handleAISuggestions({ redo: true })}
+              />
+            ) : null}
+            </ComposeBodyWithSignature>
           </section>
         </main>
 
@@ -1386,15 +1388,26 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
           <div className="flex items-center gap-4">
             {/* Circle action buttons */}
             <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className={COMPOSE_SEND_BUTTON_CLASS}
+                onClick={handleSendOffer}
+                disabled={sending}
+              >
+                {sending ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  <>
+                    <PaperAirplaneIcon className="h-6 w-6" />
+                    Send
+                  </>
+                )}
+              </button>
               {/* Attach Files Button */}
               <button
                 type="button"
-                className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                style={{ 
-                  backgroundColor: '#4218CC', 
-                  width: '44px', 
-                  height: '44px'
-                }}
+                className={COMPOSE_ACTION_BUTTON_CLASS}
+                style={COMPOSE_ACTION_BUTTON_STYLE}
                 onClick={() => fileInputRef.current?.click()}
                 disabled={sending}
                 title="Attach files"
@@ -1407,12 +1420,8 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
                 type="button"
                 onClick={handleAISuggestions}
                 disabled={isLoadingAI || !client}
-                className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                style={{ 
-                  backgroundColor: '#4218CC', 
-                  width: '44px', 
-                  height: '44px'
-                }}
+                className={COMPOSE_ACTION_BUTTON_CLASS}
+                style={COMPOSE_ACTION_BUTTON_STYLE}
                 title="AI suggestions"
               >
                 {isLoadingAI ? (
@@ -1425,14 +1434,10 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
               {/* Add Link Button */}
               <button
                 type="button"
-                className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                   showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                 }`}
-                style={{ 
-                  backgroundColor: '#4218CC', 
-                  width: '44px', 
-                  height: '44px'
-                }}
+                style={COMPOSE_ACTION_BUTTON_STYLE}
                 onClick={() => setShowLinkForm(prev => !prev)}
                 disabled={sending}
                 title={showLinkForm ? 'Hide link form' : 'Add link'}
@@ -1443,14 +1448,10 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
               {/* Add Contacts from Lead Button */}
               <button
                 type="button"
-                className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
                   showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                 }`}
-                style={{ 
-                  backgroundColor: '#4218CC', 
-                  width: '44px', 
-                  height: '44px'
-                }}
+                style={COMPOSE_ACTION_BUTTON_STYLE}
                 onClick={handleOpenContactsModal}
                 disabled={sending || !client}
                 title="Add contacts from lead"
@@ -1573,22 +1574,6 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
               )}
             </div>
           </div>
-          
-          {/* Right side - Send button only */}
-          <button
-            className="btn btn-primary min-w-[140px] flex items-center gap-2"
-            onClick={handleSendOffer}
-            disabled={sending}
-          >
-            {sending ? (
-              <span className="loading loading-spinner loading-sm" />
-            ) : (
-              <>
-                <PaperAirplaneIcon className="w-4 h-4" />
-                Send Offer
-              </>
-            )}
-          </button>
         </footer>
       </div>
       

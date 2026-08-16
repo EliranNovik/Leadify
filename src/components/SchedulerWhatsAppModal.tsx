@@ -5,6 +5,7 @@ import { FaWhatsapp } from 'react-icons/fa';
 import EmojiPicker from 'emoji-picker-react';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
+import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
 import {
@@ -1863,31 +1864,18 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     try {
       const requestType = newMessage.trim() ? 'improve' : 'suggest';
 
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          currentMessage: newMessage.trim(),
-          conversationHistory: messages.map(msg => ({
-            id: msg.id,
-            direction: msg.direction,
-            message: msg.message,
-            sent_at: msg.sent_at,
-            sender_name: msg.sender_name
-          })),
-          clientName: client.name,
-          requestType
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: newMessage.trim(),
+        conversationHistory: messages.map(msg => ({
+          id: msg.id,
+          direction: msg.direction,
+          message: msg.message,
+          sent_at: msg.sent_at,
+          sender_name: msg.sender_name
+        })),
+        clientName: client.name,
+        requestType
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
 
       if (result.success) {
         const suggestion = result.suggestion.trim();

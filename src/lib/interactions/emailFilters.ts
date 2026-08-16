@@ -27,6 +27,8 @@ export const EMAIL_LIST_SELECT =
 
 export const EMAIL_TIMELINE_SELECT = EMAIL_LIST_SELECT;
 
+export const EMAIL_BODY_HYDRATE_SELECT = 'id, body_html';
+
 export const EMAIL_MODAL_SELECT =
   'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id';
 
@@ -181,6 +183,17 @@ export function normalizeEmailSubjectKey(subject?: string | null): string {
     s = next;
   }
   return s;
+}
+
+export function displayConversationSubject(subject?: string | null): string {
+  let s = String(subject || '').trim();
+  if (!s) return '(no subject)';
+  for (let i = 0; i < 8; i++) {
+    const next = s.replace(/^(re|fw|fwd|aw|sv|vs|antw)\s*:\s*/i, '').trim();
+    if (next === s) break;
+    s = next;
+  }
+  return s || '(no subject)';
 }
 
 /**
@@ -427,6 +440,46 @@ function chunkArray<T>(items: T[], size: number): T[][] {
     out.push(items.slice(i, i + size));
   }
   return out;
+}
+
+/**
+ * Load full HTML bodies for timeline cards. List/RPC fetches omit body_html
+ * for speed; without this, cards render flattened body_preview text.
+ */
+export async function fetchEmailBodiesByIds(
+  supabaseClient: SupabaseClient,
+  ids: Array<string | number | null | undefined>,
+  limit = 40,
+): Promise<Map<string, string>> {
+  const unique = Array.from(
+    new Set(
+      ids
+        .map((id) => (id == null ? '' : String(id).trim()))
+        .filter((id) => id && !id.startsWith('temp_') && !id.startsWith('optimistic_') && !id.startsWith('local-')),
+    ),
+  ).slice(0, Math.max(1, limit));
+
+  const bodies = new Map<string, string>();
+  if (unique.length === 0) return bodies;
+
+  for (const chunk of chunkArray(unique, 80)) {
+    try {
+      const { data, error } = await withQueryTimeout(
+        supabaseClient.from('emails').select(EMAIL_BODY_HYDRATE_SELECT).in('id', chunk),
+        4000,
+      );
+      if (error || !data) continue;
+      for (const row of data as Array<{ id?: string | number; body_html?: string | null }>) {
+        const id = row?.id != null ? String(row.id) : '';
+        const html = typeof row?.body_html === 'string' ? row.body_html.trim() : '';
+        if (id && html) bodies.set(id, row.body_html as string);
+      }
+    } catch {
+      /* keep whatever we already loaded */
+    }
+  }
+
+  return bodies;
 }
 
 /**

@@ -51,6 +51,7 @@ import LeadCaseDocumentTypesManager from './LeadCaseDocumentTypesManager';
 import WhatsAppNumbersManager from './WhatsAppNumbersManager';
 import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import EmailTemplatesManager from './EmailTemplatesManager';
+import EmailSignatureManager from './EmailSignatureManager';
 import EmailTemplatesPlacementManager from './EmailTemplatesPlacementManager';
 import EmailTemplatesAutomationManager from './EmailTemplatesAutomationManager';
 import PublicMessagesManager from './PublicMessagesManager';
@@ -151,6 +152,7 @@ const ADMIN_TABS: AdminTab[] = [
       'Bank accounts',
       'Departements',
       'Employees',
+      'Email Signature',
       'Employee roles',
       'Employee Field Assignments',
       'HR document types',
@@ -1713,6 +1715,9 @@ const AdminPage: React.FC<AdminPageProps> = ({
                 ) : selectedTab?.label === 'Tenants' &&
                   selectedTab?.subcategories[selected.sub] === 'Employees' ? (
                   <div className="w-full"><EmployeesManager /></div>
+                ) : selectedTab?.label === 'Tenants' &&
+                  selectedTab?.subcategories[selected.sub] === 'Email Signature' ? (
+                  <div className="w-full"><EmailSignatureManager /></div>
                 ) : selectedTab?.label === 'Tenants' &&
                   selectedTab?.subcategories[selected.sub] === 'Employee roles' ? (
                   <div className="w-full"><EmployeeRolesManager /></div>

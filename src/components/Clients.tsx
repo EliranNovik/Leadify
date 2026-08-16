@@ -124,6 +124,7 @@ import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAcce
 import { getValidTeamsLink as getValidTeamsLinkShared } from '../lib/meetingJoinLink';
 import { generateICSFromDateTime, stripHtmlForIcs } from '../lib/icsGenerator';
 import { sendEmailViaBackend } from '../lib/mailboxApi';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import { useAuthContext } from '../contexts/AuthContext';
 import { ClientInteractionsCache, ClientTabProps } from '../types/client';
 import { useAdminRole } from '../hooks/useAdminRole';
@@ -352,14 +353,6 @@ const parseTemplateContent = (rawContent: string | null | undefined): string => 
   return sanitizeTemplateText(cleanHtml(rawContent));
 };
 
-// Helper to check if text contains RTL characters
-const containsRTL = (text?: string | null): boolean => {
-  if (!text) return false;
-  const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F]/;
-  return rtlRegex.test(text);
-};
-
-// Format email body with line breaks and RTL support
 const formatEmailBody = async (
   template: string,
   recipientName: string,
@@ -399,36 +392,7 @@ const formatEmailBody = async (
     htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
   }
 
-  // Preserve line breaks: convert \n to <br> if not already in HTML
-  // Check if content already has HTML structure
-  const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
-
-  if (!hasHtmlTags) {
-    // Plain text: convert line breaks to <br> and preserve spacing
-    htmlBody = htmlBody
-      .replace(/\r\n/g, '\n')  // Normalize line endings
-      .replace(/\r/g, '\n')    // Handle old Mac line endings
-      .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-  } else {
-    // Has HTML: ensure <br> tags are preserved, convert remaining \n
-    htmlBody = htmlBody
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
-      .replace(/\n/g, '<br>'); // Convert any remaining newlines
-  }
-
-  // Detect if content contains Hebrew/RTL text
-  const isRTL = containsRTL(htmlBody);
-
-  // Wrap in div with proper direction and styling
-  if (isRTL) {
-    htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-  } else {
-    htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-  }
-
-  return htmlBody;
+  return convertBodyToHtml(htmlBody);
 };
 
 const getContrastingTextColor = (hexColor?: string | null) => {

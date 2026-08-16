@@ -229,10 +229,10 @@ export default function EmailGmailSplitPane({
     <aside
       className={`${
         isMobile ? (showReadingPane ? 'hidden' : 'w-full') : 'w-[22rem] xl:w-96'
-      } flex h-full min-h-0 shrink-0 flex-col border-r border-slate-200 bg-white`}
+      } flex h-full min-h-0 shrink-0 flex-col border-r border-slate-200 bg-slate-100`}
     >
-      <div className="shrink-0 bg-white px-3 py-2">
-        <div className="flex items-center gap-1.5">
+      <div className="shrink-0 px-3 pt-3 pb-2">
+        <div className="flex items-center gap-1.5 rounded-xl bg-white p-1.5 shadow-sm">
           <EmailSidepanelListMenu value={listMode} onChange={setListMode} />
           <div className="relative min-w-0 flex-1">
             <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
@@ -240,7 +240,7 @@ export default function EmailGmailSplitPane({
             </div>
             <input
               type="text"
-              className="block w-full rounded-full border border-gray-300 bg-white py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:border-[#4218CC] focus:outline-none focus:ring-1 focus:ring-[#4218CC]"
+              className="block w-full rounded-lg border-0 bg-transparent py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:outline-none focus:ring-0"
               placeholder="Search emails…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -258,7 +258,7 @@ export default function EmailGmailSplitPane({
           </div>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
         {(() => {
           const conversationGroups = applyEmailSidepanelListMode(
             groupEmailsIntoSubjectConversations(filtered, {
@@ -282,7 +282,7 @@ export default function EmailGmailSplitPane({
             );
           }
           return (
-          <ul className="divide-y divide-slate-200/80">
+          <ul className="flex flex-col gap-2">
             {conversationGroups.map((group) => {
               const message = group.latest;
               const outgoing = getIsOutgoing(message);
@@ -302,10 +302,10 @@ export default function EmailGmailSplitPane({
                   <button
                     type="button"
                     onClick={() => onSelect(String(message.id))}
-                    className={`relative flex w-full gap-2 px-3 pb-8 pt-2.5 text-left transition ${
+                    className={`relative flex w-full gap-2 rounded-xl bg-white px-3 pb-8 pt-2.5 text-left shadow-sm transition ${
                       isSelected
-                        ? 'border-l-[3px] border-l-[#4218CC] bg-[#4218CC]/12 shadow-[inset_0_0_0_1px_rgba(66,24,204,0.12)]'
-                        : 'border-l-[3px] border-l-transparent hover:bg-slate-50'
+                        ? 'ring-2 ring-[#4218CC]/35'
+                        : 'hover:shadow-md'
                     }`}
                   >
                     <div
@@ -364,8 +364,8 @@ export default function EmailGmailSplitPane({
           );
         })()}
       </div>
-      <div className="shrink-0 bg-white p-2">
-        <div className="flex gap-1">
+      <div className="shrink-0 px-3 pb-3 pt-1">
+        <div className="flex gap-1 rounded-xl bg-white p-1.5 shadow-sm">
           {(
             [
               ['all', 'All', EnvelopeIcon],
@@ -595,7 +595,7 @@ export default function EmailGmailSplitPane({
                     {bodyHtml ? (
                       <div
                         dangerouslySetInnerHTML={{ __html: bodyHtml }}
-                        className="email-content mt-4 max-w-none break-words text-slate-700 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-normal"
+                        className="email-content mt-4 max-w-none break-words text-slate-700 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-normal [&_.email-signature-block]:overflow-x-auto [&_.email-signature-block_table]:w-auto [&_.email-signature-block_img]:max-w-none"
                         style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}
                         dir="auto"
                       />

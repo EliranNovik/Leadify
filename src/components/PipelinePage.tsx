@@ -10,6 +10,9 @@ import { format, parseISO } from 'date-fns';
 import DocumentModal from './DocumentModal';
 import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
+import EmailSentSuccessModal from './EmailSentSuccessModal';
+import { ComposeBodyWithSignature } from './signature/ComposeSignaturePreview';
+import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -24,6 +27,7 @@ import {
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import { convertToNIS } from '../lib/currencyConversion';
+import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import CallOptionsModal from './CallOptionsModal';
 import EditLeadDrawer from './EditLeadDrawer';
 import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
@@ -975,6 +979,7 @@ const PipelinePage: React.FC = () => {
     },
   ];
   const [sending, setSending] = useState(false);
+  const [showEmailSentModal, setShowEmailSentModal] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [labelFilter, setLabelFilter] = useState('');
@@ -3233,14 +3238,39 @@ const PipelinePage: React.FC = () => {
 
   // Send email via Microsoft Graph (copied from InteractionsTab)
   async function sendClientEmail(token: string, subject: string, body: string, lead: LeadForPipeline, senderName: string, attachments: { name: string; contentType: string; contentBytes: string }[]) {
-    const signature = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
-    const fullBody = body + signature;
-    const messageAttachments = attachments.map(att => ({
-      '@odata.type': '#microsoft.graph.fileAttachment',
-      name: att.name,
-      contentType: att.contentType,
-      contentBytes: att.contentBytes
-    }));
+    const htmlBody = convertBodyToHtml(body);
+    const { getCurrentUserEmailSignature, inlineSignatureImagesForSend } = await import('../lib/emailSignature');
+    const userSignature = await getCurrentUserEmailSignature();
+    let signatureHtml = '';
+    const inlineAttachments: Array<{
+      name: string;
+      contentType: string;
+      contentBytes: string;
+      contentId: string;
+      isInline: true;
+    }> = [];
+    if (userSignature) {
+      const inlined = await inlineSignatureImagesForSend(userSignature);
+      signatureHtml = `<div><br></div><div><br></div><div data-email-signature="1">${inlined.html}</div>`;
+      inlineAttachments.push(...inlined.inlineAttachments);
+    }
+    const fullBody = htmlBody + signatureHtml;
+    const messageAttachments = [
+      ...attachments.map(att => ({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: att.name,
+        contentType: att.contentType,
+        contentBytes: att.contentBytes,
+      })),
+      ...inlineAttachments.map(att => ({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: att.name,
+        contentType: att.contentType,
+        contentBytes: att.contentBytes,
+        contentId: att.contentId,
+        isInline: true,
+      })),
+    ];
     const draftMessage = {
       subject,
       body: { contentType: 'HTML', content: fullBody },
@@ -6682,9 +6712,13 @@ const PipelinePage: React.FC = () => {
         <div className="fixed inset-0 z-[999]">
           <div className="fixed inset-0 bg-black/30" onClick={() => setShowCompose(false)} />
           <div className="fixed inset-y-0 right-0 h-screen w-full max-w-md bg-base-100 shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Compose Email</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
+            <div className="flex items-center justify-end mb-4">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={() => setShowCompose(false)}
+                aria-label="Close compose"
+              >
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
@@ -6720,25 +6754,22 @@ const PipelinePage: React.FC = () => {
                 </div>
               </div>
               <div>
-                <label className="block font-semibold mb-1">Body</label>
-                <textarea className="textarea textarea-bordered w-full min-h-[120px]" value={composeBody} onChange={e => setComposeBody(e.target.value)} />
+                <ComposeBodyWithSignature compact>
+                  <textarea className="textarea w-full min-h-[120px]" value={composeBody} onChange={e => setComposeBody(e.target.value)} />
+                </ComposeBodyWithSignature>
               </div>
               {/* Attachments Section */}
               <div>
                 <label className="block font-semibold mb-1">Attachments</label>
                 <div className="p-4 bg-base-200 rounded-lg">
-                  <div className="flex flex-col gap-2 mb-2">
-                    {composeAttachments.map((att, index) => (
-                      <div key={index} className="flex items-center justify-between text-sm">
-                        <span>{att.name}</span>
-                        <button 
-                          className="btn btn-ghost btn-xs"
-                          onClick={() => setComposeAttachments(prev => prev.filter(a => a.name !== att.name))}
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
+                  <div className="mb-2">
+                    <ComposeAttachmentPreviews
+                      files={composeAttachments}
+                      onRemove={(index) =>
+                        setComposeAttachments((prev) => prev.filter((_, i) => i !== index))
+                      }
+                      className=""
+                    />
                   </div>
                   <label htmlFor="file-upload" className="btn btn-outline btn-sm w-full">
                     <PaperClipIcon className="w-4 h-4" /> Add Attachment
@@ -6765,7 +6796,7 @@ const PipelinePage: React.FC = () => {
                       senderName,
                       composeAttachments
                     );
-                    toast.success('Email sent and saved!');
+                    setShowEmailSentModal(true);
                     // Refresh emails after sending
                     setEmailsLoading(true);
                     await syncClientEmails(tokenResponse.accessToken, selectedLead);
@@ -6785,6 +6816,11 @@ const PipelinePage: React.FC = () => {
         </div>,
         document.body
       )}
+      <EmailSentSuccessModal
+        open={showEmailSentModal}
+        onClose={() => setShowEmailSentModal(false)}
+        recipient={selectedLead?.email}
+      />
       {/* WhatsApp Modal (copied from InteractionsTab) */}
       {isWhatsAppOpen && selectedLead && createPortal(
         <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50">

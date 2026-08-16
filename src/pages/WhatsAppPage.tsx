@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { toast } from 'react-hot-toast';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { buildApiUrl } from '../lib/api';
@@ -4920,31 +4921,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     try {
       const requestType = newMessage.trim() ? 'improve' : 'suggest';
 
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          currentMessage: newMessage.trim(),
-          conversationHistory: messages.map(msg => ({
-            id: msg.id,
-            direction: msg.direction,
-            message: msg.message,
-            sent_at: msg.sent_at,
-            sender_name: msg.sender_name
-          })),
-          clientName: selectedClient.name,
-          requestType
-        }),
+      const result = await fetchAiMessageSuggestion({
+        currentMessage: newMessage.trim(),
+        conversationHistory: messages.map(msg => ({
+          id: msg.id,
+          direction: msg.direction,
+          message: msg.message,
+          sent_at: msg.sent_at,
+          sender_name: msg.sender_name
+        })),
+        clientName: selectedClient.name,
+        requestType
       });
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
 
       if (result.success) {
         // Get the single suggestion and clean it
