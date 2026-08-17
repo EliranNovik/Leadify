@@ -8,6 +8,8 @@ import {
   EllipsisVerticalIcon,
   PencilSquareIcon,
   TrashIcon,
+  DocumentTextIcon,
+  DocumentPlusIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
@@ -27,9 +29,59 @@ import {
   type LeadSubcontractorFeeRow,
 } from '../../lib/leadSubcontractorFees';
 import FinancesLeadExpensesSection from './FinancesLeadExpensesSection';
+import ExpenseDocumentsDrawer from '../finance/ExpenseDocumentsDrawer';
+import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
+import {
+  ensureRegistryForKindDestination,
+  fetchFinanceDocsByDestinationIds,
+  type FinanceExpenseEntryRow,
+} from '../../lib/financeExpenseCreate';
+import {
+  FINANCE_EXPENSE_DOC_MAX_FILES,
+  FINANCE_EXPENSE_DOCUMENTS_BUCKET,
+  FINANCE_EXPENSE_DOCUMENT_TYPE_LABEL,
+  uploadFinanceExpenseDocuments,
+  validateFinanceExpenseDocumentFile,
+  type FinanceExpenseDocumentRow,
+  type FinanceExpenseDocumentType,
+} from '../../lib/financeExpenseDocuments';
 
 type FirmOption = { id: string; name: string };
 type CurrencyOption = { id: number; name: string; iso_code: string | null };
+type PendingDoc = {
+  localId: string;
+  file: File;
+  documentType: FinanceExpenseDocumentType;
+};
+const DOC_TYPES: FinanceExpenseDocumentType[] = ['invoice', 'receipt', 'other'];
+
+function feeToDocsRow(
+  fee: LeadSubcontractorFeeRow,
+  docs?: { entryId: number; documents: FinanceExpenseDocumentRow[] },
+): FinanceExpenseEntryRow {
+  return {
+    id: docs?.entryId || 0,
+    listKey: `subcontractor:${fee.id}`,
+    created_at: fee.created_at,
+    kind: 'subcontractor',
+    destination_table: 'lead_subcontractor_fees',
+    destination_id: String(fee.id),
+    expense_date: fee.created_at ? fee.created_at.slice(0, 10) : null,
+    amount: Number(fee.amount) || 0,
+    currency_code: fee.accounting_currencies?.iso_code || fee.accounting_currencies?.name || null,
+    firm_id: fee.firm_id,
+    new_lead_id: fee.new_lead_id,
+    legacy_lead_id: fee.legacy_lead_id,
+    category_label: 'Subcontractor fee',
+    vendor_label: fee.firms?.name || null,
+    lead_number: fee.lead_number,
+    notes: fee.notes,
+    created_by: fee.created_by,
+    created_by_name: fee.created_by_display_name || null,
+    created_by_photo: null,
+    documents: docs?.documents || [],
+  };
+}
 
 type FinancesExpensesFeesPageProps = Pick<ClientTabProps, 'client' | 'onClientUpdate'> & {
   openAddExpenseRequest?: {
@@ -155,6 +207,13 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
   const [leadFeeMenuOpen, setLeadFeeMenuOpen] = useState(false);
   const rowMenuButtonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
   const leadFeeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [docsByFeeId, setDocsByFeeId] = useState<
+    Map<number, { entryId: number; documents: FinanceExpenseDocumentRow[] }>
+  >(new Map());
+  const [docsRow, setDocsRow] = useState<FinanceExpenseEntryRow | null>(null);
+  const [viewerDocs, setViewerDocs] = useState<DocumentViewerItem[]>([]);
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
 
   const identity = useMemo(
     () => resolveLeadFeeIdentity(client),
@@ -266,6 +325,17 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     try {
       const rows = await fetchLeadSubcontractorFees(identity);
       setFees(rows);
+      try {
+        const docs = await fetchFinanceDocsByDestinationIds(
+          'lead_subcontractor_fees',
+          rows.map((row) => row.id),
+        );
+        const next = new Map<number, { entryId: number; documents: FinanceExpenseDocumentRow[] }>();
+        docs.forEach((value, key) => next.set(Number(key), value));
+        setDocsByFeeId(next);
+      } catch {
+        setDocsByFeeId(new Map());
+      }
       const feeSum = sumSubcontractorFeeAmounts(rows);
       if (rows.length > 0) {
         setLeadFeeLocal(feeSum);
@@ -355,6 +425,17 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
       leadId: client?.id,
       feeSum,
     });
+    try {
+      const docs = await fetchFinanceDocsByDestinationIds(
+        'lead_subcontractor_fees',
+        rows.map((row) => row.id),
+      );
+      const next = new Map<number, { entryId: number; documents: FinanceExpenseDocumentRow[] }>();
+      docs.forEach((value, key) => next.set(Number(key), value));
+      setDocsByFeeId(next);
+    } catch {
+      setDocsByFeeId(new Map());
+    }
   };
 
   /** Move leads.subcontractor_fee into a fee line so totals stay additive with the fees table. */
@@ -430,6 +511,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     setNotes('');
     setOpenRowMenuId(null);
     setLeadFeeMenuOpen(false);
+    setPendingDocs([]);
     setDrawerOpen(true);
     void loadDrawerOptions();
   };
@@ -445,6 +527,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     setNotes(fee.notes || '');
     setOpenRowMenuId(null);
     setLeadFeeMenuOpen(false);
+    setPendingDocs([]);
     setDrawerOpen(true);
     void loadDrawerOptions(fee.currency_id != null ? String(fee.currency_id) : null);
   };
@@ -461,6 +544,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     setNotes('');
     setOpenRowMenuId(null);
     setLeadFeeMenuOpen(false);
+    setPendingDocs([]);
     setDrawerOpen(true);
     void loadDrawerOptions(
       client?.currency_id != null ? String(client.currency_id) : null,
@@ -472,6 +556,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     setDrawerOpen(false);
     setEditingFeeId(null);
     setEditingLeadFee(false);
+    setPendingDocs([]);
   };
 
   const handleSaveLeadFee = async () => {
@@ -566,6 +651,34 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     setSaving(true);
     try {
       const roundedAmount = Math.round(amountNum * 100) / 100;
+      const currencyCode =
+        currencies.find((c) => String(c.id) === currencyId)?.iso_code ||
+        currencies.find((c) => String(c.id) === currencyId)?.name ||
+        null;
+      const vendorLabel = firmOptions.find((f) => f.id === firmId)?.name || null;
+      const attachPending = async (destinationId: number) => {
+        if (!pendingDocs.length) return;
+        const entryId = await ensureRegistryForKindDestination({
+          kind: 'subcontractor',
+          destinationId,
+          expenseDate: new Date().toISOString().slice(0, 10),
+          amount: roundedAmount,
+          currencyCode,
+          firmId,
+          newLeadId: identity.leadType === 'new' ? identity.newLeadId || null : null,
+          legacyLeadId: identity.leadType === 'legacy' ? identity.legacyLeadId || null : null,
+          categoryLabel: 'Subcontractor fee',
+          vendorLabel,
+          notes,
+        });
+        const uploaded = await uploadFinanceExpenseDocuments(
+          entryId,
+          pendingDocs.map((d) => ({ file: d.file, documentType: d.documentType })),
+        );
+        if (uploaded && uploaded < pendingDocs.length) {
+          toast.error('Fee saved; some files failed to upload');
+        }
+      };
       if (editingFeeId != null) {
         await updateLeadSubcontractorFee({
           feeId: editingFeeId,
@@ -575,6 +688,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
           notes,
           updatedBy: user?.id || null,
         });
+        await attachPending(editingFeeId);
         toast.success('Fee updated');
       } else {
         try {
@@ -586,7 +700,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
           }
           throw migErr;
         }
-        await insertLeadSubcontractorFee({
+        const created = await insertLeadSubcontractorFee({
           identity,
           firmId,
           amount: roundedAmount,
@@ -594,12 +708,14 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
           notes,
           createdBy: user?.id || null,
         });
+        await attachPending(created.id);
         toast.success('Fee added');
       }
       await refreshFeesAndTotals();
       setDrawerOpen(false);
       setEditingFeeId(null);
       setEditingLeadFee(false);
+      setPendingDocs([]);
     } catch (err: any) {
       console.error('[FinancesExpensesFeesPage] save fee:', err);
       toast.error(err?.message || (editingFeeId != null ? 'Failed to update fee' : 'Failed to add fee'));
@@ -695,6 +811,32 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     return `${leadCurrencySymbol ? `${leadCurrencySymbol} ` : ''}${amountLabel}`;
   };
 
+  const addPendingFiles = (fileList: FileList | File[]) => {
+    const incoming = Array.from(fileList);
+    setPendingDocs((prev) => {
+      const next = [...prev];
+      for (const file of incoming) {
+        if (next.length >= FINANCE_EXPENSE_DOC_MAX_FILES) {
+          toast.error(`You can attach up to ${FINANCE_EXPENSE_DOC_MAX_FILES} files`);
+          break;
+        }
+        const errMsg = validateFinanceExpenseDocumentFile(file);
+        if (errMsg) {
+          toast.error(errMsg);
+          continue;
+        }
+        const isDup = next.some((d) => d.file.name === file.name && d.file.size === file.size);
+        if (isDup) continue;
+        next.push({
+          localId: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
+          file,
+          documentType: file.name.toLowerCase().includes('receipt') ? 'receipt' : 'invoice',
+        });
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-5">
       {/* Fees */}
@@ -749,6 +891,9 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                   <th className="border-0 bg-transparent font-semibold text-right text-slate-500">Amount</th>
                   <th className="border-0 bg-transparent font-semibold text-slate-500">Notes</th>
                   <th className="border-0 bg-transparent font-semibold text-right text-slate-500">Added</th>
+                  <th className="border-0 bg-transparent w-12 text-center font-semibold text-slate-500">
+                    Docs
+                  </th>
                   <th className="border-0 bg-transparent w-10" aria-label="Actions" />
                 </tr>
               </thead>
@@ -766,6 +911,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                     </td>
                     <td className="max-w-[12rem] text-slate-500">On lead record</td>
                     <td className="text-right text-slate-400">—</td>
+                    <td className="text-center text-slate-300">—</td>
                     <td className="text-right">
                       <button
                         type="button"
@@ -827,6 +973,31 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                           </span>
                         ) : null}
                       </span>
+                    </td>
+                    <td className="text-center">
+                      {(() => {
+                        const count = docsByFeeId.get(fee.id)?.documents.length || 0;
+                        return (
+                          <button
+                            type="button"
+                            className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full ${
+                              count
+                                ? 'text-blue-600 hover:bg-blue-50'
+                                : 'text-gray-400 hover:bg-blue-50 hover:text-blue-600'
+                            }`}
+                            title={count ? `${count} document${count === 1 ? '' : 's'}` : 'Add documents'}
+                            aria-label={count ? `${count} documents` : 'Add documents'}
+                            onClick={() => setDocsRow(feeToDocsRow(fee, docsByFeeId.get(fee.id)))}
+                          >
+                            <DocumentTextIcon className="h-5 w-5" />
+                            {count ? (
+                              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white">
+                                {count}
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })()}
                     </td>
                     <td className="text-right">
                       <button
@@ -1041,6 +1212,86 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                         }}
                       />
                     </div>
+                    <div className="form-control">
+                      <label className="label py-1">
+                        <span className="label-text font-medium text-slate-700">Invoices & receipts</span>
+                      </label>
+                      {editingFeeId != null && (docsByFeeId.get(editingFeeId)?.documents.length || 0) > 0 ? (
+                        <p className="mb-2 text-xs text-slate-500">
+                          {docsByFeeId.get(editingFeeId)?.documents.length} existing document
+                          {(docsByFeeId.get(editingFeeId)?.documents.length || 0) === 1 ? '' : 's'}. Add more below.
+                        </p>
+                      ) : null}
+                      <label
+                        className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center hover:border-blue-400 hover:bg-blue-50/40"
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (e.dataTransfer.files?.length) addPendingFiles(e.dataTransfer.files);
+                        }}
+                      >
+                        <DocumentPlusIcon className="h-8 w-8 text-slate-400" />
+                        <span className="text-sm font-medium text-slate-700">Drop PDF or image files here</span>
+                        <span className="text-xs text-slate-500">
+                          or click to browse · up to {FINANCE_EXPENSE_DOC_MAX_FILES} files
+                        </span>
+                        <input
+                          type="file"
+                          className="hidden"
+                          multiple
+                          accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
+                          onChange={(e) => {
+                            if (e.target.files?.length) addPendingFiles(e.target.files);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                      {pendingDocs.length > 0 ? (
+                        <ul className="mt-2 space-y-2">
+                          {pendingDocs.map((doc) => (
+                            <li
+                              key={doc.localId}
+                              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-slate-800">{doc.file.name}</p>
+                                <p className="text-xs text-slate-500">{Math.round(doc.file.size / 1024)} KB</p>
+                              </div>
+                              <select
+                                className="select select-bordered select-xs w-28"
+                                value={doc.documentType}
+                                onChange={(e) => {
+                                  const nextType = e.target.value as FinanceExpenseDocumentType;
+                                  setPendingDocs((prev) =>
+                                    prev.map((d) =>
+                                      d.localId === doc.localId ? { ...d, documentType: nextType } : d,
+                                    ),
+                                  );
+                                }}
+                              >
+                                {DOC_TYPES.map((t) => (
+                                  <option key={t} value={t}>
+                                    {FINANCE_EXPENSE_DOCUMENT_TYPE_LABEL[t]}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs btn-circle"
+                                aria-label="Remove file"
+                                onClick={() =>
+                                  setPendingDocs((prev) => prev.filter((d) => d.localId !== doc.localId))
+                                }
+                              >
+                                <XMarkIcon className="h-4 w-4" />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
                   </>
                 )}
               </div>
@@ -1137,6 +1388,27 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
           </div>,
           document.body,
         )}
+
+      <ExpenseDocumentsDrawer
+        open={Boolean(docsRow)}
+        row={docsRow}
+        onClose={() => setDocsRow(null)}
+        onChanged={() => void loadFees()}
+        onOpenDocument={(docs, index) => {
+          setViewerDocs(docs);
+          setViewerIndex(index);
+        }}
+      />
+      <DocumentViewerModal
+        isOpen={viewerIndex !== null && viewerDocs.length > 0}
+        onClose={() => {
+          setViewerIndex(null);
+          setViewerDocs([]);
+        }}
+        documents={viewerDocs}
+        initialIndex={viewerIndex ?? 0}
+        bucketName={FINANCE_EXPENSE_DOCUMENTS_BUCKET}
+      />
     </div>
   );
 };

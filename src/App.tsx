@@ -1040,14 +1040,14 @@ const AppContentInner: React.FC = () => {
                   dockedPositionClassName={
                     isAdminPage
                       ? 'fixed bottom-0 left-56 top-12 z-40'
-                      : 'fixed bottom-0 left-40 z-40 top-[var(--client-detail-nav-top,3rem)]'
+                      : 'fixed bottom-0 left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)]'
                   }
                   dockedSurfaceClassName={
                     isAdminPage
                       ? 'border-r border-gray-200 bg-white dark:border-base-content/10 dark:bg-base-100'
-                      : 'bg-gray-100 dark:bg-base-300'
+                      : 'bg-white dark:bg-base-100'
                   }
-                  dockedOnLight={isAdminPage}
+                  dockedOnLight={isAdminPage || isClientDetailPage}
                 />
               </div>
               <div

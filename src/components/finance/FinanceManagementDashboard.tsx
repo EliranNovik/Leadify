@@ -31,7 +31,13 @@ import {
   type FinanceCollectionFocusId,
 } from '../../lib/financeCollectionFocus';
 
-export type FinanceHubTabId = 'dashboard' | 'collection' | 'collection-due' | 'signed' | 'expenses';
+export type FinanceHubTabId =
+  | 'dashboard'
+  | 'collection'
+  | 'collection-due'
+  | 'signed'
+  | 'expenses'
+  | 'expense-entry';
 
 type FinanceManagementDashboardProps = {
   onOpenTab: (tab: FinanceHubTabId, focus?: FinanceCollectionFocusId) => void;
@@ -270,6 +276,12 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       title: 'Collection Due',
       description: 'Due amounts by employee and department for the selected period.',
       icon: ClockIcon,
+    },
+    {
+      id: 'expense-entry' as const,
+      title: 'Expenses',
+      description: 'Add client, office, marketing, firm, and subcontractor expenses.',
+      icon: ReceiptPercentIcon,
     },
     ...(canViewExpenses
       ? [
@@ -525,7 +537,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
 
       <div>
         <h3 className="text-base font-semibold text-gray-800 mb-3">Reports</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           {shortcuts.map((item) => {
             const Icon = item.icon;
             return (

@@ -5,9 +5,11 @@ import {
   ClipboardDocumentCheckIcon,
   ClockIcon,
   HomeIcon,
+  PlusCircleIcon,
   ReceiptPercentIcon,
 } from '@heroicons/react/24/outline';
 import { useAdminRole } from '../hooks/useAdminRole';
+import { useExternalUser } from '../hooks/useExternalUser';
 import { supabase } from '../lib/supabase';
 import FinanceManagementSideRail from '../components/finance/FinanceManagementSideRail';
 import FinanceManagementDashboard, {
@@ -17,6 +19,7 @@ import FinanceCollectionTab from '../components/finance/FinanceCollectionTab';
 import FinanceCollectionDueTab from '../components/finance/FinanceCollectionDueTab';
 import FinanceSignedSalesTab from '../components/finance/FinanceSignedSalesTab';
 import FinanceAllExpensesTab from '../components/finance/FinanceAllExpensesTab';
+import FinanceExpensesTab from '../components/finance/FinanceExpensesTab';
 import type { CollectionFinancesRailBridge } from '../components/finance/collectionFinancesRailBridge';
 import {
   parseFinanceCollectionFocus,
@@ -25,12 +28,19 @@ import {
 
 type HubTab = FinanceHubTabId;
 
-const ALL_HUB_TABS: Array<{ id: HubTab; label: string; icon: React.ElementType; superuserOnly?: boolean }> = [
-  { id: 'dashboard', label: 'Dashboard', icon: HomeIcon },
-  { id: 'collection', label: 'Collection', icon: BanknotesIcon },
-  { id: 'collection-due', label: 'Collection Due', icon: ClockIcon },
-  { id: 'signed', label: 'Signed', icon: ClipboardDocumentCheckIcon },
+const ALL_HUB_TABS: Array<{
+  id: HubTab;
+  label: string;
+  icon: React.ElementType;
+  collectionOnly?: boolean;
+  superuserOnly?: boolean;
+}> = [
+  { id: 'dashboard', label: 'Dashboard', icon: HomeIcon, collectionOnly: true },
+  { id: 'collection', label: 'Collection', icon: BanknotesIcon, collectionOnly: true },
+  { id: 'collection-due', label: 'Collection Due', icon: ClockIcon, collectionOnly: true },
+  { id: 'signed', label: 'Signed', icon: ClipboardDocumentCheckIcon, collectionOnly: true },
   { id: 'expenses', label: 'All expenses', icon: ReceiptPercentIcon, superuserOnly: true },
+  { id: 'expense-entry', label: 'Expenses', icon: PlusCircleIcon },
 ];
 
 function parseHubTab(raw: string | null): HubTab {
@@ -39,12 +49,12 @@ function parseHubTab(raw: string | null): HubTab {
     raw === 'collection' ||
     raw === 'collection-due' ||
     raw === 'signed' ||
-    raw === 'expenses'
+    raw === 'expenses' ||
+    raw === 'expense-entry'
   ) {
     return raw;
   }
   if (raw === 'signed-sales') return 'signed';
-  // Back-compat aliases
   if (raw === 'overview') return 'dashboard';
   if (raw === 'all-expenses') return 'expenses';
   return 'dashboard';
@@ -55,12 +65,14 @@ function isCollectionFlag(value: unknown): boolean {
 }
 
 /**
- * Finance Management hub — sidebar + tabs for finance dashboard and reports.
- * Open to superusers and collection managers (`is_collection`).
- * All Expenses remains superuser-only.
+ * Finance Management hub.
+ * Expenses tab is open to all internal users.
+ * Collection tabs: superuser or collection manager.
+ * All expenses report: superuser only.
  */
 const FinanceManagementPage: React.FC = () => {
   const { isSuperUser } = useAdminRole();
+  const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = parseHubTab(searchParams.get('tab'));
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0);
@@ -131,20 +143,27 @@ const FinanceManagementPage: React.FC = () => {
     };
   }, []);
 
-  const canAccessFinanceHub = isSuperUser || hasCollectionAccess;
-  const canViewExpenses = isSuperUser;
+  const canViewCollectionTabs = isSuperUser || hasCollectionAccess;
+  const canViewAllExpenses = isSuperUser;
+  const fallbackTab: HubTab = canViewCollectionTabs ? 'dashboard' : 'expense-entry';
 
   const hubTabs = useMemo(
-    () => ALL_HUB_TABS.filter((tab) => !tab.superuserOnly || canViewExpenses),
-    [canViewExpenses],
+    () =>
+      ALL_HUB_TABS.filter((tab) => {
+        if (tab.superuserOnly && !canViewAllExpenses) return false;
+        if (tab.collectionOnly && !canViewCollectionTabs) return false;
+        return true;
+      }),
+    [canViewAllExpenses, canViewCollectionTabs],
   );
 
-  const hubTab: HubTab =
-    requestedTab === 'expenses' && !canViewExpenses ? 'dashboard' : requestedTab;
+  const allowedIds = useMemo(() => new Set(hubTabs.map((t) => t.id)), [hubTabs]);
+
+  const hubTab: HubTab = allowedIds.has(requestedTab) ? requestedTab : fallbackTab;
 
   const setHubTab = useCallback(
     (tab: HubTab, focus?: FinanceCollectionFocusId) => {
-      if (tab === 'expenses' && !canViewExpenses) return;
+      if (!allowedIds.has(tab)) return;
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -156,28 +175,32 @@ const FinanceManagementPage: React.FC = () => {
         { replace: true },
       );
     },
-    [canViewExpenses, setSearchParams],
+    [allowedIds, setSearchParams],
   );
 
   const focusPreset = parseFinanceCollectionFocus(searchParams.get('focus'));
 
-  // Bounce non-superusers away from the expenses deep-link.
   useEffect(() => {
-    if (requestedTab !== 'expenses' || canViewExpenses) return;
+    if (!permissionsLoaded) return;
+    if (allowedIds.has(requestedTab)) return;
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        next.set('tab', 'dashboard');
+        next.set('tab', fallbackTab);
         return next;
       },
       { replace: true },
     );
-  }, [canViewExpenses, requestedTab, setSearchParams]);
+  }, [allowedIds, fallbackTab, permissionsLoaded, requestedTab, setSearchParams]);
 
   const refreshDashboard = useCallback(() => {
     setDashboardRefreshKey((k) => k + 1);
-    if (hubTab !== 'dashboard') setHubTab('dashboard');
-  }, [hubTab, setHubTab]);
+    if (canViewCollectionTabs) {
+      if (hubTab !== 'dashboard') setHubTab('dashboard');
+    } else {
+      setHubTab('expense-entry');
+    }
+  }, [canViewCollectionTabs, hubTab, setHubTab]);
 
   const handleCollectionRailChange = useCallback((bridge: CollectionFinancesRailBridge | null) => {
     setCollectionRail(bridge);
@@ -196,7 +219,7 @@ const FinanceManagementPage: React.FC = () => {
     [collectionRail, hubTab, hubTabs, refreshDashboard, setHubTab],
   );
 
-  if (!permissionsLoaded && !isSuperUser) {
+  if ((!permissionsLoaded && !isSuperUser) || isLoadingExternal) {
     return (
       <div className="min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-8 flex items-center justify-center">
         <span className="loading loading-spinner loading-md text-blue-600" />
@@ -204,28 +227,26 @@ const FinanceManagementPage: React.FC = () => {
     );
   }
 
-  if (!canAccessFinanceHub) {
+  if (isExternalUser) {
     return (
       <div className="min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-8 flex items-center justify-center">
         <div className="rounded-2xl bg-white px-8 py-10 text-center shadow-sm">
           <p className="font-semibold text-gray-800">Access required</p>
-          <p className="text-sm text-gray-500 mt-1">
-            Finance Management is limited to superusers and collection managers.
-          </p>
+          <p className="text-sm text-gray-500 mt-1">Finance Management is for internal users.</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="finance-management-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-56">
+    <div className="finance-management-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:flex">
       {sideRail}
 
       <div
         className={
           hubTab === 'collection'
-            ? 'mx-auto w-full max-w-none space-y-4 px-3 py-4 md:px-5 md:py-5'
-            : 'mx-auto w-full max-w-none space-y-5 px-4 py-6 md:px-8'
+            ? 'min-w-0 flex-1 space-y-4 px-3 py-4 md:px-5 md:py-5'
+            : 'min-w-0 flex-1 space-y-5 px-4 py-6 md:px-6'
         }
       >
         <div
@@ -255,22 +276,25 @@ const FinanceManagementPage: React.FC = () => {
           })}
         </div>
 
-        {hubTab === 'dashboard' && (
+        {hubTab === 'dashboard' && canViewCollectionTabs && (
           <FinanceManagementDashboard
             onOpenTab={setHubTab}
             refreshKey={dashboardRefreshKey}
-            canViewExpenses={canViewExpenses}
+            canViewExpenses={canViewAllExpenses}
           />
         )}
-        {hubTab === 'collection' && (
+        {hubTab === 'collection' && canViewCollectionTabs && (
           <FinanceCollectionTab
             onRailBridgeChange={handleCollectionRailChange}
             focusPreset={focusPreset}
           />
         )}
-        {hubTab === 'collection-due' && <FinanceCollectionDueTab focusPreset={focusPreset} />}
-        {hubTab === 'signed' && <FinanceSignedSalesTab />}
-        {hubTab === 'expenses' && canViewExpenses && <FinanceAllExpensesTab />}
+        {hubTab === 'collection-due' && canViewCollectionTabs && (
+          <FinanceCollectionDueTab focusPreset={focusPreset} />
+        )}
+        {hubTab === 'signed' && canViewCollectionTabs && <FinanceSignedSalesTab />}
+        {hubTab === 'expenses' && canViewAllExpenses && <FinanceAllExpensesTab />}
+        {hubTab === 'expense-entry' && <FinanceExpensesTab />}
       </div>
     </div>
   );

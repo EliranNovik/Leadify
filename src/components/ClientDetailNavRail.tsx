@@ -1,25 +1,22 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Bars3BottomLeftIcon,
   CheckCircleIcon,
-  HomeIcon,
   NoSymbolIcon,
   PencilSquareIcon,
   Squares2X2Icon,
-  StarIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
-import { StarIcon as StarIconSolid } from '@heroicons/react/24/solid';
 
-/** Rail width — keep in sync with Sidebar docked `left-*` and ClientHeader rail pad. */
-export const CLIENT_DETAIL_NAV_RAIL_WIDTH_CLASS = 'w-40';
-export const CLIENT_DETAIL_NAV_RAIL_LEFT_CLASS = 'left-40';
-export const CLIENT_DETAIL_NAV_PL_CLASS = 'md:pl-40';
+/** Collapsed rail width — keep in sync with Sidebar docked `left-*` and ClientHeader rail pad. */
+export const CLIENT_DETAIL_NAV_RAIL_COLLAPSED_WIDTH = '4.75rem';
+export const CLIENT_DETAIL_NAV_RAIL_WIDTH_CLASS = 'w-[4.75rem]';
+export const CLIENT_DETAIL_NAV_RAIL_LEFT_CLASS = 'left-[4.75rem]';
+export const CLIENT_DETAIL_NAV_PL_CLASS = 'md:pl-[4.75rem]';
 export const CLIENT_DETAIL_DOCKED_SIDEBAR_WIDTH_CLASS = 'w-64';
-/** Rail (10rem) + docked app sidebar (16rem). */
-export const CLIENT_DETAIL_NAV_WITH_APP_PL_CLASS = 'md:pl-[26rem]';
-export const CLIENT_DETAIL_NAV_WITH_APP_LEFT_CLASS = 'left-[26rem]';
+/** Collapsed rail (4.75rem) + docked app sidebar (16rem). */
+export const CLIENT_DETAIL_NAV_WITH_APP_PL_CLASS = 'md:pl-[20.75rem]';
+export const CLIENT_DETAIL_NAV_WITH_APP_LEFT_CLASS = 'left-[20.75rem]';
 
 export type ClientDetailNavTab = {
   id: string;
@@ -30,8 +27,6 @@ export type ClientDetailNavTab = {
 
 export type ClientDetailNavLeadActions = {
   onCreateSubLead: () => void;
-  onToggleHighlights: () => void | Promise<void>;
-  isInHighlights: boolean;
   onEditDetails: () => void;
   onDeactivateOrActivate: () => void;
   isUnactivated: boolean;
@@ -47,13 +42,9 @@ type ClientDetailNavRailProps = {
   leadActions?: ClientDetailNavLeadActions;
 };
 
-const railActionBtnClass =
-  'relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium transition-colors';
-
 /**
- * Fixed tab rail — same grey as the Clients page (`bg-gray-100`).
- * Top edge flush under the white client header band
- * (`--client-detail-nav-top` measured from `.client-header-top-band`).
+ * Client tab rail — collapsed icon column, hover opens one menu card.
+ * Icons stay in the left column; labels appear beside them on a single surface.
  */
 const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
   tabs,
@@ -64,147 +55,179 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
   onToggleAppNav,
   leadActions,
 }) => {
+  const [expanded, setExpanded] = useState(false);
+  const collapseTimer = useRef<number | null>(null);
+
+  const clearCollapseTimer = () => {
+    if (collapseTimer.current != null) {
+      window.clearTimeout(collapseTimer.current);
+      collapseTimer.current = null;
+    }
+  };
+
+  const openRail = () => {
+    clearCollapseTimer();
+    setExpanded(true);
+  };
+
+  const scheduleCloseRail = () => {
+    clearCollapseTimer();
+    collapseTimer.current = window.setTimeout(() => {
+      setExpanded(false);
+      collapseTimer.current = null;
+    }, 160);
+  };
+
+  useEffect(() => () => clearCollapseTimer(), []);
+
+  const renderBadgeIcon = (
+    Icon: React.ComponentType<React.SVGProps<SVGSVGElement>>,
+    extraClass = '',
+    badge?: number,
+  ) => (
+    <span className="relative inline-flex">
+      <Icon className={`h-5 w-5 shrink-0 ${extraClass}`} />
+      {badge ? (
+        <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-0.5 text-[9px] font-bold text-white">
+          {badge > 99 ? '99+' : badge}
+        </span>
+      ) : null}
+    </span>
+  );
+
+  const footerBtnClass =
+    'inline-flex h-9 w-9 items-center justify-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800';
+
   return (
     <aside
-      className={`hidden md:flex ${CLIENT_DETAIL_NAV_RAIL_WIDTH_CLASS} fixed bottom-0 left-0 z-30 flex-col bg-gray-100 dark:bg-base-300`}
-      style={{ top: 'var(--client-detail-nav-top, 3rem)' }}
+      className="hidden md:block md:fixed md:bottom-0 md:left-0 md:z-30 md:w-[4.75rem] md:overflow-visible"
+      style={{ top: 'var(--client-detail-nav-top, 7.25rem)' }}
       aria-label="Client sections"
     >
-      <nav className="hide-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pt-2.5 pb-2">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => onSelectTab(tab.id)}
-              onMouseEnter={() => onPrefetchTab?.(tab.id)}
-              className={`relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors ${
-                isActive
-                  ? 'bg-white font-semibold text-gray-900 shadow-sm dark:bg-base-100 dark:text-base-content'
-                  : 'font-medium text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content'
-              }`}
-              aria-current={isActive ? 'page' : undefined}
-            >
-              {isActive && (
-                <span
-                  className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-gray-700 dark:bg-base-content"
-                  aria-hidden
-                />
-              )}
-              <span className="relative inline-flex shrink-0">
-                <Icon
-                  className={`h-5 w-5 ${
-                    isActive
-                      ? 'text-gray-800 dark:text-base-content'
-                      : 'text-gray-500 dark:text-base-content/60'
-                  }`}
-                />
-                {tab.id === 'interactions' && tab.badge ? (
-                  <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-gray-700 px-0.5 text-[10px] font-bold text-white dark:bg-base-content dark:text-base-300">
-                    {tab.badge > 99 ? '99+' : tab.badge}
+      <div
+        className={[
+          'absolute left-2 top-0 z-40 flex h-fit flex-col overflow-visible transition-[width,background-color,box-shadow] duration-200 ease-out',
+          expanded
+            ? 'w-56 rounded-2xl bg-white py-2 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/[0.04]'
+            : 'w-[3.75rem] rounded-2xl bg-transparent py-1',
+        ].join(' ')}
+        onMouseEnter={openRail}
+        onMouseLeave={scheduleCloseRail}
+      >
+        <nav
+          className={
+            expanded
+              ? 'flex h-fit flex-col gap-0.5 px-1.5'
+              : 'flex h-fit flex-col items-center gap-1 px-1'
+          }
+          aria-label="Client tabs"
+        >
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            const badge = tab.id === 'interactions' ? tab.badge : undefined;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onSelectTab(tab.id)}
+                onMouseEnter={() => onPrefetchTab?.(tab.id)}
+                title={tab.label}
+                aria-label={tab.label}
+                aria-current={active ? 'page' : undefined}
+                className={[
+                  'flex h-10 shrink-0 items-center border-0 text-left transition-colors',
+                  expanded
+                    ? 'w-full gap-3 rounded-xl px-1.5'
+                    : 'w-10 justify-center rounded-full',
+                  active
+                    ? expanded
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'bg-white text-blue-600 shadow-sm'
+                    : expanded
+                      ? 'bg-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                      : 'bg-transparent text-gray-500 hover:bg-white hover:text-gray-800',
+                ].join(' ')}
+              >
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center">
+                  {renderBadgeIcon(Icon, '', badge)}
+                </span>
+                {expanded ? (
+                  <span className="saira-regular min-w-0 flex-1 truncate pr-2 text-[13px] font-medium tracking-tight">
+                    {tab.label}
                   </span>
                 ) : null}
-              </span>
-              <span className="saira-regular truncate">{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="absolute bottom-2 left-0 z-40 flex w-[4.75rem] justify-center">
+        <div className="flex flex-col items-center gap-1">
+          {leadActions ? (
+            <div className="tooltip tooltip-right z-50" data-tip="Add sublead">
+              <button
+                type="button"
+                onClick={() => void leadActions.onCreateSubLead()}
+                className={footerBtnClass}
+                aria-label="Add Sublead"
+              >
+                <Squares2X2Icon className="h-5 w-5" />
+              </button>
+            </div>
+          ) : null}
+          {leadActions ? (
+            <div
+              className="tooltip tooltip-right z-50"
+              data-tip={leadActions.isUnactivated ? 'Activate case' : 'Deactivate / spam'}
+            >
+              <button
+                type="button"
+                onClick={() => leadActions.onDeactivateOrActivate()}
+                className={`${footerBtnClass} ${
+                  leadActions.isUnactivated
+                    ? 'text-emerald-600 hover:text-emerald-700'
+                    : 'text-red-500 hover:text-red-600'
+                }`}
+                aria-label={leadActions.isUnactivated ? 'Activate' : 'Deactivate / Spam'}
+              >
+                {leadActions.isUnactivated ? (
+                  <CheckCircleIcon className="h-5 w-5" />
+                ) : (
+                  <NoSymbolIcon className="h-5 w-5" />
+                )}
+              </button>
+            </div>
+          ) : null}
+          {leadActions ? (
+            <div className="tooltip tooltip-right z-50" data-tip="Edit details">
+              <button
+                type="button"
+                onClick={() => leadActions.onEditDetails()}
+                className={footerBtnClass}
+                aria-label="Edit Details"
+              >
+                <PencilSquareIcon className="h-5 w-5" />
+              </button>
+            </div>
+          ) : null}
+          <div
+            className="tooltip tooltip-right z-50"
+            data-tip={appNavOpen ? 'Close menu' : 'Open menu'}
+          >
+            <button
+              type="button"
+              onClick={onToggleAppNav}
+              data-clients-app-nav-toggle
+              className={`${footerBtnClass} ${appNavOpen ? 'text-gray-800' : ''}`}
+              aria-label={appNavOpen ? 'Close app navigation' : 'Open app navigation'}
+              aria-expanded={appNavOpen}
+            >
+              {appNavOpen ? <XMarkIcon className="h-5 w-5" /> : <Bars3BottomLeftIcon className="h-5 w-5" />}
             </button>
-          );
-        })}
-      </nav>
-
-      {leadActions ? (
-        <div className="flex shrink-0 flex-col gap-0.5 px-2 pt-2">
-          <button
-            type="button"
-            onClick={() => void leadActions.onCreateSubLead()}
-            className={`${railActionBtnClass} text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content`}
-            title="Create Sub-Lead"
-          >
-            <Squares2X2Icon className="h-5 w-5 shrink-0 text-gray-500 dark:text-base-content/60" />
-            <span className="saira-regular truncate">Add Sublead</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => void leadActions.onToggleHighlights()}
-            className={`${railActionBtnClass} ${
-              leadActions.isInHighlights
-                ? 'text-purple-700 hover:bg-white/55 dark:text-purple-300 dark:hover:bg-base-100/50'
-                : 'text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content'
-            }`}
-            title={leadActions.isInHighlights ? 'Remove from Highlights' : 'Add to Highlights'}
-          >
-            {leadActions.isInHighlights ? (
-              <StarIconSolid className="h-5 w-5 shrink-0 text-purple-600 dark:text-purple-300" />
-            ) : (
-              <StarIcon className="h-5 w-5 shrink-0 text-gray-500 dark:text-base-content/60" />
-            )}
-            <span className="saira-regular truncate">
-              {leadActions.isInHighlights ? 'In Highlights' : 'Add to Highlights'}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => leadActions.onDeactivateOrActivate()}
-            className={`${railActionBtnClass} ${
-              leadActions.isUnactivated
-                ? 'text-emerald-700 hover:bg-white/55 dark:text-emerald-300 dark:hover:bg-base-100/50'
-                : 'text-red-600 hover:bg-white/55 dark:text-red-400 dark:hover:bg-base-100/50'
-            }`}
-            title={leadActions.isUnactivated ? 'Activate Case' : 'Deactivate / Spam'}
-          >
-            {leadActions.isUnactivated ? (
-              <CheckCircleIcon className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-300" />
-            ) : (
-              <NoSymbolIcon className="h-5 w-5 shrink-0 text-red-500 dark:text-red-400" />
-            )}
-            <span className="saira-regular truncate">
-              {leadActions.isUnactivated ? 'Activate' : 'Deactivate / Spam'}
-            </span>
-          </button>
+          </div>
         </div>
-      ) : null}
-
-      {/* Edit + Dashboard + app menu at bottom of rail */}
-      <div className="flex shrink-0 items-center justify-center gap-1.5 px-2 py-2.5">
-        {leadActions ? (
-          <button
-            type="button"
-            onClick={() => leadActions.onEditDetails()}
-            className="flex h-10 w-10 items-center justify-center rounded-full border border-gray-400/70 bg-white text-gray-700 shadow-sm transition-colors hover:border-gray-500 hover:bg-gray-50 dark:border-base-content/20 dark:bg-base-100 dark:text-base-content dark:hover:bg-base-200"
-            aria-label="Edit Details"
-            title="Edit Details"
-          >
-            <PencilSquareIcon className="h-5 w-5" />
-          </button>
-        ) : null}
-        <Link
-          to="/"
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-gray-400/70 bg-white text-gray-700 shadow-sm transition-colors hover:border-gray-500 hover:bg-gray-50 dark:border-base-content/20 dark:bg-base-100 dark:text-base-content dark:hover:bg-base-200"
-          aria-label="Dashboard"
-          title="Dashboard"
-        >
-          <HomeIcon className="h-5 w-5" />
-        </Link>
-        <button
-          type="button"
-          onClick={onToggleAppNav}
-          data-clients-app-nav-toggle
-          className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
-            appNavOpen
-              ? 'border-gray-500 bg-gray-700 text-white shadow-md dark:border-base-content/40 dark:bg-base-100 dark:text-base-content'
-              : 'border-gray-400/70 bg-white text-gray-700 shadow-sm hover:border-gray-500 hover:bg-gray-50 dark:border-base-content/20 dark:bg-base-100 dark:text-base-content dark:hover:bg-base-200'
-          }`}
-          aria-label={appNavOpen ? 'Close app navigation' : 'Open app navigation'}
-          aria-expanded={appNavOpen}
-          title={appNavOpen ? 'Close menu' : 'Open menu'}
-        >
-          {appNavOpen ? (
-            <XMarkIcon className="h-5 w-5" />
-          ) : (
-            <Bars3BottomLeftIcon className="h-5 w-5" />
-          )}
-        </button>
       </div>
     </aside>
   );

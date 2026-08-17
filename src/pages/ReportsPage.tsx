@@ -8305,6 +8305,11 @@ const reports: ReportSection[] = [
     category: 'Expenses',
     items: [
       {
+        label: 'Expenses',
+        icon: PlusIcon,
+        route: '/reports/finance-management?tab=expense-entry',
+      },
+      {
         label: 'All expenses',
         icon: ReceiptPercentIcon,
         route: '/reports/finance-management?tab=expenses',

@@ -165,10 +165,7 @@ import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
 import ClientDetailNavRail, {
-  CLIENT_DETAIL_DOCKED_SIDEBAR_WIDTH_CLASS,
   CLIENT_DETAIL_NAV_PL_CLASS,
-  CLIENT_DETAIL_NAV_RAIL_LEFT_CLASS,
-  CLIENT_DETAIL_NAV_WITH_APP_LEFT_CLASS,
   CLIENT_DETAIL_NAV_WITH_APP_PL_CLASS,
 } from './ClientDetailNavRail';
 import HeaderRoleAssignField, {
@@ -1200,47 +1197,75 @@ const Clients: React.FC<ClientsProps> = ({
   const tabContentRef = useRef<HTMLDivElement>(null);
   const clientHeaderBandRef = useRef<HTMLDivElement>(null);
 
-  // Keep grey rail flush under the white name band (meta strip is full-bleed grey beside the rail)
+  // Align the first tab badge with the language chip in the meta strip.
   useEffect(() => {
     if (!selectedClient) {
       document.documentElement.style.removeProperty('--client-detail-nav-top');
+      document.documentElement.style.removeProperty('--client-detail-header-bottom');
       return;
     }
 
     const NAVBAR_PX = 48;
+    const pickVisible = (nodes: NodeListOf<Element> | Element[]): HTMLElement | null => {
+      const list = Array.from(nodes) as HTMLElement[];
+      return list.find((el) => el.getBoundingClientRect().height > 0) || null;
+    };
     const updateNavTop = () => {
       const root = clientHeaderBandRef.current;
-      const band =
-        (root?.querySelector('.client-header-top-band') as HTMLElement | null) ||
-        (document.querySelector('.client-header-top-band') as HTMLElement | null);
-      const body = band?.querySelector('.client-header-top-band__body') as HTMLElement | null;
-      const el = body || band;
-      if (!el) return;
-      const bottom = el.getBoundingClientRect().bottom;
-      const top = Math.max(Math.round(bottom), NAVBAR_PX);
-      document.documentElement.style.setProperty('--client-detail-nav-top', `${top}px`);
+      const langChip =
+        pickVisible(root?.querySelectorAll('[data-client-meta-language]') || []) ||
+        pickVisible(document.querySelectorAll('[data-client-meta-language]'));
+      const metaBand =
+        pickVisible(root?.querySelectorAll('.client-header-meta-band') || []) ||
+        pickVisible(document.querySelectorAll('.client-header-meta-band'));
+      const headerBand =
+        pickVisible(root?.querySelectorAll('.client-header-top-band') || []) ||
+        pickVisible(document.querySelectorAll('.client-header-top-band'));
+      const target = langChip || metaBand;
+      const scrollRoot = document.querySelector('main.clients-detail-scroll') as HTMLElement | null;
+      const scrollTop = scrollRoot?.scrollTop ?? window.scrollY ?? 0;
+      if (target) {
+        const pinned = Math.max(Math.round(target.getBoundingClientRect().top + scrollTop), NAVBAR_PX);
+        document.documentElement.style.setProperty('--client-detail-nav-top', `${pinned}px`);
+      }
+      // Viewport Y so the open white rail stays flush under the navbar after scroll.
+      const headerBottom = headerBand
+        ? Math.max(NAVBAR_PX, Math.round(headerBand.getBoundingClientRect().bottom))
+        : NAVBAR_PX;
+      document.documentElement.style.setProperty('--client-detail-header-bottom', `${headerBottom}px`);
     };
 
     updateNavTop();
+    const raf = window.requestAnimationFrame(updateNavTop);
     const t1 = window.setTimeout(updateNavTop, 0);
     const t2 = window.setTimeout(updateNavTop, 100);
-    const scrollRoot = document.querySelector('main.clients-detail-scroll') || window;
-    scrollRoot.addEventListener('scroll', updateNavTop, { passive: true } as AddEventListenerOptions);
+    const t3 = window.setTimeout(updateNavTop, 300);
     window.addEventListener('resize', updateNavTop);
+    window.addEventListener('scroll', updateNavTop, { passive: true });
+    const scrollRoot = document.querySelector('main.clients-detail-scroll');
+    scrollRoot?.addEventListener('scroll', updateNavTop, { passive: true });
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateNavTop) : null;
-    const observeTarget =
-      (clientHeaderBandRef.current?.querySelector('.client-header-top-band__body') as HTMLElement | null) ||
-      (clientHeaderBandRef.current?.querySelector('.client-header-top-band') as HTMLElement | null) ||
-      clientHeaderBandRef.current;
-    if (observeTarget) ro?.observe(observeTarget);
+    if (clientHeaderBandRef.current) ro?.observe(clientHeaderBandRef.current);
+    const mo =
+      typeof MutationObserver !== 'undefined'
+        ? new MutationObserver(() => updateNavTop())
+        : null;
+    if (clientHeaderBandRef.current) {
+      mo?.observe(clientHeaderBandRef.current, { childList: true, subtree: true });
+    }
 
     return () => {
+      window.cancelAnimationFrame(raf);
       window.clearTimeout(t1);
       window.clearTimeout(t2);
-      scrollRoot.removeEventListener('scroll', updateNavTop);
+      window.clearTimeout(t3);
       window.removeEventListener('resize', updateNavTop);
+      window.removeEventListener('scroll', updateNavTop);
+      scrollRoot?.removeEventListener('scroll', updateNavTop);
       ro?.disconnect();
+      mo?.disconnect();
       document.documentElement.style.removeProperty('--client-detail-nav-top');
+      document.documentElement.style.removeProperty('--client-detail-header-bottom');
     };
   }, [selectedClient?.id]);
 
@@ -13599,24 +13624,6 @@ const Clients: React.FC<ClientsProps> = ({
             onToggleAppNav={() => onToggleClientsAppNav?.()}
             leadActions={{
               onCreateSubLead: () => setShowSubLeadDrawer(true),
-              isInHighlights: isInHighlightsState,
-              onToggleHighlights: async () => {
-                if (!selectedClient?.id) return;
-                const isLegacyLead =
-                  selectedClient.lead_type === 'legacy' ||
-                  selectedClient.id?.toString().startsWith('legacy_');
-                const leadId = isLegacyLead
-                  ? typeof selectedClient.id === 'string'
-                    ? parseInt(selectedClient.id.replace('legacy_', ''), 10)
-                    : selectedClient.id
-                  : selectedClient.id;
-                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-                if (isInHighlightsState) {
-                  await removeFromHighlights(leadId, isLegacyLead);
-                } else {
-                  await addToHighlights(leadId, leadNumber, isLegacyLead);
-                }
-              },
               onEditDetails: () => setEditLeadOpenRequest((n) => n + 1),
               isUnactivated: (() => {
                 const isLegacy =
@@ -13882,13 +13889,9 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Centered oval glassy bar */}
           {showStickyHeader && (
             <div
-              className={`hidden md:flex fixed z-[35] justify-center px-3 transition-all duration-300 ease-in-out ${
-                clientsAppNavOpen
-                  ? CLIENT_DETAIL_NAV_WITH_APP_LEFT_CLASS
-                  : CLIENT_DETAIL_NAV_RAIL_LEFT_CLASS
-              }`}
+              className="hidden md:flex fixed left-2 z-[45] justify-start transition-all duration-300 ease-in-out"
               style={{
-                top: 'calc(max(4rem, var(--client-detail-nav-top, 4rem)) + 0.75rem)',
+                top: '5.75rem',
               }}
             >
               <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-xl border border-white/20 dark:border-gray-700/20 px-4 py-2 md:px-5 md:py-2.5 overflow-visible transition-all duration-300 ease-in-out">

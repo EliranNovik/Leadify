@@ -164,8 +164,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   presentation = 'floating',
   dockedOpen = false,
   onDockedClose,
-  dockedPositionClassName = 'fixed bottom-0 left-40 z-40 top-[var(--client-detail-nav-top,3rem)]',
-  dockedSurfaceClassName = 'bg-gray-100 dark:bg-base-300',
+  dockedPositionClassName = 'fixed bottom-0 left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)]',
+  dockedSurfaceClassName = 'bg-white dark:bg-base-100',
   dockedOnLight = false,
 }) => {
   const isDockedPresentation = presentation === 'docked';

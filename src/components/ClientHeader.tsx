@@ -207,12 +207,12 @@ const CLIENT_HEADER_APP_INSET_MOBILE =
  */
 const CLIENT_HEADER_SIDEBAR_PAD = 'md:pl-40';
 /**
- * Clear fixed client tab rail (w-40 / 10rem) plus the same horizontal inset as
+ * Clear fixed client tab rail (4.75rem collapsed) plus the same horizontal inset as
  * Clients tab content (`md:px-5` / `lg:px-6` / `xl:px-8`) so header actions
  * line up with the cards below.
  */
 const CLIENT_HEADER_NAV_RAIL_PAD =
-    'md:pl-[calc(10rem+1.25rem)] lg:pl-[calc(10rem+1.5rem)] xl:pl-[calc(10rem+2rem)]';
+    'md:pl-[calc(4.75rem+1.25rem)] lg:pl-[calc(4.75rem+1.5rem)] xl:pl-[calc(4.75rem+2rem)]';
 /** Right + mobile left page padding — never sets md:pl so sidebar pad stays intact. */
 const CLIENT_HEADER_PAGE_X = 'pl-3 pr-3 sm:pl-4 sm:pr-4 md:pr-6 lg:pr-8 xl:pr-10';
 /** Right-only page padding when left inset already includes content gutter (nav rail). */
@@ -2828,6 +2828,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             <>
                 <button
                     type="button"
+                    data-client-meta-language
                     className={`${badgeBtn} ${idleHover}`}
                     onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
                 >

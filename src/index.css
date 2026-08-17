@@ -414,14 +414,14 @@ html.dark .client-header-meta-band {
     padding-right: 1.5rem;
   }
   .client-header-meta-band {
-    /* Clear fixed rail (w-40) + same gutter as tab content */
-    padding-left: calc(10rem + 1.25rem);
+    /* Clear collapsed client rail (4.75rem) + same gutter as tab content */
+    padding-left: calc(4.75rem + 1.25rem);
     padding-right: 1.25rem;
   }
 }
 @media (min-width: 1024px) {
   .client-header-meta-band {
-    padding-left: calc(10rem + 1.5rem);
+    padding-left: calc(4.75rem + 1.5rem);
     padding-right: 1.5rem;
   }
 }
@@ -430,7 +430,7 @@ html.dark .client-header-meta-band {
     padding-right: 2.5rem;
   }
   .client-header-meta-band {
-    padding-left: calc(10rem + 2rem);
+    padding-left: calc(4.75rem + 2rem);
     padding-right: 2rem;
   }
 }

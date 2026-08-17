@@ -8,6 +8,8 @@ import {
   PencilSquareIcon,
   ScissorsIcon,
   TrashIcon,
+  DocumentTextIcon,
+  DocumentPlusIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
@@ -32,8 +34,58 @@ import {
   type SplitLeadExpenseTarget,
 } from '../../lib/leadExpenses';
 import ExpenseSplitTargetPicker from './ExpenseSplitTargetPicker';
+import ExpenseDocumentsDrawer from '../finance/ExpenseDocumentsDrawer';
+import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
+import {
+  ensureRegistryForKindDestination,
+  fetchFinanceDocsByDestinationIds,
+  type FinanceExpenseEntryRow,
+} from '../../lib/financeExpenseCreate';
+import {
+  FINANCE_EXPENSE_DOC_MAX_FILES,
+  FINANCE_EXPENSE_DOCUMENTS_BUCKET,
+  FINANCE_EXPENSE_DOCUMENT_TYPE_LABEL,
+  uploadFinanceExpenseDocuments,
+  validateFinanceExpenseDocumentFile,
+  type FinanceExpenseDocumentRow,
+  type FinanceExpenseDocumentType,
+} from '../../lib/financeExpenseDocuments';
 
 type CurrencyOption = { id: number; name: string; iso_code: string | null };
+type PendingDoc = {
+  localId: string;
+  file: File;
+  documentType: FinanceExpenseDocumentType;
+};
+const DOC_TYPES: FinanceExpenseDocumentType[] = ['invoice', 'receipt', 'other'];
+
+function expenseToDocsRow(
+  row: LeadExpenseRow,
+  docs?: { entryId: number; documents: FinanceExpenseDocumentRow[] },
+): FinanceExpenseEntryRow {
+  return {
+    id: docs?.entryId || 0,
+    listKey: `lead:${row.id}`,
+    created_at: row.created_at,
+    kind: 'lead',
+    destination_table: 'lead_expenses',
+    destination_id: String(row.id),
+    expense_date: row.expense_date,
+    amount: Number(row.amount) || 0,
+    currency_code: row.accounting_currencies?.iso_code || row.accounting_currencies?.name || null,
+    firm_id: null,
+    new_lead_id: row.new_lead_id,
+    legacy_lead_id: row.legacy_lead_id,
+    category_label: row.lead_expense_types?.label || null,
+    vendor_label: row.leads_contact?.name || null,
+    lead_number: row.lead_number,
+    notes: row.notes,
+    created_by: row.created_by,
+    created_by_name: null,
+    created_by_photo: null,
+    documents: docs?.documents || [],
+  };
+}
 
 type FinancesLeadExpensesSectionProps = Pick<ClientTabProps, 'client'> & {
   /** When set, open the add-expense drawer (from Finances payment Order → Expense no VAT). */
@@ -164,6 +216,13 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
   const [isReimbursable, setIsReimbursable] = useState(false);
   const [isReimbursed, setIsReimbursed] = useState(false);
   const [contactId, setContactId] = useState('');
+  const [docsByExpenseId, setDocsByExpenseId] = useState<
+    Map<number, { entryId: number; documents: FinanceExpenseDocumentRow[] }>
+  >(new Map());
+  const [docsRow, setDocsRow] = useState<FinanceExpenseEntryRow | null>(null);
+  const [viewerDocs, setViewerDocs] = useState<DocumentViewerItem[]>([]);
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
 
   const identity = useMemo(
     () => resolveLeadFeeIdentity(client),
@@ -180,6 +239,17 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     try {
       const rows = await fetchLeadExpenses(identity);
       setExpenses(rows);
+      try {
+        const docs = await fetchFinanceDocsByDestinationIds(
+          'lead_expenses',
+          rows.map((row) => row.id),
+        );
+        const next = new Map<number, { entryId: number; documents: FinanceExpenseDocumentRow[] }>();
+        docs.forEach((value, key) => next.set(Number(key), value));
+        setDocsByExpenseId(next);
+      } catch {
+        setDocsByExpenseId(new Map());
+      }
     } catch (err: any) {
       console.error('[FinancesLeadExpensesSection] load:', err);
       toast.error(err?.message || 'Failed to load expenses');
@@ -208,6 +278,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     setDrawerStep(0);
     setFurthestDrawerStep(0);
     setSplitTargets([]);
+    setPendingDocs([]);
   };
 
   const closeDrawer = () => {
@@ -398,8 +469,38 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
       return;
     }
     const currencyNum = currencyId ? Number(currencyId) : null;
-    const reimbursable = isReimbursable;
+    const reimbursable = drawerMode !== 'split' && editingId != null ? isReimbursable : false;
     const reimbursed = reimbursable && isReimbursed;
+    const currencyCode =
+      currencies.find((c) => String(c.id) === currencyId)?.iso_code ||
+      currencies.find((c) => String(c.id) === currencyId)?.name ||
+      null;
+    const categoryLabel = expenseTypes.find((type) => type.id === expenseTypeId)?.label || null;
+    const vendorLabel =
+      contacts.find((contact) => String(contact.id) === contactId)?.name || null;
+
+    const attachPending = async (destinationId: number) => {
+      if (!pendingDocs.length || drawerMode === 'split') return;
+      const entryId = await ensureRegistryForKindDestination({
+        kind: 'lead',
+        destinationId,
+        expenseDate: expenseDate || null,
+        amount: amountNum,
+        currencyCode,
+        newLeadId: identity.leadType === 'new' ? identity.newLeadId || null : null,
+        legacyLeadId: identity.leadType === 'legacy' ? identity.legacyLeadId || null : null,
+        categoryLabel,
+        vendorLabel,
+        notes,
+      });
+      const uploaded = await uploadFinanceExpenseDocuments(
+        entryId,
+        pendingDocs.map((d) => ({ file: d.file, documentType: d.documentType })),
+      );
+      if (uploaded && uploaded < pendingDocs.length) {
+        toast.error('Expense saved; some files failed to upload');
+      }
+    };
 
     setSaving(true);
     try {
@@ -413,8 +514,8 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
           notes,
           includeVat,
           paidBy,
-          isReimbursable: reimbursable,
-          isReimbursed: reimbursed,
+          isReimbursable: false,
+          isReimbursed: false,
         });
       } else if (editingId != null) {
         await updateLeadExpense({
@@ -432,8 +533,9 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
           contactId: contactNum,
           updatedBy: user?.id || null,
         });
+        await attachPending(editingId);
       } else {
-        await insertLeadExpense({
+        const created = await insertLeadExpense({
           identity,
           expenseTypeId,
           amount: amountNum,
@@ -442,11 +544,12 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
           notes,
           includeVat,
           paidBy,
-          isReimbursable: reimbursable,
-          isReimbursed: reimbursed,
+          isReimbursable: false,
+          isReimbursed: false,
           contactId: contactNum,
           createdBy: user?.id || null,
         });
+        await attachPending(created.id);
       }
 
       toast.success(
@@ -537,6 +640,36 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     return chips;
   };
 
+  const addPendingFiles = (fileList: FileList | File[]) => {
+    const incoming = Array.from(fileList);
+    setPendingDocs((prev) => {
+      const next = [...prev];
+      for (const file of incoming) {
+        if (next.length >= FINANCE_EXPENSE_DOC_MAX_FILES) {
+          toast.error(`You can attach up to ${FINANCE_EXPENSE_DOC_MAX_FILES} files`);
+          break;
+        }
+        const errMsg = validateFinanceExpenseDocumentFile(file);
+        if (errMsg) {
+          toast.error(errMsg);
+          continue;
+        }
+        const isDup = next.some((d) => d.file.name === file.name && d.file.size === file.size);
+        if (isDup) continue;
+        next.push({
+          localId: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
+          file,
+          documentType: file.name.toLowerCase().includes('receipt') ? 'receipt' : 'invoice',
+        });
+      }
+      return next;
+    });
+  };
+
+  const openExpenseDocuments = (row: LeadExpenseRow) => {
+    setDocsRow(expenseToDocsRow(row, docsByExpenseId.get(row.id)));
+  };
+
   return (
     <>
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -600,6 +733,9 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                   </th>
                   <th className="border-0 bg-transparent font-semibold text-slate-500">Status</th>
                   <th className="border-0 bg-transparent font-semibold text-slate-500">Client</th>
+                  <th className="border-0 bg-transparent w-12 text-center font-semibold text-slate-500">
+                    Docs
+                  </th>
                   <th className="border-0 bg-transparent w-10" aria-label="Actions" />
                 </tr>
               </thead>
@@ -629,6 +765,31 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                     </td>
                     <td className="text-slate-600">
                       {row.leads_contact?.name || '—'}
+                    </td>
+                    <td className="text-center">
+                      {(() => {
+                        const count = docsByExpenseId.get(row.id)?.documents.length || 0;
+                        return (
+                          <button
+                            type="button"
+                            className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full ${
+                              count
+                                ? 'text-blue-600 hover:bg-blue-50'
+                                : 'text-gray-400 hover:bg-blue-50 hover:text-blue-600'
+                            }`}
+                            title={count ? `${count} document${count === 1 ? '' : 's'}` : 'Add documents'}
+                            aria-label={count ? `${count} documents` : 'Add documents'}
+                            onClick={() => openExpenseDocuments(row)}
+                          >
+                            <DocumentTextIcon className="h-5 w-5" />
+                            {count ? (
+                              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white">
+                                {count}
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })()}
                     </td>
                     <td className="text-right">
                       <button
@@ -680,14 +841,13 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         : 'Add expense'}
                   </h2>
                   <p className="mt-1 text-xs font-medium text-slate-500">
-                    Step {drawerStep + 1} of 7 ·{' '}
+                    Step {drawerStep + 1} of 6 ·{' '}
                     {[
                       'Expense type',
                       'Amount',
                       drawerMode === 'split' ? 'Leads & contacts' : 'Client',
                       'Paid by',
                       'VAT',
-                      'Reimbursement',
                       'Review',
                     ][drawerStep]}
                   </p>
@@ -705,7 +865,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
               <div className="h-1 bg-slate-100">
                 <div
                   className="h-full bg-indigo-600 transition-all duration-300"
-                  style={{ width: `${((drawerStep + 1) / 7) * 100}%` }}
+                  style={{ width: `${((drawerStep + 1) / 6) * 100}%` }}
                 />
               </div>
 
@@ -969,50 +1129,6 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                     ) : null}
 
                     {drawerStep === 5 ? (
-                    <div className="animate-fade-in space-y-2">
-                      {[
-                        {
-                          label: 'Not reimbursable',
-                          description: 'No reimbursement is expected.',
-                          reimbursable: false,
-                          reimbursed: false,
-                        },
-                        {
-                          label: 'Reimbursable',
-                          description: 'The client is expected to reimburse this expense.',
-                          reimbursable: true,
-                          reimbursed: false,
-                        },
-                        {
-                          label: 'Already reimbursed',
-                          description: 'The reimbursement has already been received.',
-                          reimbursable: true,
-                          reimbursed: true,
-                        },
-                      ].map((option) => (
-                        <button
-                          key={option.label}
-                          type="button"
-                          className="w-full rounded-xl bg-slate-50 px-4 py-3 text-left transition hover:bg-indigo-50"
-                          onClick={() => {
-                            setIsReimbursable(option.reimbursable);
-                            setIsReimbursed(option.reimbursed);
-                            setDrawerStep(6);
-                          }}
-                          disabled={saving}
-                        >
-                          <span className="block text-sm font-semibold text-slate-800">
-                            {option.label}
-                          </span>
-                          <span className="mt-0.5 block text-xs text-slate-500">
-                            {option.description}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                    ) : null}
-
-                    {drawerStep === 6 ? (
                     <div className="animate-fade-in space-y-5">
                     <div className="rounded-xl bg-slate-50 p-4">
                       <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
@@ -1060,6 +1176,92 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         dir={/[\u0590-\u05FF]/.test(notes) ? 'rtl' : 'ltr'}
                       />
                     </div>
+                    {drawerMode === 'split' ? (
+                      <p className="text-xs text-slate-500">
+                        Add invoices or receipts on each expense after the split.
+                      </p>
+                    ) : (
+                      <div className="form-control">
+                        <label className="label py-1">
+                          <span className="label-text font-medium text-slate-700">Invoices & receipts</span>
+                        </label>
+                        {editingId != null && (docsByExpenseId.get(editingId)?.documents.length || 0) > 0 ? (
+                          <p className="mb-2 text-xs text-slate-500">
+                            {docsByExpenseId.get(editingId)?.documents.length} existing document
+                            {(docsByExpenseId.get(editingId)?.documents.length || 0) === 1 ? '' : 's'}. Add more below.
+                          </p>
+                        ) : null}
+                        <label
+                          className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center hover:border-blue-400 hover:bg-blue-50/40"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (e.dataTransfer.files?.length) addPendingFiles(e.dataTransfer.files);
+                          }}
+                        >
+                          <DocumentPlusIcon className="h-8 w-8 text-slate-400" />
+                          <span className="text-sm font-medium text-slate-700">Drop PDF or image files here</span>
+                          <span className="text-xs text-slate-500">
+                            or click to browse · up to {FINANCE_EXPENSE_DOC_MAX_FILES} files
+                          </span>
+                          <input
+                            type="file"
+                            className="hidden"
+                            multiple
+                            accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx"
+                            onChange={(e) => {
+                              if (e.target.files?.length) addPendingFiles(e.target.files);
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
+                        {pendingDocs.length > 0 ? (
+                          <ul className="mt-2 space-y-2">
+                            {pendingDocs.map((doc) => (
+                              <li
+                                key={doc.localId}
+                                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-2"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-medium text-slate-800">{doc.file.name}</p>
+                                  <p className="text-xs text-slate-500">{Math.round(doc.file.size / 1024)} KB</p>
+                                </div>
+                                <select
+                                  className="select select-bordered select-xs w-28"
+                                  value={doc.documentType}
+                                  onChange={(e) => {
+                                    const nextType = e.target.value as FinanceExpenseDocumentType;
+                                    setPendingDocs((prev) =>
+                                      prev.map((d) =>
+                                        d.localId === doc.localId ? { ...d, documentType: nextType } : d,
+                                      ),
+                                    );
+                                  }}
+                                >
+                                  {DOC_TYPES.map((t) => (
+                                    <option key={t} value={t}>
+                                      {FINANCE_EXPENSE_DOCUMENT_TYPE_LABEL[t]}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs btn-circle"
+                                  aria-label="Remove file"
+                                  onClick={() =>
+                                    setPendingDocs((prev) => prev.filter((d) => d.localId !== doc.localId))
+                                  }
+                                >
+                                  <XMarkIcon className="h-4 w-4" />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                    )}
                     </div>
                     ) : null}
                   </div>
@@ -1101,12 +1303,12 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                   <button
                     type="button"
                     className="btn btn-primary min-w-28"
-                    onClick={() => setDrawerStep((step) => Math.min(6, step + 1))}
+                    onClick={() => setDrawerStep((step) => Math.min(5, step + 1))}
                     disabled={saving || loadingOptions}
                   >
                     Continue
                   </button>
-                ) : drawerStep === 6 ? (
+                ) : drawerStep === 5 ? (
                   <button
                     type="button"
                     className="btn btn-primary min-w-28"
@@ -1135,6 +1337,27 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
           </div>,
           document.body,
         )}
+
+      <ExpenseDocumentsDrawer
+        open={Boolean(docsRow)}
+        row={docsRow}
+        onClose={() => setDocsRow(null)}
+        onChanged={() => void loadExpenses()}
+        onOpenDocument={(docs, index) => {
+          setViewerDocs(docs);
+          setViewerIndex(index);
+        }}
+      />
+      <DocumentViewerModal
+        isOpen={viewerIndex !== null && viewerDocs.length > 0}
+        onClose={() => {
+          setViewerIndex(null);
+          setViewerDocs([]);
+        }}
+        documents={viewerDocs}
+        initialIndex={viewerIndex ?? 0}
+        bucketName={FINANCE_EXPENSE_DOCUMENTS_BUCKET}
+      />
     </>
   );
 };
