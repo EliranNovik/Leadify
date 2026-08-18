@@ -12,6 +12,7 @@ import ProformaViewActionButtons from '../components/proforma/ProformaViewAction
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaExpenseDocumentsCarousel from '../components/proforma/ProformaExpenseDocumentsCarousel';
 import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
@@ -542,6 +543,14 @@ const ProformaViewPage: React.FC = () => {
         <ProformaIssuedByFooter name={proforma.createdBy} date={proforma.createdAt} />
         <ProformaDocumentStamp variant="card" />
       </div>
+      <ProformaExpenseDocumentsCarousel
+        className="mx-auto mt-6 w-full max-w-[1100px]"
+        source={
+          paymentPlanMeta?.lead_id || proforma.clientId
+            ? { type: 'new', leadId: String(paymentPlanMeta?.lead_id || proforma.clientId) }
+            : null
+        }
+      />
       {pdfLoading && (
         <div className="print-hide fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 shadow-lg flex flex-col items-center">

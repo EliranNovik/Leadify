@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaExpenseDocumentsCarousel from '../components/proforma/ProformaExpenseDocumentsCarousel';
 import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaPublicToolbar from '../components/proforma/ProformaPublicToolbar';
@@ -358,6 +359,12 @@ const PublicProformaViewPage: React.FC = () => {
 
           <ProformaDocumentStamp variant="card" />
         </div>
+        {id && token ? (
+          <ProformaExpenseDocumentsCarousel
+            className="mt-6"
+            source={{ type: 'public-new', paymentPlanId: id, token }}
+          />
+        ) : null}
       </div>
 
       <ProformaPublicFooter />

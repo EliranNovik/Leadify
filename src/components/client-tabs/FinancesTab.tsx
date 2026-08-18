@@ -124,6 +124,7 @@ import {
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../../contexts/AuthContext';
+import { usePaymentPlanExpenseDocs } from './PaymentPlanExpenseDocs';
 import ProformaSendLanguageModal from '../proforma/ProformaSendLanguageModal';
 import type { ProformaSendLanguage } from '../../lib/proformaSendLanguage';
 import {
@@ -246,6 +247,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const navigate = useNavigate();
   const { user } = useAuthContext();
   const { showReconnectModal } = useMailboxReconnect();
+  const expenseDocs = usePaymentPlanExpenseDocs(client);
 
   // Helper function to format date as dd/mm/yyyy
   const formatDateDDMMYYYY = (dateString: string | null | undefined): string => {
@@ -7284,7 +7286,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           )}
                                         </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap font-medium text-slate-700">
-                                          {p.order}
+                                          {expenseDocs.renderType(p, p.order)}
                                         </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           {p.isLegacy ? (
@@ -7811,7 +7813,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <PaymentStatusPill paid={!!isPaid} readyToPay={p.ready_to_pay} />
                                             {renderInvoiceAutomationBadge(p)}
                                           </div>
-                                          <p className="mt-2 text-sm font-medium text-slate-700">{p.order}</p>
+                                          <p className="mt-2 text-sm font-medium text-slate-700">
+                                            {expenseDocs.renderType(p, p.order)}
+                                          </p>
                                           <p className="text-xs text-slate-400">{p.duePercent}</p>
                                         </div>
                                         {p.proforma && !isPaid && (
@@ -9388,6 +9392,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           color: #ffffff !important;
         }
       `}</style>
+      {expenseDocs.layer}
     </>
   );
 };

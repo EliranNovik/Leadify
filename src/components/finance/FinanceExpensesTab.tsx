@@ -7,11 +7,13 @@ import {
   BuildingOfficeIcon,
   DocumentTextIcon,
   EllipsisVerticalIcon,
+  HomeModernIcon,
   MagnifyingGlassIcon,
   MegaphoneIcon,
   PencilSquareIcon,
   PlusIcon,
   TrashIcon,
+  UserGroupIcon,
   UserIcon,
   WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline';
@@ -23,6 +25,8 @@ import {
   deleteFinanceExpense,
   fetchFinanceExpenseEntries,
   FINANCE_EXPENSE_KIND_LABEL,
+  canEditFinanceExpenseKind,
+  canViewFinanceExpenseKind,
   formatFinanceExpenseAmount,
   type FinanceExpenseEntryRow,
   type FinanceExpenseKind,
@@ -53,6 +57,8 @@ const KIND_TOTALS: Array<{
   { id: 'other_firm', label: FINANCE_EXPENSE_KIND_LABEL.other_firm, icon: BuildingOffice2Icon },
   { id: 'office', label: FINANCE_EXPENSE_KIND_LABEL.office, icon: BuildingOfficeIcon },
   { id: 'marketing', label: FINANCE_EXPENSE_KIND_LABEL.marketing, icon: MegaphoneIcon },
+  { id: 'rent', label: FINANCE_EXPENSE_KIND_LABEL.rent, icon: HomeModernIcon },
+  { id: 'partner_draws', label: FINANCE_EXPENSE_KIND_LABEL.partner_draws, icon: UserGroupIcon },
 ];
 
 function formatTotalsMap(map: Map<string, number>): string {
@@ -68,10 +74,81 @@ function isTotalsMapZero(map: Map<string, number>): boolean {
   return [...map.values()].every((amount) => !amount);
 }
 
+const EXPENSE_SUMMARY_THEMES: Record<
+  'total' | FinanceExpenseKind,
+  { bg: string; border: string; title: string; muted: string; icon: string; iconBg: string }
+> = {
+  total: {
+    bg: 'bg-[#f4ecff]',
+    border: 'border-[#eadbff]',
+    title: 'text-[#342b56]',
+    muted: 'text-[#6d6791]',
+    icon: 'text-[#8a63d2]',
+    iconBg: 'bg-white/70',
+  },
+  lead: {
+    bg: 'bg-[#e8f8f2]',
+    border: 'border-[#cfeede]',
+    title: 'text-[#2a5f50]',
+    muted: 'text-[#578874]',
+    icon: 'text-[#2d947b]',
+    iconBg: 'bg-white/70',
+  },
+  subcontractor: {
+    bg: 'bg-[#fff4e6]',
+    border: 'border-[#fde4c3]',
+    title: 'text-[#7a4a12]',
+    muted: 'text-[#a67c3d]',
+    icon: 'text-[#d97706]',
+    iconBg: 'bg-white/70',
+  },
+  other_firm: {
+    bg: 'bg-[#eaf0ff]',
+    border: 'border-[#d6e2ff]',
+    title: 'text-[#2f3f7a]',
+    muted: 'text-[#5f73a8]',
+    icon: 'text-[#4b63c9]',
+    iconBg: 'bg-white/70',
+  },
+  office: {
+    bg: 'bg-[#f1f5f9]',
+    border: 'border-[#e2e8f0]',
+    title: 'text-[#334155]',
+    muted: 'text-[#64748b]',
+    icon: 'text-[#64748b]',
+    iconBg: 'bg-white/70',
+  },
+  marketing: {
+    bg: 'bg-[#f4ecff]',
+    border: 'border-[#eadbff]',
+    title: 'text-[#342b56]',
+    muted: 'text-[#6d6791]',
+    icon: 'text-[#8a63d2]',
+    iconBg: 'bg-white/70',
+  },
+  rent: {
+    bg: 'bg-[#eaf0ff]',
+    border: 'border-[#d6e2ff]',
+    title: 'text-[#2f3f7a]',
+    muted: 'text-[#5f73a8]',
+    icon: 'text-[#4b63c9]',
+    iconBg: 'bg-white/70',
+  },
+  partner_draws: {
+    bg: 'bg-[#e8f8f2]',
+    border: 'border-[#cfeede]',
+    title: 'text-[#2a5f50]',
+    muted: 'text-[#578874]',
+    icon: 'text-[#2d947b]',
+    iconBg: 'bg-white/70',
+  },
+};
+
 function TotalPill({
   label,
   value,
   icon: Icon,
+  theme,
   loading = false,
   active = false,
   isZero = false,
@@ -80,34 +157,40 @@ function TotalPill({
   label: string;
   value: string;
   icon: React.ElementType;
+  theme: (typeof EXPENSE_SUMMARY_THEMES)['total'];
   loading?: boolean;
   active?: boolean;
   isZero?: boolean;
   onClick: () => void;
 }) {
   return (
-    <div className="flex min-w-[7.5rem] flex-col items-center gap-1.5">
-      <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500">
-        <Icon className="h-5 w-5 shrink-0" />
-        {label}
-      </span>
-      <button
-        type="button"
-        onClick={onClick}
-        aria-pressed={active}
-        className={`inline-flex h-14 min-w-[7.5rem] items-center justify-center rounded-full bg-white px-6 shadow-sm transition-all ${
-          active ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-[#ececec]' : 'hover:bg-gray-50 hover:shadow'
-        }`}
-      >
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={`${label}: ${value}`}
+      className={`flex min-h-[4.5rem] min-w-0 items-center justify-between gap-2 rounded-2xl border px-3 py-2.5 text-left shadow-sm transition-all duration-300 ${theme.bg} ${theme.border} ${
+        active ? 'ring-2 ring-primary/40 scale-[1.02]' : 'hover:scale-[1.02] hover:shadow-md'
+      }`}
+    >
+      <div className="min-w-0">
+        <p className={`truncate text-sm font-semibold leading-tight sm:text-base ${theme.title}`}>{label}</p>
         {loading ? (
-          <span className="loading loading-spinner loading-sm" />
+          <span className="loading loading-spinner loading-xs mt-1" />
         ) : (
-          <span className={`text-xl font-bold leading-none ${isZero ? 'text-gray-400' : 'text-gray-900'}`}>
+          <p
+            className={`mt-0.5 truncate text-sm font-bold leading-tight tabular-nums sm:text-base ${
+              isZero ? theme.muted : theme.title
+            }`}
+          >
             {value}
-          </span>
+          </p>
         )}
-      </button>
-    </div>
+      </div>
+      <div className={`shrink-0 rounded-full border border-white p-2.5 shadow-sm ${theme.iconBg}`}>
+        <Icon className={`h-8 w-8 ${theme.icon}`} aria-hidden />
+      </div>
+    </button>
   );
 }
 
@@ -239,10 +322,12 @@ function CreatedByCell({ name, photoUrl }: { name: string | null; photoUrl: stri
 }
 
 function RowActionsMenu({
+  canEdit,
   canDelete,
   onEdit,
   onDelete,
 }: {
+  canEdit: boolean;
   canDelete: boolean;
   onEdit: () => void;
   onDelete: () => void;
@@ -270,6 +355,8 @@ function RowActionsMenu({
     };
   }, [open]);
 
+  if (!canEdit && !canDelete) return null;
+
   return (
     <>
       <button
@@ -292,19 +379,21 @@ function RowActionsMenu({
               className="menu fixed z-[120] w-40 rounded-box border border-gray-200 bg-base-100 p-2 shadow-lg"
               style={{ top: pos.top, right: pos.right }}
             >
-              <li>
-                <button
-                  type="button"
-                  className="flex items-center gap-2"
-                  onClick={() => {
-                    setOpen(false);
-                    onEdit();
-                  }}
-                >
-                  <PencilSquareIcon className="h-4 w-4" />
-                  Edit
-                </button>
-              </li>
+              {canEdit ? (
+                <li>
+                  <button
+                    type="button"
+                    className="flex items-center gap-2"
+                    onClick={() => {
+                      setOpen(false);
+                      onEdit();
+                    }}
+                  >
+                    <PencilSquareIcon className="h-4 w-4" />
+                    Edit
+                  </button>
+                </li>
+              ) : null}
               {canDelete ? (
                 <li>
                   <button
@@ -328,7 +417,9 @@ function RowActionsMenu({
   );
 }
 
-const FinanceExpensesTab: React.FC = () => {
+const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
+  canManageRestrictedKinds = false,
+}) => {
   const { isSuperUser } = useAdminRole();
   const [rows, setRows] = useState<FinanceExpenseEntryRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -342,6 +433,11 @@ const FinanceExpensesTab: React.FC = () => {
   const [dateFrom, setDateFrom] = useState(localDateIso);
   const [dateTo, setDateTo] = useState(localDateIso);
 
+  const visibleKindTotals = useMemo(
+    () => KIND_TOTALS.filter((k) => canViewFinanceExpenseKind(k.id, canManageRestrictedKinds)),
+    [canManageRestrictedKinds],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -349,6 +445,7 @@ const FinanceExpensesTab: React.FC = () => {
         search,
         dateFrom,
         dateTo,
+        hidePartnerDraws: !canManageRestrictedKinds,
       });
       setRows(data);
       setDocsRow((prev) => {
@@ -362,7 +459,7 @@ const FinanceExpensesTab: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, search]);
+  }, [canManageRestrictedKinds, dateFrom, dateTo, search]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -377,6 +474,7 @@ const FinanceExpensesTab: React.FC = () => {
   };
 
   const openEdit = (row: FinanceExpenseEntryRow) => {
+    if (!canEditFinanceExpenseKind(row.kind, canManageRestrictedKinds)) return;
     setEditRow(row);
     setDrawerOpen(true);
   };
@@ -402,32 +500,37 @@ const FinanceExpensesTab: React.FC = () => {
     }
   };
 
+  const visibleRows = useMemo(
+    () => rows.filter((row) => canViewFinanceExpenseKind(row.kind, canManageRestrictedKinds)),
+    [canManageRestrictedKinds, rows],
+  );
+
   const totalsByCurrency = useMemo(() => {
     const map = new Map<string, number>();
-    rows.forEach((row) => {
+    visibleRows.forEach((row) => {
       const code = (row.currency_code || 'ILS').trim().toUpperCase() || 'ILS';
       map.set(code, (map.get(code) || 0) + (Number(row.amount) || 0));
     });
     return map;
-  }, [rows]);
+  }, [visibleRows]);
 
   const totalsByKind = useMemo(() => {
     const byKind = new Map<FinanceExpenseKind, Map<string, number>>();
-    KIND_TOTALS.forEach((k) => byKind.set(k.id, new Map()));
-    rows.forEach((row) => {
+    visibleKindTotals.forEach((k) => byKind.set(k.id, new Map()));
+    visibleRows.forEach((row) => {
       const code = (row.currency_code || 'ILS').trim().toUpperCase() || 'ILS';
       const map = byKind.get(row.kind) ?? new Map<string, number>();
       map.set(code, (map.get(code) || 0) + (Number(row.amount) || 0));
       byKind.set(row.kind, map);
     });
     return byKind;
-  }, [rows]);
+  }, [visibleKindTotals, visibleRows]);
 
   const filteredRows = useMemo(() => {
-    if (selectedKinds.length === 0) return rows;
+    if (selectedKinds.length === 0) return visibleRows;
     const selected = new Set(selectedKinds);
-    return rows.filter((row) => selected.has(row.kind));
-  }, [rows, selectedKinds]);
+    return visibleRows.filter((row) => selected.has(row.kind));
+  }, [visibleRows, selectedKinds]);
 
   const toggleKind = (kindId: FinanceExpenseKind) => {
     setSelectedKinds((prev) =>
@@ -437,45 +540,41 @@ const FinanceExpensesTab: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl md:text-2xl font-bold text-gray-900">Expenses</h2>
-          <p className="mt-1 text-sm text-gray-500">Add client, firm, office, and marketing expenses.</p>
-        </div>
-        <div className="flex flex-wrap items-end gap-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <button
+            type="button"
+            className="btn btn-primary col-start-2 row-start-1 h-auto min-h-[4.5rem] w-full gap-2 rounded-2xl px-3 py-2.5 text-base font-semibold sm:col-start-5 sm:text-lg"
+            onClick={openCreate}
+          >
+            <PlusIcon className="h-8 w-8" />
+            Add expense
+          </button>
           <TotalPill
             label="Total"
             icon={BanknotesIcon}
+            theme={EXPENSE_SUMMARY_THEMES.total}
             value={formatTotalsMap(totalsByCurrency)}
             isZero={isTotalsMapZero(totalsByCurrency)}
             loading={loading && rows.length === 0}
             active={selectedKinds.length === 0}
             onClick={() => setSelectedKinds([])}
           />
-          {KIND_TOTALS.map((kindMeta) => {
+          {visibleKindTotals.map((kindMeta) => {
             const kindTotals = totalsByKind.get(kindMeta.id) ?? new Map();
             return (
-            <TotalPill
-              key={kindMeta.id}
-              label={kindMeta.label}
-              icon={kindMeta.icon}
-              value={formatTotalsMap(kindTotals)}
-              isZero={isTotalsMapZero(kindTotals)}
-              loading={loading && rows.length === 0}
-              active={selectedKinds.includes(kindMeta.id)}
-              onClick={() => toggleKind(kindMeta.id)}
-            />
+              <TotalPill
+                key={kindMeta.id}
+                label={kindMeta.label}
+                icon={kindMeta.icon}
+                theme={EXPENSE_SUMMARY_THEMES[kindMeta.id]}
+                value={formatTotalsMap(kindTotals)}
+                isZero={isTotalsMapZero(kindTotals)}
+                loading={loading && rows.length === 0}
+                active={selectedKinds.includes(kindMeta.id)}
+                onClick={() => toggleKind(kindMeta.id)}
+              />
             );
           })}
-          <button
-            type="button"
-            className="btn btn-primary h-14 min-h-14 gap-1.5 rounded-full px-5"
-            onClick={openCreate}
-          >
-            <PlusIcon className="h-5 w-5" />
-            Add expense
-          </button>
-        </div>
       </div>
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -566,7 +665,7 @@ const FinanceExpensesTab: React.FC = () => {
                   colSpan={8}
                   className="rounded-2xl bg-white py-10 text-center text-base text-gray-500 shadow-sm"
                 >
-                  {rows.length === 0
+                  {visibleRows.length === 0
                     ? 'No expenses for this date range.'
                     : 'No expenses for the selected kinds.'}
                 </td>
@@ -628,6 +727,7 @@ const FinanceExpensesTab: React.FC = () => {
                       className={`w-12 bg-white px-1 py-3 text-right ${rowLine} ${first ? 'rounded-tr-2xl' : ''} ${last ? 'rounded-br-2xl' : ''}`}
                     >
                       <RowActionsMenu
+                        canEdit={canEditFinanceExpenseKind(row.kind, canManageRestrictedKinds)}
                         canDelete={isSuperUser}
                         onEdit={() => openEdit(row)}
                         onDelete={() => void handleDelete(row)}
@@ -644,6 +744,7 @@ const FinanceExpensesTab: React.FC = () => {
       <AddExpenseDrawer
         open={drawerOpen}
         editRow={editRow}
+        canManageRestrictedKinds={canManageRestrictedKinds}
         onClose={closeDrawer}
         onSaved={() => void load()}
       />

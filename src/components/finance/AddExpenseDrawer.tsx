@@ -17,14 +17,19 @@ import {
   createMarketingFinanceExpense,
   createOfficeFinanceExpense,
   createOtherFirmFinanceExpense,
+  createPartnerDrawFinanceExpense,
+  createRentFinanceExpense,
   createSubcontractorFinanceExpense,
   ensureFinanceExpenseRegistry,
   fetchFinanceExpenseEditDetails,
   updateFinanceExpense,
+  canAddFinanceExpenseKind,
+  canEditFinanceExpenseKind,
   FINANCE_EXPENSE_KIND_LABEL,
   type FinanceExpenseEntryRow,
   type FinanceExpenseKind,
 } from '../../lib/financeExpenseCreate';
+import { fetchActiveStaffEmployees, type ActiveStaffEmployee } from '../../lib/employeeSalaries';
 import type { LeadFeeIdentity } from '../../lib/leadSubcontractorFees';
 import {
   FINANCE_EXPENSE_DOC_MAX_FILES,
@@ -47,8 +52,17 @@ type FirmOption = { id: string; name: string };
 type CurrencyOption = { id: number; name: string; iso_code: string | null };
 type OfficeTypeOption = { id: string; label: string };
 type SourceOption = { id: number; name: string };
+type RentOfficeOption = { id: number; name: string };
 
-const KINDS: FinanceExpenseKind[] = ['lead', 'subcontractor', 'other_firm', 'office', 'marketing'];
+const KINDS: FinanceExpenseKind[] = [
+  'lead',
+  'subcontractor',
+  'other_firm',
+  'office',
+  'marketing',
+  'rent',
+  'partner_draws',
+];
 const ISO_CURRENCIES = ['ILS', 'USD', 'EUR', 'GBP'];
 const DOC_TYPES: FinanceExpenseDocumentType[] = ['invoice', 'receipt', 'other'];
 
@@ -120,9 +134,16 @@ type Props = {
   onClose: () => void;
   onSaved: () => void;
   editRow?: FinanceExpenseEntryRow | null;
+  canManageRestrictedKinds?: boolean;
 };
 
-const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = null }) => {
+const AddExpenseDrawer: React.FC<Props> = ({
+  open,
+  onClose,
+  onSaved,
+  editRow = null,
+  canManageRestrictedKinds = false,
+}) => {
   const [kind, setKind] = useState<FinanceExpenseKind>('lead');
   const [saving, setSaving] = useState(false);
 
@@ -148,6 +169,11 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
   const [sources, setSources] = useState<SourceOption[]>([]);
   const [sourceId, setSourceId] = useState('');
   const [sourceSearch, setSourceSearch] = useState('');
+  const [rentOffices, setRentOffices] = useState<RentOfficeOption[]>([]);
+  const [rentOfficeId, setRentOfficeId] = useState('');
+  const [employees, setEmployees] = useState<ActiveStaffEmployee[]>([]);
+  const [employeeId, setEmployeeId] = useState('');
+  const [employeeSearch, setEmployeeSearch] = useState('');
 
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
   const [currencyId, setCurrencyId] = useState('');
@@ -164,7 +190,13 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
 
   const needsLead = kind === 'lead' || kind === 'subcontractor';
   const needsFirm = kind === 'subcontractor' || kind === 'other_firm' || kind === 'office';
-  const usesIsoCurrency = kind === 'other_firm' || kind === 'office' || kind === 'marketing';
+  const usesIsoCurrency = kind === 'other_firm' || kind === 'office';
+  const usesNisOnly = kind === 'marketing' || kind === 'rent' || kind === 'partner_draws';
+  const usesMonth = kind === 'other_firm' || kind === 'marketing' || kind === 'rent' || kind === 'partner_draws';
+  const visibleKinds = useMemo(
+    () => KINDS.filter((k) => canAddFinanceExpenseKind(k, canManageRestrictedKinds)),
+    [canManageRestrictedKinds],
+  );
 
   const resetForm = useCallback(() => {
     setKind('lead');
@@ -182,6 +214,9 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
     setOfficeTypeId('');
     setSourceId('');
     setSourceSearch('');
+    setRentOfficeId('');
+    setEmployeeId('');
+    setEmployeeSearch('');
     setCurrencyId('');
     setIsoCurrency(FIRM_MANAGEMENT_DEFAULT_CURRENCY);
     setAmount('');
@@ -202,11 +237,19 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
   }, [open, editRow, resetForm]);
 
   useEffect(() => {
+    if (!open || editRow) return;
+    if (!canAddFinanceExpenseKind(kind, canManageRestrictedKinds)) {
+      setKind('lead');
+    }
+  }, [open, editRow, kind, canManageRestrictedKinds]);
+
+  useEffect(() => {
     if (!open) return;
     let cancelled = false;
     void (async () => {
       try {
-        const [typeRes, firmTypeRes, officeTypeRes, currencyRes, firmRes, sourceRes] = await Promise.all([
+        const [typeRes, firmTypeRes, officeTypeRes, currencyRes, firmRes, sourceRes, rentRes, employeeRes] =
+          await Promise.all([
           fetchLeadExpenseTypes(),
           fetchActiveExpenseTypes(),
           supabase
@@ -217,6 +260,12 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
           supabase.from('accounting_currencies').select('id, name, iso_code').order('name'),
           supabase.from('firms').select('id, name').order('name'),
           supabase.from('misc_leadsource').select('id, name').order('name'),
+          supabase
+            .from('rent_offices')
+            .select('id, name, is_active, sort_order')
+            .eq('is_active', true)
+            .order('sort_order', { ascending: true }),
+          fetchActiveStaffEmployees(),
         ]);
         if (cancelled) return;
         setLeadTypes(typeRes);
@@ -241,6 +290,13 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
         setSources(
           (sourceRes.data || []).map((s: any) => ({ id: Number(s.id), name: String(s.name || `#${s.id}`) })),
         );
+        const rentRows = (rentRes.data || []).map((r: any) => ({
+          id: Number(r.id),
+          name: String(r.name || `Office #${r.id}`),
+        }));
+        setRentOffices(rentRows);
+        if (rentRows[0]?.id) setRentOfficeId((prev) => prev || String(rentRows[0].id));
+        setEmployees(employeeRes || []);
       } catch (err) {
         console.warn('[AddExpenseDrawer] lookups:', err);
       }
@@ -263,6 +319,9 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
     setFirmSearch('');
     setSourceId('');
     setSourceSearch('');
+    setRentOfficeId('');
+    setEmployeeId('');
+    setEmployeeSearch('');
     setContactId('');
     setPaidBy('client');
     setIncludeVat(false);
@@ -298,6 +357,8 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
         setPaid(details.paid);
         setPaidAt(details.paidAt || '');
         if (details.leadSourceId) setSourceId(String(details.leadSourceId));
+        if (details.rentOfficeId) setRentOfficeId(String(details.rentOfficeId));
+        if (details.employeeId) setEmployeeId(String(details.employeeId));
         if (details.leadType === 'legacy' && details.legacyLeadId != null) {
           setSelectedLead({
             leadType: 'legacy',
@@ -450,8 +511,16 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
     return sources.filter((s) => s.name.toLowerCase().includes(q)).slice(0, 40);
   }, [sourceSearch, sources]);
 
+  const filteredEmployees = useMemo(() => {
+    const q = employeeSearch.trim().toLowerCase();
+    if (!q) return employees.slice(0, 40);
+    return employees.filter((e) => e.display_name.toLowerCase().includes(q)).slice(0, 40);
+  }, [employeeSearch, employees]);
+
   const selectedFirm = firms.find((f) => f.id === firmId) || null;
   const selectedSource = sources.find((s) => String(s.id) === sourceId) || null;
+  const selectedRentOffice = rentOffices.find((o) => String(o.id) === rentOfficeId) || null;
+  const selectedEmployee = employees.find((e) => String(e.id) === employeeId) || null;
   const selectedCurrency = currencies.find((c) => String(c.id) === currencyId) || null;
 
   const addFiles = (fileList: FileList | File[]) => {
@@ -495,6 +564,13 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
 
     setSaving(true);
     try {
+      if (editRow) {
+        if (!canEditFinanceExpenseKind(kind, canManageRestrictedKinds)) {
+          throw new Error('You do not have permission to edit this expense');
+        }
+      } else if (!canAddFinanceExpenseKind(kind, canManageRestrictedKinds)) {
+        throw new Error('You do not have permission to add this expense type');
+      }
       let entryId: number | null = editRow && editRow.id > 0 ? editRow.id : null;
       if (kind === 'lead') {
         if (!selectedLead) throw new Error('Choose a lead');
@@ -634,7 +710,85 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
           entryId = result.entryId;
           toast.success('Office expense added');
         }
-      } else {
+      } else if (kind === 'rent') {
+        if (!selectedRentOffice) throw new Error('Choose an office');
+        if (editRow) {
+          await updateFinanceExpense({
+            row: editRow,
+            amount: rounded,
+            month,
+            rentOfficeId: selectedRentOffice.id,
+            rentOfficeName: selectedRentOffice.name,
+          });
+          toast.success('Expense updated');
+        } else {
+          let result = await createRentFinanceExpense({
+            officeId: selectedRentOffice.id,
+            officeName: selectedRentOffice.name,
+            expenseMonth: month,
+            amount: rounded,
+          });
+          if (result.needsConfirm) {
+            const ok = window.confirm(
+              `${selectedRentOffice.name} already has ₪${result.existingAmount?.toLocaleString()} rent for ${month}. Replace it with ₪${rounded.toLocaleString()}?`,
+            );
+            if (!ok) {
+              setSaving(false);
+              return;
+            }
+            result = await createRentFinanceExpense({
+              officeId: selectedRentOffice.id,
+              officeName: selectedRentOffice.name,
+              expenseMonth: month,
+              amount: rounded,
+              confirmUpdate: true,
+            });
+            toast.success('Rent updated');
+          } else {
+            toast.success('Rent added');
+          }
+          entryId = result.entryId;
+        }
+      } else if (kind === 'partner_draws') {
+        if (!selectedEmployee) throw new Error('Choose an employee');
+        if (editRow) {
+          await updateFinanceExpense({
+            row: editRow,
+            amount: rounded,
+            month,
+            employeeId: selectedEmployee.id,
+            employeeName: selectedEmployee.display_name,
+          });
+          toast.success('Expense updated');
+        } else {
+          let result = await createPartnerDrawFinanceExpense({
+            employeeId: selectedEmployee.id,
+            employeeName: selectedEmployee.display_name,
+            expenseMonth: month,
+            amount: rounded,
+          });
+          if (result.needsConfirm) {
+            const ok = window.confirm(
+              `${selectedEmployee.display_name} already has ₪${result.existingAmount?.toLocaleString()} for ${month}. Replace it with ₪${rounded.toLocaleString()}?`,
+            );
+            if (!ok) {
+              setSaving(false);
+              return;
+            }
+            result = await createPartnerDrawFinanceExpense({
+              employeeId: selectedEmployee.id,
+              employeeName: selectedEmployee.display_name,
+              expenseMonth: month,
+              amount: rounded,
+              confirmUpdate: true,
+            });
+            toast.success('Partner draw updated');
+          } else {
+            toast.success('Partner draw added');
+          }
+          entryId = result.entryId;
+        }
+      } else if (kind === 'marketing') {
         if (!selectedSource) throw new Error('Choose a lead source');
         if (editRow) {
           await updateFinanceExpense({
@@ -673,6 +827,8 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
           }
           entryId = result.entryId;
         }
+      } else {
+        throw new Error('Choose an expense type');
       }
 
       if (pendingDocs.length) {
@@ -741,7 +897,7 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
               disabled={Boolean(editRow) || editLoading}
               onChange={(e) => setKind(e.target.value as FinanceExpenseKind)}
             >
-              {KINDS.map((k) => (
+              {visibleKinds.map((k) => (
                 <option key={k} value={k}>
                   {FINANCE_EXPENSE_KIND_LABEL[k]}
                 </option>
@@ -1018,6 +1174,55 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
             </div>
           ) : null}
 
+          {kind === 'rent' ? (
+            <div className="form-control">
+              <label className="label py-1">
+                <span className="label-text font-medium text-slate-700">Office</span>
+              </label>
+              <select
+                className="select select-bordered w-full"
+                value={rentOfficeId}
+                onChange={(e) => setRentOfficeId(e.target.value)}
+              >
+                <option value="">Select office</option>
+                {rentOffices.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+          {kind === 'partner_draws' ? (
+            <div className="form-control">
+              <label className="label py-1">
+                <span className="label-text font-medium text-slate-700">Employee</span>
+              </label>
+              <div className="relative mb-2">
+                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  className="input input-bordered w-full pl-9"
+                  placeholder="Search employees"
+                  value={employeeSearch}
+                  onChange={(e) => setEmployeeSearch(e.target.value)}
+                />
+              </div>
+              <select
+                className="select select-bordered w-full"
+                value={employeeId}
+                onChange={(e) => setEmployeeId(e.target.value)}
+              >
+                <option value="">Select employee</option>
+                {filteredEmployees.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.display_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
           <div className="flex items-end gap-2">
             <div className="form-control min-w-0 flex-1">
               <label className="label py-1">
@@ -1040,7 +1245,7 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
               <label className="label py-1">
                 <span className="label-text font-medium text-slate-700">Currency</span>
               </label>
-              {kind === 'marketing' ? (
+              {usesNisOnly ? (
                 <select className="select select-bordered w-full" value="ILS" disabled>
                   <option value="ILS">{currencyOptionLabel('ILS')}</option>
                 </select>
@@ -1072,7 +1277,7 @@ const AddExpenseDrawer: React.FC<Props> = ({ open, onClose, onSaved, editRow = n
             </div>
           </div>
 
-          {kind === 'other_firm' || kind === 'marketing' ? (
+          {usesMonth ? (
             <div className="form-control">
               <label className="label py-1">
                 <span className="label-text font-medium text-slate-700">Month</span>

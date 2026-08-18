@@ -294,7 +294,9 @@ const FinanceManagementPage: React.FC = () => {
         )}
         {hubTab === 'signed' && canViewCollectionTabs && <FinanceSignedSalesTab />}
         {hubTab === 'expenses' && canViewAllExpenses && <FinanceAllExpensesTab />}
-        {hubTab === 'expense-entry' && <FinanceExpensesTab />}
+        {hubTab === 'expense-entry' && (
+          <FinanceExpensesTab canManageRestrictedKinds={canViewCollectionTabs} />
+        )}
       </div>
     </div>
   );

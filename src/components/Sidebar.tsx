@@ -15,6 +15,7 @@ import {
   FolderIcon,
   ChartPieIcon,
   PlusCircleIcon,
+  PlusIcon,
   DocumentChartBarIcon,
   ClipboardDocumentListIcon,
   Cog6ToothIcon,
@@ -64,6 +65,24 @@ interface SidebarItem {
   path?: string;
   subItems?: SidebarItem[];
 }
+
+const isCollectionFlag = (value: unknown) =>
+  value === true || value === 't' || value === 'true' || value === 1;
+
+const ADD_EXPENSE_SIDEBAR_ITEM: SidebarItem = {
+  icon: PlusIcon,
+  label: 'Add expense',
+  path: '/reports/finance-management?tab=expense-entry',
+};
+
+const withFinanceNavForRole = (items: SidebarItem[], canSeeFinancePipeline: boolean): SidebarItem[] => {
+  if (canSeeFinancePipeline) return items;
+  return items.map((item) =>
+    item.label === 'Finance Pipeline' ? ADD_EXPENSE_SIDEBAR_ITEM : item,
+  );
+};
+
+const navPathname = (path?: string) => (path ? path.split('?')[0] : '');
 
 const desktopSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
@@ -239,6 +258,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             userDepartment: data.userDepartment || '',
             bonusesRole: typeof data.bonusesRole === 'string' ? data.bonusesRole : '',
             leadTimeReportingEnabled: data.leadTimeReportingEnabled === true,
+            hasCollectionAccess: data.hasCollectionAccess === true,
             isSuperUser: data.isSuperUser || false,
             cachedUserId: cachedUserId
           };
@@ -253,6 +273,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       userDepartment: '',
       bonusesRole: '',
       leadTimeReportingEnabled: false,
+      hasCollectionAccess: false,
       isSuperUser: false,
       cachedUserId: null
     };
@@ -265,6 +286,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [bonusesRole, setBonusesRole] = React.useState<string>(initialUserInfo.bonusesRole || '');
   const [leadTimeReportingEnabled, setLeadTimeReportingEnabled] = React.useState<boolean>(
     initialUserInfo.leadTimeReportingEnabled === true,
+  );
+  const [hasCollectionAccess, setHasCollectionAccess] = React.useState<boolean>(
+    initialUserInfo.hasCollectionAccess === true,
   );
   // Use cached name, then AuthContext, then prop, then email
   const initialName = initialUserInfo.userOfficialName || userFullName || userName || authUser?.email || 'User';
@@ -329,6 +353,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             setUserOfficialName('');
             setUserRoleFromDB('User');
             setUserDepartment('General');
+            setHasCollectionAccess(false);
             return;
           }
 
@@ -355,7 +380,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                 setUserRoleFromDB(data.userRoleFromDB || 'User');
                 setUserDepartment(data.userDepartment || 'General');
                 setBonusesRole(typeof data.bonusesRole === 'string' ? data.bonusesRole : '');
-                return; // Skip fetch - use cache
+                if (typeof data.hasCollectionAccess === 'boolean') {
+                  setHasCollectionAccess(data.hasCollectionAccess);
+                  return; // Skip fetch - use cache
+                }
+                // Older cache without collection flag — fall through and refresh.
               } else {
                 // Cache expired - clear it
                 sessionStorage.removeItem(cacheKey);
@@ -397,6 +426,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               bonuses_role,
               lead_time_reporting_enabled,
               department_id,
+              is_collection,
               tenant_departement!department_id(
                 id,
                 name
@@ -429,6 +459,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 bonuses_role,
                 lead_time_reporting_enabled,
                 department_id,
+                is_collection,
                 tenant_departement!department_id(
                   id,
                   name
@@ -451,6 +482,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             let deptName = 'General';
             let rawBonusesRole = '';
             let reportingEnabled = false;
+            let collectionAccess = false;
 
             if (userData.tenants_employee) {
               // Handle both array and single object responses
@@ -472,6 +504,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                   empData.lead_time_reporting_enabled === 'true' ||
                   empData.lead_time_reporting_enabled === 1;
                 setLeadTimeReportingEnabled(reportingEnabled);
+                collectionAccess = isCollectionFlag(empData.is_collection);
+                setHasCollectionAccess(collectionAccess);
 
                 // Set department
                 const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
@@ -484,6 +518,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 setUserRoleFromDB('User');
                 setBonusesRole('');
                 setLeadTimeReportingEnabled(false);
+                setHasCollectionAccess(false);
                 setUserDepartment(''); // Clear department if no employee data
               }
             } else {
@@ -493,6 +528,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               setUserRoleFromDB('User');
               setBonusesRole('');
               setLeadTimeReportingEnabled(false);
+              setHasCollectionAccess(false);
               setUserDepartment(''); // Clear department if no employee relationship
             }
 
@@ -504,6 +540,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 userDepartment: deptName,
                 bonusesRole: rawBonusesRole,
                 leadTimeReportingEnabled: reportingEnabled,
+                hasCollectionAccess: collectionAccess,
               };
               sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
               sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
@@ -519,6 +556,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             setUserOfficialName(officialName);
             setUserRoleFromDB('User');
             setBonusesRole('');
+            setHasCollectionAccess(false);
             setUserDepartment(''); // Clear department if user not found
 
             // Cache basic data with user ID
@@ -528,6 +566,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 userRoleFromDB: 'User',
                 userDepartment: 'General',
                 bonusesRole: '',
+                hasCollectionAccess: false,
               };
               sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
               sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
@@ -648,33 +687,40 @@ const Sidebar: React.FC<SidebarProps> = ({
     leadTimeReportingEnabled,
   });
 
+  const canSeeFinancePipeline = isSuperUser || hasCollectionAccess;
+
   const filteredDesktopItems = React.useMemo(() => {
     const hideLeadTime = (items: SidebarItem[]) =>
       canSeeLeadTimeReport
         ? items
         : items.filter((item) => item.path !== '/lead-time-report');
 
-    if (isSuperUser) return hideLeadTime(desktopSidebarItems);
-    return hideLeadTime(desktopSidebarItems)
-      .filter(item =>
-        item.label !== 'WhatsApp Leads' &&
-        item.label !== 'Email Leads' &&
-        item.label !== 'Calls Ledger' &&
-        item.label !== 'HR Management'
-      )
-      .map(item => {
-        // Filter subItems to remove "Assign Leads" for non-superusers
-        if (item.subItems) {
-          return {
-            ...item,
-            subItems: item.subItems.filter((subItem) =>
-              isSuperUser || subItem.path !== '/new-cases'
-            ),
-          };
-        }
-        return item;
-      });
-  }, [isSuperUser, canSeeLeadTimeReport]);
+    const withFinance = (items: SidebarItem[]) =>
+      withFinanceNavForRole(items, canSeeFinancePipeline);
+
+    if (isSuperUser) return withFinance(hideLeadTime(desktopSidebarItems));
+    return withFinance(
+      hideLeadTime(desktopSidebarItems)
+        .filter(item =>
+          item.label !== 'WhatsApp Leads' &&
+          item.label !== 'Email Leads' &&
+          item.label !== 'Calls Ledger' &&
+          item.label !== 'HR Management'
+        )
+        .map(item => {
+          // Filter subItems to remove "Assign Leads" for non-superusers
+          if (item.subItems) {
+            return {
+              ...item,
+              subItems: item.subItems.filter((subItem) =>
+                isSuperUser || subItem.path !== '/new-cases'
+              ),
+            };
+          }
+          return item;
+        }),
+    );
+  }, [isSuperUser, canSeeLeadTimeReport, canSeeFinancePipeline]);
 
   const filteredMobileItems = React.useMemo(() => {
     const hideLeadTime = (items: SidebarItem[]) =>
@@ -682,27 +728,32 @@ const Sidebar: React.FC<SidebarProps> = ({
         ? items
         : items.filter((item) => item.path !== '/lead-time-report');
 
-    if (isSuperUser) return hideLeadTime(mobileSidebarItems);
-    return hideLeadTime(mobileSidebarItems)
-      .filter(item =>
-        item.label !== 'WhatsApp Leads' &&
-        item.label !== 'Email Leads' &&
-        item.label !== 'Calls Ledger' &&
-        item.label !== 'HR Management'
-      )
-      .map(item => {
-        // Filter subItems to remove "Assign Leads" for non-superusers
-        if (item.subItems) {
-          return {
-            ...item,
-            subItems: item.subItems.filter((subItem) =>
-              isSuperUser || subItem.path !== '/new-cases'
-            ),
-          };
-        }
-        return item;
-      });
-  }, [isSuperUser, canSeeLeadTimeReport]);
+    const withFinance = (items: SidebarItem[]) =>
+      withFinanceNavForRole(items, canSeeFinancePipeline);
+
+    if (isSuperUser) return withFinance(hideLeadTime(mobileSidebarItems));
+    return withFinance(
+      hideLeadTime(mobileSidebarItems)
+        .filter(item =>
+          item.label !== 'WhatsApp Leads' &&
+          item.label !== 'Email Leads' &&
+          item.label !== 'Calls Ledger' &&
+          item.label !== 'HR Management'
+        )
+        .map(item => {
+          // Filter subItems to remove "Assign Leads" for non-superusers
+          if (item.subItems) {
+            return {
+              ...item,
+              subItems: item.subItems.filter((subItem) =>
+                isSuperUser || subItem.path !== '/new-cases'
+              ),
+            };
+          }
+          return item;
+        }),
+    );
+  }, [isSuperUser, canSeeLeadTimeReport, canSeeFinancePipeline]);
 
   // Hide internal sidebar for externals, and while external-vs-internal is resolving on `/`
   // (otherwise staff nav flashes on refresh before `useExternalUser` finishes).
@@ -744,7 +795,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   const hasSubItems = !!item.subItems;
                   const isExpanded = expandedMenu === item.label;
                   // Highlight parent if itself or any subItem is active
-                  const isActive = (item.path && location.pathname === item.path) || isSubItemActive(item.subItems);
+                  const isActive = (item.path && location.pathname === navPathname(item.path)) || isSubItemActive(item.subItems);
 
                   if (showDockedDesktop) {
                     return (
@@ -905,7 +956,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 {filteredMobileItems
                   .map((item, index) => {
                     const Icon = item.icon;
-                    const isActive = item.path && location.pathname === item.path;
+                    const isActive = item.path && location.pathname === navPathname(item.path);
                     const hasSubItems = !!item.subItems;
                     const isExpanded = expandedMenu === item.label;
                     return (

@@ -280,7 +280,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
     {
       id: 'expense-entry' as const,
       title: 'Expenses',
-      description: 'Add client, office, marketing, firm, and subcontractor expenses.',
+      description: 'Add client, office, marketing, rent, firm, subcontractor, and partner-draw expenses.',
       icon: ReceiptPercentIcon,
     },
     ...(canViewExpenses
