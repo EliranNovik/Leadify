@@ -38,6 +38,8 @@ export interface EmailTemplateContext {
   portalLink?: string | null;
   /** Portal password / access code → {{access_code}} */
   accessCode?: string | null;
+  /** Digital contract signing URL → {{contract_link}} and {{link}} */
+  contractLink?: string | null;
 }
 
 /**
@@ -271,6 +273,10 @@ export async function replaceEmailTemplateParams(
   result = applyTemplateParam(result, 'lead_type', context.leadType || '');
   result = applyTemplateParam(result, 'portal_link', context.portalLink || '');
   result = applyTemplateParam(result, 'access_code', context.accessCode || '');
+  result = applyTemplateParam(result, 'contract_link', context.contractLink || '');
+  if (context.contractLink) {
+    result = applyTemplateParam(result, 'link', context.contractLink);
+  }
   
   // Check if any meeting parameters need to be replaced
   const hasDate = templateHasParam(result, 'date');
@@ -377,6 +383,10 @@ export function replaceEmailTemplateParamsSync(
   result = applyTemplateParam(result, 'lead_type', context.leadType || '');
   result = applyTemplateParam(result, 'portal_link', context.portalLink || '');
   result = applyTemplateParam(result, 'access_code', context.accessCode || '');
+  result = applyTemplateParam(result, 'contract_link', context.contractLink || '');
+  if (context.contractLink) {
+    result = applyTemplateParam(result, 'link', context.contractLink);
+  }
   result = applyMeetingDateReplacements(result, context.meetingDate || '');
   result = applyMeetingTimeReplacements(result, context.meetingTime || '');
   result = applyLocationReplacements(

@@ -2429,3 +2429,105 @@ html.entry-kiosk-active::after {
   pointer-events: none;
   background: #0a1628;
 }
+
+/* Shared A4 contract paper (editor + public signing pages) */
+.contract-studio {
+  background-color: #f0eee9;
+  background-image: radial-gradient(80% 40% at 50% -8%, rgba(255, 255, 255, 0.85), transparent 70%);
+}
+
+.contract-a4-page {
+  width: min(210mm, calc(100% - 1.5rem));
+  min-height: 297mm;
+  max-width: 100%;
+  box-sizing: border-box;
+  background: #fff;
+  border: 1px solid rgba(28, 25, 23, 0.07);
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 1px rgba(28, 25, 23, 0.03),
+    0 2px 6px rgba(28, 25, 23, 0.04),
+    0 24px 48px rgba(28, 25, 23, 0.08);
+  padding: 18mm 16mm 20mm;
+}
+
+.contract-a4-page.public-contract-paper {
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    0 12px 28px rgba(0, 0, 0, 0.12),
+    0 28px 56px rgba(0, 0, 0, 0.14);
+}
+
+.public-contract-watermark {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 2;
+  max-width: 70%;
+  color: rgba(28, 25, 23, 0.22);
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  line-height: 1.3;
+  text-align: right;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.public-contract-paper input[type="text"],
+.public-contract-paper input[type="date"],
+.public-contract-paper input:not([type]) {
+  border: none;
+  border-bottom: 1px solid #a8a29e;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+.public-contract-paper input[type="text"]:hover,
+.public-contract-paper input[type="date"]:hover,
+.public-contract-paper input:not([type]):hover {
+  border-bottom-color: #57534e;
+}
+
+.public-contract-paper input[type="text"]:focus,
+.public-contract-paper input[type="date"]:focus,
+.public-contract-paper input:not([type]):focus {
+  border-bottom-color: #172554;
+  box-shadow: none;
+  outline: none;
+}
+
+.public-contract-paper input[type="date"]::-webkit-datetime-edit,
+.public-contract-paper input[type="date"]::-webkit-inner-spin-button,
+.public-contract-paper input[type="date"]::-webkit-clear-button {
+  background: transparent;
+}
+
+@media (max-width: 639px) {
+  .contract-a4-page.public-contract-paper {
+    width: 100%;
+    max-width: none;
+    min-height: 0;
+    border-radius: 1.25rem 1.25rem 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    box-shadow:
+      0 -6px 20px rgba(0, 0, 0, 0.1),
+      0 16px 40px rgba(0, 0, 0, 0.12);
+    padding: 1.25rem 1rem 2rem;
+  }
+}
+
+@media print {
+  .contract-a4-page {
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+}

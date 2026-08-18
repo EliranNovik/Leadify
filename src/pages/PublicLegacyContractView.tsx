@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import SignatureCanvas from 'react-signature-canvas';
 import { ShareIcon } from '@heroicons/react/24/outline';
+import { shareOrCopyUrl } from '../lib/webShare';
 
 type InlineSignatureFieldProps = {
   index: number;
@@ -18,11 +19,8 @@ const CONTRACT_STAMP_SRC = '/חתימה מסמכים (5).png';
 const InlineSignatureField: React.FC<InlineSignatureFieldProps> = ({ index, registerPad }) => {
   const padRef = useRef<SignatureCanvas | null>(null);
   return (
-    <span
-      className="inline-flex items-start gap-2 md:gap-4 flex-wrap my-1"
-      style={{ display: 'inline-flex', verticalAlign: 'middle', maxWidth: '100%' }}
-    >
-      <div className="inline-flex flex-col align-middle gap-1 max-w-[min(100%,300px)] flex-shrink-0">
+      <div className="inline-flex w-full flex-wrap items-end justify-between gap-4 md:gap-8 my-1">
+      <div className="inline-flex flex-col align-middle gap-1 max-w-[min(100%,22rem)] flex-shrink-0">
         <SignatureCanvas
           ref={(instance) => {
             padRef.current = instance;
@@ -30,16 +28,16 @@ const InlineSignatureField: React.FC<InlineSignatureFieldProps> = ({ index, regi
           }}
           penColor="#1e3a8a"
           canvasProps={{
-            width: 300,
-            height: 120,
-            className: 'rounded-md border-2 border-dashed border-blue-500 bg-slate-50 touch-none',
-            style: { width: '100%', maxWidth: 300, height: 120, touchAction: 'none' },
+            width: 352,
+            height: 112,
+            className: 'rounded-md border border-slate-200 bg-white touch-none',
+            style: { width: '100%', maxWidth: 352, height: 112, touchAction: 'none' },
           }}
           backgroundColor="rgba(255,255,255,0)"
         />
         <button
           type="button"
-          className="self-start text-xs text-red-600 border border-red-400 rounded px-2 py-0.5 bg-white hover:bg-red-50"
+          className="self-start text-xs text-slate-500 hover:text-slate-800"
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -49,20 +47,19 @@ const InlineSignatureField: React.FC<InlineSignatureFieldProps> = ({ index, regi
           Clear
         </button>
       </div>
-      {/* Stamp image — same route as PublicContractView */}
-      <div className="flex-shrink-0 max-w-full flex items-center min-h-[96px] md:min-h-[160px]">
+      <div className="flex-shrink-0 max-w-full flex items-end">
         <img
           src={CONTRACT_STAMP_SRC}
           alt="Stamp"
-          width={160}
-          height={160}
+          width={76}
+          height={76}
           decoding="async"
           loading="eager"
-          className="h-24 md:h-40 w-auto max-w-[min(100vw,200px)] object-contain"
+          className="h-28 w-auto max-h-28 object-contain sm:h-36 sm:max-h-36 md:h-40 md:max-h-40"
           style={{ display: 'block', objectFit: 'contain' }}
         />
       </div>
-    </span>
+    </div>
   );
 };
 
@@ -518,53 +515,15 @@ const PublicLegacyContractView: React.FC = () => {
 
   // Handle share functionality
   const handleShare = async () => {
-    const url = window.location.href;
-    
-    // Check if Web Share API is available (mobile devices)
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'Contract Agreement',
-          text: 'View this contract agreement',
-          url: url,
-        });
-        toast.success('Contract link shared successfully');
-      } catch (error: any) {
-        // User cancelled or error occurred
-        if (error.name !== 'AbortError') {
-          console.error('Error sharing:', error);
-          // Fallback to clipboard
-          copyToClipboard(url);
-        }
-      }
-    } else {
-      // Fallback to clipboard for desktop
-      copyToClipboard(url);
-    }
-  };
-
-  // Copy URL to clipboard
-  const copyToClipboard = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
-      toast.success('Contract link copied to clipboard');
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      // Fallback for older browsers
-      const textArea = document.createElement('textarea');
-      textArea.value = text;
-      textArea.style.position = 'fixed';
-      textArea.style.opacity = '0';
-      document.body.appendChild(textArea);
-      textArea.select();
-      try {
-        document.execCommand('copy');
-        toast.success('Contract link copied to clipboard');
-      } catch (err) {
-        console.error('Fallback copy failed:', err);
-        toast.error('Failed to copy link');
-      }
-      document.body.removeChild(textArea);
+      await shareOrCopyUrl({
+        url: window.location.href,
+        title: 'Contract Agreement',
+        text: 'View this contract agreement',
+        copiedMessage: 'Contract link copied to clipboard',
+      });
+    } catch {
+      // shareOrCopyUrl already toasts copy failures
     }
   };
 

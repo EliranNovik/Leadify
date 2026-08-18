@@ -18,6 +18,7 @@ export type ParamType =
   | 'lead_number'
   | 'portal_link'
   | 'access_code'
+  | 'contract_link'
   | 'custom';
 
 export interface ParameterDefinition {
@@ -82,6 +83,11 @@ const PARAM_TYPE_OPTIONS: Array<{ value: ParamType; label: string; description: 
     value: 'access_code',
     label: 'Portal Access Code',
     description: 'Client portal password / access code saved for this lead',
+  },
+  {
+    value: 'contract_link',
+    label: 'Contract signing link',
+    description: 'Public digital-contract URL (/public-contract/{id}/{token})',
   },
   { value: 'custom', label: 'Custom Text', description: 'Enter a custom static value' },
 ];

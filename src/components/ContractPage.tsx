@@ -12,7 +12,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
-import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon, SparklesIcon, ChatBubbleLeftRightIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, Bars3BottomLeftIcon, Bars3BottomRightIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ArrowPathIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon, SparklesIcon, ChatBubbleLeftRightIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, Bars3BottomLeftIcon, Bars3BottomRightIcon, ComputerDesktopIcon, PaperAirplaneIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import {
   fetchLeadMeetingSummaries,
@@ -31,10 +31,17 @@ import { PlusIcon, MinusIcon } from '@heroicons/react/24/solid';
 // @ts-ignore - html2pdf.js doesn't have TypeScript definitions
 import html2pdf from 'html2pdf.js';
 import { getFrontendBaseUrl } from '../lib/api';
+import { getMailboxLoginUrl } from '../lib/mailboxApi';
+import {
+  ensureContractPublicUrl,
+  sendContractViaTemplates,
+} from '../lib/contractSend';
+import { canUseNativeWebShare, shareOrCopyUrl } from '../lib/webShare';
 import ContractDetailsAndPricingModal from './ContractDetailsAndPricingModal';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
 import CallOptionsModal from './CallOptionsModal';
 import DisplayOnKioskModal from './kiosk/DisplayOnKioskModal';
+import ContractSendDrawer from './ContractSendDrawer';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { fetchEmployeeProfileById } from '../lib/fetchEmployeeProfile';
@@ -58,6 +65,19 @@ function unwrapTemplateRelation(raw: any): any | null {
 /** Prefer per-contract body; fall back to template only when no instance content yet. */
 function resolveContractBodyContent(contract: any, template: any): any {
   return contract?.custom_content || template?.content || null;
+}
+
+/**
+ * TipTap text nodes store plain text. HTML injected as a string is shown literally
+ * (e.g. after a template change). Restore tokens so renderTiptapContent can draw fields.
+ */
+function restoreFieldPlaceholderTokens(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/&lt;span class="text-field-placeholder"&gt;\[Text Field\]&lt;\/span&gt;/g, '{{text}}')
+    .replace(/&lt;span class="signature-placeholder"&gt;&lt;\/span&gt;/g, '{{signature}}')
+    .replace(/<span[^>]*class="text-field-placeholder"[^>]*>[\s\S]*?<\/span>/g, '{{text}}')
+    .replace(/<span[^>]*class="signature-placeholder"[^>]*>[\s\S]*?<\/span>/g, '{{signature}}');
 }
 
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
@@ -248,11 +268,11 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
 }
 
 // Function to fill placeholders in TipTap content structure (preserves {{text}} and {{signature}})
-function fillPlaceholdersInTiptapContent(content: any, customPricing: any, client: any, contract?: any, editing?: boolean, globalRowIndex?: { current: number }): any {
+function fillPlaceholdersInTiptapContent(content: any, customPricing: any, client: any, contract?: any, _editing?: boolean, globalRowIndex?: { current: number }): any {
   if (!content) return content;
 
   if (Array.isArray(content)) {
-    const processedArray = content.map(item => fillPlaceholdersInTiptapContent(item, customPricing, client, contract, editing, globalRowIndex));
+    const processedArray = content.map(item => fillPlaceholdersInTiptapContent(item, customPricing, client, contract, _editing, globalRowIndex));
     // Filter out undefined values and empty text nodes
     return processedArray.filter(item => {
       if (item === undefined || item === null) return false;
@@ -265,7 +285,7 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
 
   if (content.type === 'text' && content.text) {
     // Fill all placeholders except {{text}} and {{signature}} (preserve those for interactive elements)
-    let text = content.text;
+    let text = restoreFieldPlaceholderTokens(content.text);
 
     // Apply all the same placeholder replacements as fillAllPlaceholders but skip {{text}} and {{signature}}
     if (customPricing) {
@@ -482,14 +502,8 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
       text = text.replace(/{{client_email}}/g, client.email || '');
     }
 
-    // Don't replace {{date}} - let renderTiptapContent handle date placeholders as date pickers
-    // text = text.replace(/{{date}}/g, new Date().toLocaleDateString());
-
-    // Replace {{text}} and {{signature}} with styled placeholders for view mode
-    if (!editing) {
-      text = text.replace(/\{\{text\}\}/g, '<span class="text-field-placeholder">[Text Field]</span>');
-      text = text.replace(/\{\{signature\}\}/g, '<span class="signature-placeholder"></span>');
-    }
+    // Don't replace {{date}}, {{text}}, or {{signature}} — renderTiptapContent draws those as fields.
+    // Never inject HTML into TipTap text nodes; it is escaped and shown as raw markup.
 
     // Skip empty text nodes by returning undefined (will be filtered out)
     if (!text || text.trim() === '') {
@@ -500,7 +514,7 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
   }
 
   if (content.content) {
-    const processedContent = fillPlaceholdersInTiptapContent(content.content, customPricing, client, contract, editing, globalRowIndex);
+    const processedContent = fillPlaceholdersInTiptapContent(content.content, customPricing, client, contract, _editing, globalRowIndex);
     // Filter out undefined/null values (empty text nodes)
     if (Array.isArray(processedContent)) {
       const filteredContent = processedContent.filter(item => item !== undefined && item !== null);
@@ -690,7 +704,8 @@ function preprocessTemplatePlaceholders(content: any): any {
     }
     if (content.type === 'text' && content.text) {
       console.log('🔧 Processing text node:', content.text);
-      let newText = content.text.replace(/\{\{text\}\}/g, () => `{{text:text-${textId++}}}`)
+      let newText = restoreFieldPlaceholderTokens(content.text)
+        .replace(/\{\{text\}\}/g, () => `{{text:text-${textId++}}}`)
         .replace(/\{\{signature\}\}/g, () => `{{signature:signature-${signatureId++}}}`);
       console.log('🔧 Processed text node:', newText);
       return { ...content, text: newText };
@@ -753,12 +768,26 @@ function buildPaymentPlan(finalAmount: number, archivalFee: number) {
   return plan;
 }
 
+const CONTRACT_BAR_ICON_BTN =
+  'btn btn-ghost btn-circle h-10 w-10 min-h-10 border-0 text-[#57534e] hover:bg-[#1c1917]/8';
 const CONTRACT_BAR_SAVE_BTN =
-  'btn btn-circle h-11 w-11 min-h-11 border-0 bg-emerald-600 text-white shadow-md shadow-emerald-900/20 ring-1 ring-emerald-700/20 hover:bg-emerald-700 hover:shadow-lg transition-all';
+  'btn btn-circle h-10 w-10 min-h-10 border-0 bg-[#1c1917] text-[#f7f4ee] hover:bg-black';
 const CONTRACT_BAR_CANCEL_BTN =
-  'btn btn-circle h-11 w-11 min-h-11 border border-slate-200 bg-white text-slate-600 shadow-sm ring-1 ring-slate-100 hover:border-slate-300 hover:bg-slate-50 transition-all';
+  'btn btn-circle h-10 w-10 min-h-10 border border-[#d8d2c8] bg-white text-[#57534e] hover:bg-[#f7f4ee]';
 const CONTRACT_BAR_DELETE_BTN =
-  'btn btn-circle h-11 w-11 min-h-11 border border-rose-200 bg-gradient-to-b from-rose-50 to-white text-rose-600 shadow-sm ring-1 ring-rose-100 hover:border-rose-300 hover:from-rose-100 hover:to-rose-50 transition-all';
+  'btn btn-circle h-10 w-10 min-h-10 border-0 bg-transparent text-rose-500 hover:bg-rose-50';
+const CONTRACT_BAR_AI_PRIMARY =
+  'btn h-11 min-h-11 gap-2 rounded-full border-0 bg-[#1c1917] px-4 text-[#f7f4ee] hover:bg-black disabled:opacity-70';
+const CONTRACT_BAR_AI_SECONDARY =
+  'btn h-11 min-h-11 gap-2 rounded-full border border-[#d8d2c8] bg-white px-4 text-[#44403c] hover:border-[#a8a29e] hover:bg-[#f7f4ee] disabled:opacity-70';
+
+function ContractBarTip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="tooltip tooltip-top z-[80]" data-tip={label}>
+      {children}
+    </span>
+  );
+}
 
 function contractToolbarFocus(editor: Editor) {
   setTimeout(() => editor.commands.focus(), 10);
@@ -823,15 +852,10 @@ function insertContractInputField(editor: Editor, tag: string) {
   contractToolbarFocus(editor);
 }
 
-const CONTRACT_TOOLBAR_ACTIVE =
-  'bg-violet-600 text-white hover:bg-violet-700';
-const CONTRACT_TOOLBAR_IDLE =
-  'text-gray-600 hover:bg-gray-300/70';
-
-function contractRailBtnClass(active: boolean) {
+function contractRibbonBtnClass(active: boolean) {
   return [
-    'btn btn-ghost btn-circle h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0',
-    active ? CONTRACT_TOOLBAR_ACTIVE : CONTRACT_TOOLBAR_IDLE,
+    'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[3px] border-0 text-[13px] leading-none text-[#323130]',
+    active ? 'bg-[#c5c5c5]' : 'bg-transparent hover:bg-[#e1dfdd]',
   ].join(' ');
 }
 
@@ -937,7 +961,7 @@ function ContractRailDropdown({
       <button
         ref={triggerRef}
         type="button"
-        className={buttonClassName || contractRailBtnClass(false)}
+        className={buttonClassName || contractRibbonBtnClass(false)}
         title={label}
         aria-label={label}
         aria-expanded={open}
@@ -968,386 +992,172 @@ function ContractRailDropdown({
   );
 }
 
-function ContractEditorToolbar({
-  editor,
-  layout,
-  railTopPx = 108,
-}: {
-  editor: Editor;
-  layout: 'mobile' | 'desktop';
-  railTopPx?: number;
-}) {
+function ContractEditorToolbar({ editor }: { editor: Editor }) {
   const fontFamily = editor.getAttributes('fontFamily').fontFamily || 'Arial';
   const fontSize = editor.getAttributes('fontSize').fontSize || '16px';
 
-  const fontFamilySelect = (
-    <select
-      className={
-        layout === 'desktop'
-          ? 'select select-bordered select-sm h-9 min-h-9 w-full text-xs'
-          : 'select select-sm select-bordered'
-      }
-      style={layout === 'mobile' ? { minWidth: '100px', width: '100px' } : undefined}
-      value={fontFamily}
-      onChange={(e) => {
-        editor.chain().focus().setFontFamily(e.target.value).run();
-        contractToolbarFocus(editor);
-      }}
-      title="Font Family"
-    >
-      {FONT_FAMILIES.map((f) => (
-        <option key={f} value={f}>
-          {f}
-        </option>
-      ))}
-    </select>
-  );
-
-  const fontSizeSelect = (
-    <select
-      className={
-        layout === 'desktop'
-          ? 'select select-bordered select-sm h-9 min-h-9 w-full text-xs'
-          : 'select select-sm select-bordered'
-      }
-      style={layout === 'mobile' ? { minWidth: '90px', width: '90px' } : undefined}
-      value={fontSize}
-      onChange={(e) => {
-        editor.chain().focus().setFontSize(e.target.value).run();
-        contractToolbarFocus(editor);
-      }}
-      title="Font Size"
-    >
-      {FONT_SIZES.map((s) => (
-        <option key={s} value={s}>
-          {s}
-        </option>
-      ))}
-    </select>
-  );
-
-  const addFieldButton = (
-    <ContractRailDropdown
-      label="Add input field"
-      placement="bottom"
-      panelClassName="w-56"
-      buttonClassName={
-        layout === 'desktop'
-          ? 'btn btn-sm h-10 min-h-10 w-full gap-1.5 border-0 bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white shadow-md shadow-violet-500/20 hover:from-violet-700 hover:via-fuchsia-700 hover:to-indigo-700'
-          : 'btn btn-sm btn-primary gap-1'
-      }
-      trigger={
-        <>
-          <PlusIcon className="h-4 w-4 shrink-0" />
-          <span className={layout === 'desktop' ? 'text-xs font-semibold' : 'ml-1'}>Add field</span>
-        </>
-      }
-    >
-      {(close) =>
-        CONTRACT_INPUT_FIELDS.map((field) => (
-          <button
-            key={field.tag}
-            type="button"
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-violet-50 hover:text-violet-800"
-            onClick={() => {
-              insertContractInputField(editor, field.tag);
-              close();
-            }}
-          >
-            {field.label}
-          </button>
-        ))
-      }
-    </ContractRailDropdown>
-  );
-
-  if (layout === 'desktop') {
-    const fontSizeShort = fontSize.replace('px', '');
-
-    return (
-      <aside
-        className="print-hide fixed bottom-0 left-0 z-[65] hidden w-[4.5rem] md:flex"
-        style={{ top: railTopPx }}
-      >
-        <div className="flex h-full w-full flex-col items-center overflow-hidden border-r border-gray-200 bg-gray-50 px-1 py-4 pb-24">
-          <div className="flex w-full flex-1 flex-col items-center justify-start gap-3 overflow-hidden">
-            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
-              <button
-                type="button"
-                className={contractRailBtnClass(editor.isActive('bold'))}
-                onClick={() => {
-                  editor.chain().focus().toggleBold().run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Bold"
-              >
-                <b className="text-sm font-bold">B</b>
-              </button>
-              <button
-                type="button"
-                className={contractRailBtnClass(editor.isActive('italic'))}
-                onClick={() => {
-                  editor.chain().focus().toggleItalic().run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Italic"
-              >
-                <i className="text-sm italic">I</i>
-              </button>
-              <button
-                type="button"
-                className={contractRailBtnClass(editor.isActive('underline'))}
-                onClick={() => {
-                  editor.chain().focus().toggleUnderline().run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Underline"
-              >
-                <u className="text-sm underline">U</u>
-              </button>
-              <button
-                type="button"
-                className={contractRailBtnClass(editor.isActive('strike'))}
-                onClick={() => {
-                  editor.chain().focus().toggleStrike().run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Strikethrough"
-              >
-                <s className="text-sm line-through">S</s>
-              </button>
-            </div>
-
-            <div className="h-px w-8 bg-gray-200" aria-hidden />
-
-            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
-              <button
-                type="button"
-                className={contractRailBtnClass(editor.isActive({ textAlign: 'left' }))}
-                onClick={() => {
-                  editor.chain().focus().setTextAlign('left').run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Align Left"
-              >
-                <Bars3BottomLeftIcon className="h-5 w-5" />
-              </button>
-              <button
-                type="button"
-                className={contractRailBtnClass(editor.isActive({ textAlign: 'right' }))}
-                onClick={() => {
-                  editor.chain().focus().setTextAlign('right').run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Align Right"
-              >
-                <Bars3BottomRightIcon className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="h-px w-8 bg-gray-200" aria-hidden />
-
-            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
-              <button
-                type="button"
-                className={contractRailBtnClass(false)}
-                onClick={() => {
-                  editor.chain().focus().undo().run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Undo"
-              >
-                <ArrowUturnLeftIcon className="h-5 w-5" />
-              </button>
-              <button
-                type="button"
-                className={contractRailBtnClass(false)}
-                onClick={() => {
-                  editor.chain().focus().redo().run();
-                  contractToolbarFocus(editor);
-                }}
-                title="Redo"
-              >
-                <ArrowUturnRightIcon className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="h-px w-8 bg-gray-200" aria-hidden />
-
-            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
-              <ContractRailDropdown
-                label={`Font: ${fontFamily}`}
-                trigger={<span className="text-xs font-bold leading-none">Aa</span>}
-              >
-                {(close) =>
-                  FONT_FAMILIES.map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      className={`block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 ${
-                        f === fontFamily ? 'bg-violet-50 font-medium text-violet-700' : 'text-gray-700'
-                      }`}
-                      onClick={() => {
-                        editor.chain().focus().setFontFamily(f).run();
-                        contractToolbarFocus(editor);
-                        close();
-                      }}
-                    >
-                      {f}
-                    </button>
-                  ))
-                }
-              </ContractRailDropdown>
-              <ContractRailDropdown
-                label={`Size: ${fontSize}`}
-                panelClassName="w-24"
-                trigger={<span className="text-xs font-semibold leading-none">{fontSizeShort}</span>}
-              >
-                {(close) =>
-                  FONT_SIZES.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      className={`block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 ${
-                        s === fontSize ? 'bg-violet-50 font-medium text-violet-700' : 'text-gray-700'
-                      }`}
-                      onClick={() => {
-                        editor.chain().focus().setFontSize(s).run();
-                        contractToolbarFocus(editor);
-                        close();
-                      }}
-                    >
-                      {s}
-                    </button>
-                  ))
-                }
-              </ContractRailDropdown>
-            </div>
-          </div>
-
-          <div className="mt-2 flex w-full justify-center pb-1 pt-2">
-            <ContractRailDropdown
-              label="Add input field"
-              placement="up"
-              panelClassName="w-56"
-              buttonClassName="btn btn-circle h-11 min-h-11 w-11 border border-gray-200 bg-gray-200 text-black shadow-sm hover:bg-gray-300"
-              trigger={<PlusIcon className="h-5 w-5 text-black" />}
-            >
-              {(close) =>
-                CONTRACT_INPUT_FIELDS.map((field) => (
-                  <button
-                    key={field.tag}
-                    type="button"
-                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-violet-50 hover:text-violet-800"
-                    onClick={() => {
-                      insertContractInputField(editor, field.tag);
-                      close();
-                    }}
-                  >
-                    {field.label}
-                  </button>
-                ))
-              }
-            </ContractRailDropdown>
-          </div>
-        </div>
-      </aside>
-    );
-  }
-
   return (
-    <div className="sticky top-0 z-30 mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-gray-300 bg-white/95 p-3 shadow-md backdrop-blur-sm print-hide md:hidden">
-      <button
-        type="button"
-        className={`btn btn-sm ${editor.isActive('bold') ? 'btn-primary' : 'btn-ghost'}`}
-        onClick={() => {
-          editor.chain().focus().toggleBold().run();
-          contractToolbarFocus(editor);
-        }}
-        title="Bold"
-      >
-        <b className="text-base font-bold">B</b>
-      </button>
-      <button
-        type="button"
-        className={`btn btn-sm ${editor.isActive('italic') ? 'btn-primary' : 'btn-ghost'}`}
-        onClick={() => {
-          editor.chain().focus().toggleItalic().run();
-          contractToolbarFocus(editor);
-        }}
-        title="Italic"
-      >
-        <i className="text-base italic">I</i>
-      </button>
-      <button
-        type="button"
-        className={`btn btn-sm ${editor.isActive('underline') ? 'btn-primary' : 'btn-ghost'}`}
-        onClick={() => {
-          editor.chain().focus().toggleUnderline().run();
-          contractToolbarFocus(editor);
-        }}
-        title="Underline"
-      >
-        <u className="text-base underline">U</u>
-      </button>
-      <button
-        type="button"
-        className={`btn btn-sm ${editor.isActive('strike') ? 'btn-primary' : 'btn-ghost'}`}
-        onClick={() => {
-          editor.chain().focus().toggleStrike().run();
-          contractToolbarFocus(editor);
-        }}
-        title="Strikethrough"
-      >
-        <s className="text-base line-through">S</s>
-      </button>
-      <button
-        type="button"
-        className={`btn btn-sm ${editor.isActive({ textAlign: 'left' }) ? 'btn-primary' : 'btn-ghost'}`}
-        onClick={() => {
-          editor.chain().focus().setTextAlign('left').run();
-          contractToolbarFocus(editor);
-        }}
-        title="Align Left"
-      >
-        <Bars3BottomLeftIcon className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        className={`btn btn-sm ${editor.isActive({ textAlign: 'right' }) ? 'btn-primary' : 'btn-ghost'}`}
-        onClick={() => {
-          editor.chain().focus().setTextAlign('right').run();
-          contractToolbarFocus(editor);
-        }}
-        title="Align Right"
-      >
-        <Bars3BottomRightIcon className="h-4 w-4" />
-      </button>
-      {fontFamilySelect}
-      {fontSizeSelect}
-      <button
-        type="button"
-        className="btn btn-sm btn-ghost"
-        onClick={() => {
-          editor.chain().focus().undo().run();
-          contractToolbarFocus(editor);
-        }}
-        title="Undo"
-      >
-        <ArrowUturnLeftIcon className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        className="btn btn-sm btn-ghost"
-        onClick={() => {
-          editor.chain().focus().redo().run();
-          contractToolbarFocus(editor);
-        }}
-        title="Redo"
-      >
-        <ArrowUturnRightIcon className="h-4 w-4" />
-      </button>
-      {addFieldButton}
+    <div className="contract-word-ribbon print-hide">
+      <div className="flex flex-nowrap items-center gap-1 overflow-x-auto px-3 py-1.5 sm:px-4">
+        <button
+          type="button"
+          className={contractRibbonBtnClass(false)}
+          onClick={() => {
+            editor.chain().focus().undo().run();
+            contractToolbarFocus(editor);
+          }}
+          title="Undo"
+        >
+          <ArrowUturnLeftIcon className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className={contractRibbonBtnClass(false)}
+          onClick={() => {
+            editor.chain().focus().redo().run();
+            contractToolbarFocus(editor);
+          }}
+          title="Redo"
+        >
+          <ArrowUturnRightIcon className="h-4 w-4" />
+        </button>
+
+        <span className="contract-word-ribbon-sep" aria-hidden />
+
+        <select
+          className="contract-word-ribbon-select min-w-[9.5rem]"
+          value={fontFamily}
+          onChange={(e) => {
+            editor.chain().focus().setFontFamily(e.target.value).run();
+            contractToolbarFocus(editor);
+          }}
+          title="Font"
+        >
+          {FONT_FAMILIES.map((f) => (
+            <option key={f} value={f}>
+              {f}
+            </option>
+          ))}
+        </select>
+        <select
+          className="contract-word-ribbon-select w-[4.5rem]"
+          value={fontSize}
+          onChange={(e) => {
+            editor.chain().focus().setFontSize(e.target.value).run();
+            contractToolbarFocus(editor);
+          }}
+          title="Font size"
+        >
+          {FONT_SIZES.map((s) => (
+            <option key={s} value={s}>
+              {s.replace('px', '')}
+            </option>
+          ))}
+        </select>
+
+        <span className="contract-word-ribbon-sep" aria-hidden />
+
+        <button
+          type="button"
+          className={contractRibbonBtnClass(editor.isActive('bold'))}
+          onClick={() => {
+            editor.chain().focus().toggleBold().run();
+            contractToolbarFocus(editor);
+          }}
+          title="Bold"
+        >
+          <b className="text-sm font-bold">B</b>
+        </button>
+        <button
+          type="button"
+          className={contractRibbonBtnClass(editor.isActive('italic'))}
+          onClick={() => {
+            editor.chain().focus().toggleItalic().run();
+            contractToolbarFocus(editor);
+          }}
+          title="Italic"
+        >
+          <i className="text-sm italic">I</i>
+        </button>
+        <button
+          type="button"
+          className={contractRibbonBtnClass(editor.isActive('underline'))}
+          onClick={() => {
+            editor.chain().focus().toggleUnderline().run();
+            contractToolbarFocus(editor);
+          }}
+          title="Underline"
+        >
+          <u className="text-sm underline">U</u>
+        </button>
+        <button
+          type="button"
+          className={contractRibbonBtnClass(editor.isActive('strike'))}
+          onClick={() => {
+            editor.chain().focus().toggleStrike().run();
+            contractToolbarFocus(editor);
+          }}
+          title="Strikethrough"
+        >
+          <s className="text-sm line-through">S</s>
+        </button>
+
+        <span className="contract-word-ribbon-sep" aria-hidden />
+
+        <button
+          type="button"
+          className={contractRibbonBtnClass(editor.isActive({ textAlign: 'left' }))}
+          onClick={() => {
+            editor.chain().focus().setTextAlign('left').run();
+            contractToolbarFocus(editor);
+          }}
+          title="Align Left"
+        >
+          <Bars3BottomLeftIcon className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className={contractRibbonBtnClass(editor.isActive({ textAlign: 'right' }))}
+          onClick={() => {
+            editor.chain().focus().setTextAlign('right').run();
+            contractToolbarFocus(editor);
+          }}
+          title="Align Right"
+        >
+          <Bars3BottomRightIcon className="h-4 w-4" />
+        </button>
+
+        <span className="contract-word-ribbon-sep" aria-hidden />
+
+        <ContractRailDropdown
+          label="Insert field"
+          placement="bottom"
+          panelClassName="w-56"
+          buttonClassName="inline-flex h-8 items-center gap-1 rounded-[3px] border border-[#8a8886] bg-white px-2.5 text-[12px] font-medium text-[#323130] hover:bg-[#e1dfdd]"
+          trigger={
+            <>
+              <PlusIcon className="h-3.5 w-3.5 shrink-0" />
+              <span>Insert field</span>
+            </>
+          }
+        >
+          {(close) =>
+            CONTRACT_INPUT_FIELDS.map((field) => (
+              <button
+                key={field.tag}
+                type="button"
+                className="block w-full rounded-[3px] px-3 py-1.5 text-left text-[13px] text-[#323130] hover:bg-[#e1dfdd]"
+                onClick={() => {
+                  insertContractInputField(editor, field.tag);
+                  close();
+                }}
+              >
+                {field.label}
+              </button>
+            ))
+          }
+        </ContractRailDropdown>
+      </div>
     </div>
   );
 }
@@ -1803,6 +1613,8 @@ const ContractPage: React.FC<{
   // Contract Details & Pricing Modal state
   const [showDetailsAndPricingModal, setShowDetailsAndPricingModal] = useState(false);
   const [showKioskModal, setShowKioskModal] = useState(false);
+  const [showSendDrawer, setShowSendDrawer] = useState(false);
+  const [sendingContract, setSendingContract] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
   const [templateLanguageFilter, setTemplateLanguageFilter] = useState<string | null>(null);
@@ -1936,29 +1748,6 @@ const ContractPage: React.FC<{
   // Track last content hash to prevent unnecessary updates
   const lastContentHashRef = useRef<string>('');
   const lastEditingStateRef = useRef<boolean>(false);
-
-  const headerRef = useRef<HTMLDivElement>(null);
-  const [editorRailTopPx, setEditorRailTopPx] = useState(108);
-
-  useLayoutEffect(() => {
-    const el = headerRef.current;
-    if (!el) return;
-    const update = () => {
-      const header = headerRef.current;
-      if (header) setEditorRailTopPx(Math.round(header.getBoundingClientRect().bottom));
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    const scrollRoot = el.closest('.app-main-scroll');
-    scrollRoot?.addEventListener('scroll', update, { passive: true });
-    window.addEventListener('resize', update);
-    return () => {
-      ro.disconnect();
-      scrollRoot?.removeEventListener('scroll', update);
-      window.removeEventListener('resize', update);
-    };
-  }, [loading, contract]);
 
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
@@ -2828,10 +2617,17 @@ const ContractPage: React.FC<{
       }
 
       const contentSnapshot = cloneContractContent(fullTemplate?.content ?? null);
+      let processedSnapshot = contentSnapshot;
+      if (contentSnapshot) {
+        const normalizedSnapshot = normalizeTiptapContent(contentSnapshot);
+        processedSnapshot = normalizedSnapshot && normalizedSnapshot.type === 'doc'
+          ? preprocessTemplatePlaceholders(normalizedSnapshot)
+          : normalizedSnapshot;
+      }
 
       // Prepare update data
       const updateData: any = {
-        custom_content: contentSnapshot,
+        custom_content: processedSnapshot,
       };
 
       if (isLegacyTemplate) {
@@ -2885,29 +2681,23 @@ const ContractPage: React.FC<{
       });
 
       if (fullTemplate) {
-          // Process template to add IDs to placeholders
-          let normalizedContent = normalizeTiptapContent(fullTemplate.content);
-          const processedContent = normalizedContent && normalizedContent.type === 'doc' ?
-            preprocessTemplatePlaceholders(normalizedContent) :
-            normalizedContent;
-
           const processedTemplate = {
             ...fullTemplate,
-            content: processedContent
+            content: processedSnapshot
           };
 
           setTemplate(processedTemplate);
 
           const updatedContract = {
             ...updatedContractData,
-            custom_content: contentSnapshot,
+            custom_content: processedSnapshot,
           };
           setContract(updatedContract);
 
-          // Update editor content from the isolated snapshot
-          if (editor && contentSnapshot) {
+          // Update editor content from the isolated, preprocessed snapshot
+          if (editor && processedSnapshot) {
             try {
-              editor.commands.setContent(contentSnapshot as any);
+              editor.commands.setContent(processedSnapshot as any);
             } catch (error) {
               console.error('❌ Error setting editor content after template change:', error);
               editor.commands.setContent({ type: 'doc', content: [] });
@@ -2993,8 +2783,9 @@ const ContractPage: React.FC<{
       const contentStr = JSON.stringify(content);
       const hasGenericText = /\{\{text\}\}/.test(contentStr);
       const hasGenericSig = /\{\{signature\}\}/.test(contentStr);
+      const hasEscapedFieldHtml = contentStr.includes('text-field-placeholder') || contentStr.includes('signature-placeholder');
 
-      if (hasGenericText || hasGenericSig) {
+      if (hasGenericText || hasGenericSig || hasEscapedFieldHtml) {
         console.log('🔧 Custom content has generic placeholders, preprocessing...');
         content = preprocessTemplatePlaceholders(content);
       }
@@ -3153,6 +2944,28 @@ const ContractPage: React.FC<{
     // Force re-render to show saved content
     setRenderKey(prev => prev + 1);
     toast.success('Contract saved');
+  };
+
+  const handleDiscardEdit = async () => {
+    setAiReviewNotes(null);
+    setAiReviewChatMessages([]);
+    setShowAiReviewPanel(false);
+    setAiRemarksInput('');
+    setEditing(false);
+    if (contract?.id && editor) {
+      const { data: contractData } = await supabase
+        .from('contracts')
+        .select('*, contract_templates(*)')
+        .eq('id', contract.id)
+        .single();
+      if (contractData) {
+        setContract(contractData);
+        if (contractData.contract_templates) {
+          setTemplate(contractData.contract_templates);
+        }
+        setRenderKey((prev) => prev + 1);
+      }
+    }
   };
 
   const getCurrentContractSource = useCallback((): unknown => {
@@ -5368,49 +5181,179 @@ const ContractPage: React.FC<{
             ? buildFirmContractPublicUrl(contract.id, publicToken)
             : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
     await navigator.clipboard.writeText(publicUrl);
-    alert('Contract link copied to clipboard!');
+    toast.success('Contract link copied to clipboard');
+  };
+
+  const seedContractContact = (): ContactInfo[] => {
+    const email = String(contract?.contact_email || '').trim();
+    const phone = String(contract?.contact_phone || '').trim();
+    const mobile = String(contract?.contact_mobile || '').trim();
+    if (!email && !phone && !mobile) return [];
+    return [
+      {
+        id: -1,
+        name: String(contract?.contact_name || client?.name || 'Recipient').trim() || 'Recipient',
+        email: email || null,
+        phone: phone || null,
+        mobile: mobile || null,
+        country_id: null,
+        isMain: true,
+      },
+    ];
+  };
+
+  const openSendDrawer = async () => {
+    setShowSendDrawer(true);
+    if (!client || isNonClientContractMode) {
+      setAvailableContacts(seedContractContact());
+      return;
+    }
+    setLoadingContacts(true);
+    try {
+      const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+      const leadId = isLegacyLead
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      setAvailableContacts(contacts.length > 0 ? contacts : seedContractContact());
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+      setAvailableContacts(seedContractContact());
+    } finally {
+      setLoadingContacts(false);
+    }
+  };
+
+  const handleContractTemplateSend = async (opts: {
+    language: 'en' | 'he';
+    channels: Array<'whatsapp' | 'email'>;
+    recipients: Array<{
+      id?: number | null;
+      name?: string;
+      email?: string | null;
+      phone?: string | null;
+      mobile?: string | null;
+    }>;
+  }) => {
+    if (!contract) return;
+    setSendingContract(true);
+    try {
+      const mode =
+        isRecruitmentMode || contract.user_id
+          ? 'recruitment'
+          : isEmployeeMode || contract.employee_id
+            ? 'employee'
+            : isFirmMode || contract.external_firm_id
+              ? 'firm'
+              : 'client';
+      const { publicToken, publicUrl } = await ensureContractPublicUrl({
+        contractId: contract.id,
+        publicToken: contract.public_token,
+        mode,
+      });
+      if (!contract.public_token) {
+        setContract((prev: any) => (prev ? { ...prev, public_token: publicToken } : prev));
+      }
+
+      const isLegacyLead =
+        client?.lead_type === 'legacy' || String(client?.id || '').startsWith('legacy_');
+      const leadId = isNonClientContractMode
+        ? null
+        : isLegacyLead
+          ? String(client?.id || '').replace(/^legacy_/, '')
+          : client?.id ?? contract.client_id ?? null;
+
+      const result = await sendContractViaTemplates({
+        contractId: contract.id,
+        publicUrl,
+        language: opts.language,
+        channels: opts.channels,
+        recipients: opts.recipients,
+        clientName:
+          (contract.contact_name && String(contract.contact_name).trim()) ||
+          (client?.name && String(client.name).trim()) ||
+          'Client',
+        leadNumber: client?.lead_number || client?.manual_id || null,
+        leadId,
+        isLegacyLead: Boolean(isLegacyLead && !isNonClientContractMode),
+      });
+
+      const sent = result.results.filter((r) => r.ok).length;
+      const failed = result.results.filter((r) => !r.ok && !r.skipped);
+      const skipped = result.results.filter((r) => r.skipped);
+      if (sent > 0) {
+        toast.success(
+          `Sent ${sent} message${sent === 1 ? '' : 's'}` +
+            (result.whatsappTemplateName || result.emailTemplateName
+              ? ` (${[result.whatsappTemplateName, result.emailTemplateName].filter(Boolean).join(', ')})`
+              : ''),
+        );
+      }
+      failed.forEach((item) => {
+        toast.error(`${item.channel} to ${item.recipient}: ${item.error || 'Failed'}`);
+      });
+      if (sent === 0 && failed.length === 0 && skipped.length > 0) {
+        toast.error('No phone or email on the selected contacts');
+      }
+      if (sent > 0) setShowSendDrawer(false);
+    } catch (error: any) {
+      if (error?.code === 'MAILBOX_NOT_CONNECTED' || error?.message === 'MAILBOX_NOT_CONNECTED') {
+        toast.error('Connect your mailbox to send email');
+        try {
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+          if (user?.id) {
+            const url = await getMailboxLoginUrl(user.id, window.location.href);
+            if (url) window.location.assign(url);
+          }
+        } catch {
+          // toast already shown
+        }
+        return;
+      }
+      toast.error(error?.message || 'Failed to send contract');
+    } finally {
+      setSendingContract(false);
+    }
   };
 
   const handleMobileShare = async () => {
     if (!contract) return;
 
-    // Check if Web Share API is available
-    if (navigator.share) {
-      let publicToken = contract.public_token;
-      if (!publicToken) {
-        publicToken = uuidv4();
-        await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
-        setContract((prev: any) => ({ ...prev, public_token: publicToken }));
-      }
-      const publicUrl =
-        isRecruitmentMode || contract.user_id
-          ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
-          : isEmployeeMode || contract.employee_id
-            ? buildEmployeeContractPublicUrl(contract.id, publicToken)
-            : isFirmMode || contract.external_firm_id
-              ? buildFirmContractPublicUrl(contract.id, publicToken)
-              : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+    let publicToken = contract.public_token;
+    if (!publicToken) {
+      publicToken = uuidv4();
+      await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
+      setContract((prev: any) => ({ ...prev, public_token: publicToken }));
+    }
+    const publicUrl =
+      isRecruitmentMode || contract.user_id
+        ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
+        : isEmployeeMode || contract.employee_id
+          ? buildEmployeeContractPublicUrl(contract.id, publicToken)
+          : isFirmMode || contract.external_firm_id
+            ? buildFirmContractPublicUrl(contract.id, publicToken)
+            : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
 
-      const clientName = contract?.contact_name || client?.name || 'Client';
-      const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
-      const shareText = `You have been invited to review and sign a legal contract from Decker Pex Levi Law Offices. This is a secure link - please review the contract and sign if you agree to the terms.`;
+    if (!canUseNativeWebShare()) {
+      await handleShareContractLink();
+      return;
+    }
 
-      try {
-        await navigator.share({
-          title: contractTitle,
-          text: shareText,
-          url: publicUrl,
-        });
-      } catch (err: any) {
-        // User cancelled or error occurred, fallback to clipboard
-        if (err.name !== 'AbortError') {
-          await navigator.clipboard.writeText(publicUrl);
-          alert('Contract link copied to clipboard!');
-        }
-      }
-    } else {
-      // Fallback to regular share function if Web Share API not available
-      handleShareContractLink();
+    const clientName = contract?.contact_name || client?.name || 'Client';
+    const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
+    const shareText = `You have been invited to review and sign a legal contract from Decker Pex Levi Law Offices. This is a secure link - please review the contract and sign if you agree to the terms.`;
+
+    try {
+      await shareOrCopyUrl({
+        url: publicUrl,
+        title: contractTitle,
+        text: shareText,
+        copiedMessage: 'Contract link copied to clipboard',
+      });
+    } catch {
+      // shareOrCopyUrl already toasts copy failures
     }
   };
 
@@ -6343,141 +6286,109 @@ const ContractPage: React.FC<{
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 print:bg-white">
-      {/* Top bar — scrolls with page on mobile; sticky from md */}
+    <div className="contract-studio min-h-screen print:bg-white">
+      {editing && editor ? (
+        <div className="print-hide sticky top-0 z-[45] px-3 pt-2 sm:px-4 sm:pt-3">
+          <ContractEditorToolbar editor={editor} />
+        </div>
+      ) : (
       <div
-        ref={headerRef}
-        className="print-hide relative z-[45] border-b border-gray-200/70 bg-white/85 shadow-[0_2px_16px_rgba(15,23,42,0.04)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/65 md:sticky md:top-0"
+        className="print-hide relative z-[45] bg-gray-100 md:sticky md:top-0"
       >
-        <div className="mx-auto flex max-w-[1920px] flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2.5 sm:gap-x-3 sm:px-5 sm:py-3">
+        <div className="flex items-center gap-2 px-3 py-2 sm:gap-3 sm:px-5">
           <button
             type="button"
             onClick={goToLeadPage}
-            className="btn btn-sm h-9 min-h-9 gap-1.5 rounded-full border-0 bg-gray-900 px-3 text-sm font-medium text-white shadow-sm hover:bg-gray-800 print-hide sm:px-4"
+            className="btn btn-ghost btn-sm h-8 min-h-8 gap-1 rounded-full border-0 px-2 text-xs font-medium text-gray-700 hover:bg-gray-200 print-hide sm:px-2.5"
             title={backButtonLabel}
           >
-            <ArrowLeftIcon className="h-4 w-4 shrink-0 opacity-90" />
-            <span>{backButtonLabel}</span>
+            <ArrowLeftIcon className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden sm:inline">{backButtonLabel}</span>
           </button>
-          <span className="hidden h-7 w-px shrink-0 bg-gray-200 sm:block" aria-hidden />
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-x-4">
-            <div className="flex min-w-0 max-w-[min(100%,20rem)] items-center gap-2.5">
-              {isNonClientContractView ? (
-                headerProfilePhotoUrl ? (
+          <span className="hidden h-3 w-px shrink-0 bg-gray-300 sm:block" aria-hidden />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-2.5">
+            {isNonClientContractView ? (
+              <>
+                {headerProfilePhotoUrl ? (
                   <img
                     src={headerProfilePhotoUrl}
                     alt={mainContactDisplay}
-                    className="h-10 w-10 shrink-0 rounded-full object-cover ring-1 ring-gray-200"
+                    className="h-7 w-7 shrink-0 rounded-full object-cover ring-1 ring-gray-200"
                     onError={(e) => {
                       (e.currentTarget as HTMLImageElement).style.display = 'none';
                       const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
                       if (fallback) fallback.classList.remove('hidden');
                     }}
                   />
-                ) : null
-              ) : null}
-              {isNonClientContractView ? (
+                ) : null}
                 <div
-                  className={`${headerProfilePhotoUrl ? 'hidden' : ''} flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
+                  className={`${headerProfilePhotoUrl ? 'hidden' : ''} flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold ${
                     isFirmContractView
                       ? 'bg-sky-100 text-sky-700 ring-1 ring-sky-200'
                       : 'bg-violet-100 text-violet-700 ring-1 ring-violet-200'
-                  } text-xs font-semibold`}
+                  }`}
                   title={mainContactDisplay}
                 >
                   {getEmployeeInitials(mainContactDisplay) || '—'}
                 </div>
-              ) : null}
-              <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">
-                  {isFirmContractView ? 'External firm' : isEmployeeContractView ? 'Employee' : 'Main contact'}
-                </p>
-                <p className="truncate text-base font-semibold leading-snug text-gray-900">{mainContactDisplay}</p>
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {!isNonClientContractView ? (
-                <div>
-                  <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Lead</p>
-                  <p className="font-mono text-base font-bold tabular-nums leading-snug text-gray-900">#{renderLeadNumber()}</p>
-                </div>
-              ) : null}
-              {!isFirmContractView ? (
-                <>
-              <button
-                type="button"
-                onClick={() => void openCallContactPicker()}
-                className="btn btn-circle h-9 min-h-9 w-9 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:border-gray-300 hover:bg-white hover:shadow"
-                title="Call"
-                aria-label="Call contact"
-              >
-                <PhoneIcon className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => void openEmailContactPicker()}
-                className="btn btn-circle h-9 min-h-9 w-9 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:border-gray-300 hover:bg-white hover:shadow"
-                title="Email"
-                aria-label="Email contact"
-              >
-                <EnvelopeIcon className="h-4 w-4" />
-              </button>
-                </>
-              ) : null}
-            </div>
+              </>
+            ) : null}
+            <p className="min-w-0 truncate text-[15px] font-medium tracking-tight text-gray-900">{mainContactDisplay}</p>
+            {!isNonClientContractView ? (
+              <p className="hidden shrink-0 font-mono text-[13px] tabular-nums tracking-wide text-gray-500 sm:block">
+                #{renderLeadNumber()}
+              </p>
+            ) : null}
             {barCategory ? (
-              <span className="hidden max-w-[min(100%,12rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 md:inline-flex sm:max-w-[14rem]">
-                <TagIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
-                <span className="truncate">{barCategory}</span>
+              <span className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-gray-200 px-3 py-1 text-xs font-medium text-gray-700">
+                <TagIcon className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
+                <span>{barCategory}</span>
               </span>
             ) : null}
             {barTopic ? (
-              <span className="hidden max-w-[min(100%,14rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 md:inline-flex sm:max-w-[18rem]">
-                <DocumentTextIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
-                <span className="truncate">{barTopic}</span>
+              <span className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-gray-200 px-3 py-1 text-xs font-medium text-gray-700">
+                <DocumentTextIcon className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
+                <span>{barTopic}</span>
               </span>
             ) : null}
           </div>
-          <div className="ml-auto flex shrink-0 items-center">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {contract?.created_at ? (
+              <span className="inline-flex items-center gap-1.5 text-xs tracking-wide text-gray-500 sm:text-sm">
+                <CalendarIcon className="h-4 w-4 shrink-0" />
+                <span>{new Date(contract.created_at).toLocaleDateString()}</span>
+              </span>
+            ) : null}
             {status === 'signed' ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-200">
-                <CheckIcon className="h-3.5 w-3.5 shrink-0" />
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-gray-200 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700">
+                <CheckIcon className="h-3 w-3 shrink-0" />
                 Signed
               </span>
             ) : (
-              <span className="rounded-full bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm shadow-violet-500/20">
+              <span className="shrink-0 rounded-full bg-gray-200 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-700">
                 Draft
               </span>
             )}
           </div>
         </div>
       </div>
-
-      {editing && editor && (
-        <ContractEditorToolbar editor={editor} layout="desktop" railTopPx={editorRailTopPx} />
       )}
 
       {/* Main Content */}
       <div
-        className={`print-content-wrapper w-full bg-gray-100 px-3 py-4 pb-[13rem] transition-[padding] duration-300 sm:px-6 sm:py-6 sm:pb-28 xl:pb-20 print:bg-transparent ${
+        className={`print-content-wrapper w-full bg-transparent px-2 py-6 pb-24 transition-[padding] duration-300 sm:px-4 sm:py-8 sm:pb-24 print:bg-transparent ${
           aiReviewOpen ? 'md:pr-[28rem]' : ''
-        } ${editing ? 'md:pl-[4.5rem]' : ''}`}
+        }`}
       >
         <div className="relative min-h-[60vh]">
-          <div className="mx-auto flex w-full max-w-[1920px] min-h-[60vh]">
-            <div className="flex min-w-0 flex-1 justify-center transition-all duration-300">
+          <div className="flex w-full justify-center">
             <div
               ref={contractContentRef}
               id="contract-print-area"
-              className={`relative min-w-0 w-full max-w-full flex-1 border border-gray-200/90 bg-white text-gray-900 shadow-sm sm:max-w-[min(100%,44rem)] md:max-w-[min(100%,48rem)] lg:max-w-[min(100%,52rem)] rounded-2xl px-5 py-6 sm:px-8 sm:py-8 leading-relaxed print:max-w-none print:rounded-none print:border-0 print:shadow-none [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-base [&_*]:text-sm sm:[&_*]:text-base ${
-                aiReviewOpen
-                  ? 'xl:max-w-[min(100%,44rem)]'
-                  : 'xl:max-w-none xl:flex-1'
-              }`}
+              className="contract-a4-page relative min-w-0 text-gray-900 leading-[1.75] print:max-w-none print:rounded-none print:border-0 print:shadow-none [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-[15px] [&_*]:text-sm sm:[&_*]:text-[15px]"
             >
               {editing ? (
                 <>
-                  {editor && <ContractEditorToolbar editor={editor} layout="mobile" />}
                   {/* Render editor content - placeholders show as plain text in edit mode */}
                   <div
                     key={`edit-content-${editorContentKey}-${renderKey}`}
@@ -6539,6 +6450,13 @@ const ContractPage: React.FC<{
                     // Draft employee contracts follow live template; others prefer saved custom_content
                     let contentToRender = resolveContractBodyContent(contract, template);
 
+                    if (contentToRender) {
+                      const contentStr = JSON.stringify(contentToRender);
+                      if (/\{\{text\}\}/.test(contentStr) || /\{\{signature\}\}/.test(contentStr) || contentStr.includes('text-field-placeholder') || contentStr.includes('signature-placeholder')) {
+                        contentToRender = preprocessTemplatePlaceholders(contentToRender);
+                      }
+                    }
+
                     // Process content to fill placeholders but keep {{text}}, {{date}}, and {{signature}}
                     if (contentToRender && customPricing && client) {
                       const processedContent = fillPlaceholdersInTiptapContent(
@@ -6556,7 +6474,6 @@ const ContractPage: React.FC<{
                 </div>
               )}
 
-            </div>
             </div>
           </div>
 
@@ -6867,6 +6784,14 @@ const ContractPage: React.FC<{
           title="Display contract on kiosk"
         />
       ) : null}
+      <ContractSendDrawer
+        open={showSendDrawer}
+        onClose={() => setShowSendDrawer(false)}
+        contacts={availableContacts}
+        loadingContacts={loadingContacts}
+        sending={sendingContract}
+        onSend={(opts) => void handleContractTemplateSend(opts)}
+      />
       <CallOptionsModal
         isOpen={isCallModalOpen}
         onClose={() => setIsCallModalOpen(false)}
@@ -6949,6 +6874,10 @@ const ContractPage: React.FC<{
             width: 100% !important;
             height: auto !important;
           }
+
+          .contract-studio {
+            background: #fff !important;
+          }
           
           /* Hide non-content elements */
           .print-hide,
@@ -6989,6 +6918,7 @@ const ContractPage: React.FC<{
             position: relative !important;
             width: 100% !important;
             max-width: 100% !important;
+            min-height: 0 !important;
             margin: 0 !important;
             padding: 0 !important;
             background: white !important;
@@ -7045,6 +6975,84 @@ const ContractPage: React.FC<{
           -moz-appearance: textfield;
         }
         
+        /* Page canvas + paper */
+        .contract-studio {
+          background-color: #f3f4f6;
+        }
+        .contract-word-ribbon {
+          background: #f3f2f1;
+          border: 1px solid #e1dfdd;
+          border-radius: 9999px;
+          box-shadow: 0 4px 16px rgba(28, 25, 23, 0.06);
+        }
+        .contract-word-ribbon-sep {
+          display: inline-block;
+          width: 1px;
+          height: 22px;
+          margin: 0 0.4rem;
+          background: #c8c6c4;
+          flex-shrink: 0;
+        }
+        .contract-word-ribbon-select {
+          height: 2rem;
+          border: 1px solid #8a8886;
+          border-radius: 2px;
+          background: #fff;
+          color: #323130;
+          font-size: 13px;
+          padding: 0 0.4rem;
+          outline: none;
+        }
+        .contract-word-ribbon-select:focus {
+          border-color: #2b88d8;
+        }
+        .contract-format-rail {
+          border-radius: 1.25rem;
+          background: rgba(247, 244, 238, 0.88);
+          border: 1px solid rgba(28, 25, 23, 0.08);
+          box-shadow:
+            0 8px 24px rgba(28, 25, 23, 0.08),
+            0 1px 0 rgba(255, 255, 255, 0.7) inset;
+          backdrop-filter: blur(12px);
+        }
+        .contract-command-bar {
+          display: flex;
+          align-items: center;
+          flex-wrap: nowrap;
+          gap: 0.25rem;
+          padding: 0.5rem 0.55rem;
+          border-radius: 9999px;
+          background: rgba(255, 252, 247, 0.94);
+          border: 1px solid rgba(28, 25, 23, 0.08);
+          box-shadow:
+            0 8px 28px rgba(28, 25, 23, 0.1),
+            0 1px 0 rgba(255, 255, 255, 0.8) inset;
+          backdrop-filter: blur(12px);
+        }
+        .contract-command-bar-scroll {
+          max-width: calc(100vw - 1.5rem);
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+        }
+        .contract-command-bar-scroll::-webkit-scrollbar {
+          display: none;
+        }
+        .contract-a4-page {
+          width: min(50rem, calc(100% - 1.5rem));
+          min-height: 297mm;
+          max-width: 100%;
+          box-sizing: border-box;
+          background: #fff;
+          border: 1px solid rgba(28, 25, 23, 0.08);
+          border-radius: 0;
+          box-shadow:
+            0 1px 1px rgba(28, 25, 23, 0.04),
+            0 10px 20px rgba(28, 25, 23, 0.06),
+            0 28px 56px rgba(28, 25, 23, 0.12);
+          padding: 1.5rem 1.75rem;
+        }
+
         /* TipTap Editor Styling - Edit Mode */
         .ProseMirror {
           min-height: 100% !important;
@@ -7130,28 +7138,30 @@ const ContractPage: React.FC<{
           margin-bottom: 0 !important;
         }
         
-        /* Style {{text}} and {{signature}} placeholders to look like input fields in view mode */
+        /* Style {{text}} and {{signature}} placeholders like legal form blanks */
         .ProseMirror[contenteditable="false"] .text-field-placeholder {
           display: inline-block;
-          min-width: 150px;
-          height: 40px;
-          border: 2px solid #d1d5db;
-          border-radius: 8px;
-          background-color: #f9fafb;
-          padding: 8px 12px;
+          min-width: 140px;
+          height: auto;
+          border: none;
+          border-bottom: 1px solid #a8a29e;
+          border-radius: 0;
+          background-color: transparent;
+          padding: 2px 4px 1px;
           margin: 0 4px;
           font-size: 14px;
-          color: #6b7280;
+          color: #78716c;
           font-style: italic;
         }
         
         .ProseMirror[contenteditable="false"] .signature-placeholder {
           display: inline-block;
           min-width: 200px;
-          height: 80px;
-          border: 2px solid #d1d5db;
-          border-radius: 8px;
-          background-color: #f9fafb;
+          height: 72px;
+          border: none;
+          border-bottom: 1px solid #a8a29e;
+          border-radius: 0;
+          background-color: transparent;
           margin: 0 4px;
           position: relative;
         }
@@ -7159,290 +7169,289 @@ const ContractPage: React.FC<{
         .ProseMirror[contenteditable="false"] .signature-placeholder::after {
           content: "Sign here";
           position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          color: #9ca3af;
-          font-size: 12px;
+          bottom: 8px;
+          left: 0;
+          right: 0;
+          text-align: center;
+          transform: none;
+          top: auto;
+          color: #a8a29e;
+          font-size: 11px;
           font-style: italic;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
         }
       `}</style>
 
-      {status === 'draft' && contract && client ? (
-        <div
-          className={`fixed bottom-[7.5rem] right-4 z-[45] flex flex-col gap-2 print-hide sm:bottom-28 sm:right-6 sm:flex-row sm:items-center ${
-            aiReviewOpen ? 'md:right-[29rem]' : ''
-          }`}
-        >
-          <button
-            type="button"
-            className="btn h-12 min-h-12 gap-2 rounded-full border-0 bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-600 px-5 text-white shadow-lg shadow-violet-500/35 transition hover:scale-[1.02] hover:shadow-xl hover:shadow-violet-500/45 disabled:opacity-70"
-            onClick={() => void handleImproveContractWithAi()}
-            disabled={improvingContract || aiChatLoading}
-            title="Improve contract with AI using meeting summaries"
-            aria-label="AI Summary — improve contract with meeting summaries"
-          >
-            <SparklesIcon className="h-6 w-6 shrink-0" />
-            <span className="text-sm font-semibold tracking-tight">AI Summary</span>
-          </button>
-          <button
-            type="button"
-            className="btn h-12 min-h-12 gap-2 rounded-full border-2 border-violet-300 bg-white px-5 text-violet-700 shadow-md transition hover:scale-[1.02] hover:border-violet-400 hover:bg-violet-50 disabled:opacity-70"
-            onClick={() => void handleOpenAiReviewPanel()}
-            disabled={improvingContract || aiChatLoading}
-            title="Open AI contract review chat to request changes"
-            aria-label="AI Review — open chat to request contract changes"
-          >
-            <ChatBubbleLeftRightIcon className="h-6 w-6 shrink-0" />
-            <span className="text-sm font-semibold tracking-tight">AI Review</span>
-          </button>
-        </div>
-      ) : null}
-
-      {/* Fixed Bottom Bar with Created Date, Template Name, Change Template Button, and Action Buttons */}
-      {contract?.created_at && (
-        <div className="fixed bottom-0 left-0 right-0 z-[60] flex justify-center pb-4 pb-safe print-hide pointer-events-none sm:pb-0">
-          {/* Mobile: Modern glassy oval container */}
-          <div className="pointer-events-auto sm:hidden w-[calc(100%-32px)] max-w-md">
-            <div
-              className="rounded-full border border-gray-200 bg-white shadow-2xl px-4 py-3"
-              style={{
-                borderRadius: '9999px',
-              }}
-            >
-              <div className="flex items-center justify-around gap-1">
-                {!showDetailsAndPricingModal && (
+      {(contract?.created_at || (status === 'draft' && contract && client)) && (
+        <>
+        {/* Mobile: one scrollable bottom bar */}
+        <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-[60] flex justify-center px-3 print-hide pb-safe md:hidden">
+          <div className="contract-command-bar contract-command-bar-scroll pointer-events-auto">
+            {!showDetailsAndPricingModal && (
+              <>
+                {!editing && status === 'draft' && (
+                  <ContractBarTip label="Edit">
+                    <button
+                      type="button"
+                      className={CONTRACT_BAR_ICON_BTN}
+                      onClick={() => {
+                        setEditing(true);
+                        setTimeout(() => {
+                          if (editor) editor.commands.focus();
+                        }, 100);
+                      }}
+                      aria-label="Edit"
+                    >
+                      <PencilIcon className="h-5 w-5" />
+                    </button>
+                  </ContractBarTip>
+                )}
+                {editing && (
                   <>
-                    {/* Button to open Contract Details & Pricing Modal */}
-                    {/* <button
-                      onClick={() => setShowDetailsAndPricingModal(true)}
-                      className="btn btn-circle btn-primary w-12 h-12"
-                      title="Contract Details & Pricing"
-                    >
-                      <Cog6ToothIcon className="w-6 h-6" />
-                    </button> */}
-
-                    {/* Share button - Mobile uses native share */}
-                    <button
-                      className="btn btn-circle btn-ghost w-12 h-12"
-                      onClick={handleMobileShare}
-                      title="Share contract link"
-                    >
-                      <ShareIcon className="w-6 h-6 text-black" />
-                    </button>
-
-                    {contract?.id ? (
-                      <button
-                        className="btn btn-circle btn-ghost w-12 h-12"
-                        onClick={() => setShowKioskModal(true)}
-                        title="Display on lobby kiosk"
-                      >
-                        <ComputerDesktopIcon className="w-6 h-6 text-black" />
+                    <ContractBarTip label="Save">
+                      <button type="button" className={CONTRACT_BAR_SAVE_BTN} onClick={handleSaveEdit} aria-label="Save">
+                        <CheckIcon className="h-5 w-5" />
                       </button>
-                    ) : null}
-
-                    {!editing && status === 'draft' && (
+                    </ContractBarTip>
+                    <ContractBarTip label="Cancel">
                       <button
-                        className="btn btn-circle btn-ghost w-12 h-12"
-                        onClick={() => {
-                          setEditing(true);
-                          // Focus editor after entering edit mode
-                          setTimeout(() => {
-                            if (editor) {
-                              editor.commands.focus();
-                            }
-                          }, 100);
-                        }}
-                        title="Edit"
+                        type="button"
+                        className={CONTRACT_BAR_CANCEL_BTN}
+                        onClick={() => void handleDiscardEdit()}
+                        aria-label="Cancel"
                       >
-                        <PencilIcon className="w-6 h-6 text-black" />
+                        <XMarkIcon className="h-5 w-5" />
                       </button>
-                    )}
-
-                    {editing && (
-                      <>
-                        <button
-                          className={`${CONTRACT_BAR_SAVE_BTN} w-12 h-12`}
-                          onClick={handleSaveEdit}
-                          title="Save"
-                        >
-                          <CheckIcon className="h-5 w-5" />
-                        </button>
-                        <button
-                          className={`${CONTRACT_BAR_CANCEL_BTN} w-12 h-12`}
-                          onClick={async () => {
-                            setAiReviewNotes(null);
-                            setAiReviewChatMessages([]);
-                            setShowAiReviewPanel(false);
-                            setAiRemarksInput('');
-                            setEditing(false);
-                            // Reload contract content to discard changes without full page reload
-                            if (contract?.id && editor) {
-                              const { data: contractData } = await supabase
-                                .from('contracts')
-                                .select('*, contract_templates(*)')
-                                .eq('id', contract.id)
-                                .single();
-                              if (contractData) {
-                                // Update contract and template state - this will trigger the useEffect to reprocess content
-                                setContract(contractData);
-                                if (contractData.contract_templates) {
-                                  setTemplate(contractData.contract_templates);
-                                }
-                                // Force content reprocessing by incrementing renderKey
-                                setRenderKey(prev => prev + 1);
-                              }
-                            }
-                          }}
-                          title="Cancel"
-                        >
-                          <XMarkIcon className="h-5 w-5" />
-                        </button>
-                      </>
-                    )}
-
-                    {/* Change Template button on mobile */}
-                    {status === 'draft' && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowChangeTemplateModal(true);
-                        }}
-                        className="btn btn-circle btn-ghost w-12 h-12"
-                        title="Change Template"
-                      >
-                        <ClipboardDocumentIcon className="w-6 h-6 text-black" />
-                      </button>
-                    )}
-
-                    {/* Delete button on mobile */}
-                    <button
-                      onClick={handleDeleteContract}
-                      className={`${CONTRACT_BAR_DELETE_BTN} w-12 h-12`}
-                      title="Delete Contract"
-                    >
-                      <TrashIcon className="h-5 w-5" />
-                    </button>
+                    </ContractBarTip>
                   </>
                 )}
-              </div>
-            </div>
-          </div>
-
-          {/* Desktop / tablet: bottom bar incl. Share & Edit (right rail is metadata-only on xl+) */}
-          <div className="pointer-events-auto hidden sm:block">
-            <div className="backdrop-blur-md bg-white/95 rounded-2xl shadow-lg border border-white/20 px-4 py-3">
-              <div className="flex items-center justify-center gap-4 flex-wrap">
-                <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-center">
-                  <div className="flex items-center gap-2">
-                    <CalendarIcon className="w-4 h-4 text-gray-500" />
-                    <p className="text-xs sm:text-sm text-gray-600">
-                      {new Date(contract.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-
-                  {!showDetailsAndPricingModal && (
-                    <>
-                      <button
-                        className="btn btn-circle btn-ghost"
-                        onClick={handleShareContractLink}
-                        title="Copy public contract link"
-                      >
-                        <ShareIcon className="w-5 h-5 text-black" />
-                      </button>
-
-                      {contract?.id ? (
-                        <button
-                          className="btn btn-circle btn-ghost"
-                          onClick={() => setShowKioskModal(true)}
-                          title="Display on lobby kiosk"
-                        >
-                          <ComputerDesktopIcon className="w-5 h-5 text-black" />
-                        </button>
-                      ) : null}
-
-                      {!editing && status === 'draft' && (
-                        <button
-                          className="btn btn-circle btn-ghost"
-                          onClick={() => {
-                            setEditing(true);
-                            setTimeout(() => {
-                              if (editor) {
-                                editor.commands.focus();
-                              }
-                            }, 100);
-                          }}
-                          title="Edit"
-                        >
-                          <PencilIcon className="w-5 h-5 text-black" />
-                        </button>
-                      )}
-
-                      {editing && (
-                        <>
-                          <button
-                            className={CONTRACT_BAR_SAVE_BTN}
-                            onClick={handleSaveEdit}
-                            title="Save"
-                          >
-                            <CheckIcon className="w-5 h-5" />
-                          </button>
-                          <button
-                            className={CONTRACT_BAR_CANCEL_BTN}
-                            onClick={async () => {
-                              setAiReviewNotes(null);
-                              setAiReviewChatMessages([]);
-                              setShowAiReviewPanel(false);
-                              setAiRemarksInput('');
-                              setEditing(false);
-                              if (contract?.id && editor) {
-                                const { data: contractData } = await supabase
-                                  .from('contracts')
-                                  .select('*, contract_templates(*)')
-                                  .eq('id', contract.id)
-                                  .single();
-                                if (contractData) {
-                                  setContract(contractData);
-                                  if (contractData.contract_templates) {
-                                    setTemplate(contractData.contract_templates);
-                                  }
-                                  setRenderKey(prev => prev + 1);
-                                }
-                              }
-                            }}
-                            title="Cancel"
-                          >
-                            <XMarkIcon className="w-5 h-5" />
-                          </button>
-                        </>
-                      )}
-                    </>
-                  )}
-
-                  {status === 'draft' && (
+                {status === 'draft' && (
+                  <ContractBarTip label="Change template">
                     <button
+                      type="button"
+                      className={CONTRACT_BAR_ICON_BTN}
                       onClick={(e) => {
                         e.stopPropagation();
                         setShowChangeTemplateModal(true);
                       }}
-                      className="btn btn-circle btn-ghost"
-                      title="Change Template"
+                      aria-label="Change template"
                     >
-                      <ClipboardDocumentIcon className="w-5 h-5 text-black" />
+                      <ArrowPathIcon className="h-5 w-5" />
                     </button>
-                  )}
+                  </ContractBarTip>
+                )}
+                <ContractBarTip label="Share">
                   <button
-                    onClick={handleDeleteContract}
-                    className={CONTRACT_BAR_DELETE_BTN}
-                    title="Delete Contract"
+                    type="button"
+                    className={CONTRACT_BAR_ICON_BTN}
+                    onClick={handleMobileShare}
+                    aria-label="Share"
                   >
-                    <TrashIcon className="w-5 h-5" />
+                    <ShareIcon className="h-5 w-5" />
                   </button>
-                </div>
-              </div>
-            </div>
+                </ContractBarTip>
+                {contract?.id ? (
+                  <ContractBarTip label="Share on screen">
+                    <button
+                      type="button"
+                      className={CONTRACT_BAR_ICON_BTN}
+                      onClick={() => setShowKioskModal(true)}
+                      aria-label="Share on screen"
+                    >
+                      <ComputerDesktopIcon className="h-5 w-5" />
+                    </button>
+                  </ContractBarTip>
+                ) : null}
+                {/* <ContractBarTip label="Send">
+                  <button
+                    type="button"
+                    className={CONTRACT_BAR_ICON_BTN}
+                    onClick={() => void openSendDrawer()}
+                    aria-label="Send"
+                  >
+                    <PaperAirplaneIcon className="h-5 w-5" />
+                  </button>
+                </ContractBarTip> */}
+                <ContractBarTip label="Delete">
+                  <button
+                    type="button"
+                    className={CONTRACT_BAR_DELETE_BTN}
+                    onClick={handleDeleteContract}
+                    aria-label="Delete"
+                  >
+                    <TrashIcon className="h-5 w-5" />
+                  </button>
+                </ContractBarTip>
+              </>
+            )}
+            {status === 'draft' && contract && client ? (
+              <>
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_AI_PRIMARY}
+                  onClick={() => void handleImproveContractWithAi()}
+                  disabled={improvingContract || aiChatLoading}
+                  title="Improve contract with AI using meeting summaries"
+                  aria-label="AI Summary"
+                >
+                  <SparklesIcon className="h-6 w-6 shrink-0" />
+                  <span className="text-sm font-semibold tracking-wide">Summary</span>
+                </button>
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_AI_SECONDARY}
+                  onClick={() => void handleOpenAiReviewPanel()}
+                  disabled={improvingContract || aiChatLoading}
+                  title="Open AI contract review"
+                  aria-label="AI Review"
+                >
+                  <ChatBubbleLeftRightIcon className="h-6 w-6 shrink-0" />
+                  <span className="text-sm font-semibold tracking-wide">Review</span>
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
+
+        {/* Desktop: edit box on the left */}
+        {!showDetailsAndPricingModal && (
+          <div className="pointer-events-none fixed bottom-0 left-0 z-[60] hidden justify-start px-4 print-hide pb-safe sm:px-6 md:flex">
+            <div className="contract-command-bar pointer-events-auto">
+              {!editing && status === 'draft' && (
+                <ContractBarTip label="Edit">
+                  <button
+                    type="button"
+                    className={CONTRACT_BAR_ICON_BTN}
+                    onClick={() => {
+                      setEditing(true);
+                      setTimeout(() => {
+                        if (editor) editor.commands.focus();
+                      }, 100);
+                    }}
+                    aria-label="Edit"
+                  >
+                    <PencilIcon className="h-5 w-5" />
+                  </button>
+                </ContractBarTip>
+              )}
+              {editing && (
+                <>
+                  <ContractBarTip label="Save">
+                    <button type="button" className={CONTRACT_BAR_SAVE_BTN} onClick={handleSaveEdit} aria-label="Save">
+                      <CheckIcon className="h-5 w-5" />
+                    </button>
+                  </ContractBarTip>
+                  <ContractBarTip label="Cancel">
+                    <button
+                      type="button"
+                      className={CONTRACT_BAR_CANCEL_BTN}
+                      onClick={() => void handleDiscardEdit()}
+                      aria-label="Cancel"
+                    >
+                      <XMarkIcon className="h-5 w-5" />
+                    </button>
+                  </ContractBarTip>
+                </>
+              )}
+              {status === 'draft' && (
+                <ContractBarTip label="Change template">
+                  <button
+                    type="button"
+                    className={CONTRACT_BAR_ICON_BTN}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowChangeTemplateModal(true);
+                    }}
+                    aria-label="Change template"
+                  >
+                    <ArrowPathIcon className="h-5 w-5" />
+                  </button>
+                </ContractBarTip>
+              )}
+              <ContractBarTip label="Share">
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_ICON_BTN}
+                  onClick={handleShareContractLink}
+                  aria-label="Share"
+                >
+                  <ShareIcon className="h-5 w-5" />
+                </button>
+              </ContractBarTip>
+              {/* <ContractBarTip label="Send">
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_ICON_BTN}
+                  onClick={() => void openSendDrawer()}
+                  aria-label="Send"
+                >
+                  <PaperAirplaneIcon className="h-5 w-5" />
+                </button>
+              </ContractBarTip> */}
+              <ContractBarTip label="Delete">
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_DELETE_BTN}
+                  onClick={handleDeleteContract}
+                  aria-label="Delete"
+                >
+                  <TrashIcon className="h-5 w-5" />
+                </button>
+              </ContractBarTip>
+            </div>
+          </div>
+        )}
+
+        {/* Desktop: share-adjacent tools + AI on the right */}
+        <div
+          className={`pointer-events-none fixed bottom-0 z-[60] hidden justify-end px-4 print-hide pb-safe sm:px-6 left-0 md:flex ${
+            aiReviewOpen ? 'md:right-[28rem]' : 'right-0'
+          }`}
+        >
+          <div className="contract-command-bar pointer-events-auto">
+            {!showDetailsAndPricingModal && contract?.id ? (
+              <ContractBarTip label="Share on screen">
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_ICON_BTN}
+                  onClick={() => setShowKioskModal(true)}
+                  aria-label="Share on screen"
+                >
+                  <ComputerDesktopIcon className="h-5 w-5" />
+                </button>
+              </ContractBarTip>
+            ) : null}
+
+            {status === 'draft' && contract && client ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_AI_PRIMARY}
+                  onClick={() => void handleImproveContractWithAi()}
+                  disabled={improvingContract || aiChatLoading}
+                  title="Improve contract with AI using meeting summaries"
+                  aria-label="AI Summary — improve contract with meeting summaries"
+                >
+                  <SparklesIcon className="h-6 w-6 shrink-0" />
+                  <span className="text-sm font-semibold tracking-wide">Summary</span>
+                </button>
+                <button
+                  type="button"
+                  className={CONTRACT_BAR_AI_SECONDARY}
+                  onClick={() => void handleOpenAiReviewPanel()}
+                  disabled={improvingContract || aiChatLoading}
+                  title="Open AI contract review chat to request changes"
+                  aria-label="AI Review — open chat to request contract changes"
+                >
+                  <ChatBubbleLeftRightIcon className="h-6 w-6 shrink-0" />
+                  <span className="text-sm font-semibold tracking-wide">Review</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        </>
       )}
     </div>
   );

@@ -31,11 +31,12 @@ export interface TemplateParamDefinition {
     | 'manual_address'
     | 'meeting_link'
     | 'invoice_link'
-  | 'payment_link'
-  | 'lead_number'
-  | 'portal_link'
-  | 'access_code'
-  | 'custom';
+    | 'payment_link'
+    | 'lead_number'
+    | 'portal_link'
+    | 'access_code'
+    | 'contract_link'
+    | 'custom';
   value?: string; // For custom params, specify the value
   // Note: 'contact_name' and 'client_name' are deprecated but supported for backward compatibility.
   // They both resolve to the same 'name' behavior - the frontend automatically determines which to use.
@@ -119,6 +120,8 @@ export type ProformaWhatsAppParamContext = {
   portalLink?: string;
   /** Client portal password / access code (plain text for staff send). */
   accessCode?: string;
+  /** Public digital-contract signing URL. */
+  contractLink?: string;
 };
 
 const isStaffMeetingClient = (client: any): boolean =>
@@ -162,6 +165,7 @@ export async function generateParamsFromDefinitions(
       proformaContext?.paymentPlanId ?? client?.paymentPlanId ?? null,
     portalLink: proformaContext?.portalLink ?? client?.portalLink ?? '',
     accessCode: proformaContext?.accessCode ?? client?.accessCode ?? '',
+    contractLink: proformaContext?.contractLink ?? client?.contractLink ?? '',
   };
   
   const parameters: Array<{ type: string; text: string }> = [];
@@ -315,6 +319,9 @@ export async function generateParamsFromDefinitions(
         break;
       case 'access_code':
         value = sanitizeWhatsAppTemplateVariableText(ctx.accessCode || '');
+        break;
+      case 'contract_link':
+        value = sanitizeWhatsAppTemplateVariableText(ctx.contractLink || ctx.invoiceLink || '');
         break;
       case 'custom':
         value = def.value || '';

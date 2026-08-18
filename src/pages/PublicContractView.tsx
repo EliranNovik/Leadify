@@ -21,6 +21,7 @@ import {
   recruitmentUserDisplayName,
 } from '../lib/recruitmentDigitalContracts';
 import { ensurePerEntityContractContentSnapshot } from '../lib/contractContentSnapshot';
+import { shareOrCopyUrl } from '../lib/webShare';
 
 function unwrapTemplateRelation(raw: any): any | null {
   if (!raw) return null;
@@ -244,6 +245,23 @@ function isRTL(text: string): boolean {
   return rtlRegex.test(text);
 }
 
+function formatContractDisplayDate(dateValue: string, rtl: boolean): string {
+  if (!dateValue) return '';
+  try {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(dateValue)
+      ? new Date(`${dateValue}T00:00:00`)
+      : new Date(dateValue);
+    if (isNaN(date.getTime())) return dateValue;
+    return date.toLocaleDateString(rtl ? 'he-IL' : 'en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  } catch {
+    return dateValue;
+  }
+}
+
 function extractTextContent(content: any): string {
   if (!content) return '';
   if (typeof content === 'string') return content;
@@ -390,32 +408,7 @@ const PublicContractView: React.FC<{
         text = text.replace(/\{\{date:([^}]+)\}\}/g, (match: string, id: string) => {
           const dateValue = clientFields[id] || '';
           if (!dateValue) return '';
-
-          // Format date for display
-          try {
-            if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
-              const date = new Date(dateValue + 'T00:00:00');
-              if (!isNaN(date.getTime())) {
-                return date.toLocaleDateString('en-US', {
-                  year: 'numeric',
-                  month: 'long',
-                  day: 'numeric'
-                });
-              }
-            } else {
-              const date = new Date(dateValue);
-              if (!isNaN(date.getTime())) {
-                return date.toLocaleDateString('en-US', {
-                  year: 'numeric',
-                  month: 'long',
-                  day: 'numeric'
-                });
-              }
-            }
-          } catch (e) {
-            // If formatting fails, return the raw value
-          }
-          return dateValue;
+          return formatContractDisplayDate(dateValue, contractIsRTL);
         });
         return { ...content, text };
       }
@@ -1082,13 +1075,23 @@ const PublicContractView: React.FC<{
         return !(typeof v === 'string' && v.trim().length > 0);
       });
 
-      if (missingSignatureIds.length > 0 || missingDateIds.length > 0) {
-        const parts: string[] = [];
-        if (missingDateIds.length > 0) parts.push('date');
-        if (missingSignatureIds.length > 0) parts.push('signature');
-        alert(`Please add your ${parts.join(' and ')} before submitting the contract.`);
-        return;
-      }
+        if (missingSignatureIds.length > 0 || missingDateIds.length > 0) {
+          if (contractIsRTL) {
+            if (missingDateIds.length > 0 && missingSignatureIds.length > 0) {
+              alert('נא להוסיף תאריך וחתימה לפני שליחת החוזה.');
+            } else if (missingDateIds.length > 0) {
+              alert('נא להוסיף תאריך לפני שליחת החוזה.');
+            } else {
+              alert('נא להוסיף חתימה לפני שליחת החוזה.');
+            }
+          } else {
+            const parts: string[] = [];
+            if (missingDateIds.length > 0) parts.push('date');
+            if (missingSignatureIds.length > 0) parts.push('signature');
+            alert(`Please add your ${parts.join(' and ')} before submitting the contract.`);
+          }
+          return;
+        }
 
       // Fill in client fields in the contract content
       const filledContent = fillClientFieldsInContent(resolveContractBodyContent(contract, template));
@@ -1382,7 +1385,7 @@ const PublicContractView: React.FC<{
     }
   };
 
-  // Share contract handler (uses Web Share API on mobile and desktop when available)
+  // Native share on phones/tablets only. Desktop Windows Share can open Word's Insert Hyperlink dialog.
   const handleShareContract = async () => {
     if (!contract) return;
 
@@ -1391,32 +1394,15 @@ const PublicContractView: React.FC<{
     const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
     const shareText = `You have been invited to review and sign a legal contract from Decker Pex Levi Law Offices. This is a secure link - please review the contract and sign if you agree to the terms.`;
 
-    // Try Web Share API first (works on mobile and some desktop browsers)
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: contractTitle,
-          text: shareText,
-          url: contractUrl,
-        });
-        return; // Successfully shared
-      } catch (error: any) {
-        // User cancelled - don't show error
-        if (error.name === 'AbortError') {
-          return;
-        }
-        // Other error - fall through to clipboard fallback
-        console.error('Error sharing contract:', error);
-      }
-    }
-
-    // Fallback: copy to clipboard
     try {
-      await navigator.clipboard.writeText(contractUrl);
-      alert('Contract link copied to clipboard!');
-    } catch (err) {
-      console.error('Failed to copy link:', err);
-      alert('Failed to share contract link.');
+      await shareOrCopyUrl({
+        url: contractUrl,
+        title: contractTitle,
+        text: shareText,
+        copiedMessage: 'Contract link copied to clipboard',
+      });
+    } catch {
+      // shareOrCopyUrl already toasts copy failures
     }
   };
 
@@ -1541,18 +1527,18 @@ const PublicContractView: React.FC<{
 
   // Reuse the renderTiptapContent logic for client view
   const contractTextInputClass =
-    'w-full max-w-md rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 shadow-sm ' +
+    'w-full max-w-md rounded-none border-0 border-b border-stone-400 bg-transparent px-1 py-1 text-sm text-slate-800 shadow-none ' +
     'placeholder:text-slate-400 transition ' +
-    'hover:border-slate-300 focus:border-blue-950 focus:outline-none focus:ring-2 focus:ring-blue-950/15 ' +
-    'disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500';
+    'hover:border-stone-600 focus:border-blue-950 focus:outline-none focus:ring-0 ' +
+    'disabled:cursor-not-allowed disabled:border-stone-300 disabled:bg-transparent disabled:text-slate-700';
 
   const contractDateInputClass =
-    'w-full max-w-xs rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 shadow-sm transition ' +
-    'hover:border-slate-300 focus:border-blue-950 focus:outline-none focus:ring-2 focus:ring-blue-950/15 ' +
-    'disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500';
+    'w-full max-w-xs rounded-none border-0 border-b border-stone-400 bg-transparent px-1 py-1 text-sm text-slate-800 shadow-none transition ' +
+    'hover:border-stone-600 focus:border-blue-950 focus:outline-none focus:ring-0 ' +
+    'disabled:cursor-not-allowed disabled:border-stone-300 disabled:bg-transparent disabled:text-slate-700';
 
   const contractSignaturePadClass =
-    'inline-flex w-full max-w-[240px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-sm ' +
+    'flex w-full max-w-[22rem] flex-col overflow-hidden rounded-xl border border-slate-200/90 bg-slate-50/70 p-2.5 ' +
     'transition hover:border-slate-300';
 
   // Helper function to render a single applicant field (used for both template and dynamic fields)
@@ -1757,19 +1743,7 @@ const PublicContractView: React.FC<{
             if (dateValue) {
               if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
                 formattedDate = dateValue;
-                // Format for display (e.g., "January 15, 2024")
-                try {
-                  const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
-                  if (!isNaN(date.getTime())) {
-                    displayDate = date.toLocaleDateString('en-US', {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric'
-                    });
-                  }
-                } catch (e) {
-                  displayDate = dateValue;
-                }
+                displayDate = formatContractDisplayDate(dateValue, contractIsRTL);
               } else {
                 try {
                   const date = new Date(dateValue);
@@ -1778,11 +1752,7 @@ const PublicContractView: React.FC<{
                     const month = String(date.getMonth() + 1).padStart(2, '0');
                     const day = String(date.getDate()).padStart(2, '0');
                     formattedDate = `${year}-${month}-${day}`;
-                    displayDate = date.toLocaleDateString('en-US', {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric'
-                    });
+                    displayDate = formatContractDisplayDate(dateValue, contractIsRTL);
                   }
                 } catch (e) {
                   // Invalid date, leave empty
@@ -1799,12 +1769,13 @@ const PublicContractView: React.FC<{
                   style={{
                     display: 'inline-block',
                     verticalAlign: 'middle',
-                    border: '2px solid #10b981',
-                    borderRadius: '6px',
-                    padding: '4px 8px',
+                    border: 'none',
+                    borderBottom: '1px solid #a8a29e',
+                    borderRadius: 0,
+                    padding: '2px 4px 1px',
                     margin: '0 4px',
                     minWidth: '150px',
-                    backgroundColor: '#f0fdf4',
+                    backgroundColor: 'transparent',
                     color: '#065f46',
                     fontWeight: 'bold'
                   }}
@@ -1820,7 +1791,9 @@ const PublicContractView: React.FC<{
                 >
                   {textBeforePlaceholder.trim() ? (
                     <span className="block font-medium text-gray-800">
-                      {textBeforePlaceholder.trim()}
+                      {contractIsRTL && /^date\s*:?\s*$/i.test(textBeforePlaceholder.trim())
+                        ? 'תאריך:'
+                        : textBeforePlaceholder.trim()}
                     </span>
                   ) : null}
                   {dateField}
@@ -1848,8 +1821,8 @@ const PublicContractView: React.FC<{
                     }}
                   />
                   {contract?.status !== 'signed' && !formattedDate ? (
-                    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
-                      Please add date
+                    <span className="text-xs font-medium text-amber-700">
+                      {contractIsRTL ? 'נא להוסיף תאריך' : 'Please add date'}
                     </span>
                   ) : null}
                 </div>
@@ -1862,7 +1835,9 @@ const PublicContractView: React.FC<{
                 >
                   {textBeforePlaceholder.trim() ? (
                     <span className="block font-medium text-gray-800">
-                      {textBeforePlaceholder.trim()}
+                      {contractIsRTL && /^date\s*:?\s*$/i.test(textBeforePlaceholder.trim())
+                        ? 'תאריך:'
+                        : textBeforePlaceholder.trim()}
                     </span>
                   ) : null}
                   {dateField}
@@ -1898,7 +1873,10 @@ const PublicContractView: React.FC<{
             const trimmedBefore = textBeforePlaceholderForDate.trim();
             const isActuallyDateField = /date\s*:\s*$/i.test(trimmedBefore) ||
               /^date\s*:/i.test(trimmedBefore) ||
-              (trimmedBefore.toLowerCase().endsWith('date:') || trimmedBefore.toLowerCase().endsWith('date: '));
+              (trimmedBefore.toLowerCase().endsWith('date:') || trimmedBefore.toLowerCase().endsWith('date: ')) ||
+              /תאריך\s*:\s*$/.test(trimmedBefore) ||
+              trimmedBefore.endsWith('תאריך:') ||
+              trimmedBefore.endsWith('תאריך: ');
             // If this is actually a date field, render it as a date input instead
             if (isActuallyDateField) {
               // Remove from applicant fields if it's there (using base ID)
@@ -1916,19 +1894,7 @@ const PublicContractView: React.FC<{
               if (dateValue) {
                 if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
                   formattedDate = dateValue;
-                  // Format for display (e.g., "January 15, 2024")
-                  try {
-                    const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
-                    if (!isNaN(date.getTime())) {
-                      displayDate = date.toLocaleDateString('en-US', {
-                        year: 'numeric',
-                        month: 'long',
-                        day: 'numeric'
-                      });
-                    }
-                  } catch (e) {
-                    displayDate = dateValue;
-                  }
+                  displayDate = formatContractDisplayDate(dateValue, contractIsRTL);
                 } else {
                   try {
                     const date = new Date(dateValue);
@@ -1937,11 +1903,7 @@ const PublicContractView: React.FC<{
                       const month = String(date.getMonth() + 1).padStart(2, '0');
                       const day = String(date.getDate()).padStart(2, '0');
                       formattedDate = `${year}-${month}-${day}`;
-                      displayDate = date.toLocaleDateString('en-US', {
-                        year: 'numeric',
-                        month: 'long',
-                        day: 'numeric'
-                      });
+                      displayDate = formatContractDisplayDate(dateValue, contractIsRTL);
                     }
                   } catch (e) {
                     // Invalid date, leave empty
@@ -1958,12 +1920,13 @@ const PublicContractView: React.FC<{
                     style={{
                       display: 'inline-block',
                       verticalAlign: 'middle',
-                      border: '2px solid #10b981',
-                      borderRadius: '6px',
-                      padding: '4px 8px',
+                      border: 'none',
+                      borderBottom: '1px solid #a8a29e',
+                      borderRadius: 0,
+                      padding: '2px 4px 1px',
                       margin: '0 4px',
                       minWidth: '150px',
-                      backgroundColor: '#f0fdf4',
+                      backgroundColor: 'transparent',
                       color: '#065f46',
                       fontWeight: 'bold'
                     }}
@@ -1992,8 +1955,8 @@ const PublicContractView: React.FC<{
                       }}
                     />
                     {contract?.status !== 'signed' && !formattedDate ? (
-                      <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
-                        Please add date
+                      <span className="text-xs font-medium text-amber-700">
+                        {contractIsRTL ? 'נא להוסיף תאריך' : 'Please add date'}
                       </span>
                     ) : null}
                   </div>
@@ -2115,22 +2078,23 @@ const PublicContractView: React.FC<{
             const signatureField = (
               <div
                 key={id}
-                className="contract-signature-block my-3 flex w-full max-w-xl flex-col items-start gap-2"
+                className="contract-signature-block my-4 flex w-full flex-col gap-2"
                 data-field-id={id}
+                dir={contractIsRTL ? 'rtl' : 'ltr'}
               >
                 {textBeforePlaceholder.trim() ? (
-                  <span className="block font-medium text-gray-800">
+                  <span className="block text-[13px] font-medium text-slate-700">
                     {textBeforePlaceholder.trim()}
                   </span>
                 ) : null}
-                <div className="inline-flex items-start gap-2 md:gap-4 relative field-wrapper flex-wrap max-w-full">
-                  <div className="flex flex-col items-start gap-2">
+                <div className="relative field-wrapper flex w-full flex-wrap items-end justify-between gap-x-8 gap-y-4">
+                  <div className="flex min-w-0 flex-col items-stretch gap-2">
                     <div className={contractSignaturePadClass}>
                       {clientFields[id] || (contract?.status === 'signed' && clientSignature) ? (
                         <img
                           src={clientFields[id] || clientSignature || ''}
                           alt="Signature"
-                          className="block h-20 w-full max-w-[200px] rounded-lg object-contain"
+                          className="block h-28 w-full max-w-[22rem] rounded-md bg-white object-contain"
                         />
                       ) : (
                         <SignaturePad
@@ -2138,17 +2102,18 @@ const PublicContractView: React.FC<{
                             if (ref && signaturePads) signaturePads[id] = ref;
                           }}
                           penColor="#0f172a"
-                          backgroundColor="rgba(248,250,252,1)"
+                          backgroundColor="rgba(255,255,255,1)"
                           canvasProps={{
-                            width: 200,
-                            height: 80,
-                            className: 'block w-full rounded-lg',
+                            width: 352,
+                            height: 112,
+                            className: 'block w-full rounded-md bg-white',
                             style: {
                               display: 'block',
-                              borderRadius: 8,
-                              background: 'rgb(248, 250, 252)',
+                              borderRadius: 6,
+                              background: '#fff',
                               maxWidth: '100%',
-                              width: '100%'
+                              width: '100%',
+                              height: 112,
                             }
                           }}
                           onEnd={() => {
@@ -2160,37 +2125,35 @@ const PublicContractView: React.FC<{
                           }}
                         />
                       )}
-                      <div className="mt-2 text-center text-xs font-medium text-slate-400">
-                        Sign here
+                      <div className="mt-1.5 border-t border-slate-200 pt-1.5 text-center text-[11px] font-medium tracking-wide text-slate-400">
+                        {contractIsRTL ? 'חתום כאן' : 'Sign here'}
                       </div>
                     </div>
                     {contract?.status !== 'signed' && (
-                      <>
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          className="btn btn-sm gap-2 rounded-full border-0 bg-blue-950 px-5 text-white hover:bg-blue-900"
+                          className="inline-flex h-11 items-center gap-2 rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-slate-600 transition hover:bg-slate-200"
                           onClick={() => setSignatureModalId(id)}
                         >
-                          <PencilSquareIcon className="h-4 w-4" />
-                          {clientFields[id] ? 'Edit signature' : 'Open signature pad'}
+                          <PencilSquareIcon className="h-6 w-6" />
+                          {clientFields[id]
+                            ? (contractIsRTL ? 'עריכת חתימה' : 'Edit signature')
+                            : (contractIsRTL ? 'פתיחת משטח חתימה' : 'Open signature pad')}
                         </button>
                         {!clientFields[id] ? (
-                          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
-                            Please sign first
+                          <span className="text-[11px] font-medium text-amber-700">
+                            {contractIsRTL ? 'יש לחתום תחילה' : 'Please sign first'}
                           </span>
                         ) : null}
-                      </>
+                      </div>
                     )}
                   </div>
-                  <div className="flex-shrink-0 max-w-full flex items-center">
+                  <div className="flex shrink-0 items-end pb-1">
                     <img
                       src="/חתימה מסמכים (5).png"
                       alt="Stamp"
-                      className="h-32 md:h-52 w-auto object-contain"
-                      style={{
-                        display: 'block',
-                        objectFit: 'contain'
-                      }}
+                      className="h-28 w-auto max-h-28 object-contain sm:h-36 sm:max-h-36 md:h-40 md:max-h-40"
                     />
                   </div>
                 </div>
@@ -2544,122 +2507,152 @@ const PublicContractView: React.FC<{
         ? client.name.trim()
         : 'Client';
   const isSigned = contract.status === 'signed' || thankYou;
+  const headerCopy = contractIsRTL
+    ? {
+        eyebrow: 'חוזה דיגיטלי',
+        awaiting: 'ממתין לחתימה',
+        signed: 'נחתם',
+        jumpToDate: 'מעבר לתאריך',
+        share: 'שיתוף',
+        print: 'הדפסה',
+        submit: 'שליחת החוזה',
+        submitting: 'שולח…',
+        signedBanner: 'החוזה נחתם והוא לקריאה בלבד.',
+        thankYou: 'תודה! החוזה נחתם ונשלח. ניצור איתך קשר בהקדם.',
+        signHere: 'חתום כאן',
+        openPad: 'פתיחת משטח חתימה',
+        editSignature: 'עריכת חתימה',
+        pleaseSign: 'יש לחתום תחילה',
+      }
+    : {
+        eyebrow: 'Digital contract',
+        awaiting: 'Awaiting signature',
+        signed: 'Signed',
+        jumpToDate: 'Jump to date',
+        share: 'Share',
+        print: 'Print',
+        submit: 'Submit contract',
+        submitting: 'Submitting…',
+        signedBanner: 'This contract has been signed and is now read-only.',
+        thankYou: 'Thank you! Your contract was signed and submitted. You will be notified soon.',
+        signHere: 'Sign here',
+        openPad: 'Open signature pad',
+        editSignature: 'Edit signature',
+        pleaseSign: 'Please sign first',
+      };
+  const chromeIconBtn =
+    'inline-flex h-11 w-11 items-center justify-center rounded-xl text-slate-600 transition hover:bg-slate-100 hover:text-slate-900';
+
+  const statusBadge = isSigned ? (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 sm:text-sm">
+      <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" aria-hidden />
+      {headerCopy.signed}
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-950 px-3 py-1.5 text-xs font-medium text-white sm:text-sm">
+      <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" aria-hidden />
+      {headerCopy.awaiting}
+    </span>
+  );
 
   return (
-    <div className="min-h-screen bg-white md:bg-gray-100">
-      {/* Premium client-first header */}
-      <header className="print-hide w-full bg-white shadow-sm">
-        <div
-          className="mx-auto grid w-full max-w-6xl items-center gap-4 px-4 py-5 md:gap-8 md:px-8 md:py-7"
-          style={{ gridTemplateColumns: 'auto minmax(0, 1fr) auto' }}
-        >
-          {/* Logo - Left (secondary) */}
-          <div className="flex shrink-0 items-center self-center">
+    <div className="contract-studio min-h-screen print:bg-white">
+      <header className="print-hide sticky top-0 z-30 bg-[#f0eee9] sm:bg-transparent" dir={contractIsRTL ? 'rtl' : 'ltr'}>
+        <div className="flex w-full justify-center px-0 sm:px-4 sm:pt-4">
+          <div className="flex w-full items-center gap-3 rounded-none border-0 bg-transparent px-3 py-2.5 shadow-none sm:w-[min(210mm,calc(100%-1.5rem))] sm:gap-4 sm:rounded-2xl sm:border sm:border-black/[0.06] sm:bg-white/80 sm:px-4 sm:py-3 sm:shadow-[0_8px_30px_rgba(28,25,23,0.08)] sm:backdrop-blur-xl">
             <img
               src="/DPL-LOGO1.png"
-              alt="DPL Logo"
-              className="h-10 w-auto object-contain md:h-14"
+              alt="Decker Pex & Co. Law Offices"
+              className="h-8 w-auto shrink-0 object-contain sm:h-9"
             />
-          </div>
-
-          {/* Client - Center (hero) */}
-          <div className="min-w-0 text-center">
-            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2">
-              <h1 className="truncate text-2xl font-bold tracking-tight text-slate-900 md:text-3xl md:leading-tight">
+            <div className="min-w-0 flex-1">
+              <p
+                className={
+                  contractIsRTL
+                    ? 'text-xs font-medium text-slate-400'
+                    : 'text-xs font-medium uppercase tracking-[0.16em] text-slate-400'
+                }
+              >
+                {headerCopy.eyebrow}
+              </p>
+              <h1 className="truncate text-[15px] font-semibold tracking-tight text-slate-900 sm:text-base">
                 {headerClientName}
               </h1>
-              {isSigned ? (
-                <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3.5 py-1.5 text-xs font-semibold text-emerald-800 shadow-sm ring-1 ring-emerald-200">
-                  <span className="relative flex h-2 w-2" aria-hidden="true">
-                    <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                  </span>
-                  Signed
-                </span>
-              ) : (
-                <span
-                  className="inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-semibold tracking-wide shadow-sm ring-1 ring-amber-200"
-                  style={{
-                    background: 'linear-gradient(90deg, #f7efd8 0%, #f3e4bc 50%, #efe0b0 100%)',
-                    color: '#7a5c16',
-                  }}
-                >
-                  <span className="relative flex h-2 w-2" aria-hidden="true">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-50" />
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
-                  </span>
-                  Ready to sign
-                </span>
-              )}
             </div>
-            <p className="mt-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 md:text-xs md:tracking-[0.16em]">
-              Decker Pex &amp; Co. Law Office
-            </p>
-          </div>
-
-          {/* Matter ID - Right */}
-          <div className="flex min-w-[5.5rem] shrink-0 flex-col items-end justify-center self-center text-right md:min-w-[7rem]">
-            {leadNumber ? (
-              <>
-                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 md:text-[11px]">
-                  Matter ID
-                </span>
-                <span className="mt-1 font-mono text-sm font-semibold text-slate-900 md:text-base">
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+              {statusBadge}
+              {leadNumber ? (
+                <span className="font-mono text-[13px] tabular-nums text-slate-500 sm:text-sm">
                   #{leadNumber}
                 </span>
-              </>
-            ) : (
-              <span className="text-xs text-slate-300">—</span>
-            )}
+              ) : null}
+              <span className="mx-0.5 hidden h-5 w-px bg-slate-200 sm:block" aria-hidden />
+              <div className="hidden sm:flex sm:items-center sm:gap-1.5">
+                {isSigned ? (
+                  <button
+                    type="button"
+                    onClick={handlePrint}
+                    className={chromeIconBtn}
+                    title={headerCopy.print}
+                    aria-label={headerCopy.print}
+                  >
+                    <PrinterIcon className="h-6 w-6" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={scrollToDateField}
+                    className={chromeIconBtn}
+                    title={headerCopy.jumpToDate}
+                    aria-label={headerCopy.jumpToDate}
+                  >
+                    <ArrowDownIcon className="h-6 w-6" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleShareContract}
+                  className={chromeIconBtn}
+                  title={headerCopy.share}
+                  aria-label={headerCopy.share}
+                >
+                  <ShareIcon className="h-6 w-6" />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Main Content — full-bleed white on phone/tablet; grey framed card on desktop */}
-      <div className="bg-white px-0 py-3 md:bg-gray-100 md:flex md:items-center md:justify-center md:px-8 md:py-8 pb-32 md:pb-8">
-        <div className="w-full max-w-6xl bg-white relative px-3.5 py-4 sm:px-5 sm:py-5 md:rounded-lg md:shadow-lg md:border md:border-gray-200 md:p-8">
-          {/* Share button in top right corner - removed since we have it in floating buttons on desktop */}
-
-          {/* Show signed message at the top if contract is signed */}
-          {contract.status === 'signed' && !thankYou && (
-            <div className="alert alert-success mb-4 md:mb-6 text-sm md:text-base">
-              This contract has been signed and is now read-only.
-            </div>
-          )}
-
-          {/* Print and Share buttons for signed contracts */}
-          {contract.status === 'signed' && (
-            <div className="flex justify-center gap-2 mb-4 print-hide">
-              <button
-                className="btn btn-outline btn-xs sm:btn-sm gap-1 sm:gap-2"
-                onClick={handlePrint}
-                title="Print contract"
-              >
-                <PrinterIcon className="w-4 h-4" />
-                <span className="hidden sm:inline">Print</span>
-              </button>
-              {/* PDF button commented out */}
-              {/* <button
-              className="btn btn-outline btn-sm gap-2"
-              onClick={handleDownloadPDF}
-              disabled={pdfLoading}
-              title="Download as PDF"
+      {/* Main content — A4 paper, same as contract editor */}
+      <div className="print-content-wrapper w-full bg-transparent px-0 py-0 pb-32 sm:px-4 sm:py-7 print:bg-transparent">
+        <div className="flex w-full justify-center">
+          <div
+            ref={contractContentRef}
+            id="contract-print-area"
+            className="contract-a4-page public-contract-paper relative min-w-0 overflow-x-hidden text-gray-900 leading-[1.75] print:max-w-none print:rounded-none print:border-0 print:shadow-none [&_p]:mb-3 text-sm sm:text-[15px] [&_*]:text-sm sm:[&_*]:text-[15px]"
+          >
+            <div
+              className="public-contract-watermark pointer-events-none select-none"
+              aria-hidden
             >
-              <ArrowDownTrayIcon className="w-5 h-5" />
-              {pdfLoading ? 'Generating...' : 'Download PDF'}
-            </button> */}
+              Issued by Decker Pex & Co Law Office
+            </div>
+          {contract.status === 'signed' && !thankYou && (
+            <div className="print-hide mb-5 rounded-xl bg-emerald-50 px-3.5 py-2.5 text-[13px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-600/10">
+              {headerCopy.signedBanner}
             </div>
           )}
 
-
-          <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none overflow-x-hidden">
             {(() => {
               const contentToRender = resolveContractBodyContent(contract, template);
               if (!contentToRender) return null;
 
               return thankYou ? (
                 <>
-                  <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
+                  <div className="print-hide mb-5 rounded-xl bg-emerald-50 px-3.5 py-2.5 text-[13px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-600/10">
+                    {headerCopy.thankYou}
+                  </div>
                   {renderTiptapContent(contentToRender, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 })}
                 </>
               ) : (
@@ -2667,43 +2660,33 @@ const PublicContractView: React.FC<{
               );
             })()}
           </div>
+        </div>
 
-          {/* Submit Contract Button (only if not signed) */}
           {contract.status !== 'signed' && !thankYou && (
-            <div className="mt-8 flex justify-center print-hide">
+            <div className="mt-6 flex justify-center print-hide">
               <button
-                className="btn btn-lg rounded-full border-none bg-blue-950 px-8 text-white hover:bg-blue-900 sm:px-10"
+                type="button"
+                className="inline-flex h-14 min-w-[16rem] items-center justify-center rounded-full bg-emerald-600 px-12 text-base font-semibold text-white shadow-[0_12px_28px_rgba(5,150,105,0.28)] transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={handleSubmitContract}
                 disabled={isSubmitting}
               >
-                {isSubmitting ? 'Submitting...' : 'Submit Contract'}
+                {isSubmitting ? headerCopy.submitting : headerCopy.submit}
               </button>
             </div>
           )}
-        </div>
       </div>
 
-      {/* Footer */}
-      <footer className="bg-blue-950 text-white mt-8 md:mt-24 print-hide">
-        <div className="max-w-5xl mx-auto px-4 py-8 md:py-20 md:px-8">
-          <div className="flex flex-col items-center justify-center gap-4 md:gap-8">
-            {/* Company Info & Addresses */}
-            <div className="text-center space-y-2 md:space-y-3">
-              <div className="flex items-center justify-center gap-3">
-                <img src="/DPLOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
-                <p className="font-bold text-xl text-white">Decker, Pex, Levi Law Offices</p>
-              </div>
-              <div className="text-blue-100 text-sm flex flex-col md:flex-row items-center justify-center gap-1 md:gap-3">
-                <p>Yad Harutzim 10, Jerusalem, Israel</p>
-                <span className="hidden md:inline text-blue-200/80">•</span>
-                <p>Menachem Begin Rd. 150, Tel Aviv, Israel</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-6 md:mt-12 pt-4 md:pt-8 border-t border-blue-900 text-center text-xs text-blue-200/90">
-            RMQ 2.0 - Copyright © {new Date().getFullYear()} - All right reserved
-          </div>
+      <footer className="print-hide px-4 py-10">
+        <div className="mx-auto max-w-[min(210mm,calc(100%-1.5rem))] text-center">
+          <p className="text-[13px] font-medium tracking-tight text-slate-600">
+            Decker, Pex, Levi Law Offices
+          </p>
+          <p className="mt-1.5 text-[12px] text-slate-400">
+            Yad Harutzim 10, Jerusalem · Menachem Begin Rd. 150, Tel Aviv
+          </p>
+          <p className="mt-4 text-[11px] text-slate-300">
+            RMQ 2.0 · © {new Date().getFullYear()}
+          </p>
         </div>
       </footer>
 
@@ -2727,31 +2710,12 @@ const PublicContractView: React.FC<{
         }
       />
 
-      {/* Scroll to Date + Share — Desktop only (top right) */}
-      <div className="hidden md:flex fixed top-32 right-6 z-40 print-hide flex-col gap-4">
-        <button
-          onClick={scrollToDateField}
-          className="btn btn-circle btn-lg bg-blue-950 text-white border-none hover:bg-blue-900 shadow-lg hover:scale-110 transition-transform"
-          title="Scroll to date field"
-        >
-          <ArrowDownIcon className="w-8 h-8" />
-        </button>
-
-        <button
-          onClick={handleShareContract}
-          className="btn btn-circle btn-lg bg-emerald-600 text-white border-none hover:bg-emerald-700 shadow-lg hover:scale-110 transition-transform"
-          title="Share contract"
-        >
-          <ShareIcon className="w-8 h-8" />
-        </button>
-      </div>
-
-      {/* Mobile Bottom Oval Box with Contact Buttons */}
+      {/* Mobile contact dock */}
       <div
         className="md:hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-50 print-hide"
         style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom))' }}
       >
-        <div className="bg-white/20 backdrop-blur-md rounded-full border border-white/30 shadow-lg">
+        <div className="rounded-full border border-black/[0.06] bg-white/85 shadow-[0_12px_40px_rgba(28,25,23,0.14)] backdrop-blur-xl">
           <div className="flex items-center justify-center gap-3 px-4 py-2.5">
             {closerEmployee && (
               <button
@@ -2770,7 +2734,7 @@ const PublicContractView: React.FC<{
             <button
               type="button"
               onClick={handleShareContract}
-              className="btn btn-circle border-none bg-emerald-600 text-white hover:bg-emerald-700"
+              className="btn btn-ghost btn-circle text-black hover:bg-white/20"
               title="Share contract"
             >
               <ShareIcon className="w-6 h-6" />
@@ -2869,6 +2833,7 @@ const PublicContractView: React.FC<{
             position: relative !important;
             width: 100% !important;
             max-width: 100% !important;
+            min-height: 0 !important;
             margin: 0 !important;
             padding: 0 !important;
             background: white !important;
@@ -3150,7 +3115,7 @@ const PublicContractView: React.FC<{
                   }}
                 />
                 <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 text-xs font-medium text-slate-400">
-                  Sign here
+                  {headerCopy.signHere}
                 </span>
               </div>
             </div>
@@ -3173,7 +3138,7 @@ const PublicContractView: React.FC<{
                 </button>
                 <button
                   type="button"
-                  className="inline-flex h-11 items-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                  className="inline-flex h-11 items-center gap-2 rounded-xl bg-blue-950 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-900"
                   onClick={applySignatureFromModal}
                 >
                   <PencilSquareIcon className="h-4 w-4" />
