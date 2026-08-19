@@ -32,6 +32,7 @@ import {
   TrashIcon,
   InboxIcon,
 } from '@heroicons/react/24/outline';
+import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
 import { fetchAiMessageSuggestion } from '../../lib/aiMessageSuggestion';
@@ -85,6 +86,7 @@ import {
   processEmailHtmlWithInlineImages,
   ensureFormattedEmailHtml,
   mergeEmailBodyPreferRicher,
+  mergeEmailSidepanelLists,
   isTimelinePrewrapHtml,
   emailBodyPlainTextLength,
   countEmailBreakSignals,
@@ -94,7 +96,9 @@ import { InteractionsEmailModal, resolveOutgoingSenderLabel, TeamAvatar } from '
 import { lookupEmployeePhotoFromMap, resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
 import { COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from '../signature/ComposeSignaturePreview';
 import { EmailMessageActionsDropdown } from './EmailMessageActionsDropdown';
+import { WhatsAppMessageActionsDropdown } from './WhatsAppMessageActionsDropdown';
 import { EmailMessageComments } from './EmailMessageComments';
+import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
 import type { EmailComment } from '../../lib/interactions/emailComments';
 import { fetchEmailCommentsByEmailIds } from '../../lib/interactions/emailComments';
 import {
@@ -141,6 +145,19 @@ import {
   type ContentFlagMeta,
   type FlagTypeRow,
 } from '../../lib/userContentFlags';
+import {
+  dispatchPinnedInteractionsChanged,
+  displayNameNotEmail,
+  fetchLeadPinnedInteractions,
+  pinLeadInteraction,
+  pinnedInteractionKey,
+  previewTextFromInteractionContent,
+  resolveLeadPinnedIdentity,
+  unpinLeadInteraction,
+  PINNED_INTERACTIONS_CHANGED_EVENT,
+  SCROLL_TO_PINNED_INTERACTION_EVENT,
+  type PinnedInteractionChannel,
+} from '../../lib/leadPinnedInteractions';
 import {
   fetchRmqMessageFlagsForLead,
   deleteRmqMessageLeadFlag,
@@ -346,6 +363,24 @@ function formatAttachmentBytes(bytes?: number | null): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function emailAttachmentDataUrl(attachment: any): string | null {
+  const bytes = attachment?.contentBytes || attachment?.content_bytes || attachment?.contentBytesBase64;
+  if (!bytes) return null;
+  if (String(bytes).startsWith('data:')) return String(bytes);
+  const mime =
+    attachment?.contentType ||
+    attachment?.content_type ||
+    attachment?.mimeType ||
+    'application/octet-stream';
+  return `data:${mime};base64,${bytes}`;
+}
+
+function emailAttachmentViewerId(emailId: string, attachment: any, idx: number): string {
+  const attId = attachment?.id != null ? String(attachment.id) : '';
+  const name = String(attachment?.name || `Attachment ${idx + 1}`);
+  return attId ? `${emailId}:${attId}` : `${emailId}:${name}:${idx}`;
 }
 
 interface CallLog {
@@ -870,6 +905,37 @@ async function fetchCurrentUserFullName() {
 const FETCH_BATCH_SIZE = 500;
 const EMAIL_MODAL_LIMIT = 200;
 
+function timelineRowsToModalEmails(rows: Interaction[]): any[] {
+  return rows
+    .filter((row) => row.kind === 'email' && row.editable !== true)
+    .filter((row) => {
+      const id = String(row.id ?? '');
+      return !id.startsWith('manual_') && !id.startsWith('legacy_pending_');
+    })
+    .map((row) => {
+      const senderEmail = row.sender_email || '';
+      const isFromOffice = isOfficeEmail(senderEmail);
+      const rawHtml = row.body_html || row.content || row.body_preview || '';
+      const formatted = rawHtml ? ensureFormattedEmailHtml(rawHtml) : '';
+      return {
+        id: stableEmailRowId(row) || String(row.id),
+        message_id: row.message_id ?? null,
+        subject: row.subject,
+        from: senderEmail,
+        to: row.recipient_list || '',
+        date: row.raw_date,
+        body_html: formatted || null,
+        bodyPreview: formatted,
+        body_preview: formatted || null,
+        direction: isFromOffice || row.direction === 'out' ? 'outgoing' : 'incoming',
+        attachments: [],
+        contact_id: row.contact_id ?? null,
+        sender_name: row.employee || null,
+        sender_display_name: row.direction === 'out' ? row.employee : null,
+      };
+    });
+}
+
 /** Survives Strict Mode remounts — prevents duplicate full timeline fetches per lead. */
 const interactionsFetchInFlight = new Map<string, Promise<void>>();
 
@@ -1384,6 +1450,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
   const [flaggedItemsModalOpen, setFlaggedItemsModalOpen] = useState(false);
   const [attachmentsModalOpen, setAttachmentsModalOpen] = useState(false);
+  const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
+  const [attachmentViewerDocs, setAttachmentViewerDocs] = useState<DocumentViewerItem[]>([]);
+  const [attachmentViewerIndex, setAttachmentViewerIndex] = useState(0);
+  const attachmentViewerBlobUrlsRef = useRef<string[]>([]);
+  const attachmentViewerGenerationRef = useRef(0);
   const [pendingFlagDelete, setPendingFlagDelete] = useState<
     | null
     | { kind: 'lead_field'; leadFieldKey: string; label: string }
@@ -1393,6 +1464,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   /** RMQ chat messages flagged to this lead (all users). */
   const [rmqLeadMessageFlags, setRmqLeadMessageFlags] = useState<RmqMessageLeadFlagWithPreview[]>([]);
 
+  const [pinnedInteractionKeys, setPinnedInteractionKeys] = useState<Set<string>>(() => new Set());
+
   // Allow ClientHeader (and other components) to open the exact same modal instance.
   useEffect(() => {
     const handler = () => setFlaggedItemsModalOpen(true);
@@ -1401,6 +1474,33 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       window.removeEventListener('rmq:open-flagged-conversations', handler as EventListener);
     };
   }, []);
+
+  const leadPinnedIdentity = useMemo(() => resolveLeadPinnedIdentity(client), [client.id, client.lead_type]);
+
+  const refreshPinnedInteractionKeys = useCallback(async () => {
+    if (!leadPinnedIdentity) {
+      setPinnedInteractionKeys(new Set());
+      return;
+    }
+    const rows = await fetchLeadPinnedInteractions(supabase, leadPinnedIdentity);
+    setPinnedInteractionKeys(
+      new Set(rows.map((row) => pinnedInteractionKey(row.channel, row.external_id))),
+    );
+  }, [leadPinnedIdentity]);
+
+  useEffect(() => {
+    void refreshPinnedInteractionKeys();
+  }, [refreshPinnedInteractionKeys]);
+
+  useEffect(() => {
+    const handler = () => {
+      void refreshPinnedInteractionKeys();
+    };
+    window.addEventListener(PINNED_INTERACTIONS_CHANGED_EVENT, handler as EventListener);
+    return () => {
+      window.removeEventListener(PINNED_INTERACTIONS_CHANGED_EVENT, handler as EventListener);
+    };
+  }, [refreshPinnedInteractionKeys]);
   const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; mailbox?: string | null; lastSyncedAt?: string | null }>({
     connected: false,
     mailbox: null,
@@ -1564,6 +1664,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const location = useLocation();
   const navigate = useNavigate();
   const [emails, setEmails] = useState<any[]>([]);
+  const emailsRef = useRef<any[]>([]);
+  emailsRef.current = emails;
+  const clientRef = useRef(client);
+  clientRef.current = client;
+  const fetchEmailsForModalSeqRef = useRef(0);
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState('');
   const [interactionsLoading, setInteractionsLoading] = useState(
@@ -1634,6 +1739,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [availablePlacements, setAvailablePlacements] = useState<Array<{ id: number; name: string }>>([]);
   const [sending, setSending] = useState(false);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const isEmailModalOpenRef = useRef(false);
+  isEmailModalOpenRef.current = isEmailModalOpen;
   const [composeAttachments, setComposeAttachments] = useState<{ name: string; contentType: string; contentBytes: string }[]>([]);
   const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
   const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
@@ -1668,6 +1775,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     leadId: string | number;
     leadType: 'legacy' | 'new';
   } | null>(null);
+  const selectedContactForEmailRef = useRef(selectedContactForEmail);
+  selectedContactForEmailRef.current = selectedContactForEmail;
   const [whatsAppInput, setWhatsAppInput] = useState("");
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
   const userFullNameLoadedRef = useRef(false);
@@ -2584,6 +2693,133 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     },
     [sortedInteractions, isLegacyLead]
   );
+
+  const pinTargetFromRow = useCallback((row: Interaction): { channel: PinnedInteractionChannel; externalId: string } | null => {
+    if (row.editable) return null;
+    const sid = String(row.id ?? '').trim();
+    if (!sid || sid.includes('optimistic_')) return null;
+    if (row.kind === 'email') return { channel: 'email', externalId: sid };
+    if (row.kind === 'whatsapp') return { channel: 'whatsapp', externalId: sid };
+    return null;
+  }, []);
+
+  const isRowPinned = useCallback(
+    (row: Interaction) => {
+      const target = pinTargetFromRow(row);
+      if (!target) return false;
+      return pinnedInteractionKeys.has(pinnedInteractionKey(target.channel, target.externalId));
+    },
+    [pinTargetFromRow, pinnedInteractionKeys],
+  );
+
+  const togglePinnedInteraction = useCallback(
+    async (row: Interaction) => {
+      const target = pinTargetFromRow(row);
+      if (!target || !leadPinnedIdentity) {
+        toast.error('This message cannot be saved.');
+        return;
+      }
+      if (!publicUserId) {
+        toast.error('Please sign in to save interactions.');
+        return;
+      }
+      const key = pinnedInteractionKey(target.channel, target.externalId);
+      const already = pinnedInteractionKeys.has(key);
+      if (already) {
+        const { error } = await unpinLeadInteraction(
+          supabase,
+          leadPinnedIdentity,
+          target.channel,
+          target.externalId,
+        );
+        if (error) {
+          toast.error(error);
+          return;
+        }
+        setPinnedInteractionKeys((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        dispatchPinnedInteractionsChanged(client.id);
+        toast.success('Removed from saved interactions');
+        return;
+      }
+      const preview = previewTextFromInteractionContent(
+        extractVisibleText(row.body_html) ||
+          extractVisibleText(row.content) ||
+          row.body_preview ||
+          row.content,
+      );
+      const partyName = displayNameNotEmail(
+        row.employee || row.contact_name,
+        client.name,
+      );
+      const { error } = await pinLeadInteraction(supabase, leadPinnedIdentity, {
+        channel: target.channel,
+        externalId: target.externalId,
+        subject: row.subject?.trim() || null,
+        preview,
+        direction: row.direction === 'in' || row.direction === 'out' ? row.direction : null,
+        partyName,
+        occurredAt: row.raw_date || null,
+        pinnedBy: publicUserId,
+        pinnedByName: userFullName || userEmail || null,
+      });
+      if (error) {
+        toast.error(error);
+        return;
+      }
+      setPinnedInteractionKeys((prev) => {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
+      dispatchPinnedInteractionsChanged(client.id);
+      toast.success('Saved to lead interactions');
+    },
+    [
+      pinTargetFromRow,
+      leadPinnedIdentity,
+      publicUserId,
+      pinnedInteractionKeys,
+      client.id,
+      userFullName,
+      userEmail,
+    ],
+  );
+
+  const scrollToPinnedTarget = useCallback(
+    (channel: PinnedInteractionChannel, externalId: string) => {
+      const idx = sortedInteractions.findIndex((row) => {
+        const target = pinTargetFromRow(row);
+        return target?.channel === channel && target.externalId === externalId;
+      });
+      if (idx >= 0) {
+        setVisibleInteractionsCount((prev) => Math.max(prev, idx + 1));
+      }
+      const key = pinnedInteractionKey(channel, externalId);
+      const selector = `[data-interaction-flag-key="${encodeURIComponent(key)}"]`;
+      window.setTimeout(() => {
+        const el = document.querySelector(selector);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 350);
+    },
+    [sortedInteractions, pinTargetFromRow],
+  );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ channel?: string; externalId?: string }>).detail;
+      if (detail?.channel !== 'email' && detail?.channel !== 'whatsapp') return;
+      if (!detail.externalId) return;
+      scrollToPinnedTarget(detail.channel, detail.externalId);
+    };
+    window.addEventListener(SCROLL_TO_PINNED_INTERACTION_EVENT, handler as EventListener);
+    return () => {
+      window.removeEventListener(SCROLL_TO_PINNED_INTERACTION_EVENT, handler as EventListener);
+    };
+  }, [scrollToPinnedTarget]);
 
   const addConversationFlag = useCallback(
     async (target: ConversationFlagTarget, flagTypeId: number) => {
@@ -4894,7 +5130,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const endTime = performance.now();
         const duration = Math.round(endTime - startTime);
         interactionsDevLog(`✅ InteractionsTab loaded in ${duration}ms with ${merged.length} interactions`);
-        setEmails(dedupeEmailsForSidepanel(formattedEmailsForModal));
+        setEmails((prev) => {
+          const next = dedupeEmailsForSidepanel(formattedEmailsForModal);
+          if (isEmailModalOpenRef.current) {
+            return mergeEmailSidepanelLists(prev, next);
+          }
+          if (next.length === 0 && prev.length > 0) return prev;
+          return next;
+        });
+        if (client?.id && formattedEmailsForModal.length > 0) {
+          writeEmailSidepanelCache(`interactions:${client.id}:all`, formattedEmailsForModal);
+        }
 
         onInteractionCountUpdate?.(merged.length);
         onInteractionsCacheUpdate?.({
@@ -5410,59 +5656,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   // Template text is applied in renderedInteractions useMemo via processWhatsAppTemplateMessage
 
-  const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview?: string; body_html?: string | null; body_preview?: string | null }[]) => {
+  const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview?: string; body_html?: string | null; body_preview?: string | null; message_id?: string | null }[]) => {
     if (!messages || messages.length === 0) return;
-    if (!userId) return;
 
-    const requiresHydration = messages.filter(message => {
-      // Skip "offer_" prefixed message IDs (optimistic price offer inserts - body already stored)
-      if (message.id && message.id.startsWith('offer_')) {
+    const requiresHydration = messages.filter((message) => {
+      if (message.id && (message.id.startsWith('offer_') || message.id.startsWith('optimistic_'))) {
         return false;
       }
-      
-      // Skip optimistic IDs (temporary IDs that don't exist in the backend)
-      if (message.id && message.id.startsWith('optimistic_')) {
-        interactionsDevLog(`📧 Skipping optimistic email ID: ${message.id}`);
-        return false;
-      }
-      
-      // ALWAYS hydrate if body_html is missing or empty (this is the main issue)
-      const hasBodyHtml = message.body_html && message.body_html.trim() !== '';
-      if (hasBodyHtml && emailBodyLooksStableForReading(message.body_html)) {
-        // Already a stable reading-pane body — do not refetch/overwrite (avoids ~2s format flash).
-        return false;
-      }
-      if (!hasBodyHtml) {
-        interactionsDevLog(`📧 Email ${message.id} missing body_html, will hydrate`);
-        return true;
-      }
-      
-      // Also check if body_preview/bodyPreview seems truncated (even if body_html exists, it might be incomplete)
-      const preview = (message.bodyPreview || message.body_preview || '').trim();
-      if (!preview) return true;
-      
-      // Remove HTML tags and normalize whitespace to check actual content length
-      const normalisedPreview = preview
-        .replace(/<[^>]*>/g, '') // Remove HTML tags
-        .replace(/<br\s*\/?>/gi, ' ')
-        .replace(/&nbsp;/g, ' ')
+
+      const display = message.body_html || message.bodyPreview || message.body_preview || '';
+      const displayLen = emailBodyPlainTextLength(display);
+      const hasBodyHtml = Boolean(message.body_html && message.body_html.trim());
+      if (hasBodyHtml && displayLen > 0) return false;
+
+      if (displayLen === 0) return true;
+
+      const plain = String(display)
+        .replace(/<[^>]*>/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-      
-      // Hydrate if:
-      // 1. Preview is very short (< 100 chars suggests truncation - increased threshold)
-      // 2. Preview equals the subject (likely truncated)
-      // 3. Preview ends with "..." or similar truncation indicators
-      const isTruncated = normalisedPreview.length < 100 || 
-                          normalisedPreview === message.subject ||
-                          normalisedPreview.endsWith('...') ||
-                          normalisedPreview.endsWith('…');
-      
-      if (isTruncated) {
-        interactionsDevLog(`📧 Email ${message.id} seems truncated, will hydrate`);
-      }
-      
-      return isTruncated;
+      const truncated =
+        plain.endsWith('...') ||
+        plain.endsWith('…') ||
+        plain === String(message.subject || '').trim() ||
+        displayLen < 40;
+      return !hasBodyHtml && truncated;
     });
 
     if (requiresHydration.length === 0) return;
@@ -5470,50 +5688,59 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     try {
       const updates: Record<string, { html: string; preview: string; attachments?: any[] }> = {};
 
-      await Promise.all(
-        requiresHydration.map(async message => {
-          if (!message.id) return;
-          try {
-            const { body: rawContent, attachments } = await fetchEmailBodyFromBackend(userId, message.id);
-            if (!rawContent || typeof rawContent !== 'string') return;
-
-            // Format for reading pane immediately so line breaks are correct on first paint
-            // (not after a late hydrate re-render).
-            const formattedHtml = ensureFormattedEmailHtml(rawContent);
-            const previewHtml =
-              formattedHtml && formattedHtml.trim()
-                ? formattedHtml
-                : ensureFormattedEmailHtml(rawContent);
-
-            updates[message.id] = {
-              html: formattedHtml,
-              preview: previewHtml,
-              attachments: Array.isArray(attachments) ? attachments : undefined,
-            };
-
-            // Do not write the body back to Supabase from the client.
-            // That fires realtime → refetch → list select (no body_html) and used to wipe
-            // the hydrated formatted body ("breaks show, then suddenly go away").
-            // Backend / sync owns persisting full bodies.
-          } catch (err) {
-            const status = Number((err as any)?.statusCode || 0);
-            const msg = String((err as any)?.message || err || '');
-            // Graph ItemNotFound / deleted mail — expected; don't spam console or retry forever
-            if (
-              status === 404 ||
-              /ErrorItemNotFound|not found in the store|ItemNotFound/i.test(msg)
-            ) {
-              return;
-            }
-            // Only log if it's not a network/CORS error (those are expected if backend is down)
-            if (err instanceof TypeError && msg.includes('fetch')) {
-              // Network error - backend might be down, skip logging to avoid spam
-            } else {
-              console.warn('Email body hydrate skipped:', msg.slice(0, 180));
-            }
-          }
-        })
+      const lookupIds = requiresHydration.flatMap((message) =>
+        [message.id, message.message_id].filter((id): id is string => Boolean(id)),
       );
+      const storedBodies = await fetchEmailBodiesByIds(supabase, lookupIds, 40);
+      for (const message of requiresHydration) {
+        const raw =
+          (message.id ? storedBodies.get(String(message.id)) : undefined) ||
+          (message.message_id ? storedBodies.get(String(message.message_id)) : undefined);
+        if (!raw) continue;
+        const formattedHtml = ensureFormattedEmailHtml(raw);
+        updates[message.id] = {
+          html: formattedHtml,
+          preview: formattedHtml,
+        };
+      }
+
+      if (userId) {
+        await Promise.all(
+          requiresHydration.map(async (message) => {
+            if (!message.id || updates[message.id]) return;
+            const idsToTry = [message.id, message.message_id].filter(
+              (id, idx, arr): id is string => Boolean(id) && arr.indexOf(id) === idx,
+            );
+            for (const emailId of idsToTry) {
+              try {
+                const { body: rawContent, attachments } = await fetchEmailBodyFromBackend(userId, emailId);
+                if (!rawContent || typeof rawContent !== 'string') continue;
+
+                const formattedHtml = ensureFormattedEmailHtml(rawContent);
+                updates[message.id] = {
+                  html: formattedHtml,
+                  preview: formattedHtml,
+                  attachments: Array.isArray(attachments) ? attachments : undefined,
+                };
+                return;
+              } catch (err) {
+                const status = Number((err as any)?.statusCode || 0);
+                const msg = String((err as any)?.message || err || '');
+                if (
+                  status === 404 ||
+                  /ErrorItemNotFound|not found in the store|ItemNotFound/i.test(msg)
+                ) {
+                  continue;
+                }
+                if (err instanceof TypeError && msg.includes('fetch')) {
+                  continue;
+                }
+                console.warn('Email body hydrate skipped:', msg.slice(0, 180));
+              }
+            }
+          }),
+        );
+      }
 
       if (Object.keys(updates).length > 0) {
         setEmails(prev =>
@@ -5658,16 +5885,30 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [attachmentsModalOpen, userId, emails, ensureAttachmentsIfNeeded]);
 
   const fetchEmailsForModal = useCallback(async () => {
-    if (!client.id) return;
+    const clientNow = clientRef.current;
+    if (!clientNow?.id) return;
 
-    const cacheKey = `interactions:${client.id}:${selectedContactForEmail?.contact?.id || 'all'}`;
+    const seq = ++fetchEmailsForModalSeqRef.current;
+    const stillCurrent = () => seq === fetchEmailsForModalSeqRef.current && isMountedRef.current;
+
+    const selectedContact = selectedContactForEmailRef.current;
+    const cacheKey = `interactions:${clientNow.id}:${selectedContact?.contact?.id || 'all'}`;
     const cached = readEmailSidepanelCache<any[]>(cacheKey);
-    if (cached && cached.length > 0) {
-      // Re-apply reading-pane formatting so cached bodies don't flash unformatted then snap.
-      const normalized = dedupeEmailsForSidepanel(cached).map((e: any) => {
+    const allCached =
+      selectedContact?.contact?.id
+        ? readEmailSidepanelCache<any[]>(`interactions:${clientNow.id}:all`)
+        : null;
+
+    const seed =
+      (cached && cached.length > 0 ? cached : null) ||
+      (emailsRef.current.length > 0 ? emailsRef.current : null) ||
+      (allCached && allCached.length > 0 ? allCached : null) ||
+      timelineRowsToModalEmails(interactionsRef.current);
+
+    if (seed.length > 0) {
+      const normalized = dedupeEmailsForSidepanel(seed).map((e: any) => {
         const raw = e.body_html || e.bodyPreview || e.body_preview || '';
-        if (!raw) return e;
-        if (isTimelinePrewrapHtml(raw)) return e;
+        if (!raw || isTimelinePrewrapHtml(raw)) return e;
         const formatted = ensureFormattedEmailHtml(raw);
         return {
           ...e,
@@ -5676,40 +5917,32 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           body_preview: formatted,
         };
       });
-      setEmails((prev) => {
-        if (!prev.length) return normalized;
-        const byId = new Map(prev.map((e) => [String(e.id), e]));
-        return normalized.map((e) => mergeEmailBodyPreferRicher(e, byId.get(String(e.id))));
-      });
-      setEmailsLoading(false);
-    } else {
+      if (stillCurrent()) {
+        setEmails((prev) => mergeEmailSidepanelLists(prev, normalized));
+        setEmailsLoading(false);
+      }
+    } else if (stillCurrent()) {
       setEmailsLoading(true);
     }
 
     try {
-      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
+      const isLegacyLead = clientNow.lead_type === 'legacy' || clientNow.id.toString().startsWith('legacy_');
+      const legacyId = isLegacyLead ? parseInt(clientNow.id.replace('legacy_', '')) : null;
 
-      // Collect all email addresses for this client (including contacts)
-      // This ensures emails are shown in all leads where any of these email addresses match
-      const clientEmails = collectClientEmails(client);
-      // Also add emails from contacts if available
+      const contacts = leadContactsRef.current || [];
+      const clientEmails = collectClientEmails(clientNow);
       const allEmails = [...clientEmails];
-      if (leadContacts && leadContacts.length > 0) {
-        leadContacts.forEach((contact) => {
-          if (contact.email) {
-            const normalized = normalizeEmailForFilter(contact.email);
-            if (normalized && !allEmails.includes(normalized)) {
-              allEmails.push(normalized);
-            }
+      contacts.forEach((contact) => {
+        if (contact.email) {
+          const normalized = normalizeEmailForFilter(contact.email);
+          if (normalized && !allEmails.includes(normalized)) {
+            allEmails.push(normalized);
           }
-        });
-      }
-      
-      // Build query that matches by lead ID OR email addresses
-      // This ensures emails are shown in all leads where the email address matches
+        }
+      });
+
       const emailFilters = buildEmailFilterClauses({
-        clientId: !isLegacyLead ? String(client.id) : null,
+        clientId: !isLegacyLead ? String(clientNow.id) : null,
         legacyId: isLegacyLead ? legacyId : null,
         emails: allEmails,
       });
@@ -5717,230 +5950,147 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const { data: emailData, error: emailError } = await fetchLeadEmailsForTimeline(supabase, {
         isLegacyLead,
         legacyId,
-        clientId: client.id,
+        clientId: clientNow.id,
         emailFilters,
         limit: EMAIL_MODAL_LIMIT,
         select: EMAIL_LIST_SELECT,
         matchByAddress: true,
         contactIds: [
-          selectedContactForEmail?.contact?.id,
-          ...(leadContacts || []).map((c: any) => c?.id),
+          selectedContact?.contact?.id,
+          ...contacts.map((c: any) => c?.id),
         ],
       });
-      
-      // Note: We'll filter by contact client-side to handle both contact_id and email matching
-      // This ensures we catch emails that might not have contact_id set yet
-      
+
+      if (!stillCurrent()) return;
+
       if (emailError) {
         console.error('❌ Error fetching emails for InteractionsTab:', emailError);
-      } else {
-        let clientEmails = emailData || [];
-        interactionsDevLog(`📧 InteractionsTab fetched ${clientEmails.length} emails for client ${client.id}`);
-        
-        // Strict client-side filtering if contact is selected
-        if (selectedContactForEmail?.contact.id) {
-          const contactId = Number(selectedContactForEmail.contact.id);
-          const contactEmail = selectedContactForEmail.contact.email?.toLowerCase().trim();
-          
-          interactionsDevLog(`🔍 Filtering emails for contact ID: ${contactId}, email: ${contactEmail}`);
-          
-          clientEmails = clientEmails.filter((e: any) => {
-            // STRICT RULE: If email has contact_id, it MUST match exactly (no fallback to email matching)
-            if (e.contact_id !== null && e.contact_id !== undefined) {
-              const emailContactId = Number(e.contact_id);
-              return emailContactId === contactId;
-            }
-            
-            // Only if email has NO contact_id, then match by email address
-            // This is a fallback for old emails that don't have contact_id set yet
-            if (contactEmail) {
-              const senderEmail = e.sender_email?.toLowerCase().trim();
-              const recipientList = e.recipient_list?.toLowerCase() || '';
-              
-              // Split recipient_list by comma/semicolon and check for exact match
-              const recipients = recipientList.split(/[,;]/).map((r: string) => r.trim());
-              const matchesEmail = senderEmail === contactEmail || recipients.includes(contactEmail);
-              
-              if (matchesEmail) {
-                interactionsDevLog(`✅ Including email ${e.id} by email match: ${contactEmail}`);
-              }
-              return matchesEmail;
-            }
-            
-            // No contact email to match, exclude this email
-            interactionsDevLog(`❌ Excluding email ${e.id}: no contact email to match`);
-            return false;
-          });
-          
-          interactionsDevLog(`📧 After strict filtering by contact, ${clientEmails.length} emails remain`);
-        }
-        
-        // Build employee email-to-name mapping once for all emails
-        const employeeEmailMap = await buildEmployeeEmailToNameMap();
-        
-        // Deduplicate: Graph message_id, else DB id, then sender+subject+timestamp fingerprint
-        const uniqueClientEmails = dedupeEmailsForSidepanel(clientEmails);
-        const missingModalBodyIds = uniqueClientEmails
-          .filter((e: any) => !(e.body_html && String(e.body_html).trim()))
-          .map((e: any) => e.id);
-        if (missingModalBodyIds.length > 0) {
-          const bodiesById = await fetchEmailBodiesByIds(supabase, missingModalBodyIds, 40);
-          if (bodiesById.size > 0) {
-            uniqueClientEmails.forEach((e: any) => {
-              const html = e?.id != null ? bodiesById.get(String(e.id)) : undefined;
-              if (html && !(e.body_html && String(e.body_html).trim())) {
-                e.body_html = html;
-              }
-            });
-          }
-        }
-        
-        // Format emails for modal display — reading-pane formatter so breaks are correct immediately
-        const formattedEmailsForModal = uniqueClientEmails.map((e: any) => {
-          const rawHtml = typeof e.body_html === 'string' ? e.body_html : null;
-          const rawPreview = typeof e.body_preview === 'string' ? e.body_preview : null;
-          
-          let cleanedHtml = null;
-          if (rawHtml) {
-            cleanedHtml = ensureFormattedEmailHtml(rawHtml);
-          }
-          
-          let cleanedPreview = null;
-          if (rawPreview) {
-            cleanedPreview = ensureFormattedEmailHtml(rawPreview);
-          } else if (cleanedHtml) {
-            cleanedPreview = cleanedHtml;
-          }
-          
-          const fallbackText = cleanedPreview || cleanedHtml || e.subject || '';
-          
-          const sanitizedHtml = cleanedHtml;
-          const sanitizedPreview = cleanedPreview
-            ? cleanedPreview
-            : sanitizedHtml ?? (fallbackText ? ensureFormattedEmailHtml(fallbackText) : null);
-          
-          // Determine if email is from team/user based on sender email domain
-          // Emails from @lawoffice.org.il are ALWAYS team/user, never client
-          const senderEmail = e.sender_email || '';
-          const isFromOffice = isOfficeEmail(senderEmail);
-          
-          // Override direction field: if sender is from office domain, it's always outgoing (team/user)
-          let correctedDirection = e.direction;
-          if (isFromOffice) {
-            correctedDirection = 'outgoing';
-          }
-          
-          // Get sender display name - use employee display_name for office emails
-          let senderDisplayName = null;
-          if (isFromOffice) {
-            // For team/user emails: use employee display_name from cache if available
-            senderDisplayName = employeeEmailMap.get(senderEmail.toLowerCase()) || e.sender_name || null;
-          }
-          
-          // Prefer body_html over body_preview for better formatting (body_html has <br> tags)
-          // Store both so we can use body_html when available
-          const finalBody = sanitizedHtml || sanitizedPreview || '';
-          const stableId = stableEmailRowId(e);
+        return;
+      }
 
-          return {
-            id: stableId,
-            message_id: e.message_id ?? null,
-            subject: e.subject,
-            from: senderEmail,
-            to: e.recipient_list,
-            date: e.sent_at,
-            body_html: sanitizedHtml || null, // Store body_html separately
-            bodyPreview: finalBody, // Keep for backward compatibility
-            body_preview: sanitizedPreview || null, // Also store body_preview
-            direction: correctedDirection,
-            attachments: parseEmailAttachmentsFromDb(e.attachments),
-            contact_id: e.contact_id,
-            sender_name: e.sender_name || null,
-            sender_display_name: senderDisplayName,
-          };
-        });
-        
-        const finalUniqueEmails = dedupeEmailsForSidepanel(formattedEmailsForModal);
-        
-        let mergedForUi = finalUniqueEmails;
+      let clientEmailRows = emailData || [];
+      interactionsDevLog(`📧 InteractionsTab fetched ${clientEmailRows.length} emails for client ${clientNow.id}`);
+
+      const employeeEmailMap = cachedEmployeeEmailToNameMap ?? (await buildEmployeeEmailToNameMap());
+      if (!stillCurrent()) return;
+
+      const uniqueClientEmails = dedupeEmailsForSidepanel(clientEmailRows);
+
+      const formattedEmailsForModal = uniqueClientEmails.map((e: any) => {
+        const rawHtml = typeof e.body_html === 'string' ? e.body_html : null;
+        const rawPreview = typeof e.body_preview === 'string' ? e.body_preview : null;
+
+        const cleanedHtml = rawHtml ? ensureFormattedEmailHtml(rawHtml) : null;
+        const cleanedPreview = rawPreview
+          ? ensureFormattedEmailHtml(rawPreview)
+          : cleanedHtml;
+
+        const fallbackText = cleanedPreview || cleanedHtml || e.subject || '';
+        const sanitizedPreview = cleanedPreview
+          ? cleanedPreview
+          : cleanedHtml ?? (fallbackText ? ensureFormattedEmailHtml(fallbackText) : null);
+
+        const senderEmail = e.sender_email || '';
+        const isFromOffice = isOfficeEmail(senderEmail);
+        const correctedDirection = isFromOffice ? 'outgoing' : e.direction;
+        const senderDisplayName = isFromOffice
+          ? employeeEmailMap.get(senderEmail.toLowerCase()) || e.sender_name || null
+          : null;
+        const finalBody = cleanedHtml || sanitizedPreview || '';
+        const stableId = stableEmailRowId(e);
+
+        return {
+          id: stableId,
+          message_id: e.message_id ?? null,
+          subject: e.subject,
+          from: senderEmail,
+          to: e.recipient_list,
+          date: e.sent_at,
+          body_html: cleanedHtml || null,
+          bodyPreview: finalBody,
+          body_preview: sanitizedPreview || null,
+          direction: correctedDirection,
+          attachments: parseEmailAttachmentsFromDb(e.attachments),
+          contact_id: e.contact_id,
+          sender_name: e.sender_name || null,
+          sender_display_name: senderDisplayName,
+        };
+      });
+
+      const finalUniqueEmails = dedupeEmailsForSidepanel(formattedEmailsForModal);
+
+      let mergedForUi = finalUniqueEmails;
+      if (stillCurrent()) {
         setEmails((prev) => {
-          const byId = new Map(prev.map((e) => [String(e.id), e]));
-          mergedForUi = finalUniqueEmails.map((e) =>
-            mergeEmailBodyPreferRicher(e, byId.get(String(e.id))),
-          );
-          writeEmailSidepanelCache(cacheKey, mergedForUi);
+          mergedForUi = mergeEmailSidepanelLists(prev, finalUniqueEmails);
+          if (mergedForUi.length > 0) {
+            writeEmailSidepanelCache(cacheKey, mergedForUi);
+          }
           return mergedForUi;
         });
-        
-        // Hydrate only when the merged UI body is still missing/short (don't re-fetch wiped full bodies).
-        const emailsNeedingHydration = mergedForUi.filter((e: any) => {
-          const html = e.body_html || e.bodyPreview || e.body_preview || '';
-          if (!html || String(html).trim() === '') return true;
-          // Already reading-pane formatted with real content — skip.
-          if (isTimelinePrewrapHtml(html) && emailBodyPlainTextLength(html) >= 100) return false;
-          return !e.body_html || e.body_html.trim() === '';
-        });
+      }
 
-        const pendingJumpId = activeEmailIdRef.current;
-        const currentSelected = selectedEmailForViewRef.current;
+      const emailsNeedingHydration = mergedForUi.filter((e: any) => {
+        const html = e.body_html || e.bodyPreview || e.body_preview || '';
+        if (!html || String(html).trim() === '') return true;
+        if (isTimelinePrewrapHtml(html) && emailBodyPlainTextLength(html) >= 100) return false;
+        return !e.body_html || e.body_html.trim() === '';
+      });
 
-        // Timeline click sets activeEmailId — must win over "pick latest" (use refs: callback deps omit these)
-        if (mergedForUi.length > 0 && pendingJumpId) {
-          const emailToSelect = mergedForUi.find(
-            (e: any) =>
-              e.id === pendingJumpId ||
-              e.message_id === pendingJumpId ||
-              String(e.id) === String(pendingJumpId) ||
-              String(e.message_id) === String(pendingJumpId)
-          );
-          if (emailToSelect) {
-            setSelectedEmailForView(emailToSelect);
-            if (emailsNeedingHydration.some((e: any) => e.id === emailToSelect.id)) {
-              hydrateEmailBodies([emailToSelect]);
-            }
-            void ensureAttachmentsIfNeeded(emailToSelect);
-            setActiveEmailId(null);
-          } else {
-            interactionsDevLog('⚠️ Email not found in fetchEmailsForModal:', pendingJumpId);
+      const pendingJumpId = activeEmailIdRef.current;
+      const currentSelected = selectedEmailForViewRef.current;
+
+      if (mergedForUi.length > 0 && pendingJumpId) {
+        const emailToSelect = mergedForUi.find(
+          (e: any) =>
+            e.id === pendingJumpId ||
+            e.message_id === pendingJumpId ||
+            String(e.id) === String(pendingJumpId) ||
+            String(e.message_id) === String(pendingJumpId)
+        );
+        if (emailToSelect) {
+          setSelectedEmailForView(emailToSelect);
+          if (emailsNeedingHydration.some((e: any) => e.id === emailToSelect.id)) {
+            hydrateEmailBodies([emailToSelect]);
           }
-        } else if (mergedForUi.length > 0 && !currentSelected) {
-          const sortedEmails = [...mergedForUi].sort(
-            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-          );
-          const latestEmail = sortedEmails[0];
-          setSelectedEmailForView(latestEmail);
-          if (emailsNeedingHydration.some((e: any) => e.id === latestEmail.id)) {
-            hydrateEmailBodies([latestEmail]);
-          }
-          void ensureAttachmentsIfNeeded(latestEmail);
-        } else if (currentSelected && mergedForUi.length > 0) {
-          // Refresh selection with merged richer body if available
-          const refreshed = mergedForUi.find((e: any) => String(e.id) === String(currentSelected.id));
-          if (refreshed) {
-            setSelectedEmailForView((prev: any) =>
-              prev ? mergeEmailBodyPreferRicher(refreshed, prev) : refreshed,
-            );
-          }
+          void ensureAttachmentsIfNeeded(emailToSelect);
+          setActiveEmailId(null);
+        } else {
+          interactionsDevLog('⚠️ Email not found in fetchEmailsForModal:', pendingJumpId);
         }
-        
-        // Hydrate ALL emails that are missing body_html (batch process in background)
-        if (emailsNeedingHydration.length > 0) {
-          interactionsDevLog(`📧 Hydrating ${emailsNeedingHydration.length} emails missing body_html`);
-          // Hydrate in batches to avoid overwhelming the backend
-          const batchSize = 5;
-          for (let i = 0; i < emailsNeedingHydration.length; i += batchSize) {
-            const batch = emailsNeedingHydration.slice(i, i + batchSize);
-            setTimeout(() => hydrateEmailBodies(batch), i * 500); // Stagger requests
-          }
+      } else if (mergedForUi.length > 0 && !currentSelected) {
+        const sortedEmails = [...mergedForUi].sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+        const latestEmail = sortedEmails[0];
+        setSelectedEmailForView(latestEmail);
+        if (emailsNeedingHydration.some((e: any) => e.id === latestEmail.id)) {
+          hydrateEmailBodies([latestEmail]);
+        }
+        void ensureAttachmentsIfNeeded(latestEmail);
+      } else if (currentSelected && mergedForUi.length > 0) {
+        const refreshed = mergedForUi.find((e: any) => String(e.id) === String(currentSelected.id));
+        if (refreshed) {
+          setSelectedEmailForView((prev: any) =>
+            prev ? mergeEmailBodyPreferRicher(refreshed, prev) : refreshed,
+          );
+        }
+      }
+
+      if (emailsNeedingHydration.length > 0) {
+        interactionsDevLog(`📧 Hydrating ${emailsNeedingHydration.length} emails missing body_html`);
+        const batchSize = 5;
+        for (let i = 0; i < emailsNeedingHydration.length; i += batchSize) {
+          const batch = emailsNeedingHydration.slice(i, i + batchSize);
+          setTimeout(() => hydrateEmailBodies(batch), i * 500);
         }
       }
     } catch (error) {
       console.error('❌ Error in fetchEmailsForModal:', error);
-      setEmails([]);
     } finally {
-      setEmailsLoading(false);
+      if (stillCurrent()) setEmailsLoading(false);
     }
-  }, [client, leadContacts, selectedContactForEmail, hydrateEmailBodies, ensureAttachmentsIfNeeded]); // Include leadContacts to match emails by contact email addresses
+  }, [hydrateEmailBodies, ensureAttachmentsIfNeeded]);
 
   const runMailboxSync = useCallback(async () => {
     if (!userId) {
@@ -6307,6 +6457,180 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   };
 
+  const revokeAttachmentViewerUrls = useCallback(() => {
+    for (const url of attachmentViewerBlobUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    attachmentViewerBlobUrlsRef.current = [];
+  }, []);
+
+  const closeAttachmentViewer = useCallback(() => {
+    attachmentViewerGenerationRef.current += 1;
+    setAttachmentViewerOpen(false);
+    setAttachmentViewerDocs([]);
+    setAttachmentViewerIndex(0);
+    revokeAttachmentViewerUrls();
+  }, [revokeAttachmentViewerUrls]);
+
+  useEffect(() => () => revokeAttachmentViewerUrls(), [revokeAttachmentViewerUrls]);
+
+  const resolveEmailAttachmentPreviewUrl = useCallback(
+    async (emailId: string, attachment: any): Promise<string> => {
+      const fromBytes = emailAttachmentDataUrl(attachment);
+      if (fromBytes) return fromBytes;
+      if (!userId) {
+        throw new Error('Please sign in to open attachments.');
+      }
+      if (!mailboxStatus.connected) {
+        throw new Error('Connect your mailbox to open attachments.');
+      }
+      if (!attachment?.id) {
+        throw new Error('Attachment id missing — open the email to view');
+      }
+      const { blob, contentType } = await downloadAttachmentFromBackend(
+        userId,
+        emailId,
+        String(attachment.id),
+      );
+      const type =
+        blob.type ||
+        contentType ||
+        attachment.contentType ||
+        attachment.content_type ||
+        attachment.mimeType ||
+        'application/octet-stream';
+      const typed = blob.type ? blob : new Blob([blob], { type });
+      const url = URL.createObjectURL(typed);
+      attachmentViewerBlobUrlsRef.current.push(url);
+      return url;
+    },
+    [mailboxStatus.connected, userId],
+  );
+
+  const handleOpenEmailAttachment = useCallback(
+    async (
+      emailId: string,
+      attachment: any,
+      siblings?: any[],
+    ) => {
+      if (!attachment) return;
+      const clickId = attachment.id ? String(attachment.id) : '';
+      if (clickId) {
+        setDownloadingAttachments((prev) => {
+          if (prev[clickId]) return prev;
+          return { ...prev, [clickId]: true };
+        });
+      }
+
+      const gallerySources: Array<{ emailId: string; attachment: any }> = [];
+      if (Array.isArray(siblings) && siblings.length > 0) {
+        for (const s of siblings) {
+          if (s?.attachment && (s.attachment.id || s.attachment.name)) {
+            gallerySources.push({
+              emailId: String(s.emailId || emailId),
+              attachment: s.attachment,
+            });
+          } else if (s && (s.id || s.name)) {
+            gallerySources.push({ emailId: String(emailId), attachment: s });
+          }
+        }
+      }
+      if (gallerySources.length === 0) {
+        gallerySources.push({ emailId: String(emailId), attachment });
+      }
+
+      const clickedKey = String(attachment.id || attachment.name || '');
+      let initialIndex = gallerySources.findIndex(
+        (s) => String(s.attachment?.id || s.attachment?.name || '') === clickedKey,
+      );
+      if (initialIndex < 0) initialIndex = 0;
+
+      attachmentViewerGenerationRef.current += 1;
+      const generation = attachmentViewerGenerationRef.current;
+      const previousUrls = attachmentViewerBlobUrlsRef.current;
+      attachmentViewerBlobUrlsRef.current = [];
+
+      try {
+        const clickedUrl = await resolveEmailAttachmentPreviewUrl(
+          gallerySources[initialIndex].emailId,
+          gallerySources[initialIndex].attachment,
+        );
+        if (generation !== attachmentViewerGenerationRef.current) {
+          if (clickedUrl.startsWith('blob:')) URL.revokeObjectURL(clickedUrl);
+          return;
+        }
+        for (const url of previousUrls) URL.revokeObjectURL(url);
+
+        const docs: DocumentViewerItem[] = gallerySources.map((s, i) => ({
+          id: emailAttachmentViewerId(s.emailId, s.attachment, i),
+          name: String(s.attachment?.name || `Attachment ${i + 1}`),
+          url: i === initialIndex ? clickedUrl : '',
+          fileType: String(
+            s.attachment?.contentType ||
+              s.attachment?.content_type ||
+              s.attachment?.mimeType ||
+              '',
+          ),
+        }));
+
+        setAttachmentViewerDocs(docs);
+        setAttachmentViewerIndex(initialIndex);
+        setAttachmentViewerOpen(true);
+
+        const remaining = gallerySources
+          .map((s, i) => ({ s, i }))
+          .filter(({ i }) => i !== initialIndex);
+        if (remaining.length === 0) return;
+
+        void Promise.all(
+          remaining.map(async ({ s, i }) => {
+            try {
+              const url = await resolveEmailAttachmentPreviewUrl(s.emailId, s.attachment);
+              if (generation !== attachmentViewerGenerationRef.current) {
+                if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+                return;
+              }
+              setAttachmentViewerDocs((prev) => {
+                if (i >= prev.length) return prev;
+                const next = [...prev];
+                next[i] = { ...next[i], url };
+                return next;
+              });
+            } catch (err) {
+              console.warn('Failed to load attachment for viewer:', err);
+              if (generation !== attachmentViewerGenerationRef.current) return;
+              setAttachmentViewerDocs((prev) => {
+                if (i >= prev.length) return prev;
+                const next = [...prev];
+                next[i] = { ...next[i], url: 'failed' };
+                return next;
+              });
+            }
+          }),
+        );
+      } catch (err) {
+        for (const url of previousUrls) URL.revokeObjectURL(url);
+        const error = err instanceof Error ? err : new Error('Failed to open attachment');
+        const errorMessage = error.message;
+        const statusCode = (error as any).statusCode;
+        if (
+          statusCode === 401 ||
+          errorMessage.toLowerCase().includes('expired') ||
+          errorMessage.toLowerCase().includes('reconnect')
+        ) {
+          showReconnectModal(errorMessage);
+        } else {
+          toast.error(errorMessage);
+        }
+      } finally {
+        if (clickId) {
+          setDownloadingAttachments((prev) => ({ ...prev, [clickId]: false }));
+        }
+      }
+    },
+    [resolveEmailAttachmentPreviewUrl, showReconnectModal],
+  );
+
   const openComposeForEmailMessage = useCallback(
     (message: any, mode: 'reply' | 'forward') => {
       if (!message) {
@@ -6495,30 +6819,46 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   // Set the subject when the email modal opens (if not already set by user)
   useEffect(() => {
-    if (isEmailModalOpen) {
-      // Use selected contact's name if available, otherwise use client name
-      const nameToUse = selectedContactForEmail?.contact.name || client.name;
-      const defaultSubject = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
-      setComposeSubject(prev => prev && prev.trim() ? prev : defaultSubject);
-      
-      // Fetch emails when modal opens - add delay to ensure contact is set if it was just set
-      const fetchDelay = selectedContactForEmail ? 200 : 0;
-      setTimeout(() => {
-        fetchEmailsForModal();
-      }, fetchDelay);
-      
-      // Always refresh mailbox status when email modal opens to ensure it's current
-      // This ensures status is fresh for each lead, even if it was checked before
-        refreshMailboxStatus();
-      }
-  }, [isEmailModalOpen, client, fetchEmailsForModal, selectedContactForEmail, refreshMailboxStatus]);
+    if (!isEmailModalOpen) return;
 
-  // Separate effect to re-fetch emails when selected contact changes (while modal is open)
-  useEffect(() => {
-    if (isEmailModalOpen && selectedContactForEmail) {
-      fetchEmailsForModal();
+    const nameToUse = selectedContactForEmail?.contact.name || client.name;
+    const defaultSubject = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
+    setComposeSubject((prev) => (prev && prev.trim() ? prev : defaultSubject));
+
+    if (emailsRef.current.length === 0) {
+      const cacheKey = `interactions:${client.id}:${selectedContactForEmail?.contact?.id || 'all'}`;
+      const cached = readEmailSidepanelCache<any[]>(cacheKey);
+      const allCached = readEmailSidepanelCache<any[]>(`interactions:${client.id}:all`);
+      const seeded =
+        (cached && cached.length > 0 ? cached : null) ||
+        (allCached && allCached.length > 0 ? allCached : null) ||
+        timelineRowsToModalEmails(interactionsRef.current);
+      if (seeded.length > 0) {
+        setEmails(dedupeEmailsForSidepanel(seeded));
+        setEmailsLoading(false);
+      }
+    } else {
+      setEmailsLoading(false);
     }
-  }, [selectedContactForEmail?.contact.id, isEmailModalOpen, fetchEmailsForModal]);
+
+    const fetchDelay = selectedContactForEmail ? 200 : 0;
+    const timeoutId = window.setTimeout(() => {
+      void fetchEmailsForModal();
+    }, fetchDelay);
+
+    refreshMailboxStatus();
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    isEmailModalOpen,
+    client.id,
+    client.name,
+    client.lead_number,
+    client.topic,
+    selectedContactForEmail?.contact?.id,
+    selectedContactForEmail?.contact?.name,
+    fetchEmailsForModal,
+    refreshMailboxStatus,
+  ]);
 
   // Live subscription while Interactions email modal is open
   useEffect(() => {
@@ -6527,13 +6867,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     const filter = isLegacyLead
       ? undefined
       : `client_id=eq.${client.id}`;
-    return subscribeEmailSidepanel(supabase, {
+    let debounceTimer: number | null = null;
+    const unsubscribe = subscribeEmailSidepanel(supabase, {
       channelName: `interactions-emails-${client.id}`,
       filter,
       onChange: () => {
-        void fetchEmailsForModal();
+        if (debounceTimer) window.clearTimeout(debounceTimer);
+        debounceTimer = window.setTimeout(() => {
+          void fetchEmailsForModal();
+        }, 800);
       },
     });
+    return () => {
+      if (debounceTimer) window.clearTimeout(debounceTimer);
+      unsubscribe();
+    };
   }, [isEmailModalOpen, client?.id, client?.lead_type, fetchEmailsForModal]);
 
   // Clear selected contact when email modal closes
@@ -7784,7 +8132,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             </div>
 
             {showFloatingContactButtons ? (
-                <div className="fixed bottom-6 right-6 z-[90] flex flex-col-reverse items-end gap-3">
+                <div className="fixed bottom-6 right-6 z-[90] hidden flex-col-reverse items-end gap-3 lg:flex">
                   <button
                     type="button"
                     className="group flex h-14 items-center justify-center gap-0 rounded-full bg-white px-3.5 text-sm font-semibold text-blue-600 shadow-lg ring-1 ring-black/5 transition-all hover:gap-2 hover:pr-4 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none"
@@ -8089,6 +8437,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 <ArrowDownIcon className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} />
                               )}
                             </div>
+                            {isRowPinned(row) ? (
+                              <span
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-sky-50 text-sky-600 sm:h-9 sm:w-9"
+                                title="Saved on this lead"
+                                aria-label="Saved on this lead"
+                              >
+                                <BookmarkIconSolid className="h-4 w-4 sm:h-5 sm:w-5" />
+                              </span>
+                            ) : null}
                             {row.kind === 'email' && !row.editable && (
                               <EmailMessageActionsDropdown
                                 onReply={() =>
@@ -8107,11 +8464,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 onDelete={() =>
                                   void deleteEmailMessage(interactionRowToComposeMessage(row))
                                 }
+                                onSave={() => void togglePinnedInteraction(row)}
+                                isSaved={isRowPinned(row)}
+                              />
+                            )}
+                            {row.kind === 'whatsapp' && !row.editable && (
+                              <WhatsAppMessageActionsDropdown
+                                onSave={() => void togglePinnedInteraction(row)}
+                                isSaved={isRowPinned(row)}
                               />
                             )}
                           </div>
                           {/* Header section with employee info and status */}
-                          <div className="mb-4 flex flex-col gap-3 pr-20 sm:flex-row sm:items-center sm:pr-24">
+                          <div className="mb-4 flex flex-col gap-3 pr-24 sm:flex-row sm:items-center sm:pr-32">
                             <div className="flex items-center gap-3">
                               <EmployeeAvatar photo={employeePhoto} name={row.employee} initials={initials} avatarBg={avatarBg} />
                               <div className="flex flex-col gap-0">

@@ -25,6 +25,11 @@ const GRAPH_SUBSCRIPTION_RENEW_BEFORE_MS =
   Number.isFinite(_renewBeforeEnv) && _renewBeforeEnv > 0 ? _renewBeforeEnv : 36 * 60 * 60 * 1000;
 
 const normalise = (value) => (value || '').trim().toLowerCase();
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const asUuidOrNull = (value) => {
+  const text = value == null ? '' : String(value).trim();
+  return UUID_RE.test(text) ? text : null;
+};
 
 // Check if email is from @lawoffice.org.il domain (internal office email)
 const isOfficeDomain = (email) => {
@@ -600,10 +605,22 @@ async function findEmailRowByMessageId(messageId) {
 }
 
 async function insertMailboxEmailRow(row) {
+  const rpcRows = [row];
+  if (row.user_id) {
+    rpcRows.push({ ...row, user_id: null });
+  }
   if (mailboxWriteRpcsAvailable) {
-    const { data, error } = await supabase.rpc('insert_mailbox_email', { p_row: row });
-    if (!error && data) {
-      return { id: data, error: null };
+    let error = null;
+    for (const rpcRow of rpcRows) {
+      const result = await supabase.rpc('insert_mailbox_email', { p_row: rpcRow });
+      if (!result.error && result.data) {
+        return { id: result.data, error: null };
+      }
+      error = result.error;
+      if (error && isMissingRpc(error)) break;
+    }
+    if (!error) {
+      return { id: null, error: null };
     }
     if (error && isMissingRpc(error)) {
       mailboxWriteRpcsAvailable = false;
@@ -623,8 +640,11 @@ async function insertMailboxEmailRow(row) {
   }
 
   const attempts = [row];
+  if (row.user_id) {
+    attempts.push({ ...row, user_id: null });
+  }
   if (row.client_id || row.legacy_id) {
-    attempts.push({ ...row, client_id: null, legacy_id: null });
+    attempts.push({ ...row, client_id: null, legacy_id: null, user_id: row.user_id || null });
   }
   let lastError = null;
   for (const attempt of attempts) {
@@ -2165,7 +2185,10 @@ class GraphMailboxSyncService {
 
       const htmlBody = payload.bodyHtml || '';
       const bodyPreview = stripHtml(htmlBody) || payload.bodyText || '';
-      const resolvedUserId = context.userInternalId ?? userInternalId ?? userId;
+      const resolvedUserId =
+        asUuidOrNull(context.userInternalId) ||
+        asUuidOrNull(userInternalId) ||
+        asUuidOrNull(userId);
 
       const normalizedRecipients = recipients.map((addr) => normalise(addr)).filter(Boolean);
       const recipientMappings = await fetchLeadMappingsForAddresses(normalizedRecipients);
@@ -2190,7 +2213,7 @@ class GraphMailboxSyncService {
       if (contextContactId) contactIds.push(Number(contextContactId));
 
       const record = {
-        message_id: result.id,
+        message_id: context.crmMessageId || result.id,
         user_id: resolvedUserId,
         client_id: primary.clientId ?? null,
         legacy_id: primary.legacyId ?? null,
@@ -2209,6 +2232,11 @@ class GraphMailboxSyncService {
 
       const inserted = await insertMailboxEmailRow(record);
       if (inserted.error) {
+        console.error(
+          '⚠️  Failed to store outgoing email',
+          inserted.error.message || inserted.error,
+          `| message_id=${record.message_id} | client_id=${record.client_id || 'null'}`
+        );
         return;
       }
       if (inserted.id) {
@@ -2220,6 +2248,64 @@ class GraphMailboxSyncService {
     } catch (error) {
       console.error('⚠️  Unable to record outgoing email:', error.message || error);
     }
+  }
+
+  async persistOutgoingEmailRow(record = {}) {
+    if (!record.message_id) {
+      throw new Error('message_id is required');
+    }
+    const row = {
+      message_id: record.message_id,
+      user_id: asUuidOrNull(record.user_id),
+      sender_name: record.sender_name ?? null,
+      sender_email: record.sender_email ?? null,
+      recipient_list: record.recipient_list ?? null,
+      subject: record.subject || '(no subject)',
+      body_html: record.body_html || '',
+      body_preview: record.body_preview ?? null,
+      sent_at: record.sent_at || new Date().toISOString(),
+      direction: record.direction || 'outgoing',
+      attachments: record.attachments ?? null,
+      client_id: record.client_id ?? null,
+      legacy_id: record.legacy_id ?? null,
+      contact_id: record.contact_id ?? null,
+      thread_id: record.thread_id ?? null,
+      body_cached: record.body_cached !== false,
+    };
+    const inserted = await insertMailboxEmailRow(row);
+    if (inserted.error) {
+      const err = new Error(inserted.error.message || 'Failed to store email');
+      err.code = inserted.error.code;
+      throw err;
+    }
+    return { id: inserted.id || null };
+  }
+
+  async listPriceOfferEmails({ clientId, legacyId } = {}) {
+    if (!clientId && (legacyId == null || legacyId === '')) {
+      return [];
+    }
+    let query = supabase
+      .from(EMAIL_HEADERS_TABLE)
+      .select('id, message_id, sender_name, sender_email, body_html, body_preview, sent_at, subject')
+      .gte('message_id', 'offer_')
+      .lt('message_id', 'offer`')
+      .order('sent_at', { ascending: true })
+      .limit(100);
+    if (clientId) {
+      query = query.eq('client_id', String(clientId).trim());
+    } else {
+      query = query.eq('legacy_id', Number(legacyId));
+    }
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(error.message || 'Failed to list price offer emails');
+    }
+    const rows = (data || []).filter((row) => String(row?.message_id || '').startsWith('offer_'));
+    console.log(
+      `📋 listPriceOfferEmails client_id=${clientId || 'null'} legacy_id=${legacyId || 'null'} rows=${rows.length}`
+    );
+    return rows;
   }
 }
 

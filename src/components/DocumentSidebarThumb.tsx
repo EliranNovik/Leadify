@@ -65,7 +65,7 @@ const DocumentSidebarThumb: React.FC<Props> = ({
 
   const image = isImageType(fileType, name, url);
   const pdf = isPdfType(fileType, name, url);
-  const httpUrl = url.startsWith('http://') || url.startsWith('https://') ? url : null;
+  const previewUrl = /^(https?:|blob:|data:)/i.test(url || '') ? url : null;
 
   useEffect(() => {
     const el = rootRef.current;
@@ -89,7 +89,7 @@ const DocumentSidebarThumb: React.FC<Props> = ({
 
   useEffect(() => {
     if (!visible || !pdf || failed) return;
-    if (!httpUrl && !(storagePath || '').trim()) {
+    if (!previewUrl && !(storagePath || '').trim()) {
       setFailed(true);
       return;
     }
@@ -97,7 +97,7 @@ const DocumentSidebarThumb: React.FC<Props> = ({
     let cancelled = false;
     setLoading(true);
     void renderPdfFirstPageThumbnail({
-      url: httpUrl || '',
+      url: previewUrl || '',
       storagePath,
       targetWidth: 180,
     }).then((dataUrl) => {
@@ -114,7 +114,7 @@ const DocumentSidebarThumb: React.FC<Props> = ({
     return () => {
       cancelled = true;
     };
-  }, [visible, pdf, httpUrl, storagePath, failed]);
+  }, [visible, pdf, previewUrl, storagePath, failed]);
 
   return (
     <div
@@ -123,9 +123,9 @@ const DocumentSidebarThumb: React.FC<Props> = ({
         isActive ? 'border-primary/30' : 'border-base-300/80'
       }`}
     >
-      {image && httpUrl && !failed ? (
+      {image && previewUrl && !failed ? (
         <img
-          src={httpUrl}
+          src={previewUrl}
           alt=""
           className="h-full w-full object-cover"
           loading="lazy"

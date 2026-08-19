@@ -1,6 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { isLegacyLeadRef } from './paymentLinkLeadRef';
-import { insertPaymentLinkRecord } from './paymentLinkQueries';
+import { getOrCreatePaymentLinkToken } from './proformaPaymentLink';
 import { getMobileAwareCacheTtlMs } from './mobileCache';
 import {
   buildClockInGateBlockedResponse,
@@ -919,6 +918,7 @@ export interface Lead {
   proposal_total?: number;
   proposal_currency?: string;
   proposal_text?: string;
+  proposal_versions?: unknown;
   balance?: number;
   balance_currency?: string;
   next_followup?: string;
@@ -1002,33 +1002,26 @@ export async function createPaymentLink({
   isLegacyPaymentPlan?: boolean;
   planContactId?: number | null;
 }) {
-  // Generate secure token
-  const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-  // Set expiration date (30 days from now)
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 30);
-
   const planRowId = Number(paymentPlanId);
   if (!Number.isFinite(planRowId)) {
     throw new Error('Invalid payment plan id');
   }
 
-  const { error } = await insertPaymentLinkRecord({
+  const secureToken = await getOrCreatePaymentLinkToken({
     paymentPlanId: planRowId,
-    leadId: clientId,
+    leadClientId: clientId,
     leadType,
-    isLegacyPaymentPlan: isLegacyPaymentPlan ?? isLegacyLeadRef(leadType, clientId),
+    isLegacyPaymentPlan,
     planContactId: planContactId ?? null,
-    secureToken,
-    amount: value,
-    vatAmount: valueVat,
-    totalAmount: value + valueVat,
+    value,
+    valueVat,
     currency: currency || '₪',
-    description: `${order} - ${clientName} (#${leadNumber})`,
-    expiresAt: expiresAt.toISOString(),
+    order,
+    clientName,
+    leadNumber,
   });
-  if (error) throw error;
-  // Generate the payment URL
-  const paymentUrl = `${window.location.origin}/payment/${secureToken}`;
-  return paymentUrl;
+  if (!secureToken) {
+    throw new Error('Failed to create payment link');
+  }
+  return `${window.location.origin}/payment/${secureToken}`;
 } 

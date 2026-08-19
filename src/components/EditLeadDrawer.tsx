@@ -95,7 +95,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       try {
         // Fetch currencies - try both new and legacy tables
         const [newCurrencies, legacyCurrencies] = await Promise.all([
-          supabase.from('misc_currency').select('id, front_name, iso_code, name').order('name', { ascending: true }),
+          supabase.from('currencies').select('id, front_name, iso_code, name').order('name', { ascending: true }),
           supabase.from('accounting_currencies').select('id, iso_code, name').order('name', { ascending: true })
         ]);
         

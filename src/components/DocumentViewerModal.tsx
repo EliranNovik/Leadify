@@ -92,6 +92,10 @@ interface DocumentViewerModalProps {
   onDetached?: (detachedPaths: string[], target?: { id: string; name: string }) => void;
 }
 
+function isDirectPreviewUrl(url: string): boolean {
+  return /^(https?:|blob:|data:)/i.test(url || '');
+}
+
 function inferFileType(name: string, fileType?: string): string {
   const t = (fileType || '').trim();
   if (t) return t;
@@ -891,8 +895,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     }
 
     if (!needsBucketSign) {
-      setSignedUrl(activeUrl.startsWith('http') ? activeUrl : null);
-      setLoadingUrl(false);
+      setSignedUrl(isDirectPreviewUrl(activeUrl) ? activeUrl : null);
+      setLoadingUrl(!activeUrl);
       return;
     }
 
@@ -921,8 +925,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   }, [isOpen, activeUrl, bucketName, needsBucketSign, activeDoc?.id]);
 
   const displayUrl =
-    signedUrl ||
-    (activeUrl.startsWith('http://') || activeUrl.startsWith('https://') ? activeUrl : null);
+    signedUrl || (isDirectPreviewUrl(activeUrl) ? activeUrl : null);
 
   const isImage =
     activeFileType.includes('image/') ||
@@ -1221,7 +1224,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
   const modal = (
     <div
-      className="fixed inset-0 z-[1200] flex flex-col overflow-hidden bg-base-100"
+      className="fixed inset-0 z-[11000] flex flex-col overflow-hidden bg-base-100"
       role="dialog"
       aria-modal="true"
       aria-label="Document viewer"
@@ -1706,13 +1709,20 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 <p className="mt-4 text-sm opacity-80">Loading document…</p>
               </div>
             ) : !displayUrl ? (
-              <div className="max-w-md text-center text-neutral-200">
-                <p className="text-lg font-semibold">Failed to load document</p>
-                <p className="mt-2 text-sm opacity-80">Unable to open this file in the viewer.</p>
-                <button type="button" className="btn btn-primary btn-sm mt-4" onClick={() => void handleDownload()}>
-                  Try download
-                </button>
-              </div>
+              !activeUrl ? (
+                <div className="text-center text-neutral-200">
+                  <span className="loading loading-spinner loading-lg" />
+                  <p className="mt-4 text-sm opacity-80">Loading document…</p>
+                </div>
+              ) : (
+                <div className="max-w-md text-center text-neutral-200">
+                  <p className="text-lg font-semibold">Failed to load document</p>
+                  <p className="mt-2 text-sm opacity-80">Unable to open this file in the viewer.</p>
+                  <button type="button" className="btn btn-primary btn-sm mt-4" onClick={() => void handleDownload()}>
+                    Try download
+                  </button>
+                </div>
+              )
             ) : isImage && !imageError ? (
               <div className="relative flex min-h-0 h-full w-full flex-1 flex-col">
                 <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/15 bg-black/55 px-1.5 py-1 shadow-lg backdrop-blur-md">

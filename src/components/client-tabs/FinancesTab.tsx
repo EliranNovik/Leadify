@@ -6,11 +6,11 @@ import { ClientTabPageHeader } from './ClientTabPageHeader';
 import FinancesExpensesFeesPage from './FinancesExpensesFeesPage';
 import {
   fetchContactPaymentHistory,
-  insertPaymentLinkRecord,
   loadPaidPaymentLinkPlanIds,
   loadPaymentPlanTaxReceipts,
   type PaymentPlanTaxReceiptInfo,
 } from '../../lib/paymentLinkQueries';
+import { getOrCreatePaymentLinkToken } from '../../lib/proformaPaymentLink';
 import { retryPayperInvoice } from '../../lib/pelecardPaymentApi';
 import { tryAdvanceHandlerStartedAfterPayment } from '../../lib/advanceHandlerStartedOnPaid';
 import toast from 'react-hot-toast';
@@ -982,32 +982,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Handler to generate and copy payment link
   const createPaymentLinkToken = async (payment: PaymentPlan): Promise<string | null> => {
     try {
-      const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30);
-
       const planRowId = Number(payment.id);
       if (!Number.isFinite(planRowId)) {
         toast.error('Invalid payment row id. Refresh and try again.');
         return null;
       }
 
-      const { error } = await insertPaymentLinkRecord({
+      const secureToken = await getOrCreatePaymentLinkToken({
         paymentPlanId: planRowId,
-        leadId: client.id,
+        leadClientId: client.id,
         leadType: client.lead_type,
         isLegacyPaymentPlan: Boolean(payment.isLegacy),
         planContactId: payment.client_id ?? null,
-        secureToken,
-        amount: payment.value,
-        vatAmount: payment.valueVat,
-        totalAmount: payment.value + payment.valueVat,
+        value: payment.value,
+        valueVat: payment.valueVat,
         currency: payment.currency === '?' || !payment.currency ? '?' : payment.currency,
-        description: `${payment.order} - ${client?.name} (#${client?.lead_number})`,
-        expiresAt: expiresAt.toISOString(),
+        order: payment.order,
+        clientName: client?.name || '',
+        leadNumber: client?.lead_number || '',
       });
 
-      if (error) throw error;
+      if (!secureToken) {
+        toast.error('Failed to generate payment link');
+        return null;
+      }
       return secureToken;
     } catch (error: any) {
       console.error('Error generating payment link:', error);

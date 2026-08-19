@@ -5,6 +5,8 @@ import { sendEmailViaBackend } from '../lib/mailboxApi';
 import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
 import { supabase } from '../lib/supabase';
+import { saveOutgoingEmailRecord } from '../lib/saveOutgoingEmailRecord';
+import { saveLeadPriceOffer } from '../lib/leadPriceOfferVersions';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { updateLeadStageWithHistory } from '../lib/leadStageManager';
 import { PaperAirplaneIcon, PlusIcon, XMarkIcon, ChevronDownIcon, PaperClipIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
@@ -560,6 +562,8 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       .slice(0, 10); // Limit to 10 results
   }, [employees]);
 
+  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(setBody);
+
   if (!isOpen) return null;
 
   const closeModal = () => {
@@ -673,8 +677,6 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
   const removeAttachment = (index: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== index));
   };
-
-  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(setBody);
 
   // Handle AI suggestions
   const handleAISuggestions = async (options?: { redo?: boolean }) => {
@@ -921,6 +923,16 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
         ? Number.parseInt(String(client.id).replace('legacy_', ''), 10)
         : null;
 
+      const now = new Date();
+      const recipientListForLog = [...finalToRecipients, ...finalCcRecipients].join(', ');
+      const messageId = `offer_${isLegacyLead ? `legacy_${legacyId}` : client?.id}_${now.getTime()}`;
+      const bodyPreview = body.length > 500 ? body.substring(0, 500) : body;
+      let parsedTotal: number | null = null;
+      if (total !== null && total !== undefined && String(total).trim() !== '') {
+        const numericTotal = Number(total);
+        parsedTotal = Number.isNaN(numericTotal) ? null : numericTotal;
+      }
+
       // Use sendEmailViaBackend for consistency and proper backend processing
       await sendEmailViaBackend({
         userId,
@@ -937,72 +949,38 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
           contactEmail: client?.email || null,
           contactName: client?.name || null,
           senderName: closerName,
-          userInternalId: client?.user_internal_id || undefined,
+          crmMessageId: messageId,
         },
       });
 
-      // Prepare email record for optimistic insert (do this AFTER sending email, but BEFORE stage update)
-      // This ensures email is saved even if stage update fails
-      const now = new Date();
-      const recipientListForLog = [...finalToRecipients, ...finalCcRecipients].join(', ');
-      // Use a unique message_id that includes timestamp to allow multiple offers
-      const messageId = `offer_${isLegacyLead ? `legacy_${legacyId}` : client?.id}_${now.getTime()}`;
-      
-      // Strip HTML from body_preview (body is already plain text, but htmlBody might have HTML)
-      // Use plain text body for preview (first 500 chars), or strip HTML from htmlBody if needed
-      const bodyPreview = body.length > 500 ? body.substring(0, 500) : body;
+      await saveLeadPriceOffer(client, {
+        body,
+        senderName: closerName,
+        senderEmail: authUser.email || '',
+        sentAt: now.toISOString(),
+        total: parsedTotal,
+        currency,
+        emailMessageId: messageId,
+      });
 
-      const emailRecord: Record<string, any> = {
-        message_id: messageId,
-        thread_id: null,
-        // Don't set user_id - it has a foreign key constraint and the backend will set it correctly
-        // user_id: userId,
-        sender_name: closerName,
-        sender_email: authUser.email || null,
-        recipient_list: recipientListForLog,
+      await saveOutgoingEmailRecord({
+        client,
         subject,
-        body_preview: bodyPreview,
-        body_html: htmlBody,
-        sent_at: now.toISOString(),
-        direction: 'outgoing',
-        attachments: attachments.length > 0 
-          ? attachments.map(file => ({ name: file.name, contentType: file.type || 'application/octet-stream' }))
-          : null,
-      };
-
-      // Set either client_id OR legacy_id, not both
-      if (isLegacyLead) {
-        emailRecord.legacy_id = Number.isNaN(legacyId) ? null : legacyId;
-        emailRecord.client_id = null;
-      } else {
-        emailRecord.client_id = client.id;
-        emailRecord.legacy_id = null;
-      }
-
-      // Optimistic insert - save email immediately so it appears even if stage update fails
-      try {
-        const { error: dbError } = await supabase.from('emails').insert([emailRecord]);
-        if (dbError) {
-          // If it's a duplicate key error, try to update instead
-          if (dbError.code === '23505' || dbError.message?.includes('duplicate key')) {
-            console.warn('Email with message_id already exists, skipping optimistic insert (backend will save it):', dbError);
-          } else {
-            console.warn('Optimistic email insert failed (backend will save it later):', dbError);
-          }
-          // Don't throw - backend will save it later
-        } else {
-          console.log('✅ Email saved optimistically:', messageId);
-        }
-      } catch (dbError) {
-        console.warn('Exception in optimistic email insert (backend will save it later):', dbError);
-        // Don't throw - backend will save it later
-      }
-
-      let parsedTotal: number | null = null;
-      if (total !== null && total !== undefined && String(total).trim() !== '') {
-        const numericTotal = Number(total);
-        parsedTotal = Number.isNaN(numericTotal) ? null : numericTotal;
-      }
+        htmlBody,
+        senderName: closerName,
+        senderEmail: authUser.email || '',
+        recipientList: recipientListForLog,
+        sentAt: now,
+        messageId,
+        bodyPreview,
+        attachments:
+          attachments.length > 0
+            ? attachments.map((file) => ({
+                name: file.name,
+                contentType: file.type || 'application/octet-stream',
+              }))
+            : null,
+      });
 
       let stageId = await resolveStageId('Mtng sum+Agreement sent');
       if (stageId === null) {

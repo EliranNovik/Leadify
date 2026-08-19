@@ -455,25 +455,53 @@ export async function fetchEmailBodiesByIds(
     new Set(
       ids
         .map((id) => (id == null ? '' : String(id).trim()))
-        .filter((id) => id && !id.startsWith('temp_') && !id.startsWith('optimistic_') && !id.startsWith('local-')),
+        .filter(
+          (id) =>
+            Boolean(id) &&
+            !id.startsWith('temp_') &&
+            !id.startsWith('optimistic_') &&
+            !id.startsWith('local-') &&
+            !id.startsWith('offer_'),
+        ),
     ),
   ).slice(0, Math.max(1, limit));
 
   const bodies = new Map<string, string>();
   if (unique.length === 0) return bodies;
 
-  for (const chunk of chunkArray(unique, 80)) {
+  const numericIds = unique.filter((id) => /^\d+$/.test(id));
+  const messageIds = unique.filter((id) => !/^\d+$/.test(id));
+
+  const storeRows = (
+    rows: Array<{ id?: string | number; message_id?: string | null; body_html?: string | null }>,
+  ) => {
+    for (const row of rows) {
+      const html = typeof row?.body_html === 'string' ? row.body_html.trim() : '';
+      if (!html) continue;
+      if (row.id != null) bodies.set(String(row.id), row.body_html as string);
+      if (row.message_id) bodies.set(String(row.message_id), row.body_html as string);
+    }
+  };
+
+  for (const chunk of chunkArray(numericIds, 80)) {
     try {
       const { data, error } = await withQueryTimeout(
-        supabaseClient.from('emails').select(EMAIL_BODY_HYDRATE_SELECT).in('id', chunk),
+        supabaseClient.from('emails').select('id, message_id, body_html').in('id', chunk),
         4000,
       );
-      if (error || !data) continue;
-      for (const row of data as Array<{ id?: string | number; body_html?: string | null }>) {
-        const id = row?.id != null ? String(row.id) : '';
-        const html = typeof row?.body_html === 'string' ? row.body_html.trim() : '';
-        if (id && html) bodies.set(id, row.body_html as string);
-      }
+      if (!error && data) storeRows(data as any[]);
+    } catch {
+      /* keep whatever we already loaded */
+    }
+  }
+
+  for (const chunk of chunkArray(messageIds, 40)) {
+    try {
+      const { data, error } = await withQueryTimeout(
+        supabaseClient.from('emails').select('id, message_id, body_html').in('message_id', chunk),
+        4000,
+      );
+      if (!error && data) storeRows(data as any[]);
     } catch {
       /* keep whatever we already loaded */
     }

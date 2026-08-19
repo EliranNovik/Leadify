@@ -1,5 +1,7 @@
 import toast from 'react-hot-toast';
 import { invalidateInteractionsTimeline } from './interactionsTimelineInvalidation';
+import { notifyPriceOffersChanged } from './leadPriceOfferVersions';
+import { recordOutgoingEmailViaBackend } from './mailboxApi';
 import { supabase } from './supabase';
 import { hasValidLeadId } from './meetingWhatsAppNotify';
 
@@ -55,7 +57,75 @@ export type SaveOutgoingEmailRecordInput = {
   sentAt?: Date;
   /** Defaults to optimistic timestamp id */
   messageId?: string;
+  bodyPreview?: string | null;
+  attachments?: unknown;
+  skipErrorToast?: boolean;
+  /** Use SECURITY DEFINER RPC first (avoids emails RLS 42501). */
+  preferRpc?: boolean;
 };
+
+function isRpcMissing(error: { message?: string; code?: string } | null | undefined): boolean {
+  const message = (error?.message || '').toLowerCase();
+  return (
+    error?.code === 'PGRST202' ||
+    message.includes('could not find the function') ||
+    message.includes('does not exist')
+  );
+}
+
+async function insertCrmEmailRpc(
+  record: Record<string, unknown>,
+): Promise<{ id: number | null; error: { message?: string; code?: string } | null }> {
+  const p_row: Record<string, unknown> = {
+    message_id: record.message_id ?? '',
+    sender_name: record.sender_name ?? null,
+    sender_email: record.sender_email ?? null,
+    recipient_list: record.recipient_list ?? null,
+    subject: record.subject ?? '(no subject)',
+    body_html: record.body_html ?? '',
+    body_preview: record.body_preview ?? null,
+    sent_at: record.sent_at ?? new Date().toISOString(),
+    direction: record.direction ?? 'outgoing',
+    client_id: record.client_id ?? null,
+    legacy_id: record.legacy_id != null ? String(record.legacy_id) : null,
+    contact_id: record.contact_id != null ? String(record.contact_id) : null,
+    thread_id: record.thread_id ?? null,
+    body_cached: true,
+  };
+  if (record.attachments != null) {
+    p_row.attachments = record.attachments;
+  }
+
+  const tryFn = async (fn: string, row: Record<string, unknown>) => {
+    const result = await supabase.rpc(fn, { p_row: row });
+    if (result.error) {
+      console.warn(`saveOutgoingEmailRecord: ${fn} failed`, {
+        code: result.error.code,
+        message: result.error.message,
+        details: result.error.details,
+        hint: result.error.hint,
+      });
+    }
+    return result;
+  };
+
+  let lastError: { message?: string; code?: string } | null = null;
+  for (const fn of ['insert_mailbox_email', 'insert_crm_email']) {
+    let { data, error } = await tryFn(fn, p_row);
+    if (error && !isRpcMissing(error)) {
+      const retry = await tryFn(fn, { ...p_row, user_id: null });
+      data = retry.data;
+      error = retry.error;
+    }
+    if (!error) {
+      const id = typeof data === 'number' ? data : data != null ? Number(data) : null;
+      if (Number.isFinite(id as number)) return { id: id as number, error: null };
+      return { id: null, error: { message: `${fn} returned no id` } };
+    }
+    lastError = error;
+  }
+  return { id: null, error: lastError };
+}
 
 /**
  * Persists an outgoing email to public.emails after Graph send succeeds.
@@ -65,30 +135,43 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
   const now = input.sentAt ?? new Date();
   const senderEmail = (input.senderEmail || '').trim();
   if (!senderEmail) {
-    console.error('saveOutgoingEmailRecord: missing sender_email');
-    return false;
+    console.warn('saveOutgoingEmailRecord: missing sender_email — inserting anyway');
   }
 
   const { client_id, legacy_id } = resolveEmailLeadForeignKeys(input.client);
   const recipientList = Array.isArray(input.recipientList)
     ? input.recipientList.join(', ')
     : input.recipientList;
+  const bodyPreview =
+    (input.bodyPreview && String(input.bodyPreview).trim()) ||
+    String(input.htmlBody || '').substring(0, 500);
+
+  let authUserId: string | null = null;
+  try {
+    const { data: authData } = await supabase.auth.getUser();
+    authUserId = authData?.user?.id ?? null;
+  } catch {
+    authUserId = null;
+  }
 
   const emailRecord: Record<string, unknown> = {
     message_id: input.messageId ?? `optimistic_${now.getTime()}`,
     thread_id: null,
     sender_name: input.senderName,
-    sender_email: senderEmail,
+    sender_email: senderEmail || null,
     recipient_list: recipientList,
     subject: input.subject,
     body_html: input.htmlBody,
-    body_preview: input.htmlBody.substring(0, 500),
+    body_preview: bodyPreview,
     sent_at: now.toISOString(),
     direction: 'outgoing',
-    attachments: null,
+    attachments: input.attachments ?? null,
     client_id,
     legacy_id,
   };
+  if (authUserId) {
+    emailRecord.user_id = authUserId;
+  }
 
   const contactId = input.contactId;
   if (typeof contactId === 'number' && contactId > 0) {
@@ -107,6 +190,9 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
     if (client_id) invalidateInteractionsTimeline(client_id);
     else if (legacy_id != null) invalidateInteractionsTimeline(`legacy_${legacy_id}`);
     else if (input.client.id != null) invalidateInteractionsTimeline(input.client.id);
+    if (String(emailRecord.message_id || '').startsWith('offer_')) {
+      notifyPriceOffersChanged(input.client.id);
+    }
   };
 
   const tryInsert = async (record: Record<string, unknown>) => {
@@ -126,6 +212,33 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
   };
 
   try {
+    try {
+      const backend = await recordOutgoingEmailViaBackend(emailRecord);
+      if (backend?.id != null && Number.isFinite(backend.id)) {
+        console.log('saveOutgoingEmailRecord: saved via backend', {
+          id: backend.id,
+          message_id: emailRecord.message_id,
+          client_id,
+        });
+        await linkContact(backend.id, emailRecord.contact_id);
+        notifyTimeline();
+        return true;
+      }
+      console.warn('saveOutgoingEmailRecord: backend record returned no id', backend);
+    } catch (backendError) {
+      console.warn('saveOutgoingEmailRecord: backend record failed', backendError);
+    }
+
+    if (input.preferRpc !== false) {
+      const rpc = await insertCrmEmailRpc(emailRecord);
+      if (!rpc.error && rpc.id != null) {
+        await linkContact(rpc.id, emailRecord.contact_id);
+        notifyTimeline();
+        return true;
+      }
+      console.warn('saveOutgoingEmailRecord: RPC insert failed, trying table insert', rpc.error);
+    }
+
     let { data: insertedData, error: insertError } = await tryInsert(emailRecord);
 
     if (
@@ -173,10 +286,17 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
         return true;
       }
       console.error('saveOutgoingEmailRecord: upsert failed', upsertError);
-    } else if (
-      insertError.code === '42501' &&
-      insertError.message?.includes('pending_stage_evaluations')
-    ) {
+    }
+
+    if (insertError.code === '42501') {
+      const rpc = await insertCrmEmailRpc(emailRecord);
+      if (!rpc.error && rpc.id != null) {
+        await linkContact(rpc.id, emailRecord.contact_id);
+        notifyTimeline();
+        return true;
+      }
+      console.warn('saveOutgoingEmailRecord: RLS fallback RPC failed', rpc.error);
+
       const withoutContext = { ...emailRecord };
       delete withoutContext.client_id;
       delete withoutContext.legacy_id;
@@ -206,11 +326,15 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
       }
     }
 
-    toast.error('Email sent but failed to save record. It will appear after sync.');
+    if (!input.skipErrorToast) {
+      toast.error('Email sent but failed to save record. It will appear after sync.');
+    }
     return false;
   } catch (error) {
     console.error('saveOutgoingEmailRecord: exception', error, logContext);
-    toast.error('Email sent but failed to save record. It will appear after sync.');
+    if (!input.skipErrorToast) {
+      toast.error('Email sent but failed to save record. It will appear after sync.');
+    }
     return false;
   }
 }

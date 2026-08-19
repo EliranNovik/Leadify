@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from '../client-tabs/TimelineHistoryButtons';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
-import { buildPaymentLinkLeadRef } from '../../lib/paymentLinkLeadRef';
+import { getOrCreatePaymentLinkToken } from '../../lib/proformaPaymentLink';
 import { tryAdvanceHandlerStartedAfterPayment } from '../../lib/advanceHandlerStartedOnPaid';
 import toast from 'react-hot-toast';
 // HandlerTabProps interface
@@ -471,45 +471,26 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
   // Handler to generate and copy payment link
   const handleGeneratePaymentLink = async (payment: PaymentPlan) => {
     try {
-      // Generate secure token
-      const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-
-      // Set expiration date (30 days from now)
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30);
-
-      // Create payment link in database
-      const leadRef = buildPaymentLinkLeadRef({
-        leadId: client.id,
+      const secureToken = await getOrCreatePaymentLinkToken({
+        paymentPlanId: payment.id,
+        leadClientId: client.id,
         leadType: client.lead_type,
         isLegacyPaymentPlan: Boolean(payment.isLegacy),
+        value: payment.value,
+        valueVat: payment.valueVat,
+        currency: payment.currency || '₪',
+        order: payment.order,
+        clientName: client?.name || '',
+        leadNumber: client?.lead_number || '',
       });
 
-      const { data: paymentLink, error } = await supabase
-        .from('payment_links')
-        .insert({
-          payment_plan_id: payment.id,
-          ...leadRef,
-          secure_token: secureToken,
-          amount: payment.value,
-          vat_amount: payment.valueVat,
-          total_amount: payment.value + payment.valueVat,
-          currency: payment.currency || '₪',
-          description: `${payment.order} - ${client?.name} (#${client?.lead_number})`,
-          status: 'pending',
-          expires_at: expiresAt.toISOString()
-        })
-        .select()
-        .single();
+      if (!secureToken) {
+        toast.error('Failed to generate payment link');
+        return;
+      }
 
-      if (error) throw error;
-
-      // Generate the payment URL
       const paymentUrl = `${window.location.origin}/payment/${secureToken}`;
-
-      // Copy to clipboard
       await navigator.clipboard.writeText(paymentUrl);
-
       toast.success('Payment link copied to clipboard!');
     } catch (error) {
       console.error('Error generating payment link:', error);

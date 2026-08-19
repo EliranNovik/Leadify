@@ -101,8 +101,50 @@ export function parseEmailAttachmentsFromDb(raw: unknown): any[] {
   return [];
 }
 
+const SIGNATURE_FILE_NAME_RE =
+  /^(signature-icon[-_]?\d+|signature[-_]?\d+|signature-image[-_]?\d+)\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+
+function attachmentName(att: any): string {
+  return String(att?.name || att?.filename || att?.fileName || att?.Name || '').trim();
+}
+
+function attachmentContentId(att: any): string {
+  return String(att?.contentId || att?.content_id || att?.contentID || '')
+    .replace(/^<|>$/g, '')
+    .trim();
+}
+
+function attachmentContentType(att: any): string {
+  return String(att?.contentType || att?.content_type || att?.mimeType || '').toLowerCase();
+}
+
+function isTruthyInlineFlag(value: unknown): boolean {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+/** Signature CID icons and other inline images must not appear as downloadable files. */
+export function isSignatureOrInlineEmailAttachment(att: any): boolean {
+  if (!att) return false;
+  if (isTruthyInlineFlag(att.isInline) || isTruthyInlineFlag(att.is_inline)) return true;
+
+  const name = attachmentName(att);
+  if (SIGNATURE_FILE_NAME_RE.test(name) || /signature-icon/i.test(name)) return true;
+
+  const cid = attachmentContentId(att);
+  if (/^signature-(icon|image)[-_]/i.test(cid)) return true;
+
+  const contentType = attachmentContentType(att);
+  const looksLikeImage =
+    contentType.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name);
+  if (cid && looksLikeImage) return true;
+
+  return false;
+}
+
 export function fileAttachmentsForUi(attachments: any[]): any[] {
-  return attachments.filter((att: any) => att && !att.isInline && (att.name || att.id));
+  return (attachments || []).filter(
+    (att: any) => att && !isSignatureOrInlineEmailAttachment(att) && (att.name || att.id),
+  );
 }
 
 export const processEmailHtmlWithInlineImages = (html: string, attachments: any[] = []): string => {
@@ -576,6 +618,44 @@ export function mergeEmailBodyPreferRicher<T extends Record<string, any>>(
         ? existing.attachments
         : incoming.attachments ?? existing.attachments,
   };
+}
+
+function emailSidepanelKey(email: Record<string, any> | null | undefined): string {
+  if (!email) return '';
+  const mid = email.message_id != null ? String(email.message_id).trim() : '';
+  if (mid) return mid;
+  return email.id != null ? String(email.id) : '';
+}
+
+/** Union two sidepanel lists. Never drop already-visible rows when a later fetch returns empty/partial. */
+export function mergeEmailSidepanelLists<T extends Record<string, any>>(
+  prev: T[] | null | undefined,
+  incoming: T[] | null | undefined,
+): T[] {
+  const existing = Array.isArray(prev) ? prev : [];
+  const next = Array.isArray(incoming) ? incoming : [];
+  if (next.length === 0) return existing;
+  if (existing.length === 0) return next;
+
+  const byKey = new Map<string, T>();
+  const unmatched: T[] = [];
+
+  for (const row of existing) {
+    const key = emailSidepanelKey(row);
+    if (key) byKey.set(key, row);
+    else unmatched.push(row);
+  }
+  for (const row of next) {
+    const key = emailSidepanelKey(row);
+    if (!key) {
+      unmatched.push(row);
+      continue;
+    }
+    const current = byKey.get(key);
+    byKey.set(key, current ? mergeEmailBodyPreferRicher(row, current) : row);
+  }
+
+  return [...byKey.values(), ...unmatched];
 }
 
 /** Format WhatsApp / plain timeline text while preserving blank lines. */

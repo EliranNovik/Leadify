@@ -17,6 +17,7 @@ import {
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
+import { findLatestLivePaymentLink } from '../lib/proformaPaymentLink';
 import { ensurePelecardClientSecureScript } from '../lib/pelecardWalletSetup';
 import { runPelecardWalletDiagnostics } from '../lib/pelecardWalletDiagnostics';
 import PaymentWalletDebugPanel from '../components/payment/PaymentWalletDebugPanel';
@@ -454,12 +455,30 @@ const PaymentPage: React.FC<{
           return;
         }
 
-        if (enriched.expires_at && new Date(enriched.expires_at) < new Date()) {
+        const linkExpiredByDate = Boolean(
+          enriched.expires_at && new Date(enriched.expires_at) < new Date(),
+        );
+        const linkExpiredByStatus =
+          enriched.status === 'expired' || enriched.status === 'cancelled';
+
+        if ((linkExpiredByDate || enriched.status === 'expired') && enriched.payment_plan_id && !kioskMode) {
+          const live = await findLatestLivePaymentLink({
+            paymentPlanId: Number(enriched.payment_plan_id),
+            excludeToken: token,
+          });
+          const liveToken = live?.secure_token?.trim();
+          if (liveToken && liveToken !== token) {
+            navigate(`/payment/${encodeURIComponent(liveToken)}`, { replace: true });
+            return;
+          }
+        }
+
+        if (linkExpiredByDate) {
           setPageError('This payment link has expired. Please contact the office for a new link.');
           return;
         }
 
-        if (enriched.status === 'expired' || enriched.status === 'cancelled') {
+        if (linkExpiredByStatus) {
           setPageError(
             enriched.status === 'cancelled'
               ? 'This payment was cancelled. You can open the link again to retry.'
@@ -481,7 +500,7 @@ const PaymentPage: React.FC<{
     };
 
     fetchPaymentLink();
-  }, [token]);
+  }, [token, kioskMode, navigate]);
 
   const loadCheckoutExchange = useCallback(
     async (options?: { forceBoiRefresh?: boolean }) => {

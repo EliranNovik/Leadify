@@ -81,6 +81,35 @@ const emailController = {
       res.status(statusCode).json({ success: false, error: error.message || 'Failed to send email' });
     }
   },
+
+  async record(req, res) {
+    try {
+      const record = req.body || {};
+      if (!record.message_id) {
+        return res.status(400).json({ success: false, error: 'message_id is required' });
+      }
+      const data = await graphMailboxSyncService.persistOutgoingEmailRow(record);
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('❌ Record email error:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to record email' });
+    }
+  },
+
+  async listOffers(req, res) {
+    try {
+      const clientId = req.query.clientId || null;
+      const legacyId = req.query.legacyId || null;
+      if (!clientId && !legacyId) {
+        return res.status(400).json({ success: false, error: 'clientId or legacyId is required' });
+      }
+      const data = await graphMailboxSyncService.listPriceOfferEmails({ clientId, legacyId });
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('❌ List offer emails error:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to list offer emails' });
+    }
+  },
 };
 
 module.exports = emailController;

@@ -41,7 +41,9 @@ import {
     LockClosedIcon,
     ChevronRightIcon,
     DocumentArrowUpIcon,
+    BookmarkIcon,
 } from '@heroicons/react/24/outline';
+import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { isNonSelfLinkedMasterLead } from '../lib/masterLeadApi';
 import toast from 'react-hot-toast';
@@ -89,6 +91,14 @@ import {
     type FlagTypeRow,
 } from '../lib/userContentFlags';
 import { fetchRmqFlagCountForLead } from '../lib/rmqMessageLeadFlags';
+import {
+    dispatchScrollToPinnedInteraction,
+    fetchLeadPinnedInteractions,
+    PINNED_INTERACTIONS_CHANGED_EVENT,
+    resolveLeadPinnedIdentity,
+    unpinLeadInteractionById,
+    type LeadPinnedInteractionRow,
+} from '../lib/leadPinnedInteractions';
 import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './client-tabs/ProbabilitySlidersModal';
 import DocumentModal from './DocumentModal';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
@@ -103,6 +113,7 @@ import EditFieldModal, {
 } from './EditFieldModal';
 import ClientPortalAdminCard from './portal/ClientPortalAdminCard';
 import LeadEmployeeCostModal from './LeadEmployeeCostModal';
+import PinnedInteractionsModal from './PinnedInteractionsModal';
 import LeadRemainingTimeBar from './LeadRemainingTimeBar';
 import LeadOverBudgetGateModal, {
     LeadBudgetExtensionRequestModal,
@@ -409,6 +420,21 @@ const MORE_ACTIONS_ICON_TONE_PRIMARY =
 const MORE_ACTIONS_ICON_TONE_PURPLE =
     'bg-purple-50 text-purple-700 group-hover:bg-purple-100 dark:bg-purple-900/25 dark:text-purple-300';
 
+const HEADER_ACTION_SHEET_ICON_TONE: Record<
+    'violet' | 'slate' | 'emerald' | 'sky' | 'cyan' | 'indigo' | 'purple' | 'amber' | 'orange',
+    string
+> = {
+    violet: MORE_ACTIONS_ICON_TONE_PURPLE,
+    slate: MORE_ACTIONS_ICON_TONE_DEFAULT,
+    emerald: MORE_ACTIONS_ICON_TONE_SUCCESS,
+    sky: MORE_ACTIONS_ICON_TONE_PRIMARY,
+    cyan: MORE_ACTIONS_ICON_TONE_DEFAULT,
+    indigo: MORE_ACTIONS_ICON_TONE_PRIMARY,
+    purple: MORE_ACTIONS_ICON_TONE_PURPLE,
+    amber: MORE_ACTIONS_ICON_TONE_WARNING,
+    orange: MORE_ACTIONS_ICON_TONE_WARNING,
+};
+
 /** Stage workflow actions — soft purple oval pills (same tone as date/meta chips). */
 const STAGE_ACTION_BTN_BASE =
     'inline-flex items-center justify-center gap-2 min-h-10 !overflow-visible rounded-full px-5 py-2 text-sm font-semibold whitespace-nowrap border-0 shadow-none transition-colors duration-150';
@@ -417,6 +443,9 @@ const STAGE_ACTION_BTN_CLASS =
     `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
 
 const STAGE_ACTION_BTN_CLASS_COMPACT = STAGE_ACTION_BTN_CLASS;
+
+const HEADER_PINNED_BTN_CLASS =
+    'inline-flex h-10 w-10 shrink-0 items-center justify-center relative !overflow-visible rounded-full border-0 bg-gray-200 text-sky-700 shadow-none transition-colors duration-150 hover:bg-gray-300 dark:bg-base-300 dark:text-sky-300 dark:hover:bg-base-200';
 
 const CLIENT_SIGNED_STAGE_BTN_CLASS =
     `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
@@ -612,6 +641,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [headerActionsDockHover, setHeaderActionsDockHover] = useState<number | null>(null);
     const [inactiveNotesExpanded, setInactiveNotesExpanded] = useState(false);
     const headerActionsMenuRef = useRef<HTMLDivElement | null>(null);
+    const [isMobileViewport, setIsMobileViewport] = useState(() =>
+        typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false,
+    );
+
+    useEffect(() => {
+        const mq = window.matchMedia('(max-width: 767px)');
+        const onChange = () => setIsMobileViewport(mq.matches);
+        onChange();
+        mq.addEventListener('change', onChange);
+        return () => mq.removeEventListener('change', onChange);
+    }, []);
 
     const closeMoreActionsSheet = useCallback(() => setMoreActionsSheetOpen(false), []);
     const closeHeaderActionsMenu = useCallback(() => {
@@ -628,7 +668,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     );
 
     useEffect(() => {
-        if (!headerActionsMenuOpen) return;
+        if (!headerActionsMenuOpen || isMobileViewport) return;
         const onKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Escape') closeHeaderActionsMenu();
         };
@@ -646,7 +686,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             document.removeEventListener('mousedown', onPointerDown);
             document.removeEventListener('touchstart', onPointerDown);
         };
-    }, [headerActionsMenuOpen, closeHeaderActionsMenu]);
+    }, [headerActionsMenuOpen, closeHeaderActionsMenu, isMobileViewport]);
 
     const setEditLeadDrawerOpenState = useCallback(
         (open: boolean) => {
@@ -715,6 +755,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     useEffect(() => {
         setHeaderFinancialDetailsOpen(false);
         setMoreActionsSheetOpen(false);
+        setHeaderActionsMenuOpen(false);
         setInactiveNotesExpanded(false);
         setLeadEmployeeCostModalOpen(false);
         setOverBudgetGateOpen(false);
@@ -1048,6 +1089,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     });
     const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
     const [tagsModalOpen, setTagsModalOpen] = useState(false);
+    const [pinnedInteractionsModalOpen, setPinnedInteractionsModalOpen] = useState(false);
+    const [pinnedInteractions, setPinnedInteractions] = useState<LeadPinnedInteractionRow[]>([]);
+    const [pinnedInteractionsLoading, setPinnedInteractionsLoading] = useState(false);
     const [headerDocumentsModalOpen, setHeaderDocumentsModalOpen] = useState(false);
     const [headerSupabaseDocumentsCount, setHeaderSupabaseDocumentsCount] = useState<number>(0);
     const [leadTags, setLeadTags] = useState<string[]>(() => {
@@ -1130,6 +1174,39 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             cancelled = true;
         };
     }, [selectedClient?.id, selectedClient?.lead_type]);
+
+    const refreshPinnedInteractions = useCallback(async () => {
+        const identity = resolveLeadPinnedIdentity(selectedClient || {});
+        if (!identity) {
+            setPinnedInteractions([]);
+            return;
+        }
+        setPinnedInteractionsLoading(true);
+        try {
+            const rows = await fetchLeadPinnedInteractions(supabase, identity);
+            setPinnedInteractions(rows);
+        } finally {
+            setPinnedInteractionsLoading(false);
+        }
+    }, [selectedClient?.id, selectedClient?.lead_type]);
+
+    useEffect(() => {
+        void refreshPinnedInteractions();
+    }, [refreshPinnedInteractions]);
+
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const leadKey = (event as CustomEvent<{ leadKey?: string | null }>).detail?.leadKey;
+            if (leadKey && selectedClient?.id != null && String(leadKey) !== String(selectedClient.id)) {
+                return;
+            }
+            void refreshPinnedInteractions();
+        };
+        window.addEventListener(PINNED_INTERACTIONS_CHANGED_EVENT, handler as EventListener);
+        return () => {
+            window.removeEventListener(PINNED_INTERACTIONS_CHANGED_EVENT, handler as EventListener);
+        };
+    }, [refreshPinnedInteractions, selectedClient?.id]);
 
     useEffect(() => {
         if (!selectedClient?.id) {
@@ -2779,6 +2856,34 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         }, 250);
     };
 
+    const openPinnedInteractionsModal = () => {
+        setPinnedInteractionsModalOpen(true);
+        void refreshPinnedInteractions();
+    };
+
+    const handleViewPinnedInteraction = (pin: LeadPinnedInteractionRow) => {
+        setPinnedInteractionsModalOpen(false);
+        onSwitchClientTab?.('interactions');
+        window.setTimeout(() => {
+            dispatchScrollToPinnedInteraction(pin.channel, pin.external_id);
+        }, 280);
+    };
+
+    const handleUnpinPinnedInteraction = async (pin: LeadPinnedInteractionRow) => {
+        const { error } = await unpinLeadInteractionById(supabase, pin.id);
+        if (error) {
+            toast.error(error);
+            return;
+        }
+        setPinnedInteractions((prev) => prev.filter((row) => row.id !== pin.id));
+        window.dispatchEvent(
+            new CustomEvent(PINNED_INTERACTIONS_CHANGED_EVENT, {
+                detail: { leadKey: selectedClient?.id != null ? String(selectedClient.id) : null },
+            }),
+        );
+        toast.success('Removed from saved interactions');
+    };
+
     if (!selectedClient) return null;
 
     const headerDocsLeadNumber =
@@ -3125,7 +3230,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         );
     };
 
-    const renderHeaderActionsMenuItems = () => {
+    const getHeaderActionItems = () => {
         const items: Array<{
             key: string;
             label: string;
@@ -3284,6 +3389,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             });
         }
 
+        return items;
+    };
+
+    const renderHeaderActionsMenuItems = () => {
+        const items = getHeaderActionItems();
         return (
             <div
                 className="flex flex-col items-end gap-4"
@@ -3315,6 +3425,34 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         );
     };
 
+    const renderHeaderActionsSheetList = () => {
+        const items = getHeaderActionItems();
+        return (
+            <div className="flex flex-col gap-2">
+                {items.map((item) => (
+                    <button
+                        key={item.key}
+                        type="button"
+                        className={`${MORE_ACTIONS_SHEET_ITEM} ${item.disabled ? 'pointer-events-none opacity-40' : ''}`}
+                        disabled={item.disabled}
+                        onClick={item.onClick}
+                    >
+                        <span
+                            className={`relative overflow-visible ${MORE_ACTIONS_ICON_BOX} ${HEADER_ACTION_SHEET_ICON_TONE[item.tone]}`}
+                        >
+                            {item.children}
+                        </span>
+                        <span className="min-w-0 flex-1">{item.label}</span>
+                        <ChevronRightIcon
+                            className="h-4 w-4 shrink-0 text-base-content/25"
+                            aria-hidden
+                        />
+                    </button>
+                ))}
+            </div>
+        );
+    };
+
     const renderHeaderActionsMenuPanel = (placement: 'header-top' | 'attached' = 'header-top') => {
         if (hideActionsDropdown) return null;
         const panelClass =
@@ -3328,7 +3466,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 data-header-actions-menu
                 role="menu"
                 aria-hidden={!headerActionsMenuOpen}
-                className={`${panelClass} transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                className={`hidden md:block ${panelClass} transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
                     headerActionsMenuOpen
                         ? 'pointer-events-auto translate-y-0 scale-100 opacity-100'
                         : 'pointer-events-none -translate-y-1.5 scale-[0.98] opacity-0'
@@ -3780,6 +3918,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         );
     };
 
+    const renderPinnedInteractionsButton = () => (
+        <button
+            type="button"
+            className={HEADER_PINNED_BTN_CLASS}
+            onClick={openPinnedInteractionsModal}
+            title="Saved interactions"
+            aria-label="Saved interactions"
+        >
+            {pinnedInteractions.length > 0 ? (
+                <BookmarkIconSolid className="h-5 w-5" aria-hidden />
+            ) : (
+                <BookmarkIcon className="h-5 w-5" aria-hidden />
+            )}
+            {pinnedInteractions.length > 0 ? (
+                <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-sky-600 px-0.5 text-[10px] font-bold text-white">
+                    {pinnedInteractions.length > 99 ? '99+' : pinnedInteractions.length}
+                </span>
+            ) : null}
+        </button>
+    );
+
     const renderMetaBadgesRow = (
         variant: 'floating' | 'connected' = 'floating',
         options?: { deferActionsPanel?: boolean },
@@ -3788,8 +3947,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
                 {renderClientMetaBadges(variant)}
             </div>
-            <div className="hidden max-w-[min(50%,40rem)] shrink-0 flex-wrap items-center justify-end gap-2 xl:flex">
+            <div className="hidden shrink-0 items-center justify-end gap-2 xl:flex xl:flex-nowrap">
                 {!needsDesktopStagePaymentBanner ? renderDesktopStageLogicButtons({ inline: true }) : null}
+                {renderPinnedInteractionsButton()}
             </div>
             <div className="flex shrink-0 items-center">
                 {renderHeaderActionsMenuTrigger(variant, {
@@ -5163,6 +5323,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <div className={`flex w-full flex-wrap items-center gap-2 ${needsDesktopStagePaymentBanner ? '' : 'xl:hidden'}`}>
                             <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
                                     {renderDesktopStageLogicButtons()}
+                                    {renderPinnedInteractionsButton()}
                             </div>
                         </div>
                         {dropdownsContent ? (
@@ -5282,7 +5443,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             ? `mt-7 flex w-full flex-wrap items-center gap-4 md:hidden ${sidebarPadClass} ${pagePadClass}`
                             : 'mt-7 flex w-full flex-wrap items-center gap-4 md:hidden'
                     }
-                >                    {/* Check if case is unactivated - show message instead of buttons */}
+                >                    {renderPinnedInteractionsButton()}
+                    {/* Check if case is unactivated - show message instead of buttons */}
                     {(() => {
                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                         const isUnactivated = isLegacy
@@ -5906,6 +6068,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                 {/* Category Edit Modal */}
                 <MobileBottomSheet
+                    open={headerActionsMenuOpen && isMobileViewport}
+                    onClose={closeHeaderActionsMenu}
+                    title="Actions"
+                    subtitle={
+                        selectedClient?.name
+                            ? `${selectedClient.name}${selectedClient?.lead_number ? ` · #${selectedClient.lead_number}` : ''}`
+                            : undefined
+                    }
+                    zIndex={325}
+                    headerClassName="!border-b-0"
+                    contentClassName="!px-4 !pb-6 bg-base-200/25 dark:bg-base-300/10"
+                    overlayClassName="backdrop-blur-[1px]"
+                    sheetClassName="md:hidden"
+                >
+                    {renderHeaderActionsSheetList()}
+                </MobileBottomSheet>
+
+                <MobileBottomSheet
                     open={moreActionsSheetOpen}
                     onClose={closeMoreActionsSheet}
                     title="Actions"
@@ -6361,6 +6541,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     />
                 </>
             )}
+            <PinnedInteractionsModal
+                open={pinnedInteractionsModalOpen}
+                onClose={() => setPinnedInteractionsModalOpen(false)}
+                loading={pinnedInteractionsLoading}
+                pins={pinnedInteractions}
+                onView={handleViewPinnedInteraction}
+                onUnpin={handleUnpinPinnedInteraction}
+            />
         </div>
     );
 };

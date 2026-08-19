@@ -192,6 +192,8 @@ import {
   isNonSelfLinkedMasterLead,
 } from '../lib/masterLeadApi';
 import SendPriceOfferModal from './SendPriceOfferModal';
+import { saveOutgoingEmailRecord } from '../lib/saveOutgoingEmailRecord';
+import { saveLeadPriceOffer } from '../lib/leadPriceOfferVersions';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import { addRecentLead } from '../lib/recentSearchStorage';
@@ -7577,11 +7579,54 @@ const Clients: React.FC<ClientsProps> = ({
         };
       }
 
+      const now = new Date();
+      const closerName =
+        additionalFields.closer ||
+        (await fetchCurrentUserFullName()) ||
+        '---';
+      const offerText = manualPriceOfferText.trim();
+      const legacyId = isLegacyLead
+        ? Number.parseInt(String(selectedClient.id).replace('legacy_', ''), 10)
+        : null;
+      const messageId = `offer_${isLegacyLead ? `legacy_${legacyId}` : selectedClient.id}_${now.getTime()}`;
+
+      await saveLeadPriceOffer(selectedClient, {
+        body: offerText,
+        senderName: closerName,
+        senderEmail: null,
+        sentAt: now.toISOString(),
+        emailMessageId: messageId,
+      });
+
       await updateLeadStageWithHistory({
         lead: selectedClient,
         stage: stageId,
         additionalFields,
       });
+
+      try {
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        await saveOutgoingEmailRecord({
+          client: selectedClient,
+          subject: 'Manual price offer',
+          htmlBody: offerText.replace(/\r\n/g, '\n').replace(/\n/g, '<br/>'),
+          senderName: closerName,
+          senderEmail: authUser?.email || '',
+          recipientList: selectedClient.email || '',
+          sentAt: now,
+          messageId,
+          bodyPreview: offerText.length > 500 ? offerText.substring(0, 500) : offerText,
+          skipErrorToast: false,
+        });
+      } catch (offerHistoryError) {
+        console.warn('Manual price offer saved, but history row failed:', offerHistoryError);
+      }
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('lead:price-offers-changed', { detail: { leadId: selectedClient.id } })
+        );
+      }
 
       setSelectedClient((prev: any) => {
         if (!prev) return prev;
@@ -15448,29 +15493,34 @@ const Clients: React.FC<ClientsProps> = ({
             subtitle="How would you like to send the price offer?"
             zIndex={320}
             {...DESKTOP_CENTER_MODAL_PROPS}
+            headerClassName="!border-b-0"
+            footerClassName={`${DESKTOP_CENTER_MODAL_PROPS.footerClassName} !border-t-0`}
             footer={
               <button
                 type="button"
-                className="btn btn-outline w-full max-md:min-h-12 md:ml-auto md:w-auto md:min-w-[6.5rem]"
+                className="btn btn-ghost w-full max-md:min-h-12 md:ml-auto md:w-auto md:min-w-[6.5rem] border-0"
                 onClick={() => setShowPriceOfferChoiceModal(false)}
               >
                 Cancel
               </button>
             }
           >
-                <div className="flex flex-col gap-3">
+                <div className="flex flex-row items-center gap-3">
                   <button
                     type="button"
-                    className="btn btn-primary w-full max-md:min-h-12"
+                    className="btn btn-primary min-h-12 flex-1 gap-2 rounded-full border-0 px-5"
                     onClick={() => handlePriceOfferChoice('automated')}
                   >
+                    <EnvelopeIcon className="h-6 w-6 shrink-0" aria-hidden />
                     Automated Email
                   </button>
+                  <span className="shrink-0 text-lg font-medium text-gray-400">or</span>
                   <button
                     type="button"
-                    className="btn btn-outline w-full max-md:min-h-12"
+                    className="btn min-h-12 flex-1 gap-2 rounded-full border-0 bg-gray-100 px-5 text-black hover:bg-gray-200"
                     onClick={() => handlePriceOfferChoice('manual')}
                   >
+                    <PencilSquareIcon className="h-6 w-6 shrink-0" aria-hidden />
                     Manual Price Offer
                   </button>
                 </div>

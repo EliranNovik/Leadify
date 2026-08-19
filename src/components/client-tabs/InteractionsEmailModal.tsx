@@ -19,7 +19,7 @@ import {
 import {
   EmailContentWithErrorHandling,
   ensureFormattedEmailHtml,
-  emailBodyLooksStableForReading,
+  emailBodyPlainTextLength,
   fileAttachmentsForUi,
   isOfficeEmail,
   parseEmailAttachmentsFromDb,
@@ -439,7 +439,7 @@ export function InteractionsEmailModal({
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2">
-              {emailsLoading ? (
+              {emailsLoading && emails.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="loading loading-spinner loading-lg text-purple-500"></div>
                 </div>
@@ -468,32 +468,6 @@ export function InteractionsEmailModal({
                     const isOutgoing = isFromOffice ? true : message.direction === 'outgoing';
                     if (listFilter === 'incoming' && isOutgoing) return false;
                     if (listFilter === 'outgoing' && !isOutgoing) return false;
-
-                    if (selectedContactForEmail) {
-                      const contactId = Number(selectedContactForEmail.contact.id);
-                      const contactEmail = selectedContactForEmail.contact.email?.toLowerCase().trim();
-
-                      if (message.contact_id !== null && message.contact_id !== undefined) {
-                        const emailContactId = Number(message.contact_id);
-                        if (emailContactId !== contactId) {
-                          return false;
-                        }
-                      } else {
-                        if (contactEmail) {
-                          const messageFrom = message.from?.toLowerCase().trim();
-                          const messageTo = message.to?.toLowerCase().trim() || '';
-                          const recipients = messageTo.split(/[,;]/).map((r: string) => r.trim());
-                          const matchesContact =
-                            messageFrom === contactEmail || recipients.includes(contactEmail);
-
-                          if (!matchesContact) {
-                            return false;
-                          }
-                        } else {
-                          return false;
-                        }
-                      }
-                    }
 
                     if (!emailSearchQuery.trim()) return true;
 
@@ -930,9 +904,8 @@ export function InteractionsEmailModal({
                       );
 
                       let emailContent =
-                        message.body_html || message.bodyPreview || message.body_preview;
-                      const bodyReady = emailBodyLooksStableForReading(emailContent);
-                      if (emailContent && bodyReady) {
+                        message.body_html || message.bodyPreview || message.body_preview || '';
+                      if (emailBodyPlainTextLength(emailContent) > 0) {
                         const attachments = parseEmailAttachmentsFromDb(message.attachments);
                         emailContent = processEmailHtmlWithInlineImages(emailContent, attachments);
                         emailContent = ensureFormattedEmailHtml(emailContent);

@@ -44,6 +44,8 @@ const ALLOWED_REST_PREFIXES = [
   '/rest/v1/lead_stages',
   '/rest/v1/call_logs',
   '/rest/v1/whatsapp_messages',
+  '/rest/v1/user_content_flags',
+  '/rest/v1/lead_pinned_interactions',
   '/rest/v1/lead_case_documents',
   '/rest/v1/staff_meeting_documents',
 ];

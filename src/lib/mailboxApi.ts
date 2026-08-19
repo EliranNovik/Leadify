@@ -136,6 +136,8 @@ export interface BackendSendEmailPayload {
     contactId?: number | null;
     senderName?: string | null;
     userInternalId?: string | number | null;
+    /** Stable CRM id (e.g. offer_<leadId>_<ts>) stored as emails.message_id. */
+    crmMessageId?: string | null;
   };
 }
 
@@ -150,6 +152,21 @@ export const sendEmailViaBackend = async (payload: BackendSendEmailPayload) => {
   });
   const data = await parseJsonResponse(response);
   return data?.data || null;
+};
+
+export const recordOutgoingEmailViaBackend = async (
+  record: Record<string, unknown>,
+): Promise<{ id: number | null } | null> => {
+  const response = await fetch(buildUrl('/api/emails/record'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(record),
+  });
+  const data = await parseJsonResponse(response);
+  const id = data?.data?.id;
+  return { id: typeof id === 'number' ? id : id != null ? Number(id) : null };
 };
 
 export type EmailBodyFromBackend = {

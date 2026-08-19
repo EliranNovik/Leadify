@@ -19,6 +19,7 @@ export interface Client extends Lead {
   teams_meeting_url?: string;
   emails?: any[];
   proposal_text?: string;
+  proposal_versions?: unknown;
   proposal_total?: number;
   proposal_currency?: string;
   case_manager?: string;

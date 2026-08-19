@@ -51,6 +51,60 @@ function isLinkUsable(row: PaymentLinkRow): boolean {
   return true;
 }
 
+export const PAYMENT_LINK_TTL_DAYS = 30;
+
+export function paymentLinkExpiresAtIso(from = new Date()): string {
+  const expiresAt = new Date(from);
+  expiresAt.setDate(expiresAt.getDate() + PAYMENT_LINK_TTL_DAYS);
+  return expiresAt.toISOString();
+}
+
+type LiveCheckoutLinkRow = {
+  id: string | number;
+  secure_token?: string | null;
+  status?: string | null;
+  expires_at?: string | null;
+};
+
+/** Pending/processing links that a client can still pay. */
+export function isLiveCheckoutPaymentLink(row: LiveCheckoutLinkRow): boolean {
+  const token = row.secure_token?.trim();
+  if (!token) return false;
+  const status = (row.status || 'pending').toLowerCase();
+  if (status !== 'pending' && status !== 'processing') return false;
+  if (row.expires_at) {
+    const exp = new Date(row.expires_at).getTime();
+    if (!Number.isNaN(exp) && exp < Date.now()) return false;
+  }
+  return true;
+}
+
+/** Latest unpaid checkout link for a payment plan row. */
+export async function findLatestLivePaymentLink(options: {
+  paymentPlanId: number;
+  excludeToken?: string | null;
+}): Promise<LiveCheckoutLinkRow | null> {
+  const { data, error } = await supabase
+    .from('payment_links')
+    .select('id, secure_token, status, expires_at, created_at')
+    .eq('payment_plan_id', options.paymentPlanId)
+    .in('status', ['pending', 'processing'])
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  if (error) {
+    console.error('[payment-link] findLatestLivePaymentLink:', error);
+    return null;
+  }
+  const exclude = options.excludeToken?.trim();
+  return (
+    (data || []).find((row) => {
+      if (exclude && row.secure_token?.trim() === exclude) return false;
+      return isLiveCheckoutPaymentLink(row);
+    }) ?? null
+  );
+}
+
 function pickBestPaymentLinkUrl(rows: PaymentLinkRow[] | null | undefined): string | null {
   if (!rows?.length) return null;
   const usable = rows.filter(isLinkUsable);
@@ -144,21 +198,22 @@ export type EnsureProformaPaymentLinkInput = {
 export async function ensureProformaPaymentLink(
   options: EnsureProformaPaymentLinkInput,
 ): Promise<{ url: string | null; created: boolean }> {
-  const existing = await resolveProformaPaymentLinkUrl({
-    paymentPlanId: options.paymentPlanId,
-    leadClientId: options.leadClientId,
-  });
-  if (existing) return { url: existing, created: false };
-
   const planRowId = Number(options.paymentPlanId);
   if (!Number.isFinite(planRowId)) {
     console.error('[ensureProformaPaymentLink] invalid payment plan id:', options.paymentPlanId);
     return { url: null, created: false };
   }
 
+  const existing = await findLatestLivePaymentLink({ paymentPlanId: planRowId });
+  if (existing?.secure_token?.trim()) {
+    await supabase
+      .from('payment_links')
+      .update({ expires_at: paymentLinkExpiresAtIso() })
+      .eq('id', existing.id);
+    return { url: buildPaymentLinkPublicUrl(existing.secure_token.trim()), created: false };
+  }
+
   const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 30);
 
   const { error } = await insertPaymentLinkRecord({
     paymentPlanId: planRowId,
@@ -173,7 +228,7 @@ export async function ensureProformaPaymentLink(
     totalAmount: options.value + options.valueVat,
     currency: options.currency || '₪',
     description: `${options.order} - ${options.clientName} (#${options.leadNumber})`,
-    expiresAt: expiresAt.toISOString(),
+    expiresAt: paymentLinkExpiresAtIso(),
   });
 
   if (error) {
@@ -182,4 +237,20 @@ export async function ensureProformaPaymentLink(
   }
 
   return { url: buildPaymentLinkPublicUrl(secureToken), created: true };
+}
+
+/** Token for `/payment/:token` — reuses a live pending/processing link instead of minting a new one. */
+export async function getOrCreatePaymentLinkToken(
+  options: EnsureProformaPaymentLinkInput,
+): Promise<string | null> {
+  const result = await ensureProformaPaymentLink(options);
+  if (!result.url) return null;
+  const path = paymentPagePathFromPaymentUrl(result.url);
+  if (!path) return null;
+  const token = path.replace(/^\/payment\//, '');
+  try {
+    return decodeURIComponent(token);
+  } catch {
+    return token;
+  }
 }

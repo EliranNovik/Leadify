@@ -9,6 +9,10 @@ import {
   readClientsTabCache,
   writeClientsTabCache,
 } from '../../lib/clientsTabCache';
+import {
+  fetchLeadPriceOffers,
+  PRICE_OFFERS_CHANGED_EVENT,
+} from '../../lib/leadPriceOfferVersions';
 
 interface PriceOfferHistoryEntry {
   id: string;
@@ -20,7 +24,6 @@ interface PriceOfferHistoryEntry {
   isFallback: boolean;
 }
 
-/** Cached bundle for the 'price' slice — everything this tab's fetch effects reload. */
 type PriceOfferTabCacheSlice = {
   history?: PriceOfferHistoryEntry[];
   closerDisplayName?: string;
@@ -76,15 +79,34 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
         });
       };
       return [
-        { table: 'emails', event: '*' as const, match: matchLead },
+        { table: 'lead_price_offers', event: '*' as const, match: matchLead },
         { table: isLegacyLead ? 'leads_lead' : 'leads', event: '*' as const, match: matchLead },
       ];
     })(),
     onChange: () => setRealtimeNonce((n) => n + 1),
   });
 
+  useEffect(() => {
+    const onChanged = (event: Event) => {
+      const leadId = (event as CustomEvent<{ leadId?: string | number | null }>).detail?.leadId;
+      if (leadId != null && String(leadId) !== String(client?.id ?? '')) return;
+      setRealtimeNonce((n) => n + 1);
+    };
+    window.addEventListener(PRICE_OFFERS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(PRICE_OFFERS_CHANGED_EVENT, onChanged);
+  }, [client?.id]);
+
   // Use legacyTotal for legacy leads, otherwise use proposalTotal
   const total = isLegacyLead && legacyTotal !== null ? legacyTotal : proposalTotal;
+  const currencySign = useMemo(() => {
+    const value = String(currency || '').trim();
+    if (['$', '€', '£', '₪'].includes(value)) return value;
+    const upper = value.toUpperCase();
+    if (upper === 'USD') return '$';
+    if (upper === 'EUR') return '€';
+    if (upper === 'GBP') return '£';
+    return '₪';
+  }, [currency]);
 
   // Fetch closer display name and total for legacy leads
   useEffect(() => {
@@ -165,17 +187,6 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
     fetchLegacyData();
   }, [client?.id, isLegacyLead, closer, realtimeNonce]);
 
-  const convertHtmlToPlainText = (html: string | null | undefined): string => {
-    if (!html) return '';
-    return html
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n\n')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\r/g, '')
-      .trim();
-  };
-
   useEffect(() => {
     const fetchHistory = async () => {
       if (!client?.id) {
@@ -192,46 +203,23 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
       setHistoryError(null);
 
       try {
-        let query = supabase
-          .from('emails')
-          .select('id, message_id, sender_name, sender_email, body_html, body_preview, sent_at')
-          .like('message_id', 'offer_%')
-          .order('sent_at', { ascending: false });
-
-        if (isLegacyLead) {
-          const legacyId = Number.parseInt(String(client.id).replace('legacy_', ''), 10);
-          if (!Number.isNaN(legacyId)) {
-            query = query.eq('legacy_id', legacyId);
-          } else {
-            query = query.eq('legacy_id', -1);
-          }
-        } else {
-          query = query.eq('client_id', client.id);
-        }
-
-        const { data, error } = await query;
-
-        if (error) {
-          throw error;
-        }
-
-        const entries: PriceOfferHistoryEntry[] = (data || []).map((email) => {
-          const bodyHtml: string | null = email.body_html;
-          const bodyPreview: string | null = email.body_preview;
-          const fallbackBody = bodyPreview && bodyPreview.trim() !== '' ? bodyPreview : bodyHtml;
-          return {
-            id: `email_${email.id}`,
-            messageId: email.message_id,
-            senderName: email.sender_name || closerDisplayName || '---',
-            senderEmail: email.sender_email || null,
-            sentAt: email.sent_at || null,
-            body: convertHtmlToPlainText(fallbackBody) || proposal,
-            isFallback: false,
-          };
+        const offerRows = await fetchLeadPriceOffers(client);
+        console.log('[PriceOfferTab] offers', {
+          leadId: client.id,
+          count: offerRows.length,
         });
 
+        const entries: PriceOfferHistoryEntry[] = offerRows.map((offer) => ({
+          id: `offer_${offer.id}`,
+          messageId: String(offer.id),
+          senderName: offer.senderName || closerDisplayName || '---',
+          senderEmail: offer.senderEmail || null,
+          sentAt: offer.sentAt || null,
+          body: offer.body || '',
+          isFallback: false,
+        }));
+
         // For legacy leads, also fetch proposal from leads_lead table as a fallback
-        // (only if no emails were found, since emails table is the primary source for multiple offers)
         if (isLegacyLead && entries.length === 0) {
           const legacyId = Number.parseInt(String(client.id).replace('legacy_', ''), 10);
           if (!Number.isNaN(legacyId)) {
@@ -243,14 +231,12 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
 
             if (!legacyError && legacyLeadData?.proposal && legacyLeadData.proposal.trim()) {
               const legacyProposal = legacyLeadData.proposal.trim();
-              
-              // Only add as fallback if no emails exist
               entries.unshift({
                 id: 'legacy_proposal',
                 messageId: null,
                 senderName: closerDisplayName,
                 senderEmail: null,
-                sentAt: null, // No date available from leads_lead.proposal
+                sentAt: null,
                 body: legacyProposal,
                 isFallback: true,
               });
@@ -259,17 +245,16 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
         }
 
         setHistory(entries);
-        if (entries.length > 0) {
-          setActiveOfferId(entries[0].id);
-        } else {
-          setActiveOfferId(null);
-        }
+        setActiveOfferId((current) => {
+          if (current && entries.some((entry) => entry.id === current)) return current;
+          return entries.length > 0 ? entries[entries.length - 1].id : null;
+        });
         const leadKey = clientsTabCacheLeadKey(client);
         const prevCache = readClientsTabCache<PriceOfferTabCacheSlice>(leadKey, 'price') ?? {};
         writeClientsTabCache(leadKey, 'price', { ...prevCache, history: entries });
       } catch (error: any) {
         console.error('Failed to fetch price offer history:', error);
-        setHistoryError('Failed to load previous offers.');
+        setHistoryError(error?.message || 'Failed to load previous offers.');
         setHistory([]);
         setActiveOfferId(null);
       } finally {
@@ -360,20 +345,17 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
   }, [proposal, closerDisplayName, client?.last_stage_changed_at]);
 
   const combinedOffers = useMemo(() => {
-    if (history.length === 0) {
-      return fallbackEntry ? [fallbackEntry] : [];
+    const offers = [...history].sort((a, b) => {
+      const aTime = a.sentAt ? Date.parse(a.sentAt) : 0;
+      const bTime = b.sentAt ? Date.parse(b.sentAt) : 0;
+      return aTime - bTime;
+    });
+
+    if (offers.length > 0) {
+      return offers;
     }
 
-    const offers = [...history];
-
-    if (
-      fallbackEntry &&
-      !offers.some(entry => entry.body === fallbackEntry.body && entry.sentAt === fallbackEntry.sentAt)
-    ) {
-      offers.unshift(fallbackEntry);
-    }
-
-    return offers;
+    return fallbackEntry ? [fallbackEntry] : [];
   }, [history, fallbackEntry]);
 
   useEffect(() => {
@@ -383,20 +365,67 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
     }
 
     if (!activeOfferId || !combinedOffers.some(entry => entry.id === activeOfferId)) {
-      setActiveOfferId(combinedOffers[0].id);
+      setActiveOfferId(combinedOffers[combinedOffers.length - 1].id);
     }
   }, [combinedOffers, activeOfferId]);
 
   const activeOffer = useMemo(
-    () => combinedOffers.find(entry => entry.id === activeOfferId) || combinedOffers[0] || null,
+    () =>
+      combinedOffers.find(entry => entry.id === activeOfferId) ||
+      combinedOffers[combinedOffers.length - 1] ||
+      null,
     [combinedOffers, activeOfferId]
   );
 
-  const displayCloser = activeOffer?.senderName || closerDisplayName;
   const displayProposal = activeOffer?.body || proposal;
-  const displaySentAt = activeOffer?.sentAt
-    ? new Date(activeOffer.sentAt).toLocaleString()
-    : null;
+
+  const formatOfferSentAt = (sentAt: string | null | undefined) => {
+    if (!sentAt) return null;
+    const date = new Date(sentAt);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleString();
+  };
+
+  const offerVersionTabs =
+    combinedOffers.length > 1 ? (
+      <div
+        className="flex max-w-full flex-wrap gap-2"
+        role="tablist"
+        aria-label="Price offer versions"
+      >
+        {combinedOffers.map((entry, index) => {
+          const selected = entry.id === activeOfferId;
+          const sentLabel = formatOfferSentAt(entry.sentAt);
+          const sender = entry.senderName || closerDisplayName || '---';
+          return (
+            <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              className={`inline-flex min-w-[12rem] flex-col items-stretch rounded-xl border px-3 py-2 text-left transition-colors ${
+                selected
+                  ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                  : 'border-transparent bg-slate-200/80 text-slate-600 hover:bg-slate-200'
+              }`}
+              onClick={() => setActiveOfferId(entry.id)}
+            >
+              <span className="flex items-start justify-between gap-3">
+                <span className="text-sm font-semibold">
+                  {entry.isFallback ? 'Current' : `Offer ${index + 1}`}
+                </span>
+                <span className="shrink-0 text-[11px] font-medium text-slate-400">
+                  by {sender}
+                </span>
+              </span>
+              {sentLabel ? (
+                <span className="mt-0.5 text-[11px] text-slate-400">{sentLabel}</span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    ) : null;
 
   return (
     <div className="p-1 sm:p-2 md:p-3">
@@ -406,56 +435,21 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
         title="Price Offer"
         subtitle="Manage pricing and proposals"
       />
-      <div className="text-lg mb-4 text-base-content/80 flex flex-col gap-1">
-        <span>
-          <span className="font-semibold">Closer:</span> {displayCloser}
-        </span>
-        {displaySentAt && (
-          <span className="text-sm text-base-content/60">
-            Sent on {displaySentAt}
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-3 mb-6">
-        <span className="text-xl font-semibold">Total:</span>
-        <span className="inline-flex items-center gap-2 bg-base-300 text-base-content font-bold rounded-lg px-4 py-2 text-lg tracking-wide shadow">
-          <span className="text-base-content/70 text-base">₪</span>
-          {typeof total === 'number' && !isNaN(total) ? total.toLocaleString() : '--'}
-          {currency && (
-            <span className="ml-2 text-base-content/80 font-medium">{currency}</span>
-          )}
+      <div className="mb-6 text-xl">
+        <span className="font-semibold">Total:</span>{' '}
+        <span className="font-semibold">
+          {typeof total === 'number' && !isNaN(total)
+            ? `${currencySign}${total.toLocaleString()}`
+            : '--'}
         </span>
       </div>
+      {offerVersionTabs ? <div className="mb-5">{offerVersionTabs}</div> : null}
       <div className="mb-2 text-lg font-semibold">Proposal:</div>
       {historyLoading && (
         <div className="mb-4 text-sm text-base-content/60">Loading previous offers...</div>
       )}
       {historyError && (
         <div className="mb-4 text-sm text-error">{historyError}</div>
-      )}
-      {combinedOffers.length > 1 && (
-        <div className="mb-6">
-          <div className="text-sm font-semibold text-base-content/70 mb-2">
-            Offer Versions
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {combinedOffers.map(entry => (
-              <button
-                key={entry.id}
-                className={`btn btn-sm ${
-                  entry.id === activeOfferId
-                    ? 'btn-primary'
-                    : 'btn-outline border-base-300 text-base-content/80'
-                }`}
-                onClick={() => setActiveOfferId(entry.id)}
-              >
-                {entry.isFallback
-                  ? 'Current Offer'
-                  : `${entry.senderName || 'Offer'}${entry.sentAt ? ` • ${new Date(entry.sentAt).toLocaleString()}` : ''}`}
-              </button>
-            ))}
-          </div>
-        </div>
       )}
       <div className="mb-8">
         <div className="w-full min-h-[200px] max-h-[600px] border border-base-300 rounded-xl p-4 text-base font-medium bg-base-100 shadow-inner overflow-y-auto">
