@@ -162,19 +162,6 @@ function formatUploadedAt(dateString?: string): string {
   return `${dd}.${mm}.${yy}, ${hh}:${min}`;
 }
 
-/** Short label for side-rail thumbnails (keeps extension when possible). */
-function shortenFileName(name: string, maxLen = 18): string {
-  const t = name.trim();
-  if (!t) return 'File';
-  if (t.length <= maxLen) return t;
-  const dot = t.lastIndexOf('.');
-  const hasExt = dot > 0 && dot < t.length - 1 && t.length - dot <= 8;
-  if (!hasExt) return `${t.slice(0, Math.max(1, maxLen - 1))}…`;
-  const ext = t.slice(dot);
-  const baseBudget = Math.max(1, maxLen - ext.length - 1);
-  return `${t.slice(0, baseBudget)}…${ext}`;
-}
-
 function formatCommentTime(dateString?: string): string {
   if (!dateString) return '';
   try {
@@ -284,7 +271,6 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   }, [documentsProp, documentUrl, documentName, uploadedAt]);
 
   const isGalleryMode = !!(documentsProp && documentsProp.length > 0);
-  const needsBucketSign = !isGalleryMode;
   /** Attach controls when opened from Sequence of Events / sub-effort context. */
   const showAttachUi =
     isGalleryMode && (subEffortRows != null || targetSubEffortId != null || typeof onAttached === 'function');
@@ -302,6 +288,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   /** Clockwise image rotation in degrees. */
   const [imageRotation, setImageRotation] = useState(0);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [signedDocId, setSignedDocId] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -675,6 +662,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     setDraftHighlight(null);
     setHighlightMode(false);
     setFocusedCommentId(null);
+    setSignedUrl(null);
+    setSignedDocId(null);
+    setLoadingUrl(true);
   }, [activeDoc?.id, activeName]);
 
   useEffect(() => {
@@ -891,12 +881,19 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   useEffect(() => {
     if (!isOpen || !activeUrl) {
       setSignedUrl(null);
+      setSignedDocId(null);
       return;
     }
 
-    if (!needsBucketSign) {
-      setSignedUrl(isDirectPreviewUrl(activeUrl) ? activeUrl : null);
-      setLoadingUrl(!activeUrl);
+    const docId = activeDoc?.id ?? null;
+
+    if (isDirectPreviewUrl(activeUrl)) {
+      setSignedUrl(activeUrl);
+      setSignedDocId(docId);
+      setLoadingUrl(false);
+      setImageError(false);
+      setPdfError(false);
+      setOfficeError(false);
       return;
     }
 
@@ -913,8 +910,10 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
         setImageError(true);
         setPdfError(true);
         setSignedUrl(null);
+        setSignedDocId(null);
       } else {
         setSignedUrl(url);
+        setSignedDocId(docId);
       }
       setLoadingUrl(false);
     })();
@@ -922,10 +921,14 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, activeUrl, bucketName, needsBucketSign, activeDoc?.id]);
+  }, [isOpen, activeUrl, bucketName, activeDoc?.id]);
 
   const displayUrl =
-    signedUrl || (isDirectPreviewUrl(activeUrl) ? activeUrl : null);
+    signedDocId === (activeDoc?.id ?? null)
+      ? signedUrl
+      : isDirectPreviewUrl(activeUrl)
+        ? activeUrl
+        : null;
 
   const isImage =
     activeFileType.includes('image/') ||
@@ -1567,7 +1570,6 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               {galleryItems.map((d, i) => {
                 const isActive = i === previewIndex;
                 const ft = inferFileType(d.name, d.fileType);
-                const shortName = shortenFileName(d.name, 28);
                 const canAttachDoc = Boolean(d.storagePath?.trim());
                 const checked = selectedAttachIds.has(d.id);
                 const pathKey = normalizeStorageKey(d.storagePath);
@@ -1617,9 +1619,10 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                       <div className="relative w-full">
                         <DocumentSidebarThumb
                           name={d.name}
-                          url={d.url}
+                          url={isActive && displayUrl ? displayUrl : d.url}
                           fileType={ft}
                           storagePath={d.storagePath}
+                          bucketName={bucketName}
                           isActive={isActive}
                         />
                         {isActive ? (
@@ -1628,8 +1631,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                           </span>
                         ) : null}
                       </div>
-                      <span className="w-full px-0.5 text-center text-[11px] font-medium leading-snug text-base-content/85 line-clamp-2 break-words md:text-xs">
-                        {shortName}
+                      <span className="w-full px-0.5 text-center text-[11px] font-medium leading-snug text-base-content/85 line-clamp-3 break-all md:text-xs">
+                        {d.name}
                       </span>
                       {showAttachUi && attachedTo.length > 0 ? (
                         <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-1 px-0.5">
@@ -1693,12 +1696,13 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           ) : null}
           <div
             className={`flex min-h-0 w-full flex-1 bg-neutral-900 ${
-              isImage && !imageError
+              !loadingUrl && isImage && !imageError && displayUrl
                 ? 'min-h-0 flex-col overflow-hidden p-0'
-                : (isPdf || Boolean(officeEmbedUrl)) &&
+                : !loadingUrl &&
+                    (isPdf || Boolean(officeEmbedUrl)) &&
                     !(highlightMode || highlightMarkers.length > 0 || draftHighlight)
                   ? 'flex-col overflow-hidden p-0'
-                  : isPdf || highlightMarkers.length > 0 || draftHighlight
+                  : !loadingUrl && (isPdf || highlightMarkers.length > 0 || draftHighlight)
                     ? 'min-h-0 flex-col overflow-auto p-0'
                     : 'items-center justify-center overflow-auto p-3 md:p-6'
             }`}
@@ -1779,6 +1783,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   className="min-h-0 h-full w-full flex-1 touch-none p-3 md:p-6"
                 >
                   <DocumentAnnotatableView
+                    key={`image-${activeDoc?.id || 'none'}`}
                     mode="image"
                     src={displayUrl}
                     storagePath={activeStoragePath}
@@ -1799,8 +1804,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             ) : isPdf && !pdfError ? (
               highlightMode || highlightMarkers.length > 0 || draftHighlight ? (
                 <DocumentAnnotatableView
+                  key={`pdf-${activeDoc?.id || 'none'}`}
                   mode="pdf"
-                  src={displayUrl}
+                  src={displayUrl || ''}
                   storagePath={activeStoragePath}
                   alt={activeName}
                   highlights={highlightMarkers}

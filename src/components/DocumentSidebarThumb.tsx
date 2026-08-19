@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import { renderPdfFirstPageThumbnail } from '../lib/pdfFirstPageThumbnail';
+import { supabase } from '../lib/supabase';
 
 type Props = {
   name: string;
   url: string;
   fileType: string;
   storagePath?: string | null;
+  bucketName?: string | null;
   isActive?: boolean;
 };
 
@@ -55,6 +57,7 @@ const DocumentSidebarThumb: React.FC<Props> = ({
   url,
   fileType,
   storagePath,
+  bucketName,
   isActive = false,
 }) => {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -66,6 +69,12 @@ const DocumentSidebarThumb: React.FC<Props> = ({
   const image = isImageType(fileType, name, url);
   const pdf = isPdfType(fileType, name, url);
   const previewUrl = /^(https?:|blob:|data:)/i.test(url || '') ? url : null;
+  const objectPath = (storagePath || (!previewUrl ? url : '') || '').trim();
+
+  useEffect(() => {
+    setFailed(false);
+    setThumbSrc(null);
+  }, [url, objectPath, bucketName]);
 
   useEffect(() => {
     const el = rootRef.current;
@@ -86,6 +95,39 @@ const DocumentSidebarThumb: React.FC<Props> = ({
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!visible || !image || failed) return;
+    if (previewUrl) {
+      setThumbSrc(previewUrl);
+      setLoading(false);
+      return;
+    }
+    if (!objectPath || !bucketName) {
+      setFailed(true);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    void supabase.storage
+      .from(bucketName)
+      .createSignedUrl(objectPath, 3600)
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error || !data?.signedUrl) {
+          setFailed(true);
+        } else {
+          setThumbSrc(data.signedUrl);
+          setFailed(false);
+        }
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, image, previewUrl, objectPath, bucketName, failed]);
 
   useEffect(() => {
     if (!visible || !pdf || failed) return;
@@ -116,6 +158,8 @@ const DocumentSidebarThumb: React.FC<Props> = ({
     };
   }, [visible, pdf, previewUrl, storagePath, failed]);
 
+  const imageSrc = image ? thumbSrc : null;
+
   return (
     <div
       ref={rootRef}
@@ -123,9 +167,9 @@ const DocumentSidebarThumb: React.FC<Props> = ({
         isActive ? 'border-primary/30' : 'border-base-300/80'
       }`}
     >
-      {image && previewUrl && !failed ? (
+      {image && imageSrc && !failed ? (
         <img
-          src={previewUrl}
+          src={imageSrc}
           alt=""
           className="h-full w-full object-cover"
           loading="lazy"

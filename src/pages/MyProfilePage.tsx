@@ -22,6 +22,7 @@ import { FaLinkedin } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
 import { getRoleDisplayName } from '../lib/employeeRoles';
 import WorkingHoursTab from '../components/profile/WorkingHoursTab';
+import PersonalTab from '../components/profile/PersonalTab';
 import MyDocumentsTab from '../components/profile/MyDocumentsTab';
 import MyContribution from '../components/MyContribution';
 import SignatureProfileForm from '../components/signature/SignatureProfileForm';
@@ -54,6 +55,7 @@ const MyProfilePage: React.FC = () => {
     const [isEditing, setIsEditing] = useState(false);
     const [profile, setProfile] = useState<EmployeeProfile | null>(null);
     const [activeTab, setActiveTab] = useState('About');
+    const profileTabs = ['About', 'Personal', 'Working Hours', 'Contribution', 'Documents', 'Email Signature'];
 
     // Edit form state
     const [formData, setFormData] = useState({
@@ -371,9 +373,9 @@ const MyProfilePage: React.FC = () => {
                 </div>
 
                 {/* Profile Header Content - Avatar overlaps banner and white bg */}
-                <div className="absolute -bottom-20 md:-bottom-20 left-0 right-0 px-4 md:px-8 max-w-5xl mx-auto flex flex-col md:flex-row items-center md:items-start gap-4 md:gap-6 pointer-events-none">
+                <div className="absolute -bottom-20 md:-bottom-20 left-0 right-0 px-4 md:px-8 max-w-7xl mx-auto flex flex-col md:flex-row items-center md:items-end gap-4 md:gap-6 pointer-events-none">
                     {/* Avatar */}
-                    <div className="relative group/avatar pointer-events-auto shrink-0">
+                    <div className="relative group/avatar pointer-events-auto shrink-0 z-20">
                         <div className="w-28 h-28 md:w-40 md:h-40 rounded-full border-4 border-white shadow-xl overflow-hidden bg-white">
                             <img
                                 src={profile.photo_url || DEFAULT_AVATAR}
@@ -395,26 +397,41 @@ const MyProfilePage: React.FC = () => {
                         />
                     </div>
 
-                    {/* Name and role — beside profile image on banner */}
-                    <div className="flex-1 pointer-events-auto text-center md:text-left mt-8 md:mt-2 min-w-0 w-full">
-                        <div className="flex flex-col md:flex-row md:items-baseline md:gap-3">
+                    {/* Name on banner; tabs sit beside the photo on larger screens */}
+                    <div className="flex-1 pointer-events-auto text-center md:text-left min-w-0 w-full md:h-40 flex flex-col md:justify-between">
+                        <div className="flex flex-col md:flex-row md:items-baseline md:gap-3 mt-8 md:mt-2">
                             <h1 className="text-2xl md:text-3xl font-bold text-gray-900 md:text-white drop-shadow-lg">{profile.official_name}</h1>
                             <p className="text-sm md:text-base text-gray-600 md:text-white/90 drop-shadow-md mt-1 md:mt-0">{getRoleDisplay(profile.bonuses_role)}</p>
+                        </div>
+                        <div className="hidden md:flex w-full items-center justify-between gap-2 lg:gap-3 overflow-x-auto pb-1 min-w-0">
+                            {profileTabs.map((tab) => (
+                                <button
+                                    key={tab}
+                                    type="button"
+                                    className={`px-4 lg:px-5 py-2.5 rounded-full text-sm font-semibold transition-all border whitespace-nowrap flex-1 ${activeTab === tab
+                                        ? 'bg-primary text-white shadow-lg border-primary/80'
+                                        : 'bg-white text-gray-700 hover:bg-white border-white shadow-sm'
+                                        }`}
+                                    onClick={() => setActiveTab(tab)}
+                                >
+                                    {tab}
+                                </button>
+                            ))}
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Navigation Tabs (Floating Glassy Badges) - Right below banner */}
-            <div className="px-4 md:px-8 max-w-5xl mx-auto -mt-6">
-                <div className="flex gap-2 md:gap-4 overflow-x-auto pb-2">
-                    {['About', 'Working Hours', 'Contribution', 'Documents', 'Email Signature'].map((tab) => (
+            {/* Tabs below the photo on small screens */}
+            <div className="relative z-10 px-4 w-full mt-24 md:hidden">
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                    {profileTabs.map((tab) => (
                         <button
                             key={tab}
                             type="button"
-                            className={`px-4 md:px-6 py-2 rounded-full text-sm font-semibold transition-all backdrop-blur-md border whitespace-nowrap ${activeTab === tab
+                            className={`px-4 py-2 rounded-full text-sm font-semibold transition-all border whitespace-nowrap shrink-0 ${activeTab === tab
                                 ? 'bg-primary text-white shadow-lg border-primary/80'
-                                : 'bg-white/45 text-gray-700 hover:bg-white/65 border-white/50'
+                                : 'bg-white/80 text-gray-700 hover:bg-white border-white/70 shadow-sm'
                                 }`}
                             onClick={() => setActiveTab(tab)}
                         >
@@ -426,8 +443,8 @@ const MyProfilePage: React.FC = () => {
 
             {/* Main Content Area */}
             <div
-              className={`flex-1 w-full py-6 md:py-8 mt-12 md:mt-16 px-4 md:px-6 ${
-                activeTab === 'Working Hours' || activeTab === 'Documents' || activeTab === 'Contribution' || activeTab === 'Email Signature' ? '' : 'max-w-5xl mx-auto'
+              className={`flex-1 w-full py-6 md:py-8 mt-4 md:mt-28 px-4 md:px-6 ${
+                activeTab === 'Working Hours' || activeTab === 'Personal' || activeTab === 'Documents' || activeTab === 'Contribution' || activeTab === 'Email Signature' ? '' : 'max-w-5xl mx-auto'
               }`}
             >
                 {activeTab === 'About' && (
@@ -567,6 +584,9 @@ const MyProfilePage: React.FC = () => {
                       employeeName={profile.official_name || profile.display_name}
                     />
                 )}
+                {activeTab === 'Personal' && profile?.id && (
+                    <PersonalTab employeeId={profile.id} />
+                )}
                 {activeTab === 'Documents' && profile?.id && (
                     <MyDocumentsTab
                       employeeId={profile.id}
@@ -585,7 +605,7 @@ const MyProfilePage: React.FC = () => {
                       employeeName={profile.official_name || profile.display_name}
                     />
                 )}
-                {activeTab !== 'About' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && activeTab !== 'Contribution' && activeTab !== 'Email Signature' && (
+                {activeTab !== 'About' && activeTab !== 'Personal' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && activeTab !== 'Contribution' && activeTab !== 'Email Signature' && (
                     <div className="rounded-[18px] bg-white py-20 text-center text-gray-400 shadow-sm">
                         <HashtagIcon className="w-16 h-16 mx-auto mb-4 opacity-20" />
                         <p>This tab is a placeholder for visual demonstration.</p>

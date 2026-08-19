@@ -8,6 +8,7 @@ import {
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
   EnvelopeIcon,
+  FolderIcon,
   FunnelIcon,
   IdentificationIcon,
   MagnifyingGlassIcon,
@@ -19,6 +20,8 @@ import {
 } from '@heroicons/react/24/outline';
 import OrganizationChart from '../components/organization/OrganizationChart';
 import OrganizationEmployeeTable from '../components/organization/OrganizationEmployeeTable';
+import OfficeDocumentsTab from '../components/organization/OfficeDocumentsTab';
+import { useAuthContext } from '../contexts/AuthContext';
 import {
   exportOrganizationChartToExcel,
   exportOrganizationTableToExcel,
@@ -35,7 +38,7 @@ import {
 import { getSalaryEmployeeInitials, salaryAvatarGradientStyle } from '../lib/employeeSalaries';
 import { useClockInGate } from '../hooks/useClockInGate';
 
-type OrganizationViewTab = 'chart' | 'table';
+type OrganizationViewTab = 'chart' | 'table' | 'office-documents';
 
 function buildWhatsAppUrl(mobile: string): string {
   const digits = mobile.replace(/\D/g, '');
@@ -261,8 +264,11 @@ const LIVE_STATUS_FILTER_OPTIONS: { value: LiveFilter; label: string }[] = [
 
 const OrganizationPage: React.FC = () => {
   const navigate = useNavigate();
+  const { isSuperUser } = useAuthContext();
   const { status: clockInGateStatus } = useClockInGate();
   const [activeTab, setActiveTab] = useState<OrganizationViewTab>('chart');
+  const showOfficeDocuments = isSuperUser;
+  const isOfficeDocumentsTab = showOfficeDocuments && activeTab === 'office-documents';
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [partners, setPartners] = useState<OrganizationEmployee[]>([]);
@@ -329,6 +335,12 @@ const OrganizationPage: React.FC = () => {
     if (clockInGateStatus === 'loading') return;
     void loadOrganization();
   }, [loadOrganization, clockInGateStatus]);
+
+  useEffect(() => {
+    if (!showOfficeDocuments && activeTab === 'office-documents') {
+      setActiveTab('chart');
+    }
+  }, [showOfficeDocuments, activeTab]);
 
   const filteredPartners = useMemo(() => {
     if (!matchesDepartmentFilter('Partners')) return [];
@@ -502,7 +514,7 @@ const OrganizationPage: React.FC = () => {
   };
 
   const tabButtonClass = (isActive: boolean) =>
-    `inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm transition-colors ${
+    `inline-flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold shadow-sm transition-colors ${
       isActive
         ? 'bg-primary text-primary-content'
         : 'bg-white text-base-content/70 hover:text-base-content dark:bg-base-100'
@@ -510,7 +522,7 @@ const OrganizationPage: React.FC = () => {
 
   return (
     <div className="organization-page-shell min-h-[calc(100dvh-3.5rem)] w-full max-w-none bg-[#ececec] px-3 py-4 dark:bg-base-200/40 md:px-5 md:py-6">
-      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="mb-2 flex items-center gap-2 text-primary">
             <BuildingOffice2Icon className="h-7 w-7" />
@@ -523,23 +535,64 @@ const OrganizationPage: React.FC = () => {
             </span>
           </h1>
           <p className="mt-1 text-sm text-base-content/60">
-            Chart view for structure, table view for full employee details.
+            {isOfficeDocumentsTab
+              ? 'Company leases, vehicle agreements, and other office files.'
+              : 'Chart view for structure, table view for full employee details.'}
           </p>
         </div>
 
-        <label className="relative w-full max-w-md">
-          <MagnifyingGlassIcon className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-base-content/40" />
-          <input
-            type="search"
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Search"
-            className="h-11 w-full rounded-full border border-gray-200/95 bg-white pl-11 pr-4 text-sm shadow-[0_8px_22px_rgba(17,24,39,0.08),0_1px_3px_rgba(17,24,39,0.06)] outline-none transition-shadow placeholder:text-base-content/40 focus:shadow-[0_12px_28px_rgba(17,24,39,0.12),0_2px_6px_rgba(17,24,39,0.08)] dark:border-base-300 dark:bg-base-100"
-          />
-        </label>
+        <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center lg:w-auto lg:justify-end">
+          <div role="tablist" className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              role="tab"
+              className={tabButtonClass(activeTab === 'chart')}
+              onClick={() => setActiveTab('chart')}
+              aria-selected={activeTab === 'chart'}
+            >
+              <Squares2X2Icon className="h-4 w-4" />
+              Chart
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={tabButtonClass(activeTab === 'table')}
+              onClick={() => setActiveTab('table')}
+              aria-selected={activeTab === 'table'}
+            >
+              <TableCellsIcon className="h-4 w-4" />
+              Employees
+            </button>
+            {showOfficeDocuments ? (
+              <button
+                type="button"
+                role="tab"
+                className={tabButtonClass(activeTab === 'office-documents')}
+                onClick={() => setActiveTab('office-documents')}
+                aria-selected={activeTab === 'office-documents'}
+              >
+                <FolderIcon className="h-4 w-4" />
+                Office Documents
+              </button>
+            ) : null}
+          </div>
+
+          {!isOfficeDocumentsTab ? (
+            <label className="relative w-full max-w-md sm:min-w-[16rem] sm:flex-1 lg:w-72 lg:flex-none">
+              <MagnifyingGlassIcon className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-base-content/40" />
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search"
+                className="h-11 w-full rounded-full border border-gray-200/95 bg-white pl-11 pr-4 text-sm shadow-[0_8px_22px_rgba(17,24,39,0.08),0_1px_3px_rgba(17,24,39,0.06)] outline-none transition-shadow placeholder:text-base-content/40 focus:shadow-[0_12px_28px_rgba(17,24,39,0.12),0_2px_6px_rgba(17,24,39,0.08)] dark:border-base-300 dark:bg-base-100"
+              />
+            </label>
+          ) : null}
+        </div>
       </div>
 
-      {!loading ? (
+      {!loading && !isOfficeDocumentsTab ? (
         <section className="mb-6">
           <div className="mb-4">
             <p className="text-sm text-base-content/55">
@@ -593,31 +646,8 @@ const OrganizationPage: React.FC = () => {
         </section>
       ) : null}
 
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        <div role="tablist" className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            role="tab"
-            className={tabButtonClass(activeTab === 'chart')}
-            onClick={() => setActiveTab('chart')}
-            aria-selected={activeTab === 'chart'}
-          >
-            <Squares2X2Icon className="h-4 w-4" />
-            Chart
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={tabButtonClass(activeTab === 'table')}
-            onClick={() => setActiveTab('table')}
-            aria-selected={activeTab === 'table'}
-          >
-            <TableCellsIcon className="h-4 w-4" />
-            Employees
-          </button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
+      {!isOfficeDocumentsTab ? (
+        <div className="mb-6 flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             className="btn btn-outline btn-sm gap-2 bg-white font-normal shadow-sm dark:bg-base-100"
@@ -716,9 +746,11 @@ const OrganizationPage: React.FC = () => {
             </button>
           ) : null}
         </div>
-      </div>
+      ) : null}
 
-      {loading ? (
+      {isOfficeDocumentsTab ? (
+        <OfficeDocumentsTab />
+      ) : loading ? (
         <div className="flex min-h-[40vh] items-center justify-center">
           <span className="loading loading-spinner loading-lg text-primary" />
         </div>
