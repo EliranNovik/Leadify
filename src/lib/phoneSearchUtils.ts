@@ -124,6 +124,13 @@ export function expandPhoneSearchPatterns(digits: string): string[] {
     add(`972${d}`);
   }
 
+  // NANP: 8452902552 ↔ 1-845-290-2552 / +18452902552
+  if (d.length === 10 && !d.startsWith('0') && !d.startsWith('1')) {
+    add(`1${d}`);
+  } else if (d.length === 11 && d.startsWith('1')) {
+    add(d.slice(1));
+  }
+
   return Array.from(patterns).sort((a, b) => b.length - a.length);
 }
 
@@ -135,65 +142,98 @@ export function looksLikePhoneSearchQuery(raw: string): boolean {
   if (trimmed.includes('/')) return false;
 
   const d = phoneDigitsOnly(trimmed);
-  // Allow progressive typing: show phone hits from 4 digits for 0… / 5… prefixes
-  // (full numbers still preferred; short lead ids stay on the lead path).
   if (!d || d.length < 4) return false;
 
   const hasFormatting = trimmed.length > d.length;
   if (hasFormatting && d.length >= 4) return true;
+  // E.164 / international (e.g. 18452902552 for +18452902552). Lead ids are ≤10 digits.
+  if (d.length >= 11 && d.length <= 15) return true;
   if (d.startsWith('00972') && d.length >= 6) return true;
   if (d.startsWith('972') && d.length >= 5) return true;
   if (d.startsWith('0') && d.length >= 4) return true;
-  // Local mobile without leading 0 — wait until 5+ to avoid clashing with short lead ids
   if (d.startsWith('5') && d.length >= 5) return true;
   return false;
 }
 
+/** Strip country / trunk prefix so 0524, 524, 972524, and 1845… compare as the same national number. */
+export function nationalPhoneDigits(digits: string): string {
+  let d = phoneDigitsOnly(digits);
+  if (d.startsWith('00972')) d = d.slice(5);
+  else if (d.startsWith('972')) d = d.slice(3);
+  if (d.startsWith('0')) d = d.slice(1);
+  if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
+  return d;
+}
+
+/**
+ * Progressive phone match — same idea as name / lead-number startsWith.
+ * Compare raw digits and national digits (0 / 972 stripped) so "0507" still
+ * matches 050-7748025. Do not require 4 national digits: "0507" is only 3
+ * after stripping the trunk 0, and that used to drop every hit.
+ */
+export function phoneDigitsPrefixMatch(stored: string, queryDigits: string): boolean {
+  const q = phoneDigitsOnly(queryDigits);
+  const s = phoneDigitsOnly(stored);
+  if (!q || q.length < 4 || !s) return false;
+  if (s.startsWith(q) || (q.length >= 7 && s.endsWith(q))) return true;
+
+  const qNat = nationalPhoneDigits(q);
+  const sNat = nationalPhoneDigits(s);
+  if (!qNat || !sNat) return false;
+  return sNat === qNat || sNat.startsWith(qNat) || (qNat.length >= 7 && sNat.endsWith(qNat));
+}
+
 /** Check if stored phone/mobile matches a search query (any common prefix format). */
 export function phoneDigitsMatch(stored: string, queryDigits: string): boolean {
+  if (phoneDigitsPrefixMatch(stored, queryDigits)) return true;
+
   const storedDigits = phoneDigitsOnly(stored);
-  if (!storedDigits) return false;
+  const q = phoneDigitsOnly(queryDigits);
+  if (!storedDigits || q.length < 7) return false;
 
-  const patterns = expandPhoneSearchPatterns(queryDigits);
-  if (patterns.length === 0) return false;
-
+  const patterns = expandPhoneSearchPatterns(q);
   return patterns.some((pattern) => {
+    if (!pattern || pattern.length < 7) return false;
     if (storedDigits === pattern) return true;
+    if (storedDigits.startsWith(pattern) || pattern.startsWith(storedDigits)) return true;
     if (storedDigits.endsWith(pattern) || pattern.endsWith(storedDigits)) return true;
-    // Mid-number / without-prefix: allow contains for 6+ digit fragments and short queries.
-    if (pattern.length >= 6 && storedDigits.includes(pattern)) return true;
-    if (pattern.length <= 5 && storedDigits.includes(pattern)) return true;
     return false;
   });
 }
 
-/** Build Supabase `.or()` clause for phone/mobile ilike matching. */
+/** Build Supabase `.or()` clause for phone/mobile prefix matching (same as names/leads). */
 export function buildPhoneSearchOrClause(digits: string, rawQuery?: string): string {
-  // Cap expansions — dozens of %…% ORs defeat indexes and blow PostgREST filters.
-  const digitPatterns = expandPhoneSearchPatterns(digits).slice(0, 5);
+  const d = phoneDigitsOnly(digits);
+  const digitPatterns = expandPhoneSearchPatterns(d).slice(0, 6);
   if (digitPatterns.length === 0) return '';
 
   const searchForms = new Set<string>();
   for (const p of digitPatterns) {
     searchForms.add(p);
+    searchForms.add(`+${p}`);
     for (const h of hyphenatedPhoneForms(p).slice(0, 3)) searchForms.add(h);
   }
 
   const raw = rawQuery?.trim();
-  if (raw && raw !== digits && phoneDigitsOnly(raw) === phoneDigitsOnly(digits)) {
+  if (raw && raw !== digits && phoneDigitsOnly(raw) === d) {
     searchForms.add(raw);
   }
 
   const clauses = new Set<string>();
-  for (const form of Array.from(searchForms).slice(0, 10)) {
-    // Drop spaced variants — they break unquoted filters and are redundant with hyphen/+ forms.
+  const forms = Array.from(searchForms).slice(0, 8);
+  for (const form of forms) {
     if (/\s/.test(form)) continue;
     const escaped = form.replace(/[%_,]/g, '');
     if (!escaped) continue;
-    // Always quote so +, hyphens, and other chars don't corrupt PostgREST `.or()` parsing.
-    const quoted = quotePhoneFilterValue(`%${escaped}%`);
-    clauses.add(`phone.ilike.${quoted}`);
-    clauses.add(`mobile.ilike.${quoted}`);
+    const quoted = quotePhoneFilterValue(`${escaped}%`);
+    clauses.add(`phone.like.${quoted}`);
+    clauses.add(`mobile.like.${quoted}`);
+  }
+  // Stored +18452902552 vs typed 18452902552 — prefix without + misses; contains hits.
+  if (d.length >= 10) {
+    const quotedContains = quotePhoneFilterValue(`%${d}%`);
+    clauses.add(`phone.like.${quotedContains}`);
+    clauses.add(`mobile.like.${quotedContains}`);
   }
 
   return Array.from(clauses).join(',');

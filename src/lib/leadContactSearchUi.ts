@@ -1,5 +1,6 @@
 import type { CombinedLead } from './legacyLeadsApi';
 import { buildContactBridgeRoute } from './contactBridgeApi';
+import { looksLikePhoneSearchQuery } from './phoneSearchUtils';
 
 export function formatLeadContactSearchSubtitle(lead: CombinedLead): string {
   const parts: string[] = [];
@@ -343,6 +344,7 @@ export function dedupeLeadContactSearchResults(results: CombinedLead[], query = 
   const isLeadNumberQuery =
     Boolean(trimmed) &&
     !trimmed.includes('@') &&
+    !looksLikePhoneSearchQuery(trimmed) &&
     (/^[LC]?\d/i.test(trimmed) || /^\d/.test(trimmed.replace(/^[LC]/i, '')));
   if (isLeadNumberQuery || isSubleadQuery(query)) {
     return collapseSearchResultsToMasterLeads(afterContactDedupe, query);

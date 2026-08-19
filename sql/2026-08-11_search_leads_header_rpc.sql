@@ -58,7 +58,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 SET row_security = off
-SET statement_timeout = '2.5s'
+SET statement_timeout = '4s'
 AS $$
 DECLARE
   v_raw text := btrim(COALESCE(p_query, ''));
@@ -73,6 +73,8 @@ DECLARE
   v_phone_forms text[] := ARRAY[]::text[];
   v_name_terms text[] := ARRAY[]::text[];
   v_name_prefixes text[] := ARRAY[]::text[];
+  v_name_wordstarts text[] := ARRAY[]::text[];
+  v_query_tokens text[] := ARRAY[]::text[];
   v_slash_parts text[];
   v_has_formatting boolean;
   v_has_non_latin boolean := false;
@@ -102,6 +104,34 @@ BEGIN
     v_name_terms := ARRAY[v_lower];
   END IF;
   v_name_prefixes := ARRAY(SELECT t || '%' FROM unnest(v_name_terms) AS t);
+  -- "stephan haas" must also search tokens so last name Haas matches.
+  IF position(' ' in v_lower) > 0 THEN
+    v_name_terms := ARRAY(
+      SELECT DISTINCT x
+      FROM unnest(
+        v_name_terms || ARRAY(
+          SELECT lower(btrim(p))
+          FROM unnest(string_to_array(regexp_replace(v_lower, '[,]+', ' ', 'g'), ' ')) AS p
+          WHERE length(btrim(p)) >= 2
+        )
+      ) AS x
+      WHERE length(x) >= 2
+      LIMIT 4
+    );
+    v_name_prefixes := ARRAY(SELECT t || '%' FROM unnest(v_name_terms) AS t);
+  END IF;
+  v_name_wordstarts := ARRAY(
+    SELECT '% ' || t || '%'
+    FROM unnest(v_name_terms) AS t
+    WHERE length(t) >= 3 AND position(' ' in t) = 0
+    LIMIT 4
+  );
+  v_query_tokens := ARRAY(
+    SELECT lower(btrim(p))
+    FROM unnest(string_to_array(regexp_replace(v_lower, '[,]+', ' ', 'g'), ' ')) AS p
+    WHERE length(btrim(p)) >= 2
+    LIMIT 3
+  );
   v_raw_noprefix := regexp_replace(v_raw, '^[LC]', '', 'i');
   v_has_slash := position('/' in v_raw_noprefix) > 0;
   v_has_formatting := length(v_raw) > length(regexp_replace(v_raw, '\D', '', 'g'));
@@ -390,9 +420,9 @@ BEGIN
   END IF;
 
   /* ===================== PHONE ===================== */
-  -- Prefer equality on normalized digits (uses expression btree indexes).
-  -- Prefix LIKE only for short progressive queries (4–6 digits) — full-number
-  -- LIKE-after-regexp was seq-scanning and timing out, which made phones "disappear".
+  -- Same strategy as names / lead numbers: prefix LIKE on the digit index
+  -- (`0524%`, `0507748025%`) plus equality on format variants. Do not switch
+  -- to exact-only at 7+ — that made slow typing miss while paste worked.
   IF v_digits <> ''
      AND length(v_digits) >= 4
      AND (
@@ -401,6 +431,7 @@ BEGIN
        OR v_digits LIKE '972%'
        OR v_digits LIKE '0%'
        OR (v_digits LIKE '5%' AND length(v_digits) >= 5)
+       OR length(v_digits) BETWEEN 11 AND 15
      )
   THEN
     v_phone_forms := ARRAY[
@@ -470,7 +501,7 @@ BEGIN
             regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
             OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
             OR (
-              length(v_digits) BETWEEN 4 AND 6
+              length(v_digits) >= 4
               AND (
                 regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') LIKE v_digits || '%'
                 OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') LIKE v_digits || '%'
@@ -480,6 +511,15 @@ BEGIN
                   AND (
                     regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
                     OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                    OR regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') LIKE ('972' || substr(v_digits, 2)) || '%'
+                    OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') LIKE ('972' || substr(v_digits, 2)) || '%'
+                  )
+                )
+                OR (
+                  v_digits LIKE '5%'
+                  AND (
+                    regexp_replace(coalesce(l.phone::text, ''), '\D', '', 'g') LIKE ('0' || v_digits) || '%'
+                    OR regexp_replace(coalesce(l.mobile::text, ''), '\D', '', 'g') LIKE ('0' || v_digits) || '%'
                   )
                 )
               )
@@ -503,7 +543,7 @@ BEGIN
             regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
             OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
             OR (
-              length(v_digits) BETWEEN 4 AND 6
+              length(v_digits) >= 4
               AND (
                 regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') LIKE v_digits || '%'
                 OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') LIKE v_digits || '%'
@@ -513,6 +553,15 @@ BEGIN
                   AND (
                     regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
                     OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                    OR regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') LIKE ('972' || substr(v_digits, 2)) || '%'
+                    OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') LIKE ('972' || substr(v_digits, 2)) || '%'
+                  )
+                )
+                OR (
+                  v_digits LIKE '5%'
+                  AND (
+                    regexp_replace(coalesce(ll.phone::text, ''), '\D', '', 'g') LIKE ('0' || v_digits) || '%'
+                    OR regexp_replace(coalesce(ll.mobile::text, ''), '\D', '', 'g') LIKE ('0' || v_digits) || '%'
                   )
                 )
               )
@@ -549,7 +598,7 @@ BEGIN
               regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
               OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') = ANY (v_phone_forms)
               OR (
-                length(v_digits) BETWEEN 4 AND 6
+                length(v_digits) >= 4
                 AND (
                   regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') LIKE v_digits || '%'
                   OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') LIKE v_digits || '%'
@@ -559,6 +608,15 @@ BEGIN
                     AND (
                       regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
                       OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') LIKE substr(v_digits, 2) || '%'
+                      OR regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') LIKE ('972' || substr(v_digits, 2)) || '%'
+                      OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') LIKE ('972' || substr(v_digits, 2)) || '%'
+                    )
+                  )
+                  OR (
+                    v_digits LIKE '5%'
+                    AND (
+                      regexp_replace(coalesce(phone::text, ''), '\D', '', 'g') LIKE ('0' || v_digits) || '%'
+                      OR regexp_replace(coalesce(mobile::text, ''), '\D', '', 'g') LIKE ('0' || v_digits) || '%'
                     )
                   )
                 )
@@ -612,10 +670,23 @@ BEGIN
         FROM public.leads l
         WHERE l.name IS NOT NULL
           AND (
-            lower(l.name) LIKE ANY (v_name_prefixes)
-            -- Word-start / contains are expensive; keep for longer queries only.
-            OR (length(v_lower) >= 4 AND NOT v_has_non_latin AND lower(l.name) LIKE ('% ' || v_lower || '%'))
-            OR (v_has_non_latin AND lower(l.name) LIKE ('%' || v_lower || '%'))
+            CASE
+              WHEN cardinality(v_query_tokens) >= 2 THEN (
+                SELECT bool_and(
+                  lower(l.name) LIKE tok || '%'
+                  OR (length(tok) >= 3 AND lower(l.name) LIKE '% ' || tok || '%')
+                )
+                FROM unnest(v_query_tokens) AS tok
+              )
+              ELSE (
+                lower(l.name) LIKE ANY (v_name_prefixes)
+                OR (
+                  cardinality(v_name_wordstarts) > 0
+                  AND lower(l.name) LIKE ANY (v_name_wordstarts)
+                )
+                OR (v_has_non_latin AND lower(l.name) LIKE ('%' || v_lower || '%'))
+              )
+            END
           )
         ORDER BY l.created_at DESC NULLS LAST
         LIMIT v_limit
@@ -634,9 +705,23 @@ BEGIN
         FROM public.leads_lead ll
         WHERE ll.name IS NOT NULL
           AND (
-            lower(ll.name) LIKE ANY (v_name_prefixes)
-            OR (length(v_lower) >= 4 AND NOT v_has_non_latin AND lower(ll.name) LIKE ('% ' || v_lower || '%'))
-            OR (v_has_non_latin AND lower(ll.name) LIKE ('%' || v_lower || '%'))
+            CASE
+              WHEN cardinality(v_query_tokens) >= 2 THEN (
+                SELECT bool_and(
+                  lower(ll.name) LIKE tok || '%'
+                  OR (length(tok) >= 3 AND lower(ll.name) LIKE '% ' || tok || '%')
+                )
+                FROM unnest(v_query_tokens) AS tok
+              )
+              ELSE (
+                lower(ll.name) LIKE ANY (v_name_prefixes)
+                OR (
+                  cardinality(v_name_wordstarts) > 0
+                  AND lower(ll.name) LIKE ANY (v_name_wordstarts)
+                )
+                OR (v_has_non_latin AND lower(ll.name) LIKE ('%' || v_lower || '%'))
+              )
+            END
           )
         ORDER BY ll.cdate DESC NULLS LAST
         LIMIT v_limit
@@ -668,9 +753,23 @@ BEGIN
           SELECT id FROM public.leads_contact
           WHERE name IS NOT NULL
             AND (
-              lower(name) LIKE ANY (v_name_prefixes)
-              OR (length(v_lower) >= 4 AND NOT v_has_non_latin AND lower(name) LIKE ('% ' || v_lower || '%'))
-              OR (v_has_non_latin AND lower(name) LIKE ('%' || v_lower || '%'))
+              CASE
+                WHEN cardinality(v_query_tokens) >= 2 THEN (
+                  SELECT bool_and(
+                    lower(name) LIKE tok || '%'
+                    OR (length(tok) >= 3 AND lower(name) LIKE '% ' || tok || '%')
+                  )
+                  FROM unnest(v_query_tokens) AS tok
+                )
+                ELSE (
+                  lower(name) LIKE ANY (v_name_prefixes)
+                  OR (
+                    cardinality(v_name_wordstarts) > 0
+                    AND lower(name) LIKE ANY (v_name_wordstarts)
+                  )
+                  OR (v_has_non_latin AND lower(name) LIKE ('%' || v_lower || '%'))
+                )
+              END
             )
           LIMIT (v_limit * 2)
         ) hit

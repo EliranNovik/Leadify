@@ -72,14 +72,16 @@ const DEFAULTS: Required<Omit<SearchOptions, "signal">> = {
   contactsLimit: 20,
   leadsLimit: 20,
   legacyLimit: 20,
-  timeoutMs: 2500,
+  timeoutMs: 1800,
 };
 
 type ResolvedSearchOptions = Required<Omit<SearchOptions, "signal">> & {
   signal?: AbortSignal;
 };
 
-const HEADER_RPC_BUDGET_MS = 2500;
+const HEADER_RPC_BUDGET_MS = 2000;
+const HEADER_RPC_RETRY_BUDGET_MS = 2500;
+const HEADER_SEARCH_COLD_AFTER_MS = 90_000;
 
 // -----------------------------------------------------
 // Helpers
@@ -97,9 +99,35 @@ function quoteFilterValue(value: string): string {
   return `"${String(value).replace(/"/g, "")}"`;
 }
 
+function nameQueryTokens(rawQuery: string): string[] {
+  return lower(rawQuery)
+    .replace(/%/g, "")
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !t.includes("@"));
+}
+
+function nameTokenMatchOrClause(token: string): string {
+  const t = token.replace(/%/g, "");
+  if (t.length < 2) return "";
+  const parts = [`name.ilike.${quoteFilterValue(`${t}%`)}`];
+  if (t.length >= 3) parts.push(`name.ilike.${quoteFilterValue(`% ${t}%`)}`);
+  return parts.join(",");
+}
+
+function nameHayMatchesTokens(name: string, contactName: string, rawQuery: string): boolean {
+  const tokens = nameQueryTokens(rawQuery);
+  if (tokens.length < 2) return true;
+  const hay = `${name} ${contactName}`.toLowerCase();
+  if (!hay.trim()) return false;
+  const parts = hay.split(/[\s,./@+-]+/);
+  return tokens.every((t) => hay.includes(t) || parts.some((p) => p.startsWith(t)));
+}
+
 /**
  * Fast name filters — prefer indexed prefix matches.
- * MUST quote values (Hebrew/Arabic break unquoted PostgREST `.or()`).
+ * Two-word queries ("stephen haas") AND the tokens so 20 other Stephens
+ * cannot crowd out Haas.
  */
 function buildNameSearchOrFilter(variants: string[], rawQuery: string): string {
   const primary = lower(rawQuery).replace(/%/g, "");
@@ -115,27 +143,41 @@ function buildNameSearchOrFilter(variants: string[], rawQuery: string): string {
   const nonLatin = containsHebrew(rawQuery) || containsArabic(rawQuery);
   const parts: string[] = [];
 
-  // Indexed prefix for every variant
   for (const term of terms) {
     parts.push(`name.ilike.${quoteFilterValue(`${term}%`)}`);
+    if (term.length >= 3 && !term.includes(" ")) {
+      parts.push(`name.ilike.${quoteFilterValue(`% ${term}%`)}`);
+    }
   }
 
-  // One word-start on the typed term only (last-name: "cohen" → "David Cohen")
-  // Skip on short first inputs — prefix match is enough and much cheaper.
-  if (primary.length >= 4) {
-    parts.push(`name.ilike.${quoteFilterValue(`% ${primary}%`)}`);
-  }
-
-  // Contains only for Hebrew/Arabic primary (trigram-friendly, single pattern)
   if (nonLatin && primary.length >= 2) {
     parts.push(`name.ilike.${quoteFilterValue(`%${primary}%`)}`);
   }
 
-  // Email only when query looks email-ish (not every name search)
   const emailOr = buildProgressiveEmailOrFilter(rawQuery);
   if (emailOr) parts.push(...emailOr.split(","));
 
   return Array.from(new Set(parts)).join(",");
+}
+
+function applyNameSearchFilter(
+  qb: { or: (clause: string) => any },
+  variants: string[],
+  rawQuery: string,
+): { or: (clause: string) => any } | null {
+  const tokens = nameQueryTokens(rawQuery);
+  if (tokens.length >= 2) {
+    let next = qb;
+    for (const token of tokens.slice(0, 3)) {
+      const clause = nameTokenMatchOrClause(token);
+      if (!clause) continue;
+      next = next.or(clause);
+    }
+    return next;
+  }
+  const nameOr = buildNameSearchOrFilter(variants, rawQuery);
+  if (!nameOr) return null;
+  return qb.or(nameOr);
 }
 
 /** Match partial emails while typing — only when query has @ or domain-ish shape. */
@@ -212,14 +254,15 @@ function buildPhoneOr(digits: string, rawQuery?: string): string {
 }
 
 /**
- * Do not dual-run phone on lead-digit queries.
- * Phone vs lead is exclusive in detectIntent + search_leads_header RPC;
- * dual search caused intermittent multi-second latency.
+ * Digit queries without L/C may be a national number (8452902552 for +18452902552).
+ * Search phones too — exclusive lead-only left those hits as "no matches".
  */
 function shouldAlsoSearchPhoneForLeadQuery(
-  _intent: Extract<SearchIntent, { kind: "lead" }>,
+  intent: Extract<SearchIntent, { kind: "lead" }>,
 ): boolean {
-  return false;
+  if (intent.hasPrefix || intent.raw.includes("/")) return false;
+  const d = digitsOnly(intent.digits);
+  return d.length >= 7 && d.length <= 15;
 }
 
 function mergeRowsById<T extends { id?: string | number | null }>(primary: T[], extra: T[]): T[] {
@@ -241,6 +284,21 @@ function mergeRowsById<T extends { id?: string | number | null }>(primary: T[], 
 function intentQueryText(intent: SearchIntent): string {
   if (intent.kind === "email") return intent.email;
   return intent.raw;
+}
+
+function collectNameVariants(raw: string): string[] {
+  const full = lower(raw);
+  const tokens = full.split(/[\s,]+/).map((t) => t.trim()).filter((t) => t.length >= 2);
+  const generated = generateSearchVariants(raw).map((v) => v.trim().toLowerCase()).filter(Boolean);
+  const ordered: string[] = [];
+  if (tokens.length >= 2) {
+    ordered.push(full, tokens[tokens.length - 1], tokens[0]);
+  } else {
+    ordered.push(full);
+  }
+  for (const v of generated) ordered.push(v);
+  const variantCap = full.length <= 5 && tokens.length < 2 ? 1 : 4;
+  return Array.from(new Set(ordered.filter(Boolean))).slice(0, variantCap);
 }
 
 function detectIntent(query: string): SearchIntent | null {
@@ -294,17 +352,15 @@ function detectIntent(query: string): SearchIntent | null {
   const phoneLike =
     (formatted && d.length >= 4) ||
     (d.startsWith("0") && d.length >= 4) ||
-    (d.startsWith("972") && d.length >= 5);
+    (d.startsWith("972") && d.length >= 5) ||
+    (d.length >= 11 && d.length <= 15);
 
   if (phoneLike) {
     return { kind: "phone", digits: d, raw };
   }
 
-  // Default name intent — lean variants only (fuzzy is a second pass if empty)
-  const variants = generateSearchVariants(raw).map((v) => v.trim().toLowerCase()).filter(Boolean);
-  // First inputs (2–3 chars): one term only — multi-variant OR slows the cold RPC.
-  const variantCap = raw.trim().length <= 3 ? 1 : 4;
-  const uniqVariants = Array.from(new Set(variants.length ? variants : [lower(raw)])).slice(0, variantCap);
+  // Default name intent — include first/last tokens so "stephan haas" hits Haas.
+  const uniqVariants = collectNameVariants(raw);
   return { kind: "name", raw, variants: uniqVariants };
 }
 
@@ -405,9 +461,34 @@ function mapHeaderSearchRpcRow(row: any): CombinedLead | null {
   };
 }
 
+function parseHeaderSearchRpcData(data: unknown): CombinedLead[] | null {
+  let rows: any[] = [];
+  if (Array.isArray(data)) rows = data;
+  else if (typeof data === "string") {
+    try {
+      const parsed = JSON.parse(data);
+      rows = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return null;
+    }
+  } else if (data == null) {
+    rows = [];
+  } else {
+    return null;
+  }
+
+  return rows.map(mapHeaderSearchRpcRow).filter((r): r is CombinedLead => r != null);
+}
+
+const headerSearchInFlight = new Map<string, Promise<CombinedLead[] | null>>();
+
+function headerSearchInFlightKey(query: string, limit: number, variants?: string[]): string {
+  return `${headerSearchCacheKey(query, variants)}:${limit}`;
+}
+
 /**
  * Fast path: one SECURITY DEFINER RPC. Returns null on miss/error so caller can fall back.
- * Aborts the HTTP request on timeout or external signal so ghost RPCs don't stack.
+ * Timeouts do NOT abort the HTTP request — the response still fills the cache (cold start).
  */
 async function trySearchLeadsHeaderRpc(
   query: string,
@@ -418,69 +499,60 @@ async function trySearchLeadsHeaderRpc(
 ): Promise<CombinedLead[] | null> {
   if (signal?.aborted) return null;
 
-  const localAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const budget = Math.min(Math.max(timeoutMs, 500), HEADER_RPC_BUDGET_MS);
-  const timer =
-    localAbort != null ? setTimeout(() => localAbort.abort(), budget) : null;
+  const budget = Math.min(Math.max(timeoutMs, 800), HEADER_RPC_RETRY_BUDGET_MS);
+  const inflightKey = headerSearchInFlightKey(query, limit, variants);
 
-  const onExternalAbort = () => localAbort?.abort();
-  signal?.addEventListener("abort", onExternalAbort, { once: true });
-
-  const combinedSignal = localAbort?.signal ?? signal;
-
-  try {
-    const payload: Record<string, unknown> = {
-      p_query: query,
-      p_limit: limit,
-    };
-    if (variants && variants.length > 0) {
-      payload.p_variants = variants.slice(0, 4);
-    }
-
-    let rpcCall = supabase.rpc("search_leads_header", payload) as any;
-    rpcCall = attachAbortSignal(rpcCall, combinedSignal);
-
-    const { data, error } = await withTimeout(
-      rpcCall,
-      budget + 50,
-      "search_leads_header timeout",
-      combinedSignal,
-    );
-
-    if (error) return null;
-
-    let rows: any[] = [];
-    if (Array.isArray(data)) rows = data;
-    else if (typeof data === "string") {
+  let work = headerSearchInFlight.get(inflightKey);
+  if (!work) {
+    work = (async () => {
       try {
-        const parsed = JSON.parse(data);
-        rows = Array.isArray(parsed) ? parsed : [];
-      } catch {
+        const payload: Record<string, unknown> = {
+          p_query: query,
+          p_limit: limit,
+        };
+        if (variants && variants.length > 0) {
+          payload.p_variants = variants.slice(0, 4);
+        }
+
+        let rpcCall = supabase.rpc("search_leads_header", payload) as any;
+        // Do not attach the keystroke abort signal — cancelling the HTTP call
+        // left every first search cold. Timeouts still fail the UI wait.
+
+        const { data, error } = await rpcCall;
+        if (error) return null;
+
+        const mapped = parseHeaderSearchRpcData(data);
+        if (mapped != null && mapped.length > 0) {
+          setCachedHeaderSearch(query, variants, mapped);
+          lastHeaderSearchSuccessAt = Date.now();
+        }
+        return mapped;
+      } catch (err) {
+        if (isAbortError(err)) return null;
         return null;
       }
-    } else if (data == null) {
-      rows = [];
-    } else {
-      return null;
-    }
+    })();
+    headerSearchInFlight.set(inflightKey, work);
+    void work.finally(() => {
+      if (headerSearchInFlight.get(inflightKey) === work) {
+        headerSearchInFlight.delete(inflightKey);
+      }
+    });
+  }
 
-    // Empty array is a valid "no matches" from RPC — still use it (don't fall back).
-    const mapped = rows
-      .map(mapHeaderSearchRpcRow)
-      .filter((r): r is CombinedLead => r != null);
-    return mapped;
+  try {
+    return await withTimeout(work, budget, "search_leads_header timeout", signal);
   } catch (err) {
     if (isAbortError(err) && signal?.aborted) return null;
+    // Timed out for the UI — leave `work` running so the cache warms.
     return null;
-  } finally {
-    if (timer != null) clearTimeout(timer);
-    signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
 let headerSearchWarmPromise: Promise<void> | null = null;
 let headerSearchWarmAt = 0;
-const HEADER_SEARCH_WARM_REUSE_MS = 45_000;
+let lastHeaderSearchSuccessAt = 0;
+const HEADER_SEARCH_WARM_REUSE_MS = 30_000;
 
 const HEADER_SEARCH_CACHE_TTL_MS = 90_000;
 const HEADER_SEARCH_CACHE_MAX = 48;
@@ -518,8 +590,8 @@ function setCachedHeaderSearch(query: string, variants: string[] | undefined, ro
 }
 
 /**
- * Warm TLS + PostgREST + RPC plan + name indexes so the first typed search isn't cold.
- * Reuses an in-flight warm; re-warms after ~45s so idle connections don't go cold again.
+ * Warm TLS + PostgREST + table pages + RPC plan so the first typed search isn't cold.
+ * Reuses an in-flight warm; re-warms after ~30s so idle connections don't go cold again.
  */
 export function warmHeaderLeadSearch(): Promise<void> {
   const now = Date.now();
@@ -529,14 +601,14 @@ export function warmHeaderLeadSearch(): Promise<void> {
   headerSearchWarmAt = now;
   headerSearchWarmPromise = (async () => {
     try {
-      // Intentional no-hit query: still executes the NAME branch and warms caches.
+      await supabase.rpc("search_leads_header_warm");
       await supabase.rpc("search_leads_header", {
         p_query: "zz",
         p_limit: 1,
         p_variants: ["zz"],
       });
+      lastHeaderSearchSuccessAt = Date.now();
     } catch {
-      // Best-effort — allow a later warm retry if this failed before auth was ready
       headerSearchWarmPromise = null;
       headerSearchWarmAt = 0;
     }
@@ -654,9 +726,9 @@ async function searchNewLeads(intent: SearchIntent, opts: ResolvedSearchOptions)
     if (!cond) return [];
     qb = qb.or(cond);
   } else if (intent.kind === "name") {
-    const nameOr = buildNameSearchOrFilter(intent.variants, intent.raw);
-    if (!nameOr) return [];
-    qb = qb.or(nameOr);
+    const filtered = applyNameSearchFilter(qb, intent.variants, intent.raw);
+    if (!filtered) return [];
+    qb = filtered;
   }
 
   const executeStartTime = performance.now();
@@ -705,9 +777,9 @@ async function searchLegacyLeads(intent: SearchIntent, opts: ResolvedSearchOptio
         ].filter(Boolean).join(","),
       );
     } else {
-      const nameOr = buildNameSearchOrFilter(intent.variants, intent.raw);
-      if (!nameOr) return [];
-      qb = qb.or(nameOr);
+      const filtered = applyNameSearchFilter(qb, intent.variants, intent.raw);
+      if (!filtered) return [];
+      qb = filtered;
     }
   }
 
@@ -739,9 +811,9 @@ async function searchContacts(intent: SearchIntent, opts: ResolvedSearchOptions)
     if (!cond) return [];
     qb = qb.or(cond);
   } else if (intent.kind === "name") {
-    const nameOr = buildNameSearchOrFilter(intent.variants, intent.raw);
-    if (!nameOr) return [];
-    qb = qb.or(nameOr);
+    const filtered = applyNameSearchFilter(qb, intent.variants, intent.raw);
+    if (!filtered) return [];
+    qb = filtered;
   } else if (intent.kind === "lead") {
     // When searching by lead number, contacts are obtained via junction,
     // so here we return empty and do the junction-based flow.
@@ -1230,11 +1302,23 @@ function scoreResult(intent: SearchIntent, r: CombinedLead): number {
   } else {
     const q = lower(intent.raw);
     const contactNm = lower(r.contactName || "");
+    const tokens = nameQueryTokens(intent.raw);
     if (name === q || contactNm === q) s += 80;
-    else if (name.startsWith(q) || contactNm.startsWith(q)) s += 55;
+    if (tokens.length >= 2) {
+      for (const t of tokens) {
+        if (name === t || contactNm === t) s += 45;
+        else if (
+          name.startsWith(t) ||
+          contactNm.startsWith(t) ||
+          name.includes(` ${t}`) ||
+          contactNm.includes(` ${t}`)
+        ) {
+          s += 35;
+        }
+      }
+    } else if (name.startsWith(q) || contactNm.startsWith(q)) s += 55;
     else if (name.includes(q) || contactNm.includes(q)) s += 35;
     else {
-      // Word-start / transliteration variants
       for (const variant of intent.variants) {
         const v = lower(variant);
         if (!v) continue;
@@ -1331,7 +1415,6 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       return mapped.slice(0, opts.limit);
     }
 
-    // Never block typing on warm — Header already warms on session/focus; racing is fine.
     if (signal?.aborted) return [];
 
     const rpcQuery = intentQueryText(intent);
@@ -1347,56 +1430,117 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
     const rpcLimit = isShortName ? Math.min(opts.limit, 12) : opts.limit;
 
     const finalize = (rows: CombinedLead[]) => {
-      rows.forEach((r) => {
+      const matched =
+        intent.kind === "name"
+          ? rows.filter((r) => nameHayMatchesTokens(r.name, r.contactName || "", intent.raw))
+          : rows;
+      matched.forEach((r) => {
         r.isFuzzyMatch = markFuzzy(intent, r);
       });
-      rows.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
-      return rows.slice(0, opts.limit);
+      matched.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
+      return matched.slice(0, opts.limit);
     };
 
+    const israeliPhoneDigits =
+      intent.kind === "phone" &&
+      (intent.digits.startsWith("0") ||
+        intent.digits.startsWith("972") ||
+        intent.digits.startsWith("00972") ||
+        (intent.digits.startsWith("5") && intent.digits.length >= 5));
+
+    const skipHeaderRpcForPhone =
+      intent.kind === "phone" &&
+      intent.digits.length >= 4 &&
+      (!israeliPhoneDigits || intent.digits.length < 10);
+
+    const leadMayBePhone =
+      intent.kind === "lead" &&
+      !intent.hasPrefix &&
+      !intent.raw.includes("/") &&
+      intent.digits.length >= 7 &&
+      intent.digits.length <= 15;
+
+    const nameTokens =
+      intent.kind === "name"
+        ? intent.raw.trim().split(/[\s,]+/).filter((t) => t.length >= 2)
+        : [];
+
     const cachedRows = getCachedHeaderSearch(rpcQuery, nameVariants);
-    if (cachedRows != null) {
-      return finalize(cachedRows);
+    if (
+      cachedRows != null &&
+      !((skipHeaderRpcForPhone || leadMayBePhone || nameTokens.length >= 2) && cachedRows.length === 0)
+    ) {
+      const finalized = finalize(cachedRows);
+      if (finalized.length > 0 || nameTokens.length < 2) {
+        lastHeaderSearchSuccessAt = Date.now();
+        return finalized;
+      }
     }
 
-    // Fast path: single DB round-trip within one budget. Fall back to multi-query if RPC
-    // missing/errors. Phone/email timeouts fall through to PostgREST waterfall.
-    const rpcBudget = isShortName
-      ? Math.min(opts.timeoutMs, 1200)
-      : intent.kind === "name"
-        ? Math.min(opts.timeoutMs, 1800)
-        : Math.min(opts.timeoutMs, HEADER_RPC_BUDGET_MS);
-    let rpcRows = await trySearchLeadsHeaderRpc(
-      rpcQuery,
-      rpcLimit,
-      rpcBudget,
-      nameVariants,
-      signal,
-    );
+    let rpcRows: CombinedLead[] | null = null;
+    const isWarm =
+      lastHeaderSearchSuccessAt > 0 &&
+      Date.now() - lastHeaderSearchSuccessAt < HEADER_SEARCH_COLD_AFTER_MS;
 
-    // Phone/email: one short retry. Name: skip retry — a second round-trip doubles spin on cold miss.
-    if (rpcRows == null && intent.kind !== "lead" && intent.kind !== "name" && !signal?.aborted) {
+    if (!skipHeaderRpcForPhone && !leadMayBePhone && nameTokens.length < 2) {
+      const rpcBudget = isWarm
+        ? Math.min(opts.timeoutMs, 1200)
+        : HEADER_RPC_BUDGET_MS;
       rpcRows = await trySearchLeadsHeaderRpc(
         rpcQuery,
-        opts.limit,
-        Math.min(rpcBudget, 1800),
+        rpcLimit,
+        rpcBudget,
         nameVariants,
         signal,
       );
+
+      if (rpcRows == null && !signal?.aborted) {
+        const cachedNow = getCachedHeaderSearch(rpcQuery, nameVariants);
+        if (cachedNow != null) rpcRows = cachedNow;
+      }
+
+      if (
+        rpcRows == null &&
+        intent.kind === "name" &&
+        nameTokens.length <= 1 &&
+        intent.raw.trim().length <= 3 &&
+        !signal?.aborted
+      ) {
+        return [];
+      }
     }
-    if (rpcRows == null && intent.kind === "name") {
-      return [];
-    }
+
+    const phoneNeedsFallback =
+      intent.kind === "phone" &&
+      !signal?.aborted &&
+      (rpcRows == null || rpcRows.length === 0);
+
+    const leadNeedsPhoneFallback =
+      leadMayBePhone &&
+      !signal?.aborted &&
+      (rpcRows == null || rpcRows.length === 0);
 
     const isSubleadQuery =
       intent.kind === "lead" && intent.raw.includes("/") && intent.master != null;
 
-    if (rpcRows != null && !(isSubleadQuery && rpcRows.length === 0)) {
+    if (
+      !phoneNeedsFallback &&
+      !leadNeedsPhoneFallback &&
+      rpcRows != null &&
+      !(isSubleadQuery && rpcRows.length === 0)
+    ) {
       // Fast hit — return immediately (including valid empty for non-name / short names)
-      if (rpcRows.length > 0 || intent.kind !== "name" || intent.raw.trim().length < 6) {
+        if (rpcRows.length > 0 || intent.kind !== "name" || (intent.raw.trim().length < 6 && !intent.raw.includes(" "))) {
         if (rpcRows.length > 0 || intent.kind !== "name") {
-          setCachedHeaderSearch(rpcQuery, nameVariants, rpcRows);
+          const skipEmptyIncompletePhone =
+            intent.kind === "phone" &&
+            rpcRows.length === 0 &&
+            intent.digits.length < 10;
+          if (!skipEmptyIncompletePhone) {
+            setCachedHeaderSearch(rpcQuery, nameVariants, rpcRows);
+          }
         }
+        lastHeaderSearchSuccessAt = Date.now();
         return finalize(rpcRows);
       }
 
@@ -1407,17 +1551,22 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
         const fuzzyRows = await trySearchLeadsHeaderRpc(
           rpcQuery,
           opts.limit,
-          Math.min(opts.timeoutMs, 700),
+          Math.min(opts.timeoutMs, 1800),
           fuzzyVariants,
           signal,
         );
-        if (fuzzyRows != null) {
+        if (fuzzyRows != null && fuzzyRows.length > 0) {
           setCachedHeaderSearch(rpcQuery, nameVariants, fuzzyRows);
+          lastHeaderSearchSuccessAt = Date.now();
           return finalize(fuzzyRows);
         }
       }
-      setCachedHeaderSearch(rpcQuery, nameVariants, []);
-      return finalize([]);
+      if (nameTokens.length < 2) {
+        setCachedHeaderSearch(rpcQuery, nameVariants, []);
+        lastHeaderSearchSuccessAt = Date.now();
+        return finalize([]);
+      }
+      // Multi-word miss: fall through to token word-start table search.
     }
 
     if (signal?.aborted) return [];
@@ -1855,6 +2004,11 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
     results.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
 
     const finalResults = results.slice(0, opts.limit);
+
+    if ((intent.kind === "phone" || leadMayBePhone || nameTokens.length >= 2) && finalResults.length > 0) {
+      setCachedHeaderSearch(rpcQuery, nameVariants, finalResults);
+      lastHeaderSearchSuccessAt = Date.now();
+    }
 
     // Return immediately — profile enrich used to add another junction round-trip before paint.
     // Contact rows already carry portal_profile_image_path when available.

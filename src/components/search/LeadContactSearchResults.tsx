@@ -9,6 +9,7 @@ import {
   isLeadContactSearchInactive,
   isLeadContactSearchResultContact,
 } from '../../lib/leadContactSearchUi';
+import { looksLikePhoneSearchQuery } from '../../lib/phoneSearchUtils';
 import LeadContactSearchStageBadge from './LeadContactSearchStageBadge';
 import LeadContactSearchTypeFilter, {
   type LeadContactSearchTypeFilterValue,
@@ -77,6 +78,7 @@ const LeadContactSearchResults: React.FC<Props> = ({
   unboundedList = false,
 }) => {
   const trimmed = query.trim();
+  const phoneQuery = looksLikePhoneSearchQuery(query);
   const [typeFilter, setTypeFilter] = useState<LeadContactSearchTypeFilterValue>('all');
 
   // Reset type filter only when the query is cleared / too short — not on every
@@ -213,6 +215,12 @@ const LeadContactSearchResults: React.FC<Props> = ({
                             {lead.lead_number ? (
                               <>
                                 {highlightQuery(lead.lead_number, trimmed)}
+                                {phoneQuery && (lead.mobile || lead.phone) ? (
+                                  <>
+                                    <span className="mx-1.5 text-gray-400">·</span>
+                                    <span>{highlightQuery(lead.mobile || lead.phone, trimmed)}</span>
+                                  </>
+                                ) : null}
                                 {lead.category ? (
                                   <>
                                     <span className="mx-1.5 text-gray-400">·</span>
@@ -220,6 +228,8 @@ const LeadContactSearchResults: React.FC<Props> = ({
                                   </>
                                 ) : null}
                               </>
+                            ) : phoneQuery && (lead.mobile || lead.phone) ? (
+                              highlightQuery(lead.mobile || lead.phone, trimmed)
                             ) : (
                               lead.category || '—'
                             )}

@@ -260,15 +260,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
   const { results: textSearchResults, loading: textSearchLoading } = useLeadContactSearch(searchValue, {
-    enabled: supabaseSessionReady && searchValue.trim().length >= 2 && !hasAppliedFilters,
+    enabled: searchValue.trim().length >= 1 && !hasAppliedFilters,
+    pause: !supabaseSessionReady,
     limit: 20,
-    debounceMs: 50,
-    minLength: 2,
+    debounceMs: 40,
+    minLength: 1,
   });
   const activeSearchResults =
-    searchValue.trim().length >= 2 && !hasAppliedFilters ? textSearchResults : searchResults;
+    searchValue.trim().length >= 1 && !hasAppliedFilters ? textSearchResults : searchResults;
   const activeSearchLoading =
-    searchValue.trim().length >= 2 && !hasAppliedFilters ? textSearchLoading : isAdvancedSearching;
+    searchValue.trim().length >= 1 && !hasAppliedFilters ? textSearchLoading : isAdvancedSearching;
   const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
   const [externalUserProfile, setExternalUserProfile] = useState<{ photo_url?: string | null } | null>(null);
   /** Prefer live employee row; fall back to auth display cache so avatar matches name on first paint after refresh */
@@ -1152,7 +1153,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return () => window.clearTimeout(t);
   }, [supabaseSessionReady, sessionRefreshNonce]);
 
+  // Re-warm when the tab becomes visible after idle (connections go cold).
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      void warmHeaderLeadSearch();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  // Keep the search connection warm while the app is open.
+  useEffect(() => {
+    if (!supabaseSessionReady) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void warmHeaderLeadSearch();
+    }, 40_000);
+    return () => window.clearInterval(id);
+  }, [supabaseSessionReady]);
+
   // Advanced search filter dropdowns — refetch when session hydrates or token refreshes (RLS + joins need JWT).
+  // Delay slightly so the search warm RPC gets first use of a cold connection.
   useEffect(() => {
     if (!supabaseSessionReady) return;
     let cancelled = false;
@@ -1174,32 +1196,36 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
 
-    void Promise.all([
-      loadOne(
-        'lead_stages',
-        setStageOptions,
-        [
-          'created', 'scheduler_assigned', 'meeting_scheduled', 'meeting_paid',
-          'unactivated', 'communication_started', 'another_meeting', 'revised_offer',
-          'offer_sent', 'waiting_for_mtng_sum', 'client_signed', 'client_declined',
-          'lead_summary', 'meeting_rescheduled', 'meeting_ended',
-        ]
-      ),
-      loadOne(
-        'misc_category',
-        setCategoryOptions,
-        ['German Citizenship', 'Austrian Citizenship', 'Inquiry', 'Consultation', 'Other']
-      ),
-      loadOne('sources', setSourceOptions, ['Manual', 'AI Assistant', 'Referral', 'Website', 'Other']),
-      loadOne(
-        'misc_language',
-        setLanguageOptions,
-        ['English', 'Hebrew', 'German', 'French', 'Russian', 'Other']
-      ),
-    ]);
+    const start = window.setTimeout(() => {
+      if (cancelled) return;
+      void Promise.all([
+        loadOne(
+          'lead_stages',
+          setStageOptions,
+          [
+            'created', 'scheduler_assigned', 'meeting_scheduled', 'meeting_paid',
+            'unactivated', 'communication_started', 'another_meeting', 'revised_offer',
+            'offer_sent', 'waiting_for_mtng_sum', 'client_signed', 'client_declined',
+            'lead_summary', 'meeting_rescheduled', 'meeting_ended',
+          ]
+        ),
+        loadOne(
+          'misc_category',
+          setCategoryOptions,
+          ['German Citizenship', 'Austrian Citizenship', 'Inquiry', 'Consultation', 'Other']
+        ),
+        loadOne('sources', setSourceOptions, ['Manual', 'AI Assistant', 'Referral', 'Website', 'Other']),
+        loadOne(
+          'misc_language',
+          setLanguageOptions,
+          ['English', 'Hebrew', 'German', 'French', 'Russian', 'Other']
+        ),
+      ]);
+    }, 450);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(start);
     };
   }, [supabaseSessionReady, sessionRefreshNonce]);
 
@@ -2748,6 +2774,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       query={searchValue}
       onSelect={handleSearchResultClick}
       unboundedList={opts?.unboundedList}
+      minLength={1}
     />
   );
 

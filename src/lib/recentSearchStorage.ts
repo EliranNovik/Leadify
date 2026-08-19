@@ -5,7 +5,7 @@
 
 const RECENT_SEARCHES_KEY = 'header_recent_searches_v1';
 const RECENT_LEADS_KEY = 'header_recent_leads_v1';
-const MAX_RECENT = 5;
+const MAX_RECENT = 12;
 
 export interface RecentLead {
   id: string;       // route id (lead_number or legacy id)
