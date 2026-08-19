@@ -1,7 +1,7 @@
 const graphMailboxSyncService = require('./graphMailboxSyncService');
 
-const DEFAULT_INTERVAL_MINUTES = Number(process.env.MAILBOX_SYNC_INTERVAL_MINUTES || '5');
-const SCHEDULER_ENABLED = true; // Enabled - fetches emails every 5 minutes
+const DEFAULT_INTERVAL_MINUTES = Number(process.env.MAILBOX_SYNC_INTERVAL_MINUTES || '30');
+const SCHEDULER_ENABLED = true; // Full mailbox sweep every 30 minutes (webhooks still pick up new mail)
 
 let schedulerHandle = null;
 let isRunning = false;
@@ -34,7 +34,7 @@ function startMailboxSyncScheduler() {
 
   const intervalMinutes = Number.isFinite(DEFAULT_INTERVAL_MINUTES) && DEFAULT_INTERVAL_MINUTES > 0
     ? DEFAULT_INTERVAL_MINUTES
-    : 5;
+    : 30;
   const intervalMs = intervalMinutes * 60 * 1000;
 
   console.log(`⏰ Mailbox scheduler starting: interval=${intervalMinutes} minute(s)`);

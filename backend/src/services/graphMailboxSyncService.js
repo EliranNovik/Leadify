@@ -396,80 +396,14 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
     }
     }
 
-    const unmatchedExternal = unique.filter(
-      (email) => (!mapping[email] || mapping[email].length === 0) && !isLawofficeDomain(email)
-    );
-    if (unmatchedExternal.length) {
-      await fillUnmatchedAddressesCaseInsensitive(unmatchedExternal, addMapping);
-    }
+    // Do not ILIKE-scan leads_lead / leads_contact for unmatched addresses.
+    // That seq-scans large tables and was pinning CPU (57014). Indexed RPC/eq lookup is enough.
   } catch (error) {
     console.error('❌ Error while resolving lead mappings for emails:', error.message || error);
   }
 
   return mapping;
 };
-
-const escapeIlikeExact = (value) =>
-  String(value || '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-
-async function fillUnmatchedAddressesCaseInsensitive(addresses, addMapping) {
-  for (const addr of addresses) {
-    const pattern = escapeIlikeExact(addr);
-    const [{ data: leads }, { data: legacy }, { data: contacts }] = await Promise.all([
-      supabase.from('leads').select('id,email').ilike('email', pattern).limit(5),
-      supabase.from('leads_lead').select('id,email').ilike('email', pattern).limit(5),
-      supabase.from('leads_contact').select('id,email,newlead_id').ilike('email', pattern).limit(5),
-    ]);
-    const contactMatches = applyAddressMatches(addMapping, leads, legacy, contacts);
-    if (!contactMatches.length) continue;
-
-    const relByContact = new Map();
-    for (const relChunk of chunkArray(contactMatches.map((c) => c.id), 200)) {
-      const { data: rels, error: relError } = await supabase
-        .from('lead_leadcontact')
-        .select('contact_id,lead_id,newlead_id')
-        .in('contact_id', relChunk);
-      if (relError) {
-        console.error('❌ Failed to resolve lead_leadcontact for email addresses:', relError.message || relError);
-        continue;
-      }
-      (rels || []).forEach((rel) => {
-        const list = relByContact.get(rel.contact_id) || [];
-        list.push(rel);
-        relByContact.set(rel.contact_id, list);
-      });
-    }
-
-    contactMatches.forEach((contact) => {
-      if (contact.newlead_id) {
-        addMapping(contact.email, {
-          clientId: contact.newlead_id,
-          legacyId: null,
-          contactId: contact.id,
-          leadId: contact.newlead_id,
-        });
-      }
-      (relByContact.get(contact.id) || []).forEach((rel) => {
-        if (rel.lead_id) {
-          addMapping(contact.email, {
-            clientId: null,
-            legacyId: rel.lead_id,
-            contactId: contact.id,
-            leadId: rel.lead_id,
-          });
-        }
-        if (rel.newlead_id) {
-          addMapping(contact.email, {
-            clientId: rel.newlead_id,
-            legacyId: null,
-            contactId: contact.id,
-            leadId: rel.newlead_id,
-          });
-        }
-      });
-    });
-  }
-}
 
 const uniqueMatches = (matches = []) => {
   const map = new Map();
@@ -605,20 +539,15 @@ async function findEmailRowByMessageId(messageId) {
 }
 
 async function insertMailboxEmailRow(row) {
-  const rpcRows = [row];
-  if (row.user_id) {
-    rpcRows.push({ ...row, user_id: null });
-  }
+  // emails.user_id_fkey does not accept CRM users.id — inserting it logs 23503 on every row.
+  const rpcRow = { ...row, user_id: null };
   if (mailboxWriteRpcsAvailable) {
     let error = null;
-    for (const rpcRow of rpcRows) {
-      const result = await supabase.rpc('insert_mailbox_email', { p_row: rpcRow });
-      if (!result.error && result.data) {
-        return { id: result.data, error: null };
-      }
-      error = result.error;
-      if (error && isMissingRpc(error)) break;
+    const result = await supabase.rpc('insert_mailbox_email', { p_row: rpcRow });
+    if (!result.error && result.data) {
+      return { id: result.data, error: null };
     }
+    error = result.error;
     if (!error) {
       return { id: null, error: null };
     }
@@ -639,12 +568,9 @@ async function insertMailboxEmailRow(row) {
     }
   }
 
-  const attempts = [row];
-  if (row.user_id) {
-    attempts.push({ ...row, user_id: null });
-  }
+  const attempts = [{ ...row, user_id: null }];
   if (row.client_id || row.legacy_id) {
-    attempts.push({ ...row, client_id: null, legacy_id: null, user_id: row.user_id || null });
+    attempts.push({ ...row, client_id: null, legacy_id: null, user_id: null });
   }
   let lastError = null;
   for (const attempt of attempts) {
@@ -874,7 +800,10 @@ class GraphMailboxSyncService {
 
     console.log(`📬 Graph sync: fetched ${messages.length} messages for ${mailboxAddress}${deltaLink ? ' (delta)' : ''}`);
 
-    const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages, accessToken);
+    const skipFullBodies = ['scheduled', 'interval', 'initial'].includes(String(trigger));
+    const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages, accessToken, {
+      skipFullBodies,
+    });
 
     await mailboxStateService.upsertState(resolvedUserId, {
       delta_link: nextDeltaLink || deltaLink || null,
@@ -1306,7 +1235,7 @@ class GraphMailboxSyncService {
     return { messages, nextDeltaLink: nextLink };
   }
 
-  async persistMessages(userId, mailboxAddress, messages = [], accessToken = null) {
+  async persistMessages(userId, mailboxAddress, messages = [], accessToken = null, options = {}) {
     if (!messages.length) {
       return { processed: 0, inserted: 0, skipped: 0, trackedCount: 0 };
     }
@@ -1513,10 +1442,14 @@ class GraphMailboxSyncService {
       console.log(`ℹ️  No new email leads to notify (${insertedCount} new emails processed)`);
     }
 
-    if (accessToken && insertedForBodies.length) {
+    if (accessToken && insertedForBodies.length && !options.skipFullBodies) {
       this.fetchFullBodiesForMessages(userId, mailboxAddress, insertedForBodies, accessToken).catch((err) => {
         console.error('⚠️  Error fetching full email bodies:', err.message || err);
       });
+    } else if (options.skipFullBodies && insertedForBodies.length) {
+      console.log(
+        `⏭️ Skipping eager full-body fetch for ${insertedForBodies.length} new email(s) on scheduled sync (loaded when opened)`
+      );
     }
 
     console.log(`📥 Stored ${insertedCount} new emails (processed ${messages.length}, ${duplicatesSkipped} already saved, ${filteredOut} filtered out)`);
@@ -1586,9 +1519,9 @@ class GraphMailboxSyncService {
 
       const hasBody = Boolean(fullBody && fullBody.trim().length > 0);
       const patch = {};
+      // Keep full HTML in email_bodies only. Writing it onto public.emails
+      // (and into body_preview) was a top CPU cost on the 5M-row table.
       if (hasBody) {
-        patch.body_html = fullBody;
-        patch.body_preview = fullBody;
         patch.body_cached = true;
       }
       if (attachmentsFetched) {

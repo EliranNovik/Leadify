@@ -218,10 +218,12 @@ const MyContribution: React.FC<MyContributionProps> = ({
 
       const { data: deptRows } = await supabase
         .from('sales_contribution_settings')
-        .select('department, percentage');
+        .select('department_name, percentage');
       if (deptRows) {
         const map = new Map<string, number>();
-        (deptRows as any[]).forEach((r: any) => map.set(String(r.department), Number(r.percentage) || 0));
+        (deptRows as any[]).forEach((r: any) =>
+          map.set(String(r.department_name), Number(r.percentage) || 0),
+        );
         setDepartmentPercentages(map);
       }
 

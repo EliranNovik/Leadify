@@ -214,7 +214,19 @@ export async function insertLegacyLeadInteraction(
     .select(selectCols)
     .single();
 
-  // Sequence can lag behind MAX(id) when rows were inserted with explicit ids historically
+  // Sequence lags behind MAX(id) after historical / app MAX(id)+1 inserts.
+  // Bump nextval, then retry without an explicit id so the sequence stays in sync.
+  if (error?.code === '23505') {
+    await supabase.rpc('resync_leads_leadinteractions_id_seq');
+    const afterResync = await supabase
+      .from('leads_leadinteractions')
+      .insert(insertPayload)
+      .select(selectCols)
+      .single();
+    data = afterResync.data;
+    error = afterResync.error;
+  }
+
   if (error?.code === '23505') {
     const nextId = await allocateLegacyLeadInteractionId();
     const retry = await supabase

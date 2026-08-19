@@ -3,9 +3,12 @@
  * Kept out of InteractionsTab.tsx to shrink the component.
  *
  * Performance rules for the large `emails` table:
- * - Prefer indexed client_id / legacy_id lookups.
+ * - Prefer indexed client_id / legacy_id lookups, or email_lead_timeline RPC.
  * - Never drive queries with recipient_list ILIKE (seq-scan / 57014).
- * - Address fallbacks use sender_email + sent_at bounds only.
+ * - Never PostgREST-filter emails by sender_email: parameterized
+ *   `sender_email = $1` cannot use idx_emails_sender_email_sent_at
+ *   (partial: btrim(sender_email) <> '') and seq-scans ~5M rows.
+ * - Address matching belongs in email_lead_timeline (predicates match the index).
  * - List fetches omit body_html; hydrate bodies on demand.
  */
 
@@ -666,49 +669,10 @@ export async function fetchLeadEmailsForTimeline(
     }
   }
 
-  if (fastRows.length > 0 || !matchByAddress) {
-    return { data: fastRows.slice(0, limit), error };
-  }
-
-  // Last resort: sender_email eq — can still timeout on this table; keep short and ignore errors.
-  if (senderEmails.length === 0) {
-    return { data: fastRows, error };
-  }
-
-  const sinceIso = new Date(
-    Date.now() - EMAIL_ADDRESS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString();
-  const uniqueSenders = Array.from(new Set(senderEmails)).slice(0, 3);
-
-  try {
-    const addressChunks = await Promise.all(
-      uniqueSenders.map(async (em) => {
-        try {
-          const result = await withQueryTimeout(
-            supabaseClient
-              .from('emails')
-              .select(select)
-              .eq('sender_email', em)
-              .gte('sent_at', sinceIso)
-              .order('sent_at', { ascending: false })
-              .limit(limit),
-            EMAIL_ADDRESS_MATCH_TIMEOUT_MS,
-          );
-          if (result.error) return [] as any[];
-          return result.data || [];
-        } catch {
-          return [] as any[];
-        }
-      }),
-    );
-
-    return {
-      data: mergeEmailRowsById(fastRows, addressChunks.flat(), limit),
-      error,
-    };
-  } catch {
-    return { data: fastRows, error };
-  }
+  // Do not fall back to PostgREST `.eq('sender_email')`. That query cannot use
+  // the partial (sender_email, sent_at) index and seq-scans emails until 57014.
+  // Address matching is already in email_lead_timeline when the RPC is healthy.
+  return { data: fastRows.slice(0, limit), error };
 }
 
 export type LeadEmailListMeta = {

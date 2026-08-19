@@ -108,7 +108,8 @@ BEGIN
     body_cached
   ) VALUES (
     NULLIF(p_row->>'message_id', ''),
-    NULLIF(p_row->>'user_id', '')::uuid,
+    -- emails.user_id → auth.users(id). Mailbox tokens carry public.users.id (23503).
+    NULL,
     p_row->>'sender_name',
     p_row->>'sender_email',
     p_row->>'recipient_list',

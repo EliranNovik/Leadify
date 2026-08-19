@@ -1,5 +1,13 @@
--- Speeds InteractionsTab / email modal address fallback:
---   WHERE sender_email = $1 AND sent_at >= $2 ORDER BY sent_at DESC
+-- Speeds email_lead_timeline / email_office_thread_* sender branches:
+--   WHERE sender_email = $1
+--     AND sender_email IS NOT NULL
+--     AND btrim(sender_email) <> ''
+--     AND sent_at >= $2
+--   ORDER BY sent_at DESC
+--
+-- PostgREST `.eq('sender_email', $1).gte('sent_at', $2)` CANNOT use this
+-- partial index (planner cannot prove btrim($1) <> '' at plan time) and
+-- seq-scans emails → 57014. Do not issue that query from the app.
 --
 -- Do NOT run CREATE INDEX on emails in the Supabase SQL editor — the HTTP
 -- gateway times out even with SET statement_timeout TO '0'.

@@ -6027,20 +6027,6 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
           interactionTime = now.toTimeString().split(' ')[0]; // HH:MM:SS format
         }
 
-        // Get the next available ID for leads_leadinteractions
-        const { data: maxIdData, error: maxIdError } = await supabase
-          .from('leads_leadinteractions')
-          .select('id')
-          .order('id', { ascending: false })
-          .limit(1)
-          .single();
-
-        if (maxIdError && maxIdError.code !== 'PGRST116') { // PGRST116 = no rows returned
-          throw maxIdError;
-        }
-
-        const nextId = maxIdData?.id ? maxIdData.id + 1 : 1;
-
         // Prepare description - prefix with METHOD: to preserve the kind when fetching
         // Format: "METHOD:office|observation text" or "METHOD:sms|observation text"
         let descriptionValue = newContact.observation || null;
@@ -6052,8 +6038,9 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
         
         // Insert into leads_leadinteractions table
         // Only include contact_id if a specific contact was selected (not the main lead with id -1)
+        // Omit id — let the serial default assign it. Explicit MAX(id)+1 leaves
+        // the sequence behind and causes 23505 on every later insert.
         const insertPayload: any = {
-          id: nextId,
           cdate: now.toISOString(),
           udate: now.toISOString(),
           kind: dbKind,

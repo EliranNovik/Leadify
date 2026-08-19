@@ -255,12 +255,11 @@ async function lookupLanguageId(languageText) {
     try {
       const result = await supabase
         .from('misc_language')
-        .select('id, name, iso_code, name_he')
-        .limit(100); // Get all languages (should be a small table)
+        .select('id, name, iso_code')
+        .limit(100);
       allLanguages = result.data;
       allError = result.error;
     } catch (err) {
-      // If name_he column doesn't exist, try without it
       const result = await supabase
         .from('misc_language')
         .select('id, name, iso_code')
@@ -366,7 +365,7 @@ async function lookupLanguageId(languageText) {
         if (lang.iso_code?.toUpperCase() === normalizedInput.toUpperCase()) return true;
         // If input has Hebrew chars, check if it matches Hebrew name or if language is Hebrew
         if (hasHebrewChars) {
-          if (lang.name_he === normalizedInput) return true;
+          if (lang.name === normalizedInput) return true;
           // If input is "עברית" and language name contains "Hebrew" or iso_code is "HE", it's a match
           if (normalizedInput === 'עברית' && (lang.name?.toLowerCase().includes('hebrew') || lang.iso_code?.toUpperCase() === 'HE')) {
             return true;
@@ -387,7 +386,7 @@ async function lookupLanguageId(languageText) {
         if (lang.name?.toUpperCase().includes(normalizedInput.toUpperCase())) return true;
         if (lang.iso_code?.toUpperCase().includes(normalizedInput.toUpperCase())) return true;
         // If input has Hebrew chars, check Hebrew name
-        if (hasHebrewChars && lang.name_he && lang.name_he.includes(normalizedInput)) return true;
+        if (hasHebrewChars && lang.name && lang.name.includes(normalizedInput)) return true;
         // If input is "עברית", match Hebrew language
         if (normalizedInput === 'עברית' && (lang.name?.toLowerCase().includes('hebrew') || lang.iso_code?.toUpperCase() === 'HE')) {
           return true;
