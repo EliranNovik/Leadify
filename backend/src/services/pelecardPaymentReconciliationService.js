@@ -54,6 +54,8 @@ function extractPelecardMeta(data = {}) {
     data.pelecardTransactionId ||
     data.TransactionId ||
     data.TransactionPelecardId ||
+    data.UserKey ||
+    data.userKey ||
     null;
   return { statusCode, statusDescription, transactionId };
 }
@@ -194,6 +196,31 @@ async function fetchPaymentByCallbackRef(ref) {
   }
 
   return null;
+}
+
+async function fetchPaymentByTransactionId(transactionId) {
+  const value = String(transactionId || '').trim();
+  if (!value) return null;
+
+  const { data: rows, error } = await supabase
+    .from('payment_links')
+    .select('secure_token')
+    .eq('pelecard_transaction_id', value)
+    .order('created_at', { ascending: false })
+    .limit(2);
+
+  if (error) {
+    logSupabaseError('fetchPaymentByTransactionId failed', error);
+    return null;
+  }
+  if (!rows?.length) return null;
+  if (rows.length > 1) {
+    console.warn('[Pelecard] Ambiguous pelecard_transaction_id match', {
+      transactionId: value,
+      count: rows.length,
+    });
+  }
+  return fetchPaymentByToken(rows[0].secure_token);
 }
 
 async function enrichPaymentRow(data) {
@@ -502,6 +529,7 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
           pelecard: verifyPayload?.pelecard ?? verifyPayload,
           reconciledAt: new Date().toISOString(),
           reconcilePlanPending: false,
+          openFinancePending: false,
         },
       })
       .eq('id', payment.id);
@@ -615,6 +643,7 @@ async function persistPaymentFailure(payment, secureToken, callbackData, verifyR
           ...previousRaw,
           callback: callbackData,
           pelecard: verifyPayload?.pelecard ?? verifyPayload,
+          openFinancePending: false,
         },
         ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
       })
@@ -690,7 +719,12 @@ async function handleSessionExpired(payment, callbackData) {
     .update({
       status: 'pending',
       pelecard_status_code: statusCode,
-      pelecard_raw_response: { ...previousRaw, callback: callbackData, sessionExpired: true },
+      pelecard_raw_response: {
+        ...previousRaw,
+        callback: callbackData,
+        sessionExpired: true,
+        openFinancePending: false,
+      },
       ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
     })
     .eq('id', payment.id);
@@ -1014,6 +1048,7 @@ module.exports = {
   pelecardDescriptionFromRaw,
   fetchPaymentByToken,
   fetchPaymentByCallbackRef,
+  fetchPaymentByTransactionId,
   persistCallbackSnapshot,
   verifyPelecardTransaction,
   persistPaymentSuccess,

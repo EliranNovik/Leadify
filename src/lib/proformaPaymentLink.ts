@@ -43,15 +43,10 @@ function isLinkUsable(row: PaymentLinkRow): boolean {
   const token = row.secure_token?.trim();
   if (!token) return false;
   const status = (row.status || '').toLowerCase();
-  if (status === 'expired' || status === 'cancelled') return false;
-  if (row.expires_at && status === 'pending') {
-    const exp = new Date(row.expires_at).getTime();
-    if (!Number.isNaN(exp) && exp < Date.now()) return false;
-  }
-  return true;
+  return status !== 'paid';
 }
 
-export const PAYMENT_LINK_TTL_DAYS = 30;
+export const PAYMENT_LINK_TTL_DAYS = 180;
 
 export function paymentLinkExpiresAtIso(from = new Date()): string {
   const expiresAt = new Date(from);
@@ -66,17 +61,12 @@ type LiveCheckoutLinkRow = {
   expires_at?: string | null;
 };
 
-/** Pending/processing links that a client can still pay. */
+/** Unpaid links that a client can still pay on the original URL. */
 export function isLiveCheckoutPaymentLink(row: LiveCheckoutLinkRow): boolean {
   const token = row.secure_token?.trim();
   if (!token) return false;
   const status = (row.status || 'pending').toLowerCase();
-  if (status !== 'pending' && status !== 'processing') return false;
-  if (row.expires_at) {
-    const exp = new Date(row.expires_at).getTime();
-    if (!Number.isNaN(exp) && exp < Date.now()) return false;
-  }
-  return true;
+  return status !== 'paid';
 }
 
 /** Latest unpaid checkout link for a payment plan row. */
@@ -88,7 +78,7 @@ export async function findLatestLivePaymentLink(options: {
     .from('payment_links')
     .select('id, secure_token, status, expires_at, created_at')
     .eq('payment_plan_id', options.paymentPlanId)
-    .in('status', ['pending', 'processing'])
+    .in('status', ['pending', 'processing', 'failed', 'cancelled', 'expired'])
     .order('created_at', { ascending: false })
     .limit(20);
 

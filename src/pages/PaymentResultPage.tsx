@@ -34,6 +34,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const [confirmationEmailSent, setConfirmationEmailSent] = useState(false);
   const [invoiceLink, setInvoiceLink] = useState<string | null>(null);
   const [invoiceNumber, setInvoiceNumber] = useState<string | null>(null);
+  const [waitTimedOut, setWaitTimedOut] = useState(false);
+  const [keepWaitingKey, setKeepWaitingKey] = useState(0);
 
   const redirectMeta = useMemo(
     () => ({
@@ -76,8 +78,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     let cancelled = false;
     let attempts = 0;
     let timer: ReturnType<typeof setInterval> | null = null;
-    // Soft ErrorURL / confirming flow needs longer for CheckGoodParamX recovery.
-    const maxAttempts =
+    let maxAttempts =
       confirming || variant === 'success' ? 45 : variant === 'failed' ? 30 : 12;
     const intervalMs = 2000;
 
@@ -112,6 +113,9 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
       applyStatus(data);
       attempts += 1;
+      if (data.openFinancePending || data.pelecard_status_code === '665') {
+        maxAttempts = Math.max(maxAttempts, 150);
+      }
 
       // Landed on failed/cancelled but charge actually succeeded — move to thank-you URL.
       if (data.status === 'paid' && (variant === 'failed' || variant === 'cancelled')) {
@@ -153,7 +157,20 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
         }
       }
 
-      if (isFinalStatus(data.status) || attempts >= maxAttempts) {
+      if (isFinalStatus(data.status)) {
+        setWaitTimedOut(false);
+        setVerifying(false);
+        if (timer) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+        return;
+      }
+
+      if (attempts >= maxAttempts) {
+        const stillWaiting =
+          data.status === 'processing' || data.status === 'pending' || !data.status;
+        setWaitTimedOut(stillWaiting);
         setVerifying(false);
         if (timer) {
           window.clearInterval(timer);
@@ -163,6 +180,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     };
 
     setVerifying(true);
+    setWaitTimedOut(false);
     void poll();
     timer = window.setInterval(() => {
       if (cancelled || attempts >= maxAttempts) {
@@ -176,7 +194,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, [paymentId, variant, redirectMeta, confirming, navigate]);
+  }, [paymentId, variant, redirectMeta, confirming, navigate, keepWaitingKey]);
 
   // Email + tax invoice are created asynchronously after redirect — poll briefly
   useEffect(() => {
@@ -219,6 +237,26 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     };
   }, [variant, paymentId, verifying, statusData?.status]);
 
+  useEffect(() => {
+    if (!waitTimedOut || !paymentId || statusData?.status === 'paid') return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      const data = await fetchPaymentStatus(paymentId);
+      if (cancelled) return;
+      setStatusData(data);
+      if (data.status === 'paid') {
+        setWaitTimedOut(false);
+        navigate(`/payment/success?paymentId=${encodeURIComponent(paymentId)}`, { replace: true });
+      } else if (data.status === 'failed' || data.status === 'cancelled' || data.status === 'expired') {
+        setWaitTimedOut(false);
+      }
+    }, 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [waitTimedOut, paymentId, statusData?.status, navigate]);
+
   const pelecardStatusCode =
     statusData?.pelecard_status_code ||
     urlPelecardStatus ||
@@ -246,15 +284,24 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     !statusData?.status ||
     statusData.status === 'processing' ||
     statusData.status === 'pending';
+  const openFinancePending = Boolean(
+    statusData?.openFinancePending ||
+      statusData?.pelecard_status_code === '665' ||
+      statusData?.bank_transfer_status === 'RCVD',
+  );
   const resolvedCancelled = statusData?.status === 'cancelled';
   const showSuccess = backendPaid;
+  const showWaitingTimeout = !backendPaid && waitTimedOut && stillProcessing;
   // Prefer thank-you/verifying over a hard error while confirmation is in flight.
   const showConfirming =
-    !backendPaid && (verifying || ((confirming || variant === 'success') && stillProcessing));
+    !backendPaid &&
+    !showWaitingTimeout &&
+    (verifying || ((confirming || variant === 'success') && stillProcessing));
   const showCancelled =
     !showConfirming && !backendPaid && (variant === 'cancelled' || resolvedCancelled);
   const showFailed =
     !showConfirming &&
+    !showWaitingTimeout &&
     !backendPaid &&
     !showCancelled &&
     (variant === 'failed' || variant === 'success');
@@ -284,13 +331,45 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
           {showConfirming ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <span className="loading loading-spinner loading-lg text-primary" />
-              <h2 className="text-xl font-bold text-gray-900">Confirming your payment…</h2>
+              <h2 className="text-xl font-bold text-gray-900">
+                {openFinancePending ? 'Waiting for your bank…' : 'Confirming your payment…'}
+              </h2>
               <p className="text-sm text-gray-600 text-center">
-                Please wait — we are verifying the charge with the payment provider.
+                {openFinancePending
+                  ? 'Your bank received the transfer request. Open your bank app and approve it — this can take a few minutes.'
+                  : 'Please wait — we are verifying the charge with the payment provider.'}
               </p>
               <p className="text-xs text-gray-400 text-center">
-                Do not close this window. You will see a thank-you screen when it is confirmed.
+                {openFinancePending
+                  ? 'Do not start a second payment. Keep this page open until you see a thank-you screen or a clear result.'
+                  : 'Do not close this window. You will see a thank-you screen when it is confirmed.'}
               </p>
+            </div>
+          ) : showWaitingTimeout ? (
+            <div className="text-center">
+              <ExclamationCircleIcon className="w-16 h-16 text-amber-500 mx-auto mb-4" />
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">
+                {openFinancePending ? 'Still waiting for your bank' : 'Still confirming your payment'}
+              </h2>
+              <p className="text-gray-600 mb-4 leading-relaxed">
+                {openFinancePending
+                  ? 'The bank has not finished this transfer yet. If you already approved it, you can wait a bit longer. If you left the bank app or it timed out, try again on the same link — by card or bank transfer.'
+                  : 'We have not received a final confirmation yet. You can wait a bit longer or try again on the same payment link.'}
+              </p>
+              <div className="flex flex-col gap-2">
+                {paymentId ? (
+                  <Link to={`/payment/${paymentId}?fresh=1`} className="btn btn-primary h-14 min-h-14 w-full rounded-xl text-base font-semibold">
+                    Try again
+                  </Link>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn btn-ghost w-full rounded-xl"
+                  onClick={() => setKeepWaitingKey((n) => n + 1)}
+                >
+                  Keep waiting
+                </button>
+              </div>
             </div>
           ) : showSuccess ? (
             <div className="text-center">
@@ -342,7 +421,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
                 </ul>
               )}
               {paymentId && (
-                <Link to={`/payment/${paymentId}?fresh=1`} className="btn btn-primary w-full">
+                <Link to={`/payment/${paymentId}?fresh=1`} className="btn btn-primary h-14 min-h-14 w-full rounded-xl text-base font-semibold">
                   Back to payment
                 </Link>
               )}
@@ -362,7 +441,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
               {paymentId && statusData?.status !== 'paid' && (
                 <Link
                   to={`/payment/${paymentId}?fresh=1`}
-                  className="btn btn-primary w-full rounded-xl"
+                  className="btn btn-primary h-14 min-h-14 w-full rounded-xl text-base font-semibold"
                 >
                   Try again
                 </Link>

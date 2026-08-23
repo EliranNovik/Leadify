@@ -41,6 +41,7 @@ import {
     LockClosedIcon,
     ChevronRightIcon,
     DocumentArrowUpIcon,
+    DocumentPlusIcon,
     BookmarkIcon,
 } from '@heroicons/react/24/outline';
 import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
@@ -243,14 +244,14 @@ const CLIENT_HEADER_INNER_PANEL = CLIENT_HEADER_CARD;
 
 /** Light grey pills for language, source, category, topic (below header box). */
 const META_BADGE_WHITE =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-[18px] bg-gray-100 px-3.5 py-2.5 text-sm font-medium text-base-content/85 shadow-none border-0 dark:bg-base-200';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-[18px] bg-gray-100 px-3.5 py-2.5 text-sm font-medium text-gray-500 shadow-none border-0 dark:bg-base-200 dark:text-base-content/55';
 
 const META_BADGE_WHITE_BTN =
     `${META_BADGE_WHITE} font-sans transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:shadow-md`;
 
 /** Compact chips — light grey, larger icons than stage buttons. */
 const META_BADGE_CONNECTED =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-full border-0 bg-gray-100 px-3 py-2 text-[13px] font-medium text-base-content/80 shadow-none dark:bg-base-200';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-full border-0 bg-gray-100 px-3 py-2 text-[13px] font-medium text-gray-500 shadow-none dark:bg-base-200 dark:text-base-content/55';
 
 const META_BADGE_CONNECTED_BTN =
     `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:bg-gray-200 dark:hover:bg-base-200`;
@@ -290,10 +291,10 @@ const HEADER_ACTION_BAR_HISTORY_BTN =
 
 /** Round badge for the header actions menu trigger (aligned with meta chips). */
 const HEADER_ACTIONS_MENU_TRIGGER =
-    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative z-[1] !h-10 !w-10 !min-h-10 !min-w-10 !max-h-10 !max-w-10 shrink-0 !overflow-visible border border-base-200/60 !bg-white !p-0 text-base-content/75 shadow-sm transition-colors duration-150 hover:!bg-violet-50 hover:text-violet-800 dark:border-base-300/45 dark:!bg-base-100 dark:hover:!bg-violet-900/30 dark:hover:text-violet-200 sm:!h-11 sm:!w-11 sm:!min-h-11 sm:!min-w-11';
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative z-[1] !h-10 !w-10 !min-h-10 !min-w-10 !max-h-10 !max-w-10 shrink-0 !overflow-visible border border-neutral-200 !bg-white !p-0 text-black shadow-sm transition-colors duration-150 hover:!bg-neutral-100 sm:!h-11 sm:!w-11 sm:!min-h-11 sm:!min-w-11';
 
 const HEADER_ACTIONS_MENU_TRIGGER_CONNECTED =
-    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative z-[1] !h-9 !w-9 !min-h-9 !min-w-9 !max-h-9 !max-w-9 shrink-0 !overflow-visible border-0 !bg-gray-200 !p-0 text-base-content/75 shadow-none transition-colors duration-150 hover:!bg-gray-300 hover:text-violet-800 dark:!bg-base-300 dark:hover:!bg-base-200';
+    'btn btn-circle btn-ghost aspect-square pointer-events-auto relative z-[1] !h-9 !w-9 !min-h-9 !min-w-9 !max-h-9 !max-w-9 shrink-0 !overflow-visible border-0 !bg-neutral-200 !p-0 text-black shadow-none transition-colors duration-150 hover:!bg-neutral-300';
 
 const HEADER_ACTIONS_FAB_BTN =
     'btn btn-circle btn-ghost aspect-square relative !h-11 !w-11 !min-h-11 !min-w-11 !max-h-11 !max-w-11 shrink-0 !overflow-visible !p-0 shadow-md backdrop-blur-md transition-none';
@@ -394,13 +395,16 @@ const HEADER_DUPLICATES_BTN_CLASS =
     'btn btn-circle btn-ghost relative shrink-0 !overflow-visible border border-orange-200/80 bg-orange-50 text-orange-700 hover:border-orange-300 hover:bg-orange-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-orange-800/50 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
 
 const MORE_ACTIONS_SECTION_LABEL =
-    'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500 dark:text-gray-400';
+    'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500';
 
 const MORE_ACTIONS_SHEET_ITEM =
-    'group flex w-full items-center gap-3 rounded-2xl border border-transparent bg-transparent px-3.5 py-3 text-left text-[15px] font-medium leading-snug text-base-content/90 transition-all hover:border-base-200/80 hover:bg-base-200/70 hover:shadow-sm active:scale-[0.995] dark:hover:border-base-300/40 dark:hover:bg-base-200/35';
+    'client-actions-drawer-item group flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-[15px] font-medium leading-snug text-black';
 
 const MORE_ACTIONS_ICON_BOX =
-    'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors';
+    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-black';
+
+const ACTIONS_DRAWER_COUNT =
+    'ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-black px-1.5 text-[11px] font-semibold text-white';
 
 const MORE_ACTIONS_ICON_TONE_DEFAULT =
     'bg-base-200/70 text-base-content/70 group-hover:bg-base-200 dark:group-hover:bg-base-300/50';
@@ -440,7 +444,7 @@ const STAGE_ACTION_BTN_BASE =
     'inline-flex items-center justify-center gap-2 min-h-10 !overflow-visible rounded-full px-5 py-2 text-sm font-semibold whitespace-nowrap border-0 shadow-none transition-colors duration-150';
 
 const STAGE_ACTION_BTN_CLASS =
-    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
+    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-base-300 dark:text-base-content/55 dark:hover:bg-base-200`;
 
 const STAGE_ACTION_BTN_CLASS_COMPACT = STAGE_ACTION_BTN_CLASS;
 
@@ -448,10 +452,10 @@ const HEADER_PINNED_BTN_CLASS =
     'inline-flex h-10 w-10 shrink-0 items-center justify-center relative !overflow-visible rounded-full border-0 bg-gray-200 text-sky-700 shadow-none transition-colors duration-150 hover:bg-gray-300 dark:bg-base-300 dark:text-sky-300 dark:hover:bg-base-200';
 
 const CLIENT_SIGNED_STAGE_BTN_CLASS =
-    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
+    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-base-300 dark:text-base-content/55 dark:hover:bg-base-200`;
 
 const CLIENT_DECLINED_STAGE_BTN_CLASS =
-    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-black hover:bg-gray-300 dark:bg-base-300 dark:text-base-content dark:hover:bg-base-200`;
+    `${STAGE_ACTION_BTN_BASE} bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-base-300 dark:text-base-content/55 dark:hover:bg-base-200`;
 
 const CLIENT_SIGNED_STAGE_BTN_COMPACT = CLIENT_SIGNED_STAGE_BTN_CLASS;
 
@@ -638,55 +642,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [clientPortalModalOpen, setClientPortalModalOpen] = useState(false);
     const [moreActionsSheetOpen, setMoreActionsSheetOpen] = useState(false);
     const [headerActionsMenuOpen, setHeaderActionsMenuOpen] = useState(false);
-    const [headerActionsDockHover, setHeaderActionsDockHover] = useState<number | null>(null);
     const [inactiveNotesExpanded, setInactiveNotesExpanded] = useState(false);
     const headerActionsMenuRef = useRef<HTMLDivElement | null>(null);
-    const [isMobileViewport, setIsMobileViewport] = useState(() =>
-        typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false,
-    );
-
-    useEffect(() => {
-        const mq = window.matchMedia('(max-width: 767px)');
-        const onChange = () => setIsMobileViewport(mq.matches);
-        onChange();
-        mq.addEventListener('change', onChange);
-        return () => mq.removeEventListener('change', onChange);
-    }, []);
 
     const closeMoreActionsSheet = useCallback(() => setMoreActionsSheetOpen(false), []);
     const closeHeaderActionsMenu = useCallback(() => {
         setHeaderActionsMenuOpen(false);
-        setHeaderActionsDockHover(null);
     }, []);
     const toggleHeaderActionsMenu = useCallback(
-        () =>
-            setHeaderActionsMenuOpen((open) => {
-                if (open) setHeaderActionsDockHover(null);
-                return !open;
-            }),
+        () => setHeaderActionsMenuOpen((open) => !open),
         [],
     );
-
-    useEffect(() => {
-        if (!headerActionsMenuOpen || isMobileViewport) return;
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') closeHeaderActionsMenu();
-        };
-        const onPointerDown = (event: MouseEvent | TouchEvent) => {
-            const target = event.target as Node | null;
-            if (!target) return;
-            if (target instanceof Element && target.closest('[data-header-actions-menu]')) return;
-            closeHeaderActionsMenu();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        document.addEventListener('mousedown', onPointerDown);
-        document.addEventListener('touchstart', onPointerDown);
-        return () => {
-            window.removeEventListener('keydown', onKeyDown);
-            document.removeEventListener('mousedown', onPointerDown);
-            document.removeEventListener('touchstart', onPointerDown);
-        };
-    }, [headerActionsMenuOpen, closeHeaderActionsMenu, isMobileViewport]);
 
     const setEditLeadDrawerOpenState = useCallback(
         (open: boolean) => {
@@ -2985,27 +2951,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         iconTone?: 'default' | 'success' | 'danger' | 'warning' | 'primary' | 'purple';
         className?: string;
     }) => {
-        const iconToneClass =
-            iconTone === 'success'
-                ? MORE_ACTIONS_ICON_TONE_SUCCESS
-                : iconTone === 'danger'
-                  ? MORE_ACTIONS_ICON_TONE_DANGER
-                  : iconTone === 'warning'
-                    ? MORE_ACTIONS_ICON_TONE_WARNING
-                    : iconTone === 'primary'
-                      ? MORE_ACTIONS_ICON_TONE_PRIMARY
-                      : iconTone === 'purple'
-                        ? MORE_ACTIONS_ICON_TONE_PURPLE
-                        : MORE_ACTIONS_ICON_TONE_DEFAULT;
-
         return (
             <button type="button" className={`${MORE_ACTIONS_SHEET_ITEM} ${className}`.trim()} onClick={onClick}>
-                <span className={`${MORE_ACTIONS_ICON_BOX} ${iconToneClass}`}>
+                <span className={MORE_ACTIONS_ICON_BOX}>
                     <Icon className="h-5 w-5" aria-hidden />
                 </span>
                 <span className="min-w-0 flex-1">{label}</span>
                 <ChevronRightIcon
-                    className="h-4 w-4 shrink-0 text-base-content/25 transition-all group-hover:translate-x-0.5 group-hover:text-base-content/45"
+                    className="h-4 w-4 shrink-0 text-neutral-400 transition-colors group-hover:text-black"
                     aria-hidden
                 />
             </button>
@@ -3047,8 +3000,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             {renderMoreActionRow({
                                 icon: isInHighlightsState ? StarIcon : StarIcon,
                                 label: isInHighlightsState ? 'Remove from Highlights' : 'Add to Highlights',
-                                iconTone: 'purple',
-                                className: isInHighlightsState ? 'text-purple-700 dark:text-purple-300' : '',
                                 onClick: async () => {
                                     if (!selectedClient?.id) return;
                                     const isLegacyLead =
@@ -3122,8 +3073,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 ? renderMoreActionRow({
                                       icon: CheckCircleIcon,
                                       label: 'Activate Case',
-                                      iconTone: 'success',
-                                      className: 'text-emerald-700 dark:text-emerald-300',
                                       onClick: () => {
                                           handleActivation();
                                           closeMoreActionsSheet();
@@ -3132,8 +3081,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 : renderMoreActionRow({
                                       icon: NoSymbolIcon,
                                       label: 'Deactivate / Spam',
-                                      iconTone: 'danger',
-                                      className: 'text-red-600 dark:text-red-400',
                                       onClick: () => {
                                           setShowUnactivationModal(true);
                                           closeMoreActionsSheet();
@@ -3148,8 +3095,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                               renderMoreActionRow({
                                   icon: TrashIcon,
                                   label: 'Delete Lead',
-                                  iconTone: 'danger',
-                                  className: 'text-red-600 dark:text-red-400',
                                   onClick: () => {
                                       setShowDeleteModal(true);
                                       closeMoreActionsSheet();
@@ -3181,51 +3126,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         [closeHeaderActionsMenu],
     );
 
-    const renderHeaderActionsFabRow = ({
-        label,
-        onClick,
-        title,
-        tone = 'slate',
-        index,
-        children,
-        disabled = false,
-    }: {
-        label: string;
-        onClick: () => void;
-        title?: string;
-        tone?: keyof typeof HEADER_ACTIONS_FAB_TONE;
-        index: number;
-        children: React.ReactNode;
-        disabled?: boolean;
-    }) => {
-        const scale = headerActionsDockScale(headerActionsDockHover, index);
-        const toneClasses = HEADER_ACTIONS_FAB_TONE[tone];
-        return (
-            <div
-                className="flex origin-right items-center justify-end gap-2.5 will-change-transform"
-                style={{
-                    transform: `scale(${scale})`,
-                    // Follow the pointer instantly; ease only when leaving the dock.
-                    transition:
-                        headerActionsDockHover == null ? HEADER_ACTIONS_DOCK_TRANSITION_RESET : 'none',
-                    zIndex: scale > 1.02 ? 5 : 1,
-                }}
-            >
-                <span className={`${HEADER_ACTIONS_FAB_LABEL} ${toneClasses.label}`}>{label}</span>
-                <button
-                    type="button"
-                    className={`${HEADER_ACTIONS_FAB_BTN} ${toneClasses.btn} disabled:pointer-events-none disabled:opacity-40`}
-                    title={title || label}
-                    aria-label={label}
-                    disabled={disabled}
-                    onClick={onClick}
-                >
-                    {children}
-                </button>
-            </div>
-        );
-    };
-
     const getHeaderActionItems = () => {
         const items: Array<{
             key: string;
@@ -3235,16 +3135,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             disabled?: boolean;
             onClick: () => void;
             children: React.ReactNode;
-        }> = [
-            {
-                key: 'more',
-                label: 'More',
-                title: 'More lead actions',
-                tone: 'violet',
-                onClick: () => runHeaderAction(() => setMoreActionsSheetOpen(true)),
-                children: <EllipsisHorizontalIcon className={HEADER_ACTION_ICON} aria-hidden />,
-            },
-        ];
+            count?: number;
+        }> = [];
 
         if (displayPhone) {
             items.push({
@@ -3310,21 +3202,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             tone: 'indigo',
             disabled: !headerDocsLeadNumber,
             onClick: () => runHeaderAction(openHeaderDocumentsModal),
-            children: (
-                <>
-                    <DocumentArrowUpIcon className={HEADER_ACTION_ICON} aria-hidden />
-                    {headerSupabaseDocumentsCount > 0 ? (
-                        <span
-                            className="absolute -right-1 -top-1 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-[10px] font-bold text-white"
-                            style={{ backgroundColor: '#3a3a3a' }}
-                        >
-                            {headerSupabaseDocumentsCount > 99
-                                ? '99+'
-                                : headerSupabaseDocumentsCount}
-                        </span>
-                    ) : null}
-                </>
-            ),
+            count: headerSupabaseDocumentsCount,
+            children: <DocumentArrowUpIcon className={HEADER_ACTION_ICON} aria-hidden />,
+        });
+
+        items.push({
+            key: 'create-word',
+            label: 'Create Word document',
+            title: leadIdentifier
+                ? 'Create a Word document with letterhead'
+                : 'Lead number required',
+            tone: 'indigo',
+            disabled: !leadIdentifier,
+            onClick: () =>
+                runHeaderAction(() => {
+                    if (!leadIdentifier) return;
+                    navigate(`/clients/${encodeURIComponent(String(leadIdentifier))}/word-document`);
+                }),
+            children: <DocumentPlusIcon className={HEADER_ACTION_ICON} aria-hidden />,
         });
 
         items.push({
@@ -3333,16 +3228,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             title: 'Tags',
             tone: 'purple',
             onClick: () => runHeaderAction(() => setTagsModalOpen(true)),
-            children: (
-                <>
-                    <TagIcon className={HEADER_ACTION_ICON} aria-hidden />
-                    {tagsCount > 0 ? (
-                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
-                            {tagsCount > 99 ? '99+' : tagsCount}
-                        </span>
-                    ) : null}
-                </>
-            ),
+            count: tagsCount,
+            children: <TagIcon className={HEADER_ACTION_ICON} aria-hidden />,
         });
 
         items.push({
@@ -3352,79 +3239,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             tone: 'amber',
             disabled: !publicUserId,
             onClick: () => runHeaderAction(openFlaggedConversationsModal),
-            children: (
-                <>
-                    <FlagIcon className={HEADER_ACTION_ICON} aria-hidden />
-                    {totalFlagBadge > 0 ? (
-                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
-                            {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
-                        </span>
-                    ) : null}
-                </>
-            ),
+            count: totalFlagBadge,
+            children: <FlagIcon className={HEADER_ACTION_ICON} aria-hidden />,
         });
 
-        if (duplicateContacts && duplicateContacts.length > 0) {
-            items.push({
-                key: 'duplicates',
-                label: 'Duplicates',
-                title:
-                    duplicateContacts.length === 1
-                        ? `Duplicate Contact: ${duplicateContacts[0].contactName}`
-                        : `${duplicateContacts.length} Duplicate Contacts`,
-                tone: 'orange',
-                onClick: () => runHeaderAction(handleDuplicatesClick),
-                children: (
-                    <>
-                        <DocumentDuplicateIcon className={HEADER_ACTION_ICON} aria-hidden />
-                        <span className="absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
-                            {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
-                        </span>
-                    </>
-                ),
-            });
-        }
-
         return items;
-    };
-
-    const renderHeaderActionsMenuItems = () => {
-        const items = getHeaderActionItems();
-        return (
-            <div
-                className="flex flex-col items-end gap-4"
-                onMouseLeave={() => setHeaderActionsDockHover(null)}
-                onMouseMove={(event) => {
-                    const bounds = event.currentTarget.getBoundingClientRect();
-                    if (bounds.height <= 0 || items.length === 0) return;
-                    const ratio = (event.clientY - bounds.top) / bounds.height;
-                    const next = Math.max(0, Math.min(items.length - 1, ratio * items.length - 0.5));
-                    setHeaderActionsDockHover((prev) =>
-                        prev != null && Math.abs(prev - next) < 0.02 ? prev : next,
-                    );
-                }}
-            >
-                {items.map((item, index) => (
-                    <React.Fragment key={item.key}>
-                        {renderHeaderActionsFabRow({
-                            label: item.label,
-                            title: item.title,
-                            tone: item.tone,
-                            index,
-                            disabled: item.disabled,
-                            onClick: item.onClick,
-                            children: item.children,
-                        })}
-                    </React.Fragment>
-                ))}
-            </div>
-        );
     };
 
     const renderHeaderActionsSheetList = () => {
         const items = getHeaderActionItems();
         return (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col">
                 {items.map((item) => (
                     <button
                         key={item.key}
@@ -3433,85 +3258,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         disabled={item.disabled}
                         onClick={item.onClick}
                     >
-                        <span
-                            className={`relative overflow-visible ${MORE_ACTIONS_ICON_BOX} ${HEADER_ACTION_SHEET_ICON_TONE[item.tone]}`}
-                        >
-                            {item.children}
-                        </span>
+                        <span className={MORE_ACTIONS_ICON_BOX}>{item.children}</span>
                         <span className="min-w-0 flex-1">{item.label}</span>
-                        <ChevronRightIcon
-                            className="h-4 w-4 shrink-0 text-base-content/25"
-                            aria-hidden
-                        />
+                        {item.count && item.count > 0 ? (
+                            <span className={ACTIONS_DRAWER_COUNT}>
+                                {item.count > 99 ? '99+' : item.count}
+                            </span>
+                        ) : (
+                            <ChevronRightIcon className="h-4 w-4 shrink-0 text-neutral-400 transition-colors group-hover:text-black" aria-hidden />
+                        )}
                     </button>
                 ))}
             </div>
         );
     };
 
-    const renderHeaderActionsMenuPanel = (placement: 'header-top' | 'attached' = 'header-top') => {
-        if (hideActionsDropdown) return null;
-        const panelClass =
-            placement === 'attached'
-                ? HEADER_ACTIONS_DROPDOWN_PANEL_ATTACHED
-                : connectToAppHeader
-                  ? HEADER_ACTIONS_DROPDOWN_PANEL_CONNECTED
-                  : HEADER_ACTIONS_DROPDOWN_PANEL;
-        return (
-            <div
-                data-header-actions-menu
-                role="menu"
-                aria-hidden={!headerActionsMenuOpen}
-                className={`hidden md:block ${panelClass} transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-                    headerActionsMenuOpen
-                        ? 'pointer-events-auto translate-y-0 scale-100 opacity-100'
-                        : 'pointer-events-none -translate-y-1.5 scale-[0.98] opacity-0'
-                }`}
-                {...(!headerActionsMenuOpen ? ({ inert: '' } as Record<string, string>) : {})}
-            >
-                <div
-                    aria-hidden
-                    className="pointer-events-none absolute -inset-x-6 -inset-y-5 -z-10 bg-white/70 backdrop-blur-2xl dark:bg-base-300/75"
-                    style={{
-                        borderRadius: '2.5rem',
-                        WebkitMaskImage:
-                            'radial-gradient(ellipse 82% 76% at 78% 50%, #000 42%, transparent 82%)',
-                        maskImage:
-                            'radial-gradient(ellipse 82% 76% at 78% 50%, #000 42%, transparent 82%)',
-                    }}
-                />
-                <div
-                    aria-hidden
-                    className="pointer-events-none absolute -inset-x-3 -inset-y-2 -z-10 bg-white/40 backdrop-blur-md dark:bg-base-200/45"
-                    style={{
-                        borderRadius: '2rem',
-                        WebkitMaskImage:
-                            'radial-gradient(ellipse 88% 82% at 80% 50%, #000 55%, transparent 88%)',
-                        maskImage:
-                            'radial-gradient(ellipse 88% 82% at 80% 50%, #000 55%, transparent 88%)',
-                    }}
-                />
-                {renderHeaderActionsMenuItems()}
-            </div>
-        );
-    };
-
     const renderHeaderActionsMenuTrigger = (
         variant: 'floating' | 'connected' = 'floating',
-        options?: { withPanel?: boolean },
     ) => {
         if (hideActionsDropdown) return null;
-        const withPanel = options?.withPanel !== false;
         const triggerClass =
             variant === 'connected' ? HEADER_ACTIONS_MENU_TRIGGER_CONNECTED : HEADER_ACTIONS_MENU_TRIGGER;
         return (
             <div className="relative z-40" ref={headerActionsMenuRef} data-header-actions-menu>
                 <button
                     type="button"
-                    className={`${triggerClass} ${headerActionsMenuOpen ? 'ring-2 ring-violet-400/60 text-violet-800 dark:text-violet-200' : ''}`}
+                    className={`${triggerClass} ${headerActionsMenuOpen ? '!bg-black !text-white hover:!bg-neutral-800' : ''}`}
                     aria-label={headerActionsMenuOpen ? 'Close actions' : 'Open actions'}
                     aria-expanded={headerActionsMenuOpen}
-                    aria-haspopup="menu"
+                    aria-haspopup="dialog"
                     onClick={toggleHeaderActionsMenu}
                 >
                     {headerActionsMenuOpen ? (
@@ -3520,8 +3295,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <EllipsisVerticalIcon className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />
                     )}
                 </button>
-
-                {withPanel ? renderHeaderActionsMenuPanel('attached') : null}
             </div>
         );
     };
@@ -3937,7 +3710,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     const renderMetaBadgesRow = (
         variant: 'floating' | 'connected' = 'floating',
-        options?: { deferActionsPanel?: boolean },
     ) => (
         <div className="relative z-30 flex w-full min-w-0 items-center gap-2 sm:gap-2.5">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
@@ -3948,9 +3720,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 {renderPinnedInteractionsButton()}
             </div>
             <div className="flex shrink-0 items-center">
-                {renderHeaderActionsMenuTrigger(variant, {
-                    withPanel: !options?.deferActionsPanel,
-                })}
+                {renderHeaderActionsMenuTrigger(variant)}
             </div>
         </div>
     );
@@ -5292,16 +5062,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
                         {connectToAppHeader ? (
                             <div className="client-header-meta-band">
-                                {renderMetaBadgesRow('connected', { deferActionsPanel: true })}
+                                {renderMetaBadgesRow('connected')}
                             </div>
                         ) : null}
-                        {renderHeaderActionsMenuPanel('header-top')}
                     </div>
                     </div>
 
                     {!connectToAppHeader ? (
                     <div className="mt-2.5 flex w-full min-w-0">
-                        {renderMetaBadgesRow('floating', { deferActionsPanel: true })}
+                        {renderMetaBadgesRow('floating')}
                     </div>
                     ) : null}
 
@@ -6064,7 +5833,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                 {/* Category Edit Modal */}
                 <MobileBottomSheet
-                    open={headerActionsMenuOpen && isMobileViewport}
+                    open={headerActionsMenuOpen}
                     onClose={closeHeaderActionsMenu}
                     title="Actions"
                     subtitle={
@@ -6072,13 +5841,29 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             ? `${selectedClient.name}${selectedClient?.lead_number ? ` · #${selectedClient.lead_number}` : ''}`
                             : undefined
                     }
+                    desktopLayout="drawer-right"
                     zIndex={325}
-                    headerClassName="!border-b-0"
-                    contentClassName="!px-4 !pb-6 bg-base-200/25 dark:bg-base-300/10"
-                    overlayClassName="backdrop-blur-[1px]"
-                    sheetClassName="md:hidden"
+                    headerClassName="!border-b border-neutral-200"
+                    contentClassName="!px-3 !pb-6 !bg-white"
+                    overlayClassName="bg-black/40"
+                    sheetClassName="md:max-w-[min(100%,22rem)] md:shadow-xl md:!border-l md:!border-neutral-200 md:!bg-white"
                 >
-                    {renderHeaderActionsSheetList()}
+                    <div
+                        onClick={(e) => {
+                            const target = e.target as HTMLElement;
+                            if (target.closest('button, a, [role="button"]')) {
+                                closeHeaderActionsMenu();
+                                closeMoreActionsSheet();
+                            }
+                        }}
+                    >
+                        {renderHeaderActionsSheetList()}
+                        {!hideActionsDropdown ? (
+                            <div className="mt-6 border-t border-neutral-200 pt-5">
+                                {moreActionsMenuItems}
+                            </div>
+                        ) : null}
+                    </div>
                 </MobileBottomSheet>
 
                 <MobileBottomSheet

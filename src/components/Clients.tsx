@@ -1227,7 +1227,11 @@ const Clients: React.FC<ClientsProps> = ({
       const scrollRoot = document.querySelector('main.clients-detail-scroll') as HTMLElement | null;
       const scrollTop = scrollRoot?.scrollTop ?? window.scrollY ?? 0;
       if (target) {
-        const pinned = Math.max(Math.round(target.getBoundingClientRect().top + scrollTop), NAVBAR_PX);
+        const rect = target.getBoundingClientRect();
+        // 3rem collapsed icon button — keep centered on the language chip.
+        const iconBtnPx = 48;
+        const alignedTop = Math.round(rect.top + rect.height / 2 - iconBtnPx / 2 + scrollTop);
+        const pinned = Math.max(alignedTop, NAVBAR_PX);
         document.documentElement.style.setProperty('--client-detail-nav-top', `${pinned}px`);
       }
       // Viewport Y so the open white rail stays flush under the navbar after scroll.

@@ -113,3 +113,10 @@ export async function consumeContractAiReviewSse<T>(
 ): Promise<T> {
   return consumeAiReviewSse<T>('ai-contract-improvement', body, onThinking);
 }
+
+export async function consumeWordDocumentAiReviewSse<T>(
+  body: Record<string, unknown>,
+  onThinking?: (text: string) => void,
+): Promise<T> {
+  return consumeAiReviewSse<T>('ai-word-document', body, onThinking);
+}

@@ -21,6 +21,9 @@ export interface PaymentStatusResponse {
   pelecard_transaction_id?: string | null;
   pelecard_status_code?: string | null;
   pelecard_status_description?: string | null;
+  openFinancePending?: boolean;
+  sessionExpired?: boolean;
+  bank_transfer_status?: string | null;
   confirmation_email_sent?: boolean;
   payper_invoice_link?: string | null;
   payper_invoice_number?: string | null;
@@ -45,6 +48,8 @@ export interface CreatePelecardSessionResponse {
   alreadyPaid?: boolean;
   /** True when an existing in-progress checkout URL was returned (no new Pelecard init). */
   reusedSession?: boolean;
+  /** Bank transfer is still with the receiving bank — do not start a second checkout. */
+  openFinancePending?: boolean;
   status?: PaymentLinkStatus;
   /** CssURL sent to Pelecard at init — verify this URL returns your CSS file. */
   cssUrl?: string;

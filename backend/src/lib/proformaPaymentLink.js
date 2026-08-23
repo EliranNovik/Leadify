@@ -18,11 +18,7 @@ function isLinkUsable(row) {
   const token = row?.secure_token?.trim();
   if (!token) return false;
   const status = (row.status || '').toLowerCase();
-  if (status === 'expired' || status === 'cancelled') return false;
-  if (row.expires_at && status === 'pending') {
-    const exp = new Date(row.expires_at).getTime();
-    if (!Number.isNaN(exp) && exp < Date.now()) return false;
-  }
+  if (status === 'paid') return false;
   return true;
 }
 

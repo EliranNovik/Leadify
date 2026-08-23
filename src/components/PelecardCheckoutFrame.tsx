@@ -1,12 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowPathIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline';
 import { paymentFormErrorCopy } from '../lib/paymentPageUtils';
+import { getPelecardFailureCopy } from '../lib/pelecardErrors';
+
+/** Pelecard hosted iframes die in ~10–20 minutes. Replace the dead form before the client is stuck. */
+const IFRAME_EXPIRE_MS = 10 * 60 * 1000;
 
 interface PelecardCheckoutFrameProps {
   paymentUrl: string | null;
   loading?: boolean;
   error?: string | null;
   onRetry?: () => void;
+  /** Server already marked this hosted session expired (301/302). */
+  sessionExpired?: boolean;
+  /** Do not auto-expire the iframe (Open Finance waiting on the bank). */
+  disableAutoExpire?: boolean;
   title?: string;
   onCheckoutNavigate?: (pathWithQuery: string) => void;
   /** Extra classes on the iframe shell (e.g. full-bleed on mobile). */
@@ -69,6 +77,8 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   loading = false,
   error = null,
   onRetry,
+  sessionExpired = false,
+  disableAutoExpire = false,
   title = 'Payment',
   onCheckoutNavigate,
   shellClassName = '',
@@ -81,11 +91,19 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   const [iframeHeight, setIframeHeight] = useState(() =>
     isLgViewportNow() ? IFRAME_CONTENT_HEIGHT : IFRAME_CONTENT_HEIGHT_MOBILE,
   );
+  const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {
     setIframeHeight(isLgViewportNow() ? IFRAME_CONTENT_HEIGHT : IFRAME_CONTENT_HEIGHT_MOBILE);
     setIframeLoaded(false);
+    setTimedOut(false);
   }, [paymentUrl]);
+
+  useEffect(() => {
+    if (!paymentUrl || loading || error || disableAutoExpire || sessionExpired) return;
+    const timer = window.setTimeout(() => setTimedOut(true), IFRAME_EXPIRE_MS);
+    return () => window.clearTimeout(timer);
+  }, [paymentUrl, loading, error, disableAutoExpire, sessionExpired]);
 
   useEffect(() => {
     if (!paymentUrl || isLgViewport || loading || error) return;
@@ -156,6 +174,8 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 
   const showIframeLoading = paymentUrl && !iframeLoaded && !loading && !error;
   const errCopy = paymentFormErrorCopy(error);
+  const showExpiredOverlay = Boolean(paymentUrl && !loading && !error && (sessionExpired || timedOut));
+  const expiredCopy = getPelecardFailureCopy({ statusCode: '301' });
 
   if (error) {
     console.error('[Pelecard] Payment form error:', error);
@@ -182,10 +202,10 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
             {onRetry && (
               <button
                 type="button"
-                className="btn btn-primary btn-sm mt-5 gap-2 rounded-xl"
+                className="btn btn-primary mt-6 h-14 min-h-14 w-full rounded-xl text-base font-semibold gap-2"
                 onClick={onRetry}
               >
-                <ArrowPathIcon className="w-4 h-4" />
+                <ArrowPathIcon className="w-5 h-5" />
                 Try again
               </button>
             )}
@@ -193,7 +213,34 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
         </div>
       )}
 
-      {paymentUrl && !loading && !error && (
+      {showExpiredOverlay && (
+        <div className="flex items-center justify-center py-10 px-4 sm:px-6 lg:flex-1">
+          <div className="text-center max-w-md bg-gray-50 border border-gray-100 rounded-2xl px-6 py-8 w-full">
+            <ExclamationCircleIcon className="w-12 h-12 text-amber-500 mx-auto mb-3" />
+            <p className="text-xl font-semibold text-gray-900">{expiredCopy.title}</p>
+            <p className="text-sm text-gray-600 mt-3 leading-relaxed">{expiredCopy.explanation}</p>
+            {expiredCopy.actions.length > 0 && (
+              <ul className="text-sm text-gray-600 text-left mt-4 space-y-2 list-disc pl-5">
+                {expiredCopy.actions.map((action) => (
+                  <li key={action}>{action}</li>
+                ))}
+              </ul>
+            )}
+            {onRetry && (
+              <button
+                type="button"
+                className="btn btn-primary mt-6 h-14 min-h-14 w-full rounded-xl text-base font-semibold gap-2"
+                onClick={onRetry}
+              >
+                <ArrowPathIcon className="w-5 h-5" />
+                Try again
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {paymentUrl && !loading && !error && !showExpiredOverlay && (
         <div className={`${IFRAME_SCROLL_SHELL_CLASS} ${fillDesktop ? 'lg:!h-full' : ''}`.trim()}>
           {showIframeLoading && (
             <div className="flex flex-col items-center justify-center px-4 sm:px-6 min-h-[280px] max-lg:min-h-[320px] bg-white lg:sticky lg:top-0 lg:z-10 lg:min-h-full">

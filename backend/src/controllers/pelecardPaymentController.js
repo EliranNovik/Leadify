@@ -6,6 +6,11 @@ const {
   buildReusedSessionResponse,
   sessionAgeMs,
 } = require('../lib/pelecardSessionReuse');
+const {
+  reviveUnpaidPaymentLink,
+  isOpenFinancePending,
+} = require('../lib/paymentLinkRevive');
+const { openFinanceStatus } = require('../lib/pelecardCallback');
 const payperInvoiceService = require('../services/payperInvoiceService');
 const { sendPaymentConfirmationEmail } = require('../services/paymentConfirmationEmailService');
 const {
@@ -93,23 +98,25 @@ async function createPaymentSession(req, res) {
       }
     }
 
-    if (payment.expires_at && new Date(payment.expires_at) < new Date()) {
-      await supabase
-        .from('payment_links')
-        .update({ status: 'expired' })
-        .eq('id', payment.id);
-      return res.status(400).json({ success: false, error: 'Payment link expired' });
-    }
+    payment = await reviveUnpaidPaymentLink(supabase, payment);
 
     const forceNew = Boolean(req.body?.forceNew);
     const pelecardProfile = resolvePelecardProfileFromRequest(req);
 
-    if (canReusePelecardSession(payment, pelecardProfile, { forceNew })) {
+    // Never mint a second Pelecard init while a bank transfer is still with the bank.
+    const ofPending = isOpenFinancePending(payment);
+    if (
+      (ofPending && String(payment.pelecard_session_url || '').trim()) ||
+      canReusePelecardSession(payment, pelecardProfile, { forceNew: forceNew && !ofPending })
+    ) {
       console.info('[Pelecard] Reusing checkout session', {
         paymentId,
         ageMs: sessionAgeMs(payment),
       });
-      return res.json(buildReusedSessionResponse(payment, paymentId, pelecardProfile));
+      return res.json({
+        ...buildReusedSessionResponse(payment, paymentId, pelecardProfile),
+        openFinancePending: ofPending,
+      });
     }
 
     payment = await ensurePaymentLinkPlanContact(payment);
@@ -146,6 +153,8 @@ async function createPaymentSession(req, res) {
           initParamX: session.paramX,
           customerIdField: pelecardService.getCustomerIdFieldMode(),
           sessionCreatedAt: new Date().toISOString(),
+          openFinancePending: false,
+          sessionExpired: false,
         },
       })
       .eq('id', payment.id);
@@ -243,6 +252,13 @@ async function getPaymentStatus(req, res) {
       pelecard_status_description: reconciliation.pelecardDescriptionFromRaw(
         payment.pelecard_raw_response,
       ),
+      openFinancePending: isOpenFinancePending(payment),
+      sessionExpired:
+        Boolean(payment.pelecard_raw_response?.sessionExpired) ||
+        reconciliation.isSessionExpiredCode(payment.pelecard_status_code),
+      bank_transfer_status:
+        openFinanceStatus(payment.pelecard_raw_response?.callback || payment.pelecard_raw_response) ||
+        null,
       confirmation_email_sent: Boolean(payment.payment_confirmation_email_sent_at),
       payper_invoice_link: payment.payper_invoice_link || null,
       payper_invoice_number: payment.payper_invoice_number || null,
@@ -341,14 +357,24 @@ async function handlePelecardReturn(req, res, outcome) {
     }
 
     if (!secureToken && transactionId) {
-      // Identity is only a transaction id — still attempt recovery of recent processing links.
-      setImmediate(() => {
-        void reconciliation.recoverRecentProcessingPayments({ lookbackMinutes: 45, limit: 20 });
-      });
+      payment = await reconciliation.fetchPaymentByTransactionId(transactionId);
+      if (payment?.secure_token) {
+        secureToken = payment.secure_token;
+      } else {
+        setImmediate(() => {
+          void reconciliation.recoverRecentProcessingPayments({ lookbackMinutes: 45, limit: 20 });
+        });
+      }
     }
 
     if (!secureToken) {
-      return res.redirect(appRedirect('/payment/failed', { reason: 'missing_payment_id' }));
+      return res.redirect(
+        appRedirect('/payment/failed', {
+          reason: 'missing_payment_id',
+          ...(statusCode ? { pelecardStatus: statusCode } : {}),
+          ...(statusDescription ? { pelecardMessage: statusDescription.slice(0, 300) } : {}),
+        }),
+      );
     }
 
     payment = await reconciliation.fetchPaymentByCallbackRef(secureToken);
@@ -390,7 +416,7 @@ async function handlePelecardReturn(req, res, outcome) {
         .from('payment_links')
         .update({
           status: 'cancelled',
-          pelecard_raw_response: { ...previousRaw, callback: data },
+          pelecard_raw_response: { ...previousRaw, callback: data, openFinancePending: false },
         })
         .eq('id', payment.id);
       return res.redirect(appRedirect('/payment/cancelled', { paymentId: secureToken }, redirectProfile));
@@ -592,6 +618,7 @@ async function getBillingContact(req, res) {
       return sendNoCacheJson(res, { success: false, error: 'Payment not found' });
     }
 
+    payment = await reviveUnpaidPaymentLink(supabase, payment);
     payment = await ensurePaymentLinkPlanContact(payment);
     const contact = await resolvePlanBillingContact(payment);
 

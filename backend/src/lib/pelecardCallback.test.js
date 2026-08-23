@@ -23,6 +23,21 @@ const openFinancePayload = {
   },
 };
 
+test('recovers identity from truncated Pelecard JSON field name', () => {
+  const truncated =
+    '{"StatusCode":"133","ErrorMessage":"card not valid according to Isracard list.","ResultData":{"TransactionId":"c7532747-e40b-4394-a79a-be4298fa1717","ShvaResult":"141","AdditionalDetailsParamX":"L214731-211469","TransactionPelecardId":"3065414758","Cavv":"AKPLFJHSy5BVAp2EVuwaAoABFA';
+  const data = mergeCallbackData({
+    query: {},
+    body: { [truncated]: '' },
+  });
+
+  assert.equal(data.StatusCode, '133');
+  assert.equal(data.AdditionalDetailsParamX, 'L214731-211469');
+  assert.equal(data.TransactionId, 'c7532747-e40b-4394-a79a-be4298fa1717');
+  assert.equal(data.TransactionPelecardId, '3065414758');
+  assert.equal(data.ShvaResult, '141');
+});
+
 test('parses JSON sent as the sole URL-encoded field name', () => {
   const raw = JSON.stringify(openFinancePayload);
   const data = mergeCallbackData({

@@ -4,7 +4,7 @@
  * payment page is refreshed or opened in a second tab.
  */
 
-const DEFAULT_REUSE_MINUTES = 20;
+const DEFAULT_REUSE_MINUTES = 3;
 
 function sessionCreatedAt(payment) {
   const raw = payment?.pelecard_raw_response;
@@ -34,6 +34,11 @@ function canReusePelecardSession(payment, profile, options = {}) {
   const requestedProfile = (profile || 'production').trim() || 'production';
   if (sessionProfile !== requestedProfile) return false;
 
+  const raw = payment.pelecard_raw_response;
+  if (raw && typeof raw === 'object' && raw.openFinancePending === true) {
+    return true;
+  }
+
   const reuseMinutes = Number(
     process.env.PELECARD_SESSION_REUSE_MINUTES || String(DEFAULT_REUSE_MINUTES),
   );
@@ -44,8 +49,6 @@ function canReusePelecardSession(payment, profile, options = {}) {
 
   const statusCode = String(payment.pelecard_status_code || '').trim();
   if (statusCode === '301' || statusCode === '302') return false;
-
-  const raw = payment.pelecard_raw_response;
   if (raw && typeof raw === 'object' && raw.sessionExpired === true) return false;
 
   // Do not reuse a hosted page built with a different CustomerIdField mode

@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import { PaperAirplaneIcon, SparklesIcon } from '@heroicons/react/24/solid';
+import { PaperAirplaneIcon, SparklesIcon, XMarkIcon } from '@heroicons/react/24/solid';
 import MobileBottomSheet from './MobileBottomSheet';
 import { formatAiThinkingDisplay } from '../lib/aiReviewStreaming';
 
@@ -22,6 +22,8 @@ type ContractAiReviewPanelProps = {
   title?: React.ReactNode;
   subtitle?: string;
   placeholder?: string;
+  /** Plain chat — no “What changed” / Suggestion labels or change-diff layout. */
+  conversationOnly?: boolean;
 };
 
 const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
@@ -42,6 +44,7 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
   ),
   subtitle = 'Ask questions or request contract changes',
   placeholder = 'Type text...',
+  conversationOnly = false,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -109,17 +112,17 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
       className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
     >
       <div
-        className={`max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${
+        className={`max-w-[85%] rounded-2xl px-5 py-4 ${
           msg.role === 'user' ? 'contract-ai-bubble-user' : 'contract-ai-bubble-assistant'
         }`}
         style={{ fontSize: '1rem', lineHeight: 1.7 }}
       >
-        {msg.role === 'assistant' ? (
+        {!conversationOnly && msg.role === 'assistant' ? (
           <p className="mb-2 text-sm font-semibold text-violet-700">
             {msg.kind === 'answer' ? 'Suggestion' : 'What changed'}
           </p>
         ) : null}
-        {msg.role === 'assistant' && msg.kind === 'change' ? (
+        {!conversationOnly && msg.role === 'assistant' && msg.kind === 'change' ? (
           <div>{renderChangeContent(msg.content)}</div>
         ) : (
           <p className={`whitespace-pre-wrap text-sm ${msg.role === 'user' ? 'text-white' : 'text-gray-800'}`}>
@@ -134,12 +137,13 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
     <>
       <style>{`
         .contract-ai-bubble-assistant {
-          background: rgba(255,255,255,0.95);
+          background: #fff;
           color: #1f2937;
           border-bottom-left-radius: 2rem !important;
           border-top-right-radius: 2rem !important;
-          border: 1px solid #e5e7eb;
-          box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+          border: none;
+          box-shadow: none;
+          outline: none;
         }
         .contract-ai-bubble-user {
           background: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
@@ -181,13 +185,24 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
         onClose={onClose}
         title={title}
         subtitle={subtitle}
+        headerRight={
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle btn-sm text-base-content/60 hover:bg-base-200 hover:text-base-content"
+            onClick={onClose}
+            aria-label="Close AI sidebar"
+            title="Close"
+          >
+            <XMarkIcon className="h-5 w-5" />
+          </button>
+        }
         desktopLayout="drawer-right"
         mobileFullHeight
         zIndex={70}
         sheetClassName="print-hide md:max-w-md"
         overlayClassName="md:bg-transparent md:pointer-events-none"
         scrollLock="mobile"
-        contentClassName="!p-0 bg-gray-50/50"
+        contentClassName="!p-0 bg-gray-100"
         footerClassName="border-t-0"
         footer={
           <div className="contract-ai-input-area p-4 pt-3" data-sheet-no-drag>
@@ -231,11 +246,17 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
           {initialSummary ? (
             <div className="flex justify-start">
               <div
-                className="contract-ai-bubble-assistant max-w-[85%] rounded-2xl px-5 py-4 shadow-sm"
+                className="contract-ai-bubble-assistant max-w-[85%] rounded-2xl px-5 py-4"
                 style={{ fontSize: '1rem', lineHeight: 1.7 }}
               >
-                <p className="mb-2 text-sm font-semibold text-violet-700">What changed</p>
-                {renderChangeContent(initialSummary)}
+                {conversationOnly ? (
+                  <p className="whitespace-pre-wrap text-sm text-gray-800">{initialSummary}</p>
+                ) : (
+                  <>
+                    <p className="mb-2 text-sm font-semibold text-violet-700">What changed</p>
+                    {renderChangeContent(initialSummary)}
+                  </>
+                )}
               </div>
             </div>
           ) : null}
@@ -243,7 +264,9 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
           {!initialSummary && messages.length === 0 && !isApplying ? (
             <div className="flex justify-start">
               <div className="contract-ai-bubble-assistant max-w-[85%] rounded-2xl px-5 py-4 text-sm text-gray-600">
-                Add a question or change request below.
+                {conversationOnly
+                  ? 'Ask anything about this document, or describe what you want written.'
+                  : 'Add a question or change request below.'}
               </div>
             </div>
           ) : null}
@@ -252,8 +275,10 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
 
           {isApplying ? (
             <div className="flex justify-start">
-              <div className="contract-ai-bubble-assistant max-w-[85%] rounded-2xl px-5 py-4 shadow-sm">
-                <p className="mb-2 text-sm font-semibold text-violet-700">Working…</p>
+              <div className="contract-ai-bubble-assistant max-w-[85%] rounded-2xl px-5 py-4">
+                {conversationOnly ? null : (
+                  <p className="mb-2 text-sm font-semibold text-violet-700">Working…</p>
+                )}
                 <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-600">
                   {formatAiThinkingDisplay(thinkingText || '') || 'Starting…'}
                 </p>

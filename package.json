@@ -39,6 +39,7 @@
     "axios": "^1.12.2",
     "daisyui": "^5.0.43",
     "date-fns": "^4.1.0",
+    "docx": "^9.5.0",
     "dotenv": "^16.4.5",
     "emoji-picker-react": "^4.13.3",
     "framer-motion": "^12.23.25",

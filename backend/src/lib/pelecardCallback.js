@@ -17,6 +17,31 @@ const SUCCESSFUL_OPEN_FINANCE_STATUSES = new Set([
   'ACFC',
 ]);
 
+const RECOVERABLE_JSON_FIELDS = [
+  'StatusCode',
+  'ErrorMessage',
+  'StatusDescription',
+  'ShvaResult',
+  'TransactionId',
+  'AdditionalDetailsParamX',
+  'TransactionPelecardId',
+  'ConfirmationKey',
+  'ParamX',
+  'BankTransferStatus',
+  'BankTransferID',
+];
+
+/** Pull identity fields out of truncated Pelecard JSON (Cavv often blows the body limit). */
+function recoverFieldsFromPelecardText(raw, into = {}) {
+  if (typeof raw !== 'string' || raw.indexOf('StatusCode') === -1) return into;
+  for (const name of RECOVERABLE_JSON_FIELDS) {
+    if (into[name] != null && String(into[name]).trim() !== '') continue;
+    const match = raw.match(new RegExp(`"${name}"\\s*:\\s*"([^"]*)"`));
+    if (match?.[1]) into[name] = match[1];
+  }
+  return into;
+}
+
 function flattenCallbackSource(source, into = {}) {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return into;
 
@@ -26,7 +51,12 @@ function flattenCallbackSource(source, into = {}) {
     }
     // When URL-encoded parsing turns the entire JSON payload into a field name,
     // do not retain that huge raw key; mergeCallbackData parses it separately.
-    if (key.trim().startsWith('{') && parseJsonObject(key)) continue;
+    if (typeof key === 'string' && key.trim().startsWith('{')) {
+      const parsed = parseJsonObject(key);
+      if (parsed) flattenCallbackSource(parsed, into);
+      else recoverFieldsFromPelecardText(key, into);
+      continue;
+    }
     if (typeof value === 'object' && !Array.isArray(value)) {
       // Pelecard payloads vary between flat fields and nested ResultData /
       // OpenFinanceData objects. Flatten all plain nested objects so both forms work.
@@ -64,6 +94,7 @@ function mergeCallbackData(req = {}) {
   if (typeof req.body === 'string') {
     const parsedBody = parseJsonObject(req.body);
     if (parsedBody) flattenCallbackSource(parsedBody, merged);
+    else recoverFieldsFromPelecardText(req.body, merged);
   }
 
   // Standard wrappers used by gateways.
@@ -82,6 +113,7 @@ function mergeCallbackData(req = {}) {
     for (const rawKey of Object.keys(req.body)) {
       const parsed = parseJsonObject(rawKey);
       if (parsed) flattenCallbackSource(parsed, merged);
+      else recoverFieldsFromPelecardText(rawKey, merged);
     }
   }
 
@@ -126,6 +158,7 @@ function isPendingOpenFinanceCallback(data = {}) {
 
 module.exports = {
   flattenCallbackSource,
+  recoverFieldsFromPelecardText,
   mergeCallbackData,
   openFinanceStatus,
   isSuccessfulOpenFinanceStatus,

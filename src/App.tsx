@@ -46,6 +46,8 @@ import {
   LazyContactBridgePage,
   LazyDuplicateContactsPage,
   LazyContractPage,
+  LazyWordDocumentPage,
+  LazyPublicWordDocumentView,
   LazyHrEmployeeContractPage,
   LazyHrRecruitmentContractPage,
   LazyHrRecruitmentCandidatePage,
@@ -168,7 +170,13 @@ const AppContentInner: React.FC = () => {
     return path.includes('/contract');
   }, [location.pathname]);
   const isPoaEditPage = useMemo(() => location.pathname.startsWith('/poa/edit'), [location.pathname]);
-  const isFullBleedEditorPage = isContractPage || isPoaEditPage;
+  const isWordDocumentPage = useMemo(
+    () =>
+      location.pathname.includes('/word-document') &&
+      !location.pathname.includes('/public-word-document'),
+    [location.pathname],
+  );
+  const isFullBleedEditorPage = isContractPage || isPoaEditPage || isWordDocumentPage;
   const isCalendarPage = useMemo(
     () => location.pathname === '/calendar' || location.pathname === '/outlook-calendar',
     [location.pathname],
@@ -237,7 +245,7 @@ const AppContentInner: React.FC = () => {
     // Client subpages (timeline / history / duplicates / …) render their own layout and need
     // normal main padding so content isn't hidden under the fixed app Header.
     if (
-      /^\/clients\/[^/]+\/(duplicates|timeline|history|master|contract|schedule-meeting|reschedule-meeting)(\/|$)/.test(
+      /^\/clients\/[^/]+\/(duplicates|timeline|history|master|contract|word-document|schedule-meeting|reschedule-meeting)(\/|$)/.test(
         location.pathname,
       )
     ) {
@@ -728,6 +736,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-recruitment-contract/:contractId/:token" element={<RouteSuspense><LazyPublicRecruitmentContractView /></RouteSuspense>} />
       <Route path="/public-firm-contract/:contractId/:token" element={<RouteSuspense><LazyPublicFirmContractView /></RouteSuspense>} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
+      <Route path="/public-word-document/:id/:token" element={<RouteSuspense><LazyPublicWordDocumentView /></RouteSuspense>} />
       <Route path="/payment/success" element={<RouteSuspense><LazyPaymentSuccessPage /></RouteSuspense>} />
       <Route path="/payment/failed" element={<RouteSuspense><LazyPaymentFailedPage /></RouteSuspense>} />
       <Route path="/payment/cancelled" element={<RouteSuspense><LazyPaymentCancelledPage /></RouteSuspense>} />
@@ -1081,6 +1090,8 @@ const AppContentInner: React.FC = () => {
                     <Route path="/contacts/:contactId" element={<RouteSuspense><LazyContactBridgePage /></RouteSuspense>} />
                     <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} clientsAppNavOpen={clientsAppNavOpen} onToggleClientsAppNav={handleToggleClientsAppNav} /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/word-document/:id" element={<RouteSuspense><LazyWordDocumentPage key="word-document-id" /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/word-document" element={<RouteSuspense><LazyWordDocumentPage key="word-document-new" /></RouteSuspense>} />
                     <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />
                     <Route
                       path="/hr/employees/:employeeId/contract/:contractId"

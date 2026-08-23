@@ -41,7 +41,14 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
     };
   }
 
-  if (reason === 'missing_payment_id' || reason === 'payment_not_found') {
+  if (
+    (reason === 'missing_payment_id' || reason === 'payment_not_found') &&
+    !isPelecardSessionExpiredCode(code) &&
+    code !== '655' &&
+    code !== '666' &&
+    code !== '133' &&
+    code !== '141'
+  ) {
     return {
       title: 'Payment link problem',
       explanation: 'We could not match this page to a payment request.',
@@ -97,6 +104,47 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
     };
   }
 
+  if (code === '665') {
+    return {
+      title: 'Bank transfer in progress',
+      explanation:
+        'Your bank received the payment request and is still confirming it. This is not a declined card payment.',
+      actions: [
+        'Keep this page open, or wait a few minutes and refresh.',
+        'Do not start a second payment until this one is confirmed or rejected.',
+        'If your bank app is still open, complete the approval there.',
+      ],
+    };
+  }
+
+  if (code === '655' || code === '666') {
+    return {
+      title: 'Bank transfer was not completed',
+      explanation:
+        code === '655'
+          ? 'The bank transfer was cancelled before it finished. No money was taken.'
+          : 'The bank rejected or timed out this transfer (insufficient funds, expired bank approval, or the bank declined it). No money was taken.',
+      actions: [
+        'Click “Try again” below — you can use the same payment link.',
+        'Complete the approval in your bank app within a few minutes, or pay by card instead.',
+        'Contact our office only if the problem continues. You do not need a new link.',
+      ],
+    };
+  }
+
+  if (code === '133' || code === '141') {
+    return {
+      title: 'This card could not be charged',
+      explanation:
+        'The card network (Isracard) rejected this card for internet payment. The charge was not completed and no money was taken.',
+      actions: [
+        'Try a different credit or debit card on the same payment link.',
+        'If this is a business or prepaid card, try a standard personal card instead.',
+        'Contact your bank if the problem continues. You do not need a new link from our office.',
+      ],
+    };
+  }
+
   if (code === '002') {
     return {
       title: 'Card declined',
@@ -112,13 +160,13 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
 
   if (code === '004') {
     return {
-      title: 'Payment could not be processed',
+      title: 'Card declined',
       explanation:
-        'The card network or bank could not complete the charge. This can happen due to a temporary issue, incorrect card details, or bank security rules.',
+        'The card issuer (Isracard / the bank) refused this charge. The payment was not completed and no money was taken.',
       actions: [
-        'Check that the card number, expiry date, and security code (CVV) are correct.',
-        'Try again in a few minutes or use another card.',
-        'Contact your bank if the problem continues.',
+        'Try a different card on the same payment link.',
+        'Call the number on the back of the card — the bank can explain why it was refused (security block, internet payments, or limit).',
+        'You do not need a new link from our office.',
       ],
     };
   }

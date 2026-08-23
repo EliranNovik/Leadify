@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession, fetchBillingContact, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
+import { isPelecardSessionExpiredCode } from '../lib/pelecardErrors';
 import PelecardCheckoutFrame from '../components/PelecardCheckoutFrame';
 import PaymentSummaryCard, {
   type PaymentSummaryData,
@@ -17,7 +18,6 @@ import {
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
-import { findLatestLivePaymentLink } from '../lib/proformaPaymentLink';
 import { ensurePelecardClientSecureScript } from '../lib/pelecardWalletSetup';
 import { runPelecardWalletDiagnostics } from '../lib/pelecardWalletDiagnostics';
 import PaymentWalletDebugPanel from '../components/payment/PaymentWalletDebugPanel';
@@ -302,6 +302,8 @@ const PaymentPage: React.FC<{
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
+  const [checkoutSessionExpired, setCheckoutSessionExpired] = useState(false);
+  const [openFinancePending, setOpenFinancePending] = useState(false);
   const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
   const [exchangeLoading, setExchangeLoading] = useState(false);
 
@@ -455,41 +457,6 @@ const PaymentPage: React.FC<{
           return;
         }
 
-        const linkExpiredByDate = Boolean(
-          enriched.expires_at && new Date(enriched.expires_at) < new Date(),
-        );
-        const linkExpiredByStatus =
-          enriched.status === 'expired' || enriched.status === 'cancelled';
-
-        if ((linkExpiredByDate || enriched.status === 'expired') && enriched.payment_plan_id && !kioskMode) {
-          const live = await findLatestLivePaymentLink({
-            paymentPlanId: Number(enriched.payment_plan_id),
-            excludeToken: token,
-          });
-          const liveToken = live?.secure_token?.trim();
-          if (liveToken && liveToken !== token) {
-            navigate(`/payment/${encodeURIComponent(liveToken)}`, { replace: true });
-            return;
-          }
-        }
-
-        if (linkExpiredByDate) {
-          setPageError('This payment link has expired. Please contact the office for a new link.');
-          return;
-        }
-
-        if (linkExpiredByStatus) {
-          setPageError(
-            enriched.status === 'cancelled'
-              ? 'This payment was cancelled. You can open the link again to retry.'
-              : 'This payment link has expired.'
-          );
-          if (enriched.status === 'cancelled') {
-            setPaymentLink(enriched);
-          }
-          return;
-        }
-
         setPaymentLink(enriched);
       } catch (error) {
         console.error('Error:', error);
@@ -578,11 +545,14 @@ const PaymentPage: React.FC<{
     checkoutPaymentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
-  const canPay =
-    paymentLink &&
-    !isAlreadyPaid &&
-    paymentLink.status !== 'expired' &&
-    !(paymentLink.expires_at && new Date(paymentLink.expires_at) < new Date());
+  const canPay = Boolean(paymentLink && !isAlreadyPaid);
+
+  useEffect(() => {
+    setPaymentUrl(null);
+    setSessionError(null);
+    setCheckoutSessionExpired(false);
+    setOpenFinancePending(false);
+  }, [token, kioskMode]);
 
   const loadPelecardSession = useCallback(
     async (options?: { forceNew?: boolean }) => {
@@ -590,6 +560,7 @@ const PaymentPage: React.FC<{
 
       setSessionLoading(true);
       setSessionError(null);
+      setCheckoutSessionExpired(false);
 
       try {
         const result = await createPelecardPaymentSession(token, {
@@ -603,11 +574,18 @@ const PaymentPage: React.FC<{
           navigate(`/payment/success?paymentId=${encodeURIComponent(token)}`);
           return;
         }
+        if (result.openFinancePending) {
+          if (!kioskMode) {
+            navigate(`/payment/success?paymentId=${encodeURIComponent(token)}&confirming=1`);
+            return;
+          }
+        }
         if (!result.success || !result.paymentUrl) {
           throw new Error(result.error || 'Failed to create payment session');
         }
         await ensurePelecardClientSecureScript();
         setPaymentUrl(result.paymentUrl);
+        setOpenFinancePending(Boolean(result.openFinancePending));
         await loadCheckoutExchange({ forceBoiRefresh: !result.reusedSession });
         if (forceFreshSession) {
           setSearchParams(
@@ -638,6 +616,10 @@ const PaymentPage: React.FC<{
     ],
   );
 
+  const startCheckout = useCallback(() => {
+    scrollToCheckoutPayment();
+  }, [scrollToCheckoutPayment]);
+
   useEffect(() => {
     if (!canPay) {
       setPaymentUrl(null);
@@ -655,6 +637,14 @@ const PaymentPage: React.FC<{
     const poll = async () => {
       const data = await fetchPaymentStatus(token);
       if (cancelled || !data.success) return;
+      if (data.sessionExpired || isPelecardSessionExpiredCode(data.pelecard_status_code)) {
+        failedStreak = 0;
+        setCheckoutSessionExpired(true);
+        return;
+      }
+      if (data.openFinancePending) {
+        setOpenFinancePending(true);
+      }
       if (data.status === 'paid') {
         failedStreak = 0;
         if (kioskMode) {
@@ -840,7 +830,7 @@ const PaymentPage: React.FC<{
           {!isAlreadyPaid ? (
             <button
               type="button"
-              onClick={scrollToCheckoutPayment}
+              onClick={startCheckout}
               className="absolute top-3.5 right-3.5 z-20 inline-flex items-center gap-1.5 rounded-full bg-white px-3.5 py-1.5 text-sm font-semibold text-violet-800 shadow-sm transition hover:bg-white/90 active:scale-[0.98]"
             >
               <CreditCardIcon className="h-5 w-5 shrink-0" aria-hidden />
@@ -867,8 +857,8 @@ const PaymentPage: React.FC<{
           {!isAlreadyPaid ? (
             <button
               type="button"
-              onClick={scrollToCheckoutPayment}
-              aria-label="Scroll to payment form"
+              onClick={startCheckout}
+              aria-label="Continue to payment form"
               className="absolute bottom-3.5 left-3.5 z-20 inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white/90 shadow-none backdrop-blur-sm transition hover:bg-white/25 active:scale-[0.96] animate-pulse"
             >
               <ArrowDownIcon className="h-5 w-5" strokeWidth={2.5} aria-hidden />
@@ -898,6 +888,8 @@ const PaymentPage: React.FC<{
               loading={sessionLoading}
               error={sessionError}
               onRetry={() => loadPelecardSession({ forceNew: true })}
+              sessionExpired={checkoutSessionExpired}
+              disableAutoExpire={openFinancePending}
               onCheckoutNavigate={(path) => navigate(path)}
               title="Secure payment"
               fillColumn={!kioskMode}

@@ -362,6 +362,16 @@ html,
   padding-top: 0 !important;
 }
 
+.client-actions-drawer-item {
+  background-color: transparent;
+}
+.client-actions-drawer-item:hover {
+  background-color: #e8e8e8 !important;
+}
+.client-actions-drawer-item:active {
+  background-color: #d4d4d4 !important;
+}
+
 /*
  * Full-bleed client top strip: continuous white under the fixed navbar, edge-to-edge
  * (including under the floating sidebar). Content is cleared via inner padding / spacer.
