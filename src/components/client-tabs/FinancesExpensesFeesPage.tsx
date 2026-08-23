@@ -6,6 +6,7 @@ import {
   XMarkIcon,
   BuildingOffice2Icon,
   EllipsisVerticalIcon,
+  CheckIcon,
   PencilSquareIcon,
   TrashIcon,
   DocumentTextIcon,
@@ -24,10 +25,12 @@ import {
   resolveLeadFeeIdentity,
   setLeadSubcontractorFeeScalar,
   sumSubcontractorFeeAmounts,
+  setLeadSubcontractorFeePaid,
   updateLeadSubcontractorFee,
   updateLeadSubcontractorFeeNotes,
   type LeadSubcontractorFeeRow,
 } from '../../lib/leadSubcontractorFees';
+import { FinanceExpenseLikeColgroup, PaymentStatusPill } from './paymentPlanUi';
 import FinancesLeadExpensesSection from './FinancesLeadExpensesSection';
 import ExpenseDocumentsDrawer from '../finance/ExpenseDocumentsDrawer';
 import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
@@ -98,7 +101,9 @@ const FeeRowMenuPortal: React.FC<{
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
-}> = ({ open, anchorEl, onClose, onEdit, onDelete }) => {
+  paid?: boolean;
+  onTogglePaid?: () => void;
+}> = ({ open, anchorEl, onClose, onEdit, onDelete, paid = false, onTogglePaid }) => {
   const [style, setStyle] = useState<React.CSSProperties>({ visibility: 'hidden' });
 
   useEffect(() => {
@@ -106,7 +111,7 @@ const FeeRowMenuPortal: React.FC<{
 
     const updatePosition = () => {
       const rect = anchorEl.getBoundingClientRect();
-      const menuHeight = 96;
+      const menuHeight = onTogglePaid ? 140 : 96;
       const spaceBelow = window.innerHeight - rect.bottom;
       const openUpward = spaceBelow < menuHeight + 8;
       setStyle({
@@ -128,7 +133,7 @@ const FeeRowMenuPortal: React.FC<{
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
-  }, [open, anchorEl]);
+  }, [open, anchorEl, onTogglePaid]);
 
   useEffect(() => {
     if (!open) return;
@@ -149,8 +154,20 @@ const FeeRowMenuPortal: React.FC<{
     <ul
       data-fee-row-menu
       style={style}
-      className="w-40 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+      className="w-44 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
     >
+      {onTogglePaid ? (
+        <li>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+            onClick={onTogglePaid}
+          >
+            <CheckIcon className="h-4 w-4" />
+            {paid ? 'Mark unpaid' : 'Mark paid'}
+          </button>
+        </li>
+      ) : null}
       <li>
         <button
           type="button"
@@ -724,6 +741,29 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
     }
   };
 
+  const handleToggleFeePaid = async (fee: LeadSubcontractorFeeRow) => {
+    setOpenRowMenuId(null);
+    const nextPaid = !fee.paid;
+    try {
+      await setLeadSubcontractorFeePaid({
+        feeId: fee.id,
+        paid: nextPaid,
+        updatedBy: user?.id || null,
+      });
+      setFees((prev) =>
+        prev.map((row) =>
+          row.id === fee.id
+            ? { ...row, paid: nextPaid, paid_at: nextPaid ? new Date().toISOString() : null }
+            : row,
+        ),
+      );
+      toast.success(nextPaid ? 'Fee marked paid' : 'Fee marked unpaid');
+    } catch (err: any) {
+      console.error('[FinancesExpensesFeesPage] toggle paid:', err);
+      toast.error(err?.message || 'Failed to update fee status. Run sql/2026-08-23_lead_subcontractor_fees_paid.sql if the paid column is missing.');
+    }
+  };
+
   const handleDeleteFee = async (fee: LeadSubcontractorFeeRow) => {
     setOpenRowMenuId(null);
     if (!window.confirm(`Delete fee for ${fee.firms?.name || 'this firm'}?`)) return;
@@ -838,9 +878,9 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
   };
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-5">
+    <div className="grid grid-cols-1 gap-4 lg:gap-5">
       {/* Fees */}
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <section className="overflow-hidden rounded-2xl bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gray-50">
@@ -869,7 +909,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
             className="btn btn-sm btn-ghost gap-1 rounded-xl border-0 px-2 text-indigo-700 hover:bg-indigo-50"
             onClick={openAddFeeDrawer}
           >
-            <PlusIcon className="h-4 w-4" />
+            <PlusIcon className="h-5 w-5" />
             Add fee
           </button>
         </div>
@@ -883,13 +923,16 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
             <p className="text-sm text-slate-500">No fees yet. Add a subcontractor fee to get started.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="table w-full text-sm">
+          <div className="min-w-0 overflow-x-hidden">
+            <table className="table w-full max-w-full table-fixed text-sm">
+              <FinanceExpenseLikeColgroup />
               <thead>
                 <tr className="border-0 text-xs uppercase tracking-wider text-slate-400">
+                  <th className="border-0 bg-transparent font-semibold text-slate-500">Status</th>
                   <th className="border-0 bg-transparent font-semibold text-slate-500">Firm</th>
                   <th className="border-0 bg-transparent font-semibold text-right text-slate-500">Amount</th>
                   <th className="border-0 bg-transparent font-semibold text-slate-500">Notes</th>
+                  <th className="border-0 bg-transparent" aria-hidden />
                   <th className="border-0 bg-transparent font-semibold text-right text-slate-500">Added</th>
                   <th className="border-0 bg-transparent w-12 text-center font-semibold text-slate-500">
                     Docs
@@ -900,6 +943,9 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
               <tbody>
                 {showLeadFeeRow ? (
                   <tr className="border-t border-slate-100 bg-slate-50/60">
+                    <td>
+                      <PaymentStatusPill paid={false} />
+                    </td>
                     <td className="font-medium text-slate-900">
                       <span className="inline-flex items-center gap-2">
                         <BuildingOffice2Icon className="h-5 w-5 shrink-0 text-slate-400" />
@@ -910,6 +956,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                       {formatLeadFeeAmount()}
                     </td>
                     <td className="max-w-[12rem] text-slate-500">On lead record</td>
+                    <td aria-hidden />
                     <td className="text-right text-slate-400">—</td>
                     <td className="text-center text-slate-300">—</td>
                     <td className="text-right">
@@ -940,6 +987,9 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                 ) : null}
                 {fees.map((fee) => (
                   <tr key={fee.id} className="border-t border-slate-100">
+                    <td>
+                      <PaymentStatusPill paid={Boolean(fee.paid)} />
+                    </td>
                     <td className="font-medium text-slate-900">
                       <span className="inline-flex items-center gap-2">
                         <BuildingOffice2Icon className="h-5 w-5 shrink-0 text-slate-400" />
@@ -963,6 +1013,7 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                         {fee.notes?.trim() || '—'}
                       </button>
                     </td>
+                    <td aria-hidden />
                     <td className="text-right text-slate-500">
                       <span className="whitespace-nowrap">
                         {fee.created_at ? new Date(fee.created_at).toLocaleDateString() : '—'}
@@ -1023,6 +1074,8 @@ const FinancesExpensesFeesPage: React.FC<FinancesExpensesFeesPageProps> = ({
                         onClose={() => setOpenRowMenuId(null)}
                         onEdit={() => openEditFeeDrawer(fee)}
                         onDelete={() => void handleDeleteFee(fee)}
+                        paid={Boolean(fee.paid)}
+                        onTogglePaid={() => void handleToggleFeePaid(fee)}
                       />
                     </td>
                   </tr>

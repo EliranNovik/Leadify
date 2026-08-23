@@ -2702,23 +2702,9 @@ const Dashboard: React.FC = () => {
       const [{ data: recentEmails }, { data: recentWhatsApp }] = await Promise.all([
         supabase
           .from('emails')
-          .select(`
-            id,
-            message_id,
-            client_id,
-            sender_name,
-            sender_email,
-            subject,
-            body_preview,
-            sent_at,
-            direction,
-            leads:client_id (
-              id,
-              name,
-              lead_number,
-              email
-            )
-          `)
+          .select(
+            'id, message_id, client_id, sender_name, sender_email, subject, body_preview, sent_at, direction',
+          )
           .eq('direction', 'incoming')
           .gte('sent_at', since)
           .order('sent_at', { ascending: false })
@@ -2750,21 +2736,39 @@ const Dashboard: React.FC = () => {
       const allMessages: any[] = [];
 
       if (recentEmails) {
-        recentEmails.forEach((email) => {
-          if (email.leads && typeof email.leads === 'object' && 'name' in email.leads) {
-            const leads = email.leads as any;
-            allMessages.push({
-              id: email.message_id,
-              type: 'email',
-              client_name: leads.name,
-              lead_number: leads.lead_number,
-              content: email.subject || email.body_preview || 'Email received',
-              sender: email.sender_name || email.sender_email,
-              created_at: email.sent_at,
-              client_id: email.client_id,
-              direction: email.direction,
-            });
-          }
+        const emailClientIds = [
+          ...new Set(
+            recentEmails
+              .map((email: any) => email.client_id)
+              .filter(Boolean)
+              .map((id: any) => String(id)),
+          ),
+        ];
+        const emailLeadsById = new Map<string, { name?: string; lead_number?: string }>();
+        if (emailClientIds.length > 0) {
+          const { data: emailLeadRows } = await supabase
+            .from('leads')
+            .select('id, name, lead_number')
+            .in('id', emailClientIds);
+          (emailLeadRows || []).forEach((row: any) => {
+            if (row?.id != null) emailLeadsById.set(String(row.id), row);
+          });
+        }
+
+        recentEmails.forEach((email: any) => {
+          const lead = email.client_id ? emailLeadsById.get(String(email.client_id)) : null;
+          if (!lead) return;
+          allMessages.push({
+            id: email.message_id,
+            type: 'email',
+            client_name: lead.name,
+            lead_number: lead.lead_number,
+            content: email.subject || email.body_preview || 'Email received',
+            sender: email.sender_name || email.sender_email,
+            created_at: email.sent_at,
+            client_id: email.client_id,
+            direction: email.direction,
+          });
         });
       }
 

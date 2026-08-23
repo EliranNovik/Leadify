@@ -32,6 +32,7 @@ import {
   type FinanceExpenseKind,
 } from '../../lib/financeExpenseCreate';
 import { FINANCE_EXPENSE_DOCUMENTS_BUCKET } from '../../lib/financeExpenseDocuments';
+import { buildClientFinancesTabPath } from '../../lib/proformaClientNavigation';
 import { useAdminRole } from '../../hooks/useAdminRole';
 
 const TABLE_COLGROUP = (
@@ -215,16 +216,23 @@ function localDateIso(d = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
-function buildExpenseLeadPath(row: FinanceExpenseEntryRow): string | null {
-  const leadNumber = (row.lead_number || '').trim();
-  if (row.legacy_lead_id != null) {
-    if (leadNumber.includes('/')) {
-      return `/clients/${encodeURIComponent(String(row.legacy_lead_id))}?lead=${encodeURIComponent(leadNumber)}`;
-    }
-    return `/clients/${encodeURIComponent(String(row.legacy_lead_id))}`;
+function markOpenFinancesExpensesSubTab() {
+  try {
+    sessionStorage.setItem('financesSubTab', 'expenses-fees');
+  } catch {
+    /* ignore */
   }
-  if (leadNumber) return `/clients/${encodeURIComponent(leadNumber)}`;
-  return null;
+}
+
+function buildExpenseLeadPath(row: FinanceExpenseEntryRow): string | null {
+  const leadNumber = (row.lead_number || '').trim() || null;
+  const isLegacy = row.legacy_lead_id != null;
+  return buildClientFinancesTabPath({
+    isLegacy,
+    leadId: isLegacy ? row.legacy_lead_id : row.new_lead_id,
+    leadNumber,
+    manualId: isLegacy ? String(row.legacy_lead_id) : null,
+  });
 }
 
 function buildExpenseFirmPath(firmId: string | null): string | null {
@@ -241,7 +249,7 @@ function VendorRelatedCell({ row }: { row: FinanceExpenseEntryRow }) {
 
   const leadLink = (text: string) =>
     leadPath ? (
-      <Link to={leadPath} className={linkClass}>
+      <Link to={leadPath} className={linkClass} onClick={markOpenFinancesExpensesSubTab}>
         {text}
       </Link>
     ) : (
@@ -543,10 +551,10 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           <button
             type="button"
-            className="btn btn-primary col-start-2 row-start-1 h-auto min-h-[4.5rem] w-full gap-2 rounded-2xl px-3 py-2.5 text-base font-semibold sm:col-start-5 sm:text-lg"
+            className="btn btn-primary col-start-2 row-start-1 h-12 min-h-12 w-auto justify-self-end self-center gap-1.5 rounded-full border-none px-6 text-sm font-semibold sm:col-start-5 sm:h-14 sm:min-h-14 sm:px-7 sm:text-base"
             onClick={openCreate}
           >
-            <PlusIcon className="h-8 w-8" />
+            <PlusIcon className="h-5 w-5 sm:h-6 sm:w-6" />
             Add expense
           </button>
           <TotalPill

@@ -22,10 +22,10 @@ import {
   fetchLeadExpenses,
   insertLeadExpense,
   insertSplitLeadExpenses,
-  paidByLabel,
+  leadExpenseGrossAmount,
+  leadExpenseVatAmount,
   resolveLeadFeeIdentity,
   splitExpenseAmountEvenly,
-  sumLeadExpenseAmounts,
   updateLeadExpense,
   type LeadExpenseContactOption,
   type LeadExpensePaidBy,
@@ -34,6 +34,7 @@ import {
   type SplitLeadExpenseTarget,
 } from '../../lib/leadExpenses';
 import ExpenseSplitTargetPicker from './ExpenseSplitTargetPicker';
+import { FinanceExpenseLikeColgroup, getContactAccentSoftStyle, PaymentStatusPill } from './paymentPlanUi';
 import ExpenseDocumentsDrawer from '../finance/ExpenseDocumentsDrawer';
 import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
 import {
@@ -200,8 +201,6 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [drawerMode, setDrawerMode] = useState<'single' | 'split'>('single');
-  const [drawerStep, setDrawerStep] = useState(0);
-  const [furthestDrawerStep, setFurthestDrawerStep] = useState(0);
   const [splitTargets, setSplitTargets] = useState<SplitLeadExpenseTarget[]>([]);
   const [openRowMenuId, setOpenRowMenuId] = useState<number | null>(null);
   const rowMenuButtonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
@@ -262,6 +261,14 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     void loadExpenses();
   }, [loadExpenses]);
 
+  useEffect(() => {
+    const onChange = () => {
+      void loadExpenses();
+    };
+    window.addEventListener('paymentPlan:changed', onChange);
+    return () => window.removeEventListener('paymentPlan:changed', onChange);
+  }, [loadExpenses]);
+
   const resetForm = () => {
     setEditingId(null);
     setExpenseTypeId('');
@@ -275,8 +282,6 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     setIsReimbursed(false);
     setContactId('');
     setDrawerMode('single');
-    setDrawerStep(0);
-    setFurthestDrawerStep(0);
     setSplitTargets([]);
     setPendingDocs([]);
   };
@@ -414,14 +419,9 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open once per request token
   }, [openAddExpenseRequest?.token]);
 
-  useEffect(() => {
-    setFurthestDrawerStep((furthest) => Math.max(furthest, drawerStep));
-  }, [drawerStep]);
-
   const openEditDrawer = (row: LeadExpenseRow) => {
     setOpenRowMenuId(null);
     setDrawerMode('single');
-    setDrawerStep(1);
     setEditingId(row.id);
     setExpenseTypeId(row.expense_type_id);
     setAmount(String(row.amount ?? ''));
@@ -570,35 +570,6 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     }
   };
 
-  const handleContinue = () => {
-    if (drawerMode !== 'split' || drawerStep !== 2) return;
-    if (splitTargets.length < 2) {
-      toast.error('Add at least one more lead contact, then continue');
-      return;
-    }
-    setDrawerStep(3);
-  };
-
-  const completeAmountStep = (showError = false) => {
-    const amountNum = Number(amount);
-    const invalid =
-      amount.trim() === '' ||
-      !Number.isFinite(amountNum) ||
-      amountNum < 0 ||
-      (drawerMode === 'split' && amountNum <= 0);
-    if (invalid || !currencyId) {
-      if (showError) {
-        toast.error(
-          drawerMode === 'split'
-            ? 'Enter a total amount greater than zero'
-            : 'Enter a valid amount and currency',
-        );
-      }
-      return;
-    }
-    setDrawerStep(2);
-  };
-
   const handleDelete = async (row: LeadExpenseRow) => {
     setOpenRowMenuId(null);
     if (!window.confirm('Delete this expense and its Finances payment row?')) return;
@@ -612,17 +583,17 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     }
   };
 
-  const formatAmount = (row: LeadExpenseRow) => {
+  const formatMoney = (row: LeadExpenseRow, value: number) => {
     const symbol =
       row.accounting_currencies?.name || row.accounting_currencies?.iso_code || '';
-    const amountLabel = Number(row.amount || 0).toLocaleString(undefined, {
+    const amountLabel = Number(value || 0).toLocaleString(undefined, {
       minimumFractionDigits: 0,
       maximumFractionDigits: 2,
     });
     return `${symbol ? `${symbol} ` : ''}${amountLabel}`;
   };
 
-  const total = sumLeadExpenseAmounts(expenses);
+  const total = expenses.reduce((sum, row) => sum + leadExpenseGrossAmount(row), 0);
   const splitAmounts = useMemo(
     () => splitExpenseAmountEvenly(Number(amount), splitTargets.length),
     [amount, splitTargets.length],
@@ -632,12 +603,41 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
     currencies.find((currency) => String(currency.id) === currencyId)?.iso_code ||
     '';
 
-  const statusChips = (row: LeadExpenseRow) => {
-    const chips: string[] = [paidByLabel(row.paid_by)];
-    chips.push(row.include_vat ? 'With VAT' : 'Without VAT');
-    if (row.is_reimbursed) chips.push('Reimbursed');
-    else if (row.is_reimbursable) chips.push('Reimbursable');
-    return chips;
+  const expensesByContact = useMemo(() => {
+    const groups = new Map<
+      string,
+      { key: string; name: string; rows: LeadExpenseRow[] }
+    >();
+    for (const row of expenses) {
+      const name = row.leads_contact?.name?.trim() || 'Unassigned';
+      const key = row.contact_id != null ? `id:${row.contact_id}` : `name:${name}`;
+      const existing = groups.get(key);
+      if (existing) existing.rows.push(row);
+      else groups.set(key, { key, name, rows: [row] });
+    }
+    return [...groups.values()].sort((a, b) => {
+      if (a.name === 'Unassigned') return 1;
+      if (b.name === 'Unassigned') return -1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [expenses]);
+
+  const formatGroupTotal = (rows: LeadExpenseRow[]) => {
+    const byCurrency = new Map<string, number>();
+    for (const row of rows) {
+      const symbol =
+        row.accounting_currencies?.name || row.accounting_currencies?.iso_code || '';
+      byCurrency.set(symbol, (byCurrency.get(symbol) || 0) + leadExpenseGrossAmount(row));
+    }
+    return [...byCurrency.entries()]
+      .map(([symbol, value]) => {
+        const amountLabel = Number(value || 0).toLocaleString(undefined, {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 2,
+        });
+        return `${symbol ? `${symbol} ` : ''}${amountLabel}`;
+      })
+      .join(' · ');
   };
 
   const addPendingFiles = (fileList: FileList | File[]) => {
@@ -672,7 +672,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
 
   return (
     <>
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <section className="w-full">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gray-50">
@@ -700,7 +700,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
               className="btn btn-sm btn-ghost gap-1 rounded-xl border-0 px-2 text-indigo-700 hover:bg-indigo-50"
               onClick={openAddDrawer}
             >
-              <PlusIcon className="h-4 w-4" />
+              <PlusIcon className="h-5 w-5" />
               Add expense
             </button>
             <button
@@ -708,7 +708,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
               className="btn btn-sm btn-ghost gap-1 rounded-xl border-0 px-2 text-indigo-700 hover:bg-indigo-50"
               onClick={openSplitDrawer}
             >
-              <ScissorsIcon className="h-4 w-4" />
+              <ScissorsIcon className="h-5 w-5" />
               Split
             </button>
           </div>
@@ -719,105 +719,174 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
             <span className="loading loading-spinner loading-md text-primary" />
           </div>
         ) : expenses.length === 0 ? (
-          <div className="px-6 py-12 text-center">
-            <p className="text-sm text-slate-500">No expenses yet. Add an expense to get started.</p>
+          <div className="w-full overflow-hidden rounded-2xl bg-white">
+            <div className="px-6 py-12 text-center">
+              <p className="text-sm text-slate-500">No expenses added</p>
+            </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="table w-full text-sm">
-              <thead>
-                <tr className="border-0 text-xs uppercase tracking-wider text-slate-400">
-                  <th className="border-0 bg-transparent font-semibold text-slate-500">Type</th>
-                  <th className="border-0 bg-transparent font-semibold text-right text-slate-500">
-                    Amount
-                  </th>
-                  <th className="border-0 bg-transparent font-semibold text-slate-500">Status</th>
-                  <th className="border-0 bg-transparent font-semibold text-slate-500">Client</th>
-                  <th className="border-0 bg-transparent w-12 text-center font-semibold text-slate-500">
-                    Docs
-                  </th>
-                  <th className="border-0 bg-transparent w-10" aria-label="Actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {expenses.map((row) => (
-                  <tr key={row.id} className="border-t border-slate-100">
-                    <td className="font-medium text-slate-900">
-                      {row.lead_expense_types?.label || 'Expense'}
-                      {row.expense_date ? (
-                        <div className="mt-0.5 text-xs font-normal text-slate-400">
-                          {row.expense_date}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="text-right tabular-nums text-slate-800">{formatAmount(row)}</td>
-                    <td>
-                      <div className="flex flex-wrap gap-1">
-                        {statusChips(row).map((chip) => (
-                          <span
-                            key={chip}
-                            className="inline-flex rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600"
-                          >
-                            {chip}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="text-slate-600">
-                      {row.leads_contact?.name || '—'}
-                    </td>
-                    <td className="text-center">
-                      {(() => {
-                        const count = docsByExpenseId.get(row.id)?.documents.length || 0;
-                        return (
-                          <button
-                            type="button"
-                            className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full ${
-                              count
-                                ? 'text-blue-600 hover:bg-blue-50'
-                                : 'text-gray-400 hover:bg-blue-50 hover:text-blue-600'
-                            }`}
-                            title={count ? `${count} document${count === 1 ? '' : 's'}` : 'Add documents'}
-                            aria-label={count ? `${count} documents` : 'Add documents'}
-                            onClick={() => openExpenseDocuments(row)}
-                          >
-                            <DocumentTextIcon className="h-5 w-5" />
-                            {count ? (
-                              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white">
-                                {count}
+          <div className="flex flex-col gap-6">
+            {expensesByContact.map((group) => {
+              const initials = group.name
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((part) => part.charAt(0).toUpperCase())
+                .join('') || '?';
+              const avatarStyle = getContactAccentSoftStyle(group.name);
+              return (
+                <div
+                  key={group.key}
+                  className="w-full overflow-hidden rounded-2xl bg-white"
+                >
+                  <div className="overflow-x-auto bg-white">
+                    <table className="table w-full table-fixed text-sm">
+                      <FinanceExpenseLikeColgroup />
+                      <thead>
+                        <tr className="border-0">
+                          <th colSpan={8} className="border-0 bg-transparent px-4 py-3">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span
+                                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
+                                style={avatarStyle}
+                              >
+                                {initials}
                               </span>
-                            ) : null}
-                          </button>
-                        );
-                      })()}
-                    </td>
-                    <td className="text-right">
-                      <button
-                        type="button"
-                        data-expense-menu-trigger
-                        ref={(el) => {
-                          rowMenuButtonRefs.current[row.id] = el;
-                        }}
-                        className="btn btn-ghost btn-xs btn-circle"
-                        onClick={() =>
-                          setOpenRowMenuId((prev) => (prev === row.id ? null : row.id))
-                        }
-                        aria-label="Expense actions"
-                      >
-                        <EllipsisVerticalIcon className="h-4 w-4" />
-                      </button>
-                      <ExpenseRowMenuPortal
-                        open={openRowMenuId === row.id}
-                        anchorEl={rowMenuButtonRefs.current[row.id] || null}
-                        onClose={() => setOpenRowMenuId(null)}
-                        onEdit={() => openEditDrawer(row)}
-                        onDelete={() => void handleDelete(row)}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                              <div className="min-w-0">
+                                <p className="truncate text-base font-semibold text-slate-800">{group.name}</p>
+                                <p className="text-sm font-normal text-slate-500">
+                                  {group.rows.length} expense{group.rows.length === 1 ? '' : 's'}
+                                </p>
+                              </div>
+                            </div>
+                          </th>
+                        </tr>
+                        <tr className="border-0 text-xs uppercase tracking-wider text-slate-400">
+                          <th className="border-0 bg-transparent font-semibold text-slate-500">Status</th>
+                          <th className="border-0 bg-transparent font-semibold text-slate-500">Type</th>
+                          <th className="border-0 bg-transparent font-semibold text-right text-slate-500">
+                            Amount
+                          </th>
+                          <th className="border-0 bg-transparent font-semibold text-right text-slate-500">
+                            Total
+                          </th>
+                          <th className="border-0 bg-transparent font-semibold text-slate-500">Paid by</th>
+                          <th className="border-0 bg-transparent font-semibold text-right text-slate-500">
+                            Added
+                          </th>
+                          <th className="border-0 bg-transparent w-12 text-center font-semibold text-slate-500">
+                            Docs
+                          </th>
+                          <th className="border-0 bg-transparent w-10" aria-label="Actions" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.rows.map((row) => {
+                          const vatAmount = leadExpenseVatAmount(row);
+                          return (
+                            <tr key={row.id} className="border-t border-slate-100">
+                              <td>
+                                <PaymentStatusPill paid={Boolean(row.paid)} />
+                              </td>
+                              <td className="font-medium text-slate-900">
+                                {row.lead_expense_types?.label || 'Expense'}
+                              </td>
+                              <td className="text-right tabular-nums text-slate-800">
+                                <div>{formatMoney(row, Number(row.amount) || 0)}</div>
+                                {vatAmount > 0 ? (
+                                  <div className="text-xs font-normal text-slate-500">
+                                    + {formatMoney(row, vatAmount)} VAT
+                                  </div>
+                                ) : null}
+                              </td>
+                              <td className="text-right font-semibold tabular-nums text-slate-900">
+                                {formatMoney(row, leadExpenseGrossAmount(row))}
+                              </td>
+                              <td>
+                                <span
+                                  className={`inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold uppercase leading-tight tracking-wide ${
+                                    row.paid_by === 'firm' ? 'text-slate-700' : 'text-sky-600'
+                                  }`}
+                                >
+                                  {row.paid_by === 'firm' ? 'Firm' : 'Client'}
+                                </span>
+                              </td>
+                              <td className="text-right text-slate-500">
+                                <span className="whitespace-nowrap">
+                                  {row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}
+                                  {row.created_by_display_name ? (
+                                    <span className="text-slate-400">
+                                      {' '}
+                                      by <span className="font-medium text-slate-600">{row.created_by_display_name}</span>
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </td>
+                              <td className="text-center">
+                                {(() => {
+                                  const count = docsByExpenseId.get(row.id)?.documents.length || 0;
+                                  return (
+                                    <button
+                                      type="button"
+                                      className={`relative inline-flex h-8 w-8 items-center justify-center rounded-full ${
+                                        count
+                                          ? 'text-blue-600 hover:bg-blue-50'
+                                          : 'text-gray-400 hover:bg-blue-50 hover:text-blue-600'
+                                      }`}
+                                      title={count ? `${count} document${count === 1 ? '' : 's'}` : 'Add documents'}
+                                      aria-label={count ? `${count} documents` : 'Add documents'}
+                                      onClick={() => openExpenseDocuments(row)}
+                                    >
+                                      <DocumentTextIcon className="h-5 w-5" />
+                                      {count ? (
+                                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white">
+                                          {count}
+                                        </span>
+                                      ) : null}
+                                    </button>
+                                  );
+                                })()}
+                              </td>
+                              <td className="text-right">
+                                <button
+                                  type="button"
+                                  data-expense-menu-trigger
+                                  ref={(el) => {
+                                    rowMenuButtonRefs.current[row.id] = el;
+                                  }}
+                                  className="btn btn-ghost btn-xs btn-circle"
+                                  onClick={() =>
+                                    setOpenRowMenuId((prev) => (prev === row.id ? null : row.id))
+                                  }
+                                  aria-label="Expense actions"
+                                >
+                                  <EllipsisVerticalIcon className="h-4 w-4" />
+                                </button>
+                                <ExpenseRowMenuPortal
+                                  open={openRowMenuId === row.id}
+                                  anchorEl={rowMenuButtonRefs.current[row.id] || null}
+                                  onClose={() => setOpenRowMenuId(null)}
+                                  onEdit={() => openEditDrawer(row)}
+                                  onDelete={() => void handleDelete(row)}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        <tr className="border-t-2 border-slate-200">
+                          <td colSpan={3} className="py-3.5" />
+                          <td className="py-3.5 text-right text-base font-semibold tabular-nums text-slate-900">
+                            {formatGroupTotal(group.rows)}
+                          </td>
+                          <td colSpan={4} className="py-3.5" />
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -840,17 +909,11 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         ? 'Edit expense'
                         : 'Add expense'}
                   </h2>
-                  <p className="mt-1 text-xs font-medium text-slate-500">
-                    Step {drawerStep + 1} of 6 ·{' '}
-                    {[
-                      'Expense type',
-                      'Amount',
-                      drawerMode === 'split' ? 'Leads & contacts' : 'Client',
-                      'Paid by',
-                      'VAT',
-                      'Review',
-                    ][drawerStep]}
-                  </p>
+                  {drawerMode === 'split' ? (
+                    <p className="mt-0.5 text-sm text-slate-500">
+                      Split one total across two or more lead contacts
+                    </p>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -862,12 +925,6 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                   <XMarkIcon className="h-5 w-5" />
                 </button>
               </div>
-              <div className="h-1 bg-slate-100">
-                <div
-                  className="h-full bg-indigo-600 transition-all duration-300"
-                  style={{ width: `${((drawerStep + 1) / 6) * 100}%` }}
-                />
-              </div>
 
               <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
                 {loadingOptions ? (
@@ -876,21 +933,14 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                   </div>
                 ) : (
                   <div className="space-y-5">
-                    {drawerStep === 0 ? (
-                    <div className="form-control animate-fade-in">
+                    <div className="form-control">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">Expense type</span>
                       </label>
                       <select
                         className="select select-bordered w-full"
                         value={expenseTypeId}
-                        onChange={(e) => {
-                          setExpenseTypeId(e.target.value);
-                          if (e.target.value) setDrawerStep(1);
-                        }}
-                        onBlur={() => {
-                          if (expenseTypeId) setDrawerStep(1);
-                        }}
+                        onChange={(e) => setExpenseTypeId(e.target.value)}
                         disabled={saving}
                       >
                         <option value="" disabled>
@@ -903,11 +953,8 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         ))}
                       </select>
                     </div>
-                    ) : null}
 
-                    {drawerStep === 1 ? (
-                    <div className="animate-fade-in space-y-5">
-                      <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-2 gap-3">
                       <div className="form-control">
                         <label className="label py-1">
                           <span className="label-text font-medium text-slate-700">Currency</span>
@@ -925,51 +972,40 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                           ))}
                         </select>
                       </div>
-                        <div className="form-control">
-                          <label className="label py-1">
-                            <span className="label-text font-medium text-slate-700">Due date</span>
-                          </label>
-                          <input
-                            type="date"
-                            className="input input-bordered w-full"
-                            value={expenseDate}
-                            onChange={(e) => setExpenseDate(e.target.value)}
-                            disabled={saving}
-                          />
-                        </div>
-                      </div>
                       <div className="form-control">
                         <label className="label py-1">
-                          <span className="label-text font-medium text-slate-700">
-                            {drawerMode === 'split' ? 'Total amount' : 'Amount'}
-                          </span>
+                          <span className="label-text font-medium text-slate-700">Due date</span>
                         </label>
                         <input
-                          type="number"
-                          min="0"
-                          step="0.01"
+                          type="date"
                           className="input input-bordered w-full"
-                          placeholder="0.00"
-                          value={amount}
-                          onChange={(e) => setAmount(e.target.value)}
-                          onBlur={() => completeAmountStep(false)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              completeAmountStep(true);
-                            }
-                          }}
+                          value={expenseDate}
+                          onChange={(e) => setExpenseDate(e.target.value)}
                           disabled={saving}
                         />
-                        <p className="mt-1.5 text-xs text-slate-500">
-                          Enter the amount and press Enter or leave the field to continue.
-                        </p>
                       </div>
                     </div>
-                    ) : null}
+
+                    <div className="form-control">
+                      <label className="label py-1">
+                        <span className="label-text font-medium text-slate-700">
+                          {drawerMode === 'split' ? 'Total amount' : 'Amount'}
+                        </span>
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className="input input-bordered w-full"
+                        placeholder="0.00"
+                        value={amount}
+                        onChange={(e) => setAmount(e.target.value)}
+                        disabled={saving}
+                      />
+                    </div>
 
                     {drawerMode === 'split' && identity ? (
-                      <div className={drawerStep === 2 ? 'animate-fade-in space-y-5' : 'hidden'}>
+                      <div className="space-y-3">
                         <ExpenseSplitTargetPicker
                           currentIdentity={identity}
                           currentLeadName={client?.name || identity.leadNumber || 'Current lead'}
@@ -995,7 +1031,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                           )}
                         </div>
                       </div>
-                    ) : drawerStep === 2 ? (
+                    ) : (
                       <div className="form-control">
                         <label className="label py-1">
                           <span className="label-text font-medium text-slate-700">
@@ -1005,13 +1041,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <select
                           className="select select-bordered w-full"
                           value={contactId}
-                          onChange={(e) => {
-                            setContactId(e.target.value);
-                            if (e.target.value) setDrawerStep(3);
-                          }}
-                          onBlur={() => {
-                            if (contactId) setDrawerStep(3);
-                          }}
+                          onChange={(e) => setContactId(e.target.value)}
                           disabled={saving}
                         >
                           <option value="" disabled>
@@ -1034,10 +1064,8 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                           </p>
                         )}
                       </div>
-                    ) : null}
+                    )}
 
-                    {drawerStep === 3 ? (
-                    <div className="animate-fade-in space-y-5">
                     <div className="form-control">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">Paid by</span>
@@ -1050,10 +1078,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => {
-                            setPaidBy('client');
-                            setDrawerStep(4);
-                          }}
+                          onClick={() => setPaidBy('client')}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             paidBy === 'client'
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -1065,10 +1090,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => {
-                            setPaidBy('firm');
-                            setDrawerStep(4);
-                          }}
+                          onClick={() => setPaidBy('firm')}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             paidBy === 'firm'
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -1079,11 +1101,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         </button>
                       </div>
                     </div>
-                    </div>
-                    ) : null}
 
-                    {drawerStep === 4 ? (
-                    <div className="animate-fade-in space-y-5">
                     <div className="form-control">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">VAT</span>
@@ -1096,10 +1114,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => {
-                            setIncludeVat(false);
-                            setDrawerStep(5);
-                          }}
+                          onClick={() => setIncludeVat(false)}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             !includeVat
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -1111,10 +1126,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         <button
                           type="button"
                           disabled={saving}
-                          onClick={() => {
-                            setIncludeVat(true);
-                            setDrawerStep(5);
-                          }}
+                          onClick={() => setIncludeVat(true)}
                           className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
                             includeVat
                               ? 'bg-white font-semibold text-slate-900 shadow-sm'
@@ -1125,44 +1137,7 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         </button>
                       </div>
                     </div>
-                    </div>
-                    ) : null}
 
-                    {drawerStep === 5 ? (
-                    <div className="animate-fade-in space-y-5">
-                    <div className="rounded-xl bg-slate-50 p-4">
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                        <div>
-                          <p className="text-xs text-slate-500">Type</p>
-                          <p className="font-medium text-slate-800">
-                            {expenseTypes.find((type) => type.id === expenseTypeId)?.label || '—'}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-500">Amount</p>
-                          <p className="font-medium text-slate-800">
-                            {splitCurrencyLabel} {Number(amount || 0).toFixed(2)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-500">
-                            {drawerMode === 'split' ? 'Destinations' : 'Client'}
-                          </p>
-                          <p className="font-medium text-slate-800">
-                            {drawerMode === 'split'
-                              ? `${splitTargets.length} lead contact${splitTargets.length === 1 ? '' : 's'}`
-                              : contacts.find((contact) => String(contact.id) === contactId)?.name || '—'}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-500">Options</p>
-                          <p className="font-medium text-slate-800">
-                            {paidBy === 'firm' ? 'Firm paid' : 'Client paid'} ·{' '}
-                            {includeVat ? 'With VAT' : 'Without VAT'}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
                     <div className="form-control">
                       <label className="label py-1">
                         <span className="label-text font-medium text-slate-700">Notes</span>
@@ -1176,8 +1151,9 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         dir={/[\u0590-\u05FF]/.test(notes) ? 'rtl' : 'ltr'}
                       />
                     </div>
+
                     {drawerMode === 'split' ? (
-                      <p className="text-xs text-slate-500">
+                      <p className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
                         Add invoices or receipts on each expense after the split.
                       </p>
                     ) : (
@@ -1262,76 +1238,35 @@ const FinancesLeadExpensesSection: React.FC<FinancesLeadExpensesSectionProps> = 
                         ) : null}
                       </div>
                     )}
-                    </div>
-                    ) : null}
                   </div>
                 )}
               </div>
 
               <div className="flex items-center justify-between gap-2 px-6 py-4">
-                <div>
-                  {drawerStep > 0 ? (
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      onClick={() => setDrawerStep((step) => Math.max(0, step - 1))}
-                      disabled={saving}
-                    >
-                      Back
-                    </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={closeDrawer}
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary min-w-28"
+                  onClick={() => void handleSave()}
+                  disabled={saving || loadingOptions}
+                >
+                  {saving ? (
+                    <span className="loading loading-spinner loading-sm" />
+                  ) : drawerMode === 'split' ? (
+                    'Split expense'
+                  ) : editingId != null ? (
+                    'Save changes'
                   ) : (
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      onClick={closeDrawer}
-                      disabled={saving}
-                    >
-                      Cancel
-                    </button>
+                    'Add expense'
                   )}
-                </div>
-                {drawerMode === 'split' && drawerStep === 2 ? (
-                  <button
-                    type="button"
-                    className="btn btn-primary min-w-28"
-                    onClick={handleContinue}
-                    disabled={saving || loadingOptions}
-                  >
-                    Continue
-                  </button>
-                ) : drawerStep < furthestDrawerStep ? (
-                  <button
-                    type="button"
-                    className="btn btn-primary min-w-28"
-                    onClick={() => setDrawerStep((step) => Math.min(5, step + 1))}
-                    disabled={saving || loadingOptions}
-                  >
-                    Continue
-                  </button>
-                ) : drawerStep === 5 ? (
-                  <button
-                    type="button"
-                    className="btn btn-primary min-w-28"
-                    onClick={() => void handleSave()}
-                    disabled={saving || loadingOptions}
-                  >
-                    {saving ? (
-                      <span className="loading loading-spinner loading-sm" />
-                    ) : drawerMode === 'split' ? (
-                      'Split expense'
-                    ) : editingId != null ? (
-                      'Save changes'
-                    ) : (
-                      'Add expense'
-                    )}
-                  </button>
-                ) : (
-                  <p className="text-xs font-medium text-slate-400">
-                    {drawerStep === 1
-                      ? 'Complete the amount to continue'
-                      : 'Choose an option to continue'}
-                  </p>
-                )}
+                </button>
               </div>
             </div>
           </div>,

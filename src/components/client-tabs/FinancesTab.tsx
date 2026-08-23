@@ -115,11 +115,11 @@ import { calculatePaymentPlanVatAmount, readPaymentPlanVatFromRow } from '../../
 import { sumUnpaidBaseAndVatByCurrencyFromPayments } from '../../lib/financeUnpaidTotal';
 import { isExpenseNoVatPayment } from '../../lib/proformaVat';
 import {
-  formatContractTotalNisDisplay,
   formatExpenseNoVatNisDisplay,
   formatOutstandingNisDisplay,
+  sumAllPaymentPlanTotalsInNis,
+  sumContactPlanHeaderTotalsInNis,
   sumExpenseNoVatPlanTotalsInNis,
-  sumPaymentPlanTotalsInNis,
 } from '../../lib/paymentPlanTotalInNis';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
@@ -190,7 +190,7 @@ type FinancesTabNisDisplays = {
   contractTotalNisDisplay: { primary: string; secondary?: string; loading: boolean };
   expenseNoVatNisDisplay: { primary?: string; loading: boolean };
   outstandingNisDisplay: { primary: string; loading: boolean };
-  contactTotalNisByName: Record<string, { primary: string; loading: boolean }>;
+  contactTotalNisByName: Record<string, { primary: string; office?: string; loading: boolean }>;
 };
 
 type FinancesTabCachedState = {
@@ -209,7 +209,16 @@ type FinancesTabCachedState = {
 /** Stable signature of the payment rows that affect NIS totals ? used to skip needless recomputes. */
 function financesNisSignature(payments?: PaymentPlan[]): string {
   return JSON.stringify(
-    (payments ?? []).map((p) => [p.id, p.client, p.value, p.valueVat, p.paid, p.currency ?? '']),
+    (payments ?? []).map((p) => [
+      p.id,
+      p.client,
+      p.value,
+      p.valueVat,
+      p.paid,
+      p.currency ?? '',
+      p.order ?? '',
+      p.expensePaidBy ?? '',
+    ]),
   );
 }
 
@@ -310,7 +319,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     loading: boolean;
   }>({ primary: '?', loading: true });
   const [contactTotalNisByName, setContactTotalNisByName] = useState<
-    Record<string, { primary: string; loading: boolean }>
+    Record<string, { primary: string; office?: string; loading: boolean }>
   >({});
   // Signature of the payments the NIS displays were last computed for. Lets us skip recomputing
   // (and the loading flash) when financePlan changes reference but the underlying values are the
@@ -481,7 +490,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           acc[name] = { primary: '?', loading: true };
           return acc;
         },
-        {} as Record<string, { primary: string; loading: boolean }>,
+        {} as Record<string, { primary: string; office?: string; loading: boolean }>,
       ),
     );
 
@@ -489,18 +498,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       try {
         const unpaidPayments = financePlan.payments.filter((p) => !p.paid);
         const [contractTotals, expenseTotals, outstandingTotals, ...contactResults] = await Promise.all([
-          sumPaymentPlanTotalsInNis(financePlan.payments),
+          sumContactPlanHeaderTotalsInNis(financePlan.payments),
           sumExpenseNoVatPlanTotalsInNis(financePlan.payments),
-          sumPaymentPlanTotalsInNis(unpaidPayments),
+          sumAllPaymentPlanTotalsInNis(unpaidPayments),
           ...contactNames.map(async (contactName) => {
             const contactPayments = financePlan.payments.filter((p) => p.client === contactName);
-            const totals = await sumPaymentPlanTotalsInNis(contactPayments);
-            return { contactName, totals };
+            const headerTotals = await sumContactPlanHeaderTotalsInNis(contactPayments);
+            return { contactName, headerTotals };
           }),
         ]);
         if (cancelled) return;
         setContractTotalNisDisplay({
-          ...formatContractTotalNisDisplay(contractTotals),
+          ...formatOutstandingNisDisplay(contractTotals.total),
           loading: false,
         });
         setExpenseNoVatNisDisplay({
@@ -513,11 +522,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         });
         setContactTotalNisByName(
           contactResults.reduce(
-            (acc, { contactName, totals }) => {
-              acc[contactName] = { ...formatOutstandingNisDisplay(totals), loading: false };
+            (acc, { contactName, headerTotals }) => {
+              acc[contactName] = {
+                ...formatOutstandingNisDisplay(headerTotals.total),
+                office: formatExpenseNoVatNisDisplay(headerTotals.office),
+                loading: false,
+              };
               return acc;
             },
-            {} as Record<string, { primary: string; loading: boolean }>,
+            {} as Record<string, { primary: string; office?: string; loading: boolean }>,
           ),
         );
       } catch (err) {
@@ -3515,6 +3528,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return allContacts;
   };
 
+  const isMainPaymentContact = (contactName: string): boolean => {
+    const normalized = contactName.trim().toLowerCase();
+    if (!normalized) return false;
+    if (client?.name && client.name.trim().toLowerCase() === normalized) return true;
+    return contacts.some(
+      (contact) =>
+        contact.isMain &&
+        typeof contact.name === 'string' &&
+        contact.name.trim().toLowerCase() === normalized,
+    );
+  };
+
+  const sortPaymentContactEntries = <T,>(
+    entries: Array<[string, T]>,
+  ): Array<[string, T]> =>
+    [...entries].sort(([nameA], [nameB]) => {
+      const aMain = isMainPaymentContact(nameA);
+      const bMain = isMainPaymentContact(nameB);
+      if (aMain !== bMain) return aMain ? 1 : -1;
+      return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+    });
+
   // Helper function to get client_id for a contact name
   const getClientIdForContact = (contactName: string): number | null => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
@@ -5544,9 +5579,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     </div>
   ) : null;
 
-  const financesHeaderExtras = (
-    <div className="flex flex-wrap items-center gap-2">
-      {financesSubTabSwitcher}
+  const financesHeaderExtras = financesSubTabSwitcher;
+  const financesHeaderActions = (
+    <div className="flex flex-wrap items-center justify-end gap-2">
       {clientOfficeToggle}
       {financesMoreMenu}
     </div>
@@ -5574,6 +5609,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 : 'Payment plans and collections'
             }
             titleExtra={financesHeaderExtras}
+            actions={financesHeaderActions}
           />
           {financesSubTab === 'expenses-fees' ? (
             <FinancesExpensesFeesPage
@@ -6135,18 +6171,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     );
 
   const paymentRowIconBtn =
-    'btn btn-sm btn-circle flex items-center justify-center border-2 shadow-sm p-0';
+    'inline-flex h-9 w-9 items-center justify-center rounded-full border-0 p-0 shadow-none';
 
   const createProformaBtnClass =
-    'rounded-lg border-0 bg-gray-50 px-3.5 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100';
+    'rounded-lg border-0 bg-gray-50 px-3.5 py-2 text-sm font-semibold text-slate-500 hover:bg-gray-100 hover:text-slate-600';
 
   const existingProformaBtnClass =
-    'rounded-lg border-0 bg-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-800 transition-colors hover:bg-purple-700 hover:text-white';
+    'rounded-lg border-0 bg-purple-50 px-3 py-1.5 text-xs font-semibold text-purple-700 transition-colors hover:bg-purple-700 hover:text-white';
 
-  const getExistingProformaBtnClass = (paid?: boolean) =>
-    paid
-      ? 'rounded-lg border-0 bg-purple-50 px-3 py-1.5 text-xs font-semibold text-purple-700 transition-colors hover:bg-purple-700 hover:text-white'
-      : existingProformaBtnClass;
+  const getExistingProformaBtnClass = (_paid?: boolean) => existingProformaBtnClass;
 
   const legacyPaymentHasProforma = (paymentPlanId: string | number): boolean =>
     legacyProformas.some((proforma) => Number(proforma.ppr_id) === Number(paymentPlanId));
@@ -6154,6 +6187,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   /** New leads: proforma JSON on row. Legacy: proformainvoice linked via ppr_id. */
   const paymentRowHasProforma = (payment: PaymentPlan): boolean =>
     paymentPlanHasProforma(payment, legacyProformas);
+
+  /** Office-paid expenses are not invoiced to the client. */
+  const isOfficePaidExpense = (payment: PaymentPlan): boolean =>
+    isExpenseNoVatPayment(payment.order) && payment.expensePaidBy === 'firm';
 
   const exitSendInvoiceSelectMode = () => {
     setSendInvoiceSelectMode(false);
@@ -6192,6 +6229,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const isPaymentRowPickDisabled = (payment: PaymentPlan) => {
     if (payment.paid) return true;
+    if (isOfficePaidExpense(payment)) return true;
     if (sendInvoiceSelectMode && !paymentRowHasProforma(payment)) return true;
     if (paymentRowPickMode === 'automation' && !payment.dueDate) return true;
     return false;
@@ -6605,7 +6643,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     if (!paidViaLink && !info?.payper_invoice_status) {
-      return <span className="text-slate-400">?</span>;
+      return <span className="text-slate-400">—</span>;
     }
 
     const status = info?.payper_invoice_status;
@@ -6648,7 +6686,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       );
     }
 
-    return <span className="text-slate-400">?</span>;
+    return <span className="text-slate-400">—</span>;
   };
 
   const renderPaymentPickCell = (payment: PaymentPlan) => {
@@ -6659,7 +6697,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const disabled = isPaymentRowPickDisabled(payment);
 
     return (
-      <td className="w-10 px-2 py-4 align-middle" onClick={(e) => e.stopPropagation()}>
+      <td className="w-10 align-middle" onClick={(e) => e.stopPropagation()}>
         <input
           type="checkbox"
           className="checkbox checkbox-sm checkbox-primary"
@@ -6688,9 +6726,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     const renderAdminMenuItems = () => {
       if (!showPaymentAdminMenu(p, isPaid)) return null;
-      const shouldShowSentToFinance = p.isLegacy
-        ? !(p as any).original_due_date
-        : !p.ready_to_pay;
+      const shouldShowSentToFinance =
+        !isOfficePaidExpense(p) &&
+        (p.isLegacy ? !(p as any).original_due_date : !p.ready_to_pay);
       return (
         <>
           {shouldShowSentToFinance ? (
@@ -6727,10 +6765,79 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       );
     };
 
+    const canEditPayment = showPaymentEditButton(p, isPaid);
+    const canDeletePayment = showPaymentDeleteButton(p, isPaid);
     const hasPaidRowMenu =
-      showPaymentAdminMenu(p, isPaid)
-      || showPaymentEditButton(p, isPaid)
-      || showPaymentDeleteButton(p, isPaid);
+      showPaymentAdminMenu(p, isPaid) || canEditPayment || canDeletePayment;
+    const editLabel = isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit';
+
+    const renderEditDeleteMenuItems = () => (
+      <>
+        {canEditPayment ? (
+          <li>
+            <button
+              type="button"
+              className="flex items-center gap-2 text-sm text-slate-600"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleEditPayment(p);
+                setOpenDropdownPaymentId(null);
+              }}
+            >
+              <PencilIcon className="h-4 w-4" />
+              {editLabel}
+            </button>
+          </li>
+        ) : null}
+        {canDeletePayment ? (
+          <li>
+            <button
+              type="button"
+              className="flex items-center gap-2 text-sm text-slate-600"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDeletePayment(p);
+                setOpenDropdownPaymentId(null);
+              }}
+            >
+              <TrashIcon className="h-4 w-4" />
+              Delete
+            </button>
+          </li>
+        ) : null}
+      </>
+    );
+
+    const rowActionsMenu = (canEditPayment || canDeletePayment || (isPaid && hasPaidRowMenu)) ? (
+      <>
+        <button
+          type="button"
+          ref={(el) => {
+            dropdownButtonRefs.current[p.id] = el;
+          }}
+          className={`${paymentRowIconBtn} text-slate-400 hover:bg-slate-100 hover:text-slate-600`}
+          title="Payment actions"
+          aria-label="Payment actions"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
+          }}
+        >
+          <EllipsisVerticalIcon className="h-5 w-5" />
+        </button>
+        <AnchorDropdownPortal
+          anchorId={openDropdownPaymentId === p.id ? p.id : null}
+          buttonRefs={dropdownButtonRefs}
+          open={openDropdownPaymentId === p.id}
+          onClose={() => setOpenDropdownPaymentId(null)}
+        >
+          <ul className="menu w-48 rounded-box border border-gray-200 bg-base-100 p-2 shadow-lg">
+            {isPaid ? renderAdminMenuItems() : null}
+            {renderEditDeleteMenuItems()}
+          </ul>
+        </AnchorDropdownPortal>
+      </>
+    ) : null;
 
     if (isPaid && hasPaidRowMenu) {
       return (
@@ -6738,61 +6845,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           className="flex items-center justify-end"
           style={{ overflow: 'visible', position: 'relative' }}
         >
-          <button
-            type="button"
-            ref={(el) => {
-              dropdownButtonRefs.current[p.id] = el;
-            }}
-            className="btn btn-ghost btn-sm btn-circle min-h-9 min-w-9 h-9 w-9 text-emerald-800 hover:bg-emerald-50"
-            title="Payment actions"
-            aria-label="Payment actions"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
-            }}
-          >
-            <EllipsisVerticalIcon className="h-5 w-5" />
-          </button>
-          <AnchorDropdownPortal
-            anchorId={openDropdownPaymentId === p.id ? p.id : null}
-            buttonRefs={dropdownButtonRefs}
-            open={openDropdownPaymentId === p.id}
-            onClose={() => setOpenDropdownPaymentId(null)}
-          >
-            <ul className="menu w-52 rounded-box border border-gray-200 bg-base-100 p-2 shadow-lg">
-              {renderAdminMenuItems()}
-              {showPaymentEditButton(p, isPaid) ? (
-                <li>
-                  <button
-                    type="button"
-                    className="text-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEditPayment(p);
-                      setOpenDropdownPaymentId(null);
-                    }}
-                  >
-                    {isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
-                  </button>
-                </li>
-              ) : null}
-              {showPaymentDeleteButton(p, isPaid) ? (
-                <li>
-                  <button
-                    type="button"
-                    className="text-sm text-red-600"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeletePayment(p);
-                      setOpenDropdownPaymentId(null);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </li>
-              ) : null}
-            </ul>
-          </AnchorDropdownPortal>
+          {rowActionsMenu}
         </div>
       );
     }
@@ -6805,7 +6858,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         {paymentRowHasProforma(p) && !isPaid && (
           <button
             type="button"
-            className={`${paymentRowIconBtn} border-blue-300 bg-blue-100 text-blue-700 hover:bg-blue-200`}
+            className={`${paymentRowIconBtn} bg-blue-100 text-blue-700 hover:bg-blue-200`}
             title="Generate Payment Link"
             onClick={() => handleGeneratePaymentLink(p)}
           >
@@ -6815,17 +6868,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         {paymentRowHasProforma(p) && !isPaid && (
           <button
             type="button"
-            className={`${paymentRowIconBtn} border-indigo-300 bg-indigo-100 text-indigo-700 hover:bg-indigo-200`}
+            className={`${paymentRowIconBtn} bg-indigo-100 text-indigo-700 hover:bg-indigo-200`}
             title="Display payment on lobby kiosk"
             onClick={() => void handleDisplayPaymentOnKiosk(p)}
           >
             <ComputerDesktopIcon className="h-5 w-5" />
           </button>
         )}
-        {!isPaid && !p.ready_to_pay && (
+        {!isPaid && !p.ready_to_pay && !isOfficePaidExpense(p) && (
           <button
             type="button"
-            className={`${paymentRowIconBtn} border-yellow-300 bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
+            className={`${paymentRowIconBtn} bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
             title="Mark as Ready to Pay"
             onClick={() => handleMarkAsReadyToPay(p)}
           >
@@ -6835,7 +6888,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         {!isPaid && p.ready_to_pay && (
             <button
               type="button"
-              className={`${paymentRowIconBtn} border-red-300 bg-red-100 text-red-700 hover:bg-red-200`}
+              className={`${paymentRowIconBtn} bg-red-100 text-red-700 hover:bg-red-200`}
               title={
                 p.ready_to_pay_by_display_name
                   ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert`
@@ -6849,33 +6902,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         {!isPaid && (isSuperuser || isCollection) && (
           <button
             type="button"
-            className={`${paymentRowIconBtn} border-green-300 bg-green-100 text-green-700 hover:bg-green-200`}
+            className={`${paymentRowIconBtn} bg-green-100 text-green-700 hover:bg-green-200`}
             title={p.isLegacy ? 'Mark Legacy Payment as Paid' : 'Mark as Paid'}
             onClick={() => handleOpenPaidDateModal(p.id)}
           >
             <CurrencyDollarIcon className="h-5 w-5" />
           </button>
         )}
-        {showPaymentEditButton(p, isPaid) && (
-          <button
-            type="button"
-            className={`${paymentRowIconBtn} border-none bg-gray-100 text-primary hover:bg-gray-200`}
-            title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
-            onClick={() => handleEditPayment(p)}
-          >
-            <PencilIcon className="h-5 w-5" />
-          </button>
-        )}
-        {showPaymentDeleteButton(p, isPaid) && (
-          <button
-            type="button"
-            className={`${paymentRowIconBtn} border-none bg-red-100 text-red-500 hover:bg-red-200`}
-            title="Delete"
-            onClick={() => handleDeletePayment(p)}
-          >
-            <TrashIcon className="h-5 w-5" />
-          </button>
-        )}
+        {rowActionsMenu}
       </div>
     );
   };
@@ -6892,6 +6926,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               : 'Payment plans and collections'
           }
           titleExtra={financesHeaderExtras}
+          actions={financesHeaderActions}
         />
         {financesSubTab === 'expenses-fees' ? (
           <FinancesExpensesFeesPage
@@ -7110,8 +7145,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 }, {});
 
                 return (
-                  <div className="space-y-12 pt-10">
-                    {Object.entries(paymentsByContact).map(([contactName, payments], contactIndex) => {
+                  <div className="flex flex-col gap-6">
+                    {sortPaymentContactEntries(Object.entries(paymentsByContact)).map(([contactName, payments], contactIndex) => {
                   // Sort this contact's payments by due date (or fallback to original order if no due dates)
                   // Robust due date parsing and sorting
                   const parseDueDate = (dateStr: string | null | undefined) => {
@@ -7144,83 +7179,88 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   });
                   const dueDatePaymentId = dueDatePayment ? dueDatePayment.id : sortedContactPayments[0]?.id;
                   const contactAccentColor = getContactAccentColor(contactName);
+                  const paymentTableColCount = (paymentRowPickMode ? 1 : 0) + 10;
+                  const contactPlanHeader = (
+                    <ContactPlanHeader
+                      contactName={contactName}
+                      payments={sortedContactPayments}
+                      collapsed={!!collapsedContacts[contactName]}
+                      onToggle={() =>
+                        setCollapsedContacts((prev) => ({ ...prev, [contactName]: !prev[contactName] }))
+                      }
+                      totalNis={contactTotalNisByName[contactName]}
+                      profileImageUrl={resolveContactProfileImageUrl(
+                        contactName,
+                        sortedContactPayments[0]?.client_id,
+                      )}
+                      automationActiveCount={automationActiveCountForContact(contactName)}
+                    />
+                  );
+                  const contactPaymentHistory = openHistoryContact === contactName && (
+                    <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 p-4">
+                      <h4 className="font-semibold mb-2">Payment History</h4>
+                      {paymentHistory[contactName]?.length ? (
+                        <table className="table w-full text-sm">
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th>Amount</th>
+                              <th>Method</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {paymentHistory[contactName].map((tx, idx) => (
+                              <tr key={tx.id || idx}>
+                                <td>{tx.created_at ? new Date(tx.created_at).toLocaleString() : ''}</td>
+                                <td>{tx.amount ? `?${tx.amount.toLocaleString()}` : ''}</td>
+                                <td>{tx.payment_method || ''}</td>
+                                <td>{tx.status || ''}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="text-gray-500">No payment history found.</div>
+                      )}
+                    </div>
+                  );
                   return (
                     <div
                       key={contactName}
-                      className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
-                      style={{ '--contact-accent': contactAccentColor } as React.CSSProperties}
+                      className="w-full overflow-hidden rounded-2xl bg-white"
                     >
-                      {/* Contact header */}
-                      <div className="px-6 py-4">
-                        <ContactPlanHeader
-                          contactName={contactName}
-                          payments={sortedContactPayments}
-                          collapsed={!!collapsedContacts[contactName]}
-                          onToggle={() =>
-                            setCollapsedContacts((prev) => ({ ...prev, [contactName]: !prev[contactName] }))
-                          }
-                          totalNis={contactTotalNisByName[contactName]}
-                          profileImageUrl={resolveContactProfileImageUrl(
-                            contactName,
-                            sortedContactPayments[0]?.client_id,
-                          )}
-                          automationActiveCount={automationActiveCountForContact(contactName)}
-                        />
-                        {openHistoryContact === contactName && (
-                          <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 p-4">
-                            <h4 className="font-semibold mb-2">Payment History</h4>
-                            {paymentHistory[contactName]?.length ? (
-                              <table className="table w-full text-sm">
-                                <thead>
-                                  <tr>
-                                    <th>Date</th>
-                                    <th>Amount</th>
-                                    <th>Method</th>
-                                    <th>Status</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {paymentHistory[contactName].map((tx, idx) => (
-                                    <tr key={tx.id || idx}>
-                                      <td>{tx.created_at ? new Date(tx.created_at).toLocaleString() : ''}</td>
-                                      <td>{tx.amount ? `?${tx.amount.toLocaleString()}` : ''}</td>
-                                      <td>{tx.payment_method || ''}</td>
-                                      <td>{tx.status || ''}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            ) : (
-                              <div className="text-gray-500">No payment history found.</div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Table or Box view for this contact ? same white card */}
-                      {!collapsedContacts[contactName] && (
-                        <div className="px-4 pb-4 pt-2 md:px-6 md:pb-5">
-                          {viewMode === 'table' ? (
+                      {viewMode === 'table' ? (
                             <div className="finances-payments-table-shell overflow-x-auto">
-                              <table className="finances-payments-table w-full min-w-[960px] text-sm">
+                              <table className="finances-payments-table table w-full min-w-[960px] text-sm">
                                 <thead>
-                                  <tr className="text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                                    {paymentRowPickMode && (
-                                      <th className="w-10 px-2 py-3.5" aria-label="Select" />
-                                    )}
-                                    <th className="px-4 py-3.5 text-left">Status</th>
-                                    <th className="px-4 py-3.5 text-left">Due date</th>
-                                    <th className="px-4 py-3.5 text-right">Value</th>
-                                    <th className="px-4 py-3.5 text-right">VAT</th>
-                                    <th className="px-4 py-3.5 text-right">Total</th>
-                                    <th className="px-4 py-3.5 text-left">Payment date</th>
-                                    <th className="px-4 py-3.5 text-left">Type</th>
-                                    <th className="px-4 py-3.5 text-left">Proforma</th>
-                                    <th className="px-4 py-3.5 text-left">Tax receipt</th>
-                                    <th className="px-4 py-3.5 text-left">Notes</th>
-                                    <th className="px-4 py-3.5 text-right">Actions</th>
+                                  <tr className="border-0">
+                                    <th
+                                      colSpan={paymentTableColCount}
+                                      className="border-0 bg-transparent px-4 py-3 text-left font-normal normal-case tracking-normal"
+                                    >
+                                      {contactPlanHeader}
+                                    </th>
                                   </tr>
+                                  {!collapsedContacts[contactName] && (
+                                  <tr className="border-0 text-xs uppercase tracking-wider text-slate-400">
+                                    {paymentRowPickMode && (
+                                      <th className="w-10 border-0 bg-transparent px-2" aria-label="Select" />
+                                    )}
+                                    <th className="border-0 bg-transparent font-semibold text-slate-500">Status</th>
+                                    <th className="border-0 bg-transparent font-semibold text-slate-500">Due date</th>
+                                    <th className="border-0 bg-transparent text-right font-semibold text-slate-500">Value</th>
+                                    <th className="border-0 bg-transparent text-right font-semibold text-slate-500">Total</th>
+                                    <th className="border-0 bg-transparent font-semibold text-slate-500">Payment date</th>
+                                    <th className="border-0 bg-transparent font-semibold text-slate-500">Type</th>
+                                    <th className="border-0 bg-transparent font-semibold text-slate-500">Proforma</th>
+                                    <th className="border-0 bg-transparent font-semibold text-slate-500">Tax receipt</th>
+                                    <th className="border-0 bg-transparent font-semibold text-slate-500">Notes</th>
+                                    <th className="border-0 bg-transparent text-right font-semibold text-slate-500">Actions</th>
+                                  </tr>
+                                  )}
                                 </thead>
+                                {!collapsedContacts[contactName] && (
                                 <tbody>
                                   {visibleContactPayments.map((p: PaymentPlan, idx: number) => {
                                     const isPaid = !!p.paid;
@@ -7228,7 +7268,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     return (
                                       <tr
                                         key={p.id || idx}
-                                        className={`finance-payment-row${isPaid ? ' finance-payment-row-paid' : ''}${
+                                        className={`finance-payment-row border-t border-slate-100${isPaid ? ' finance-payment-row-paid' : ''}${
                                           rowSelectable ? ' finance-payment-row-selectable cursor-pointer' : ''
                                         }${
                                           isPaymentRowSelectedForPick(p) ? ' finance-payment-row-picked' : ''
@@ -7240,14 +7280,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         }
                                       >
                                         {renderAutomationSelectCell(p)}
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                        <td className="whitespace-nowrap align-middle">
                                           <div className="flex flex-wrap items-center gap-2">
-                                            <PaymentStatusPill paid={isPaid} readyToPay={p.ready_to_pay} />
+                                            <PaymentStatusPill
+                                              paid={isPaid}
+                                              readyToPay={p.ready_to_pay}
+                                              expensePaidBy={
+                                                isExpenseNoVatPayment(p.order)
+                                                  ? p.expensePaidBy ?? 'client'
+                                                  : null
+                                              }
+                                            />
                                             <span className="text-xs text-slate-400">{p.duePercent}</span>
                                             {renderInvoiceAutomationBadge(p)}
                                           </div>
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                        <td className="whitespace-nowrap align-middle">
                                           {isPaid ? (
                                             <span className="text-sm font-semibold text-slate-900">
                                               {formatDateDDMMYYYY(p.dueDate) || '?'}
@@ -7260,19 +7308,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             />
                                           )}
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right font-semibold text-slate-900">
-                                          {getCurrencySymbol(p.currency)}
-                                          {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        <td className="whitespace-nowrap text-right align-middle tabular-nums text-slate-500">
+                                          <div className="relative inline-block text-right">
+                                            {getCurrencySymbol(p.currency)}
+                                            {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                            {Number(p.valueVat) > 0 ? (
+                                              <div className="absolute right-0 top-full mt-0.5 text-xs font-normal text-slate-400">
+                                                + {getCurrencySymbol(p.currency)}
+                                                {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              </div>
+                                            ) : null}
+                                          </div>
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right text-slate-500">
-                                          {getCurrencySymbol(p.currency)}
-                                          {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                        </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right font-bold text-slate-900">
+                                        <td className="whitespace-nowrap text-right align-middle font-semibold tabular-nums text-slate-900">
                                           {getCurrencySymbol(p.currency)}
                                           {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-slate-600">
+                                        <td className="whitespace-nowrap align-middle text-slate-600">
                                           {p.paid_at ? (
                                             isPaid ? (
                                               <PaidPaymentDateBadge date={p.paid_at} />
@@ -7280,13 +7332,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               formatDateDDMMYYYY(p.paid_at)
                                             )
                                           ) : (
-                                            '---'
+                                            <span className="text-slate-400">—</span>
                                           )}
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap font-medium text-slate-700">
+                                        <td className="whitespace-nowrap align-middle font-medium text-slate-500">
                                           {expenseDocs.renderType(p, p.order)}
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                        <td className="whitespace-nowrap align-middle">
                                           {p.isLegacy ? (
                                             // For legacy leads, show proforma if available
                                             (() => {
@@ -7314,6 +7366,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     )}
                                                   </div>
                                                 );
+                                              } else if (isOfficePaidExpense(p)) {
+                                                return <span className="text-slate-400">—</span>;
                                               } else {
                                                 return (
                                                   <button
@@ -7339,6 +7393,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             >
                                               {getProformaName(p.proforma)}
                                             </button>
+                                          ) : isOfficePaidExpense(p) ? (
+                                            <span className="text-slate-400">—</span>
                                           ) : (
                                             <button
                                               type="button"
@@ -7350,14 +7406,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </button>
                                           )}
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                        <td className="whitespace-nowrap align-middle">
                                           {renderTaxReceiptCell(p)}
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap max-w-[180px]">
+                                        <td className="max-w-[180px] whitespace-nowrap align-middle">
                                           <button
                                             type="button"
                                             onClick={() => handleOpenNotesModal(p)}
-                                            className="block w-full truncate text-left text-sm text-slate-700 hover:text-indigo-600"
+                                            className="block w-full truncate text-left text-sm text-slate-500 hover:text-indigo-600"
                                             title={p.notes || 'Click to add notes'}
                                             dir={getNotesTextDirection(p.notes)}
                                             style={{ textAlign: getNotesTextDirection(p.notes) === 'rtl' ? 'right' : 'left' }}
@@ -7368,7 +7424,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </button>
                                         </td>
                                         <td
-                                          className="relative min-w-[200px] px-4 py-4 align-middle"
+                                          className="relative min-w-[200px] align-middle"
                                           onClick={(e) => paymentRowPickMode && e.stopPropagation()}
                                         >
                                           {renderPaymentRowActions(p, isPaid)}
@@ -7378,8 +7434,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   })}
                                   {addingPaymentContact === contactName && (
                                     viewMode === 'table' ? (
-                                      <tr key={`new-payment-${contactName}`} className="finance-payment-row finance-payment-row-new">
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                      <tr key={`new-payment-${contactName}`} className="finance-payment-row finance-payment-row-new border-t border-slate-100">
+                                        <td className="whitespace-nowrap align-middle">
                                           <span className="rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
                                             New
                                           </span>
@@ -7391,7 +7447,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             placeholder="%"
                                           />
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                        <td className="whitespace-nowrap align-middle">
                                           <input type="date" className="input input-bordered input-sm w-40" value={newPaymentData.dueDate} onChange={e => {
                                             const newDueDate = e.target.value;
                                             setNewPaymentData((d: any) => {
@@ -7401,7 +7457,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             });
                                           }} />
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right">
+                                        <td className="whitespace-nowrap text-right align-middle">
                                           <input type="number" className="input input-bordered input-sm w-28 text-right no-arrows" value={newPaymentData.value} onChange={e => {
                                             const value = e.target.value;
                                             let vat = 0;
@@ -7415,16 +7471,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             const duePercent = totalAmount > 0 ? Math.round((Number(value) / totalAmount) * 100) : 0;
                                             setNewPaymentData((d: any) => ({ ...d, value, valueVat: vat, duePercent }));
                                           }} />
+                                          {Number(newPaymentData.valueVat) > 0 ? (
+                                            <div className="mt-1 text-xs font-normal text-slate-400">
+                                              + {getCurrencySymbol(newPaymentData.currency || '?')}
+                                              {Number(newPaymentData.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                            </div>
+                                          ) : null}
                                         </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right">
-                                          <input type="number" className="input input-bordered input-sm w-24 cursor-not-allowed bg-slate-50 text-right text-slate-500 no-arrows" value={newPaymentData.valueVat || 0} readOnly />
-                                        </td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right font-bold text-slate-900">
+                                        <td className="whitespace-nowrap text-right align-middle font-semibold tabular-nums text-slate-900">
                                           {getCurrencySymbol(newPaymentData.currency || '?')}
                                           {(Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">?</td>
-                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                        <td className="align-middle text-slate-400">—</td>
+                                        <td className="whitespace-nowrap align-middle">
                                           <select
                                             className="select select-bordered select-sm w-full max-w-[180px]"
                                             value={newPaymentData.paymentOrder}
@@ -7446,9 +7505,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <option value="Expense">Expense</option>
                                           </select>
                                         </td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">?</td>
-                                        <td className="px-4 py-4 align-middle text-slate-400">?</td>
-                                        <td className="px-4 py-4 align-middle">
+                                        <td className="align-middle text-slate-400">?</td>
+                                        <td className="align-middle text-slate-400">?</td>
+                                        <td className="align-middle">
                                           <input className="input input-bordered input-sm mb-2 w-full max-w-[180px]" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
                                           <div className="flex flex-wrap items-center gap-2">
                                             <select
@@ -7510,7 +7569,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </label>
                                           </div>
                                         </td>
-                                        <td className="px-4 py-4 align-middle">
+                                        <td className="align-middle">
                                           <div className="flex justify-end gap-2">
                                             <button type="button" className="btn btn-sm rounded-xl bg-emerald-600 text-white hover:bg-emerald-700" onClick={handleSaveNewPayment} disabled={isSavingPaymentRow || !newPaymentData.value || !newPaymentData.duePercent}>
                                               <CheckIcon className="h-4 w-4" />
@@ -7679,23 +7738,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     )
                                   )}
                                 </tbody>
+                                )}
                               </table>
+                              {!collapsedContacts[contactName] ? (
+                                <div className="px-4">{contactPaymentHistory}</div>
+                              ) : null}
 
                               {/* Add payment / delete plan (table view) */}
-                              {!addingPaymentContact && (
-                                <div className="mt-4 flex items-center justify-between gap-3">
+                              {!collapsedContacts[contactName] && !addingPaymentContact && (
+                                <div className="mt-4 flex items-center justify-between gap-3 px-4 pb-4">
                                   <div className="flex flex-wrap items-center gap-1">
                                     <button
                                       type="button"
-                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50"
+                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50 [&_svg]:h-6 [&_svg]:w-6"
                                       onClick={() => handleAddNewPayment(contactName)}
                                     >
-                                      <PlusIcon className="h-4 w-4" />
+                                      <PlusIcon className="h-6 w-6 shrink-0" />
                                       Add Payment
                                     </button>
                                     <button
                                       type="button"
-                                      className={`btn btn-sm btn-ghost rounded-xl border-0 ${
+                                      className={`btn btn-sm btn-ghost rounded-xl border-0 [&_svg]:h-6 [&_svg]:w-6 ${
                                         openHistoryContact === contactName
                                           ? 'bg-indigo-50 text-indigo-700'
                                           : 'text-indigo-700 hover:bg-indigo-50'
@@ -7703,23 +7766,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       onClick={() => fetchPaymentHistory(contactName)}
                                       title="Payment history"
                                     >
-                                      <ClockIcon className="h-4 w-4" />
+                                      <ClockIcon className="h-6 w-6 shrink-0" />
                                       Payment History
                                     </button>
                                   </div>
                                   <button
                                     type="button"
-                                    className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600"
+                                    className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600 [&_svg]:h-6 [&_svg]:w-6"
                                     onClick={() => handleDeletePaymentPlan(contactName)}
                                   >
-                                    <TrashIcon className="h-4 w-4" />
+                                    <TrashIcon className="h-6 w-6 shrink-0" />
                                     Delete Plan
                                   </button>
                                 </div>
                               )}
 
                               {/* Total and Left to Plan Display - Below Payment Table */}
-                              {addingPaymentContact === contactName && (
+                              {!collapsedContacts[contactName] && addingPaymentContact === contactName && (
                                 <div className="mt-6 p-6">
                                   <div className="flex flex-col md:flex-row gap-6 items-center justify-center">
                                     {/* Total Amount */}
@@ -7775,6 +7838,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             </div>
                           ) : (
                             <>
+                              <div className="px-4 py-3">
+                                {contactPlanHeader}
+                                {contactPaymentHistory}
+                              </div>
+                              {!collapsedContacts[contactName] && (
+                            <>
                               <div className="divide-y divide-slate-100 rounded-xl border border-slate-100">
                                 {visibleContactPayments.map((p: PaymentPlan, idx: number) => {
                                   const isPaid = p.paid;
@@ -7808,10 +7877,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 onClick={(e) => e.stopPropagation()}
                                               />
                                             )}
-                                            <PaymentStatusPill paid={!!isPaid} readyToPay={p.ready_to_pay} />
+                                            <PaymentStatusPill
+                                              paid={!!isPaid}
+                                              readyToPay={p.ready_to_pay}
+                                              expensePaidBy={
+                                                isExpenseNoVatPayment(p.order)
+                                                  ? p.expensePaidBy ?? 'client'
+                                                  : null
+                                              }
+                                            />
                                             {renderInvoiceAutomationBadge(p)}
                                           </div>
-                                          <p className="mt-2 text-sm font-medium text-slate-700">
+                                          <p className="mt-2 text-sm font-medium text-slate-500">
                                             {expenseDocs.renderType(p, p.order)}
                                           </p>
                                           <p className="text-xs text-slate-400">{p.duePercent}</p>
@@ -7842,7 +7919,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
-                                            <span className="text-sm font-bold text-gray-900">
+                                            <span className="text-sm font-bold text-slate-500">
                                               {getCurrencySymbol(p.currency)}
                                               {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                               + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -7871,7 +7948,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   formatDateDDMMYYYY(p.paid_at)
                                                 )
                                               ) : (
-                                                '---'
+                                                <span className="text-slate-400">—</span>
                                               )}
                                             </span>
                                           </div>
@@ -7905,6 +7982,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                         )}
                                                       </div>
                                                     );
+                                                  } else if (isOfficePaidExpense(p)) {
+                                                    return <span className="text-slate-400">—</span>;
                                                   } else {
                                                     return (
                                                       <button
@@ -7931,6 +8010,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 >
                                                   {getProformaName(p.proforma)}
                                                 </button>
+                                              ) : isOfficePaidExpense(p) ? (
+                                                <span className="text-slate-400">—</span>
                                               ) : (
                                                 <button
                                                   type="button"
@@ -7951,7 +8032,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>
                                             <button
                                               onClick={() => handleOpenNotesModal(p)}
-                                              className="text-sm font-bold text-gray-900 hover:text-indigo-600 transition-colors cursor-pointer max-w-[200px] truncate"
+                                              className="text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors cursor-pointer max-w-[200px] truncate"
                                               title={p.notes || 'Click to add notes'}
                                               dir={getNotesTextDirection(p.notes)}
                                               style={{ textAlign: getNotesTextDirection(p.notes) === 'rtl' ? 'right' : 'left' }}
@@ -7972,19 +8053,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 })}
                               </div>
                               {!addingPaymentContact && (
-                                <div className="mt-4 flex items-center justify-between gap-3">
+                                <div className="mt-4 flex items-center justify-between gap-3 px-4 pb-4">
                                   <div className="flex flex-wrap items-center gap-1">
                                     <button
                                       type="button"
-                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50"
+                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50 [&_svg]:h-6 [&_svg]:w-6"
                                       onClick={() => handleAddNewPayment(contactName)}
                                     >
-                                      <PlusIcon className="h-4 w-4" />
+                                      <PlusIcon className="h-6 w-6 shrink-0" />
                                       Add Payment
                                     </button>
                                     <button
                                       type="button"
-                                      className={`btn btn-sm btn-ghost rounded-xl border-0 ${
+                                      className={`btn btn-sm btn-ghost rounded-xl border-0 [&_svg]:h-6 [&_svg]:w-6 ${
                                         openHistoryContact === contactName
                                           ? 'bg-indigo-50 text-indigo-700'
                                           : 'text-indigo-700 hover:bg-indigo-50'
@@ -7992,24 +8073,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       onClick={() => fetchPaymentHistory(contactName)}
                                       title="Payment history"
                                     >
-                                      <ClockIcon className="h-4 w-4" />
+                                      <ClockIcon className="h-6 w-6 shrink-0" />
                                       Payment History
                                     </button>
                                   </div>
                                   <button
                                     type="button"
-                                    className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600"
+                                    className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600 [&_svg]:h-6 [&_svg]:w-6"
                                     onClick={() => handleDeletePaymentPlan(contactName)}
                                   >
-                                    <TrashIcon className="h-4 w-4" />
+                                    <TrashIcon className="h-6 w-6 shrink-0" />
                                     Delete Plan
                                   </button>
                                 </div>
                               )}
                             </>
+                              )}
+                            </>
                           )}
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -9335,7 +9416,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         .finances-payments-table-shell table.finances-payments-table thead th {
           background: transparent !important;
           border: none !important;
-          border-bottom: 1px solid #e2e8f0 !important;
           box-shadow: none !important;
         }
 
@@ -9346,31 +9426,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         .finances-payments-table-shell table.finances-payments-table tbody td {
           border: none !important;
-          border-bottom: 1px solid #f1f5f9 !important;
+          border-top: 1px solid #f1f5f9 !important;
           background: transparent !important;
           box-shadow: none !important;
           vertical-align: middle;
-          padding: 0.85rem 1rem !important;
-        }
-
-        .finances-payments-table-shell table.finances-payments-table tbody tr:last-child td {
-          border-bottom: none !important;
-        }
-
-        .finances-payments-table-shell table.finances-payments-table tbody td:first-child {
-          position: relative;
-          padding-left: 1.25rem !important;
-        }
-
-        .finances-payments-table-shell table.finances-payments-table tbody td:first-child::before {
-          content: '';
-          position: absolute;
-          left: 0;
-          top: 0.55rem;
-          bottom: 0.55rem;
-          width: 3px;
-          border-radius: 999px;
-          background: var(--contact-accent, #94a3b8);
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody tr:hover td {

@@ -3,12 +3,16 @@ import ReactDOM from 'react-dom';
 import { DocumentPlusIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
+import ExpenseSplitTargetPicker from '../client-tabs/ExpenseSplitTargetPicker';
 import {
   fetchLeadExpenseContacts,
   fetchLeadExpenseTypes,
+  insertSplitLeadExpenses,
+  splitExpenseAmountEvenly,
   type LeadExpenseContactOption,
   type LeadExpensePaidBy,
   type LeadExpenseTypeRow,
+  type SplitLeadExpenseTarget,
 } from '../../lib/leadExpenses';
 import { fetchActiveExpenseTypes, type ExpenseTypeRow } from '../../lib/expenseTypes';
 import { FIRM_MANAGEMENT_DEFAULT_CURRENCY } from '../../lib/firmManagementCosts';
@@ -145,6 +149,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
   canManageRestrictedKinds = false,
 }) => {
   const [kind, setKind] = useState<FinanceExpenseKind>('lead');
+  const [leadEntryMode, setLeadEntryMode] = useState<'single' | 'split'>('single');
+  const [splitTargets, setSplitTargets] = useState<SplitLeadExpenseTarget[]>([]);
   const [saving, setSaving] = useState(false);
 
   const [leadQuery, setLeadQuery] = useState('');
@@ -188,7 +194,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
   const [editLoading, setEditLoading] = useState(false);
 
-  const needsLead = kind === 'lead' || kind === 'subcontractor';
+  const isLeadSplit = kind === 'lead' && leadEntryMode === 'split' && !editRow;
+  const needsLead = (kind === 'lead' && !isLeadSplit) || kind === 'subcontractor';
   const needsFirm = kind === 'subcontractor' || kind === 'other_firm' || kind === 'office';
   const usesIsoCurrency = kind === 'other_firm' || kind === 'office';
   const usesNisOnly = kind === 'marketing' || kind === 'rent' || kind === 'partner_draws';
@@ -200,6 +207,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
 
   const resetForm = useCallback(() => {
     setKind('lead');
+    setLeadEntryMode('single');
+    setSplitTargets([]);
     setLeadQuery('');
     setLeadResults([]);
     setSelectedLead(null);
@@ -240,6 +249,10 @@ const AddExpenseDrawer: React.FC<Props> = ({
     if (!open || editRow) return;
     if (!canAddFinanceExpenseKind(kind, canManageRestrictedKinds)) {
       setKind('lead');
+    }
+    if (kind !== 'lead') {
+      setLeadEntryMode('single');
+      setSplitTargets([]);
     }
   }, [open, editRow, kind, canManageRestrictedKinds]);
 
@@ -522,6 +535,12 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const selectedRentOffice = rentOffices.find((o) => String(o.id) === rentOfficeId) || null;
   const selectedEmployee = employees.find((e) => String(e.id) === employeeId) || null;
   const selectedCurrency = currencies.find((c) => String(c.id) === currencyId) || null;
+  const splitAmounts = useMemo(
+    () => splitExpenseAmountEvenly(Number(amount), splitTargets.length),
+    [amount, splitTargets.length],
+  );
+  const splitCurrencyLabel = selectedCurrency?.iso_code || selectedCurrency?.name || '';
+  const splitCurrentIdentity = selectedLead ? identityFromPick(selectedLead) : null;
 
   const addFiles = (fileList: FileList | File[]) => {
     const incoming = Array.from(fileList);
@@ -573,8 +592,25 @@ const AddExpenseDrawer: React.FC<Props> = ({
       }
       let entryId: number | null = editRow && editRow.id > 0 ? editRow.id : null;
       if (kind === 'lead') {
-        if (!selectedLead) throw new Error('Choose a lead');
         if (!leadTypeId) throw new Error('Choose an expense type');
+        if (isLeadSplit) {
+          if (splitTargets.length < 2) throw new Error('Select at least two lead contacts');
+          if (rounded <= 0) throw new Error('Enter a total amount greater than zero');
+          await insertSplitLeadExpenses({
+            targets: splitTargets,
+            expenseTypeId: leadTypeId,
+            totalAmount: rounded,
+            currencyId: selectedCurrency?.id ?? null,
+            expenseDate,
+            notes,
+            includeVat,
+            paidBy,
+            isReimbursable: false,
+            isReimbursed: false,
+          });
+          toast.success(`Expense split across ${splitTargets.length} contacts`);
+        } else {
+        if (!selectedLead) throw new Error('Choose a lead');
         const cid = Number(contactId);
         if (!Number.isFinite(cid)) throw new Error('Choose a related contact');
         const typeLabel = leadTypes.find((t) => t.id === leadTypeId)?.label || 'Expense';
@@ -612,6 +648,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
           });
           entryId = result.entryId;
           toast.success('Lead expense added');
+        }
         }
       } else if (kind === 'subcontractor') {
         if (!selectedLead) throw new Error('Choose a lead');
@@ -831,7 +868,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
         throw new Error('Choose an expense type');
       }
 
-      if (pendingDocs.length) {
+      if (pendingDocs.length && !isLeadSplit) {
         if ((!entryId || entryId <= 0) && editRow) {
           entryId = await ensureFinanceExpenseRegistry(editRow);
         }
@@ -862,13 +899,23 @@ const AddExpenseDrawer: React.FC<Props> = ({
   return ReactDOM.createPortal(
     <div className="fixed inset-0 z-[100]">
       <div className="absolute inset-0 bg-black/30" onClick={close} />
-      <div className="absolute inset-y-0 right-0 flex w-full max-w-md flex-col overflow-hidden bg-white shadow-2xl">
+      <div
+        className={`absolute inset-y-0 right-0 flex w-full flex-col overflow-hidden bg-white shadow-2xl ${
+          isLeadSplit ? 'max-w-xl' : 'max-w-md'
+        }`}
+      >
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-6 py-5">
           <div>
-            <h2 className="text-xl font-bold text-slate-900">{editRow ? 'Edit expense' : 'New expense'}</h2>
-            <p className="mt-0.5 text-sm text-slate-500">
-              {editRow ? 'Update this expense in its finance table' : 'Saves into the matching finance table'}
-            </p>
+            <h2 className="text-xl font-bold text-slate-900">
+              {editRow ? 'Edit expense' : isLeadSplit ? 'Split expense' : 'New expense'}
+            </h2>
+            {editRow || isLeadSplit ? (
+              <p className="mt-0.5 text-sm text-slate-500">
+                {editRow
+                  ? 'Update this expense in its finance table'
+                  : 'Split one total across two or more lead contacts'}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -904,6 +951,44 @@ const AddExpenseDrawer: React.FC<Props> = ({
               ))}
             </select>
           </div>
+
+          {kind === 'lead' && !editRow ? (
+            <div className="form-control">
+              <label className="label py-1">
+                <span className="label-text font-medium text-slate-700">How to add</span>
+              </label>
+              <div
+                role="group"
+                aria-label="Simple or split expense"
+                className="inline-flex w-full rounded-full bg-slate-100/90 p-1"
+              >
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setLeadEntryMode('single')}
+                  className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
+                    leadEntryMode === 'single'
+                      ? 'bg-white font-semibold text-slate-900 shadow-sm'
+                      : 'font-medium text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Simple
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setLeadEntryMode('split')}
+                  className={`flex-1 rounded-full px-3 py-2 text-sm transition ${
+                    leadEntryMode === 'split'
+                      ? 'bg-white font-semibold text-slate-900 shadow-sm'
+                      : 'font-medium text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Split
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {needsLead ? (
             <div className="form-control relative">
@@ -973,7 +1058,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
             </div>
           ) : null}
 
-          {kind === 'lead' && selectedLead ? (
+          {kind === 'lead' && (isLeadSplit || selectedLead) ? (
             <>
               <div className="form-control">
                 <label className="label py-1">
@@ -991,6 +1076,39 @@ const AddExpenseDrawer: React.FC<Props> = ({
                   ))}
                 </select>
               </div>
+              {isLeadSplit ? (
+                <div className="space-y-3">
+                  <ExpenseSplitTargetPicker
+                    key={
+                      splitCurrentIdentity
+                        ? `${splitCurrentIdentity.leadType}:${splitCurrentIdentity.newLeadId || splitCurrentIdentity.legacyLeadId || ''}`
+                        : 'no-current-lead'
+                    }
+                    currentIdentity={splitCurrentIdentity}
+                    currentLeadName={
+                      selectedLead?.clientName || selectedLead?.leadNumber || undefined
+                    }
+                    disabled={saving}
+                    onChange={setSplitTargets}
+                  />
+                  <div className="rounded-xl bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+                    {splitTargets.length < 2 || splitAmounts.length === 0 || Number(amount) <= 0 ? (
+                      <span>Select at least two contacts to preview the split.</span>
+                    ) : (
+                      <span>
+                        The total will create {splitTargets.length} expense rows.{' '}
+                        {Math.min(...splitAmounts) === Math.max(...splitAmounts)
+                          ? `Each contact receives ${splitCurrencyLabel} ${splitAmounts[0].toFixed(2)}.`
+                          : `Shares range from ${splitCurrencyLabel} ${Math.min(
+                              ...splitAmounts,
+                            ).toFixed(2)} to ${splitCurrencyLabel} ${Math.max(
+                              ...splitAmounts,
+                            ).toFixed(2)} so the total remains exact.`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ) : (
               <div className="form-control">
                 <label className="label py-1">
                   <span className="label-text font-medium text-slate-700">Related contact</span>
@@ -1009,6 +1127,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
                   ))}
                 </select>
               </div>
+              )}
               <div className="form-control">
                 <label className="label py-1">
                   <span className="label-text font-medium text-slate-700">Paid by</span>
@@ -1226,7 +1345,9 @@ const AddExpenseDrawer: React.FC<Props> = ({
           <div className="flex items-end gap-2">
             <div className="form-control min-w-0 flex-1">
               <label className="label py-1">
-                <span className="label-text font-medium text-slate-700">Amount</span>
+                <span className="label-text font-medium text-slate-700">
+                  {isLeadSplit ? 'Total amount' : 'Amount'}
+                </span>
               </label>
               <input
                 type="text"
@@ -1303,6 +1424,11 @@ const AddExpenseDrawer: React.FC<Props> = ({
             </div>
           )}
 
+          {isLeadSplit ? (
+            <p className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              Add invoices or receipts on each expense after the split.
+            </p>
+          ) : (
           <div className="form-control">
             <label className="label py-1">
               <span className="label-text font-medium text-slate-700">Invoices & receipts</span>
@@ -1371,6 +1497,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
               </ul>
             ) : null}
           </div>
+          )}
 
           <div className="form-control">
             <label className="label py-1">
@@ -1404,6 +1531,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
               <span className="loading loading-spinner loading-sm" />
             ) : editRow ? (
               'Save changes'
+            ) : isLeadSplit ? (
+              'Split expense'
             ) : (
               'Save expense'
             )}

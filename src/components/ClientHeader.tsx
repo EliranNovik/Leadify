@@ -241,19 +241,19 @@ const TEAM_ROLE_LABEL =
     'text-[11px] font-semibold uppercase tracking-widest text-gray-500 dark:text-base-content/45';
 const CLIENT_HEADER_INNER_PANEL = CLIENT_HEADER_CARD;
 
-/** Individual white pills for language, source, category, topic (below header box). */
+/** Light grey pills for language, source, category, topic (below header box). */
 const META_BADGE_WHITE =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-[18px] bg-white px-3.5 py-2.5 text-sm font-medium text-base-content/85 shadow-sm border-0 dark:bg-base-100';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-[18px] bg-gray-100 px-3.5 py-2.5 text-sm font-medium text-base-content/85 shadow-none border-0 dark:bg-base-200';
 
 const META_BADGE_WHITE_BTN =
     `${META_BADGE_WHITE} font-sans transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:shadow-md`;
 
-/** Compact chips — same grey as stage action buttons (`bg-gray-200`). */
+/** Compact chips — light grey, larger icons than stage buttons. */
 const META_BADGE_CONNECTED =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full border-0 bg-gray-200 px-3 py-1.5 text-[13px] font-medium text-base-content/80 shadow-none dark:bg-base-300';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-full border-0 bg-gray-100 px-3 py-2 text-[13px] font-medium text-base-content/80 shadow-none dark:bg-base-200';
 
 const META_BADGE_CONNECTED_BTN =
-    `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:bg-gray-300 dark:hover:bg-base-200`;
+    `${META_BADGE_CONNECTED} font-sans transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:bg-gray-200 dark:hover:bg-base-200`;
 
 const CLIENT_HEADER_LEAD_NUMBER =
     'mt-0 block text-sm font-medium tabular-nums text-gray-500 dark:text-base-content/45';
@@ -2913,15 +2913,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const renderClientMetaBadges = (variant: 'floating' | 'connected' = 'floating') => {
         const badge = variant === 'connected' ? META_BADGE_CONNECTED : META_BADGE_WHITE;
         const badgeBtn = variant === 'connected' ? META_BADGE_CONNECTED_BTN : META_BADGE_WHITE_BTN;
-        const iconTone =
-            variant === 'connected'
-                ? 'h-4 w-4 shrink-0'
-                : undefined;
-        const languageIcon = iconTone ? `${iconTone} text-sky-600` : META_ICON_LANGUAGE;
-        const sourceIcon = iconTone ? `${iconTone} text-violet-600` : META_ICON_SOURCE;
-        const applicantsIcon = iconTone ? `${iconTone} text-rose-600` : META_ICON_APPLICANTS;
-        const categoryIcon = iconTone ? `${iconTone} text-amber-600` : META_ICON_CATEGORY;
-        const topicIcon = iconTone ? `${iconTone} text-emerald-600` : META_ICON_TOPIC;
+        const languageIcon = META_ICON_LANGUAGE;
+        const sourceIcon = META_ICON_SOURCE;
+        const applicantsIcon = META_ICON_APPLICANTS;
+        const categoryIcon = META_ICON_CATEGORY;
+        const topicIcon = META_ICON_TOPIC;
         const idleHover =
             disableCategoryModal
                 ? variant === 'connected'

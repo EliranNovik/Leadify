@@ -80,9 +80,8 @@ export function usePaymentPlanExpenseDocs(client: {
       );
       const next = new Map<string, PaymentDocHit>();
       rows.forEach((row) => {
-        const bundle = docsMap.get(String(row.id));
-        const count = bundle?.documents.length || 0;
-        if (!count || !bundle) return;
+        const bundle = docsMap.get(String(row.id)) || { entryId: 0, documents: [] };
+        const count = bundle.documents.length;
         const hit: PaymentDocHit = { expense: row, docs: bundle, count };
         const keys = [
           paymentDocsKey(false, row.payment_plan_id),
@@ -127,9 +126,12 @@ export function usePaymentPlanExpenseDocs(client: {
     const isExpense = isExpenseNoVatPayment(payment.order) || isExpenseNoVatPayment(String(label ?? ''));
     const key = paymentDocsKey(payment.isLegacy, payment.id);
     const hit = isExpense && key ? byPaymentKey.get(key) : null;
+    const category = hit?.expense.lead_expense_types?.label?.trim() || null;
     return (
       <span className="inline-flex items-center gap-1.5">
-        <span>{label}</span>
+        <span title={category || undefined}>
+          {label}
+        </span>
         {hit && hit.count > 0 ? (
           <button
             type="button"

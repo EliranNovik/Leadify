@@ -93,6 +93,13 @@ export async function sumPaymentPlanTotalsInNis(
   );
 }
 
+/** All rows, including client and office expenses. */
+export async function sumAllPaymentPlanTotalsInNis(
+  payments: PaymentPlanRowLike[],
+): Promise<PaymentPlanTotalsInNis> {
+  return sumFilteredPaymentPlanTotalsInNis(payments, () => true);
+}
+
 export async function sumExpenseNoVatPlanTotalsInNis(
   payments: PaymentPlanRowLike[],
 ): Promise<PaymentPlanTotalsInNis> {
@@ -102,6 +109,83 @@ export async function sumExpenseNoVatPlanTotalsInNis(
     payments,
     (p) => isExpenseNoVatPayment(p.order) && p.expensePaidBy !== 'firm',
   );
+}
+
+function emptyNisTotals(): PaymentPlanTotalsInNis {
+  return { subtotalNis: 0, vatNis: 0, totalNis: 0 };
+}
+
+function addNisTotals(target: PaymentPlanTotalsInNis, subtotalNis: number, vatNis: number) {
+  target.subtotalNis += subtotalNis;
+  target.vatNis += vatNis;
+  target.totalNis += subtotalNis + vatNis;
+}
+
+function roundNisTotals(totals: PaymentPlanTotalsInNis): PaymentPlanTotalsInNis {
+  return {
+    subtotalNis: Math.round(totals.subtotalNis),
+    vatNis: Math.round(totals.vatNis),
+    totalNis: Math.round(totals.totalNis),
+  };
+}
+
+/** Contact header: payments + client expenses in `total`; office-paid expenses kept separate. */
+export async function sumContactPlanHeaderTotalsInNis(
+  payments: PaymentPlanRowLike[],
+): Promise<{ total: PaymentPlanTotalsInNis; office: PaymentPlanTotalsInNis }> {
+  const plan = emptyNisTotals();
+  const clientExpense = emptyNisTotals();
+  const office = emptyNisTotals();
+
+  const eligiblePayments = payments.filter((payment) => {
+    const subtotal = Number(payment.value) || 0;
+    const vat = Number(payment.valueVat) || 0;
+    return subtotal > 0 || vat > 0 || subtotal + vat > 0;
+  });
+
+  const planIds = eligiblePayments
+    .map((p) => (typeof p.id === 'number' ? p.id : parseInt(String(p.id), 10)))
+    .filter((id) => Number.isFinite(id));
+  const exchangeContexts = await fetchPaymentPlanExchangeContexts(planIds);
+
+  for (const payment of eligiblePayments) {
+    const subtotal = Number(payment.value) || 0;
+    const vat = Number(payment.valueVat) || 0;
+    const total = subtotal + vat;
+    const planId =
+      typeof payment.id === 'number' ? payment.id : parseInt(String(payment.id), 10);
+
+    const info = await fetchProformaExchangeRateInfo({
+      currency: resolvePaymentRowCurrencyInput(payment),
+      paid: !!payment.paid,
+      paidAt: payment.paid_at ?? null,
+      subtotal,
+      vat,
+      total,
+      paymentPlanId: Number.isFinite(planId) ? planId : null,
+      preloadedExchangeContext: Number.isFinite(planId)
+        ? exchangeContexts.get(planId) ?? null
+        : null,
+    });
+    if (!info) continue;
+
+    if (!isExpenseNoVatPayment(payment.order)) {
+      addNisTotals(plan, info.subtotalNis, info.vatNis);
+    } else if (payment.expensePaidBy === 'firm') {
+      addNisTotals(office, info.subtotalNis, info.vatNis);
+    } else {
+      addNisTotals(clientExpense, info.subtotalNis, info.vatNis);
+    }
+  }
+
+  return {
+    total: roundNisTotals({
+      subtotalNis: plan.subtotalNis + clientExpense.subtotalNis,
+      vatNis: plan.vatNis + clientExpense.vatNis,
+      totalNis: plan.totalNis + clientExpense.totalNis,
+    }),
+    office: roundNisTotals(office),
+  };
 }
 
 export function formatOutstandingNisDisplay(totals: PaymentPlanTotalsInNis): {

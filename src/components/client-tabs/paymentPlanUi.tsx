@@ -6,6 +6,7 @@ import {
   PaperAirplaneIcon,
 } from '@heroicons/react/24/outline';
 import { isExpenseNoVatPayment } from '../../lib/proformaVat';
+import { mapLeadCurrencyToSymbol } from '../../lib/paymentPlanCurrency';
 import ContactProfileAvatar from '../ContactProfileAvatar';
 
 function contactInitials(name: string): string {
@@ -57,6 +58,7 @@ export type PaymentPlanRowLike = {
   paid?: boolean;
   paid_at?: string | null;
   ready_to_pay?: boolean;
+  sent_to_finance?: boolean;
   currency?: string;
   currency_id?: number | string | null;
   isLegacy?: boolean;
@@ -137,14 +139,16 @@ export function computePlanSummary(payments: PaymentPlanRowLike[]): PlanSummaryS
   const contractPayments = payments.filter((p) => !isExpenseNoVatPayment(p.order));
   const expensePayments = payments.filter((p) => isExpenseNoVatPayment(p.order));
   const firmExpensePayments = expensePayments.filter((p) => p.expensePaidBy === 'firm');
-  // Client-paid (or unset) expenses: pass-through — not in contract total, do not reduce lead value
   const clientExpensePayments = expensePayments.filter((p) => p.expensePaidBy !== 'firm');
-  const scheduledCount = contractPayments.length;
-  const paidCount = contractPayments.filter((p) => p.paid).length;
-  const unpaidCount = scheduledCount - paidCount;
-  const progressPct = scheduledCount > 0 ? Math.round((paidCount / scheduledCount) * 100) : 0;
+  const clientFacingPayments = [...contractPayments, ...clientExpensePayments];
+  const scheduledCount = payments.filter((p) => p.sent_to_finance || p.ready_to_pay).length;
+  const paidCount = payments.filter((p) => p.paid).length;
+  const unpaidCount = payments.filter((p) => !p.paid).length;
+  const progressPct = scheduledCount > 0
+    ? Math.round((payments.filter((p) => (p.sent_to_finance || p.ready_to_pay) && p.paid).length / scheduledCount) * 100)
+    : 0;
 
-  const unpaidPayments = contractPayments.filter((p) => !p.paid);
+  const unpaidPayments = payments.filter((p) => !p.paid);
   const nextDuePayment = [...unpaidPayments].sort((a, b) => {
     const aTime = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
     const bTime = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
@@ -156,9 +160,9 @@ export function computePlanSummary(payments: PaymentPlanRowLike[]): PlanSummaryS
     paidCount,
     unpaidCount,
     progressPct,
-    totalByCurrency: sumByCurrency(contractPayments),
-    paidByCurrency: sumByCurrency(contractPayments, (p) => !!p.paid),
-    outstandingByCurrency: sumByCurrency(contractPayments, (p) => !p.paid),
+    totalByCurrency: sumByCurrency(clientFacingPayments),
+    paidByCurrency: sumByCurrency(payments, (p) => !!p.paid),
+    outstandingByCurrency: sumByCurrency(unpaidPayments),
     expenseNoVatByCurrency: sumByCurrency(clientExpensePayments),
     expenseNoVatCount: clientExpensePayments.length,
     firmExpenseByCurrency: sumByCurrency(firmExpensePayments),
@@ -254,27 +258,40 @@ export function PaidPaymentDateBadge({
 export function PaymentStatusPill({
   paid,
   readyToPay,
+  expensePaidBy,
 }: {
   paid: boolean;
   readyToPay?: boolean;
+  expensePaidBy?: 'firm' | 'client' | null;
 }) {
-  if (paid) {
-    return (
-      <span className="inline-flex rounded-full bg-emerald-700 px-3.5 py-1.5 text-sm font-semibold text-white">
-        Paid
-      </span>
-    );
-  }
-  if (readyToPay) {
-    return (
-      <span className="inline-flex rounded-full bg-sky-50 px-3.5 py-1.5 text-sm font-semibold text-sky-700">
-        Sent to finance
-      </span>
-    );
-  }
-  return (
+  const status = paid ? (
+    <span className="inline-flex rounded-full bg-emerald-700 px-3.5 py-1.5 text-sm font-semibold text-white">
+      Paid
+    </span>
+  ) : readyToPay ? (
+    <span className="inline-flex rounded-full bg-sky-50 px-3.5 py-1.5 text-sm font-semibold text-sky-700">
+      Sent to finance
+    </span>
+  ) : (
     <span className="inline-flex rounded-full bg-amber-50 px-3.5 py-1.5 text-sm font-semibold text-amber-700">
       Unpaid
+    </span>
+  );
+
+  const paidByLabel =
+    expensePaidBy === 'firm' ? 'Office' : expensePaidBy === 'client' ? 'Client' : null;
+  if (!paidByLabel) return status;
+
+  return (
+    <span className="relative inline-flex pt-2.5">
+      <span
+        className={`absolute -top-0.5 right-0 z-10 rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-bold uppercase leading-tight tracking-wide ${
+          expensePaidBy === 'firm' ? 'text-slate-500' : 'text-sky-500'
+        }`}
+      >
+        {paidByLabel}
+      </span>
+      {status}
     </span>
   );
 }
@@ -327,6 +344,7 @@ function SummaryMetricCard({
   label,
   primary,
   primaryDate,
+  primaryAside,
   secondary,
   tertiary,
   icon: Icon,
@@ -341,6 +359,7 @@ function SummaryMetricCard({
   label: string;
   primary: string;
   primaryDate?: string | null;
+  primaryAside?: string;
   secondary?: string;
   tertiary?: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -355,7 +374,7 @@ function SummaryMetricCard({
   const colors = SUMMARY_CARD_TONES[tone];
   const isFilterable = Boolean(filterKey && onFilterToggle && !filterDisabled);
   const cardClassName = [
-    'relative rounded-2xl border border-slate-200 bg-white p-4 shadow-sm text-left w-full',
+    'relative rounded-2xl bg-white p-4 text-left w-full',
     isFilterable ? 'cursor-pointer transition-all hover:shadow-md' : '',
     active ? colors.activeRing : '',
   ]
@@ -382,7 +401,17 @@ function SummaryMetricCard({
           <DueDateBadge date={primaryDate} className="!text-lg px-3.5 py-2" />
         </div>
       ) : (
-        <p className="mt-1 text-2xl font-bold text-slate-900">{primary}</p>
+        <p className="mt-1 flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-2xl font-bold text-slate-900">
+          <span>{primary}</span>
+          {primaryAside ? (
+            <>
+              <span className="text-lg font-semibold text-slate-300" aria-hidden>
+                |
+              </span>
+              <span className="text-lg font-semibold text-slate-500">{primaryAside}</span>
+            </>
+          ) : null}
+        </p>
       )}
       {secondary ? (
         secondaryBadge === 'unpaid' ? (
@@ -427,41 +456,23 @@ export function PaymentPlanSummaryCards({
   activeFilter = null,
   onFilterToggle,
 }: SummaryCardsProps) {
-  const total =
-    contractTotalNis?.loading
-      ? { primary: '…' }
-      : contractTotalNis ?? formatMultiCurrencyAmounts(summary.totalByCurrency, getCurrencySymbol, {
-          includeVatLine: true,
-        });
-  const expenseNoVatAmounts = formatMultiCurrencyAmounts(
-    summary.expenseNoVatByCurrency,
-    getCurrencySymbol,
-    { emphasizeGross: true },
-  );
-  const expenseNoVatLine =
-    expenseNoVatNis?.loading
-      ? '…'
-      : expenseNoVatNis?.primary
-        ? `+ ${expenseNoVatNis.primary} client expenses`
-        : expenseNoVatAmounts.primary !== '—'
-          ? `+ ${expenseNoVatAmounts.primary} client expenses`
-          : undefined;
+  const total = formatMultiCurrencyAmounts(summary.totalByCurrency, getCurrencySymbol, {
+    emphasizeGross: true,
+  });
   const firmExpenseAmounts = formatMultiCurrencyAmounts(
     summary.firmExpenseByCurrency,
     getCurrencySymbol,
     { emphasizeGross: true },
   );
-  const firmExpenseLine =
+  const expenseTertiary =
     summary.firmExpenseCount > 0 && firmExpenseAmounts.primary !== '—'
-      ? `− ${firmExpenseAmounts.primary} firm expenses`
+      ? `Office ${firmExpenseAmounts.primary}`
       : undefined;
-  const expenseTertiary = [firmExpenseLine, expenseNoVatLine].filter(Boolean).join(' · ') || undefined;
-  const outstanding =
-    outstandingNis?.loading
-      ? { primary: '…' }
-      : outstandingNis ?? formatMultiCurrencyAmounts(summary.outstandingByCurrency, getCurrencySymbol, {
-          emphasizeGross: true,
-        });
+  const outstanding = formatMultiCurrencyAmounts(
+    summary.outstandingByCurrency,
+    getCurrencySymbol,
+    { emphasizeGross: true },
+  );
   const paid = formatMultiCurrencyAmounts(summary.paidByCurrency, getCurrencySymbol, {
     emphasizeGross: true,
   });
@@ -481,8 +492,8 @@ export function PaymentPlanSummaryCards({
       <SummaryMetricCard
         label="Total contract value"
         primary={total.primary}
+        primaryAside={expenseTertiary}
         secondary={total.secondary}
-        tertiary={expenseTertiary}
         icon={BanknotesIcon}
         tone="neutral"
       />
@@ -490,7 +501,7 @@ export function PaymentPlanSummaryCards({
       <SummaryMetricCard
         label="Outstanding"
         primary={outstanding.primary}
-        secondary={`${summary.unpaidCount} unpaid payment${summary.unpaidCount === 1 ? '' : 's'}`}
+        secondary={`${summary.unpaidCount} unpaid`}
         icon={PaperAirplaneIcon}
         tone="amber"
         secondaryBadge="unpaid"
@@ -503,7 +514,7 @@ export function PaymentPlanSummaryCards({
       <SummaryMetricCard
         label="Paid"
         primary={paid.primary}
-        secondary={`${summary.paidCount} payment${summary.paidCount === 1 ? '' : 's'} completed`}
+        secondary={`${summary.paidCount} completed`}
         icon={CurrencyDollarIcon}
         tone="emerald"
         secondaryBadge="paid"
@@ -530,12 +541,27 @@ export function PaymentPlanSummaryCards({
   );
 }
 
+/** Shared column template so Fees Amount/Notes line up with Expenses Amount/Total. */
+export function FinanceExpenseLikeColgroup() {
+  return (
+    <colgroup>
+      <col className="w-[14%]" />
+      <col className="w-[18%]" />
+      <col className="w-[12%]" />
+      <col className="w-[16%]" />
+      <col className="w-[8%]" />
+      <col className="w-[18%]" />
+      <col className="w-[7%]" />
+      <col className="w-[7%]" />
+    </colgroup>
+  );
+}
+
 export function ContactPlanHeader({
   contactName,
   payments,
   collapsed,
   onToggle,
-  totalNis,
   profileImageUrl,
   automationActiveCount = 0,
 }: {
@@ -543,25 +569,45 @@ export function ContactPlanHeader({
   payments: PaymentPlanRowLike[];
   collapsed: boolean;
   onToggle: () => void;
-  /** Sum of row totals (value + VAT) in NIS — BOI rate per row at payment/due date. */
-  totalNis?: { primary: string; loading?: boolean };
+  /** Unused by the header display; kept so existing callers can still pass NIS totals. */
+  totalNis?: { primary: string; office?: string; loading?: boolean };
   profileImageUrl?: string | null;
   automationActiveCount?: number;
 }) {
-  const stats = computePlanSummary(payments);
+  const isScheduled = (p: PaymentPlanRowLike) => Boolean(p.sent_to_finance || p.ready_to_pay);
+  const scheduledCount = payments.filter(isScheduled).length;
+  const paidCount = payments.filter((p) => !!p.paid).length;
+  const unpaidCount = payments.filter((p) => !p.paid).length;
+  const progressPct = scheduledCount > 0
+    ? Math.round((payments.filter((p) => isScheduled(p) && p.paid).length / scheduledCount) * 100)
+    : 0;
+  const clientFacingPayments = payments.filter(
+    (p) => !isExpenseNoVatPayment(p.order) || p.expensePaidBy !== 'firm',
+  );
+  const officePayments = payments.filter(
+    (p) => isExpenseNoVatPayment(p.order) && p.expensePaidBy === 'firm',
+  );
+  const headerTotal = formatMultiCurrencyAmounts(
+    sumByCurrency(clientFacingPayments),
+    mapLeadCurrencyToSymbol,
+    { emphasizeGross: true },
+  ).primary;
+  const headerOffice = formatMultiCurrencyAmounts(
+    sumByCurrency(officePayments),
+    mapLeadCurrencyToSymbol,
+    { emphasizeGross: true },
+  ).primary;
   const initials = contactInitials(contactName);
   const avatarStyle = getContactAccentSoftStyle(contactName);
   const hasProfileImage = Boolean(profileImageUrl?.trim());
 
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-      <div className="flex min-w-0 flex-1 items-start gap-4">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
         <button
           type="button"
-          className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 ${
-            hasProfileImage ? 'p-1' : 'text-lg'
-          }`}
-          style={avatarStyle}
+          className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full text-sm font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2"
+          style={hasProfileImage ? undefined : avatarStyle}
           onClick={onToggle}
           aria-label={collapsed ? 'Expand payment plan' : 'Collapse payment plan'}
         >
@@ -569,38 +615,45 @@ export function ContactPlanHeader({
             <ContactProfileAvatar
               name={contactName}
               imageUrl={profileImageUrl}
-              className="h-full w-full text-base"
+              className="h-11 w-11 text-sm"
             />
           ) : (
             initials
           )}
         </button>
-        <div className="min-w-0 flex-1 pt-0.5">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
             <button
               type="button"
-              className="truncate text-left text-lg font-bold leading-tight text-slate-500 hover:text-slate-600"
+              className="truncate text-left text-base font-semibold leading-tight text-slate-800 hover:text-slate-900"
               onClick={onToggle}
             >
               {contactName}
             </button>
-            {totalNis ? (
-              <>
-                <span className="text-slate-300" aria-hidden>
-                  |
-                </span>
-                <span className="text-sm font-semibold leading-snug text-slate-600">
-                  Total{' '}
-                  <span className="tabular-nums">
-                    {totalNis.loading ? '…' : totalNis.primary}
+            <>
+              <span className="text-slate-300" aria-hidden>
+                |
+              </span>
+              <span className="text-sm font-semibold leading-snug text-slate-600">
+                Total{' '}
+                <span className="tabular-nums">{headerTotal}</span>
+              </span>
+              {headerOffice !== '—' ? (
+                <>
+                  <span className="text-slate-300" aria-hidden>
+                    |
                   </span>
-                </span>
-              </>
-            ) : null}
+                  <span className="text-sm font-semibold leading-snug text-slate-500">
+                    Office{' '}
+                    <span className="tabular-nums">{headerOffice}</span>
+                  </span>
+                </>
+              ) : null}
+            </>
           </div>
-          <button type="button" className="mt-0.5 block w-full text-left" onClick={onToggle}>
-            <p className="text-sm leading-snug text-slate-500">
-              {stats.scheduledCount} scheduled · {stats.paidCount} paid · {stats.unpaidCount} outstanding
+          <button type="button" className="mt-0 block w-full text-left" onClick={onToggle}>
+            <p className="text-sm font-normal leading-snug text-slate-500">
+              {scheduledCount} scheduled · {paidCount} paid · {unpaidCount} outstanding
             </p>
           </button>
         </div>
@@ -616,12 +669,12 @@ export function ContactPlanHeader({
             </span>
           )}
           <span className="text-sm font-medium text-slate-500">Payment progress</span>
-          <span className="text-sm font-semibold text-slate-600">{stats.progressPct}%</span>
+          <span className="text-sm font-semibold text-slate-600">{progressPct}%</span>
         </div>
         <div className="h-2 rounded-full bg-slate-100">
           <div
             className="h-2 rounded-full bg-emerald-500 transition-all"
-            style={{ width: `${stats.progressPct}%` }}
+            style={{ width: `${progressPct}%` }}
           />
         </div>
       </div>

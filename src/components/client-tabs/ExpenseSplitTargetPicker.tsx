@@ -26,8 +26,8 @@ type SelectedLead = {
 };
 
 type Props = {
-  currentIdentity: LeadFeeIdentity;
-  currentLeadName: string;
+  currentIdentity?: LeadFeeIdentity | null;
+  currentLeadName?: string;
   disabled?: boolean;
   onChange: (targets: SplitLeadExpenseTarget[]) => void;
 };
@@ -156,6 +156,7 @@ const ExpenseSplitTargetPicker: React.FC<Props> = ({
   );
 
   useEffect(() => {
+    if (!currentIdentity) return;
     void addLead(currentIdentity, currentLeadName || currentIdentity.leadNumber || 'Current lead');
   }, [addLead, currentIdentity, currentLeadName]);
 
@@ -278,7 +279,9 @@ const ExpenseSplitTargetPicker: React.FC<Props> = ({
       {searchOpen ? (
         <div className="animate-fade-in rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-sm font-semibold text-slate-800">Add another lead or contact</p>
+            <p className="text-sm font-semibold text-slate-800">
+              {selectedLeads.length === 0 ? 'Add a lead or contact' : 'Add another lead or contact'}
+            </p>
             <button
               type="button"
               className="btn btn-ghost btn-xs btn-circle"
@@ -348,7 +351,7 @@ const ExpenseSplitTargetPicker: React.FC<Props> = ({
           disabled={disabled}
         >
           <PlusIcon className="h-4 w-4" />
-          Add another lead or contact
+          {selectedLeads.length === 0 ? 'Add a lead or contact' : 'Add another lead or contact'}
         </button>
       )}
     </div>

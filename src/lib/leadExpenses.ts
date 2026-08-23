@@ -45,7 +45,9 @@ export type LeadExpenseRow = {
   contact_id: number | null;
   payment_plan_id: number | null;
   legacy_payment_plan_row_id: number | null;
+  paid: boolean;
   created_by: string | null;
+  created_by_display_name?: string | null;
   lead_expense_types?: { id: string; code: string; label: string } | null;
   accounting_currencies?: { id: number; name: string; iso_code: string | null } | null;
   leads_contact?: { id: number; name: string | null } | null;
@@ -121,7 +123,9 @@ function normalizeExpenseRow(row: any): LeadExpenseRow {
     payment_plan_id: row.payment_plan_id != null ? Number(row.payment_plan_id) : null,
     legacy_payment_plan_row_id:
       row.legacy_payment_plan_row_id != null ? Number(row.legacy_payment_plan_row_id) : null,
+    paid: Boolean(row.paid),
     created_by: row.created_by != null ? String(row.created_by) : null,
+    created_by_display_name: row.created_by_display_name != null ? String(row.created_by_display_name) : null,
     lead_expense_types: typeJoin
       ? {
           id: String(typeJoin.id),
@@ -161,14 +165,10 @@ function normalizePaidFlags(input: {
 
 function buildFinanceNotes(params: {
   typeLabel?: string | null;
-  paidBy: LeadExpensePaidBy;
-  includeVat: boolean;
   notes?: string | null;
 }): string {
   const parts: string[] = [];
   if (params.typeLabel?.trim()) parts.push(params.typeLabel.trim());
-  parts.push(params.paidBy === 'firm' ? 'Paid by firm' : 'Paid by client');
-  parts.push(params.includeVat ? 'With VAT' : 'Without VAT');
   if (params.notes?.trim()) parts.push(params.notes.trim());
   return parts.join('\n');
 }
@@ -183,6 +183,27 @@ function resolveExpenseVatAmount(params: {
     Boolean(params.includeVat),
     params.expenseDate || null,
   );
+}
+
+export function leadExpenseVatAmount(row: {
+  amount?: number | string | null;
+  include_vat?: boolean | null;
+  expense_date?: string | null;
+}): number {
+  return resolveExpenseVatAmount({
+    amount: Number(row.amount) || 0,
+    includeVat: Boolean(row.include_vat),
+    expenseDate: row.expense_date,
+  });
+}
+
+export function leadExpenseGrossAmount(row: {
+  amount?: number | string | null;
+  include_vat?: boolean | null;
+  expense_date?: string | null;
+}): number {
+  const amount = Number(row.amount) || 0;
+  return Math.round((amount + leadExpenseVatAmount(row)) * 100) / 100;
 }
 
 export function dispatchPaymentPlanChanged(leadId: string | number | null | undefined) {
@@ -460,7 +481,111 @@ export async function fetchLeadExpenses(identity: LeadFeeIdentity): Promise<Lead
 
   const { data, error } = await query;
   if (error) throw error;
-  return (data || []).map(normalizeExpenseRow);
+  const rows = (data || []).map(normalizeExpenseRow);
+  await attachExpensePaidStatus(rows);
+  return enrichExpensesWithCreatorNames(rows);
+}
+
+async function enrichExpensesWithCreatorNames(rows: LeadExpenseRow[]): Promise<LeadExpenseRow[]> {
+  const authIds = Array.from(
+    new Set(rows.map((r) => r.created_by).filter((id): id is string => Boolean(id))),
+  );
+  if (authIds.length === 0) return rows;
+
+  const { data: usersData, error: usersError } = await supabase
+    .from('users')
+    .select('auth_id, employee_id, full_name, first_name, last_name')
+    .in('auth_id', authIds);
+  if (usersError) {
+    console.warn('[leadExpenses] creator users lookup:', usersError);
+    return rows;
+  }
+
+  const users = usersData || [];
+  const employeeIds = Array.from(
+    new Set(
+      users
+        .map((u: any) => u.employee_id)
+        .filter((id: unknown) => id != null && id !== '')
+        .map((id: any) => Number(id))
+        .filter((id: number) => Number.isFinite(id)),
+    ),
+  );
+
+  const employeeNameById = new Map<number, string>();
+  if (employeeIds.length > 0) {
+    const { data: employees, error: empError } = await supabase
+      .from('tenants_employee')
+      .select('id, display_name')
+      .in('id', employeeIds);
+    if (empError) {
+      console.warn('[leadExpenses] creator employees lookup:', empError);
+    } else {
+      for (const emp of employees || []) {
+        const name = String((emp as any).display_name || '').trim();
+        if (name) employeeNameById.set(Number((emp as any).id), name);
+      }
+    }
+  }
+
+  const nameByAuthId = new Map<string, string>();
+  for (const u of users) {
+    const authId = String((u as any).auth_id || '');
+    if (!authId) continue;
+    const empId = (u as any).employee_id != null ? Number((u as any).employee_id) : NaN;
+    const fromEmployee = Number.isFinite(empId) ? employeeNameById.get(empId) : null;
+    const fromUser =
+      String((u as any).full_name || '').trim() ||
+      [String((u as any).first_name || '').trim(), String((u as any).last_name || '').trim()]
+        .filter(Boolean)
+        .join(' ');
+    const name = fromEmployee || fromUser;
+    if (name) nameByAuthId.set(authId, name);
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    created_by_display_name: row.created_by ? nameByAuthId.get(row.created_by) || null : null,
+  }));
+}
+
+async function attachExpensePaidStatus(rows: LeadExpenseRow[]): Promise<void> {
+  const planIds = [
+    ...new Set(rows.map((row) => row.payment_plan_id).filter((id): id is number => id != null)),
+  ];
+  const legacyIds = [
+    ...new Set(
+      rows.map((row) => row.legacy_payment_plan_row_id).filter((id): id is number => id != null),
+    ),
+  ];
+  const paidByPlan = new Map<number, boolean>();
+  const paidByLegacy = new Map<number, boolean>();
+
+  if (planIds.length > 0) {
+    const { data } = await supabase.from('payment_plans').select('id, paid').in('id', planIds);
+    (data || []).forEach((row: any) => {
+      paidByPlan.set(Number(row.id), Boolean(row.paid));
+    });
+  }
+  if (legacyIds.length > 0) {
+    const { data } = await supabase
+      .from('finances_paymentplanrow')
+      .select('id, paid')
+      .in('id', legacyIds);
+    (data || []).forEach((row: any) => {
+      paidByLegacy.set(Number(row.id), Boolean(row.paid));
+    });
+  }
+
+  rows.forEach((row) => {
+    if (row.payment_plan_id != null) {
+      row.paid = paidByPlan.get(row.payment_plan_id) ?? false;
+    } else if (row.legacy_payment_plan_row_id != null) {
+      row.paid = paidByLegacy.get(row.legacy_payment_plan_row_id) ?? false;
+    } else {
+      row.paid = false;
+    }
+  });
 }
 
 export async function fetchLeadExpenseContacts(
@@ -528,8 +653,6 @@ export async function insertLeadExpense(input: {
   ]);
   const financeNotes = buildFinanceNotes({
     typeLabel,
-    paidBy: flags.paid_by,
-    includeVat,
     notes: input.notes,
   });
 
@@ -653,8 +776,6 @@ export async function insertSplitLeadExpenses(input: {
   ]);
   const financeNotes = buildFinanceNotes({
     typeLabel,
-    paidBy: flags.paid_by,
-    includeVat,
     notes: input.notes,
   });
 
@@ -737,8 +858,6 @@ export async function updateLeadExpense(input: {
   ]);
   const financeNotes = buildFinanceNotes({
     typeLabel,
-    paidBy: flags.paid_by,
-    includeVat,
     notes: input.notes,
   });
 

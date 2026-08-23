@@ -12,6 +12,8 @@ export type LeadSubcontractorFeeRow = {
   amount: number;
   currency_id: number | null;
   notes: string | null;
+  paid: boolean;
+  paid_at: string | null;
   created_by: string | null;
   created_by_display_name?: string | null;
   firms?: { id: string; name: string } | null;
@@ -237,10 +239,31 @@ async function enrichFeesWithCreatorNames(
   }));
 }
 
+const FEE_ROW_SELECT = `
+      id,
+      created_at,
+      updated_at,
+      lead_type,
+      new_lead_id,
+      legacy_lead_id,
+      lead_number,
+      firm_id,
+      amount,
+      currency_id,
+      notes,
+      paid,
+      paid_at,
+      created_by,
+      firms:firm_id ( id, name ),
+      accounting_currencies:currency_id ( id, name, iso_code )
+    `;
+
 function normalizeFeeRow(row: any): LeadSubcontractorFeeRow {
   return {
     ...row,
     amount: Number(row.amount ?? 0),
+    paid: Boolean(row.paid),
+    paid_at: row.paid_at != null ? String(row.paid_at) : null,
     created_by: row.created_by ?? null,
     created_by_display_name: row.created_by_display_name ?? null,
     firms: Array.isArray(row.firms) ? row.firms[0] ?? null : row.firms ?? null,
@@ -255,24 +278,7 @@ export async function fetchLeadSubcontractorFees(
 ): Promise<LeadSubcontractorFeeRow[]> {
   let query = supabase
     .from('lead_subcontractor_fees')
-    .select(
-      `
-      id,
-      created_at,
-      updated_at,
-      lead_type,
-      new_lead_id,
-      legacy_lead_id,
-      lead_number,
-      firm_id,
-      amount,
-      currency_id,
-      notes,
-      created_by,
-      firms:firm_id ( id, name ),
-      accounting_currencies:currency_id ( id, name, iso_code )
-    `,
-    )
+    .select(FEE_ROW_SELECT)
     .order('created_at', { ascending: false });
 
   if (identity.leadType === 'legacy' && identity.legacyLeadId != null) {
@@ -313,24 +319,7 @@ export async function insertLeadSubcontractorFee(input: {
   const { data, error } = await supabase
     .from('lead_subcontractor_fees')
     .insert(payload)
-    .select(
-      `
-      id,
-      created_at,
-      updated_at,
-      lead_type,
-      new_lead_id,
-      legacy_lead_id,
-      lead_number,
-      firm_id,
-      amount,
-      currency_id,
-      notes,
-      created_by,
-      firms:firm_id ( id, name ),
-      accounting_currencies:currency_id ( id, name, iso_code )
-    `,
-    )
+    .select(FEE_ROW_SELECT)
     .single();
 
   if (error) throw error;
@@ -369,6 +358,23 @@ export async function updateLeadSubcontractorFee(input: {
       amount: input.amount,
       currency_id: input.currencyId,
       notes: input.notes?.trim() || null,
+      updated_at: new Date().toISOString(),
+      updated_by: input.updatedBy || null,
+    })
+    .eq('id', input.feeId);
+  if (error) throw error;
+}
+
+export async function setLeadSubcontractorFeePaid(input: {
+  feeId: number;
+  paid: boolean;
+  updatedBy?: string | null;
+}): Promise<void> {
+  const { error } = await supabase
+    .from('lead_subcontractor_fees')
+    .update({
+      paid: input.paid,
+      paid_at: input.paid ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
       updated_by: input.updatedBy || null,
     })
