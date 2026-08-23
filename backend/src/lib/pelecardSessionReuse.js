@@ -89,9 +89,32 @@ function buildReusedSessionResponse(payment, paymentId, profile) {
   };
 }
 
+/** True only if the current hosted iframe is dead — not a leftover 301 from a prior try. */
+function isHostedSessionExpired(payment) {
+  const raw =
+    payment?.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
+      ? payment.pelecard_raw_response
+      : {};
+  const createdMs = Date.parse(raw.sessionCreatedAt || '') || 0;
+  const callbackMs = Date.parse(raw.callbackReceivedAt || '') || 0;
+  const expiredFlag = raw.sessionExpired === true;
+  const expiredCode =
+    String(payment?.pelecard_status_code || '').trim() === '301' ||
+    String(payment?.pelecard_status_code || '').trim() === '302';
+
+  if (createdMs && (!callbackMs || createdMs >= callbackMs) && raw.sessionExpired === false) {
+    return false;
+  }
+  if (createdMs && callbackMs && createdMs > callbackMs) {
+    return expiredFlag;
+  }
+  return expiredFlag || expiredCode;
+}
+
 module.exports = {
   canReusePelecardSession,
   buildReusedSessionResponse,
   sessionAgeMs,
   sessionCreatedAt,
+  isHostedSessionExpired,
 };

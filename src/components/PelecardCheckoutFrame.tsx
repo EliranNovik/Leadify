@@ -100,6 +100,10 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   }, [paymentUrl]);
 
   useEffect(() => {
+    if (loading || !sessionExpired) setTimedOut(false);
+  }, [loading, sessionExpired]);
+
+  useEffect(() => {
     if (!paymentUrl || loading || error || disableAutoExpire || sessionExpired) return;
     const timer = window.setTimeout(() => setTimedOut(true), IFRAME_EXPIRE_MS);
     return () => window.clearTimeout(timer);

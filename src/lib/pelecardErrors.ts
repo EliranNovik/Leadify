@@ -71,7 +71,7 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
     return {
       title: 'Checkout session expired',
       explanation:
-        'The secure payment form is no longer active. This often happens if the payment page was open in more than one tab or browser, or was left open for a long time before submitting.',
+        'The secure payment form timed out. No payment was taken. This happens if the page sat open too long before you entered card details, or if it was open in more than one tab.',
       actions: [
         'Close any other tabs or windows with this payment link.',
         'Use only one browser window to complete the payment.',

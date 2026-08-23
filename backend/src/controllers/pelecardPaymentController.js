@@ -5,6 +5,7 @@ const {
   canReusePelecardSession,
   buildReusedSessionResponse,
   sessionAgeMs,
+  isHostedSessionExpired,
 } = require('../lib/pelecardSessionReuse');
 const {
   reviveUnpaidPaymentLink,
@@ -253,9 +254,7 @@ async function getPaymentStatus(req, res) {
         payment.pelecard_raw_response,
       ),
       openFinancePending: isOpenFinancePending(payment),
-      sessionExpired:
-        Boolean(payment.pelecard_raw_response?.sessionExpired) ||
-        reconciliation.isSessionExpiredCode(payment.pelecard_status_code),
+      sessionExpired: isHostedSessionExpired(payment),
       bank_transfer_status:
         openFinanceStatus(payment.pelecard_raw_response?.callback || payment.pelecard_raw_response) ||
         null,

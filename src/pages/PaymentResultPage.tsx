@@ -10,6 +10,7 @@ import { fetchPaymentStatus, type PaymentStatusResponse } from '../lib/pelecardP
 import {
   getPelecardFailureCopy,
   getPelecardCancelledCopy,
+  isPelecardSessionExpiredCode,
   logPelecardResult,
 } from '../lib/pelecardErrors';
 
@@ -27,10 +28,11 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const urlPelecardMessage = searchParams.get('pelecardMessage') || '';
   const urlReason = searchParams.get('reason') || '';
   const confirming = searchParams.get('confirming') === '1' || urlReason === 'pending_confirmation';
+  const urlSessionExpired = isPelecardSessionExpiredCode(urlPelecardStatus);
 
   const [statusData, setStatusData] = useState<PaymentStatusResponse | null>(null);
   /** True while polling the backend for a final status (paid / failed / cancelled). */
-  const [verifying, setVerifying] = useState(!!paymentId);
+  const [verifying, setVerifying] = useState(() => !!paymentId && !urlSessionExpired);
   const [confirmationEmailSent, setConfirmationEmailSent] = useState(false);
   const [invoiceLink, setInvoiceLink] = useState<string | null>(null);
   const [invoiceNumber, setInvoiceNumber] = useState<string | null>(null);
@@ -78,8 +80,13 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     let cancelled = false;
     let attempts = 0;
     let timer: ReturnType<typeof setInterval> | null = null;
-    let maxAttempts =
-      confirming || variant === 'success' ? 45 : variant === 'failed' ? 30 : 12;
+    let maxAttempts = urlSessionExpired
+      ? 1
+      : confirming || variant === 'success'
+        ? 45
+        : variant === 'failed'
+          ? 30
+          : 12;
     const intervalMs = 2000;
 
     const applyStatus = (data: PaymentStatusResponse) => {
@@ -95,16 +102,19 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       }
     };
 
-    const isFinalStatus = (status?: PaymentStatusResponse['status']) => {
-      if (status === 'paid') return true;
+    const isFinalStatus = (data: PaymentStatusResponse) => {
+      if (data.status === 'paid') return true;
+      if (data.sessionExpired || isPelecardSessionExpiredCode(data.pelecard_status_code)) {
+        return true;
+      }
       if (confirming || variant === 'success') {
         // Keep waiting while still processing — do not flip to failure early.
-        return status === 'failed' || status === 'cancelled' || status === 'expired';
+        return data.status === 'failed' || data.status === 'cancelled' || data.status === 'expired';
       }
       if (variant === 'failed') {
-        return status === 'failed' || status === 'cancelled' || status === 'expired';
+        return data.status === 'failed' || data.status === 'cancelled' || data.status === 'expired';
       }
-      return status === 'cancelled' || status === 'expired';
+      return data.status === 'cancelled' || data.status === 'expired';
     };
 
     const poll = async () => {
@@ -157,7 +167,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
         }
       }
 
-      if (isFinalStatus(data.status)) {
+      if (isFinalStatus(data)) {
         setWaitTimedOut(false);
         setVerifying(false);
         if (timer) {
@@ -168,8 +178,13 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       }
 
       if (attempts >= maxAttempts) {
+        const expiredSession =
+          urlSessionExpired ||
+          data.sessionExpired ||
+          isPelecardSessionExpiredCode(data.pelecard_status_code);
         const stillWaiting =
-          data.status === 'processing' || data.status === 'pending' || !data.status;
+          !expiredSession &&
+          (data.status === 'processing' || data.status === 'pending' || !data.status);
         setWaitTimedOut(stillWaiting);
         setVerifying(false);
         if (timer) {
@@ -194,7 +209,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, [paymentId, variant, redirectMeta, confirming, navigate, keepWaitingKey]);
+  }, [paymentId, variant, redirectMeta, confirming, navigate, keepWaitingKey, urlSessionExpired]);
 
   // Email + tax invoice are created asynchronously after redirect — poll briefly
   useEffect(() => {
@@ -280,10 +295,16 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const cancelledCopy = useMemo(() => getPelecardCancelledCopy(), []);
 
   const backendPaid = statusData?.status === 'paid';
+  const sessionExpired =
+    !backendPaid &&
+    (urlSessionExpired ||
+      Boolean(statusData?.sessionExpired) ||
+      isPelecardSessionExpiredCode(statusData?.pelecard_status_code));
   const stillProcessing =
-    !statusData?.status ||
-    statusData.status === 'processing' ||
-    statusData.status === 'pending';
+    !sessionExpired &&
+    (!statusData?.status ||
+      statusData.status === 'processing' ||
+      statusData.status === 'pending');
   const openFinancePending = Boolean(
     statusData?.openFinancePending ||
       statusData?.pelecard_status_code === '665' ||
@@ -291,20 +312,22 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   );
   const resolvedCancelled = statusData?.status === 'cancelled';
   const showSuccess = backendPaid;
-  const showWaitingTimeout = !backendPaid && waitTimedOut && stillProcessing;
+  const showWaitingTimeout = !backendPaid && !sessionExpired && waitTimedOut && stillProcessing;
   // Prefer thank-you/verifying over a hard error while confirmation is in flight.
+  // 301/302 is an expired hosted form, not a charge waiting to confirm.
   const showConfirming =
     !backendPaid &&
+    !sessionExpired &&
     !showWaitingTimeout &&
     (verifying || ((confirming || variant === 'success') && stillProcessing));
   const showCancelled =
-    !showConfirming && !backendPaid && (variant === 'cancelled' || resolvedCancelled);
+    !showConfirming && !backendPaid && !sessionExpired && (variant === 'cancelled' || resolvedCancelled);
   const showFailed =
     !showConfirming &&
     !showWaitingTimeout &&
     !backendPaid &&
     !showCancelled &&
-    (variant === 'failed' || variant === 'success');
+    (sessionExpired || variant === 'failed' || variant === 'success');
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';

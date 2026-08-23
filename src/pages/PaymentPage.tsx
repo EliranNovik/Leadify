@@ -303,6 +303,8 @@ const PaymentPage: React.FC<{
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [checkoutSessionExpired, setCheckoutSessionExpired] = useState(false);
+  const [checkoutGeneration, setCheckoutGeneration] = useState(0);
+  const sessionStartedAtRef = useRef(0);
   const [openFinancePending, setOpenFinancePending] = useState(false);
   const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
   const [exchangeLoading, setExchangeLoading] = useState(false);
@@ -561,6 +563,7 @@ const PaymentPage: React.FC<{
       setSessionLoading(true);
       setSessionError(null);
       setCheckoutSessionExpired(false);
+      sessionStartedAtRef.current = Date.now();
 
       try {
         const result = await createPelecardPaymentSession(token, {
@@ -584,6 +587,9 @@ const PaymentPage: React.FC<{
           throw new Error(result.error || 'Failed to create payment session');
         }
         await ensurePelecardClientSecureScript();
+        sessionStartedAtRef.current = Date.now();
+        setCheckoutSessionExpired(false);
+        setCheckoutGeneration((n) => n + 1);
         setPaymentUrl(result.paymentUrl);
         setOpenFinancePending(Boolean(result.openFinancePending));
         await loadCheckoutExchange({ forceBoiRefresh: !result.reusedSession });
@@ -638,6 +644,11 @@ const PaymentPage: React.FC<{
       const data = await fetchPaymentStatus(token);
       if (cancelled || !data.success) return;
       if (data.sessionExpired || isPelecardSessionExpiredCode(data.pelecard_status_code)) {
+        // Ignore leftover 301 from the previous iframe after Try again.
+        const ignoreStaleMs = 2 * 60 * 1000;
+        if (Date.now() - sessionStartedAtRef.current < ignoreStaleMs) {
+          return;
+        }
         failedStreak = 0;
         setCheckoutSessionExpired(true);
         return;
@@ -884,6 +895,7 @@ const PaymentPage: React.FC<{
             </div>
           ) : (
             <PelecardCheckoutFrame
+              key={checkoutGeneration}
               paymentUrl={paymentUrl}
               loading={sessionLoading}
               error={sessionError}
