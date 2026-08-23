@@ -23,6 +23,7 @@ export interface PaymentStatusResponse {
   pelecard_status_description?: string | null;
   openFinancePending?: boolean;
   sessionExpired?: boolean;
+  sessionCreatedAt?: string | null;
   bank_transfer_status?: string | null;
   confirmation_email_sent?: boolean;
   payper_invoice_link?: string | null;

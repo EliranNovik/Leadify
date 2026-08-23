@@ -643,12 +643,15 @@ const PaymentPage: React.FC<{
     const poll = async () => {
       const data = await fetchPaymentStatus(token);
       if (cancelled || !data.success) return;
-      if (data.sessionExpired || isPelecardSessionExpiredCode(data.pelecard_status_code)) {
-        // Ignore leftover 301 from the previous iframe after Try again.
-        const ignoreStaleMs = 2 * 60 * 1000;
-        if (Date.now() - sessionStartedAtRef.current < ignoreStaleMs) {
-          return;
-        }
+      const sessionCreatedMs = data.sessionCreatedAt ? Date.parse(data.sessionCreatedAt) : NaN;
+      const expiryBelongsToThisIframe =
+        Number.isFinite(sessionCreatedMs) &&
+        sessionCreatedMs >= sessionStartedAtRef.current - 2000;
+      // A leftover 301 from the previous form must not kill a new checkout.
+      if (
+        expiryBelongsToThisIframe &&
+        (data.sessionExpired || isPelecardSessionExpiredCode(data.pelecard_status_code))
+      ) {
         failedStreak = 0;
         setCheckoutSessionExpired(true);
         return;

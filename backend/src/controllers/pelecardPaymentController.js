@@ -255,6 +255,7 @@ async function getPaymentStatus(req, res) {
       ),
       openFinancePending: isOpenFinancePending(payment),
       sessionExpired: isHostedSessionExpired(payment),
+      sessionCreatedAt: payment.pelecard_raw_response?.sessionCreatedAt || null,
       bank_transfer_status:
         openFinanceStatus(payment.pelecard_raw_response?.callback || payment.pelecard_raw_response) ||
         null,

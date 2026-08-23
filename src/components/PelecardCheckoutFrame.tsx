@@ -3,8 +3,8 @@ import { ArrowPathIcon, ExclamationCircleIcon } from '@heroicons/react/24/outlin
 import { paymentFormErrorCopy } from '../lib/paymentPageUtils';
 import { getPelecardFailureCopy } from '../lib/pelecardErrors';
 
-/** Pelecard hosted iframes die in ~10–20 minutes. Replace the dead form before the client is stuck. */
-const IFRAME_EXPIRE_MS = 10 * 60 * 1000;
+/** Pelecard hosted iframes die in ~15–20 minutes. Overlay only after that — not after idle of a few minutes. */
+const IFRAME_EXPIRE_MS = 15 * 60 * 1000;
 
 interface PelecardCheckoutFrameProps {
   paymentUrl: string | null;
