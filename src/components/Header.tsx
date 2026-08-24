@@ -92,6 +92,8 @@ interface HeaderProps {
   onOpenMessaging?: () => void;
   /** When the shell has no md:pl-24 (client detail), pad header chrome clear of the floating sidebar. */
   clearFloatingSidebar?: boolean;
+  /** Pull the header in from the left so a full-height page rail can sit beside it. */
+  startInsetClassName?: string;
 }
 
 interface Notification {
@@ -177,7 +179,7 @@ interface RMQMessage {
 
 // Mock notifications removed - now using only RMQ messages
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging, clearFloatingSidebar = false }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging, clearFloatingSidebar = false, startInsetClassName }) => {
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
   // Dark mode: Tailwind `dark` class is set for both dark and Dark 2 themes
@@ -3749,7 +3751,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className={`navbar navbar-safe-x flex-nowrap md:px-0 h-11 md:h-12 md:max-h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0 ${clearFloatingSidebar ? 'md:pl-2 md:pr-6 lg:pr-8 border-b-0 shadow-none' : ''}`}
+        className={`navbar navbar-safe-x flex-nowrap md:px-0 h-11 md:h-12 md:max-h-12 fixed top-0 ${startInsetClassName || 'left-0'} right-0 z-50 w-auto max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0 ${clearFloatingSidebar ? 'md:pl-2 md:pr-6 lg:pr-8 border-b-0 shadow-none' : ''}`}
       >
         {/* Left section with menu and logo */}
         <div className={`shrink-0 flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>

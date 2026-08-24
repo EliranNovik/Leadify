@@ -769,6 +769,22 @@ html.dark .table tbody tr:hover {
   background-color: rgba(255, 255, 255, 0.08) !important;
 }
 
+/* Pipeline tabs: one white sheet; hover the whole row, not a single cell */
+.pipeline-flat-table tbody tr.pipeline-flat-row > td {
+  background-color: #ffffff;
+  transition: background-color 0.15s ease;
+}
+
+.pipeline-flat-table tbody tr.pipeline-flat-row:hover > td {
+  background-color: #f3f4f6 !important;
+}
+
+.pipeline-flat-table tbody tr.pipeline-flat-row-selected > td,
+.pipeline-flat-table tbody tr.pipeline-flat-row-selected:hover > td {
+  background-color: rgb(239 246 255) !important;
+}
+
+
 /* Calendar page (list): each meeting row = card + layered “3D” depth (drop-shadow on <tr>) */
 .calendar-page-meetings-wrap table.calendar-page-meetings-table,
 .calendar-page-meetings-wrap table.table {

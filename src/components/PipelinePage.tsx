@@ -24,6 +24,8 @@ import {
   getStageColour,
   getStageName,
   initializeStageNames,
+  fetchStageNames,
+  listLeadStages,
 } from '../lib/stageUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
@@ -34,6 +36,32 @@ import EditLeadDrawer from './EditLeadDrawer';
 import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import CasePipelineView, { type CasePipelineRoleTab } from './CasePipelineView';
+import PipelineRoleTabs, { type PipelineRoleTab } from './pipeline/PipelineRoleTabs';
+import ExpertPipelineView from './pipeline/ExpertPipelineView';
+import HandlerPipelineView from './pipeline/HandlerPipelineView';
+import RetentionHandlerPipelineView from './pipeline/RetentionHandlerPipelineView';
+import PipelineFollowUpButton from './pipeline/PipelineFollowUpButton';
+import { toPipelineFollowupLead } from './pipeline/PipelineFollowupAiCell';
+import PipelineActionSidebar from './pipeline/PipelineActionSidebar';
+import {
+  PipelineRowPickCell,
+  PipelineRowPickHeader,
+} from './pipeline/PipelineRowPickCell';
+import {
+  applyPipelineBulkStageChange,
+  hydratePipelineActionLead,
+  toPipelineActionLead,
+  type PipelineActionLead,
+  type PipelineRailAction,
+} from './pipeline/pipelineActions';
+import { PipelineBulkStageBar, PipelineBulkStageSettings } from './pipeline/PipelineBulkStageControls';
+import LeadFollowupAiDrawer from './LeadFollowupAiDrawer';
+import type { Lead } from '../lib/supabase';
+import PipelineEmployeePicker from './pipeline/PipelineEmployeePicker';
+import PipelineLastInteractionsModal from './pipeline/PipelineLastInteractionsModal';
+import type { PipelineViewAs } from '../lib/resolvePipelineIdentity';
+import { leadRoutePath, openLeadFromRowClick } from '../lib/leadNavigation';
+import { CLIENT_FINANCES_TAB } from '../lib/proformaClientNavigation';
 import {
   createSnapshotStore,
   useDebouncedCallback,
@@ -41,7 +69,6 @@ import {
   useScrollRestoration,
 } from '../lib/pipelineLiveCache';
 import PipelineSummaryCards from './PipelineSummaryCards';
-import { openLeadFromRowClick } from '../lib/leadNavigation';
 import {
   matchesQuickFilter,
   summarizePipelineRows,
@@ -134,34 +161,6 @@ const getCurrencySymbol = (currencyCode?: string | null) => {
   }
   
   return '$';
-};
-
-// Helper function to get follow up date color based on date (same logic as meeting date)
-const getFollowUpColor = (followUpDateStr: string | null | undefined): string => {
-  if (!followUpDateStr) return 'bg-gray-100 text-gray-600';
-  
-  const followUpDate = new Date(followUpDateStr);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  // Set follow up date to start of day for comparison
-  const followUpDateStart = new Date(followUpDate);
-  followUpDateStart.setHours(0, 0, 0, 0);
-  
-  // Calculate difference in days
-  const diffTime = followUpDateStart.getTime() - today.getTime();
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  
-  if (diffDays < 0) {
-    // Past follow up date - red
-    return 'bg-red-500 text-white';
-  } else if (diffDays === 0) {
-    // Today - green
-    return 'bg-green-500 text-white';
-  } else {
-    // Tomorrow or more than 1 day away - yellow
-    return 'bg-yellow-500 text-white';
-  }
 };
 
 // Helper function to get employee display name from ID (copied from CalendarPage.tsx)
@@ -371,8 +370,8 @@ const ExpertAvatarWithOpinionBadge: React.FC<{ lead: LeadForPipeline; allEmploye
 
 // Removed LABEL_OPTIONS - now fetched from misc_leadtag table
 
-/** Closer and Scheduler show this page's own pipeline; Manager and Helper show the case pipeline. */
-type PipelineTab = 'closer' | 'scheduler' | CasePipelineRoleTab;
+/** Closer/Scheduler use this page; Manager/Helper use the case pipeline; Expert and Handler have their own views. */
+type PipelineTab = PipelineRoleTab;
 
 /**
  * Same in-memory snapshot the case pipeline uses: navigating away and back repaints the last
@@ -411,13 +410,6 @@ const pipelineScrollStore = (() => {
   };
 })();
 
-const PIPELINE_TAB_LABELS: Record<PipelineTab, string> = {
-  closer: 'Closer',
-  scheduler: 'Scheduler',
-  manager: 'Manager',
-  helper: 'Helper',
-};
-
 /** Lead counts per mode, kept across tab switches so both tabs can show a number. */
 const pipelineModeCounts: Record<'closer' | 'scheduler', number | null> = {
   closer: null,
@@ -438,7 +430,27 @@ const PipelinePage: React.FC = () => {
     storage: 'sessionStorage',
   });
   const [caseRoleCounts, setCaseRoleCounts] = useState({ manager: 0, helper: 0 });
+  const [extraRoleCounts, setExtraRoleCounts] = useState<{
+    expert: number | null;
+    handler: number | null;
+    retention: number | null;
+  }>({
+    expert: null,
+    handler: null,
+    retention: null,
+  });
+  const [viewAs, setViewAs] = usePersistedState<PipelineViewAs | null>(
+    'pipelinePage_viewAs',
+    null,
+    { storage: 'sessionStorage' },
+  );
+  const signedInIdentityRef = useRef<{
+    userId: string | null;
+    employeeId: number | null;
+    fullName: string;
+  } | null>(null);
   const [modeCounts, setModeCounts] = useState(() => ({ ...pipelineModeCounts }));
+  const isOwnPipelineTab = activeTab === 'closer' || activeTab === 'scheduler';
   const isCaseTab = activeTab === 'manager' || activeTab === 'helper';
 
   /** Summary box selection, shared with the case pipeline's boxes. */
@@ -458,6 +470,7 @@ const PipelinePage: React.FC = () => {
   const [editingFollowUpLead, setEditingFollowUpLead] = useState<LeadForPipeline | null>(null);
   const [followUpDraft, setFollowUpDraft] = useState('');
   const [savingFollowUp, setSavingFollowUp] = useState(false);
+  const [interactionsFor, setInteractionsFor] = useState<LeadForPipeline | null>(null);
 
   const selectTab = useCallback(
     (tab: PipelineTab) => {
@@ -466,6 +479,18 @@ const PipelinePage: React.FC = () => {
     },
     [setActiveTab, setPipelineMode],
   );
+
+  const handleExpertCount = useCallback((count: number) => {
+    setExtraRoleCounts((prev) => (prev.expert === count ? prev : { ...prev, expert: count }));
+  }, []);
+
+  const handleHandlerCount = useCallback((count: number) => {
+    setExtraRoleCounts((prev) => (prev.handler === count ? prev : { ...prev, handler: count }));
+  }, []);
+
+  const handleRetentionCount = useCallback((count: number) => {
+    setExtraRoleCounts((prev) => (prev.retention === count ? prev : { ...prev, retention: count }));
+  }, []);
   
   // Helper to load persisted state for a key based on pipelineMode (needs mode as param for initial load)
   const loadPersistedStateForMode = <T,>(mode: string, baseKey: string, defaultValue: T): T => {
@@ -532,18 +557,18 @@ const PipelinePage: React.FC = () => {
   const setLeads = useCallback((value: LeadForPipeline[] | ((prev: LeadForPipeline[]) => LeadForPipeline[])) => {
     setLeadsInternal((prev) => {
       const newLeads = typeof value === 'function' ? value(prev) : value;
-      // Save to mode-specific persisted state
-      try {
-        const key = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
-        sessionStorage.setItem(key, JSON.stringify(newLeads));
-      } catch (e) {
-        // Ignore errors
+      if (!viewAs?.employeeId) {
+        try {
+          const key = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
+          sessionStorage.setItem(key, JSON.stringify(newLeads));
+        } catch (e) {
+          // Ignore errors
+        }
+        pipelineLeadsStores[pipelineMode].set({ mode: pipelineMode, leads: newLeads });
       }
-      // Keep the in-memory snapshot in step so it never drifts from what is rendered.
-      pipelineLeadsStores[pipelineMode].set({ mode: pipelineMode, leads: newLeads });
       return newLeads;
     });
-  }, [pipelineMode]);
+  }, [pipelineMode, viewAs?.employeeId]);
 
   // Sync leads when pipelineMode changes - but don't load from storage here,
   // the fetchLeads useEffect will handle it and always refetch on mode change
@@ -983,15 +1008,33 @@ const PipelinePage: React.FC = () => {
   const [showEmailSentModal, setShowEmailSentModal] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [commentSubmitting, setCommentSubmitting] = useState(false);
-  const [labelFilter, setLabelFilter] = useState('');
+  const [labelFilter, setLabelFilter] = useState(() => loadPersistedStateForMode(pipelineMode, 'labelFilter', ''));
   const [labelDropdownOpen, setLabelDropdownOpen] = useState<number | null>(null);
   const [labelSubmitting, setLabelSubmitting] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string | number>>(new Set());
+  const [followupLead, setFollowupLead] = useState<Lead | null>(null);
+  const [railLead, setRailLead] = useState<PipelineActionLead | null>(null);
+  const [armedAction, setArmedAction] = useState<PipelineRailAction | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bulkStageMode, setBulkStageMode] = useState(false);
+  const [bulkSelectedLeads, setBulkSelectedLeads] = useState<PipelineActionLead[]>([]);
+  const [bulkStageId, setBulkStageId] = useState('');
+  const [bulkStageApplying, setBulkStageApplying] = useState(false);
+  const [bulkStageOptions, setBulkStageOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [stageRefreshToken, setStageRefreshToken] = useState(0);
+  const clearBulkStageMode = useCallback(() => {
+    setBulkStageMode(false);
+    setBulkSelectedLeads([]);
+    setBulkStageId('');
+    setBulkStageApplying(false);
+  }, []);
   // Card ("box") view is switched off for now: the toggle is commented out below and the table
   // is the only view. The card markup is kept so it can be turned back on.
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('list');
-  const [showSignedAgreements, setShowSignedAgreements] = useState(false);
+  const [showSignedAgreements, setShowSignedAgreements] = useState(
+    () => loadPersistedStateForMode(pipelineMode, 'showSignedAgreements', false),
+  );
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null); // User ID from users table (for RLS)
@@ -1000,6 +1043,7 @@ const PipelinePage: React.FC = () => {
   /** True after users/employee resolution finishes (success or fallback) — drives default tab + fetch ordering. */
   const [pipelineIdentityReady, setPipelineIdentityReady] = useState(false);
   const [isSuperUser, setIsSuperUser] = useState(false);
+  const viewingOtherEmployee = Boolean(isSuperUser && viewAs?.employeeId);
   
   // State for editing fields in collapsible section
   const [editingFields, setEditingFields] = useState<Record<string | number, { facts?: boolean; special_notes?: boolean }>>({});
@@ -1045,8 +1089,19 @@ const PipelinePage: React.FC = () => {
   const [assignmentStageFilter, setAssignmentStageFilter] = useState<string>('');
 
   // Status filter state
-  const [showUnassignedOnly, setShowUnassignedOnly] = useState(false);
-  const [showLostInteractionsOnly, setShowLostInteractionsOnly] = useState(false);
+  const [showUnassignedOnly, setShowUnassignedOnly] = useState(
+    () => loadPersistedStateForMode(pipelineMode, 'showUnassignedOnly', false),
+  );
+  const [showLostInteractionsOnly, setShowLostInteractionsOnly] = useState(
+    () => loadPersistedStateForMode(pipelineMode, 'showLostInteractionsOnly', false),
+  );
+
+  useEffect(() => {
+    savePersistedState('labelFilter', labelFilter);
+    savePersistedState('showUnassignedOnly', showUnassignedOnly);
+    savePersistedState('showLostInteractionsOnly', showLostInteractionsOnly);
+    savePersistedState('showSignedAgreements', showSignedAgreements);
+  }, [labelFilter, showUnassignedOnly, showLostInteractionsOnly, showSignedAgreements, pipelineMode]);
 
   // My Stats modal state
   const [showMyStatsModal, setShowMyStatsModal] = useState(false);
@@ -2147,13 +2202,18 @@ const PipelinePage: React.FC = () => {
     panel.classList.add('pipeline-tab-panel');
   }, [activeTab]);
 
-  // A row selected in the closer/scheduler table must not keep its overlay open over the case pipeline.
+  // A row selected in the closer/scheduler table must not keep its overlay open over other role views.
   useEffect(() => {
-    if (!isCaseTab) return;
+    setRailLead(null);
+    setArmedAction(null);
+    setSettingsOpen(false);
+    clearBulkStageMode();
+    setInteractionsFor(null);
+    if (isOwnPipelineTab) return;
     setSelectedRowId(null);
     setShowActionMenu(false);
     setOpenContactDropdown(null);
-  }, [isCaseTab]);
+  }, [activeTab, clearBulkStageMode]);
 
   // Track if we've loaded from persisted state to avoid double-fetching (per mode)
   const hasLoadedFromStorageRef = useRef<{ [mode: string]: boolean }>({});
@@ -2162,14 +2222,20 @@ const PipelinePage: React.FC = () => {
   // Load leads: use saved state per tab so switching Closer/Scheduler does not reload content.
   // Requires display name + employee id: fetchLeads filters `leads` by scheduler/closer string and legacy by id.
   useEffect(() => {
-    // The case pipeline tabs load their own rows; don't pull this page's data behind them.
-    if (isCaseTab) return;
+    // Other role tabs load their own rows; don't pull closer/scheduler data behind them.
+    if (!isOwnPipelineTab) return;
     if (!currentUserEmployeeId || !currentUserFullName?.trim()) {
       return;
     }
 
     const persistedLeadsKey = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
     previousModeRef.current = pipelineMode;
+
+    if (viewingOtherEmployee) {
+      hasLoadedFromStorageRef.current[pipelineMode] = false;
+      fetchLeads();
+      return;
+    }
 
     // Each mode keeps its own snapshot, so switching tabs repaints its rows straight away and
     // only hits the network when that mode's cache is empty or has aged out.
@@ -2209,10 +2275,10 @@ const PipelinePage: React.FC = () => {
       void fetchLeads({ silent: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipelineMode, currentUserEmployeeId, currentUserFullName, isCaseTab]);
+  }, [pipelineMode, currentUserEmployeeId, currentUserFullName, isOwnPipelineTab, viewingOtherEmployee]);
 
   // Returning to this page should land exactly where the user left it.
-  useScrollRestoration(pipelineScrollStore, isLoading, !isCaseTab);
+  useScrollRestoration(pipelineScrollStore, isLoading, isOwnPipelineTab);
 
   // Live refresh (no hard refresh needed): when pipeline-related tables change, refresh leads +
   // stats for the active tab. Debounced to collapse bursts (bulk updates, multi-row writes) and
@@ -2240,7 +2306,7 @@ const PipelinePage: React.FC = () => {
     ],
     {
       enabled:
-        !isCaseTab &&
+        isOwnPipelineTab &&
         pipelineIdentityReady &&
         !!currentUserEmployeeId &&
         !!currentUserFullName?.trim(),
@@ -2261,7 +2327,7 @@ const PipelinePage: React.FC = () => {
   const metricsKey = useMemo(() => leads.map((lead) => lead.id).join(','), [leads]);
 
   useEffect(() => {
-    if (isCaseTab || leads.length === 0) return;
+    if (!isOwnPipelineTab || leads.length === 0) return;
 
     const cached = pipelineMetricsCache[pipelineMode];
     if (cached && cached.key === metricsKey) {
@@ -2291,7 +2357,7 @@ const PipelinePage: React.FC = () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [metricsKey, isCaseTab, pipelineMode]);
+  }, [metricsKey, isOwnPipelineTab, pipelineMode]);
 
   /** True once the metrics for exactly these rows have arrived. */
   const metricsLoaded = metricsState.key === metricsKey;
@@ -2325,11 +2391,11 @@ const PipelinePage: React.FC = () => {
 
   // Remember how many leads each mode holds so both role tabs can show a count.
   useEffect(() => {
-    if (isCaseTab || isLoading) return;
+    if (!isOwnPipelineTab || isLoading) return;
     if (pipelineModeCounts[pipelineMode] === leads.length) return;
     pipelineModeCounts[pipelineMode] = leads.length;
     setModeCounts({ ...pipelineModeCounts });
-  }, [leads.length, pipelineMode, isCaseTab, isLoading]);
+  }, [leads.length, pipelineMode, isOwnPipelineTab, isLoading]);
 
   const openFollowUpModal = (lead: LeadForPipeline, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -2687,16 +2753,6 @@ const PipelinePage: React.FC = () => {
     };
   }, [sortedLeads, pipelineMode, realSummaryStats]);
 
-  /**
-   * Clicking a row goes straight to the lead, same as the case pipeline.
-   * Cmd/Ctrl (or middle) click opens it in a new tab instead.
-   */
-  const handleRowSelect = (leadId: string | number, event?: React.MouseEvent) => {
-    const lead = leads.find(l => String(l.id) === String(leadId));
-    if (!lead) return;
-    openLeadFromRowClick(event, lead.lead_number || lead.id, navigate);
-  };
-
   const handleRowClick = (lead: LeadForPipeline, event?: React.MouseEvent) => {
     const isNewTab = event?.metaKey || event?.ctrlKey;
     
@@ -2943,7 +2999,11 @@ const PipelinePage: React.FC = () => {
   };
 
   const handleEmail = (lead: LeadForPipeline) => {
-    console.log('📧 Email clicked for lead:', lead);
+    const actionLead = toPipelineActionLead({
+      ...lead,
+      navId: lead.lead_number || String(lead.id),
+    });
+    setRailLead(actionLead);
     setSelectedLead(lead);
     setIsContactEmailModalOpen(true);
     setOpenContactDropdown(null);
@@ -2951,12 +3011,188 @@ const PipelinePage: React.FC = () => {
   };
 
   const handleWhatsApp = (lead: LeadForPipeline) => {
-    console.log('💬 WhatsApp clicked for lead:', lead);
+    const actionLead = toPipelineActionLead({
+      ...lead,
+      navId: lead.lead_number || String(lead.id),
+    });
+    setRailLead(actionLead);
     setSelectedLead(lead);
     setIsContactWhatsAppModalOpen(true);
     setOpenContactDropdown(null);
     setDropdownPosition(null);
   };
+
+  const closerToActionLead = (lead: LeadForPipeline): PipelineActionLead =>
+    toPipelineActionLead({
+      id: lead.id,
+      navId: lead.lead_number || String(lead.id),
+      name: lead.name,
+      lead_number: lead.lead_number,
+      phone: lead.phone,
+      mobile: lead.mobile,
+      email: lead.email,
+      lead_type: lead.lead_type,
+      created_at: lead.created_at,
+      stage: lead.stage,
+      facts: lead.facts,
+      special_notes: lead.special_notes,
+      next_followup: lead.next_followup,
+      topic: lead.topic,
+    });
+
+  const runRailAction = async (action: PipelineRailAction, lead: PipelineActionLead) => {
+    setRailLead(lead);
+    if (action === 'finance') setArmedAction(null);
+    if (action === 'ai') {
+      setFollowupLead(toPipelineFollowupLead(lead));
+      return;
+    }
+    if (action === 'finance') {
+      navigate(leadRoutePath(lead.navId, `?tab=${CLIENT_FINANCES_TAB}`));
+      return;
+    }
+    const hydrated = await hydratePipelineActionLead(lead);
+    setRailLead(hydrated);
+    if (action === 'call') {
+      const phoneNumber = hydrated.phone || hydrated.mobile;
+      if (!phoneNumber) {
+        toast.error('No phone number available for this lead');
+        return;
+      }
+      const normalizedPhone = phoneNumber.replace(/[\s\-()]/g, '');
+      const isUSNumber =
+        normalizedPhone.startsWith('+1') ||
+        (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+      if (isUSNumber) {
+        setCallPhoneNumber(phoneNumber);
+        setCallLeadName(hydrated.name || '');
+        setIsCallModalOpen(true);
+      } else {
+        window.open(`tel:${phoneNumber}`, '_self');
+      }
+      return;
+    }
+    if (action === 'email') {
+      setIsContactEmailModalOpen(true);
+      return;
+    }
+    if (action === 'whatsapp') {
+      setIsContactWhatsAppModalOpen(true);
+    }
+  };
+
+  const handleRailButton = (action: PipelineRailAction) => {
+    if (bulkStageMode) {
+      setBulkStageMode(false);
+      setBulkSelectedLeads([]);
+      setBulkStageId('');
+    }
+    if (armedAction === action) {
+      setArmedAction(null);
+      return;
+    }
+    setArmedAction(action);
+  };
+
+  const startBulkStageMode = useCallback(() => {
+    setArmedAction(null);
+    setRailLead(null);
+    setSelectedRowId(null);
+    setFollowupLead(null);
+    setBulkStageMode(true);
+    setSettingsOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!bulkStageMode) return;
+    void fetchStageNames().then(() => setBulkStageOptions(listLeadStages()));
+  }, [bulkStageMode]);
+
+  const applyBulkStageChange = async () => {
+    if (!bulkStageId || bulkSelectedLeads.length === 0 || bulkStageApplying) return;
+    setBulkStageApplying(true);
+    try {
+      const { updated, failed } = await applyPipelineBulkStageChange(bulkSelectedLeads, bulkStageId);
+      if (failed === 0) {
+        toast.success(`Updated ${updated} lead${updated === 1 ? '' : 's'}`);
+        clearBulkStageMode();
+      } else {
+        toast.error(`Updated ${updated}, ${failed} failed`);
+      }
+      setStageRefreshToken((value) => value + 1);
+      if (isOwnPipelineTab) {
+        void fetchLeadsRef.current({ silent: true });
+      }
+    } catch (error) {
+      console.error('Bulk stage change failed', error);
+      toast.error('Failed to update lead stages');
+    } finally {
+      setBulkStageApplying(false);
+    }
+  };
+
+  const bulkStageControls = {
+    selectedCount: bulkSelectedLeads.length,
+    stages: bulkStageOptions,
+    stageId: bulkStageId,
+    applying: bulkStageApplying,
+    onStageId: setBulkStageId,
+    onApply: () => {
+      void applyBulkStageChange();
+    },
+    onCancel: clearBulkStageMode,
+  };
+
+  const handlePipelineLeadChosen = (lead: PipelineActionLead, event?: React.MouseEvent) => {
+    if (event && (event.metaKey || event.ctrlKey || event.button === 1)) {
+      openLeadFromRowClick(event, lead.navId, navigate);
+      return;
+    }
+    if (bulkStageMode) {
+      setBulkSelectedLeads((prev) => {
+        const id = String(lead.id);
+        if (prev.some((row) => String(row.id) === id)) {
+          return prev.filter((row) => String(row.id) !== id);
+        }
+        return [...prev, lead];
+      });
+      return;
+    }
+    if (railLead && String(railLead.id) === String(lead.id)) {
+      setRailLead(null);
+      setSelectedRowId(null);
+      setFollowupLead(null);
+      return;
+    }
+    setRailLead(lead);
+    setSelectedRowId(lead.id);
+    if (armedAction) {
+      void runRailAction(armedAction, lead);
+    }
+  };
+
+  const handleRowSelect = (leadId: string | number, event?: React.MouseEvent) => {
+    const lead = leads.find((row) => String(row.id) === String(leadId));
+    if (!lead) return;
+    handlePipelineLeadChosen(closerToActionLead(lead), event);
+  };
+
+  const handleOpenClient = (leadId: string | number, event?: React.MouseEvent) => {
+    const lead = leads.find((row) => String(row.id) === String(leadId));
+    if (!lead) return;
+    openLeadFromRowClick(event, lead.lead_number || lead.id, navigate);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setArmedAction(null);
+      setSettingsOpen(false);
+      clearBulkStageMode();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [clearBulkStageMode]);
 
   const handleTimeline = (lead: LeadForPipeline) => {
     navigate(`/clients/${lead.lead_number}?tab=interactions`);
@@ -3976,7 +4212,7 @@ const PipelinePage: React.FC = () => {
 
   useRefetchOnVisible({
     enabled:
-      !isCaseTab && pipelineIdentityReady && !!currentUserEmployeeId && !!currentUserFullName?.trim(),
+      isOwnPipelineTab && pipelineIdentityReady && !!currentUserEmployeeId && !!currentUserFullName?.trim(),
     staleMs: getMobileAwareCacheTtlMs(PIPELINE_LEADS_STALE_MS, 45_000),
     lastFetchedAtRef: pipelineLastFetchedAtRef,
     onRefetch: () => {
@@ -4369,13 +4605,26 @@ const PipelinePage: React.FC = () => {
 
         // Employee ID — from users.employee_id (join is for display/role only)
         const empId = finalUserData.employee_id;
+        let resolvedEmployeeId: number | null = null;
         if (empId != null && typeof empId === 'number') {
+          resolvedEmployeeId = empId;
           setCurrentUserEmployeeId(empId);
         } else if (empId != null && typeof empId === 'string' && /^\d+$/.test(empId)) {
-          setCurrentUserEmployeeId(parseInt(empId, 10));
+          resolvedEmployeeId = parseInt(empId, 10);
+          setCurrentUserEmployeeId(resolvedEmployeeId);
         } else {
           setCurrentUserEmployeeId(null);
         }
+
+        signedInIdentityRef.current = {
+          userId: finalUserData.id ? String(finalUserData.id) : null,
+          employeeId: resolvedEmployeeId,
+          fullName:
+            finalUserData.full_name ||
+            joinedEmployee?.display_name ||
+            finalUserData.email ||
+            fallbackName,
+        };
 
         // Bonus role: from JOIN first, else fetch by employee_id
         if (joinedEmployee?.bonuses_role != null) {
@@ -4407,6 +4656,24 @@ const PipelinePage: React.FC = () => {
     }
     setPipelineModeInitialized(true);
   }, [pipelineIdentityReady, currentUserBonusRole, pipelineModeInitialized, setPipelineMode]);
+
+  useEffect(() => {
+    const signedIn = signedInIdentityRef.current;
+    if (!signedIn || !pipelineIdentityReady) return;
+    if (isSuperUser && viewAs?.employeeId) {
+      setCurrentUserId(viewAs.userId);
+      setCurrentUserEmployeeId(viewAs.employeeId);
+      setCurrentUserFullName(viewAs.fullName || viewAs.displayName);
+      return;
+    }
+    setCurrentUserId(signedIn.userId);
+    setCurrentUserEmployeeId(signedIn.employeeId);
+    setCurrentUserFullName(signedIn.fullName);
+  }, [viewAs, isSuperUser, pipelineIdentityReady]);
+
+  useEffect(() => {
+    if (pipelineIdentityReady && !isSuperUser && viewAs) setViewAs(null);
+  }, [pipelineIdentityReady, isSuperUser, viewAs, setViewAs]);
 
   // Helper function to add highlight to user_highlights table
   const handleHighlight = async (lead: LeadForPipeline) => {
@@ -4953,61 +5220,135 @@ const PipelinePage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full w-full bg-[#f3f4f6] px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
-        <div className="flex items-center gap-4">
+    <div className="flex min-h-full w-full bg-[#f3f4f6]">
+      <PipelineActionSidebar
+        armedAction={armedAction}
+        selectedLead={railLead}
+        settingsOpen={settingsOpen}
+        onToggleSettings={() => setSettingsOpen((open) => !open)}
+        onAction={handleRailButton}
+      >
+        <div className="space-y-4">
+          <p className="text-xs leading-relaxed text-gray-500">
+            Click AI, Email, Call, WhatsApp or Finance, then click a lead. If a lead is already
+            selected, the action runs immediately. Cmd/Ctrl-click a row to open the client page.
+          </p>
+          {isSuperUser ? (
+            <PipelineBulkStageSettings
+              active={bulkStageMode}
+              onStart={() => {
+                if (bulkStageMode) clearBulkStageMode();
+                else startBulkStageMode();
+              }}
+              {...bulkStageControls}
+            />
+          ) : null}
+          {railLead ? (
+            <div className="rounded-xl bg-gray-50 px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Selected lead</p>
+              <p className="mt-1 font-semibold text-gray-900">{railLead.name || '—'}</p>
+              <p className="font-mono text-xs text-gray-500">{railLead.lead_number}</p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs"
+                  onClick={() => navigate(leadRoutePath(railLead.navId))}
+                >
+                  Open client
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs"
+                  onClick={() => {
+                    setRailLead(null);
+                    setSelectedRowId(null);
+                    setArmedAction(null);
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">No lead selected.</p>
+          )}
+          {isOwnPipelineTab ? (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm w-full"
+              onClick={() => {
+                setShowMyStatsModal(true);
+                setSettingsOpen(false);
+              }}
+            >
+              My Stats
+            </button>
+          ) : null}
+          {isSuperUser ? (
+            <div>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                View as
+              </p>
+              <PipelineEmployeePicker
+                value={viewAs}
+                onChange={(next) => {
+                  if (!isSuperUser) return;
+                  setViewAs(next);
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
+      </PipelineActionSidebar>
+      <div className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mb-6 flex flex-col md:flex-row justify-between items-start gap-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
           <h1 className="text-3xl font-bold flex items-center gap-3">
             <ChartBarIcon className="w-8 h-8 text-primary" />
             {isCaseTab
               ? 'Case Pipeline'
-              : showSignedAgreements
-                ? 'Signed Agreements'
-                : pipelineMode === 'scheduler'
-                  ? 'Scheduler Pipeline'
-                  : 'Closer Pipeline'}
+              : activeTab === 'expert'
+                ? 'Expert Pipeline'
+                : activeTab === 'handler'
+                  ? 'Handler Pipeline'
+                  : activeTab === 'retention'
+                    ? 'Retention Pipeline'
+                  : showSignedAgreements
+                    ? 'Signed Agreements'
+                    : pipelineMode === 'scheduler'
+                      ? 'Scheduler Pipeline'
+                      : 'Closer Pipeline'}
           </h1>
-          
-          {/* Role tabs: Closer/Scheduler use this page's pipeline, Manager/Helper the case pipeline */}
-          <div
-            className="inline-flex items-center gap-1 rounded-full bg-gray-200/70 p-1"
-            role="tablist"
-            aria-label="Pipeline role"
-          >
-            {(['closer', 'scheduler', 'manager', 'helper'] as PipelineTab[]).map((tab) => {
-              const active = activeTab === tab;
-              const count =
-                tab === 'manager'
-                  ? caseRoleCounts.manager
-                  : tab === 'helper'
-                    ? caseRoleCounts.helper
-                    : modeCounts[tab];
-              // Switching between Closer and Scheduler refetches, so block it mid-load only there.
-              const blocked = isLoading && !isCaseTab && (tab === 'closer' || tab === 'scheduler');
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
-                    active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
-                  } ${blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-                  onClick={() => !blocked && selectTab(tab)}
-                  disabled={blocked}
-                >
-                  {PIPELINE_TAB_LABELS[tab]}
-                  {count != null ? (
-                    <span className="ml-1.5 text-xs font-medium text-gray-400">{count}</span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
+
+          <PipelineRoleTabs
+            activeTab={activeTab}
+            onSelect={selectTab}
+            counts={{
+              closer: modeCounts.closer,
+              scheduler: modeCounts.scheduler,
+              manager: caseRoleCounts.manager,
+              helper: caseRoleCounts.helper,
+              expert: extraRoleCounts.expert,
+              handler: extraRoleCounts.handler,
+              retention: extraRoleCounts.retention,
+            }}
+            blockedTabs={isLoading && isOwnPipelineTab ? ['closer', 'scheduler'] : []}
+          />
         </div>
         
-        {/* These actions all operate on the closer/scheduler pipeline below */}
-        {isCaseTab ? null : (
         <div className="flex items-center gap-2">
+          {isSuperUser ? (
+            <PipelineEmployeePicker
+              value={viewAs}
+              onChange={(next) => {
+                if (!isSuperUser) return;
+                setViewAs(next);
+              }}
+            />
+          ) : null}
+        {/* These actions all operate on the closer/scheduler pipeline below */}
+        {isOwnPipelineTab ? (
+        <>
           {/* My Stats Button */}
           <button
             onClick={() => setShowMyStatsModal(true)}
@@ -5047,18 +5388,60 @@ const PipelinePage: React.FC = () => {
             </button>
           )}
           */}
+        </>
+        ) : null}
         </div>
-        )}
       </div>
 
       {/* Animated on tab change without a key, so the case pipeline is not remounted */}
       <div ref={tabPanelRef} className="pipeline-tab-panel">
+      {bulkStageMode ? <PipelineBulkStageBar {...bulkStageControls} /> : null}
       {isCaseTab ? (
         <CasePipelineView
           roleTab={activeTab as CasePipelineRoleTab}
           showHeader={false}
           withPageChrome={false}
           onCountsChange={setCaseRoleCounts}
+          viewAs={viewingOtherEmployee ? viewAs : null}
+          selectedLeadId={railLead ? String(railLead.id) : null}
+          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
+          picking={Boolean(armedAction) || bulkStageMode}
+          multiSelect={bulkStageMode}
+          onSelectLead={handlePipelineLeadChosen}
+          refreshToken={stageRefreshToken}
+        />
+      ) : activeTab === 'expert' ? (
+        <ExpertPipelineView
+          onCountChange={handleExpertCount}
+          viewAs={viewingOtherEmployee ? viewAs : null}
+          selectedLeadId={railLead ? String(railLead.id) : null}
+          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
+          picking={Boolean(armedAction) || bulkStageMode}
+          multiSelect={bulkStageMode}
+          onSelectLead={handlePipelineLeadChosen}
+          refreshToken={stageRefreshToken}
+        />
+      ) : activeTab === 'handler' ? (
+        <HandlerPipelineView
+          onCountChange={handleHandlerCount}
+          viewAs={viewingOtherEmployee ? viewAs : null}
+          selectedLeadId={railLead ? String(railLead.id) : null}
+          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
+          picking={Boolean(armedAction) || bulkStageMode}
+          multiSelect={bulkStageMode}
+          onSelectLead={handlePipelineLeadChosen}
+          refreshToken={stageRefreshToken}
+        />
+      ) : activeTab === 'retention' ? (
+        <RetentionHandlerPipelineView
+          onCountChange={handleRetentionCount}
+          viewAs={viewingOtherEmployee ? viewAs : null}
+          selectedLeadId={railLead ? String(railLead.id) : null}
+          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
+          picking={Boolean(armedAction) || bulkStageMode}
+          multiSelect={bulkStageMode}
+          onSelectLead={handlePipelineLeadChosen}
+          refreshToken={stageRefreshToken}
         />
       ) : (
       <>
@@ -5172,7 +5555,7 @@ const PipelinePage: React.FC = () => {
       {/* Leads Cards Grid or List */}
       {viewMode === 'cards' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
-          {isLoading ? (
+          {isLoading && leads.length === 0 ? (
             <div className="col-span-full text-center p-12">
               <div className="flex flex-col items-center justify-center gap-4">
                 <div className="loading loading-spinner loading-lg text-primary"></div>
@@ -5186,8 +5569,8 @@ const PipelinePage: React.FC = () => {
               <div
                 key={lead.id}
                 ref={el => (mainCardRefs.current[Number(lead.id)] = el)}
-                className={`bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 cursor-pointer ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
-                onClick={(e) => handleRowSelect(lead.id, e)}
+                className={`bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 cursor-pointer ${railLead?.id === String(lead.id) ? 'ring-2 ring-primary ring-offset-2' : ''}`}
+                onClick={(e) => handleOpenClient(lead.id, e)}
               >
                 <div className="flex-1 flex flex-col">
                   {/* Lead Number and Name */}
@@ -5278,17 +5661,10 @@ const PipelinePage: React.FC = () => {
                     {/* Follow Up Date */}
                     <div className="flex justify-between items-center py-1">
                       <span className="text-sm font-semibold text-gray-500">Follow Up Date</span>
-                      {lead.next_followup ? (() => {
-                        const followupDate = parseISO(lead.next_followup);
-                        const colorClass = getFollowUpColor(lead.next_followup);
-                        return (
-                          <span className={`text-xs font-bold ml-2 px-2 py-1 rounded ${colorClass}`}>
-                            {format(followupDate, 'dd/MM/yyyy')}
-                          </span>
-                        );
-                      })() : (
-                        <span className="text-sm font-bold text-gray-800 ml-2">--</span>
-                      )}
+                      <PipelineFollowUpButton
+                        date={lead.next_followup}
+                        onClick={(e) => openFollowUpModal(lead, e)}
+                      />
                     </div>
                     {/* Country */}
                     <div className="flex justify-between items-center py-1">
@@ -5358,13 +5734,13 @@ const PipelinePage: React.FC = () => {
         </div>
       ) : (
         <div className="overflow-x-auto w-full mt-6" style={{ overflowY: 'visible' }}>
-          {/* Rows sit as separate white cards on the grey page, matching the case pipeline */}
           <table
-            className="table-auto border-separate border-spacing-y-2 text-base w-full"
+            className="pipeline-flat-table table-auto border-separate border-spacing-0 text-base w-full"
             style={{ position: 'relative' }}
           >
             <thead className="sticky top-0 z-10 bg-[#f3f4f6] text-sm uppercase tracking-wide text-gray-500">
               <tr>
+                <PipelineRowPickHeader visible={Boolean(armedAction) || bulkStageMode} />
                 <th className="py-3 px-2 text-center w-10"></th>
                 <th className="py-3 px-2 text-left">Lead</th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('follow_up')}>
@@ -5395,13 +5771,13 @@ const PipelinePage: React.FC = () => {
                 <th className="py-3 px-2 text-center">Expert</th>
                 <th className="py-3 px-2 text-center">Country</th>
                 <th className="py-3 px-2 text-center">Language</th>
-                <th className="py-3 px-2 text-center rounded-r-xl">Tags</th>
+                <th className="py-3 px-2 text-center">Tags</th>
               </tr>
             </thead>
             <tbody>
-              {isLoading ? (
+              {isLoading && leads.length === 0 ? (
                 <tr>
-                  <td colSpan={15} className="text-center py-12">
+                  <td colSpan={15 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-12">
                     <div className="flex flex-col items-center justify-center gap-4">
                       <div className="loading loading-spinner loading-lg text-primary"></div>
                       <p className="text-base font-medium text-base-content/70">
@@ -5411,20 +5787,42 @@ const PipelinePage: React.FC = () => {
                   </td>
                 </tr>
               ) : sortedLeads.length === 0 ? (
-                <tr><td colSpan={15} className="text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={15 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => {
                   const isExpanded = expandedRows.has(lead.id);
                   return (
                     <React.Fragment key={lead.id}>
                       <tr
-                    className="group relative cursor-pointer transition hover:-translate-y-[1px] [&>td]:border-y [&>td]:border-gray-100 [&>td]:bg-white [&>td]:shadow-sm [&>td:first-child]:rounded-l-xl [&>td:first-child]:border-l [&>td:last-child]:rounded-r-xl [&>td:last-child]:border-r"
-                    onClick={(e) => handleRowSelect(lead.id, e)}
+                    className={`pipeline-flat-row group relative cursor-pointer [&>td]:border-b [&>td]:border-gray-100 ${
+                      selectedRowId === lead.id ||
+                      railLead?.id === String(lead.id) ||
+                      (bulkStageMode && bulkSelectedLeads.some((row) => String(row.id) === String(lead.id)))
+                        ? 'pipeline-flat-row-selected'
+                        : ''
+                    }`}
+                    onClick={(e) => {
+                      if (bulkStageMode) {
+                        handleRowSelect(lead.id, e);
+                        return;
+                      }
+                      handleOpenClient(lead.id, e);
+                    }}
                     onAuxClick={(e) => {
-                      if (e.button === 1) handleRowSelect(lead.id, e);
+                      if (e.button === 1) handleOpenClient(lead.id, e);
                     }}
                     style={{ overflow: 'visible' }}
                   >
+                        <PipelineRowPickCell
+                          visible={Boolean(armedAction) || bulkStageMode}
+                          selected={
+                            bulkStageMode
+                              ? bulkSelectedLeads.some((row) => String(row.id) === String(lead.id))
+                              : railLead?.id === String(lead.id)
+                          }
+                          name={lead.name}
+                          onPick={(e) => handleRowSelect(lead.id, e)}
+                        />
                         {/* Expand/Collapse Arrow */}
                         <td className="px-2 py-3 md:py-4 text-center w-10">
                           <button
@@ -5453,26 +5851,24 @@ const PipelinePage: React.FC = () => {
                         <td className="px-2 py-3 md:py-4 truncate max-w-[180px] text-left">
                       <div className="flex flex-col">
                         <span className="font-mono font-bold text-xs text-gray-500 truncate">{lead.lead_number}</span>
-                        <span className="font-semibold text-base-content truncate">{lead.name}</span>
+                        <button
+                          type="button"
+                          className="truncate text-left font-semibold text-base-content hover:underline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openLeadFromRowClick(e, lead.lead_number || lead.id, navigate);
+                          }}
+                        >
+                          {lead.name}
+                        </button>
                       </div>
                     </td>
                     {/* Follow Up — click to set or change your own follow-up date */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
-                      <button
-                        type="button"
-                        title="Edit your follow-up date"
+                      <PipelineFollowUpButton
+                        date={lead.next_followup}
                         onClick={(e) => openFollowUpModal(lead, e)}
-                        className={`inline-flex items-center gap-1 rounded px-2 py-1 font-semibold transition hover:brightness-95 ${
-                          lead.next_followup
-                            ? getFollowUpColor(lead.next_followup)
-                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                        }`}
-                      >
-                        <CalendarIcon className="w-4 h-4 shrink-0 opacity-80" />
-                        {lead.next_followup
-                          ? format(parseISO(lead.next_followup), 'dd/MM/yyyy')
-                          : 'Set date'}
-                      </button>
+                      />
                     </td>
                     {/* Stage — soft coloured badge, same as the case pipeline */}
                     <td className="px-2 py-3 md:py-4 text-center">
@@ -5524,7 +5920,15 @@ const PipelinePage: React.FC = () => {
                         Fixed height and width: the values arrive after the rows, and the column
                         must not resize or reflow the table when they land. */}
                     <td className="px-2 py-3 md:py-4 text-center w-[120px] min-w-[120px]">
-                      <div className="flex h-9 flex-col items-center justify-center leading-tight">
+                      <button
+                        type="button"
+                        className="inline-flex h-9 w-full flex-col items-center justify-center rounded-lg leading-tight transition hover:bg-gray-50"
+                        title="Show the last interactions"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setInteractionsFor(lead);
+                        }}
+                      >
                         {(() => {
                           const lastInteraction = summaryRowById.get(String(lead.id))?.last_interaction;
                           if (!lastInteraction) {
@@ -5548,7 +5952,7 @@ const PipelinePage: React.FC = () => {
                             </>
                           );
                         })()}
-                      </div>
+                      </button>
                     </td>
                     {/* Total Applicants */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? '--'}</td>
@@ -5607,18 +6011,9 @@ const PipelinePage: React.FC = () => {
                     {/* Tags */}
                     <td className="px-2 py-3 md:py-4 text-center truncate rounded-r-xl">
                       {lead.tags && lead.tags.length > 0 ? (
-                        <div className="flex flex-wrap gap-1 justify-center">
-                          {lead.tags.slice(0, 2).map((tag, idx) => (
-                            <span key={idx} className="badge badge-outline badge-primary text-xs font-semibold">
-                              {tag}
-                            </span>
-                          ))}
-                          {lead.tags.length > 2 && (
-                            <span className="badge badge-outline badge-ghost text-xs font-semibold">
-                              +{lead.tags.length - 2}
-                            </span>
-                          )}
-                        </div>
+                        <span className="text-sm text-gray-700" title={lead.tags.join(', ')}>
+                          {lead.tags.join(', ')}
+                        </span>
                       ) : (
                         <span className="text-base-content/40 text-xs">—</span>
                       )}
@@ -5628,8 +6023,8 @@ const PipelinePage: React.FC = () => {
                   {isExpanded && (
                     <tr>
                       <td
-                        colSpan={15}
-                        className="rounded-xl border border-gray-100 bg-white px-4 py-4 shadow-sm"
+                        colSpan={15 + (armedAction || bulkStageMode ? 1 : 0)}
+                        className="border-b border-gray-100 bg-white px-4 py-4"
                       >
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                           {/* Comments */}
@@ -5954,167 +6349,6 @@ const PipelinePage: React.FC = () => {
       )}
       </div>
 
-      {/* Floating Action Buttons - Fixed position on right side */}
-      {selectedRowId && (() => {
-        const selectedLead = sortedLeads.find(l => l.id === selectedRowId);
-        if (!selectedLead) return null;
-        
-        return (
-          <>
-            {/* Overlay to close buttons */}
-            <div
-              className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
-              onClick={() => {
-                setShowActionMenu(false);
-                setSelectedRowId(null);
-              }}
-            />
-            
-            {/* Floating Action Buttons - Centered vertically on right side */}
-            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
-              {/* Call Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCall(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Call"
-                >
-                  <PhoneIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Email Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEmail(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Email"
-                >
-                  <EnvelopeIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* WhatsApp Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleWhatsApp(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="WhatsApp"
-                >
-                  <FaWhatsapp className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Timeline Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleTimeline(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Timeline"
-                >
-                  <ClockIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Edit Lead Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEditLead(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Edit Lead"
-                >
-                  <PencilSquareIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* View Client Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleViewClient(selectedLead, e);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="View Client"
-                >
-                  <EyeIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Documents Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedLead(selectedLead);
-                    setIsDocumentModalOpen(true);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Documents"
-                >
-                  <FolderIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Highlight Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleHighlight(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Highlight"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.05 17.95l-1.414 1.414m12.728 0l-1.414-1.414M6.05 6.05L4.636 4.636" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-          </>
-        );
-      })()}
-      
       {/* Contact Dropdown Portal - renders outside table to avoid overflow issues */}
       {openContactDropdown && dropdownPosition && (
         <div 
@@ -6200,17 +6434,17 @@ const PipelinePage: React.FC = () => {
       )}
       
       {/* WhatsApp Modal (from contact dropdown) */}
-      {isContactWhatsAppModalOpen && selectedLead && (
+      {isContactWhatsAppModalOpen && (railLead || selectedLead) && (
         <SchedulerWhatsAppModal
           isOpen={isContactWhatsAppModalOpen}
           onClose={() => setIsContactWhatsAppModalOpen(false)}
           client={{
-            id: String(selectedLead.id),
-            name: selectedLead.name,
-            lead_number: selectedLead.lead_number,
-            phone: selectedLead.phone || undefined,
-            mobile: selectedLead.mobile || undefined,
-            lead_type: selectedLead.lead_type || 'new'
+            id: String((railLead || selectedLead)!.id),
+            name: (railLead || selectedLead)!.name || '',
+            lead_number: (railLead || selectedLead)!.lead_number || '',
+            phone: (railLead || selectedLead)!.phone || undefined,
+            mobile: (railLead || selectedLead)!.mobile || undefined,
+            lead_type: (railLead || selectedLead)!.lead_type === 'legacy' ? 'legacy' : 'new'
           }}
           onClientUpdate={async () => {
             await fetchLeads();
@@ -6219,17 +6453,17 @@ const PipelinePage: React.FC = () => {
       )}
       
       {/* Email Modal (from contact dropdown) */}
-      {isContactEmailModalOpen && selectedLead && (
+      {isContactEmailModalOpen && (railLead || selectedLead) && (
         <SchedulerEmailThreadModal
           isOpen={isContactEmailModalOpen}
           onClose={() => setIsContactEmailModalOpen(false)}
           client={{
-            id: String(selectedLead.id),
-            name: selectedLead.name,
-            lead_number: selectedLead.lead_number,
-            email: selectedLead.email || undefined,
-            lead_type: selectedLead.lead_type || 'new',
-            topic: selectedLead.topic || undefined
+            id: String((railLead || selectedLead)!.id),
+            name: (railLead || selectedLead)!.name || '',
+            lead_number: (railLead || selectedLead)!.lead_number || '',
+            email: (railLead || selectedLead)!.email || undefined,
+            lead_type: (railLead || selectedLead)!.lead_type === 'legacy' ? 'legacy' : 'new',
+            topic: (railLead || selectedLead)!.topic || undefined
           }}
           onClientUpdate={async () => {
             await fetchLeads();
@@ -7388,6 +7622,18 @@ const PipelinePage: React.FC = () => {
           </div>
         </div>
       )}
+
+      <PipelineLastInteractionsModal
+        lead={interactionsFor}
+        onClose={() => setInteractionsFor(null)}
+      />
+
+      <LeadFollowupAiDrawer
+        open={followupLead != null}
+        lead={followupLead}
+        onClose={() => setFollowupLead(null)}
+      />
+      </div>
     </div>
   );
 };

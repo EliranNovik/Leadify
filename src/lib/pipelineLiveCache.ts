@@ -20,6 +20,10 @@ export function getAppScrollContainer(): HTMLElement | null {
 
 export const DEFAULT_PIPELINE_STALE_MS = 5 * 60 * 1000;
 
+export function pipelineViewIdentityKey(viewAs?: { employeeId?: number | null } | null): string {
+  return viewAs?.employeeId != null ? `emp:${viewAs.employeeId}` : 'self';
+}
+
 export type SnapshotStore<T> = {
   get(): T | null;
   set(data: T): void;

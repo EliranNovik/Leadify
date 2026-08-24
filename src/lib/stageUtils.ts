@@ -88,6 +88,19 @@ export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
   }
 };
 
+/** All cached lead stages, ordered by numeric id when possible. */
+export function listLeadStages(): Array<{ id: string; name: string }> {
+  return Object.entries(stageNamesCache)
+    .filter(([id, name]) => Boolean(id) && Boolean(name))
+    .map(([id, name]) => ({ id, name: String(name) }))
+    .sort((a, b) => {
+      const left = Number(a.id);
+      const right = Number(b.id);
+      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+}
+
 /**
  * Gets the display name for a stage ID
  * @param stageId - The stage ID to get the name for

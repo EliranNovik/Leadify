@@ -160,6 +160,10 @@ const AppContentInner: React.FC = () => {
   const isAdminPage = useMemo(() => location.pathname === '/admin', [location.pathname]);
   const isReportsPage = useMemo(() => location.pathname.startsWith('/reports'), [location.pathname]);
   const isSignedSalesPage = useMemo(() => location.pathname === '/sales/signed', [location.pathname]);
+  const isPipelinePage = useMemo(
+    () => location.pathname === '/pipeline' || location.pathname.startsWith('/pipeline/'),
+    [location.pathname],
+  );
   const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
   const isContractPage = useMemo(() => {
     const path = location.pathname;
@@ -203,12 +207,12 @@ const AppContentInner: React.FC = () => {
   // Memoize computed props for Header/Sidebar to prevent unnecessary re-renders
   const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
   const sidebarMobileOnly = useMemo(
-    () => isReportsPage || (isAdminPage && !adminAppNavOpen),
-    [isReportsPage, isAdminPage, adminAppNavOpen],
+    () => isReportsPage || isPipelinePage || (isAdminPage && !adminAppNavOpen),
+    [isReportsPage, isPipelinePage, isAdminPage, adminAppNavOpen],
   );
   const showBottomNav = useMemo(
-    () => !isFullBleedEditorPage && !isCaseManagerPage && !isReportsPage,
-    [isFullBleedEditorPage, isCaseManagerPage, isReportsPage]
+    () => !isFullBleedEditorPage && !isCaseManagerPage && !isReportsPage && !isPipelinePage,
+    [isFullBleedEditorPage, isCaseManagerPage, isReportsPage, isPipelinePage]
   );
   const useStaffSidebarInset = useMemo(
     () =>
@@ -216,6 +220,7 @@ const AppContentInner: React.FC = () => {
       !isReportsPage &&
       !isSignedSalesPage &&
       !isCaseManagerPage &&
+      !isPipelinePage &&
       !isFullBleedEditorPage &&
       !(isExternalUser && !isLoadingExternal),
     [
@@ -223,6 +228,7 @@ const AppContentInner: React.FC = () => {
       isReportsPage,
       isSignedSalesPage,
       isCaseManagerPage,
+      isPipelinePage,
       isFullBleedEditorPage,
       isExternalUser,
       isLoadingExternal,
@@ -1074,6 +1080,7 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                   clearFloatingSidebar={isClientDetailPage}
+                  startInsetClassName={isPipelinePage ? 'left-16' : undefined}
                 />
                 <main
                   className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 ${

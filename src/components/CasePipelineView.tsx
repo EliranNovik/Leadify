@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  CalendarDaysIcon,
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
   ChevronUpDownIcon,
@@ -39,6 +38,7 @@ import {
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import {
   createSnapshotStore,
+  pipelineViewIdentityKey,
   useRealtimeTables,
   useRevalidateOnVisible,
   useScrollRestoration,
@@ -46,6 +46,28 @@ import {
 } from '../lib/pipelineLiveCache';
 import PipelineSummaryCards from './PipelineSummaryCards';
 import { openLeadFromRowClick } from '../lib/leadNavigation';
+import PipelineFollowUpButton from './pipeline/PipelineFollowUpButton';
+import {
+  handlePipelineRowPick,
+  isPipelineLeadPicked,
+  toPipelineActionLead,
+  type PipelineLeadSelectProps,
+} from './pipeline/pipelineActions';
+import {
+  PipelineRowPickCell,
+  PipelineRowPickHeader,
+} from './pipeline/PipelineRowPickCell';
+import {
+  PIPELINE_CELL_FIRST,
+  PIPELINE_CELL_LAST,
+  PIPELINE_CELL_MID,
+  PIPELINE_CELL_STYLE,
+  PIPELINE_TABLE_CLASS,
+  PIPELINE_THEAD_CLASS,
+  pipelineRowClassName,
+} from './pipeline/pipelineUi';
+import { loadPipelineFilters, savePipelineFilters } from './pipeline/pipelineFilterPersist';
+import type { PipelineViewAs } from '../lib/resolvePipelineIdentity';
 import {
   isPastMeetingDate,
   matchesQuickFilter,
@@ -179,9 +201,6 @@ type CasePipelineRow = {
   lead_type: 'new' | 'legacy';
   nav_id: string;
 };
-
-/** Inline so shared `.table` / theme rules can't tint the row cards. */
-const ROW_CELL_STYLE: React.CSSProperties = { backgroundColor: '#ffffff' };
 
 const STATUS_FILTER_OPTIONS: MultiSelectOption[] = [
   { id: 'active', label: 'Active' },
@@ -576,6 +595,7 @@ function mapLegacyLead(lead: any, ctx: PipelineContext): CasePipelineRow | null 
 }
 
 type PipelineSnapshot = {
+  identityKey: string;
   rows: CasePipelineRow[];
   categoryOptions: MultiSelectOption[];
   tagOptions: MultiSelectOption[];
@@ -585,7 +605,7 @@ type PipelineSnapshot = {
 };
 
 /** Bump when the row shape changes so an old in-memory snapshot is discarded. */
-const PIPELINE_CACHE_VERSION = 7;
+const PIPELINE_CACHE_VERSION = 8;
 const PIPELINE_STALE_MS = 5 * 60 * 1000;
 
 /**
@@ -622,8 +642,8 @@ const DEFAULT_FILTERS: PipelineFilterState = {
   quickFilter: null,
 };
 
-/** Filters live at module scope too, so leaving and returning keeps the current view. */
-let pipelineFilters: PipelineFilterState = { ...DEFAULT_FILTERS };
+/** Filters live at module scope and in sessionStorage so leaving and returning keeps the current view. */
+let pipelineFilters: PipelineFilterState = loadPipelineFilters('case', DEFAULT_FILTERS);
 
 type MultiSelectOption = { id: string; label: string };
 
@@ -903,16 +923,29 @@ export type CasePipelineViewProps = {
   withPageChrome?: boolean;
   /** Lets a host page label its own tabs with the per-role row counts. */
   onCountsChange?: (counts: { manager: number; helper: number }) => void;
-};
+  /** Superuser viewing another employee’s pipeline. */
+  viewAs?: PipelineViewAs | null;
+} & PipelineLeadSelectProps;
 
 const CasePipelineView: React.FC<CasePipelineViewProps> = ({
   roleTab: controlledRoleTab,
   showHeader = true,
   withPageChrome = true,
   onCountsChange,
+  viewAs = null,
+  selectedLeadId = null,
+  selectedLeadIds,
+  picking = false,
+  multiSelect = false,
+  onSelectLead,
+  refreshToken = 0,
 }) => {
   const navigate = useNavigate();
-  const initialSnapshot = snapshotStore.get();
+  const initialSnapshot = (() => {
+    const snapshot = snapshotStore.get();
+    if (!snapshot || snapshot.identityKey !== pipelineViewIdentityKey(viewAs)) return null;
+    return snapshot;
+  })();
   const [uncontrolledRoleTab, setUncontrolledRoleTab] = useState<RoleTab>(
     () => pipelineFilters.roleTab,
   );
@@ -985,30 +1018,41 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
         return;
       }
 
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select(
-          `
-          id,
-          employee_id,
-          tenants_employee!employee_id(
+      let userDbId: string | null = null;
+      let userEmployeeId: number | string | null = null;
+      let userDisplayName: string | null = null;
+
+      if (viewAs?.employeeId) {
+        userDbId = viewAs.userId;
+        userEmployeeId = viewAs.employeeId;
+        userDisplayName = viewAs.displayName || viewAs.fullName;
+      } else {
+        const { data: userData, error: userError } = await supabase
+          .from('users')
+          .select(
+            `
             id,
-            display_name
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `,
           )
-        `,
-        )
-        .eq('auth_id', user.id)
-        .maybeSingle();
+          .eq('auth_id', user.id)
+          .maybeSingle();
 
-      if (userError) throw userError;
+        if (userError) throw userError;
 
-      const userDbId = userData?.id ? String(userData.id) : null;
+        userDbId = userData?.id ? String(userData.id) : null;
+        userEmployeeId = userData?.employee_id ?? null;
+        const empJoin = userData?.tenants_employee as any;
+        userDisplayName = Array.isArray(empJoin)
+          ? empJoin[0]?.display_name || null
+          : empJoin?.display_name || null;
+      }
+
       setCurrentUserDbId(userDbId);
-      const userEmployeeId = userData?.employee_id ?? null;
-      const empJoin = userData?.tenants_employee as any;
-      const userDisplayName = Array.isArray(empJoin)
-        ? empJoin[0]?.display_name || null
-        : empJoin?.display_name || null;
 
       if (!userEmployeeId && !userDisplayName) {
         setError('No employee profile is linked to your account.');
@@ -1322,6 +1366,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
       });
 
       snapshotStore.set({
+        identityKey: pipelineViewIdentityKey(viewAs),
         rows: mapped,
         categoryOptions: categoryOpts,
         tagOptions: tagOpts,
@@ -1356,18 +1401,21 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [setRows]);
+  }, [setRows, viewAs]);
 
   useEffect(() => {
-    if (!snapshotStore.get()) {
-      void loadData();
+    const snapshot = snapshotStore.get();
+    if (snapshot && snapshot.identityKey === pipelineViewIdentityKey(viewAs)) {
+      void loadData({ silent: true });
       return;
     }
-    // Paint instantly from the snapshot. Only refetch when it has aged out: remounting on every
-    // tab switch would otherwise re-run the whole query, and realtime keeps rows patched while
-    // this view is mounted.
-    if (snapshotStore.isStale(PIPELINE_STALE_MS)) void loadData({ silent: true });
-  }, [loadData]);
+    void loadData();
+  }, [loadData, viewAs]);
+
+  useEffect(() => {
+    if (!refreshToken) return;
+    void loadData({ silent: true });
+  }, [refreshToken, loadData]);
 
   // Same reasoning for a tab that sat in the background with the socket idle.
   useRevalidateOnVisible({
@@ -1730,6 +1778,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
       sortDirection,
       quickFilter,
     };
+    savePipelineFilters('case', pipelineFilters);
   }, [
     roleTab,
     search,
@@ -2078,19 +2127,6 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
     );
   };
 
-  const followUpTone = (value: string | null): string => {
-    const ms = parseDateMs(value);
-    if (ms == null) return 'bg-gray-100 text-gray-500';
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const day = new Date(ms);
-    day.setHours(0, 0, 0, 0);
-    const diff = Math.ceil((day.getTime() - today.getTime()) / 86400000);
-    if (diff < 0) return 'bg-red-100 text-red-700';
-    if (diff === 0) return 'bg-emerald-100 text-emerald-700';
-    return 'bg-green-100 text-green-700';
-  };
-
   const todayKey = localTodayYmd();
 
   return (
@@ -2229,16 +2265,20 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
             <div className="rounded-xl border border-red-200 bg-white px-4 py-6 text-center text-sm text-red-600">
               {error}
             </div>
-          ) : loading ? (
+          ) : loading && rows.length === 0 ? (
             <div className="flex items-center justify-center py-20">
               <span className="loading loading-spinner loading-lg text-primary" />
             </div>
           ) : (
             <div className="w-full overflow-x-auto">
-              <table className="w-full border-separate border-spacing-y-2 text-sm">
-                <thead>
-                  <tr className="text-left text-sm uppercase tracking-wide text-gray-500">
+              <table className={PIPELINE_TABLE_CLASS}>
+                <thead className={PIPELINE_THEAD_CLASS}>
+                  <tr className="text-left">
+                    <PipelineRowPickHeader visible={picking} />
                     <th className="px-4 py-2 font-semibold">Lead</th>
+                    <th className="px-4 py-2 font-semibold">
+                      <SortHeader column="follow_up">Follow up</SortHeader>
+                    </th>
                     <th className="px-4 py-2 font-semibold">
                       <SortHeader column="created_at">Date created</SortHeader>
                     </th>
@@ -2259,21 +2299,17 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                     <th className="px-4 py-2 font-semibold">
                       <SortHeader column="next_meeting">Meeting</SortHeader>
                     </th>
-                    <th className="px-4 py-2 font-semibold">
-                      <SortHeader column="follow_up">Follow up</SortHeader>
-                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredRows.length === 0 ? (
                     <tr>
-                      <td colSpan={12}>
-                        <div
-                          className="rounded-xl bg-white px-4 py-12 text-center text-sm text-gray-500 shadow-sm"
-                          style={ROW_CELL_STYLE}
-                        >
-                          No leads match your filters.
-                        </div>
+                      <td
+                        colSpan={12 + (picking ? 1 : 0)}
+                        className="bg-white px-4 py-12 text-center text-sm text-gray-500"
+                        style={PIPELINE_CELL_STYLE}
+                      >
+                        No leads match your filters.
                       </td>
                     </tr>
                   ) : (
@@ -2285,15 +2321,57 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                       return (
                         <tr
                           key={row.id}
-                          className="cursor-pointer transition hover:-translate-y-[1px]"
-                          onClick={(e) => openLeadFromRowClick(e, row.nav_id, navigate)}
+                          className={pipelineRowClassName(isPipelineLeadPicked(row.id, selectedLeadId, selectedLeadIds))}
+                          onClick={(e) =>
+                            handlePipelineRowPick(
+                              e,
+                              toPipelineActionLead({
+                                id: row.id,
+                                navId: row.nav_id,
+                                client_name: row.client_name,
+                                lead_number: row.lead_number,
+                                phone: row.phone,
+                                mobile: row.mobile,
+                                email: row.email,
+                                lead_type: row.lead_type,
+                                created_at: row.created_at,
+                                stage: row.stage_id,
+                                follow_up: row.follow_up,
+                              }),
+                              navigate,
+                              { multiSelect, onSelectLead },
+                            )
+                          }
                           onAuxClick={(e) => {
                             if (e.button === 1) openLeadFromRowClick(e, row.nav_id, navigate);
                           }}
                         >
+                          <PipelineRowPickCell
+                            visible={picking}
+                            selected={isPipelineLeadPicked(row.id, selectedLeadId, selectedLeadIds)}
+                            name={row.client_name || row.lead_number}
+                            onPick={(e) =>
+                              onSelectLead?.(
+                                toPipelineActionLead({
+                                  id: row.id,
+                                  navId: row.nav_id,
+                                  client_name: row.client_name,
+                                  lead_number: row.lead_number,
+                                  phone: row.phone,
+                                  mobile: row.mobile,
+                                  email: row.email,
+                                  lead_type: row.lead_type,
+                                  created_at: row.created_at,
+                                  stage: row.stage_id,
+                                  follow_up: row.follow_up,
+                                }),
+                                e,
+                              )
+                            }
+                          />
                           <td
-                            className="rounded-l-xl border border-r-0 border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_FIRST}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             <div className="min-w-0">
                               <p className="flex items-center gap-2 text-sm font-semibold text-gray-900">
@@ -2304,23 +2382,34 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                                   </span>
                                 ) : null}
                               </p>
-                              <p
-                                className="line-clamp-3 max-w-[11rem] break-words text-sm leading-snug text-gray-600"
+                              <button
+                                type="button"
+                                className="line-clamp-3 max-w-[11rem] break-words text-left text-sm leading-snug text-gray-600 hover:underline"
                                 title={row.client_name}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openLeadFromRowClick(e, row.nav_id, navigate);
+                                }}
                               >
                                 {row.client_name || '—'}
-                              </p>
+                              </button>
                             </div>
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 text-sm text-gray-700 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_MID}
+                            style={PIPELINE_CELL_STYLE}
+                          >
+                            <PipelineFollowUpButton date={row.follow_up} onClick={(e) => openFollowUpModal(row, e)} />
+                          </td>
+                          <td
+                            className={`${PIPELINE_CELL_MID} text-sm text-gray-700`}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             {formatDisplayDate(row.created_at)}
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_MID}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             {row.stage_id ? (
                               <span
@@ -2338,8 +2427,8 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                             )}
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_MID}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             <span
                               className="block max-w-[11rem] break-words text-sm leading-snug text-gray-700 line-clamp-2"
@@ -2349,28 +2438,28 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                             </span>
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_MID}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             <CloserCell name={row.closer_name} photoUrl={row.closer_photo} />
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 text-sm font-semibold tabular-nums text-gray-900 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={`${PIPELINE_CELL_MID} text-sm font-semibold tabular-nums text-gray-900`}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             {row.value_display}
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 text-sm shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={`${PIPELINE_CELL_MID} text-sm`}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             <span className={`font-bold ${probabilityTone(row.probability)}`}>
                               {row.probability != null ? `${row.probability}%` : '—'}
                             </span>
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_MID}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             {row.tags.length === 0 ? (
                               <span className="text-sm text-gray-400">—</span>
@@ -2384,8 +2473,8 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                             )}
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_MID}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             <button
                               type="button"
@@ -2404,8 +2493,8 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                             </button>
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_MID}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             {/* Fixed-width name so the business-hours dot lines up down the column */}
                             <div className="flex items-center gap-1.5">
@@ -2438,8 +2527,8 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                             </div>
                           </td>
                           <td
-                            className="border-y border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
+                            className={PIPELINE_CELL_LAST}
+                            style={PIPELINE_CELL_STYLE}
                           >
                             {row.next_meeting ? (
                               <span
@@ -2454,24 +2543,6 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                             ) : (
                               <span className="text-sm text-gray-400">—</span>
                             )}
-                          </td>
-                          <td
-                            className="rounded-r-xl border border-l-0 border-gray-100 bg-white px-4 py-3.5 shadow-sm"
-                            style={ROW_CELL_STYLE}
-                          >
-                            <button
-                              type="button"
-                              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition hover:ring-2 hover:ring-primary/20 ${
-                                row.follow_up
-                                  ? followUpTone(row.follow_up)
-                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                              }`}
-                              title="Edit your follow-up date"
-                              onClick={(e) => openFollowUpModal(row, e)}
-                            >
-                              <CalendarDaysIcon className="h-3.5 w-3.5 shrink-0 opacity-80" />
-                              {row.follow_up ? formatDisplayDate(row.follow_up) : 'Set date'}
-                            </button>
                           </td>
                         </tr>
                       );
@@ -2496,20 +2567,16 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
             aria-modal="true"
             aria-labelledby="case-pipeline-followup-title"
           >
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start justify-between gap-4">
               <div>
                 <h3
                   id="case-pipeline-followup-title"
-                  className="text-lg font-bold text-gray-900"
+                  className="text-lg font-semibold text-gray-900"
                 >
                   Follow-up date
                 </h3>
                 <p className="mt-1 text-sm text-gray-500">
-                  #{editingFollowUp.lead_number}
-                  {editingFollowUp.client_name ? ` · ${editingFollowUp.client_name}` : ''}
-                </p>
-                <p className="mt-1 text-xs text-gray-400">
-                  Saved only for your account
+                  {editingFollowUp.lead_number} · {editingFollowUp.client_name || '—'}
                 </p>
               </div>
               <button
@@ -2523,34 +2590,22 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
               </button>
             </div>
 
-            <div className="mt-5">
-              <label
-                className="mb-1.5 block text-sm font-medium text-gray-700"
-                htmlFor="case-pipeline-followup-date"
-              >
-                Date
-              </label>
-              <input
-                id="case-pipeline-followup-date"
-                type="date"
-                className="input input-bordered w-full rounded-xl"
-                value={followUpDraft}
-                onChange={(e) => setFollowUpDraft(e.target.value)}
-                disabled={savingFollowUp}
-              />
-            </div>
+            <label className="mt-5 block text-sm font-medium text-gray-700" htmlFor="case-pipeline-followup-date">
+              Your follow-up date
+            </label>
+            <input
+              id="case-pipeline-followup-date"
+              type="date"
+              className="input input-bordered mt-2 w-full"
+              value={followUpDraft}
+              onChange={(e) => setFollowUpDraft(e.target.value)}
+              disabled={savingFollowUp}
+            />
+            <p className="mt-2 text-xs text-gray-400">
+              Leave empty and save to clear the date. Only you see this follow-up.
+            </p>
 
-            <div className="mt-6 flex flex-wrap justify-end gap-2">
-              {editingFollowUp.follow_up || followUpDraft ? (
-                <button
-                  type="button"
-                  className="btn btn-ghost rounded-full"
-                  disabled={savingFollowUp}
-                  onClick={() => setFollowUpDraft('')}
-                >
-                  Clear
-                </button>
-              ) : null}
+            <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
                 className="btn btn-ghost rounded-full"
@@ -2565,14 +2620,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                 onClick={() => void saveFollowUpDate()}
                 disabled={savingFollowUp}
               >
-                {savingFollowUp ? (
-                  <>
-                    <span className="loading loading-spinner loading-sm" />
-                    Saving…
-                  </>
-                ) : (
-                  'Save'
-                )}
+                {savingFollowUp ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
               </button>
             </div>
           </div>

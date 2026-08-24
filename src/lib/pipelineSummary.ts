@@ -59,6 +59,15 @@ export function lostInteractionCutoffMs(): number {
   return startOfTodayMs() - LOST_INTERACTION_DAYS * 86400000;
 }
 
+/** True when the follow-up date falls on the local calendar day. */
+export function isTodayFollowUp(row: PipelineSummaryRow, todayKey: string): boolean {
+  const ms = parseDateMs(row.follow_up);
+  if (ms == null) return false;
+  const d = new Date(ms);
+  const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return ymd === todayKey;
+}
+
 export function isMissedFollowUp(row: PipelineSummaryRow, todayMs: number): boolean {
   const ms = parseDateMs(row.follow_up);
   if (ms == null) return false;
