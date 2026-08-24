@@ -578,16 +578,25 @@ export async function fetchAllUnavailabilitiesInRange(
   dateFrom: string,
   dateTo: string,
 ): Promise<EmployeeUnavailabilityEntry[]> {
-  const { data, error } = await supabase
-    .from('employee_unavailability_reasons')
-    .select(UNAVAILABILITY_SELECT)
-    .lte('start_date', dateTo)
-    .or(`end_date.gte.${dateFrom},end_date.is.null`)
-    .order('start_date', { ascending: true });
+  const PAGE = 1000;
+  const all: unknown[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('employee_unavailability_reasons')
+      .select(UNAVAILABILITY_SELECT)
+      .lte('start_date', dateTo)
+      .or(`end_date.gte.${dateFrom},end_date.is.null`)
+      .order('start_date', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
 
-  if (error) throw error;
+    if (error) throw error;
+    const batch = data || [];
+    all.push(...batch);
+    if (batch.length < PAGE) break;
+  }
 
-  return mapUnavailabilityRows(data).filter((row) =>
+  return mapUnavailabilityRows(all).filter((row) =>
     rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
   );
 }

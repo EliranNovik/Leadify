@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
-import { ExclamationTriangleIcon, SparklesIcon } from '@heroicons/react/24/outline';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ExclamationTriangleIcon, SparklesIcon, UserPlusIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-hot-toast';
 import type { Lead } from '../lib/supabase';
 import { buildLeadClientPath } from '../lib/leadClientRoute';
 import {
@@ -8,14 +9,30 @@ import {
   type LeadFollowupResult,
   type LeadFollowupVerdict,
 } from '../lib/leadFollowupAiApi';
-import { getSoftStageBadgeStyle, getStageColour, getStageName, fetchStageNames } from '../lib/stageUtils';
+import { getSoftStageBadgeStyle, getStageColour, getStageName, fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 import MobileBottomSheet from './MobileBottomSheet';
+import { updateLeadStageWithHistory } from '../lib/leadStageManager';
+import type { CombinedLead } from '../lib/legacyLeadsApi';
+import {
+  fetchActiveStaffEmployees,
+  type ActiveStaffEmployee,
+} from '../lib/employeeSalaries';
+import { EmployeeAvatarLabel } from './admin/ActiveEmployeeSelect';
 
 type Props = {
   open: boolean;
   lead: Lead | null;
   onClose: () => void;
+  onResult?: (lead: Lead, result: LeadFollowupResult) => void;
+  onSchedulerAssigned?: (lead: Lead, patch: { scheduler: string; meeting_scheduler_id?: number; stage: number }) => void;
 };
+
+const LOADING_LINES = [
+  'Opening the file',
+  'Reading facts & meetings',
+  'Checking WhatsApp & email',
+  'Scoring the follow-up',
+];
 
 const VERDICT_LABEL: Record<LeadFollowupVerdict, string> = {
   high: 'High chance — follow up',
@@ -30,6 +47,34 @@ const VERDICT_BADGE: Record<LeadFollowupVerdict, string> = {
   low: 'bg-gradient-to-r from-slate-400 to-slate-500',
   not_worth: 'bg-gradient-to-r from-rose-500 to-red-600',
 };
+
+function isEmptyRole(value: unknown): boolean {
+  const s = String(value ?? '').trim();
+  return !s || s === '---' || s === '--' || /^not[_\s-]?assigned$/i.test(s);
+}
+
+function isBeforeSchedulerAssigned(stage: unknown): boolean {
+  if (stage == null || String(stage).trim() === '') return true;
+  const raw = String(stage).trim();
+  if (/^\d+$/.test(raw)) return Number(raw) < 10;
+  if (areStagesEquivalent(raw, 'Created')) return true;
+  const name = getStageName(raw);
+  if (areStagesEquivalent(name, 'Created')) return true;
+  if (areStagesEquivalent(name, 'Scheduler assigned')) return false;
+  return false;
+}
+
+function leadHasScheduler(lead: Lead): boolean {
+  const row = lead as unknown as Record<string, unknown>;
+  if (!isEmptyRole(row.scheduler)) return true;
+  const schedulerId = row.meeting_scheduler_id;
+  if (schedulerId != null && String(schedulerId).trim() !== '' && String(schedulerId) !== '0' && !isEmptyRole(schedulerId)) {
+    return true;
+  }
+  const roles = row.roles as { scheduler?: unknown } | undefined;
+  if (roles && !isEmptyRole(roles.scheduler)) return true;
+  return false;
+}
 
 function formatWhen(value?: string | null) {
   if (!value) return '—';
@@ -120,10 +165,17 @@ function StageBadge({ stage }: { stage: string | number | null | undefined }) {
   );
 }
 
-const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
+const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose, onResult, onSchedulerAssigned }) => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<LeadFollowupResult | null>(null);
+  const [loadingLine, setLoadingLine] = useState(0);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [employees, setEmployees] = useState<ActiveStaffEmployee[]>([]);
+  const [employeesLoading, setEmployeesLoading] = useState(false);
+  const [employeeSearch, setEmployeeSearch] = useState('');
+  const [assigningId, setAssigningId] = useState<number | null>(null);
+  const [assignedName, setAssignedName] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -131,23 +183,111 @@ const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
   }, [open]);
 
   useEffect(() => {
+    if (!loading) {
+      setLoadingLine(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setLoadingLine((prev) => (prev + 1) % LOADING_LINES.length);
+    }, 1600);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
+  useEffect(() => {
     if (!open || !lead) {
       setResult(null);
       setLoading(false);
+      setPickerOpen(false);
+      setEmployeeSearch('');
+      setAssignedName(null);
+      setAssigningId(null);
       return;
     }
+    const currentLead = lead;
     let cancelled = false;
     setLoading(true);
     setResult(null);
-    void fetchLeadFollowupVerdict(lead).then((next) => {
+    setPickerOpen(false);
+    setEmployeeSearch('');
+    setAssignedName(null);
+    void fetchLeadFollowupVerdict(currentLead).then((next) => {
       if (cancelled) return;
       setResult(next);
       setLoading(false);
+      if (next.success) onResult?.(currentLead, next);
     });
     return () => {
       cancelled = true;
     };
-  }, [open, lead]);
+  }, [open, lead?.id, onResult]);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    if (employees.length > 0) return;
+    let cancelled = false;
+    setEmployeesLoading(true);
+    void fetchActiveStaffEmployees()
+      .then((rows) => {
+        if (!cancelled) setEmployees(rows);
+      })
+      .catch((err) => {
+        console.error('Failed to load employees', err);
+        if (!cancelled) {
+          setEmployees([]);
+          toast.error('Could not load employees');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setEmployeesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pickerOpen, employees.length]);
+
+  const filteredEmployees = useMemo(() => {
+    const term = employeeSearch.trim().toLowerCase();
+    if (!term) return employees;
+    return employees.filter((emp) => emp.display_name.toLowerCase().includes(term));
+  }, [employees, employeeSearch]);
+
+  const canAssignScheduler = Boolean(
+    lead && isBeforeSchedulerAssigned(lead.stage) && !leadHasScheduler(lead) && !assignedName,
+  );
+
+  const assignScheduler = async (employee: ActiveStaffEmployee) => {
+    if (!lead || assigningId != null) return;
+    const row = lead as unknown as Record<string, unknown>;
+    const isLegacy = row.lead_type === 'legacy' || String(lead.id ?? '').startsWith('legacy_');
+    setAssigningId(employee.id);
+    try {
+      await updateLeadStageWithHistory({
+        lead: {
+          ...(lead as unknown as CombinedLead),
+          id: String(lead.id),
+          lead_type: isLegacy ? 'legacy' : 'new',
+        },
+        stage: 10,
+        additionalFields: isLegacy
+          ? { meeting_scheduler_id: employee.id }
+          : { scheduler: employee.display_name },
+      });
+      setAssignedName(employee.display_name);
+      setPickerOpen(false);
+      setEmployeeSearch('');
+      onSchedulerAssigned?.(lead, {
+        scheduler: employee.display_name,
+        meeting_scheduler_id: employee.id,
+        stage: 10,
+      });
+      toast.success(`Assigned ${employee.display_name} as scheduler`);
+    } catch (err) {
+      console.error('Failed to assign scheduler', err);
+      toast.error('Could not assign scheduler');
+    } finally {
+      setAssigningId(null);
+    }
+  };
 
   const anyLead = (lead || {}) as Record<string, unknown>;
   const title = String(anyLead.name || result?.leadName || 'Lead');
@@ -155,6 +295,72 @@ const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
   const clientPath = lead ? buildLeadClientPath(lead) : null;
 
   const moneyCurrency = result?.stats.balanceCurrency || result?.stats.proposalCurrency;
+
+  const assignSchedulerPanel =
+    canAssignScheduler ? (
+      <div className="mt-6">
+        {!pickerOpen ? (
+          <button
+            type="button"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-violet-700"
+            onClick={() => setPickerOpen(true)}
+          >
+            <UserPlusIcon className="h-5 w-5" aria-hidden />
+            Assign scheduler
+          </button>
+        ) : (
+          <div className="rounded-2xl border border-neutral-200 bg-white p-3">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-neutral-400">
+              Assign scheduler
+            </p>
+            <input
+              type="text"
+              value={employeeSearch}
+              onChange={(e) => setEmployeeSearch(e.target.value)}
+              placeholder="Search employees…"
+              className="h-10 w-full rounded-xl border border-neutral-200 bg-neutral-50 px-3 text-sm text-neutral-900 placeholder:text-neutral-400"
+              autoFocus
+            />
+            <div className="mt-2 max-h-56 overflow-y-auto rounded-xl border border-neutral-100">
+              {employeesLoading ? (
+                <p className="px-3 py-4 text-sm text-neutral-500">Loading employees…</p>
+              ) : filteredEmployees.length === 0 ? (
+                <p className="px-3 py-4 text-sm text-neutral-500">No employees match this search.</p>
+              ) : (
+                filteredEmployees.map((emp) => (
+                  <button
+                    key={emp.id}
+                    type="button"
+                    disabled={assigningId != null}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-neutral-50 disabled:opacity-60"
+                    onClick={() => void assignScheduler(emp)}
+                  >
+                    <EmployeeAvatarLabel employee={emp} size="sm" />
+                    {assigningId === emp.id ? (
+                      <span className="ml-auto text-xs text-violet-600">Saving…</span>
+                    ) : null}
+                  </button>
+                ))
+              )}
+            </div>
+            <button
+              type="button"
+              className="mt-2 w-full rounded-xl px-3 py-2 text-sm text-neutral-500 hover:bg-neutral-50"
+              onClick={() => {
+                setPickerOpen(false);
+                setEmployeeSearch('');
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+    ) : assignedName ? (
+      <p className="mt-6 rounded-2xl bg-violet-50 px-4 py-3 text-sm font-medium text-violet-800">
+        Scheduler: {assignedName}
+      </p>
+    ) : null;
 
   return (
     <MobileBottomSheet
@@ -199,14 +405,73 @@ const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
       sheetClassName="md:max-w-[min(100%,26rem)] md:shadow-xl md:!border-l md:!border-neutral-200 md:!bg-white"
     >
       {loading ? (
-        <div className="flex flex-col items-center justify-center gap-3 py-16">
-          <span className="loading loading-spinner loading-lg text-neutral-400" />
-          <p className="text-sm text-neutral-500">Reading this lead…</p>
+        <div className="flex flex-col items-center justify-center px-4 py-20">
+          <div className="followup-ai-loader relative mb-7 flex items-center justify-center">
+            <span className="followup-ai-ring-outer" aria-hidden />
+            <span className="followup-ai-ring-inner" aria-hidden />
+            <span className="followup-ai-glow" aria-hidden />
+            <SparklesIcon className="followup-ai-sparkle relative z-10 h-8 w-8 text-violet-600" aria-hidden />
+          </div>
+          <p className="bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-500 bg-clip-text text-lg font-semibold tracking-tight text-transparent">
+            Reviewing this lead
+          </p>
+          <p className="mt-2 text-sm text-neutral-500 transition-opacity duration-500">
+            {LOADING_LINES[loadingLine]}
+          </p>
+          <style>{`
+            @keyframes followup-ai-spin {
+              to { transform: rotate(360deg); }
+            }
+            @keyframes followup-ai-spin-rev {
+              to { transform: rotate(-360deg); }
+            }
+            @keyframes followup-ai-pulse {
+              0%, 100% { transform: scale(0.92); opacity: 0.4; }
+              50% { transform: scale(1.06); opacity: 0.9; }
+            }
+            @keyframes followup-ai-sparkle {
+              0%, 100% { transform: scale(1) rotate(0deg); }
+              50% { transform: scale(1.12) rotate(8deg); }
+            }
+            .followup-ai-loader {
+              width: 5.5rem;
+              height: 5.5rem;
+            }
+            .followup-ai-ring-outer {
+              position: absolute;
+              inset: 0;
+              border-radius: 9999px;
+              background: conic-gradient(from 0deg, #e879f9, #8b5cf6, #6366f1, #38bdf8, #e879f9);
+              -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+              mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+              animation: followup-ai-spin 1.15s linear infinite;
+            }
+            .followup-ai-ring-inner {
+              position: absolute;
+              inset: 12px;
+              border-radius: 9999px;
+              border: 2px solid transparent;
+              border-top-color: #c4b5fd;
+              border-right-color: #67e8f9;
+              animation: followup-ai-spin-rev 0.9s linear infinite;
+            }
+            .followup-ai-glow {
+              position: absolute;
+              inset: 20px;
+              border-radius: 9999px;
+              background: radial-gradient(circle, rgba(167,139,250,0.5) 0%, rgba(56,189,248,0.18) 55%, transparent 72%);
+              animation: followup-ai-pulse 2s ease-in-out infinite;
+            }
+            .followup-ai-sparkle {
+              animation: followup-ai-sparkle 1.7s ease-in-out infinite;
+            }
+          `}</style>
         </div>
       ) : result && !result.success ? (
         <div className="flex flex-col items-center gap-3 py-12 text-center">
           <ExclamationTriangleIcon className="h-8 w-8 text-neutral-400" />
           <p className="text-sm text-neutral-600">{result.error || 'Could not generate a summary.'}</p>
+          <div className="w-full text-left">{assignSchedulerPanel}</div>
         </div>
       ) : result ? (
         <div className="flex flex-col">
@@ -234,6 +499,20 @@ const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
             </div>
           ) : null}
 
+          {result.caseHighlights.length > 0 ? (
+            <div className="mt-6 rounded-2xl bg-violet-50 px-4 py-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-violet-400">Case</p>
+              <ul className="mt-2 space-y-2">
+                {result.caseHighlights.map((item, index) => (
+                  <li key={`${index}-${item.slice(0, 24)}`} className="flex gap-2.5 text-sm leading-relaxed text-violet-950/80">
+                    <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-violet-300" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           {result.nextAction ? (
             <div className="mt-6 rounded-2xl bg-neutral-100 px-4 py-4">
               <p className="text-xs font-medium uppercase tracking-wide text-neutral-400">Next step</p>
@@ -242,6 +521,8 @@ const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
               </p>
             </div>
           ) : null}
+
+          {assignSchedulerPanel}
 
           {result.why.length > 0 ? (
             <div className="mt-6 rounded-2xl bg-emerald-50 px-4 py-4">
@@ -286,6 +567,16 @@ const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
                 label="Last contact"
                 value={`${result.stats.lastContactChannel || '—'} · ${formatWhen(result.stats.lastContactAt)}`}
               />
+              {result.stats.lastMessagePreview ? (
+                <StatRow
+                  label="Last message"
+                  value={
+                    result.stats.lastMessagePreview.length > 160
+                      ? `${result.stats.lastMessagePreview.slice(0, 160)}…`
+                      : result.stats.lastMessagePreview
+                  }
+                />
+              ) : null}
               <StatRow
                 label="Days quiet"
                 value={result.stats.daysSinceContact != null ? result.stats.daysSinceContact : '—'}
@@ -294,7 +585,7 @@ const LeadFollowupAiDrawer: React.FC<Props> = ({ open, lead, onClose }) => {
                 label="In / out"
                 value={`${result.stats.inboundCount ?? 0} / ${result.stats.outboundCount ?? 0}`}
               />
-              <StatRow label="Stage" value={<StageBadge stage={result.stats.stage} />} />
+              <StatRow label="Stage" value={<StageBadge stage={assignedName ? 10 : result.stats.stage} />} />
               {result.stats.expertExam ? (
                 <StatRow label="Expert exam" value={result.stats.expertExam} />
               ) : null}

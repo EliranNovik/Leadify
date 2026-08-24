@@ -870,8 +870,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   }, [userId]);
 
   useEffect(() => {
-    refreshMailboxStatus();
-  }, [refreshMailboxStatus]);
+    if (!isOpen) return;
+    void refreshMailboxStatus();
+  }, [isOpen, refreshMailboxStatus]);
 
   // Fetch employees for autocomplete
   useEffect(() => {

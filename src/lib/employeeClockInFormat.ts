@@ -145,8 +145,10 @@ export function countMissingMonthEntryDays(
 }
 
 export function dateRangeToIsoBounds(from: string, to: string): { start: string; end: string } {
-  const start = new Date(`${from}T00:00:00`);
-  const end = new Date(`${to}T23:59:59.999`);
+  const start = parseDateKeyLocal(from);
+  start.setHours(0, 0, 0, 0);
+  const end = parseDateKeyLocal(to);
+  end.setHours(23, 59, 59, 999);
   return { start: start.toISOString(), end: end.toISOString() };
 }
 

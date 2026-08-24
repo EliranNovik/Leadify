@@ -27,6 +27,8 @@ export type LeadFollowupStats = {
   nextMeetingDate?: string | null;
   nextMeetingTime?: string | null;
   nextMeetingStatus?: string | null;
+  lastMessagePreview?: string | null;
+  highlights?: string[];
 };
 
 export type LeadFollowupResult = {
@@ -40,6 +42,7 @@ export type LeadFollowupResult = {
   score: number;
   headline: string;
   summary: string;
+  caseHighlights: string[];
   why: string[];
   nextAction: string;
   risks: string[];
@@ -76,6 +79,7 @@ export async function fetchLeadFollowupVerdict(lead: Lead): Promise<LeadFollowup
       score: 0,
       headline: '',
       summary: '',
+      caseHighlights: [],
       why: [],
       nextAction: '',
       risks: [],
@@ -105,6 +109,7 @@ export async function fetchLeadFollowupVerdict(lead: Lead): Promise<LeadFollowup
       score: 0,
       headline: '',
       summary: '',
+      caseHighlights: [],
       why: [],
       nextAction: '',
       risks: [],
@@ -120,6 +125,7 @@ export async function fetchLeadFollowupVerdict(lead: Lead): Promise<LeadFollowup
       score: 0,
       headline: '',
       summary: '',
+      caseHighlights: [],
       why: [],
       nextAction: '',
       risks: [],
@@ -144,6 +150,15 @@ export async function fetchLeadFollowupVerdict(lead: Lead): Promise<LeadFollowup
     score: Number(data?.score) || 0,
     headline: withStageNames(String(data?.headline || '')),
     summary: withStageNames(String(data?.summary || '')),
+    caseHighlights: (() => {
+      const fromTop = Array.isArray(data?.caseHighlights) ? data.caseHighlights : null;
+      const fromStats =
+        data?.stats && typeof data.stats === 'object' && Array.isArray((data.stats as { highlights?: unknown }).highlights)
+          ? (data.stats as { highlights: unknown[] }).highlights
+          : null;
+      const raw = fromTop || fromStats || [];
+      return raw.map((item: unknown) => withStageNames(String(item))).filter(Boolean);
+    })(),
     why: Array.isArray(data?.why) ? data.why.map((item: unknown) => withStageNames(String(item))) : [],
     nextAction: withStageNames(String(data?.nextAction || '')),
     risks: Array.isArray(data?.risks) ? data.risks.map((item: unknown) => withStageNames(String(item))) : [],
@@ -152,6 +167,79 @@ export async function fetchLeadFollowupVerdict(lead: Lead): Promise<LeadFollowup
 }
 
 const BEST_FOLLOWUP_CAP = 40;
+const CACHE_SCORE_CHUNK = 250;
+
+export type LeadFollowupCachedScore = {
+  score: number;
+  verdict: LeadFollowupVerdict | null;
+};
+
+export function followupCacheIdForLead(lead: Lead): string | null {
+  return resolveLeadFollowupId(lead)?.leadId ?? null;
+}
+
+export async function fetchLeadFollowupCacheScores(
+  leads: Lead[],
+): Promise<Map<string, LeadFollowupCachedScore>> {
+  const map = new Map<string, LeadFollowupCachedScore>();
+  const ids = Array.from(
+    new Set(leads.map(followupCacheIdForLead).filter((id): id is string => Boolean(id))),
+  );
+  if (ids.length === 0) return map;
+
+  for (let i = 0; i < ids.length; i += CACHE_SCORE_CHUNK) {
+    const chunk = ids.slice(i, i + CACHE_SCORE_CHUNK);
+    const { data, error } = await supabase
+      .from('lead_followup_ai_cache')
+      .select('lead_id, score, verdict')
+      .in('lead_id', chunk);
+    if (error) {
+      console.warn('[leadFollowup] cache scores', error.message);
+      break;
+    }
+    for (const row of data || []) {
+      const id = String((row as { lead_id?: string }).lead_id || '');
+      if (!id) continue;
+      const verdictRaw = String((row as { verdict?: string }).verdict || '').toLowerCase();
+      const verdict: LeadFollowupVerdict | null = ['high', 'medium', 'low', 'not_worth'].includes(
+        verdictRaw,
+      )
+        ? (verdictRaw as LeadFollowupVerdict)
+        : null;
+      map.set(id, {
+        score: Number((row as { score?: number }).score) || 0,
+        verdict,
+      });
+    }
+  }
+
+  return map;
+}
+
+/** Saved AI score when present; otherwise the cheap search-result ranking. */
+export function followupRankScore(
+  lead: Lead,
+  cache: Map<string, LeadFollowupCachedScore>,
+): number {
+  const id = followupCacheIdForLead(lead);
+  if (id) {
+    const cached = cache.get(id);
+    if (cached) return cached.score;
+  }
+  return heuristicFollowupScore(lead);
+}
+
+/** Cached AI reviews stay above unscored leads, then highest score first. */
+export function followupSortKey(
+  lead: Lead,
+  cache: Map<string, LeadFollowupCachedScore>,
+): number {
+  const id = followupCacheIdForLead(lead);
+  if (id && cache.has(id)) {
+    return 1000 + (cache.get(id)?.score ?? 0);
+  }
+  return heuristicFollowupScore(lead);
+}
 
 function numberish(value: unknown): number {
   const n = Number(String(value ?? '').replace(/[^\d.-]/g, ''));

@@ -76,6 +76,23 @@ const CLOCK_IN_REPORT_SELECT = `
   id, employee_id, clock_in_time, clock_out_time, manually, approved, declined
 `;
 
+/** PostgREST returns at most 1000 rows unless we page with .range(). */
+const CLOCK_IN_PAGE_SIZE = 1000;
+
+async function fetchClockInRowsPaged<T>(
+  runPage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+): Promise<T[]> {
+  const all: T[] = [];
+  for (let from = 0; ; from += CLOCK_IN_PAGE_SIZE) {
+    const { data, error } = await runPage(from, from + CLOCK_IN_PAGE_SIZE - 1);
+    if (error) throw error;
+    const batch = data || [];
+    all.push(...batch);
+    if (batch.length < CLOCK_IN_PAGE_SIZE) break;
+  }
+  return all;
+}
+
 export function computeWorkingHoursTotals(
   records: ClockInExportRecord[],
 ): EmployeeWorkingHoursTotals {
@@ -98,16 +115,17 @@ export async function fetchEmployeeClockInRecords(
   dateTo: string,
 ): Promise<ClockInExportRecord[]> {
   const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
-  const { data, error } = await supabase
-    .from('employee_clock_in')
-    .select(CLOCK_IN_DETAIL_SELECT)
-    .eq('employee_id', employeeId)
-    .gte('clock_in_time', start)
-    .lte('clock_in_time', end)
-    .order('clock_in_time', { ascending: false });
-
-  if (error) throw error;
-  return (data as ClockInExportRecord[]) || [];
+  return fetchClockInRowsPaged<ClockInExportRecord>((from, to) =>
+    supabase
+      .from('employee_clock_in')
+      .select(CLOCK_IN_DETAIL_SELECT)
+      .eq('employee_id', employeeId)
+      .gte('clock_in_time', start)
+      .lte('clock_in_time', end)
+      .order('clock_in_time', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 }
 
 export type ClockInWithEmployee = ClockInExportRecord & {
@@ -148,7 +166,7 @@ export type ClockInForAllocationMs = {
 };
 
 const CLOCK_IN_ALLOCATION_MS_SELECT =
-  'employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined';
+  'id, employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined';
 
 /** Paginated clock-in fetch sized for allocation report aggregation. */
 export async function fetchClockInRecordsForAllocationMs(
@@ -156,25 +174,16 @@ export async function fetchClockInRecordsForAllocationMs(
   dateTo: string,
 ): Promise<ClockInForAllocationMs[]> {
   const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
-  const PAGE = 1000;
-  const all: ClockInForAllocationMs[] = [];
-
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
+  return fetchClockInRowsPaged<ClockInForAllocationMs>((from, to) =>
+    supabase
       .from('employee_clock_in')
       .select(CLOCK_IN_ALLOCATION_MS_SELECT)
       .gte('clock_in_time', start)
       .lte('clock_in_time', end)
-      .order('clock_in_time', { ascending: false })
-      .range(from, from + PAGE - 1);
-
-    if (error) throw error;
-    const batch = (data as ClockInForAllocationMs[]) || [];
-    all.push(...batch);
-    if (batch.length < PAGE) break;
-  }
-
-  return all;
+      .order('clock_in_time', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 }
 
 /** All clock-in rows in range, with employee profile for report merging. */
@@ -183,22 +192,23 @@ export async function fetchClockInRecordsInRange(
   dateTo: string,
 ): Promise<ClockInWithEmployee[]> {
   const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
-  const { data, error } = await supabase
-    .from('employee_clock_in')
-    .select(
-      `${CLOCK_IN_DETAIL_SELECT},
-       tenants_employee!employee_id (
-         display_name, photo_url, department_id, min_hours, hour_rate, bonuses_role,
-         lead_time_reporting_enabled, lead_time_reporting_weekdays, lead_time_reporting_excluded_dates,
-         tenant_departement!department_id ( name )
-       )`,
-    )
-    .gte('clock_in_time', start)
-    .lte('clock_in_time', end)
-    .order('clock_in_time', { ascending: false });
-
-  if (error) throw error;
-  return (data as ClockInWithEmployee[]) || [];
+  return fetchClockInRowsPaged<ClockInWithEmployee>((from, to) =>
+    supabase
+      .from('employee_clock_in')
+      .select(
+        `${CLOCK_IN_DETAIL_SELECT},
+         tenants_employee!employee_id (
+           display_name, photo_url, department_id, min_hours, hour_rate, bonuses_role,
+           lead_time_reporting_enabled, lead_time_reporting_weekdays, lead_time_reporting_excluded_dates,
+           tenant_departement!department_id ( name )
+         )`,
+      )
+      .gte('clock_in_time', start)
+      .lte('clock_in_time', end)
+      .order('clock_in_time', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 }
 
 /** Lightweight clock-in fetch for report aggregation (no GPS / employee join). */
@@ -207,15 +217,16 @@ export async function fetchClockInRecordsInRangeForReport(
   dateTo: string,
 ): Promise<ClockInExportRecord[]> {
   const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
-  const { data, error } = await supabase
-    .from('employee_clock_in')
-    .select(CLOCK_IN_REPORT_SELECT)
-    .gte('clock_in_time', start)
-    .lte('clock_in_time', end)
-    .order('clock_in_time', { ascending: false });
-
-  if (error) throw error;
-  return (data as ClockInExportRecord[]) || [];
+  return fetchClockInRowsPaged<ClockInExportRecord>((from, to) =>
+    supabase
+      .from('employee_clock_in')
+      .select(CLOCK_IN_REPORT_SELECT)
+      .gte('clock_in_time', start)
+      .lte('clock_in_time', end)
+      .order('clock_in_time', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
 }
 
 export function groupClockInTotalsByEmployee(

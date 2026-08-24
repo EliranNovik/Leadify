@@ -7,7 +7,7 @@ const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MEETING_SELECT =
-  'id, meeting_date, meeting_time, status, meeting_amount, meeting_currency, meeting_brief, expert_notes, meeting_location, scheduler, expert';
+  'id, meeting_date, meeting_time, status, meeting_amount, meeting_currency, meeting_brief, expert_notes, meeting_summary_notes, meeting_location, scheduler, expert';
 
 const STAGE_FALLBACK: Record<string, string> = {
   '0': 'Created',
@@ -59,6 +59,7 @@ type MeetingRow = {
   meeting_currency?: string | null;
   meeting_brief?: string | null;
   expert_notes?: string | null;
+  meeting_summary_notes?: string | null;
   meeting_location?: string | null;
   scheduler?: string | null;
   expert?: string | null;
@@ -71,17 +72,27 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function clip(raw: unknown, max = 200): string {
+function clip(raw: unknown, max = 400): string {
   const text = String(raw ?? '')
     .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
     .replace(/\s+/g, ' ')
     .trim();
   if (!text) return '';
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
-function clipNote(raw: unknown, max = 600): string {
+function clipNote(raw: unknown, max = 2500): string {
   return clip(raw, max);
+}
+
+function emailBody(row: { body_html?: unknown; body_preview?: unknown }): string {
+  const html = clip(row.body_html, 900);
+  const preview = clip(row.body_preview, 900);
+  return html.length >= preview.length ? html : preview;
 }
 
 function normalizeDirection(raw: unknown): Direction | null {
@@ -144,8 +155,9 @@ function mapMeeting(row: MeetingRow) {
     currency: row.meeting_currency || null,
     scheduler: clip(row.scheduler, 80) || null,
     expert: clip(row.expert, 80) || null,
-    brief: clip(row.meeting_brief, 180) || null,
-    expertNotes: clip(row.expert_notes, 180) || null,
+    brief: clip(row.meeting_brief, 900) || null,
+    expertNotes: clip(row.expert_notes, 900) || null,
+    summaryNotes: clip(row.meeting_summary_notes, 2200) || null,
   };
 }
 
@@ -207,27 +219,27 @@ serve(async (req) => {
           .select('direction, message, sent_at, sender_name')
           .eq('legacy_id', ref.legacyId)
           .order('sent_at', { ascending: false })
-          .limit(15)
+          .limit(20)
       : supabase
           .from('whatsapp_messages')
           .select('direction, message, sent_at, sender_name')
           .eq('lead_id', ref.uuid)
           .order('sent_at', { ascending: false })
-          .limit(15);
+          .limit(20);
 
     const emailQuery = ref.isLegacy
       ? supabase
           .from('emails')
-          .select('direction, subject, body_preview, sent_at')
+          .select('direction, subject, body_preview, body_html, sent_at')
           .eq('legacy_id', ref.legacyId)
           .order('sent_at', { ascending: false })
-          .limit(15)
+          .limit(10)
       : supabase
           .from('emails')
-          .select('direction, subject, body_preview, sent_at')
+          .select('direction, subject, body_preview, body_html, sent_at')
           .eq('client_id', ref.uuid)
           .order('sent_at', { ascending: false })
-          .limit(15);
+          .limit(10);
 
     const callQuery = ref.isLegacy
       ? supabase
@@ -332,7 +344,7 @@ serve(async (req) => {
         channel: 'whatsapp',
         direction: normalizeDirection(row.direction),
         at: row.sent_at || null,
-        preview: clip(row.message),
+        preview: clip(row.message, 500),
       });
     }
     for (const row of emailRes.data || []) {
@@ -340,8 +352,8 @@ serve(async (req) => {
         channel: 'email',
         direction: normalizeDirection(row.direction),
         at: row.sent_at || null,
-        subject: clip(row.subject, 120),
-        preview: clip(row.body_preview),
+        subject: clip(row.subject, 160),
+        preview: emailBody(row),
       });
     }
     for (const row of callRes.data || []) {
@@ -360,7 +372,7 @@ serve(async (req) => {
         channel: 'manual',
         direction: normalizeDirection(row.direction),
         at: row.raw_date || row.cdate || null,
-        preview: clip(row.content || row.description || row.observation || row.kind),
+        preview: clip(row.content || row.description || row.observation || row.kind, 500),
       });
     }
 
@@ -370,7 +382,7 @@ serve(async (req) => {
           channel: 'manual',
           direction: normalizeDirection(item.direction),
           at: String(item.raw_date || item.date || '') || null,
-          preview: clip(item.content || item.observation || item.kind),
+          preview: clip(item.content || item.observation || item.kind, 500),
         });
       }
     }
@@ -407,13 +419,16 @@ serve(async (req) => {
         direction: null,
         at: meetingAt(row),
         preview: clip(
-          `${row.status || 'meeting'} ${row.meeting_location || ''} ${row.meeting_brief || ''}`.trim(),
+          [row.status, row.meeting_location, row.meeting_summary_notes, row.meeting_brief, row.expert_notes]
+            .filter(Boolean)
+            .join(' · '),
+          700,
         ),
       });
     }
 
     interactions.sort(sortByAtDesc);
-    const recent = interactions.slice(0, 18);
+    const recent = interactions.slice(0, 24);
 
     const inbound = recent.filter((i) => i.direction === 'in').length;
     const outbound = recent.filter((i) => i.direction === 'out').length;
@@ -491,9 +506,19 @@ serve(async (req) => {
       followUpDate: pick(lead, ['follow_up_date', 'next_followup']),
       latestInteraction: pick(lead, ['latest_interaction']),
       dateSigned: pick(lead, ['date_signed']),
-      facts: clipNote(pick(lead, ['facts', 'description'])),
-      specialNotes: clipNote(pick(lead, ['special_notes'])),
-      generalNotes: clipNote(pick(lead, ['general_notes'])),
+      eligible: pick(lead, ['eligible', 'eligibile']),
+      applicants: pick(lead, [
+        'no_of_applicants',
+        'number_of_applicants',
+        'number_of_applicants_meeting',
+        'potential_applicants',
+        'potential_applicants_meeting',
+      ]),
+      facts: clipNote(pick(lead, ['facts', 'description']), 2500),
+      specialNotes: clipNote(pick(lead, ['special_notes']), 1200),
+      generalNotes: clipNote(pick(lead, ['general_notes', 'notes']), 1200),
+      schedulingNotes: clipNote(pick(lead, ['meeting_scheduling_notes']), 800),
+      proposalText: clipNote(pick(lead, ['proposal_text']), 800),
     };
 
     const stats = {
@@ -522,6 +547,7 @@ serve(async (req) => {
       nextMeetingDate: nextMeeting?.meeting_date || null,
       nextMeetingTime: nextMeeting?.meeting_time || null,
       nextMeetingStatus: nextMeeting?.status || null,
+      lastMessagePreview: last?.preview || null,
     };
 
     const fingerprint = await sha256(
@@ -559,7 +585,15 @@ serve(async (req) => {
             why: Array.isArray(cached.why) ? cached.why : [],
             nextAction: cached.next_action || '',
             risks: Array.isArray(cached.risks) ? cached.risks : [],
-            stats,
+            caseHighlights: Array.isArray((cached.stats as { highlights?: unknown })?.highlights)
+              ? ((cached.stats as { highlights: unknown[] }).highlights as unknown[]).map((item) => String(item))
+              : [],
+            stats: {
+              ...stats,
+              highlights: Array.isArray((cached.stats as { highlights?: unknown })?.highlights)
+                ? (cached.stats as { highlights: unknown[] }).highlights
+                : [],
+            },
           });
         }
       }
@@ -569,13 +603,49 @@ serve(async (req) => {
       return json({ error: 'OpenAI API key not configured', code: 'NO_OPENAI_KEY' }, 503);
     }
 
+    const formatLine = (items: Array<string | null | undefined>) =>
+      items.filter((item) => item && String(item).trim()).join(' · ');
+
+    const factsBlock = [caseBlock.facts, caseBlock.specialNotes, caseBlock.generalNotes, caseBlock.schedulingNotes]
+      .filter((item) => item && String(item).trim())
+      .join('\n\n') || '(none on file)';
+
+    const meetingNarrative =
+      meetings
+        .map((m) => {
+          const header = formatLine([String(m.date || ''), String(m.status || '')]);
+          const body = [m.summaryNotes, m.brief, m.expertNotes].filter(Boolean).join('\n');
+          if (!body) return header ? `${header}: (no notes)` : '';
+          return `${header}\n${body}`;
+        })
+        .filter(Boolean)
+        .slice(0, 6)
+        .join('\n---\n') || '(no meeting notes)';
+
+    const whatsappBlock =
+      interactions
+        .filter((i) => i.channel === 'whatsapp' && i.preview)
+        .slice(0, 12)
+        .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)}: ${i.preview}`)
+        .join('\n') || '(none)';
+
+    const emailBlock =
+      interactions
+        .filter((i) => i.channel === 'email' && (i.preview || i.subject))
+        .slice(0, 8)
+        .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)} ${i.subject || ''}: ${i.preview}`)
+        .join('\n') || '(none)';
+
     const systemPrompt =
       'You are an expert CRM assistant for a citizenship and immigration law firm. ' +
       'Judge whether THIS lead is worth following up NOW, not lifetime case success. ' +
-      'Use only the provided data. Include meeting dates and the case balance (total value) when present. If comms are empty, say so. Never invent payments or signatures. ' +
+      'Use only the provided data. Never invent facts, payments, signatures, or conversations. ' +
       'Always use the stage display name (for example "Mtng sum+Agreement sent"), never the numeric stage id. ' +
+      'The summary must explain THIS client\'s situation: who they are, what they want, eligibility/family/documents, and what was actually said in facts, meeting notes, WhatsApp, and email. ' +
+      'Do NOT write a generic recap of last communication channel, stage, and balance — those are shown separately in the UI. Mention them only if they change the follow-up decision. ' +
+      'If a source is empty, skip it; do not pad the summary with "no WhatsApp" / "stage is X" / "balance is Y". ' +
       (!ref.isLegacy
-        ? 'This is a NEW lead. In the summary you MUST name the lead source (use the source name from source_id, never the numeric id) and how many days have passed without contact (daysWithoutContact). '
+        ? 'This is a NEW lead. Add one short sentence naming the lead source (the source name, never the numeric id) and how many days have passed without contact (daysWithoutContact). Put that sentence at the end, not as the whole summary. '
         : '') +
       'Return JSON only.';
 
@@ -583,23 +653,36 @@ serve(async (req) => {
 {
   "verdict": "high" | "medium" | "low" | "not_worth",
   "score": 0-100,
-  "headline": "one line",
-  "summary": "2-4 short paragraphs",
-  "why": ["3-6 bullets grounded in the data"],
+  "headline": "one line about THIS client's situation",
+  "summary": "2-4 short paragraphs a closer can read without opening the file. Paragraph 1: who the client is and what they want. Paragraph 2: crucial case details from facts and meeting notes. Paragraph 3: what WhatsApp/email show (requests, objections, promises, documents). Optional last sentence: follow-up timing.",
+  "caseHighlights": ["4-8 short bullets of crucial client/case details from facts, meetings, WhatsApp, email. Not stage, not balance, not last-channel."],
+  "why": ["3-6 bullets on why follow up NOW, grounded in the data"],
   "nextAction": "one concrete next step for staff",
   "risks": ["optional risks"]
 }
 
-Case:
+CASE FILE — facts and notes:
+${factsBlock}
+
+MEETING SUMMARIES (newest first):
+${meetingNarrative}
+
+WHATSAPP (newest first):
+${whatsappBlock}
+
+EMAIL (newest first):
+${emailBlock}
+
+CRM fields:
 ${JSON.stringify(caseBlock)}
 
-Meetings (newest first; use these dates):
-${JSON.stringify(meetings)}
+Meetings (dates/status):
+${JSON.stringify(meetings.map((m) => ({ date: m.date, time: m.time, status: m.status, location: m.location, amount: m.amount })))}
 
 Payments:
 ${JSON.stringify({ unpaid, paid, nextDue, rowCount: paymentRows.length })}
 
-Recent interactions (newest first, includes meetings):
+Recent interactions (newest first):
 ${JSON.stringify(recent)}
 
 Computed stats:
@@ -607,8 +690,8 @@ ${JSON.stringify(stats)}${
       !ref.isLegacy
         ? `
 
-REQUIRED in the summary for this NEW lead:
-- Name the source as "${sourceName || 'unknown'}" (from source_id; never print the numeric source_id).
+REQUIRED one-sentence addendum at the end of the summary for this NEW lead (not a substitute for the case narrative):
+- Name the source as "${sourceName || 'unknown'}" (never the numeric source_id).
 - State that ${daysWithoutContact ?? 'an unknown number of'} day(s) have passed without contact${
             daysSinceContact == null ? ' (no recorded contact; counted from the created date)' : ''
           }.`
@@ -623,8 +706,8 @@ REQUIRED in the summary for this NEW lead:
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        temperature: 0.3,
-        max_tokens: 900,
+        temperature: 0.35,
+        max_tokens: 1400,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
@@ -669,7 +752,11 @@ REQUIRED in the summary for this NEW lead:
       : 'medium';
     const scoreNum = Number(parsed.score);
     const score = Number.isFinite(scoreNum) ? Math.max(0, Math.min(100, Math.round(scoreNum))) : 50;
+    const caseHighlights = Array.isArray(parsed.caseHighlights)
+      ? parsed.caseHighlights.map((item) => clip(item, 280)).filter(Boolean)
+      : [];
     const generatedAt = new Date().toISOString();
+    const statsWithHighlights = { ...stats, highlights: caseHighlights };
     const payload = {
       success: true,
       cached: false,
@@ -681,10 +768,11 @@ REQUIRED in the summary for this NEW lead:
       score,
       headline: clip(parsed.headline, 180) || 'Follow-up review',
       summary: String(parsed.summary || '').trim(),
-      why: Array.isArray(parsed.why) ? parsed.why.map((item) => clip(item, 240)).filter(Boolean) : [],
+      caseHighlights,
+      why: Array.isArray(parsed.why) ? parsed.why.map((item) => clip(item, 280)).filter(Boolean) : [],
       nextAction: String(parsed.nextAction || '').trim(),
-      risks: Array.isArray(parsed.risks) ? parsed.risks.map((item) => clip(item, 240)).filter(Boolean) : [],
-      stats,
+      risks: Array.isArray(parsed.risks) ? parsed.risks.map((item) => clip(item, 280)).filter(Boolean) : [],
+      stats: statsWithHighlights,
     };
 
     const { error: cacheWriteErr } = await supabase.from('lead_followup_ai_cache').upsert(

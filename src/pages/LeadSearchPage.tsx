@@ -7,6 +7,7 @@ import {
   Squares2X2Icon,
   SparklesIcon,
   TableCellsIcon,
+  BarsArrowDownIcon,
   CalendarIcon,
   GlobeAltIcon,
   BoltIcon,
@@ -38,7 +39,14 @@ import { useTheme } from '../hooks/useTheme';
 import LeadSearchCardActions from '../components/LeadSearchCardActions';
 import LeadSearchRolesModal from '../components/LeadSearchRolesModal';
 import LeadFollowupAiDrawer from '../components/LeadFollowupAiDrawer';
-import { pickBestFollowupLead } from '../lib/leadFollowupAiApi';
+import {
+  fetchLeadFollowupCacheScores,
+  followupCacheIdForLead,
+  followupSortKey,
+  pickBestFollowupLead,
+  type LeadFollowupCachedScore,
+  type LeadFollowupResult,
+} from '../lib/leadFollowupAiApi';
 import { buildLeadClientPath } from '../lib/leadClientRoute';
 import {
   fetchFlagTypes,
@@ -1392,17 +1400,136 @@ function getLeadColumnValueForExport(lead: Lead, columnKey: string): string {
   return String(value);
 }
 
+type LeadSearchSortMode = 'newest' | 'oldest' | 'value' | 'stage' | 'followup';
+
+const LEAD_SEARCH_SORT_OPTIONS: { value: LeadSearchSortMode; label: string }[] = [
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
+  { value: 'value', label: 'Highest value' },
+  { value: 'stage', label: 'Stage' },
+  { value: 'followup', label: 'Highest follow-up' },
+];
+
+const STAGE_PIPELINE_RANK: Record<string, number> = {
+  '0': 0,
+  created: 0,
+  '10': 10,
+  scheduler_assigned: 10,
+  '11': 11,
+  precommunication: 11,
+  '15': 15,
+  communication_started: 15,
+  '20': 20,
+  meeting_scheduled: 20,
+  '21': 21,
+  meeting_rescheduled: 21,
+  meeting_rescheduling: 21,
+  '30': 30,
+  meeting_complete: 30,
+  meeting_ended: 30,
+  meeting_paid: 30,
+  '35': 35,
+  meeting_irrelevant: 35,
+  unactivated: 38,
+  '40': 40,
+  waiting_for_mtng_sum: 40,
+  lead_summary: 40,
+  '50': 50,
+  offer_sent: 50,
+  '51': 51,
+  client_declined: 51,
+  '55': 55,
+  another_meeting: 55,
+  revised_offer: 55,
+  '60': 60,
+  client_signed: 60,
+  '70': 70,
+  payment_request_sent: 70,
+  finances_and_payments_plan: 70,
+  '91': 91,
+  '100': 100,
+  '105': 105,
+  '110': 110,
+  '150': 150,
+};
+
+function leadNumberish(value: unknown): number {
+  const n = Number(String(value ?? '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function leadCreatedMs(lead: Lead): number {
+  const ms = Date.parse(String(lead.created_at || ''));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function leadValueAmount(lead: Lead): number {
+  const row = lead as unknown as Record<string, unknown>;
+  return Math.max(
+    leadNumberish(row.balance),
+    leadNumberish(row.total_base),
+    leadNumberish(row.total),
+    leadNumberish(row.proposal_total),
+    leadNumberish(row.proposal),
+    leadNumberish(row.potential_value),
+    leadNumberish(row.potential_total),
+  );
+}
+
+function stagePipelineRank(lead: Lead): number {
+  const raw = String((lead as unknown as Record<string, unknown>).stage ?? '').trim();
+  if (!raw) return 9999;
+  if (STAGE_PIPELINE_RANK[raw] != null) return STAGE_PIPELINE_RANK[raw];
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const named = getStageName(raw).toLowerCase().replace(/[\s-]+/g, '_');
+  if (STAGE_PIPELINE_RANK[named] != null) return STAGE_PIPELINE_RANK[named];
+  const compact = named.replace(/_/g, '');
+  for (const [key, rank] of Object.entries(STAGE_PIPELINE_RANK)) {
+    if (key.replace(/_/g, '') === compact) return rank;
+  }
+  return 8000;
+}
+
+function digitsOnly(value: unknown): string {
+  return String(value ?? '').replace(/\D/g, '');
+}
+
+function leadMatchesQuickQuery(lead: Lead, query: string): boolean {
+  const raw = query.trim().toLowerCase();
+  if (!raw) return true;
+  const row = lead as unknown as Record<string, unknown>;
+  const textFields = [
+    row.name,
+    row.lead_number,
+    row.display_lead_number,
+    row.email,
+    row.id,
+  ].map((value) => String(value ?? '').toLowerCase());
+  if (textFields.some((field) => field.includes(raw))) return true;
+  const phoneFields = [row.phone, row.mobile, row.phone_number];
+  if (phoneFields.some((field) => String(field ?? '').toLowerCase().includes(raw))) return true;
+  const qDigits = digitsOnly(raw);
+  if (qDigits.length >= 3) {
+    return phoneFields.some((field) => digitsOnly(field).includes(qDigits));
+  }
+  return false;
+}
+
 // Table View Component
 const TableView = ({
   leads,
   selectedColumns,
   onLeadClick,
   onAiFollowup,
+  showFollowupScores,
+  followupScoreOf,
 }: {
   leads: Lead[];
   selectedColumns: string[];
   onLeadClick: (lead: Lead | string, event?: React.MouseEvent) => void;
   onAiFollowup: (lead: Lead) => void;
+  showFollowupScores?: boolean;
+  followupScoreOf?: (lead: Lead) => number | null;
 }) => {
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const mirrorScrollRef = React.useRef<HTMLDivElement>(null);
@@ -1543,6 +1670,7 @@ const TableView = ({
               const isLegacyInactive = anyLead.lead_type === 'legacy' && anyLead.status != null && (Number(anyLead.status) === 10 || anyLead.status === '10');
               const isNewInactive = anyLead.lead_type === 'new' && anyLead.unactivated_at != null;
               const isInactive = isLegacyInactive || isNewInactive;
+              const followupScore = showFollowupScores && followupScoreOf ? followupScoreOf(lead) : null;
               return (
                 <tr
                   key={lead.id || index}
@@ -1557,18 +1685,25 @@ const TableView = ({
                   title={`Click to view lead ${anyLead.display_lead_number || anyLead.lead_number || lead.id}`}
                 >
                   <td className="lead-search-ai-cell w-12 px-1 py-3">
-                    <button
-                      type="button"
-                      className="flex h-9 w-9 items-center justify-center rounded-full text-violet-600 hover:bg-violet-50"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onAiFollowup(lead);
-                      }}
-                      title="AI follow-up"
-                      aria-label={`AI follow-up for ${lead.name}`}
-                    >
-                      <SparklesIcon className="h-5 w-5" aria-hidden />
-                    </button>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <button
+                        type="button"
+                        className="flex h-9 w-9 items-center justify-center rounded-full text-violet-600 hover:bg-violet-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAiFollowup(lead);
+                        }}
+                        title="AI follow-up"
+                        aria-label={`AI follow-up for ${lead.name}`}
+                      >
+                        <SparklesIcon className="h-5 w-5" aria-hidden />
+                      </button>
+                      {followupScore != null ? (
+                        <span className="text-[11px] font-semibold tabular-nums text-violet-700">
+                          {followupScore}
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   {selectedColumns.map((columnKey) => {
                     const columnValue = getColumnValue(lead, columnKey);
@@ -1710,6 +1845,10 @@ const LeadSearchPage: React.FC = () => {
   // Ref for results section to scroll to after search
   const resultsRef = useRef<HTMLDivElement>(null);
   const resultsCountRef = useRef<HTMLHeadingElement>(null);
+  const resultsToolbarRef = useRef<HTMLDivElement>(null);
+  const pinToolsRootRef = useRef<HTMLDivElement>(null);
+  const pinToolsActiveRef = useRef(false);
+  const headerToolbarVisibleRef = useRef(true);
   const cardsGridRef = useRef<HTMLDivElement>(null);
   const pageTopRef = useRef<HTMLDivElement>(null);
   const tableResultsRef = useRef<HTMLDivElement>(null);
@@ -1820,12 +1959,23 @@ const LeadSearchPage: React.FC = () => {
   const [selectedColumns, setSelectedColumns] = usePersistedState<string[]>('leadSearchPage_selectedColumns', ['name', 'lead_number', 'email', 'phone', 'stage', 'source', 'created_at'], {
     storage: 'sessionStorage',
   });
+  const [sortMode, setSortMode] = usePersistedState<LeadSearchSortMode>('leadSearchPage_sortMode', 'newest', {
+    storage: 'sessionStorage',
+  });
+  const [resultsQuery, setResultsQuery] = usePersistedState('leadSearchPage_resultsQuery', '', {
+    storage: 'sessionStorage',
+  });
+  const [followupScoreMap, setFollowupScoreMap] = useState<Map<string, LeadFollowupCachedScore>>(
+    () => new Map(),
+  );
+  const [followupScoresLoading, setFollowupScoresLoading] = useState(false);
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   // After a search, filters collapse; reopen via bottom funnel.
   const [showFiltersPanel, setShowFiltersPanel] = useState(true);
   // Bottom quick bar starts collapsed to icons once a search has run.
   const [quickBarOpen, setQuickBarOpen] = useState(false);
   const [activeMobileFilter, setActiveMobileFilter] = useState<MobileFilterKey | null>(null);
+  const [pinResultTools, setPinResultTools] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -1912,14 +2062,195 @@ const LeadSearchPage: React.FC = () => {
     setFollowupLead(null);
   }, []);
 
+  const handleFollowupResult = useCallback((lead: Lead, result: LeadFollowupResult) => {
+    const id = followupCacheIdForLead(lead);
+    if (!id || !result.success) return;
+    setFollowupScoreMap((prev) => {
+      const next = new Map(prev);
+      next.set(id, { score: result.score, verdict: result.verdict });
+      return next;
+    });
+  }, []);
+
+  const resultsScoreKey = useMemo(
+    () => results.map((lead) => followupCacheIdForLead(lead) || String(lead.id)).join('|'),
+    [results],
+  );
+
+  useEffect(() => {
+    if (sortMode !== 'followup' || results.length === 0) {
+      setFollowupScoresLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setFollowupScoresLoading(true);
+    void fetchLeadFollowupCacheScores(results)
+      .then((map) => {
+        if (cancelled) return;
+        setFollowupScoreMap(map);
+        setFollowupScoresLoading(false);
+      })
+      .catch((err) => {
+        console.error('Failed to load follow-up scores', err);
+        if (cancelled) return;
+        setFollowupScoresLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sortMode, resultsScoreKey, results]);
+
+  const sortedResults = useMemo(() => {
+    if (sortMode === 'newest') return results;
+    const copy = [...results];
+    if (sortMode === 'oldest') {
+      return copy.sort((a, b) => leadCreatedMs(a) - leadCreatedMs(b));
+    }
+    if (sortMode === 'value') {
+      return copy.sort((a, b) => {
+        const diff = leadValueAmount(b) - leadValueAmount(a);
+        if (diff !== 0) return diff;
+        return leadCreatedMs(b) - leadCreatedMs(a);
+      });
+    }
+    if (sortMode === 'stage') {
+      return copy.sort((a, b) => {
+        const diff = stagePipelineRank(a) - stagePipelineRank(b);
+        if (diff !== 0) return diff;
+        const nameCmp = getStageName(String(a.stage ?? '')).localeCompare(getStageName(String(b.stage ?? '')));
+        if (nameCmp !== 0) return nameCmp;
+        return leadCreatedMs(b) - leadCreatedMs(a);
+      });
+    }
+    return copy.sort((a, b) => {
+      const diff = followupSortKey(b, followupScoreMap) - followupSortKey(a, followupScoreMap);
+      if (diff !== 0) return diff;
+      return leadCreatedMs(b) - leadCreatedMs(a);
+    });
+  }, [results, sortMode, followupScoreMap]);
+
+  const displayedResults = useMemo(() => {
+    const q = resultsQuery.trim();
+    if (!q) return sortedResults;
+    return sortedResults.filter((lead) => leadMatchesQuickQuery(lead, q));
+  }, [sortedResults, resultsQuery]);
+
+  const followupScoreOf = useCallback(
+    (lead: Lead): number | null => {
+      const id = followupCacheIdForLead(lead);
+      if (!id) return null;
+      const cached = followupScoreMap.get(id);
+      return cached ? cached.score : null;
+    },
+    [followupScoreMap],
+  );
+
   const handleBestFollowup = useCallback(() => {
-    const winner = pickBestFollowupLead(results);
+    const winner = sortMode === 'followup' && displayedResults.length > 0
+      ? displayedResults[0]
+      : pickBestFollowupLead(displayedResults.length > 0 ? displayedResults : results);
     if (!winner) {
       toast.error('No leads to rank');
       return;
     }
     setFollowupLead(winner);
-  }, [results]);
+  }, [displayedResults, results, sortMode]);
+
+  const applyPinVisibility = useCallback(() => {
+    if (pinToolsActiveRef.current) {
+      setPinResultTools(true);
+      return;
+    }
+    setPinResultTools(!headerToolbarVisibleRef.current);
+  }, []);
+
+  useEffect(() => {
+    const el = resultsToolbarRef.current;
+    if (!el || !searchPerformed || results.length === 0 || isSearching) {
+      headerToolbarVisibleRef.current = true;
+      if (!pinToolsActiveRef.current) setPinResultTools(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        headerToolbarVisibleRef.current = entry.isIntersecting;
+        applyPinVisibility();
+      },
+      { threshold: 0, rootMargin: '-80px 0px 0px 0px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [searchPerformed, results.length, isSearching, viewMode, showFiltersPanel, applyPinVisibility]);
+
+  const handlePinToolsFocus = useCallback(() => {
+    pinToolsActiveRef.current = true;
+    setPinResultTools(true);
+  }, []);
+
+  const handlePinToolsBlur = useCallback(() => {
+    window.setTimeout(() => {
+      const root = pinToolsRootRef.current;
+      if (root?.contains(document.activeElement)) return;
+      pinToolsActiveRef.current = false;
+      applyPinVisibility();
+    }, 0);
+  }, [applyPinVisibility]);
+
+  const renderSortSelect = (id: string, pinned = false) => (
+    <label className="relative inline-flex shrink-0 items-center">
+      <span className="sr-only">Sort leads</span>
+      {followupScoresLoading ? (
+        <Loader2 className="pointer-events-none absolute left-3 h-4 w-4 animate-spin text-violet-600" aria-hidden />
+      ) : (
+        <BarsArrowDownIcon className="pointer-events-none absolute left-3 h-4 w-4 text-violet-600" aria-hidden />
+      )}
+      <select
+        id={id}
+        className="h-9 cursor-pointer appearance-none rounded-full border border-base-300 bg-white pl-9 pr-8 text-sm font-medium text-gray-800 shadow-sm"
+        value={sortMode}
+        onChange={(e) => setSortMode(e.target.value as LeadSearchSortMode)}
+        title="Sort results"
+        onFocus={pinned ? handlePinToolsFocus : undefined}
+        onBlur={pinned ? handlePinToolsBlur : undefined}
+      >
+        {LEAD_SEARCH_SORT_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDownIcon className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-gray-400" aria-hidden />
+    </label>
+  );
+
+  const renderResultsSearch = (id: string, widthClass: string, pinned = false) => (
+    <label className={`relative inline-flex min-w-0 items-center ${widthClass}`}>
+      <span className="sr-only">Filter by name, lead number, phone, or email</span>
+      <Search className="pointer-events-none absolute left-3 h-4 w-4 text-gray-400" strokeWidth={2} aria-hidden />
+      <input
+        id={id}
+        type="text"
+        value={resultsQuery}
+        onChange={(e) => setResultsQuery(e.target.value)}
+        placeholder="Name, #, phone, email"
+        className="h-9 w-full rounded-full border border-base-300 bg-white pl-9 pr-8 text-sm text-gray-800 shadow-sm placeholder:text-gray-400"
+        autoComplete="off"
+        onFocus={pinned ? handlePinToolsFocus : undefined}
+        onBlur={pinned ? handlePinToolsBlur : undefined}
+      />
+      {resultsQuery.trim() ? (
+        <button
+          type="button"
+          className="absolute right-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setResultsQuery('')}
+          aria-label="Clear result search"
+        >
+          <XMarkIcon className="h-4 w-4" aria-hidden />
+        </button>
+      ) : null}
+    </label>
+  );
 
   const openFactsModal = useCallback(async (lead: Lead, event?: React.MouseEvent) => {
     event?.stopPropagation();
@@ -1987,7 +2318,7 @@ const LeadSearchPage: React.FC = () => {
       toast.error('Select at least one table column to export.');
       return;
     }
-    if (results.length === 0) {
+    if (displayedResults.length === 0) {
       toast.error('No leads to export. Run a search first.');
       return;
     }
@@ -1995,7 +2326,7 @@ const LeadSearchPage: React.FC = () => {
       const headers = selectedColumns.map(
         (k) => AVAILABLE_COLUMNS.find((c) => c.key === k)?.label || k
       );
-      const rows = results.map((lead) =>
+      const rows = displayedResults.map((lead) =>
         selectedColumns.map((key) => getLeadColumnValueForExport(lead, key))
       );
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
@@ -2003,12 +2334,12 @@ const LeadSearchPage: React.FC = () => {
       XLSX.utils.book_append_sheet(wb, ws, 'Leads');
       const dateStr = new Date().toISOString().slice(0, 10);
       XLSX.writeFile(wb, `lead_search_export_${dateStr}.xlsx`);
-      toast.success(`Exported ${results.length} lead${results.length !== 1 ? 's' : ''}.`);
+      toast.success(`Exported ${displayedResults.length} lead${displayedResults.length !== 1 ? 's' : ''}.`);
     } catch (e) {
       console.error('Excel export failed:', e);
       toast.error('Export failed.');
     }
-  }, [selectedColumns, results]);
+  }, [selectedColumns, displayedResults]);
 
   // Note: State persistence is now handled by usePersistedFilters and usePersistedState hooks
   // They automatically handle saving/restoring state across navigation (but not on page refresh)
@@ -2183,7 +2514,6 @@ const LeadSearchPage: React.FC = () => {
 
         const sources = data?.map(source => source.name) || [];
         setSourceOptions(sources);
-        console.log('✅ Fetched source options from misc_leadsource:', sources);
       } catch (error) {
         console.error('Error fetching source options:', error);
         // Fallback to hardcoded options if database fetch fails
@@ -5196,6 +5526,7 @@ const LeadSearchPage: React.FC = () => {
 
           // Roles
           roles: roles,
+          meeting_scheduler_id: legacyLead.meeting_scheduler_id ?? null,
           scheduler: roles.scheduler,
           manager: roles.manager,
           lawyer: roles.lawyer,
@@ -5412,6 +5743,7 @@ const LeadSearchPage: React.FC = () => {
       anyLead.lead_type === 'new' && anyLead.unactivated_at !== null && anyLead.unactivated_at !== undefined;
 
     const isInactive = isLegacyInactive || isNewInactive;
+    const followupScore = sortMode === 'followup' ? followupScoreOf(lead) : null;
 
     const isMenuOpen = openCardMenuLeadId === String(lead.id);
     const cardClasses = [
@@ -5479,6 +5811,11 @@ const LeadSearchPage: React.FC = () => {
               <p className="mt-0.5 text-sm text-gray-500 font-mono font-medium">
                 #{leadNumber}
               </p>
+              {followupScore != null ? (
+                <p className="mt-1 text-xs font-semibold tabular-nums text-violet-700">
+                  Follow-up {followupScore}
+                </p>
+              ) : null}
             </div>
             <div
               className={`shrink-0 max-w-[42%] ${isInactive ? '[&_.stage-badge]:!border-0 [&_.stage-badge]:!bg-gray-200 [&_.stage-badge]:![color:black]' : ''}`}
@@ -5536,6 +5873,17 @@ const LeadSearchPage: React.FC = () => {
         role="toolbar"
         aria-label="Lead search quick filters"
       >
+        <div className={`flex items-end gap-2 ${quickBarOpen ? 'flex-col' : 'flex-col md:flex-row'}`}>
+          {pinResultTools && results.length > 0 ? (
+            <div
+              ref={pinToolsRootRef}
+              className="flex max-w-[min(calc(100vw-1.5rem),28rem)] items-center gap-2 rounded-full border border-white/50 bg-white/90 px-2 py-1.5 shadow-lg backdrop-blur-md dark:border-base-content/10 dark:bg-base-100/90"
+            >
+              {renderResultsSearch('lead-search-results-q-pin', 'w-[9.5rem] sm:w-44 md:w-52', true)}
+              {renderSortSelect('lead-search-sort-pin', true)}
+            </div>
+          ) : null}
+          <div>
         {/* Mobile */}
         <div className="md:hidden flex flex-col items-end gap-2 pointer-events-auto">
           {quickBarOpen && (
@@ -5791,6 +6139,8 @@ const LeadSearchPage: React.FC = () => {
               )}
             </button>
           )}
+        </div>
+          </div>
         </div>
       </div>
       )}
@@ -6394,30 +6744,49 @@ const LeadSearchPage: React.FC = () => {
             </div>
           ) : results.length > 0 ? (
             <>
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 md:px-0">
+              <div
+                ref={resultsToolbarRef}
+                className="mb-4 flex flex-wrap items-center justify-between gap-3 md:px-0"
+              >
                 <h2
                   ref={resultsCountRef}
                   className="text-2xl font-bold scroll-mt-28 md:scroll-mt-24"
                 >
-                  Found {results.length} lead{results.length !== 1 && 's'}
+                  {resultsQuery.trim()
+                    ? `${displayedResults.length} of ${results.length} lead${results.length !== 1 ? 's' : ''}`
+                    : `Found ${results.length} lead${results.length !== 1 ? 's' : ''}`}
                 </h2>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost gap-1.5 text-violet-700 hover:bg-violet-50"
-                  onClick={handleBestFollowup}
-                  title="Ranks up to 40 currently shown leads, then opens a full AI review for the top one"
+                <div
+                  className={`flex min-w-0 flex-wrap items-center justify-end gap-2 ${
+                    pinResultTools ? 'invisible pointer-events-none' : ''
+                  }`}
                 >
-                  <SparklesIcon className="h-4 w-4" aria-hidden />
-                  Best follow-up
-                </button>
+                  {renderResultsSearch('lead-search-results-q', 'w-44 sm:w-56 md:w-64')}
+                  {renderSortSelect('lead-search-sort')}
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost gap-1.5 text-violet-700 hover:bg-violet-50"
+                    onClick={handleBestFollowup}
+                    title="Ranks up to 40 currently shown leads, then opens a full AI review for the top one"
+                  >
+                    <SparklesIcon className="h-4 w-4" aria-hidden />
+                    Best follow-up
+                  </button>
+                </div>
               </div>
-              {viewMode === 'table' ? (
+              {displayedResults.length === 0 ? (
+                <div className="text-center p-8 bg-white rounded-lg md:mx-0 shadow-sm">
+                  No leads match this search.
+                </div>
+              ) : viewMode === 'table' ? (
                 <div ref={tableResultsRef}>
                   <TableView
-                    leads={results}
+                    leads={displayedResults}
                     selectedColumns={selectedColumns}
                     onLeadClick={handleLeadClick}
                     onAiFollowup={openAiFollowup}
+                    showFollowupScores={sortMode === 'followup'}
+                    followupScoreOf={followupScoreOf}
                   />
                 </div>
               ) : (
@@ -6425,7 +6794,7 @@ const LeadSearchPage: React.FC = () => {
                   ref={cardsGridRef}
                   className="grid w-full min-w-0 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4"
                 >
-                  {results.map(renderResultCard)}
+                  {displayedResults.map(renderResultCard)}
                 </div>
               )}
             </>
@@ -6516,6 +6885,19 @@ const LeadSearchPage: React.FC = () => {
         open={followupLead != null}
         lead={followupLead}
         onClose={closeAiFollowup}
+        onResult={handleFollowupResult}
+        onSchedulerAssigned={(lead, patch) => {
+          const withRoles = (row: Lead) => {
+            const prevRoles = (row as unknown as { roles?: Record<string, unknown> }).roles;
+            return {
+              ...row,
+              ...patch,
+              roles: prevRoles ? { ...prevRoles, scheduler: patch.scheduler } : prevRoles,
+            };
+          };
+          setFollowupLead((prev) => (prev && prev.id === lead.id ? withRoles(prev) : prev));
+          setResults((prev) => prev.map((row) => (row.id === lead.id ? withRoles(row) : row)));
+        }}
       />
 
     </div>
