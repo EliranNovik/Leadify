@@ -16,6 +16,11 @@ let cachedRefreshCheckResult: boolean | null = null;
 // so that navigating to another page after a refresh doesn't wipe that page's stored state.
 let pathnameWhenRefreshDetected: string | null = null;
 
+/** In-tab copy of persisted state so SPA remounts survive sessionStorage quota failures. */
+const persistedMemory = new Map<string, string>();
+/** Keys already wiped once after this document reload — do not wipe again on remount. */
+const refreshClearedKeys = new Set<string>();
+
 const DEBUG_PERSISTED_STATE =
   typeof import.meta !== 'undefined' &&
   String(import.meta.env?.VITE_DEBUG_PERSISTED_STATE || '').toLowerCase() === 'true';
@@ -240,8 +245,6 @@ if (typeof window !== 'undefined') {
   // Listen for popstate events (back/forward navigation)
   window.addEventListener('popstate', () => {
     setNavigationFlag();
-    // Clear cached refresh check result (module-level variable, resets on page load anyway)
-    cachedRefreshCheckResult = null;
   });
   
   // Intercept history.pushState and history.replaceState
@@ -250,13 +253,11 @@ if (typeof window !== 'undefined') {
   
   history.pushState = function(...args) {
     setNavigationFlag();
-    cachedRefreshCheckResult = null; // Clear cached result on navigation
     return originalPushState.apply(history, args);
   };
   
   history.replaceState = function(...args) {
     setNavigationFlag();
-    cachedRefreshCheckResult = null; // Clear cached result on navigation
     return originalReplaceState.apply(history, args);
   };
 }
@@ -327,9 +328,12 @@ export function usePersistedState<T>(
       wasRefresh &&
       (pathnameWhenRefreshDetected === null || pathnameWhenRefreshDetected === currentPath);
 
-    if (shouldClearForThisRoute && !retainOnPageRefresh) {
-      // This route was the one refreshed - clear persisted state for this key
+    if (shouldClearForThisRoute && !retainOnPageRefresh && !refreshClearedKeys.has(storageKey)) {
+      // This route was the one refreshed - clear persisted state for this key once.
+      // Later SPA remounts (open a lead, then back to Lead Search) must restore, not wipe again.
+      refreshClearedKeys.add(storageKey);
       logPersisted(`[usePersistedState] Page refresh on this route, clearing state for key: ${key}`);
+      persistedMemory.delete(storageKey);
       if (storage === 'localStorage' || storage === 'both') {
         try {
           localStorage.removeItem(storageKey);
@@ -370,6 +374,7 @@ export function usePersistedState<T>(
         if (item) {
           const parsed = JSON.parse(item);
           logPersisted(`[usePersistedState] Loaded state from localStorage for key: ${key}`, parsed);
+          persistedMemory.set(storageKey, item);
           return parsed;
         }
       } catch (e) {
@@ -385,10 +390,20 @@ export function usePersistedState<T>(
           if (String(import.meta.env.VITE_DEBUG_PERSISTED_STATE || '').toLowerCase() === 'true') {
             logPersisted(`[usePersistedState] Loaded state from sessionStorage for key: ${key}`, parsed);
           }
+          persistedMemory.set(storageKey, item);
           return parsed;
         }
       } catch (e) {
         console.warn(`Failed to read sessionStorage for ${storageKey}:`, e);
+      }
+    }
+
+    const memoryItem = persistedMemory.get(storageKey);
+    if (memoryItem) {
+      try {
+        return JSON.parse(memoryItem) as T;
+      } catch (e) {
+        console.warn(`Failed to parse in-memory state for ${storageKey}:`, e);
       }
     }
 
@@ -414,13 +429,22 @@ export function usePersistedState<T>(
   const updateStorage = useCallback((newState: T) => {
     try {
       const serialized = JSON.stringify(newState);
-      
+      persistedMemory.set(storageKey, serialized);
+
       if (storage === 'localStorage' || storage === 'both') {
-        localStorage.setItem(storageKey, serialized);
+        try {
+          localStorage.setItem(storageKey, serialized);
+        } catch (e) {
+          console.warn(`Failed to save localStorage for ${storageKey}:`, e);
+        }
       }
-      
+
       if (storage === 'sessionStorage' || storage === 'both') {
-        sessionStorage.setItem(storageKey, serialized);
+        try {
+          sessionStorage.setItem(storageKey, serialized);
+        } catch (e) {
+          console.warn(`Failed to save sessionStorage for ${storageKey}:`, e);
+        }
       }
     } catch (e) {
       console.warn(`Failed to save state to storage for ${storageKey}:`, e);
@@ -443,6 +467,7 @@ export function usePersistedState<T>(
 
   // Clear state function
   const clearState = useCallback(() => {
+    persistedMemory.delete(storageKey);
     if (storage === 'localStorage' || storage === 'both') {
       localStorage.removeItem(storageKey);
     }

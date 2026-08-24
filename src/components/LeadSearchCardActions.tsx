@@ -5,6 +5,7 @@ import {
   DocumentTextIcon,
   EllipsisVerticalIcon,
   LinkIcon,
+  SparklesIcon,
   StarIcon,
   UserGroupIcon,
   UserIcon,
@@ -24,10 +25,12 @@ type LeadSearchCardActionsProps = {
   onOpenChange: (open: boolean) => void;
   onViewFacts: (lead: Lead) => void;
   onViewRoles: (lead: Lead) => void;
+  onAiFollowup: (lead: Lead) => void;
 };
 
 const MOBILE_MENU_OPTIONS = [
   { value: '', label: 'Choose action…' },
+  { value: 'ai', label: 'AI follow-up' },
   { value: 'share', label: 'Share' },
   { value: 'client', label: 'Client page' },
   { value: 'facts', label: 'Facts' },
@@ -41,6 +44,7 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
   onOpenChange,
   onViewFacts,
   onViewRoles,
+  onAiFollowup,
 }) => {
   const navigate = useNavigate();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -142,6 +146,11 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
     await addToHighlights(highlightId, leadNumber, isLegacy);
   }, [close, lead]);
 
+  const runAiFollowup = useCallback(() => {
+    close();
+    onAiFollowup(lead);
+  }, [close, lead, onAiFollowup]);
+
   const runFacts = useCallback(() => {
     close();
     onViewFacts(lead);
@@ -155,6 +164,9 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
   const handleMobileMenuPick = useCallback(
     (value: string) => {
       switch (value) {
+        case 'ai':
+          runAiFollowup();
+          break;
         case 'share':
           void runShare();
           break;
@@ -174,11 +186,22 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
           break;
       }
     },
-    [runClientPage, runFacts, runHighlight, runRoles, runShare],
+    [runAiFollowup, runClientPage, runFacts, runHighlight, runRoles, runShare],
   );
 
   const menuSections = (
     <>
+      <button
+        type="button"
+        className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100"
+        onClick={(e) => {
+          e.stopPropagation();
+          runAiFollowup();
+        }}
+      >
+        <SparklesIcon className="h-5 w-5 shrink-0 text-violet-600" aria-hidden />
+        AI follow-up
+      </button>
       <button
         type="button"
         className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100"

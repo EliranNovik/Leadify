@@ -5,6 +5,7 @@ import { supabase, type Lead } from '../lib/supabase';
 import {
   ArrowDownTrayIcon,
   Squares2X2Icon,
+  SparklesIcon,
   TableCellsIcon,
   CalendarIcon,
   GlobeAltIcon,
@@ -36,6 +37,8 @@ import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedSta
 import { useTheme } from '../hooks/useTheme';
 import LeadSearchCardActions from '../components/LeadSearchCardActions';
 import LeadSearchRolesModal from '../components/LeadSearchRolesModal';
+import LeadFollowupAiDrawer from '../components/LeadFollowupAiDrawer';
+import { pickBestFollowupLead } from '../lib/leadFollowupAiApi';
 import { buildLeadClientPath } from '../lib/leadClientRoute';
 import {
   fetchFlagTypes,
@@ -1390,7 +1393,17 @@ function getLeadColumnValueForExport(lead: Lead, columnKey: string): string {
 }
 
 // Table View Component
-const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (lead: Lead | string, event?: React.MouseEvent) => void }) => {
+const TableView = ({
+  leads,
+  selectedColumns,
+  onLeadClick,
+  onAiFollowup,
+}: {
+  leads: Lead[];
+  selectedColumns: string[];
+  onLeadClick: (lead: Lead | string, event?: React.MouseEvent) => void;
+  onAiFollowup: (lead: Lead) => void;
+}) => {
   const tableScrollRef = React.useRef<HTMLDivElement>(null);
   const mirrorScrollRef = React.useRef<HTMLDivElement>(null);
   const syncingScrollRef = React.useRef(false);
@@ -1510,6 +1523,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
         <table className="table lead-search-results-table w-full min-w-[36rem] text-base">
           <thead>
             <tr className="md:sticky md:top-0 z-20">
+              <th className="w-12 px-2 py-3.5" aria-label="AI follow-up" />
               {selectedColumns.map((columnKey) => {
                 const column = AVAILABLE_COLUMNS.find(col => col.key === columnKey);
                 return (
@@ -1542,6 +1556,20 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
                   }}
                   title={`Click to view lead ${anyLead.display_lead_number || anyLead.lead_number || lead.id}`}
                 >
+                  <td className="lead-search-ai-cell w-12 px-1 py-3">
+                    <button
+                      type="button"
+                      className="flex h-9 w-9 items-center justify-center rounded-full text-violet-600 hover:bg-violet-50"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAiFollowup(lead);
+                      }}
+                      title="AI follow-up"
+                      aria-label={`AI follow-up for ${lead.name}`}
+                    >
+                      <SparklesIcon className="h-5 w-5" aria-hidden />
+                    </button>
+                  </td>
                   {selectedColumns.map((columnKey) => {
                     const columnValue = getColumnValue(lead, columnKey);
                     const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
@@ -1609,6 +1637,11 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
           border-top-left-radius: 18px !important;
           border-bottom-left-radius: 18px !important;
           padding-left: 1.1rem !important;
+        }
+
+        .lead-search-table-shell table tbody td.lead-search-ai-cell {
+          padding-left: 0.35rem !important;
+          padding-right: 0.15rem !important;
         }
 
         .lead-search-table-shell table tbody td:last-child {
@@ -1721,6 +1754,7 @@ const LeadSearchPage: React.FC = () => {
   const [factsModalLead, setFactsModalLead] = useState<Lead | null>(null);
   const [factsModalText, setFactsModalText] = useState('');
   const [factsModalLoading, setFactsModalLoading] = useState(false);
+  const [followupLead, setFollowupLead] = useState<Lead | null>(null);
   const [openCardMenuLeadId, setOpenCardMenuLeadId] = useState<string | null>(null);
   const [rolesModalLead, setRolesModalLead] = useState<Lead | null>(null);
   const [stageOptions, setStageOptions] = useState<string[]>([]);
@@ -1868,6 +1902,24 @@ const LeadSearchPage: React.FC = () => {
     setFactsModalText('');
     setFactsModalLoading(false);
   }, []);
+
+  const openAiFollowup = useCallback((lead: Lead, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    setFollowupLead(lead);
+  }, []);
+
+  const closeAiFollowup = useCallback(() => {
+    setFollowupLead(null);
+  }, []);
+
+  const handleBestFollowup = useCallback(() => {
+    const winner = pickBestFollowupLead(results);
+    if (!winner) {
+      toast.error('No leads to rank');
+      return;
+    }
+    setFollowupLead(winner);
+  }, [results]);
 
   const openFactsModal = useCallback(async (lead: Lead, event?: React.MouseEvent) => {
     event?.stopPropagation();
@@ -5409,16 +5461,17 @@ const LeadSearchPage: React.FC = () => {
         }}
       >
         <div className="relative p-4 md:p-5">
-          <div className="absolute top-3 right-3 z-20">
+          <div className="absolute top-3 right-3 z-20 flex items-center">
             <LeadSearchCardActions
               lead={lead}
               isOpen={openCardMenuLeadId === String(lead.id)}
               onOpenChange={(open) => setOpenCardMenuLeadId(open ? String(lead.id) : null)}
               onViewFacts={(l) => void openFactsModal(l)}
               onViewRoles={(l) => setRolesModalLead(l)}
+              onAiFollowup={openAiFollowup}
             />
           </div>
-          <div className="mb-4 flex items-start justify-between gap-2 pr-11">
+          <div className="mb-4 flex items-start justify-between gap-2 pr-12">
             <div className="min-w-0 flex-1">
               <h2 className="text-lg font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-[#6d28d9] transition-colors">
                 {lead.name}
@@ -6341,15 +6394,31 @@ const LeadSearchPage: React.FC = () => {
             </div>
           ) : results.length > 0 ? (
             <>
-              <h2
-                ref={resultsCountRef}
-                className="text-2xl font-bold mb-4 md:px-0 scroll-mt-28 md:scroll-mt-24"
-              >
-                Found {results.length} lead{results.length !== 1 && 's'}
-              </h2>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 md:px-0">
+                <h2
+                  ref={resultsCountRef}
+                  className="text-2xl font-bold scroll-mt-28 md:scroll-mt-24"
+                >
+                  Found {results.length} lead{results.length !== 1 && 's'}
+                </h2>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost gap-1.5 text-violet-700 hover:bg-violet-50"
+                  onClick={handleBestFollowup}
+                  title="Ranks up to 40 currently shown leads, then opens a full AI review for the top one"
+                >
+                  <SparklesIcon className="h-4 w-4" aria-hidden />
+                  Best follow-up
+                </button>
+              </div>
               {viewMode === 'table' ? (
                 <div ref={tableResultsRef}>
-                  <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
+                  <TableView
+                    leads={results}
+                    selectedColumns={selectedColumns}
+                    onLeadClick={handleLeadClick}
+                    onAiFollowup={openAiFollowup}
+                  />
                 </div>
               ) : (
                 <div
@@ -6441,6 +6510,12 @@ const LeadSearchPage: React.FC = () => {
         lead={rolesModalLead}
         isOpen={rolesModalLead != null}
         onClose={() => setRolesModalLead(null)}
+      />
+
+      <LeadFollowupAiDrawer
+        open={followupLead != null}
+        lead={followupLead}
+        onClose={closeAiFollowup}
       />
 
     </div>
