@@ -24,6 +24,8 @@ export type { PipelineViewAs } from '../../lib/resolvePipelineIdentity';
 export const PIPELINE_TABLE_CLASS =
   'pipeline-flat-table w-full table-auto border-separate border-spacing-0 text-sm';
 
+export const PIPELINE_TABLE_SHELL = 'w-full overflow-x-auto';
+
 export const PIPELINE_THEAD_CLASS =
   'sticky top-0 z-10 bg-[#f3f4f6] text-sm uppercase tracking-wide text-gray-500';
 
@@ -35,7 +37,7 @@ export function pipelineRowClassName(selected?: boolean): string {
 
 export const PIPELINE_CELL_STYLE: CSSProperties = { backgroundColor: '#ffffff' };
 
-const PIPELINE_CELL_BASE = 'px-4 py-3.5 border-b border-gray-100';
+const PIPELINE_CELL_BASE = 'px-2 py-3.5 border-b border-gray-100';
 
 export const PIPELINE_CELL_FIRST = PIPELINE_CELL_BASE;
 export const PIPELINE_CELL_MID = PIPELINE_CELL_BASE;

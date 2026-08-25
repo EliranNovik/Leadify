@@ -17,6 +17,8 @@ type Props = {
   onToggleSettings: () => void;
   onAction: (action: PipelineRailAction) => void;
   children?: React.ReactNode;
+  /** Hide the fixed rail when the keep-alive pipeline is off-screen. */
+  visible?: boolean;
 };
 
 const ACTIONS: Array<{
@@ -57,11 +59,16 @@ const PipelineActionSidebar: React.FC<Props> = ({
   onToggleSettings,
   onAction,
   children,
+  visible = true,
 }) => {
   return (
     <>
       <div className="w-16 shrink-0" aria-hidden />
-      <aside className="fixed inset-y-0 left-0 z-[51] flex h-[100dvh] w-16 flex-col border-r border-gray-200 bg-[#f9fafb]">
+      <aside
+        className={`fixed inset-y-0 left-0 z-[51] flex h-[100dvh] w-16 flex-col border-r border-gray-200 bg-[#f9fafb] ${
+          visible ? '' : 'hidden'
+        }`}
+      >
       <div className="flex flex-1 flex-col items-center gap-2 px-2 pt-[calc(env(safe-area-inset-top,0px)+5rem)] md:pt-20">
         {ACTIONS.map((action, index) => {
           const armed = armedAction === action.id;

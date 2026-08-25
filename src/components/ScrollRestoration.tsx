@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useLocation, useNavigationType } from "react-router-dom";
 import { cacheRouteInstance, getCachedRouteInstance } from '../utils/routeCache';
+import { isKeepAlivePipelinePath } from '../lib/pipelineLiveCache';
 
 const RESTORE_DELAYS = [0, 100, 300, 500, 1000]; // Multiple attempts to ensure restoration works
 const SCROLL_DEBUG = typeof window !== 'undefined' && (window as any).__SCROLL_DEBUG__ === true;
@@ -103,6 +104,32 @@ export default function ScrollRestoration() {
 
   // Restore scroll position whenever we navigate to a route with cached state.
   useEffect(() => {
+    const timers: number[] = [];
+    const frames: number[] = [];
+
+    const restoreScroll = (targetScroll: number, attempt: number) => {
+      // A later timer must not run after the user has already gone back to pipeline.
+      if (isKeepAlivePipelinePath(window.location.pathname)) return;
+
+      if (SCROLL_DEBUG) console.log(`[ScrollRestoration] Restore attempt ${attempt}:`, {
+        routeKey: currentRouteKey,
+        targetScroll,
+      });
+
+      const mainElement = document.querySelector('main');
+      if (mainElement) mainElement.scrollTop = targetScroll;
+      window.scrollTo({ top: targetScroll, left: 0, behavior: 'auto' });
+      document.documentElement.scrollTop = targetScroll;
+      document.body.scrollTop = targetScroll;
+    };
+
+    if (isKeepAlivePipelinePath(location.pathname)) {
+      return () => {
+        timers.forEach((t) => window.clearTimeout(t));
+        frames.forEach((f) => window.cancelAnimationFrame(f));
+      };
+    }
+
     if (SCROLL_DEBUG) console.log('[ScrollRestoration] Restore effect triggered:', {
       routeKey: currentRouteKey,
       navType,
@@ -110,53 +137,22 @@ export default function ScrollRestoration() {
     });
 
     const cached = getCachedRouteInstance(currentRouteKey);
-    const restoreScroll = (targetScroll: number, attempt: number) => {
-      const mainElement = document.querySelector('main');
-      
-      if (SCROLL_DEBUG) console.log(`[ScrollRestoration] Restore attempt ${attempt}:`, {
-        routeKey: currentRouteKey,
-        targetScroll,
-        mainElementFound: !!mainElement,
-        currentWindowScrollY: window.scrollY,
-        currentMainScrollTop: mainElement?.scrollTop || 0,
-        currentDocElementScrollTop: document.documentElement.scrollTop,
-        currentBodyScrollTop: document.body.scrollTop,
-      });
-
-      if (mainElement) {
-        mainElement.scrollTop = targetScroll;
-      }
-      window.scrollTo({ top: targetScroll, left: 0, behavior: 'auto' });
-      document.documentElement.scrollTop = targetScroll;
-      document.body.scrollTop = targetScroll;
-    };
 
     if (cached && cached.scrollPosition > 0) {
       const targetScroll = cached.scrollPosition;
-      if (SCROLL_DEBUG) console.log('[ScrollRestoration] Found cached position, restoring:', {
-        routeKey: currentRouteKey,
-        navType,
-        targetScroll,
-      });
-
-      requestAnimationFrame(() => restoreScroll(targetScroll, 0));
+      frames.push(window.requestAnimationFrame(() => restoreScroll(targetScroll, 0)));
       RESTORE_DELAYS.forEach((delay, index) => {
-        setTimeout(() => restoreScroll(targetScroll, index + 1), delay);
+        timers.push(window.setTimeout(() => restoreScroll(targetScroll, index + 1), delay));
       });
     } else {
-      if (SCROLL_DEBUG) console.log('[ScrollRestoration] No cached position, scrolling to top:', {
-        routeKey: currentRouteKey,
-        navType,
-      });
-      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-      document.documentElement.scrollTop = 0;
-      document.body.scrollTop = 0;
-      const mainElement = document.querySelector('main');
-      if (mainElement) {
-        mainElement.scrollTop = 0;
-      }
+      restoreScroll(0, 0);
     }
-  }, [currentRouteKey, navType]);
+
+    return () => {
+      timers.forEach((t) => window.clearTimeout(t));
+      frames.forEach((f) => window.cancelAnimationFrame(f));
+    };
+  }, [currentRouteKey, navType, location.pathname]);
 
   return null;
 }

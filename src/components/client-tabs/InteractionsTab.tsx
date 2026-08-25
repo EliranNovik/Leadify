@@ -113,7 +113,9 @@ import {
   displayConversationSubject,
   emailInteractionVisibleOnTimeline,
   EMAIL_LIST_SELECT,
+  dedupeTimelineEmailLikeRows,
 } from '../../lib/interactions/emailFilters';
+import { interactionTimestampMs } from '../../lib/interactions/timelineTimestamp';
 import {
   readEmailSidepanelCache,
   writeEmailSidepanelCache,
@@ -959,19 +961,17 @@ function timelineHasEmailRows(items: Interaction[]): boolean {
   return countTimelineChannelRows(items, 'email') > 0;
 }
 
-/** Prefer the snapshot with more DB-sourced emails/WhatsApp, then total rows. */
+/** Don't replace a populated channel with an empty fetch; never keep a fatter duplicate-heavy snapshot. */
 function shouldKeepExistingTimeline(prev: Interaction[], next: Interaction[]): boolean {
   const prevWa = countTimelineChannelRows(prev, 'whatsapp');
   const nextWa = countTimelineChannelRows(next, 'whatsapp');
-  if (prevWa > nextWa) return true;
-  if (nextWa > prevWa) return false;
+  if (prevWa > 0 && nextWa === 0) return true;
 
   const prevEmail = countTimelineChannelRows(prev, 'email');
   const nextEmail = countTimelineChannelRows(next, 'email');
-  if (prevEmail > nextEmail) return true;
-  if (nextEmail > prevEmail) return false;
+  if (prevEmail > 0 && nextEmail === 0) return true;
 
-  return prev.length > next.length;
+  return false;
 }
 
 function isOptimisticEmailRow(row: Interaction): boolean {
@@ -1034,7 +1034,7 @@ function reconcileOptimisticEmailRows(prev: Interaction[], next: Interaction[]):
 
   const leftover = temps.filter((t) => !usedTempIds.has(String(t.id)));
   if (leftover.length === 0) return merged;
-  return [...leftover, ...merged].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+  return sortInteractionsByDate([...leftover, ...merged]);
 }
 
 function runInteractionsFetchOnce(key: string, run: () => Promise<void>): Promise<void> {
@@ -1097,11 +1097,7 @@ function readInitialInteractionsFromStorage(
 }
 
 function sortInteractionsByDate(items: Interaction[]): Interaction[] {
-  return [...items].sort((a, b) => {
-    const ta = a.raw_date ? new Date(a.raw_date).getTime() : 0;
-    const tb = b.raw_date ? new Date(b.raw_date).getTime() : 0;
-    return tb - ta;
-  });
+  return [...items].sort((a, b) => interactionTimestampMs(b) - interactionTimestampMs(a));
 }
 
 /** Lightweight map for instant paint from client.manual_interactions before network fetch completes. */
@@ -2478,9 +2474,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     const filtered = interactions.filter((interaction: any) =>
       emailInteractionVisibleOnTimeline(interaction),
     );
-    // Always sort by raw_date (same key used when merging) — date/time string parsing caused a
-    // second reorder ~1s after enter when emails arrived with different display fields.
-    return sortInteractionsByDate(filtered);
+    return sortInteractionsByDate(dedupeTimelineEmailLikeRows(filtered));
   }, [interactions]);
 
   useEffect(() => {
@@ -4340,7 +4334,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               id: `call_${callLog.id}`,
               date: callDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
               time: callTime,
-              raw_date: callLog.cdate,
+              raw_date: new Date(
+                interactionTimestampMs({
+                  kind: 'call',
+                  date: callDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+                  time: callTime,
+                  raw_date: callLog.cdate,
+                }) || Date.parse(callLog.cdate) || Date.now(),
+              ).toISOString(),
               employee: employeeName,
               direction: direction,
               kind: 'call',
@@ -4423,10 +4424,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
           
           // CRITICAL: Ensure raw_date exists - construct from date and time if missing
-          // IMPORTANT: If raw_date exists, use it directly - don't recalculate from date/time
-          // This ensures that edited interactions preserve their raw_date value
+          // Prefer date+time (what the drawer shows) so sort and display stay in sync.
           let rawDate = i.raw_date;
-          if (!rawDate && i.date && i.time) {
+          const fromDateTime = interactionTimestampMs({
+            kind: i.kind,
+            id: i.id,
+            editable: true,
+            date: i.date,
+            time: i.time,
+            raw_date: i.raw_date,
+          });
+          if (fromDateTime) {
+            rawDate = new Date(fromDateTime).toISOString();
+          } else if (!rawDate && i.date && i.time) {
             // Only calculate raw_date if it's missing - this preserves edited values
             // Try to parse date and time to create ISO string
             try {
@@ -4503,7 +4513,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Build employee email-to-name mapping for email sender matching
         const employeeEmailMap = await buildEmployeeEmailToNameMap();
         
-        const sortedEmails = [...clientEmails].sort((a: any, b: any) => {
+        const sortedEmails = dedupeEmailsForSidepanel([...clientEmails]).sort((a: any, b: any) => {
           const aDate = new Date(a.sent_at || 0).getTime();
           const bDate = new Date(b.sent_at || 0).getTime();
           return bDate - aDate;
@@ -4768,6 +4778,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             // Preserve contact_id and contact_name from transformation
             contact_id: i.contact_id,
             contact_name: i.contact_name,
+            raw_date: new Date(
+              interactionTimestampMs({
+                ...i,
+                editable: true,
+              }) || Date.now(),
+            ).toISOString(),
           };
         });
         
@@ -4790,15 +4806,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const filteredOutByReason: Record<string, number> = {};
         const filteredOutDetails: Array<{id: any, kind: any, reason: string, raw_date?: string, subject?: string, contentLength?: number}> = [];
         const validInteractions = combined.filter((interaction: any) => {
-          if (!interaction.raw_date) {
-            filteredOutByReason['missing_raw_date'] = (filteredOutByReason['missing_raw_date'] || 0) + 1;
-            filteredOutDetails.push({ id: interaction.id, kind: interaction.kind, reason: 'missing_raw_date' });
-            return false;
-          }
-          const date = new Date(interaction.raw_date);
-          if (isNaN(date.getTime())) {
+          if (!interactionTimestampMs(interaction)) {
             filteredOutByReason['invalid_raw_date'] = (filteredOutByReason['invalid_raw_date'] || 0) + 1;
-            filteredOutDetails.push({ id: interaction.id, kind: interaction.kind, reason: 'invalid_raw_date', raw_date: interaction.raw_date });
+            filteredOutDetails.push({ id: interaction.id, kind: interaction.kind, reason: 'invalid_timestamp', raw_date: interaction.raw_date });
             return false;
           }
           
@@ -4878,122 +4888,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
         }
 
-        // For emails, deduplicate by message_id - keep the one with most content
-        // Also filter out emails that only have a subject (no actual content)
-        const emailMap = new Map<string, any>();
-        const nonEmailInteractions: any[] = [];
-        const emailsFilteredOut: Array<{id: any, reason: string, isLegacy?: boolean, hasBodyHtml?: boolean, hasBodyPreview?: boolean, hasContentField?: boolean, contentLength?: number, subject?: string}> = [];
-        const emailsDeduplicated: Array<{id: any, keptId: any}> = [];
-        
-        interactionsAfterLegacyManualDedup.forEach((interaction: any) => {
-          if (interaction.kind === 'email' && interaction.id) {
-            // Check if this is a manual interaction (by ID prefix) - always include manual interactions
-            const isManualInteraction = interaction.id?.toString().startsWith('manual_');
-            if (isManualInteraction) {
-              // Always include manual interactions - add to nonEmailInteractions to bypass email deduplication
-              nonEmailInteractions.push(interaction);
-              return;
-            }
-            
-            // Check if this is a legacy email (from leads_leadinteractions)
-            // Legacy emails have content field, not body_html/body_preview
-            const isLegacyEmail = interaction.id?.toString().startsWith('legacy_');
-            
-            const contentText = (interaction.content || '')
-              .replace(/<[^>]*>/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim();
-            const subjectText = (interaction.subject || '').trim();
-            const hasContent = Boolean(subjectText || contentText);
+        const uniqueInteractions = dedupeTimelineEmailLikeRows(interactionsAfterLegacyManualDedup);
 
-            if (!hasContent) {
-              // Skip this email - it only has a subject or no meaningful content
-              const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-              emailsFilteredOut.push({ 
-                id: interaction.id, 
-                reason: 'email_no_content',
-                isLegacy: isLegacyEmail,
-                hasBodyHtml: !!(interaction.body_html && interaction.body_html.trim()),
-                hasBodyPreview: !!(interaction.body_preview && interaction.body_preview.trim()),
-                hasContentField: !!(interaction.content && interaction.content.trim()),
-                contentLength: contentText.length,
-                subject: (interaction.subject || '').substring(0, 50)
-              });
-              return;
-            }
-            
-            const emailStableKey =
-              interaction.message_id != null && String(interaction.message_id).trim() !== ''
-                ? String(interaction.message_id)
-                : String(interaction.id);
-            const existing = emailMap.get(emailStableKey);
-
-            if (!existing) {
-              emailMap.set(emailStableKey, interaction);
-            } else {
-              // Compare content - keep the one with more content (not just subject)
-              // Use same strict checking as above
-              const existingContentText = (existing.content || '')
-                .replace(/<[^>]*>/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim();
-              const existingSubjectText = (existing.subject || '').trim();
-              const existingHasContent = Boolean(existingSubjectText || existingContentText);
-
-              const currentContentText = (interaction.content || '')
-                .replace(/<[^>]*>/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim();
-              const currentSubjectText = (interaction.subject || '').trim();
-              const currentHasContent = Boolean(currentSubjectText || currentContentText);
-              
-              if (currentHasContent && !existingHasContent) {
-                // Current has content, existing doesn't - replace
-                emailsDeduplicated.push({ id: interaction.id, keptId: existing.id });
-                emailMap.set(emailStableKey, interaction);
-              } else if (!currentHasContent && existingHasContent) {
-                // Existing has content, current doesn't - keep existing
-                emailsDeduplicated.push({ id: interaction.id, keptId: existing.id });
-                // Do nothing
-              } else if (currentHasContent && existingHasContent) {
-                // Both have content, keep the one with more content
-                if (currentContentText.length > existingContentText.length) {
-                  emailsDeduplicated.push({ id: existing.id, keptId: interaction.id });
-                  emailMap.set(emailStableKey, interaction);
-                } else {
-                  emailsDeduplicated.push({ id: interaction.id, keptId: existing.id });
-                }
-              }
-              // If neither has content, don't add either (shouldn't happen due to earlier filtering)
-            }
-          } else {
-            nonEmailInteractions.push(interaction);
-          }
-        });
-        
-        interactionsDevLog(`📊 [InteractionsTab] After email deduplication for lead ${clientLeadId}:`, {
+        interactionsDevLog(`📊 [InteractionsTab] After email/manual cross-source dedupe for lead ${clientLeadId}:`, {
           leadId: clientLeadId,
           beforeEmailDedup: interactionsAfterLegacyManualDedup.length,
-          emailsFilteredOut: emailsFilteredOut.length,
-          emailsDeduplicated: emailsDeduplicated.length,
-          afterEmailDedup: Array.from(emailMap.values()).length + nonEmailInteractions.length,
-          emailsFilteredOutDetails: emailsFilteredOut, // Show all filtered emails
-          emailsDeduplicatedDetails: emailsDeduplicated.slice(0, 20),
+          afterEmailDedup: uniqueInteractions.length,
           emailBreakdown: {
-            totalEmails: interactionsAfterLegacyManualDedup.filter((i: any) => i.kind === 'email').length,
-            legacyEmails: interactionsAfterLegacyManualDedup.filter((i: any) => i.kind === 'email' && i.id?.toString().startsWith('legacy_')).length,
-            newEmails: interactionsAfterLegacyManualDedup.filter((i: any) => i.kind === 'email' && !i.id?.toString().startsWith('legacy_')).length
+            totalEmails: uniqueInteractions.filter((i: any) => i.kind === 'email' || i.kind === 'email_manual').length,
+            syncedEmails: uniqueInteractions.filter((i: any) => i.kind === 'email' && !String(i.id).startsWith('manual_') && !String(i.id).startsWith('legacy_')).length,
+            manualEmails: uniqueInteractions.filter((i: any) => String(i.id).startsWith('manual_') || i.kind === 'email_manual').length,
+            legacyEmails: uniqueInteractions.filter((i: any) => i.kind === 'email' && String(i.id).startsWith('legacy_')).length,
           }
-        });
-        
-        // Do NOT collapse by raw_date + kind — different emails/WhatsApp/calls can share the same
-        // second; that logic caused real interactions to disappear from the timeline.
-        const allInteractions = [...Array.from(emailMap.values()), ...nonEmailInteractions];
-        const uniqueInteractions = allInteractions;
-
-        interactionsDevLog(`📊 [InteractionsTab] After merge (no timestamp collapse) for lead ${clientLeadId}:`, {
-          leadId: clientLeadId,
-          interactionCount: uniqueInteractions.length,
         });
         
         interactionsDevLog(`📊 [InteractionsTab] FINAL COUNT for lead ${clientLeadId}:`, {
@@ -5009,11 +4915,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
         });
         
-        const sorted = uniqueInteractions.sort((a, b) => {
-          const dateA = new Date(a.raw_date).getTime();
-          const dateB = new Date(b.raw_date).getTime();
-          return dateB - dateA;
-        });
+        const sorted = sortInteractionsByDate(uniqueInteractions);
 
         // Merge optimistic rows only when absent (legacy: legacy_*; new leads: manual_*)
         const sortedIds = new Set(
@@ -5036,11 +4938,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         });
         const merged =
           orphanManuals.length > 0
-            ? [...orphanManuals, ...sorted].sort((a, b) => {
-                const dateA = new Date(a.raw_date).getTime();
-                const dateB = new Date(b.raw_date).getTime();
-                return dateB - dateA;
-              })
+            ? sortInteractionsByDate([...orphanManuals, ...sorted])
             : sorted;
         
         // Log WhatsApp messages count for debugging
@@ -7165,7 +7063,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     });
     
     // Sort interactions by raw_date after update
-    const sortedInteractions = updatedInteractions.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+    const sortedInteractions = sortInteractionsByDate(updatedInteractions);
     setInteractions(sortedInteractions);
     closeDrawer();
     // --- End Optimistic Update ---
@@ -7553,7 +7451,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
     // --- Optimistic Update ---
     const previousInteractions = [...interactions];
-    const newInteractions = [newInteraction, ...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+    const newInteractions = sortInteractionsByDate([newInteraction, ...interactions]);
     setInteractions(newInteractions);
     closeContactDrawer();
     // --- End Optimistic Update ---
@@ -7603,7 +7501,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   }
                 : item,
             )
-            .sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()),
+            .sort((a, b) => interactionTimestampMs(b) - interactionTimestampMs(a)),
         );
 
         interactionsDevLog('✅ Legacy interaction saved successfully:', {
@@ -8192,65 +8090,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   });
                 }
                 
-                // Date formatting - USE THE SAME LOGIC AS THE DRAWER
-                // The drawer shows row.date and row.time directly, so we should construct the date from those
-                // This ensures the timeline shows exactly what the drawer shows
-                let dateObj: Date;
-                
-                // CRITICAL: Use row.date and row.time to construct the date, just like we do when saving
-                // This ensures consistency with the drawer which shows row.date and row.time
-                if (row.date && row.time) {
-                  try {
-                    // Handle different date formats (DD/MM/YYYY, DD.MM.YY, YYYY-MM-DD, etc.) - SAME AS SAVE LOGIC
-                    const dateStr = row.date;
-                    const timeStr = row.time;
-                    
-                    let parsedDate: Date | null = null;
-                    
-                    // Try DD/MM/YYYY or DD.MM.YY format first (common in en-GB)
-                    if (dateStr.includes('/') || dateStr.includes('.')) {
-                      const separator = dateStr.includes('/') ? '/' : '.';
-                      const parts = dateStr.split(separator);
-                      if (parts.length === 3) {
-                        const [day, month, year] = parts;
-                        const fullYear = year.length === 2 ? `20${year}` : year;
-                        parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
-                      }
-                    } else if (dateStr.includes('-')) {
-                      // Try YYYY-MM-DD format
-                      parsedDate = new Date(`${dateStr}T${timeStr}`);
-                    } else {
-                      // Try to parse as-is
-                      parsedDate = new Date(`${dateStr} ${timeStr}`);
-                    }
-                    
-                    if (parsedDate && !isNaN(parsedDate.getTime())) {
-                      dateObj = parsedDate;
-                    } else {
-                      // Fallback to raw_date if parsing fails
-                      dateObj = row.raw_date ? new Date(row.raw_date) : new Date();
-                      if (isNaN(dateObj.getTime())) {
-                        dateObj = new Date();
-                      }
-                    }
-                  } catch (error) {
-                    // Fallback to raw_date if parsing fails
-                    dateObj = row.raw_date ? new Date(row.raw_date) : new Date();
-                    if (isNaN(dateObj.getTime())) {
-                      dateObj = new Date();
-                    }
-                  }
-                } else if (row.raw_date) {
-                  // Fallback to raw_date if date/time not available
-                  dateObj = new Date(row.raw_date);
-                  if (isNaN(dateObj.getTime())) {
-                    dateObj = new Date();
-                  }
-                } else {
-                  // Last resort: use current date
-                  dateObj = new Date();
-                }
-                
+                const ts = interactionTimestampMs(row);
+                const dateObj = new Date(ts || Date.now()); 
                 const day = dateObj.getDate().toString().padStart(2, '0');
                 const month = dateObj.toLocaleString('en', { month: 'short' });
                 const year = dateObj.getFullYear();

@@ -122,30 +122,17 @@ const HandlerAssignedDateBadge: React.FC<Props> = ({
 
   return (
     <div
-      className={`relative inline-flex items-center justify-start pt-2 ${
-        showOverlay ? (isReassigned ? 'pr-[4.5rem]' : 'pr-8') : ''
-      } ${tipText ? 'tooltip tooltip-top' : ''}`}
+      className={`inline-flex flex-col items-center justify-center gap-0.5 ${
+        tipText ? 'tooltip tooltip-top' : ''
+      }`}
       {...(tipText ? { 'data-tip': tipText } : {})}
     >
-      <span
-        className={`text-sm font-semibold ${
-          isReassigned ? 'text-amber-600' : isNew ? 'text-emerald-600' : 'text-gray-800'
-        }`}
-      >
-        {formatDateDDMMYY(d)}
-      </span>
       {showOverlay ? (
-        <span
-          className={`absolute -top-0.5 right-0 border-0 px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide uppercase text-white shadow-md outline-none ${
-            isReassigned
-              ? 'bg-gradient-to-r from-amber-500 to-orange-500'
-              : 'bg-gradient-to-r from-emerald-500 to-teal-500'
-          }`}
-          style={{ lineHeight: 1 }}
-        >
+        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-500">
           {isReassigned ? 'Re-assigned' : 'New'}
         </span>
       ) : null}
+      <span className="text-sm font-semibold text-gray-800">{formatDateDDMMYY(d)}</span>
     </div>
   );
 };

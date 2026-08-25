@@ -2241,6 +2241,28 @@ html.dark.theme-dark2 .hover\:bg-base-200:hover {
   }
 }
 
+.pipeline-keep-alive-scroll,
+.pipeline-flat-table {
+  overflow-anchor: none;
+}
+
+/* Row card corners sit below the grey column titles */
+.pipeline-flat-table > thead > tr > th {
+  background-color: #f3f4f6;
+}
+.pipeline-flat-table > tbody > tr:first-child > td:first-child {
+  border-top-left-radius: 1rem;
+}
+.pipeline-flat-table > tbody > tr:first-child > td:last-child {
+  border-top-right-radius: 1rem;
+}
+.pipeline-flat-table > tbody > tr:last-child > td:first-child {
+  border-bottom-left-radius: 1rem;
+}
+.pipeline-flat-table > tbody > tr:last-child > td:last-child {
+  border-bottom-right-radius: 1rem;
+}
+
 /* Pipeline page — panel transition when switching Closer / Scheduler / Manager / Helper */
 .pipeline-tab-panel {
   animation: pipeline-tab-enter 220ms cubic-bezier(0.4, 0, 0.2, 1) both;

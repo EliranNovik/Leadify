@@ -18,7 +18,6 @@ import {
   createSnapshotStore,
   pipelineViewIdentityKey,
   useRevalidateOnVisible,
-  useScrollRestoration,
 } from '../../lib/pipelineLiveCache';
 import ExpertSummaryCards, {
   type ExpertQuickFilter,
@@ -41,6 +40,7 @@ import {
   PIPELINE_CELL_MID,
   PIPELINE_CELL_STYLE,
   PIPELINE_TABLE_CLASS,
+  PIPELINE_TABLE_SHELL,
   PIPELINE_THEAD_CLASS,
   formatPipelineCategory,
   formatPipelineMoney,
@@ -480,7 +480,6 @@ const ExpertPipelineView: React.FC<Props> = ({
     isStale: () => snapshotStore.isStale(EXPERT_STALE_MS),
     onRevalidate: () => void load({ silent: true }),
   });
-  useScrollRestoration(snapshotStore, loading);
 
   useEffect(() => {
     onCountChange?.(rows.length);
@@ -714,24 +713,24 @@ const ExpertPipelineView: React.FC<Props> = ({
           {error}
         </div>
       ) : (
-        <div className="w-full overflow-x-auto">
+        <div className={PIPELINE_TABLE_SHELL}>
           <table className={PIPELINE_TABLE_CLASS}>
             <thead className={PIPELINE_THEAD_CLASS}>
               <tr>
                 <PipelineRowPickHeader visible={picking} />
-                <th className="px-4 py-3 text-left font-semibold">Lead</th>
-                <th className="px-4 py-3 text-left font-semibold">
+                <th className="px-2 py-3 text-left font-semibold">Lead</th>
+                <th className="px-2 py-3 text-left font-semibold">
                   <SortHeader column="assigned_since">Assigned since</SortHeader>
                 </th>
-                <th className="px-4 py-3 text-left font-semibold">Meeting</th>
-                <th className="px-4 py-3 text-left font-semibold">Stage</th>
-                <th className="px-4 py-3 text-left font-semibold">Category</th>
-                <th className="px-4 py-3 text-left font-semibold">Date created</th>
-                <th className="px-4 py-3 text-left font-semibold">
+                <th className="px-2 py-3 text-left font-semibold">Meeting</th>
+                <th className="px-2 py-3 text-left font-semibold">Stage</th>
+                <th className="px-2 py-3 text-left font-semibold">Category</th>
+                <th className="px-2 py-3 text-left font-semibold">Date created</th>
+                <th className="px-2 py-3 text-left font-semibold">
                   <SortHeader column="probability">Probability</SortHeader>
                 </th>
-                <th className="px-4 py-3 text-left font-semibold">Applicants</th>
-                <th className="px-4 py-3 text-left font-semibold">Value</th>
+                <th className="px-2 py-3 text-left font-semibold">Applicants</th>
+                <th className="px-2 py-3 text-left font-semibold">Value</th>
               </tr>
             </thead>
             <tbody>

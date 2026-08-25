@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/queryClient';
@@ -203,6 +203,18 @@ const AppContentInner: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [clientsAppNavOpen, setClientsAppNavOpen] = useState(false);
   const [adminAppNavOpen, setAdminAppNavOpen] = useState(false);
+  const [pipelinePageMounted, setPipelinePageMounted] = useState(isPipelinePage);
+  if (isPipelinePage && !pipelinePageMounted) {
+    setPipelinePageMounted(true);
+  }
+  const pipelineScrollRef = useRef<HTMLDivElement>(null);
+  const pipelineScrollTopRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const el = pipelineScrollRef.current;
+    if (!el || !isPipelinePage) return;
+    el.scrollTop = pipelineScrollTopRef.current;
+  }, [isPipelinePage]);
 
   // Memoize computed props for Header/Sidebar to prevent unnecessary re-renders
   const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
@@ -1083,14 +1095,35 @@ const AppContentInner: React.FC = () => {
                   startInsetClassName={isPipelinePage ? 'left-16' : undefined}
                 />
                 <main
-                  className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 ${
+                  className={`app-main-scroll relative min-h-0 w-full min-w-0 flex-1 ${
                     isPoaEditPage
                       ? 'overflow-hidden flex flex-col'
                       : isCalendarPage
                         ? 'max-md:overflow-x-hidden max-md:overflow-y-auto md:overflow-hidden md:flex md:flex-col'
                         : 'overflow-y-auto overflow-x-hidden md:overflow-x-auto'
-                  } ${isClientDetailPage ? 'clients-detail-scroll scrollbar-hide' : `pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${isClientsPage ? 'scrollbar-hide' : ''}`} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                  } ${
+                    isClientDetailPage
+                      ? 'clients-detail-scroll scrollbar-hide'
+                      : `pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${isClientsPage ? 'scrollbar-hide' : ''}`
+                  } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
+                  {pipelinePageMounted ? (
+                    <div
+                      ref={pipelineScrollRef}
+                      className={`pipeline-keep-alive-scroll absolute bottom-0 left-0 right-0 overflow-x-hidden overflow-y-auto bg-[#f3f4f6] top-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:top-14 ${
+                        isPipelinePage ? 'z-0' : 'hidden'
+                      }`}
+                      aria-hidden={!isPipelinePage}
+                      onScroll={(event) => {
+                        if (!isPipelinePage) return;
+                        pipelineScrollTopRef.current = event.currentTarget.scrollTop;
+                      }}
+                    >
+                      <RouteSuspense>
+                        <LazyPipelinePage />
+                      </RouteSuspense>
+                    </div>
+                  ) : null}
                   <Routes>
                     <Route path="/" element={<HomeEntryPage />} />
                     <Route path="/external-home" element={<RouteSuspense><LazyExternalUserHomePage /></RouteSuspense>} />
@@ -1139,7 +1172,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/expert" element={<RouteSuspense><LazyExpertPage /></RouteSuspense>} />
                     <Route path="/create" element={<RouteSuspense><LazyCreateNewLead /></RouteSuspense>} />
                     <Route path="/lead-search" element={<RouteSuspense><LazyLeadSearchPage /></RouteSuspense>} />
-                    <Route path="/pipeline" element={<RouteSuspense><LazyPipelinePage /></RouteSuspense>} />
+                    <Route path="/pipeline" element={null} />
                     <Route path="/new-cases" element={<RouteSuspense><LazyNewCasesPage /></RouteSuspense>} />
                     <Route path="/new-handler-cases" element={<RouteSuspense><LazyNewHandlerCasesPage /></RouteSuspense>} />
                     <Route path="/handler-management" element={<RouteSuspense><LazyHandlerManagementPage /></RouteSuspense>} />

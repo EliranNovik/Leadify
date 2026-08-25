@@ -18,7 +18,6 @@ import {
   createSnapshotStore,
   pipelineViewIdentityKey,
   useRevalidateOnVisible,
-  useScrollRestoration,
 } from '../../lib/pipelineLiveCache';
 import {
   HandlerCaseOverlays,
@@ -53,6 +52,7 @@ import {
   PIPELINE_CELL_MID,
   PIPELINE_CELL_STYLE,
   PIPELINE_TABLE_CLASS,
+  PIPELINE_TABLE_SHELL,
   PIPELINE_THEAD_CLASS,
   formatPipelineCategory,
   formatPipelineMoney,
@@ -475,7 +475,6 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
     isStale: () => snapshotStore.isStale(RETENTION_STALE_MS),
     onRevalidate: () => void load({ silent: true }),
   });
-  useScrollRestoration(snapshotStore, loading);
 
   useEffect(() => {
     onCountChange?.(rows.length);
@@ -607,21 +606,21 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           {error}
         </div>
       ) : (
-        <div className="w-full overflow-x-auto">
+        <div className={PIPELINE_TABLE_SHELL}>
           <table className={PIPELINE_TABLE_CLASS}>
             <thead className={PIPELINE_THEAD_CLASS}>
               <tr>
                 <PipelineRowPickHeader visible={picking} />
-                <th className="px-4 py-3 text-left font-semibold">Lead</th>
-                <th className="px-4 py-3 text-left font-semibold">Follow up</th>
-                <th className="px-4 py-3 text-left font-semibold">Category</th>
-                <th className="px-4 py-3 text-left font-semibold">Language</th>
-                <th className="px-4 py-3 text-left font-semibold">Country</th>
-                <th className="px-4 py-3 text-left font-semibold">Applicants</th>
-                <th className="px-4 py-3 text-left font-semibold">Value</th>
-                <th className="px-4 py-3 text-left font-semibold">Stage</th>
-                <th className="px-4 py-3 text-left font-semibold">Handler</th>
-                <th className="px-4 py-3 text-right font-semibold">Actions</th>
+                <th className="px-2 py-3 text-left font-semibold">Lead</th>
+                <th className="px-2 py-3 text-left font-semibold">Follow up</th>
+                <th className="px-2 py-3 text-left font-semibold">Category</th>
+                <th className="px-2 py-3 text-left font-semibold">Language</th>
+                <th className="px-2 py-3 text-left font-semibold">Country</th>
+                <th className="px-2 py-3 text-left font-semibold">Applicants</th>
+                <th className="px-2 py-3 text-left font-semibold">Value</th>
+                <th className="px-2 py-3 text-left font-semibold">Stage</th>
+                <th className="px-2 py-3 text-left font-semibold">Handler</th>
+                <th className="px-2 py-3 text-right font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>

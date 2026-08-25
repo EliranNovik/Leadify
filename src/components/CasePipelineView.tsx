@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
@@ -38,7 +38,9 @@ import {
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import {
   createSnapshotStore,
+  isKeepAlivePipelinePath,
   pipelineViewIdentityKey,
+  usePipelineRouteActive,
   useRealtimeTables,
   useRevalidateOnVisible,
   useScrollRestoration,
@@ -63,6 +65,7 @@ import {
   PIPELINE_CELL_MID,
   PIPELINE_CELL_STYLE,
   PIPELINE_TABLE_CLASS,
+  PIPELINE_TABLE_SHELL,
   PIPELINE_THEAD_CLASS,
   pipelineRowClassName,
 } from './pipeline/pipelineUi';
@@ -765,17 +768,17 @@ function CloserCell({ name, photoUrl }: { name: string | null; photoUrl: string 
   const showPhoto = url.length > 0 && !imgErr;
 
   return (
-    <span className="inline-flex items-center gap-2 min-w-0">
+    <span className="inline-flex items-center gap-1.5 min-w-0">
       {showPhoto ? (
         <img
           src={url}
           alt=""
-          className="h-11 w-11 shrink-0 rounded-full object-cover"
+          className="h-8 w-8 shrink-0 rounded-full object-cover"
           onError={() => setImgErr(true)}
         />
       ) : (
         <span
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gray-200 text-sm font-semibold text-gray-700"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[10px] font-semibold text-gray-700"
           aria-hidden
         >
           {initialsFromName(display)}
@@ -941,6 +944,8 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
   refreshToken = 0,
 }) => {
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const pipelineRouteActive = usePipelineRouteActive();
   const initialSnapshot = (() => {
     const snapshot = snapshotStore.get();
     if (!snapshot || snapshot.identityKey !== pipelineViewIdentityKey(viewAs)) return null;
@@ -1423,7 +1428,11 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
     onRevalidate: () => void loadData({ silent: true }),
   });
 
-  useScrollRestoration(snapshotStore, loading);
+  useScrollRestoration(
+    snapshotStore,
+    loading,
+    pipelineRouteActive && !isKeepAlivePipelinePath(pathname),
+  );
 
   const removeRow = useCallback(
     (rowId: string) => {
@@ -2132,7 +2141,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
   return (
     <div
       className={
-        withPageChrome ? 'min-h-full w-full bg-[#f3f4f6] px-4 py-6 sm:px-6 lg:px-8' : 'w-full'
+        withPageChrome ? 'min-h-full w-full bg-[#f3f4f6] px-2 py-6 sm:px-3' : 'w-full'
       }
     >
       <div className="w-full space-y-5">
@@ -2270,33 +2279,33 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
               <span className="loading loading-spinner loading-lg text-primary" />
             </div>
           ) : (
-            <div className="w-full overflow-x-auto">
+            <div className={PIPELINE_TABLE_SHELL}>
               <table className={PIPELINE_TABLE_CLASS}>
                 <thead className={PIPELINE_THEAD_CLASS}>
                   <tr className="text-left">
                     <PipelineRowPickHeader visible={picking} />
-                    <th className="px-4 py-2 font-semibold">Lead</th>
-                    <th className="px-4 py-2 font-semibold">
+                    <th className="px-2 py-2 font-semibold">Lead</th>
+                    <th className="px-2 py-2 font-semibold">
                       <SortHeader column="follow_up">Follow up</SortHeader>
                     </th>
-                    <th className="px-4 py-2 font-semibold">
+                    <th className="px-2 py-2 font-semibold">
                       <SortHeader column="created_at">Date created</SortHeader>
                     </th>
-                    <th className="px-4 py-2 font-semibold">Stage</th>
-                    <th className="px-4 py-2 font-semibold">Category</th>
-                    <th className="px-4 py-2 font-semibold">Closer</th>
-                    <th className="px-4 py-2 font-semibold">
+                    <th className="px-2 py-2 font-semibold">Stage</th>
+                    <th className="px-2 py-2 font-semibold">Category</th>
+                    <th className="px-2 py-2 font-semibold">Closer</th>
+                    <th className="px-2 py-2 font-semibold">
                       <SortHeader column="value">Value</SortHeader>
                     </th>
-                    <th className="px-4 py-2 font-semibold">
+                    <th className="px-2 py-2 font-semibold">
                       <SortHeader column="probability">Probability</SortHeader>
                     </th>
-                    <th className="px-4 py-2 font-semibold">Tags</th>
-                    <th className="px-4 py-2 font-semibold">
+                    <th className="px-2 py-2 font-semibold">Tags</th>
+                    <th className="px-2 py-2 font-semibold">
                       <SortHeader column="last_interaction">L. Interaction</SortHeader>
                     </th>
-                    <th className="px-4 py-2 font-semibold">Country</th>
-                    <th className="px-4 py-2 font-semibold">
+                    <th className="px-2 py-2 font-semibold">Country</th>
+                    <th className="px-2 py-2 font-semibold">
                       <SortHeader column="next_meeting">Meeting</SortHeader>
                     </th>
                   </tr>
@@ -2373,9 +2382,11 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                             className={PIPELINE_CELL_FIRST}
                             style={PIPELINE_CELL_STYLE}
                           >
-                            <div className="min-w-0">
-                              <p className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-                                #{row.lead_number}
+                            <div className="flex min-w-0 flex-col items-start">
+                              <p className="flex max-w-full items-center gap-2">
+                                <span className="truncate font-mono text-xs font-bold text-gray-500">
+                                  {row.lead_number}
+                                </span>
                                 {row.is_inactive ? (
                                   <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                                     Inactive
@@ -2384,7 +2395,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
                               </p>
                               <button
                                 type="button"
-                                className="line-clamp-3 max-w-[11rem] break-words text-left text-sm leading-snug text-gray-600 hover:underline"
+                                className="max-w-full truncate text-left font-semibold text-base-content hover:underline"
                                 title={row.client_name}
                                 onClick={(e) => {
                                   e.stopPropagation();

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { supabase } from './supabase';
 
 /**
@@ -22,6 +23,25 @@ export const DEFAULT_PIPELINE_STALE_MS = 5 * 60 * 1000;
 
 export function pipelineViewIdentityKey(viewAs?: { employeeId?: number | null } | null): string {
   return viewAs?.employeeId != null ? `emp:${viewAs.employeeId}` : 'self';
+}
+
+export function isPipelineShellPath(pathname: string): boolean {
+  return (
+    pathname === '/pipeline' ||
+    pathname.startsWith('/pipeline/') ||
+    pathname === '/case-pipeline' ||
+    pathname.startsWith('/case-pipeline/')
+  );
+}
+
+export function isKeepAlivePipelinePath(pathname: string): boolean {
+  return pathname === '/pipeline' || pathname.startsWith('/pipeline/');
+}
+
+/** False while the keep-alive pipeline is hidden behind another route. */
+export function usePipelineRouteActive(): boolean {
+  const { pathname } = useLocation();
+  return isPipelineShellPath(pathname);
 }
 
 export type SnapshotStore<T> = {
@@ -88,50 +108,24 @@ export function useScrollRestoration(
   contentReadyKey: unknown,
   enabled = true,
 ): void {
-  const frozenRef = useRef(false);
-  const enabledRef = useRef(enabled);
-  enabledRef.current = enabled;
+  const frozenRef = useRef(!enabled);
+  const wasEnabledRef = useRef(enabled);
 
-  // Capture the final offset before the DOM is torn down; a layout cleanup still sees it.
+  // Freeze during render when the page hides so a hide-induced scroll-to-0 cannot clobber the offset.
+  if (wasEnabledRef.current && !enabled) {
+    frozenRef.current = true;
+  }
+  wasEnabledRef.current = enabled;
+
   useLayoutEffect(() => {
-    frozenRef.current = false;
-    return () => {
-      const container = getAppScrollContainer();
-      if (container && enabledRef.current) store.setScrollTop(container.scrollTop);
-      // Removing our rows can make the shell clamp scrollTop to 0 and emit a scroll event.
-      frozenRef.current = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
     if (!enabled) return;
+
     const container = getAppScrollContainer();
     if (!container) return;
 
     const target = store.getScrollTop();
-    const timers: number[] = [];
-    const frames: number[] = [];
-    let restored = target <= 0;
-
-    if (!restored) {
-      // Rows may still be laying out, so retry until the container is tall enough to scroll.
-      [0, 60, 160, 320].forEach((delay) => {
-        timers.push(
-          window.setTimeout(() => {
-            if (restored) return;
-            frames.push(
-              window.requestAnimationFrame(() => {
-                if (container.scrollHeight - container.clientHeight >= target) {
-                  container.scrollTop = target;
-                  restored = true;
-                }
-              }),
-            );
-          }, delay),
-        );
-      });
-    }
+    if (target > 0) container.scrollTop = target;
+    frozenRef.current = false;
 
     const onScroll = () => {
       if (frozenRef.current) return;
@@ -139,9 +133,9 @@ export function useScrollRestoration(
     };
     container.addEventListener('scroll', onScroll, { passive: true });
     return () => {
+      store.setScrollTop(container.scrollTop);
+      frozenRef.current = true;
       container.removeEventListener('scroll', onScroll);
-      timers.forEach((t) => window.clearTimeout(t));
-      frames.forEach((f) => window.cancelAnimationFrame(f));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentReadyKey, enabled]);

@@ -13,6 +13,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { interactionTimestampMs } from './timelineTimestamp';
 
 /** Max wait for optional address matching (must not block the tab). */
 const EMAIL_ADDRESS_MATCH_TIMEOUT_MS = 2500;
@@ -320,12 +321,67 @@ export function applyEmailSidepanelListMode<T extends Record<string, any>>(
   });
 }
 
+function emailMinuteBucket(row: {
+  sent_at?: string | null;
+  date?: string | null;
+  raw_date?: string | null;
+  time?: string | null;
+  kind?: string;
+  id?: unknown;
+  editable?: boolean;
+}): number {
+  const ms = interactionTimestampMs({
+    kind: row.kind,
+    id: row.id,
+    editable: row.editable,
+    date: row.date,
+    time: row.time,
+    raw_date: row.raw_date || row.sent_at || null,
+  });
+  return ms ? Math.floor(ms / 60_000) : 0;
+}
+
+function normalizeEmailSubjectForDedupe(subject?: string | null): string {
+  return String(subject || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^(re|fw|fwd|aw|sv|vs|antw)\s*:\s*/i, '')
+    .replace(/\s+/g, ' ');
+}
+
+function emailBodySnippet(row: {
+  content?: string | null;
+  body_html?: string | null;
+  body_preview?: string | null;
+  bodyPreview?: string | null;
+}): string {
+  return String(row.body_html || row.bodyPreview || row.body_preview || row.content || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .slice(0, 80);
+}
+
+function isSyncedEmailTimelineRow(row: { kind?: string; id?: unknown; editable?: boolean }): boolean {
+  const id = String(row.id ?? '');
+  const kind = String(row.kind || '');
+  if (kind === 'email_manual') return false;
+  if (row.editable === true) return false;
+  if (id.startsWith('manual_') || id.startsWith('legacy_') || id.startsWith('temp_') || id.startsWith('optimistic_')) {
+    return false;
+  }
+  return kind === 'email';
+}
+
 /** Same logical message often lands as multiple DB rows (multi-mailbox sync). */
 export function emailContentFingerprint(row: {
   message_id?: string | null;
   id?: string | number | null;
   sent_at?: string | null;
   date?: string | null;
+  raw_date?: string | null;
+  time?: string | null;
   subject?: string | null;
   sender_email?: string | null;
   from?: string | null;
@@ -334,16 +390,11 @@ export function emailContentFingerprint(row: {
   recipient_list?: string | null;
   to?: string | null;
   direction?: string | null;
+  kind?: string;
+  editable?: boolean;
 }): string {
-  const sentRaw = row.sent_at || row.date || '';
-  const sentMs = sentRaw ? new Date(sentRaw).getTime() : 0;
-  // Round to the minute — sync copies / retries often differ by seconds but show the same UI time.
-  const minute = Number.isFinite(sentMs) ? Math.floor(sentMs / 60_000) : 0;
-  const subject = String(row.subject || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^(re|fw|fwd):\s*/i, '')
-    .replace(/\s+/g, ' ');
+  const minute = emailMinuteBucket(row);
+  const subject = normalizeEmailSubjectForDedupe(row.subject);
   const from = String(
     row.sender_email ||
       row.from ||
@@ -363,7 +414,8 @@ function emailRowRichness(row: any): number {
   ).length;
   const hasMessageId = row?.message_id != null && String(row.message_id).trim() !== '' ? 1_000_000 : 0;
   const hasAttachments = Array.isArray(row?.attachments) && row.attachments.length > 0 ? 10_000 : 0;
-  return hasMessageId + hasAttachments + bodyLen;
+  const synced = isSyncedEmailTimelineRow(row) ? 50_000_000 : 0;
+  return synced + hasMessageId + hasAttachments + bodyLen;
 }
 
 /**
@@ -398,17 +450,14 @@ export function dedupeEmailsForSidepanel<T extends Record<string, any>>(rows: T[
   }
 
   // Soft pass: subject + minute only (handles missing/mismatched from across sync copies).
+  // Empty subjects stay unique — collapsing them would merge unrelated emails in the same minute.
   const bySoft = new Map<string, T>();
   for (const row of byFingerprint.values()) {
-    const sentRaw = row.sent_at || row.date || '';
-    const sentMs = sentRaw ? new Date(sentRaw).getTime() : 0;
-    const minute = Number.isFinite(sentMs) ? Math.floor(sentMs / 60_000) : 0;
-    const subject = String(row.subject || '')
-      .trim()
-      .toLowerCase()
-      .replace(/^(re|fw|fwd):\s*/i, '')
-      .replace(/\s+/g, ' ');
-    const softKey = `${minute}|${subject}`;
+    const minute = emailMinuteBucket(row);
+    const subject = normalizeEmailSubjectForDedupe(row.subject);
+    const softKey = subject
+      ? `${minute}|${subject}`
+      : `${minute}|id:${stableEmailRowId(row) || String(row.id ?? '')}`;
     const existing = bySoft.get(softKey);
     if (!existing || emailRowRichness(row) > emailRowRichness(existing)) {
       bySoft.set(softKey, row);
@@ -416,6 +465,56 @@ export function dedupeEmailsForSidepanel<T extends Record<string, any>>(rows: T[
   }
 
   return Array.from(bySoft.values());
+}
+
+function timelineEmailFingerprintRow<T extends Record<string, any>>(row: T) {
+  return {
+    ...row,
+    sent_at: row.sent_at || row.raw_date,
+    subject: row.subject || row.observation || '',
+    sender_email: row.sender_email,
+    from: row.sender_email || row.from,
+  };
+}
+
+/**
+ * Collapse the same email that landed in `emails` AND `lead_manual_interactions`
+ * (and/or legacy `leads_leadinteractions`) so the timeline shows it once.
+ * Prefers the synced `emails` row when both exist.
+ */
+export function dedupeTimelineEmailLikeRows<T extends Record<string, any>>(rows: T[]): T[] {
+  if (!Array.isArray(rows) || rows.length <= 1) return rows || [];
+
+  const emails: T[] = [];
+  const rest: T[] = [];
+  for (const row of rows) {
+    const kind = String(row.kind || '');
+    if (kind === 'email' || kind === 'email_manual') emails.push(row);
+    else rest.push(row);
+  }
+
+  if (emails.length <= 1) return rows;
+
+  const mapped = emails.map((row) => timelineEmailFingerprintRow(row));
+  const unique = dedupeEmailsForSidepanel(mapped);
+
+  const bySnippet = new Map<string, T>();
+  for (const row of unique) {
+    const minute = emailMinuteBucket(row);
+    const subject = normalizeEmailSubjectForDedupe(row.subject || row.observation);
+    const snippet = emailBodySnippet(row);
+    const key = subject
+      ? `${minute}|${subject}`
+      : snippet
+        ? `${minute}|snip:${snippet}`
+        : `${minute}|id:${String(row.id ?? '')}`;
+    const existing = bySnippet.get(key);
+    if (!existing || emailRowRichness(row) > emailRowRichness(existing)) {
+      bySnippet.set(key, row);
+    }
+  }
+
+  return [...Array.from(bySnippet.values()), ...rest];
 }
 
 function mergeEmailRowsById(primary: any[], secondary: any[], limit: number): any[] {
@@ -602,10 +701,10 @@ export async function fetchLeadEmailsForTimeline(
       }
     }
     if (!rpcResult?.error && Array.isArray(rpcData)) {
-      return { data: rpcData.slice(0, limit), error: null };
+      return { data: dedupeEmailsForSidepanel(rpcData).slice(0, limit), error: null };
     }
     if (!rpcResult?.error && rpcData && typeof rpcData === 'object' && Array.isArray((rpcData as any).emails)) {
-      return { data: (rpcData as any).emails.slice(0, limit), error: null };
+      return { data: dedupeEmailsForSidepanel((rpcData as any).emails).slice(0, limit), error: null };
     }
   } catch {
     /* fall through to direct queries */
@@ -672,7 +771,7 @@ export async function fetchLeadEmailsForTimeline(
   // Do not fall back to PostgREST `.eq('sender_email')`. That query cannot use
   // the partial (sender_email, sent_at) index and seq-scans emails until 57014.
   // Address matching is already in email_lead_timeline when the RPC is healthy.
-  return { data: fastRows.slice(0, limit), error };
+  return { data: dedupeEmailsForSidepanel(fastRows).slice(0, limit), error };
 }
 
 export type LeadEmailListMeta = {

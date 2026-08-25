@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { upsertEmailsKeepExistingLeadLinks } from '../lib/graphEmailSync';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { FileText, PencilLine } from 'lucide-react';
@@ -62,11 +62,13 @@ import PipelineLastInteractionsModal from './pipeline/PipelineLastInteractionsMo
 import type { PipelineViewAs } from '../lib/resolvePipelineIdentity';
 import { leadRoutePath, openLeadFromRowClick } from '../lib/leadNavigation';
 import { CLIENT_FINANCES_TAB } from '../lib/proformaClientNavigation';
+import { PIPELINE_TABLE_SHELL } from './pipeline/pipelineUi';
 import {
   createSnapshotStore,
+  isKeepAlivePipelinePath,
+  pipelineViewIdentityKey,
   useDebouncedCallback,
   useRealtimeTables,
-  useScrollRestoration,
 } from '../lib/pipelineLiveCache';
 import PipelineSummaryCards from './PipelineSummaryCards';
 import {
@@ -378,8 +380,12 @@ type PipelineTab = PipelineRoleTab;
  * rows immediately while a silent refetch runs behind them. sessionStorage still backs full
  * page reloads; this only covers moving around inside the app.
  */
-type PipelineLeadsSnapshot = { mode: 'closer' | 'scheduler'; leads: LeadForPipeline[] };
-const PIPELINE_LEADS_CACHE_VERSION = 1;
+type PipelineLeadsSnapshot = {
+  mode: 'closer' | 'scheduler';
+  identityKey: string;
+  leads: LeadForPipeline[];
+};
+const PIPELINE_LEADS_CACHE_VERSION = 2;
 const PIPELINE_LEADS_STALE_MS = 3 * 60 * 1000;
 /** One snapshot per mode, so switching Closer/Scheduler repaints instead of refetching. */
 const pipelineLeadsStores: Record<
@@ -390,6 +396,9 @@ const pipelineLeadsStores: Record<
   scheduler: createSnapshotStore<PipelineLeadsSnapshot>(PIPELINE_LEADS_CACHE_VERSION),
 };
 
+/** Role default runs once per session so coming back does not yank the user off their last tab. */
+let pipelineRoleDefaultApplied = false;
+
 /**
  * Interaction/meeting metrics keyed by the row ids they were fetched for, so returning to a
  * mode reuses them instead of re-running the interaction queries.
@@ -398,17 +407,6 @@ const pipelineMetricsCache: Record<
   'closer' | 'scheduler',
   { key: string; metrics: Map<string, PipelineLeadMetrics> } | null
 > = { closer: null, scheduler: null };
-
-/** Scroll position is per page, not per mode, so it lives outside the data snapshots. */
-const pipelineScrollStore = (() => {
-  let scrollTop = 0;
-  return {
-    getScrollTop: () => scrollTop,
-    setScrollTop: (value: number) => {
-      scrollTop = value;
-    },
-  };
-})();
 
 /** Lead counts per mode, kept across tab switches so both tabs can show a number. */
 const pipelineModeCounts: Record<'closer' | 'scheduler', number | null> = {
@@ -452,6 +450,8 @@ const PipelinePage: React.FC = () => {
   const [modeCounts, setModeCounts] = useState(() => ({ ...pipelineModeCounts }));
   const isOwnPipelineTab = activeTab === 'closer' || activeTab === 'scheduler';
   const isCaseTab = activeTab === 'manager' || activeTab === 'helper';
+  const { pathname } = useLocation();
+  const pipelineVisible = isKeepAlivePipelinePath(pathname);
 
   /** Summary box selection, shared with the case pipeline's boxes. */
   const [quickFilter, setQuickFilter] = usePersistedState<PipelineQuickFilter>(
@@ -524,19 +524,21 @@ const PipelinePage: React.FC = () => {
   // Use regular useState for leads and manually sync with mode-specific persisted state
   // Initialize with persisted state for the current pipelineMode
   const [leads, setLeadsInternal] = useState<LeadForPipeline[]>(() => {
-    // Prefer the in-memory snapshot (survives navigation within the app), then sessionStorage.
+    const identityKey = pipelineViewIdentityKey(viewAs?.employeeId ? viewAs : null);
     const snapshot = pipelineLeadsStores[pipelineMode].get();
-    if (snapshot && snapshot.leads.length > 0) {
+    if (snapshot && snapshot.identityKey === identityKey && snapshot.leads.length > 0) {
       return snapshot.leads;
     }
+    if (viewAs?.employeeId) return [];
     return loadPersistedStateForMode(pipelineMode, 'leads', []);
   });
   
   // Initialize loading to false if we have persisted state (for faster initial render)
   const [isLoading, setIsLoading] = useState(() => {
+    const identityKey = pipelineViewIdentityKey(viewAs?.employeeId ? viewAs : null);
     const snapshot = pipelineLeadsStores[pipelineMode].get();
-    if (snapshot && snapshot.leads.length > 0) return false;
-    // Check if we have persisted state on initial mount (check both modes)
+    if (snapshot && snapshot.identityKey === identityKey && snapshot.leads.length > 0) return false;
+    if (viewAs?.employeeId) return true;
     try {
       const persistedLeadsCloser = sessionStorage.getItem('persisted_state_filters_pipelinePage_closer_leads');
       const persistedLeadsScheduler = sessionStorage.getItem('persisted_state_filters_pipelinePage_scheduler_leads');
@@ -544,19 +546,23 @@ const PipelinePage: React.FC = () => {
       if (persistedLeads) {
         const parsed = JSON.parse(persistedLeads);
         if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          return false; // We have persisted data, don't show loading
+          return false;
         }
       }
     } catch (e) {
       // Ignore errors, default to loading
     }
-    return true; // No persisted data, show loading
+    return true;
   });
+  const leadsRef = useRef<LeadForPipeline[]>(leads);
+  leadsRef.current = leads;
   
   // Wrapper for setLeads that also saves to persisted state
   const setLeads = useCallback((value: LeadForPipeline[] | ((prev: LeadForPipeline[]) => LeadForPipeline[])) => {
     setLeadsInternal((prev) => {
       const newLeads = typeof value === 'function' ? value(prev) : value;
+      const identityKey = pipelineViewIdentityKey(viewAs?.employeeId ? viewAs : null);
+      pipelineLeadsStores[pipelineMode].set({ mode: pipelineMode, identityKey, leads: newLeads });
       if (!viewAs?.employeeId) {
         try {
           const key = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
@@ -564,11 +570,10 @@ const PipelinePage: React.FC = () => {
         } catch (e) {
           // Ignore errors
         }
-        pipelineLeadsStores[pipelineMode].set({ mode: pipelineMode, leads: newLeads });
       }
       return newLeads;
     });
-  }, [pipelineMode, viewAs?.employeeId]);
+  }, [pipelineMode, viewAs]);
 
   // Sync leads when pipelineMode changes - but don't load from storage here,
   // the fetchLeads useEffect will handle it and always refetch on mode change
@@ -1043,7 +1048,8 @@ const PipelinePage: React.FC = () => {
   /** True after users/employee resolution finishes (success or fallback) — drives default tab + fetch ordering. */
   const [pipelineIdentityReady, setPipelineIdentityReady] = useState(false);
   const [isSuperUser, setIsSuperUser] = useState(false);
-  const viewingOtherEmployee = Boolean(isSuperUser && viewAs?.employeeId);
+  /** Use the persisted employee as soon as it exists so we never paint the signed-in user's cache first. */
+  const viewAsForPipeline = viewAs?.employeeId ? viewAs : null;
   
   // State for editing fields in collapsible section
   const [editingFields, setEditingFields] = useState<Record<string | number, { facts?: boolean; special_notes?: boolean }>>({});
@@ -1361,6 +1367,7 @@ const PipelinePage: React.FC = () => {
    */
   const fetchLeads = async (options: { silent?: boolean } = {}) => {
     const { silent = false } = options;
+    const keepVisible = silent || leadsRef.current.length > 0;
     // New `leads` rows filter by scheduler/closer display name — never query with an empty string.
     if (!currentUserFullName?.trim()) {
       console.warn('Pipeline: fetchLeads skipped until display name is loaded');
@@ -1368,7 +1375,7 @@ const PipelinePage: React.FC = () => {
       return;
     }
 
-    if (!silent) setIsLoading(true);
+    if (!keepVisible) setIsLoading(true);
     
     // Add timeout to prevent hanging
     const timeoutPromise = new Promise((_, reject) => {
@@ -2114,7 +2121,7 @@ const PipelinePage: React.FC = () => {
     } catch (error) {
       console.error('Error fetching leads for pipeline page:', error);
       // Keep the rows already on screen rather than emptying the table behind the user's back.
-      if (!silent) setLeads([]);
+      if (!keepVisible) setLeads([]);
     }
     setIsLoading(false);
     pipelineLastFetchedAtRef.current = Date.now();
@@ -2192,11 +2199,16 @@ const PipelinePage: React.FC = () => {
     };
   }, [openContactDropdown]);
 
-  // Replay the panel's enter animation on tab change (restarting it needs a reflow).
+  // Replay the panel's enter animation on tab change only — not when returning to the page.
   const tabPanelRef = useRef<HTMLDivElement>(null);
+  const skipTabEnterAnimationRef = useRef(true);
   useEffect(() => {
     const panel = tabPanelRef.current;
     if (!panel) return;
+    if (skipTabEnterAnimationRef.current) {
+      skipTabEnterAnimationRef.current = false;
+      return;
+    }
     panel.classList.remove('pipeline-tab-panel');
     void panel.offsetWidth;
     panel.classList.add('pipeline-tab-panel');
@@ -2231,23 +2243,20 @@ const PipelinePage: React.FC = () => {
     const persistedLeadsKey = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
     previousModeRef.current = pipelineMode;
 
-    if (viewingOtherEmployee) {
-      hasLoadedFromStorageRef.current[pipelineMode] = false;
-      fetchLeads();
+    if (viewAs?.employeeId && Number(currentUserEmployeeId) !== Number(viewAs.employeeId)) {
       return;
     }
 
-    // Each mode keeps its own snapshot, so switching tabs repaints its rows straight away and
-    // only hits the network when that mode's cache is empty or has aged out.
+    const identityKey = pipelineViewIdentityKey(viewAs?.employeeId ? viewAs : null);
     let restored = false;
     const store = pipelineLeadsStores[pipelineMode];
     const snapshot = store.get();
-    if (snapshot && snapshot.leads.length > 0) {
+    if (snapshot && snapshot.identityKey === identityKey && snapshot.leads.length > 0) {
       setLeadsInternal(snapshot.leads);
       hasLoadedFromStorageRef.current[pipelineMode] = true;
       setIsLoading(false);
       restored = true;
-    } else {
+    } else if (!viewAs?.employeeId) {
       try {
         const raw = sessionStorage.getItem(persistedLeadsKey);
         if (raw) {
@@ -2270,15 +2279,11 @@ const PipelinePage: React.FC = () => {
       return;
     }
 
-    // Painted from cache: refresh behind it so edits made elsewhere show up without a spinner.
     if (store.isStale(PIPELINE_LEADS_STALE_MS)) {
       void fetchLeads({ silent: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipelineMode, currentUserEmployeeId, currentUserFullName, isOwnPipelineTab, viewingOtherEmployee]);
-
-  // Returning to this page should land exactly where the user left it.
-  useScrollRestoration(pipelineScrollStore, isLoading, isOwnPipelineTab);
+  }, [pipelineMode, currentUserEmployeeId, currentUserFullName, isOwnPipelineTab, viewAs?.employeeId]);
 
   // Live refresh (no hard refresh needed): when pipeline-related tables change, refresh leads +
   // stats for the active tab. Debounced to collapse bursts (bulk updates, multi-row writes) and
@@ -4584,36 +4589,20 @@ const PipelinePage: React.FC = () => {
           return;
         }
 
-        if (finalUserData.id) {
-          setCurrentUserId(finalUserData.id);
-        }
         if (finalUserData.is_superuser !== undefined) {
           setIsSuperUser(finalUserData.is_superuser === true || finalUserData.is_superuser === 'true' || finalUserData.is_superuser === 1);
         }
 
-        // Display name: full_name, then joined display_name, then email, then fallback
         const joinedEmployee = Array.isArray(finalUserData.tenants_employee)
           ? finalUserData.tenants_employee[0]
           : finalUserData.tenants_employee;
-        if (finalUserData.full_name) {
-          setCurrentUserFullName(finalUserData.full_name);
-        } else if (joinedEmployee?.display_name) {
-          setCurrentUserFullName(joinedEmployee.display_name);
-        } else {
-          setCurrentUserFullName(finalUserData.email || fallbackName);
-        }
 
-        // Employee ID — from users.employee_id (join is for display/role only)
         const empId = finalUserData.employee_id;
         let resolvedEmployeeId: number | null = null;
         if (empId != null && typeof empId === 'number') {
           resolvedEmployeeId = empId;
-          setCurrentUserEmployeeId(empId);
         } else if (empId != null && typeof empId === 'string' && /^\d+$/.test(empId)) {
           resolvedEmployeeId = parseInt(empId, 10);
-          setCurrentUserEmployeeId(resolvedEmployeeId);
-        } else {
-          setCurrentUserEmployeeId(null);
         }
 
         signedInIdentityRef.current = {
@@ -4625,6 +4614,18 @@ const PipelinePage: React.FC = () => {
             finalUserData.email ||
             fallbackName,
         };
+
+        if (viewAs?.employeeId) {
+          setCurrentUserId(viewAs.userId);
+          setCurrentUserEmployeeId(viewAs.employeeId);
+          setCurrentUserFullName(viewAs.fullName || viewAs.displayName);
+        } else {
+          if (finalUserData.id) {
+            setCurrentUserId(finalUserData.id);
+          }
+          setCurrentUserEmployeeId(resolvedEmployeeId);
+          setCurrentUserFullName(signedInIdentityRef.current.fullName);
+        }
 
         // Bonus role: from JOIN first, else fetch by employee_id
         if (joinedEmployee?.bonuses_role != null) {
@@ -4648,19 +4649,27 @@ const PipelinePage: React.FC = () => {
     })();
   }, []);
 
-  // Set default pipeline mode based on bonus role (only once, after identity is resolved).
+  // Set default pipeline mode based on bonus role (only on a first visit this session).
   useEffect(() => {
     if (!pipelineIdentityReady || pipelineModeInitialized) return;
+    setPipelineModeInitialized(true);
+    if (pipelineRoleDefaultApplied) return;
+    pipelineRoleDefaultApplied = true;
+    try {
+      if (sessionStorage.getItem('persisted_state_pipelinePage_tab')) return;
+    } catch {
+      return;
+    }
     if (currentUserBonusRole === 's') {
       setPipelineMode('scheduler');
+      setActiveTab('scheduler');
     }
-    setPipelineModeInitialized(true);
-  }, [pipelineIdentityReady, currentUserBonusRole, pipelineModeInitialized, setPipelineMode]);
+  }, [pipelineIdentityReady, currentUserBonusRole, pipelineModeInitialized, setPipelineMode, setActiveTab]);
 
   useEffect(() => {
     const signedIn = signedInIdentityRef.current;
     if (!signedIn || !pipelineIdentityReady) return;
-    if (isSuperUser && viewAs?.employeeId) {
+    if (viewAs?.employeeId) {
       setCurrentUserId(viewAs.userId);
       setCurrentUserEmployeeId(viewAs.employeeId);
       setCurrentUserFullName(viewAs.fullName || viewAs.displayName);
@@ -4669,7 +4678,7 @@ const PipelinePage: React.FC = () => {
     setCurrentUserId(signedIn.userId);
     setCurrentUserEmployeeId(signedIn.employeeId);
     setCurrentUserFullName(signedIn.fullName);
-  }, [viewAs, isSuperUser, pipelineIdentityReady]);
+  }, [viewAs, pipelineIdentityReady]);
 
   useEffect(() => {
     if (pipelineIdentityReady && !isSuperUser && viewAs) setViewAs(null);
@@ -5227,6 +5236,7 @@ const PipelinePage: React.FC = () => {
         settingsOpen={settingsOpen}
         onToggleSettings={() => setSettingsOpen((open) => !open)}
         onAction={handleRailButton}
+        visible={pipelineVisible}
       >
         <div className="space-y-4">
           <p className="text-xs leading-relaxed text-gray-500">
@@ -5300,7 +5310,7 @@ const PipelinePage: React.FC = () => {
           ) : null}
         </div>
       </PipelineActionSidebar>
-      <div className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="min-w-0 flex-1 px-2 py-6 sm:px-3">
       <div className="mb-6 flex flex-col md:flex-row justify-between items-start gap-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
           <h1 className="text-3xl font-bold flex items-center gap-3">
@@ -5394,15 +5404,16 @@ const PipelinePage: React.FC = () => {
       </div>
 
       {/* Animated on tab change without a key, so the case pipeline is not remounted */}
-      <div ref={tabPanelRef} className="pipeline-tab-panel">
+      <div ref={tabPanelRef}>
       {bulkStageMode ? <PipelineBulkStageBar {...bulkStageControls} /> : null}
       {isCaseTab ? (
         <CasePipelineView
+          key={pipelineViewIdentityKey(viewAsForPipeline)}
           roleTab={activeTab as CasePipelineRoleTab}
           showHeader={false}
           withPageChrome={false}
           onCountsChange={setCaseRoleCounts}
-          viewAs={viewingOtherEmployee ? viewAs : null}
+          viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
           selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
           picking={Boolean(armedAction) || bulkStageMode}
@@ -5412,8 +5423,9 @@ const PipelinePage: React.FC = () => {
         />
       ) : activeTab === 'expert' ? (
         <ExpertPipelineView
+          key={pipelineViewIdentityKey(viewAsForPipeline)}
           onCountChange={handleExpertCount}
-          viewAs={viewingOtherEmployee ? viewAs : null}
+          viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
           selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
           picking={Boolean(armedAction) || bulkStageMode}
@@ -5423,8 +5435,9 @@ const PipelinePage: React.FC = () => {
         />
       ) : activeTab === 'handler' ? (
         <HandlerPipelineView
+          key={pipelineViewIdentityKey(viewAsForPipeline)}
           onCountChange={handleHandlerCount}
-          viewAs={viewingOtherEmployee ? viewAs : null}
+          viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
           selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
           picking={Boolean(armedAction) || bulkStageMode}
@@ -5434,8 +5447,9 @@ const PipelinePage: React.FC = () => {
         />
       ) : activeTab === 'retention' ? (
         <RetentionHandlerPipelineView
+          key={pipelineViewIdentityKey(viewAsForPipeline)}
           onCountChange={handleRetentionCount}
-          viewAs={viewingOtherEmployee ? viewAs : null}
+          viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
           selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
           picking={Boolean(armedAction) || bulkStageMode}
@@ -5733,7 +5747,7 @@ const PipelinePage: React.FC = () => {
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto w-full mt-6" style={{ overflowY: 'visible' }}>
+        <div className={`${PIPELINE_TABLE_SHELL} mt-6`} style={{ overflowY: 'visible' }}>
           <table
             className="pipeline-flat-table table-auto border-separate border-spacing-0 text-base w-full"
             style={{ position: 'relative' }}
@@ -5741,7 +5755,6 @@ const PipelinePage: React.FC = () => {
             <thead className="sticky top-0 z-10 bg-[#f3f4f6] text-sm uppercase tracking-wide text-gray-500">
               <tr>
                 <PipelineRowPickHeader visible={Boolean(armedAction) || bulkStageMode} />
-                <th className="py-3 px-2 text-center w-10"></th>
                 <th className="py-3 px-2 text-left">Lead</th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('follow_up')}>
                   Follow Up {sortColumn === 'follow_up' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
@@ -5771,13 +5784,13 @@ const PipelinePage: React.FC = () => {
                 <th className="py-3 px-2 text-center">Expert</th>
                 <th className="py-3 px-2 text-center">Country</th>
                 <th className="py-3 px-2 text-center">Language</th>
-                <th className="py-3 px-2 text-center">Tags</th>
+                <th className="py-3 px-2 text-center w-[10rem] min-w-[10rem] max-w-[10rem]">Tags</th>
               </tr>
             </thead>
             <tbody>
               {isLoading && leads.length === 0 ? (
                 <tr>
-                  <td colSpan={15 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-12">
+                  <td colSpan={13 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-12">
                     <div className="flex flex-col items-center justify-center gap-4">
                       <div className="loading loading-spinner loading-lg text-primary"></div>
                       <p className="text-base font-medium text-base-content/70">
@@ -5787,7 +5800,7 @@ const PipelinePage: React.FC = () => {
                   </td>
                 </tr>
               ) : sortedLeads.length === 0 ? (
-                <tr><td colSpan={15 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={13 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => {
                   const isExpanded = expandedRows.has(lead.id);
@@ -5823,43 +5836,42 @@ const PipelinePage: React.FC = () => {
                           name={lead.name}
                           onPick={(e) => handleRowSelect(lead.id, e)}
                         />
-                        {/* Expand/Collapse Arrow */}
-                        <td className="px-2 py-3 md:py-4 text-center w-10">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExpandedRows(prev => {
-                                const newSet = new Set(prev);
-                                if (newSet.has(lead.id)) {
-                                  newSet.delete(lead.id);
-                                } else {
-                                  newSet.add(lead.id);
-                                }
-                                return newSet;
-                              });
-                            }}
-                            className="p-1 hover:bg-base-200 rounded transition-colors"
-                          >
-                            {isExpanded ? (
-                              <ChevronDownIcon className="w-5 h-5 text-gray-600" />
-                            ) : (
-                              <ChevronRightIcon className="w-5 h-5 text-gray-600" />
-                            )}
-                          </button>
-                        </td>
-                    {/* Lead column: lead number + name (left-aligned) */}
-                        <td className="px-2 py-3 md:py-4 truncate max-w-[180px] text-left">
-                      <div className="flex flex-col">
-                        <span className="font-mono font-bold text-xs text-gray-500 truncate">{lead.lead_number}</span>
+                    {/* Lead column: number, name, and expand arrow under the name */}
+                        <td className="px-2 py-3 md:py-4 max-w-[180px] text-left">
+                      <div className="flex flex-col items-start">
+                        <span className="font-mono font-bold text-xs text-gray-500 truncate max-w-full">{lead.lead_number}</span>
                         <button
                           type="button"
-                          className="truncate text-left font-semibold text-base-content hover:underline"
+                          className="truncate max-w-full text-left font-semibold text-base-content hover:underline"
                           onClick={(e) => {
                             e.stopPropagation();
                             openLeadFromRowClick(e, lead.lead_number || lead.id, navigate);
                           }}
                         >
                           {lead.name}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedRows(prev => {
+                              const newSet = new Set(prev);
+                              if (newSet.has(lead.id)) {
+                                newSet.delete(lead.id);
+                              } else {
+                                newSet.add(lead.id);
+                              }
+                              return newSet;
+                            });
+                          }}
+                          className="-ml-1 mt-0.5 rounded p-0.5 hover:bg-base-200 transition-colors"
+                          aria-label={isExpanded ? 'Collapse lead details' : 'Expand lead details'}
+                        >
+                          {isExpanded ? (
+                            <ChevronUpIcon className="w-4 h-4 text-gray-500" />
+                          ) : (
+                            <ChevronDownIcon className="w-4 h-4 text-gray-500" />
+                          )}
                         </button>
                       </div>
                     </td>
@@ -6009,9 +6021,12 @@ const PipelinePage: React.FC = () => {
                       </span>
                     </td>
                     {/* Tags */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate rounded-r-xl">
+                    <td className="px-2 py-3 md:py-4 text-left w-[10rem] min-w-[10rem] max-w-[10rem]">
                       {lead.tags && lead.tags.length > 0 ? (
-                        <span className="text-sm text-gray-700" title={lead.tags.join(', ')}>
+                        <span
+                          className="block w-full line-clamp-2 whitespace-normal break-words text-sm leading-snug text-gray-700"
+                          title={lead.tags.join(', ')}
+                        >
                           {lead.tags.join(', ')}
                         </span>
                       ) : (
@@ -6023,7 +6038,7 @@ const PipelinePage: React.FC = () => {
                   {isExpanded && (
                     <tr>
                       <td
-                        colSpan={15 + (armedAction || bulkStageMode ? 1 : 0)}
+                        colSpan={13 + (armedAction || bulkStageMode ? 1 : 0)}
                         className="border-b border-gray-100 bg-white px-4 py-4"
                       >
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
