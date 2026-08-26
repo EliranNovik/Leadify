@@ -7568,8 +7568,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
               {showCompose && createPortal(
                 <div className="fixed inset-0 z-[10002]">
                   <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
-                  <div className="relative z-[10003] flex h-full w-full flex-col bg-slate-100 shadow-2xl">
-                    <div className="flex items-center justify-end px-4 pt-3 pb-0 md:px-6">
+                  <div className="relative z-[10003] flex h-full w-full flex-col overflow-y-auto bg-slate-100 shadow-2xl overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
+                    <div className="sticky top-0 z-20 flex items-center justify-end bg-slate-100/95 px-4 pt-3 pb-0 md:px-6">
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm btn-circle"
@@ -7579,8 +7579,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                         <XMarkIcon className="w-5 h-5" />
                       </button>
                     </div>
-                    <div className="m-4 mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-                    <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 md:px-6">
+                    <div className="m-4 mt-1 flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                    <div className="flex flex-1 flex-col space-y-4 px-5 py-5 md:px-6">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <label className="font-semibold text-sm">To</label>
@@ -7703,7 +7703,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                       textAlign: composeBodyIsRTL ? 'right' : 'left',
                       direction: composeBodyIsRTL ? 'rtl' : 'ltr'
                     }}
-                    className="w-full px-4 py-3 resize-y min-h-[240px]"
+                    className="w-full min-h-[280px] overflow-hidden px-4 py-3 resize-none"
                     rows={10}
                   />
                   <ComposeAiEmptyPrompt
@@ -7722,7 +7722,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                   </ComposeBodyWithSignature>
                   
                   </div>
-                    <div className="px-4 py-4 border-t border-gray-200 flex items-center justify-between gap-4 md:px-6 lg:px-10">
+                    <div className="sticky bottom-0 z-10 flex items-center justify-between gap-4 border-t border-gray-200 bg-white px-4 py-4 md:px-6 lg:px-10">
                       {/* Left side - Buttons and Template Filters */}
                       <div className="flex items-center gap-4 flex-wrap">
                         {/* Circle action buttons */}

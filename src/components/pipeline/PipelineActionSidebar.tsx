@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   BanknotesIcon,
+  ClockIcon,
   Cog6ToothIcon,
   EnvelopeIcon,
   PhoneIcon,
@@ -30,6 +31,11 @@ const ACTIONS: Array<{
     id: 'ai',
     label: 'AI summary',
     icon: <SparklesIcon className="h-6 w-6" />,
+  },
+  {
+    id: 'followup',
+    label: 'Follow up',
+    icon: <ClockIcon className="h-6 w-6" />,
   },
   {
     id: 'email',
@@ -74,7 +80,7 @@ const PipelineActionSidebar: React.FC<Props> = ({
           const armed = armedAction === action.id;
           return (
             <React.Fragment key={action.id}>
-              {index === 1 ? <div className="h-px w-8 bg-gray-200" /> : null}
+              {index === 2 ? <div className="h-px w-8 bg-gray-200" /> : null}
               <button
                 type="button"
                 onClick={() => onAction(action.id)}

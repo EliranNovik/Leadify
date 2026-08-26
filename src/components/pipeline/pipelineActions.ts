@@ -4,7 +4,7 @@ import { updateLeadStageWithHistory, fetchStageActorInfo } from '../../lib/leadS
 import type { CombinedLead } from '../../lib/legacyLeadsApi';
 import type { PipelineFollowupLeadSource } from './PipelineFollowupAiCell';
 
-export type PipelineRailAction = 'ai' | 'email' | 'call' | 'whatsapp' | 'finance';
+export type PipelineRailAction = 'ai' | 'followup' | 'email' | 'call' | 'whatsapp' | 'finance';
 
 export type PipelineActionLead = PipelineFollowupLeadSource & {
   navId: string;
@@ -12,6 +12,8 @@ export type PipelineActionLead = PipelineFollowupLeadSource & {
   mobile?: string | null;
   email?: string | null;
   topic?: string | null;
+  language?: string | null;
+  category?: string | null;
 };
 
 export type PipelineLeadSelectProps = {
@@ -57,6 +59,8 @@ export function toPipelineActionLead(row: {
   next_followup?: string | null;
   follow_up?: string | null;
   topic?: string | null;
+  language?: string | null;
+  category?: string | null;
 }): PipelineActionLead {
   const id = String(row.id);
   const leadNumber = String(row.lead_number || row.navId || row.nav_id || id);
@@ -77,6 +81,8 @@ export function toPipelineActionLead(row: {
     special_notes: row.special_notes || null,
     next_followup: row.next_followup || row.follow_up || null,
     topic: row.topic || null,
+    language: row.language || null,
+    category: row.category || null,
   };
 }
 
@@ -139,31 +145,43 @@ function asContact(data: { phone?: string | null; mobile?: string | null; email?
 
 /** Fill phone / email when a pipeline row was loaded without them. */
 export async function hydratePipelineActionLead(lead: PipelineActionLead): Promise<PipelineActionLead> {
-  if (lead.phone || lead.mobile || lead.email) return lead;
+  const hasPhone = Boolean(lead.phone || lead.mobile);
+  const hasEmail = Boolean(lead.email && String(lead.email).trim());
+  if (hasPhone && hasEmail) return lead;
   const rawId = String(lead.id).replace(/^legacy_/i, '');
+  const mergeContact = (
+    next: PipelineActionLead,
+    contact: { phone?: string | null; mobile?: string | null; email?: string | null } | null,
+  ): PipelineActionLead => ({
+    ...next,
+    phone: next.phone || contact?.phone || null,
+    mobile: next.mobile || contact?.mobile || null,
+    email: next.email || contact?.email || null,
+  });
   try {
     if (isLegacyActionLead(lead)) {
-      const { data } = await supabase
-        .from('leads_lead')
-        .select('phone')
-        .eq('id', rawId)
-        .maybeSingle();
-      const fromLead = asContact(data);
-      if (fromLead && (fromLead.phone || fromLead.mobile || fromLead.email)) {
-        return { ...lead, ...fromLead };
+      let next = lead;
+      if (!hasPhone) {
+        const { data } = await supabase
+          .from('leads_lead')
+          .select('phone')
+          .eq('id', rawId)
+          .maybeSingle();
+        next = mergeContact(next, asContact(data));
       }
-      const { data: contacts } = await supabase
-        .from('lead_leadcontact')
-        .select('leads_contact ( phone, mobile, email )')
-        .eq('lead_id', rawId)
-        .eq('main', 'true')
-        .maybeSingle();
-      const contact = Array.isArray((contacts as { leads_contact?: unknown } | null)?.leads_contact)
-        ? (contacts as { leads_contact: Array<{ phone?: string | null; mobile?: string | null; email?: string | null }> }).leads_contact[0]
-        : (contacts as { leads_contact?: { phone?: string | null; mobile?: string | null; email?: string | null } } | null)?.leads_contact;
-      const fromContact = asContact(contact);
-      if (fromContact) return { ...lead, ...fromContact };
-      return lead;
+      if (!next.email) {
+        const { data: contacts } = await supabase
+          .from('lead_leadcontact')
+          .select('leads_contact ( phone, mobile, email )')
+          .eq('lead_id', rawId)
+          .eq('main', 'true')
+          .maybeSingle();
+        const contact = Array.isArray((contacts as { leads_contact?: unknown } | null)?.leads_contact)
+          ? (contacts as { leads_contact: Array<{ phone?: string | null; mobile?: string | null; email?: string | null }> }).leads_contact[0]
+          : (contacts as { leads_contact?: { phone?: string | null; mobile?: string | null; email?: string | null } } | null)?.leads_contact;
+        next = mergeContact(next, asContact(contact));
+      }
+      return next;
     }
 
     const { data } = await supabase
@@ -171,8 +189,7 @@ export async function hydratePipelineActionLead(lead: PipelineActionLead): Promi
       .select('phone, mobile, email')
       .eq('id', rawId)
       .maybeSingle();
-    const fromLead = asContact(data);
-    if (fromLead) return { ...lead, ...fromLead };
+    return mergeContact(lead, asContact(data));
   } catch (error) {
     console.error('Failed to load lead contact details', error);
   }

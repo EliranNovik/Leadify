@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   getCurrentUserEmailSignature,
   prefetchCurrentUserEmailSignature,
@@ -195,6 +195,13 @@ type ComposeBodyWithSignatureProps = {
   afterSignature?: React.ReactNode;
 };
 
+const autosizeComposeTextarea = (textarea: HTMLTextAreaElement, minHeight: number) => {
+  textarea.style.overflowY = 'hidden';
+  textarea.style.resize = 'none';
+  textarea.style.height = 'auto';
+  textarea.style.height = `${Math.max(minHeight, textarea.scrollHeight)}px`;
+};
+
 /** Outlook-style compose paper: message field on top, signature below. */
 export const ComposeBodyWithSignature: React.FC<ComposeBodyWithSignatureProps> = ({
   children,
@@ -202,12 +209,33 @@ export const ComposeBodyWithSignature: React.FC<ComposeBodyWithSignatureProps> =
   compact = false,
   afterSignature,
 }) => {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const minHeight = compact ? 160 : 280;
+
+  const resize = useCallback(() => {
+    const textarea = rootRef.current?.querySelector('textarea');
+    if (textarea) autosizeComposeTextarea(textarea, minHeight);
+  }, [minHeight]);
+
+  // Resize on every paint so AI drafts and typed text push the signature down
+  // instead of clipping inside a fixed textarea.
+  useLayoutEffect(() => {
+    resize();
+  });
+
   return (
     <div
-      className={`bg-white [&_textarea]:border-0 [&_textarea]:shadow-none [&_textarea]:outline-none [&_textarea]:ring-0 [&_textarea]:focus:border-0 [&_textarea]:focus:outline-none [&_textarea]:focus:ring-0 ${className}`}
+      ref={rootRef}
+      className={`flex flex-1 flex-col bg-white [&_textarea]:border-0 [&_textarea]:shadow-none [&_textarea]:outline-none [&_textarea]:ring-0 [&_textarea]:focus:border-0 [&_textarea]:focus:outline-none [&_textarea]:focus:ring-0 ${
+        compact ? '' : 'min-h-[min(28rem,55vh)]'
+      } ${className}`}
     >
-      <div>{children}</div>
-      <ComposeSignaturePreview compact={compact} />
+      <div className="flex-1" style={{ minHeight }}>
+        {children}
+      </div>
+      <div className={`shrink-0 ${compact ? 'mt-4' : 'mt-12 pt-2'}`}>
+        <ComposeSignaturePreview compact={compact} />
+      </div>
       {afterSignature}
     </div>
   );

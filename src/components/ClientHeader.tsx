@@ -103,6 +103,16 @@ import {
 import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './client-tabs/ProbabilitySlidersModal';
 import DocumentModal from './DocumentModal';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
+import { parseLeadCurrencyId, resolveLeadCurrencyName } from '../lib/leadCurrencyDisplay';
+import {
+    ensureLeadCategories,
+    ensureLeadLanguages,
+    getCachedCategoriesSync,
+    getCachedLanguagesSync,
+    resolveLeadMetaChips,
+    resolveLeadSourceName,
+    writeResolvedLeadMeta,
+} from '../lib/leadMetaDisplay';
 import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
 import EditLeadDrawer from './EditLeadDrawer';
 import MobileBottomSheet from './MobileBottomSheet';
@@ -144,7 +154,42 @@ import {
 type ClientHeaderCostCacheSlice = {
     summary: LeadEmployeeCostSummary | null;
     firmPaidExpenseTotal?: number;
+    /** Last painted Total badge (after fees/expenses) — used so refresh does not flash the unlocked lead total. */
+    displayMainAmount?: number;
+    displayVatAmount?: number;
+    displayHasPlan?: boolean;
 };
+
+function patchHeaderCostCache(
+    leadKey: string | null | undefined,
+    patch: Partial<ClientHeaderCostCacheSlice>,
+) {
+    const prev = readClientsTabCache<ClientHeaderCostCacheSlice>(leadKey, 'header');
+    writeClientsTabCache(leadKey, 'header', {
+        summary: patch.summary !== undefined ? patch.summary : prev?.summary ?? null,
+        firmPaidExpenseTotal:
+            patch.firmPaidExpenseTotal !== undefined
+                ? patch.firmPaidExpenseTotal
+                : prev?.firmPaidExpenseTotal,
+        displayMainAmount:
+            patch.displayMainAmount !== undefined ? patch.displayMainAmount : prev?.displayMainAmount,
+        displayVatAmount:
+            patch.displayVatAmount !== undefined ? patch.displayVatAmount : prev?.displayVatAmount,
+        displayHasPlan:
+            patch.displayHasPlan !== undefined ? patch.displayHasPlan : prev?.displayHasPlan,
+    });
+}
+
+function unlockedLeadContractBase(selectedClient: any): number {
+    const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+    const numericCurrencyId = parseLeadCurrencyId(selectedClient?.currency_id) ?? 1;
+    if (isLegacyLead) {
+        return numericCurrencyId === 1
+            ? Number(selectedClient?.total_base ?? 0)
+            : Number(selectedClient?.total ?? 0);
+    }
+    return Number(selectedClient?.balance || selectedClient?.proposal_total || 0) || 0;
+}
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -180,11 +225,6 @@ let cachedCurrenciesPromise: Promise<
   Array<{ id: number | string; name: string; iso_code: string | null }>
 > | null = null;
 
-let cachedCategories: any[] | null = null;
-let cachedCategoriesPromise: Promise<any[]> | null = null;
-
-let cachedLanguages: Array<{ id: number | string; name: string }> | null = null;
-let cachedLanguagesPromise: Promise<Array<{ id: number | string; name: string }>> | null = null;
 
 const leadFieldFlagLabel = (key: string): string => {
     const map: Record<string, string> = {
@@ -737,23 +777,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         let cancelled = false;
         const identity = resolveLeadFeeIdentity(selectedClient);
         if (!identity) {
-            setFirmPaidExpenseTotal(0);
             return;
         }
         void fetchFirmPaidExpenseReductionTotal(identity)
             .then((total) => {
                 if (cancelled) return;
                 setFirmPaidExpenseTotal(total);
-                const leadKey = clientsTabCacheLeadKey(selectedClient);
-                const prev = readClientsTabCache<ClientHeaderCostCacheSlice>(leadKey, 'header');
-                writeClientsTabCache(leadKey, 'header', {
-                    summary: prev?.summary ?? null,
+                patchHeaderCostCache(clientsTabCacheLeadKey(selectedClient), {
                     firmPaidExpenseTotal: total,
                 });
             })
             .catch((err) => {
                 console.error('[ClientHeader] firm-paid expense total fetch failed:', err);
-                if (!cancelled) setFirmPaidExpenseTotal(0);
+                // Keep the last known amount — zeroing here flashes a higher Total.
             });
         return () => {
             cancelled = true;
@@ -813,7 +849,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 if (leadEmployeeCostFetchIdRef.current !== fetchId) return;
 
                 setLeadEmployeeCostSummary(summary);
-                writeClientsTabCache(leadKey, 'header', {
+                patchHeaderCostCache(leadKey, {
                     summary,
                     firmPaidExpenseTotal: cached?.firmPaidExpenseTotal ?? firmPaidExpenseTotal,
                 });
@@ -1035,9 +1071,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 const identity = resolveLeadFeeIdentity(selectedClient);
                 if (identity) {
                     try {
-                        setFirmPaidExpenseTotal(await fetchFirmPaidExpenseReductionTotal(identity));
+                        const total = await fetchFirmPaidExpenseReductionTotal(identity);
+                        setFirmPaidExpenseTotal(total);
+                        patchHeaderCostCache(clientsTabCacheLeadKey(selectedClient), {
+                            firmPaidExpenseTotal: total,
+                        });
                     } catch {
-                        setFirmPaidExpenseTotal(0);
+                        // Keep last known amount
                     }
                 }
             })();
@@ -1985,12 +2025,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [showCategoryModal, setShowCategoryModal] = useState(false);
     const [categoryInputValue, setCategoryInputValue] = useState('');
     const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
-    const [allCategories, setAllCategories] = useState<any[]>([]);
-    const [isLoadingCategories, setIsLoadingCategories] = useState(false);
+    const [allCategories, setAllCategories] = useState<any[]>(() => getCachedCategoriesSync());
     const [showLanguageModal, setShowLanguageModal] = useState(false);
     const [languageInputValue, setLanguageInputValue] = useState('');
     const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
-    const [allLanguages, setAllLanguages] = useState<Array<{ id: number | string; name: string }>>([]);
+    const [allLanguages, setAllLanguages] = useState<Array<{ id: number | string; name: string }>>(
+        () => getCachedLanguagesSync(),
+    );
     const [savingLanguage, setSavingLanguage] = useState(false);
     const [showTopicModal, setShowTopicModal] = useState(false);
     const [topicInputValue, setTopicInputValue] = useState('');
@@ -2125,9 +2166,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
         const joinName = getSourceDisplayFromJoin(selectedClient);
         const propSourceId = normalizeLeadSourceId(selectedClient?.source_id);
+        const syncName = resolveLeadSourceName(selectedClient, allSources);
 
         // Already resolvable synchronously (memo handles it) or already fetched this session → no DB call.
-        if (joinName) return;
+        if (joinName || syncName) return;
         if (propSourceId && lookupSourceNameById(propSourceId, allSources)) return;
         if (resolvedLeadSourceCache.has(clientId)) return;
 
@@ -2201,62 +2243,23 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         fetchCurrencies();
     }, []);
 
-    // Fetch categories
+    // Fetch categories / languages once per session (shared module cache with Clients).
     useEffect(() => {
         const fetchCategories = async () => {
             try {
-                setIsLoadingCategories(true);
-                if (cachedCategories) {
-                    setAllCategories(cachedCategories);
-                    return;
-                }
-                if (!cachedCategoriesPromise) {
-                    cachedCategoriesPromise = (async () => {
-                        const { data, error } = await supabase
-                            .from('misc_category')
-                            .select(`
-            id,
-            name,
-            misc_maincategory ( id, name )
-          `)
-                            .order('name');
-
-                        if (error) throw error;
-                        return data || [];
-                    })();
-                }
-                const rows = await cachedCategoriesPromise;
-                cachedCategories = rows;
+                const rows = await ensureLeadCategories();
                 setAllCategories(rows);
             } catch (error) {
                 console.error('Error fetching categories:', error);
-            } finally {
-                setIsLoadingCategories(false);
             }
         };
         fetchCategories();
     }, []);
 
-    // Fetch languages (misc_language) — same list as Edit Lead / legacy language_id resolution
     useEffect(() => {
         const fetchLanguages = async () => {
             try {
-                if (cachedLanguages) {
-                    setAllLanguages(cachedLanguages);
-                    return;
-                }
-                if (!cachedLanguagesPromise) {
-                    cachedLanguagesPromise = (async () => {
-                        const { data, error } = await supabase
-                            .from('misc_language')
-                            .select('id, name')
-                            .order('name', { ascending: true });
-                        if (error) throw error;
-                        return (data || []).filter((row: any) => row?.name);
-                    })();
-                }
-                const rows = await cachedLanguagesPromise;
-                cachedLanguages = rows;
+                const rows = await ensureLeadLanguages();
                 setAllLanguages(rows);
             } catch (error) {
                 console.error('Error fetching languages:', error);
@@ -2545,31 +2548,40 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setContactDetailsModalOpen(false);
     }, []);
 
-    // Helper function to get category display name with main category
-    const getCategoryDisplayName = (categoryId: number | string | null | undefined, fallbackCategory?: string): string => {
-        if (!categoryId) {
-            return fallbackCategory || 'No Category';
-        }
-
-        const category = allCategories.find((cat: any) => {
-            const catId = typeof cat.id === 'bigint' ? Number(cat.id) : cat.id;
-            const searchId = typeof categoryId === 'string' ? parseInt(categoryId, 10) : categoryId;
-            return catId === searchId || Number(catId) === Number(searchId);
-        });
-
-        if (category) {
-            if (category.misc_maincategory?.name) {
-                return `${category.name} (${category.misc_maincategory.name})`;
-            } else {
-                return category.name;
-            }
-        }
-
-        return fallbackCategory || 'No Category';
-    };
-
     // Get the full category display name (subcategory + main category)
-    const displayCategory = getCategoryDisplayName(selectedClient?.category_id, selectedClient?.category);
+    const leadMetaChips = useMemo(
+        () => {
+            void sourceFetchNonce;
+            const chips = resolveLeadMetaChips(selectedClient, {
+                languages: allLanguages,
+                categories: allCategories,
+                sources: allSources,
+            });
+            const sourceFromMemo = resolvedNewLeadSource?.name?.trim();
+            if (sourceFromMemo) chips.source = sourceFromMemo;
+            return chips;
+        },
+        [
+            selectedClient,
+            allLanguages,
+            allCategories,
+            allSources,
+            sourceFetchNonce,
+            resolvedNewLeadSource,
+        ],
+    );
+
+    useEffect(() => {
+        if (!selectedClient?.id) return;
+        if (leadMetaChips.language || leadMetaChips.source || leadMetaChips.category || leadMetaChips.topic) {
+            writeResolvedLeadMeta(selectedClient, leadMetaChips);
+        }
+    }, [selectedClient, leadMetaChips]);
+
+    const displayCategory = leadMetaChips.category || 'No Category';
+    const displayLanguageChip = leadMetaChips.language || '---';
+    const displayTopicChip = leadMetaChips.topic || '---';
+    const displaySourceChip = leadMetaChips.source || '---';
 
     const filteredCategories = allCategories.filter((category) => {
         const categoryName = category.misc_maincategory?.name
@@ -2578,16 +2590,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         // Safely handle categoryInputValue being potentially undefined
         return categoryName.toLowerCase().includes((categoryInputValue || '').toLowerCase());
     });
-
-    const displayLanguageChip =
-        selectedClient?.language && String(selectedClient.language).trim() !== ''
-            ? String(selectedClient.language).trim()
-            : '---';
-
-    const displayTopicChip =
-        selectedClient?.topic && String(selectedClient.topic).trim() !== ''
-            ? String(selectedClient.topic).trim()
-            : '---';
 
     const filteredLanguages = allLanguages.filter((lang) =>
         lang.name.toLowerCase().includes((languageInputValue || '').toLowerCase())
@@ -2606,103 +2608,225 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     // --- Render Helpers ---
 
-    // Helper: misc_leadsource name via source_id (bigint-safe string compare)
-    const getSourceDisplayName = (sourceId: string | number | null | undefined) => {
-        const sourceIdStr = normalizeLeadSourceId(sourceId);
-        if (!sourceIdStr) return '';
-        return lookupSourceNameById(sourceIdStr, allSources) || '';
-    };
-
-    const isLegacyLeadClient =
-        selectedClient?.lead_type === 'legacy' ||
-        String(selectedClient?.id ?? '').startsWith('legacy_');
-
-    const displaySourceChip = (() => {
-        if (!selectedClient) return '---';
-        if (!isLegacyLeadClient) {
-            const name = resolvedNewLeadSource?.name?.trim();
-            if (name) return name;
-            const id =
-                resolvedNewLeadSource?.sourceId ??
-                normalizeLeadSourceId(selectedClient.source_id);
-            if (id) {
-                const fromId = getSourceDisplayName(id);
-                if (fromId) return fromId;
-            }
-            return '---';
-        }
-        const joinName = getSourceDisplayFromJoin(selectedClient);
-        if (joinName) return joinName;
-        const sourceId = normalizeLeadSourceId(selectedClient.source_id);
-        if (sourceId) {
-            const fromId = getSourceDisplayName(sourceId);
-            if (fromId) return fromId;
-        }
-        return '---';
-    })();
-
-    // Helper function to get currency name from accounting_currencies table
-    // Always uses accounting_currencies.name column, never hardcoded values
     const getCurrencyName = (currencyId: string | number | null | undefined, accountingCurrencies?: any): string => {
-        // Default to currency_id 1 if not set
-        const finalCurrencyId = currencyId ?? 1;
-
-        // First, try to use accounting_currencies join data if provided
-        if (accountingCurrencies) {
-            const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-            if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-                return currencyRecord.name.trim();
-            }
-        }
-
-        // If currencies haven't loaded yet, return empty string (will be handled by fallback)
-        if (!allCurrencies || allCurrencies.length === 0) {
-            return '';
-        }
-
-        // Convert currencyId to number for comparison (handle bigint)
-        const currencyIdNum = typeof finalCurrencyId === 'string' ? parseInt(finalCurrencyId, 10) : Number(finalCurrencyId);
-        if (isNaN(currencyIdNum)) {
-            // If invalid, try to get currency_id 1
-            const defaultCurrency = allCurrencies.find((curr: any) => {
-                if (!curr || !curr.id) return false;
-                const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-                const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-                return !isNaN(currIdNum) && currIdNum === 1;
-            });
-            if (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') {
-                return defaultCurrency.name.trim();
-            }
-            return '';
-        }
-
-        // Find currency in loaded currencies - compare as numbers
-        const currency = allCurrencies.find((curr: any) => {
-            if (!curr || !curr.id) return false;
-            const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-            const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-            return !isNaN(currIdNum) && currIdNum === currencyIdNum;
-        });
-
-        if (currency && currency.name && currency.name.trim() !== '') {
-            return currency.name.trim();
-        }
-
-        // Fallback: try to get currency_id 1
-        const defaultCurrency = allCurrencies.find((curr: any) => {
-            if (!curr || !curr.id) return false;
-            const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-            const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-            return !isNaN(currIdNum) && currIdNum === 1;
-        });
-
-        if (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') {
-            return defaultCurrency.name.trim();
-        }
-
-        // Ultimate fallback: return empty string (should not happen if currencies are loaded)
-        return '';
+        return resolveLeadCurrencyName(currencyId, accountingCurrencies, allCurrencies);
     };
+
+    const headerTotalBadge = useMemo(() => {
+        const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+        const numericCurrencyId = parseLeadCurrencyId((selectedClient as any)?.currency_id) ?? 1;
+        const currency = getCurrencyName(
+            numericCurrencyId,
+            (selectedClient as any)?.accounting_currencies,
+        );
+        const leadKey = clientsTabCacheLeadKey(selectedClient);
+        const held = readClientsTabCache<ClientHeaderCostCacheSlice>(leadKey, 'header');
+        const planPending = hasPaymentPlan == null;
+
+        let contractBase: number | null = null;
+        if (hasPaymentPlan === true) {
+            if (paymentPlanBaseTotal != null) contractBase = Number(paymentPlanBaseTotal) || 0;
+        } else if (hasPaymentPlan === false) {
+            contractBase = unlockedLeadContractBase(selectedClient);
+        } else if (paymentPlanBaseTotal != null) {
+            contractBase = Number(paymentPlanBaseTotal) || 0;
+        }
+
+        const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+        const firmExpense = Math.max(0, Number(firmPaidExpenseTotal) || 0);
+        const totalReductions =
+            (subcontractorFee > 0 ? subcontractorFee : 0) + firmExpense;
+
+        const potentialAmount = isLegacyLead
+            ? Number((selectedClient as any)?.potential_total ?? 0) || 0
+            : Number(
+                  (selectedClient as any)?.potential_value ??
+                      (selectedClient as any)?.potential_total ??
+                      0
+              ) || 0;
+        const potentialApplicantsMeeting = isLegacyLead
+            ? Number(
+                  (selectedClient as any)?.potential_applicants_meeting ??
+                      (selectedClient as any)?.potential_applicants ??
+                      0
+              ) || 0
+            : Number((selectedClient as any)?.potential_applicants_meeting ?? 0) || 0;
+
+        const unpaidOutstandingPair =
+            unpaidByCurrency === null
+                ? null
+                : pickUnpaidBaseAndVatForCurrency(unpaidByCurrency, currency);
+        const unpaidGross =
+            unpaidOutstandingPair != null
+                ? unpaidOutstandingPair.base + unpaidOutstandingPair.vat
+                : 0;
+        const unpaidExpenseAmount = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
+
+        const computeVat = (baseAmount: number) => {
+            let vatAmount = 0;
+            let shouldShowVAT = false;
+            const vatValue = selectedClient?.vat;
+            if (isLegacyLead) {
+                shouldShowVAT = true;
+                if (vatValue !== null && vatValue !== undefined) {
+                    const vatStr = String(vatValue).toLowerCase().trim();
+                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
+                        shouldShowVAT = false;
+                    }
+                }
+                if (hasPaymentPlan === true && paymentPlanVatTotal !== null) {
+                    vatAmount = Number(paymentPlanVatTotal) || 0;
+                    shouldShowVAT = vatAmount > 0;
+                } else if (hasPaymentPlan === false && shouldShowVAT) {
+                    const vatRate = getVatRateForLegacyLead(
+                        (selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null,
+                    );
+                    vatAmount = Math.round((baseAmount * vatRate) * 100) / 100;
+                } else if (shouldShowVAT) {
+                    vatAmount = Number((selectedClient as any)?.vat_value ?? 0) || 0;
+                    if (!vatAmount) shouldShowVAT = false;
+                }
+            } else {
+                shouldShowVAT = true;
+                if (vatValue !== null && vatValue !== undefined) {
+                    const vatStr = String(vatValue).toLowerCase().trim();
+                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
+                        shouldShowVAT = false;
+                    }
+                }
+                if (shouldShowVAT) {
+                    if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                        vatAmount = Number(selectedClient.vat_value);
+                    } else {
+                        const vatRate = getVatRateForLegacyLead(
+                            (selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null,
+                        );
+                        vatAmount = baseAmount * vatRate;
+                    }
+                }
+            }
+            return { vatAmount, shouldShowVAT };
+        };
+
+        if (planPending && contractBase == null) {
+            if (held?.displayMainAmount != null) {
+                const vatAmount = Number(held.displayVatAmount) || 0;
+                const baseAmount = held.displayMainAmount;
+                const netWithoutFeesAndExpenses = null;
+                return {
+                    currency,
+                    isLegacyLead,
+                    planPending: true,
+                    amountReady: true,
+                    showLocked: held.displayHasPlan === true,
+                    baseAmount,
+                    mainAmount: held.displayMainAmount,
+                    netWithoutFeesAndExpenses,
+                    vatAmount,
+                    shouldShowVAT: vatAmount > 0,
+                    subcontractorFee,
+                    potentialAmount,
+                    potentialApplicantsMeeting,
+                    unpaidOutstandingPair,
+                    unpaidGross,
+                    unpaidExpenseAmount,
+                    hasExpandableFinancialDetails:
+                        (paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0) ||
+                        potentialAmount > 0 ||
+                        potentialApplicantsMeeting > 0 ||
+                        unpaidGross > 0 ||
+                        unpaidExpenseAmount > 0,
+                };
+            }
+            return {
+                currency,
+                isLegacyLead,
+                planPending: true,
+                amountReady: false,
+                showLocked: false,
+                baseAmount: 0,
+                mainAmount: 0,
+                netWithoutFeesAndExpenses: null as number | null,
+                vatAmount: 0,
+                shouldShowVAT: false,
+                subcontractorFee,
+                potentialAmount,
+                potentialApplicantsMeeting,
+                unpaidOutstandingPair,
+                unpaidGross,
+                unpaidExpenseAmount,
+                hasExpandableFinancialDetails: false,
+            };
+        }
+
+        const baseAmount = contractBase ?? 0;
+        const mainAmount = Math.max(0, baseAmount - totalReductions);
+        const netWithoutFeesAndExpenses =
+            totalReductions > 0 ? baseAmount : null;
+        const { vatAmount, shouldShowVAT } = planPending
+            ? {
+                  vatAmount: Number(held?.displayVatAmount) || 0,
+                  shouldShowVAT: (Number(held?.displayVatAmount) || 0) > 0,
+              }
+            : computeVat(baseAmount);
+
+        return {
+            currency,
+            isLegacyLead,
+            planPending,
+            amountReady: true,
+            showLocked: hasPaymentPlan === true || (planPending && held?.displayHasPlan === true),
+            baseAmount,
+            mainAmount,
+            netWithoutFeesAndExpenses,
+            vatAmount,
+            shouldShowVAT,
+            subcontractorFee,
+            potentialAmount,
+            potentialApplicantsMeeting,
+            unpaidOutstandingPair,
+            unpaidGross,
+            unpaidExpenseAmount,
+            hasExpandableFinancialDetails:
+                netWithoutFeesAndExpenses !== null ||
+                (paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0) ||
+                potentialAmount > 0 ||
+                potentialApplicantsMeeting > 0 ||
+                unpaidGross > 0 ||
+                unpaidExpenseAmount > 0,
+        };
+        // getCurrencyName closes over allCurrencies
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        selectedClient,
+        hasPaymentPlan,
+        paymentPlanBaseTotal,
+        paymentPlanVatTotal,
+        paymentPlanExpenseNoVatTotal,
+        firmPaidExpenseTotal,
+        unpaidByCurrency,
+        unpaidExpenseByCurrency,
+        allCurrencies,
+    ]);
+
+    useEffect(() => {
+        if (!headerTotalBadge.amountReady || headerTotalBadge.planPending) return;
+        patchHeaderCostCache(clientsTabCacheLeadKey(selectedClient), {
+            displayMainAmount: headerTotalBadge.mainAmount,
+            displayVatAmount: headerTotalBadge.shouldShowVAT ? headerTotalBadge.vatAmount : 0,
+            displayHasPlan: hasPaymentPlan === true,
+            firmPaidExpenseTotal,
+        });
+    }, [
+        headerTotalBadge.amountReady,
+        headerTotalBadge.planPending,
+        headerTotalBadge.mainAmount,
+        headerTotalBadge.shouldShowVAT,
+        headerTotalBadge.vatAmount,
+        hasPaymentPlan,
+        firmPaidExpenseTotal,
+        selectedClient,
+    ]);
 
     // Lead Number
     const renderLeadNumber = () => {
@@ -4149,116 +4273,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {!hideTotalValueBadge && (
                             <div className="w-full border-t border-base-200/70 pb-8 pt-4 dark:border-base-300/40">
                             {(() => {
-                            const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                            let currency = '';
-                            const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
-                            if (accountingCurrencies) {
-                                const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-                                if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-                                    currency = currencyRecord.name.trim();
-                                }
-                            }
-                            if (!isLegacyLead) {
-                                const currencyId = (selectedClient as any)?.currency_id ?? 1;
-                                const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                                    currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-                                    if (!currency || currency.trim() === '') currency = getCurrencyName(1);
-                                } else {
-                                    currency = getCurrencyName(1);
-                                }
-                            } else {
-                                if (!currency && selectedClient?.currency_id) {
-                                    const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
-                                    if (currencyFromId && currencyFromId.trim() !== '') currency = currencyFromId;
-                                }
-                                if (!currency || currency.trim() === '') currency = selectedClient?.balance_currency || '';
-                                if (!currency || currency.trim() === '') currency = getCurrencyName(1);
-                            }
-                            let baseAmount: number;
-                            if (isLegacyLead) {
-                                const currencyId = (selectedClient as any)?.currency_id;
-                                let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
-                                baseAmount = numericCurrencyId === 1
-                                    ? Number((selectedClient as any)?.total_base ?? 0)
-                                    : Number((selectedClient as any)?.total ?? 0);
-                            } else {
-                                baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                            }
-
-                            if (hasPaymentPlan === true) {
-                                if (paymentPlanBaseTotal !== null) baseAmount = Number(paymentPlanBaseTotal) || 0;
-                            }
-                            const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                            const firmExpense = Math.max(0, Number(firmPaidExpenseTotal) || 0);
-                            // Total (top) = lead total after office (firm-paid) expenses + subcontractor fees
-                            // Net = full lead total without those deductions
-                            const totalReductions =
-                                (subcontractorFee > 0 ? subcontractorFee : 0) + firmExpense;
-                            const mainAmount = Math.max(0, baseAmount - totalReductions);
-                            const netWithoutFeesAndExpenses =
-                                totalReductions > 0 ? baseAmount : null;
-                            const potentialAmount = isLegacyLead
-                                ? Number((selectedClient as any)?.potential_total ?? 0) || 0
-                                : Number(
-                                      (selectedClient as any)?.potential_value ??
-                                          (selectedClient as any)?.potential_total ??
-                                          0
-                                  ) || 0;
-                            /** Not the same as meeting applicants — uses potential_applicants_meeting / potential_applicants */
-                            const potentialApplicantsMeeting = isLegacyLead
-                                ? Number(
-                                      (selectedClient as any)?.potential_applicants_meeting ??
-                                          (selectedClient as any)?.potential_applicants ??
-                                          0
-                                  ) || 0
-                                : Number((selectedClient as any)?.potential_applicants_meeting ?? 0) || 0;
-                            let vatAmount = 0;
-                            let shouldShowVAT = false;
-                            const vatValue = selectedClient?.vat;
-                            if (isLegacyLead) {
-                                shouldShowVAT = true;
-                                if (vatValue !== null && vatValue !== undefined) {
-                                    const vatStr = String(vatValue).toLowerCase().trim();
-                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                }
-                                if (hasPaymentPlan === true && paymentPlanVatTotal !== null) {
-                                    vatAmount = Number(paymentPlanVatTotal) || 0;
-                                    shouldShowVAT = vatAmount > 0;
-                                } else if (hasPaymentPlan !== true && shouldShowVAT) {
-                                    // When there's no payment plan, totals are treated as NET (same mental model as FinancesTab).
-                                    const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
-                                    vatAmount = Math.round((baseAmount * vatRate) * 100) / 100;
-                                } else if (shouldShowVAT) {
-                                    // Legacy fallback: legacy totals may already be gross; avoid inventing VAT when missing.
-                                    vatAmount = Number((selectedClient as any)?.vat_value ?? 0) || 0;
-                                    if (!vatAmount) {
-                                        shouldShowVAT = false;
-                                    }
-                                }
-                            } else {
-                                shouldShowVAT = true;
-                                if (vatValue !== null && vatValue !== undefined) {
-                                    const vatStr = String(vatValue).toLowerCase().trim();
-                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                }
-                                if (shouldShowVAT) {
-                                    vatAmount =
-                                        selectedClient?.vat_value && Number(selectedClient.vat_value) > 0
-                                            ? Number(selectedClient.vat_value)
-                                            : baseAmount * getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
-                                }
-                            }
-                            const unpaidOutstandingPair =
-                                unpaidByCurrency === null
-                                    ? null
-                                    : pickUnpaidBaseAndVatForCurrency(unpaidByCurrency, currency);
-                            const unpaidGross =
-                                unpaidOutstandingPair != null
-                                    ? unpaidOutstandingPair.base + unpaidOutstandingPair.vat
-                                    : 0;
-                            const unpaidExpenseAmount = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
+                            const {
+                                currency,
+                                amountReady,
+                                showLocked,
+                                mainAmount,
+                                netWithoutFeesAndExpenses,
+                                vatAmount,
+                                shouldShowVAT,
+                                subcontractorFee,
+                                potentialAmount,
+                                potentialApplicantsMeeting,
+                                unpaidOutstandingPair,
+                                unpaidGross,
+                                unpaidExpenseAmount,
+                            } = headerTotalBadge;
                             return (
                                 <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
@@ -4283,15 +4312,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         </div>
                                         <div className="flex flex-col items-end">
                                             <p className="inline-flex items-center gap-2 text-3xl font-bold leading-none tracking-tight text-base-content/95">
-                                                <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
-                                                {hasPaymentPlan === true && <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />}
+                                                {amountReady ? (
+                                                    <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
+                                                ) : (
+                                                    <span className="inline-block h-8 w-28 animate-pulse rounded-md bg-base-200/80" aria-hidden />
+                                                )}
+                                                {showLocked && <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />}
                                             </p>
-                                            {shouldShowVAT && vatAmount > 0 && (
+                                            {amountReady && shouldShowVAT && vatAmount > 0 && (
                                                 <p className="mt-0.5 text-sm text-base-content/55">
                                                     +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
                                                 </p>
                                             )}
                                         </div>
+                                        {amountReady ? (
                                         <ClientHeaderTotalInNis
                                             clientId={selectedClient?.id}
                                             leadType={selectedClient?.lead_type}
@@ -4299,6 +4333,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             subtotal={mainAmount}
                                             vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
                                         />
+                                        ) : null}
                                         {netWithoutFeesAndExpenses !== null && (
                                             <p className="text-[11px] text-base-content/50">
                                                 Net {currency}
@@ -4444,141 +4479,22 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             {!hideTotalValueBadge ? (
                                 <div className="w-fit max-w-[min(100%,14rem)] shrink-0 text-left sm:max-w-xs">
                             {(() => {
-                                const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-
-                                let currency = '';
-                                const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
-                                if (accountingCurrencies) {
-                                    const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-                                    if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-                                        currency = currencyRecord.name.trim();
-                                    }
-                                }
-
-                                if (!isLegacyLead) {
-                                    const currencyId = (selectedClient as any)?.currency_id ?? 1;
-                                    const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                    if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                                        currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-                                        if (!currency || currency.trim() === '') {
-                                            currency = getCurrencyName(1);
-                                        }
-                                    } else {
-                                        currency = getCurrencyName(1);
-                                    }
-                                } else {
-                                    if (!currency && selectedClient?.currency_id) {
-                                        const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
-                                        if (currencyFromId && currencyFromId.trim() !== '') {
-                                            currency = currencyFromId;
-                                        }
-                                    }
-                                    if (!currency || currency.trim() === '') {
-                                        currency = selectedClient?.balance_currency || '';
-                                    }
-                                    if (!currency || currency.trim() === '') {
-                                        currency = getCurrencyName(1);
-                                    }
-                                }
-
-                                let baseAmount: number;
-                                if (isLegacyLead) {
-                                    const currencyId = (selectedClient as any)?.currency_id;
-                                    let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                    if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
-
-                                    if (numericCurrencyId === 1) {
-                                        baseAmount = Number((selectedClient as any)?.total_base ?? 0);
-                                    } else {
-                                        baseAmount = Number((selectedClient as any)?.total ?? 0);
-                                    }
-                                } else {
-                                    baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                                }
-
-                                // When payment plan exists, Total Value should match plan totals (no double VAT).
-                                if (hasPaymentPlan === true && paymentPlanBaseTotal !== null) {
-                                    baseAmount = Number(paymentPlanBaseTotal) || 0;
-                                }
-
-                                const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                                const firmExpense = Math.max(0, Number(firmPaidExpenseTotal) || 0);
-                                // Total (top) = lead total after office (firm-paid) expenses + subcontractor fees
-                                // Net = full lead total without those deductions
-                                const totalReductions =
-                                    (subcontractorFee > 0 ? subcontractorFee : 0) + firmExpense;
-                                const mainAmount = Math.max(0, baseAmount - totalReductions);
-                                const netWithoutFeesAndExpenses =
-                                    totalReductions > 0 ? baseAmount : null;
-                                const potentialAmount = isLegacyLead
-                                    ? Number((selectedClient as any)?.potential_total ?? 0) || 0
-                                    : Number(
-                                          (selectedClient as any)?.potential_value ??
-                                              (selectedClient as any)?.potential_total ??
-                                              0
-                                      ) || 0;
-                                const potentialApplicantsMeeting = isLegacyLead
-                                    ? Number(
-                                          (selectedClient as any)?.potential_applicants_meeting ??
-                                              (selectedClient as any)?.potential_applicants ??
-                                              0
-                                      ) || 0
-                                    : Number((selectedClient as any)?.potential_applicants_meeting ?? 0) || 0;
-
-                                let vatAmount = 0;
-                                let shouldShowVAT = false;
-                                const vatValue = selectedClient?.vat;
-
-                                if (isLegacyLead) {
-                                    shouldShowVAT = true;
-                                    if (vatValue !== null && vatValue !== undefined) {
-                                        const vatStr = String(vatValue).toLowerCase().trim();
-                                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                    }
-                                    if (hasPaymentPlan === true && paymentPlanVatTotal !== null) {
-                                        vatAmount = Number(paymentPlanVatTotal) || 0;
-                                        shouldShowVAT = vatAmount > 0;
-                                    } else if (hasPaymentPlan !== true && shouldShowVAT) {
-                                        const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
-                                        vatAmount = Math.round((baseAmount * vatRate) * 100) / 100;
-                                    } else if (shouldShowVAT) {
-                                        vatAmount = Number((selectedClient as any)?.vat_value ?? 0) || 0;
-                                        if (!vatAmount) shouldShowVAT = false;
-                                    }
-                                } else {
-                                    shouldShowVAT = true;
-                                    if (vatValue !== null && vatValue !== undefined) {
-                                        const vatStr = String(vatValue).toLowerCase().trim();
-                                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                    }
-
-                                    if (shouldShowVAT) {
-                                        if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                                            vatAmount = Number(selectedClient.vat_value);
-                                        } else {
-                                            const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
-                                            vatAmount = baseAmount * vatRate;
-                                        }
-                                    }
-                                }
-
-                                const unpaidOutstandingPairDesktop =
-                                    unpaidByCurrency === null
-                                        ? null
-                                        : pickUnpaidBaseAndVatForCurrency(unpaidByCurrency, currency);
-                                const unpaidGrossDesktop =
-                                    unpaidOutstandingPairDesktop != null
-                                        ? unpaidOutstandingPairDesktop.base + unpaidOutstandingPairDesktop.vat
-                                        : 0;
-                                const unpaidExpenseAmountDesktop = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
-
-                                const hasExpandableFinancialDetails =
-                                    netWithoutFeesAndExpenses !== null ||
-                                    (paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0) ||
-                                    potentialAmount > 0 ||
-                                    potentialApplicantsMeeting > 0 ||
-                                    unpaidGrossDesktop > 0 ||
-                                    unpaidExpenseAmountDesktop > 0;
+                                const {
+                                    currency,
+                                    amountReady,
+                                    showLocked,
+                                    mainAmount,
+                                    netWithoutFeesAndExpenses,
+                                    vatAmount,
+                                    shouldShowVAT,
+                                    subcontractorFee,
+                                    potentialAmount,
+                                    potentialApplicantsMeeting,
+                                    unpaidOutstandingPair: unpaidOutstandingPairDesktop,
+                                    unpaidGross: unpaidGrossDesktop,
+                                    unpaidExpenseAmount: unpaidExpenseAmountDesktop,
+                                    hasExpandableFinancialDetails,
+                                } = headerTotalBadge;
 
                                 return (
                                     <>
@@ -4602,16 +4518,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         >
                                             <div className="flex flex-col items-start">
                                                 <p className="inline-flex items-center gap-2 text-2xl font-bold leading-none tracking-tight text-base-content/95 sm:text-3xl">
-                                                    <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
-                                                    {hasPaymentPlan === true && (
+                                                    {amountReady ? (
+                                                        <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
+                                                    ) : (
+                                                        <span className="inline-block h-8 w-28 animate-pulse rounded-md bg-base-200/80" aria-hidden />
+                                                    )}
+                                                    {showLocked && (
                                                         <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />
                                                     )}
                                                 </p>
                                             </div>
                                         </button>
-                                        {(shouldShowVAT && vatAmount > 0) || hasExpandableFinancialDetails ? (
+                                        {(amountReady && shouldShowVAT && vatAmount > 0) || (amountReady && hasExpandableFinancialDetails) ? (
                                             <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                                                {shouldShowVAT && vatAmount > 0 ? (
+                                                {amountReady && shouldShowVAT && vatAmount > 0 ? (
                                                     <button
                                                         type="button"
                                                         className="text-sm text-base-content/55"

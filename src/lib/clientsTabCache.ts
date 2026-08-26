@@ -14,7 +14,9 @@ export type ClientsTabSlice =
   | 'marketing'
   | 'expert'
   | 'roles'
-  | 'header';
+  | 'header'
+  | 'paymentPlan'
+  | 'meta';
 
 type StoredSlice<T> = {
   v: number;
@@ -85,7 +87,16 @@ export function clearClientsTabCacheSlice(
 
 export function clearAllClientsTabCacheForLead(leadKey: string | null | undefined): void {
   if (!leadKey || typeof window === 'undefined') return;
-  const slices: ClientsTabSlice[] = ['info', 'meetings', 'price', 'marketing', 'expert', 'roles', 'header'];
+  const slices: ClientsTabSlice[] = [
+    'info',
+    'meetings',
+    'price',
+    'marketing',
+    'expert',
+    'roles',
+    'header',
+    'meta',
+  ];
   for (const slice of slices) {
     clearClientsTabCacheSlice(leadKey, slice);
   }

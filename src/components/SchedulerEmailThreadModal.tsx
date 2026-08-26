@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, DocumentTextIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, DocumentTextIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
@@ -21,6 +21,9 @@ import EmailSentSuccessModal from './EmailSentSuccessModal';
 import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
 import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
 import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
+import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
+import { sendWordDocumentAiChatMessage } from '../lib/wordDocumentAiApi';
+import { fetchLeadCaseFileForAi, parseFollowupDocumentLinks, formatRequiredDocumentLinksBlock, applyCrmDocumentLinksToEmailDraft } from '../lib/leadFollowupAiApi';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -89,6 +92,23 @@ const buildEmailFilterClauses = (params: {
   return clauses;
 };
 
+/** CRM already appends the company signature — drop anything after the sign-off. */
+const stripAiEmailSignature = (text: string): string => {
+  const normalized = text.replace(/\r\n/g, '\n').trimEnd();
+  const lines = normalized.split('\n');
+  const closeRe =
+    /^(best regards|kind regards|warm regards|with regards|regards|sincerely|yours sincerely|yours truly|thanks|thank you|בברכה|בכבוד רב)\s*,?\s*$/i;
+  let closeIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (closeRe.test(lines[i].trim())) closeIdx = i;
+  }
+  if (closeIdx >= 0) return lines.slice(0, closeIdx + 1).join('\n').trim();
+  return normalized.replace(
+    /\n+(?:\[your name\]|\[your position\]|decker,?\s*pex[\s\S]*)$/i,
+    '',
+  ).trim();
+};
+
 interface SchedulerEmailThreadModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -100,8 +120,17 @@ interface SchedulerEmailThreadModalProps {
     lead_type?: string;
     topic?: string;
     user_internal_id?: string | number | null;
+    language?: string | null;
+    category?: string | null;
   };
   onClientUpdate?: () => Promise<void>;
+  /** Open the compose overlay immediately (pipeline follow-up queue). */
+  startInCompose?: boolean;
+  /** Word-document AI side panel for drafting / editing the follow-up email. */
+  enableDocumentAiChat?: boolean;
+  queueInfo?: { current: number; total: number };
+  onSent?: () => void;
+  onSkip?: () => void;
 }
 
 interface EmailTemplate {
@@ -363,12 +392,22 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
   return emailToNameMap;
 };
 
-const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ isOpen, onClose, client, onClientUpdate }) => {
+const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
+  isOpen,
+  onClose,
+  client,
+  onClientUpdate,
+  startInCompose = false,
+  enableDocumentAiChat = false,
+  queueInfo,
+  onSent,
+  onSkip,
+}) => {
   const [emails, setEmails] = useState<any[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState("");
   const [isSearchBarOpen, setIsSearchBarOpen] = useState(false);
-  const [showCompose, setShowCompose] = useState(false);
+  const [showCompose, setShowCompose] = useState(() => Boolean(startInCompose));
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
   const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
@@ -412,6 +451,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
   const [aiDraftActive, setAiDraftActive] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [aiChatMessages, setAiChatMessages] = useState<ContractAiReviewMessage[]>([]);
+  const [aiChatRemarks, setAiChatRemarks] = useState('');
+  const [aiChatApplying, setAiChatApplying] = useState(false);
+  const [aiChatThinking, setAiChatThinking] = useState<string | null>(null);
+  const caseFileRef = useRef('');
+  const caseFilePromiseRef = useRef<Promise<string> | null>(null);
   
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [templateSearch, setTemplateSearch] = useState('');
@@ -494,7 +540,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         if (createNew && isUsableAiDraft(suggestion)) {
           setShowAISuggestions(false);
           setAiSuggestions([]);
-          typewriteComposeAi(suggestion);
+          typewriteComposeAi(stripAiEmailSignature(suggestion));
           setAiDraftActive(true);
         } else {
           setAiSuggestions([suggestion]);
@@ -518,9 +564,153 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
   // Apply AI suggestion
   const applyAISuggestion = (suggestion: string) => {
-    setComposeBody(suggestion);
+    setComposeBody(stripAiEmailSignature(suggestion));
     setShowAISuggestions(false);
     setAiSuggestions([]);
+  };
+
+  const applyEmailAiDraft = (text: string) => {
+    const trimmed = stripAiEmailSignature(
+      text.replace(/\[\[\/?[A-Z]+(?::[^\]]+)?\]\]/g, '').replace(/\r\n/g, '\n').trim(),
+    );
+    const subjectMatch = trimmed.match(/^Subject:\s*(.+?)\n(?:\s*\n)?([\s\S]*)$/i);
+    if (subjectMatch) {
+      const nextSubject = subjectMatch[1].trim();
+      if (nextSubject) setComposeSubject(nextSubject);
+      setComposeBody(stripAiEmailSignature(subjectMatch[2]));
+      return;
+    }
+    setComposeBody(trimmed);
+  };
+
+  const openCompose = useCallback(() => {
+    setShowCompose(true);
+    const initialRecipients = normaliseAddressList(client?.email);
+    setToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
+    setCcRecipients([]);
+    setToInput('');
+    setCcInput('');
+    setRecipientError(null);
+    setSelectedTemplateId(null);
+    setTemplateSearch('');
+    setShowLinkForm(false);
+    setLinkLabel('');
+    setLinkUrl('');
+    setComposeBody('');
+    setAiDraftActive(false);
+    setAiChatOpen(false);
+    setAiChatMessages([]);
+    setAiChatRemarks('');
+    const defaultSubject = `[${client?.lead_number || ''}] - ${client?.name || ''} - ${client?.topic || ''}`
+      .replace(/\s-\s*$/, '')
+      .trim();
+    setComposeSubject(defaultSubject);
+  }, [client?.email, client?.lead_number, client?.name, client?.topic]);
+
+  useEffect(() => {
+    if (!isOpen || !startInCompose || !client) return;
+    openCompose();
+  }, [isOpen, startInCompose, client?.id, openCompose]);
+
+  useEffect(() => {
+    if (!enableDocumentAiChat || !isOpen || !client?.id) {
+      caseFileRef.current = '';
+      caseFilePromiseRef.current = null;
+      return;
+    }
+    const leadId = String(client.id);
+    const promise = fetchLeadCaseFileForAi({
+      leadId,
+      isLegacy: client.lead_type === 'legacy' || leadId.startsWith('legacy_'),
+    })
+      .then((text) => {
+        caseFileRef.current = text;
+        return text;
+      })
+      .catch((error) => {
+        console.warn('Failed to load CRM case file for follow-up AI', error);
+        caseFileRef.current = '';
+        return '';
+      });
+    caseFilePromiseRef.current = promise;
+  }, [enableDocumentAiChat, isOpen, client?.id, client?.lead_type]);
+
+  const handleApplyEmailAiChat = async () => {
+    const remarks = aiChatRemarks.trim();
+    if (!remarks || !client) return;
+    setAiChatApplying(true);
+    setAiChatThinking('Opening the case file…');
+    setAiChatMessages((prev) => [...prev, { role: 'user', content: remarks }]);
+    setAiChatRemarks('');
+    try {
+      let caseContext =
+        caseFileRef.current ||
+        (caseFilePromiseRef.current ? await caseFilePromiseRef.current : '') ||
+        (await fetchLeadCaseFileForAi({
+          leadId: String(client.id),
+          isLegacy: client.lead_type === 'legacy' || String(client.id).startsWith('legacy_'),
+        }).catch(() => ''));
+      let links = parseFollowupDocumentLinks(caseContext);
+      if (!links.contractSigningUrl && !links.poaUrl && !links.invoiceUrl) {
+        const fresh = await fetchLeadCaseFileForAi({
+          leadId: String(client.id),
+          isLegacy: client.lead_type === 'legacy' || String(client.id).startsWith('legacy_'),
+        }).catch(() => '');
+        if (fresh) {
+          caseContext = fresh;
+          caseFileRef.current = fresh;
+          links = parseFollowupDocumentLinks(fresh);
+        }
+      }
+      const requiredLinks = formatRequiredDocumentLinksBlock(links);
+      setAiChatThinking('Reading the case and your request…');
+      const currentDocumentText = `Subject: ${composeSubject || `(follow-up for ${client.name})`}\n\n${
+        composeBody.trim() || '(empty follow-up email — draft one for this client)'
+      }`;
+      const userRemarks = [remarks, requiredLinks, caseContext ? `[BACKGROUND CASE FILE — use these facts. Copy REQUIRED LINKS exactly when needed. Do not dump this file into the email. Never use example.com.]\n${caseContext}` : '']
+        .filter(Boolean)
+        .join('\n\n');
+      const result = await sendWordDocumentAiChatMessage(
+        {
+          currentDocumentText,
+          userRemarks,
+          clientName: client.name,
+          leadNumber: client.lead_number,
+          language: client.language,
+          category: client.category,
+          chatHistory: aiChatMessages.map((m) => ({
+            role: m.role,
+            content:
+              m.role === 'assistant' && m.kind === 'change'
+                ? 'Updated the email draft.'
+                : m.content,
+          })),
+          caseContext: [requiredLinks, caseContext].filter(Boolean).join('\n\n'),
+          purpose: 'email_followup',
+        },
+        (text) => setAiChatThinking(text),
+      );
+      if (result.intent === 'action') {
+        applyEmailAiDraft(applyCrmDocumentLinksToEmailDraft(result.improvedDocumentText, links, remarks));
+      }
+      setAiChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          kind: result.intent === 'question' ? 'answer' : 'change',
+          content:
+            result.intent === 'question'
+              ? result.answer
+              : result.changeSummary || 'Done — I updated the email.',
+        },
+      ]);
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : 'AI request failed');
+    } finally {
+      setAiChatApplying(false);
+      setAiChatThinking(null);
+    }
   };
 
   const extractHtmlBody = (html: string) => {
@@ -755,6 +945,14 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
+
+  useEffect(() => {
+    if (!startInCompose || !showCompose || toRecipients.length > 0) return;
+    const withEmail = leadContacts.find((c) => c.isMain && c.email) || leadContacts.find((c) => c.email);
+    if (!withEmail?.email) return;
+    setToRecipients(normaliseAddressList(withEmail.email));
+    setSelectedContactId(withEmail.id);
+  }, [startInCompose, showCompose, leadContacts, toRecipients.length]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1206,6 +1404,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
       syncOnOpenRef.current = false;
       return;
     }
+    if (startInCompose) return;
 
     const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
     setComposeSubject(prev => (prev && prev.trim() ? prev : defaultSubject));
@@ -1226,7 +1425,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
       // Subsequent opens: just load from DB.
       fetchEmailsForModal();
     }
-  }, [isOpen, client, runMailboxSync, fetchEmailsForModal]);
+  }, [isOpen, client, startInCompose, runMailboxSync, fetchEmailsForModal]);
 
   const handleAttachmentUpload = (files: FileList) => {
     if (!files || files.length === 0) return;
@@ -1334,6 +1533,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     setLinkUrl('');
     setShowCompose(false);
     setSending(false);
+    if (onSent) onSent();
 
     // Fire-and-forget: perform the actual send in the background.
     (async () => {
@@ -1341,13 +1541,15 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         const bodyHtml = convertBodyToHtml(bodySnapshot);
         const { html: emailContentWithSignature, inlineAttachments } =
           await buildOutgoingHtmlWithSignature(bodyHtml);
-        setEmails((prev) =>
-          prev.map((email) =>
-            String(email.id) === optimisticId || String(email.message_id) === optimisticId
-              ? { ...email, body_html: emailContentWithSignature, body_preview: emailContentWithSignature }
-              : email,
-          ),
-        );
+        if (!onSent) {
+          setEmails((prev) =>
+            prev.map((email) =>
+              String(email.id) === optimisticId || String(email.message_id) === optimisticId
+                ? { ...email, body_html: emailContentWithSignature, body_preview: emailContentWithSignature }
+                : email,
+            ),
+          );
+        }
         const attachmentsPayload = [
           ...(await Promise.all(
           attachmentsSnapshot.map(async (file) => ({
@@ -1398,22 +1600,24 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
           },
         });
 
-        setShowEmailSentModal(true);
-        const messageId = sendResult?.id || sendResult?.messageId || optimisticId;
-        setEmails((prev) =>
-          prev.map((email) =>
-            String(email.id) === optimisticId || String(email.message_id) === optimisticId
-              ? {
-                  ...email,
-                  id: messageId,
-                  message_id: messageId,
-                  body_html: emailContentWithSignature,
-                  body_preview: emailContentWithSignature,
-                }
-              : email,
-          ),
-        );
-        void fetchEmailsForModal();
+        if (!onSent) {
+          setShowEmailSentModal(true);
+          const messageId = sendResult?.id || sendResult?.messageId || optimisticId;
+          setEmails((prev) =>
+            prev.map((email) =>
+              String(email.id) === optimisticId || String(email.message_id) === optimisticId
+                ? {
+                    ...email,
+                    id: messageId,
+                    message_id: messageId,
+                    body_html: emailContentWithSignature,
+                    body_preview: emailContentWithSignature,
+                  }
+                : email,
+            ),
+          );
+          void fetchEmailsForModal();
+        }
       } catch (error) {
         console.error('Error sending email (background):', error);
         toast.error(error instanceof Error ? error.message : 'Failed to send email');
@@ -1737,7 +1941,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
   return (
     <>
-      {createPortal(
+      {!startInCompose && createPortal(
         <div className="fixed inset-0 bg-white z-[9999]">
           {/* CSS to ensure email content displays fully and preserves Outlook formatting */}
           <style>{`
@@ -2122,20 +2326,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
             {/* Compose Email Section */}
             <div className="border-t border-gray-200 px-4 md:px-6 py-4 bg-white">
               <button
-                onClick={() => {
-                  setShowCompose(true);
-                  const initialRecipients = normaliseAddressList(client?.email);
-                  setToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
-                  setCcRecipients([]);
-                  setToInput('');
-                  setCcInput('');
-                  setRecipientError(null);
-                  setSelectedTemplateId(null);
-                  setTemplateSearch('');
-                  setShowLinkForm(false);
-                  setLinkLabel('');
-                  setLinkUrl('');
-                }}
+                onClick={openCompose}
                 className="w-full btn btn-primary h-12 min-h-0"
               >
                 <PaperAirplaneIcon className="w-4 h-4 mr-2" />
@@ -2147,21 +2338,56 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         document.body
       )}
       {showCompose && createPortal(
-        <div className="fixed inset-0 z-[10001] flex">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
-          <div className="relative w-full h-full bg-slate-100 shadow-2xl flex flex-col">
-            <div className="flex items-center justify-end px-4 pt-3 pb-0">
+        <div className={`fixed inset-0 z-[10001] flex ${aiChatOpen ? 'md:pr-[28rem]' : ''}`}>
+          <div
+            className="fixed inset-0 bg-black/50"
+            onClick={() => {
+              if (startInCompose) onClose();
+              else setShowCompose(false);
+            }}
+          />
+          <div
+            className="relative flex h-full w-full flex-col overflow-y-auto bg-slate-100 shadow-2xl overscroll-contain"
+            style={{ WebkitOverflowScrolling: 'touch' }}
+          >
+            <div className="sticky top-0 z-20 flex items-center gap-2 bg-slate-100/95 px-4 pt-3 pb-0 backdrop-blur-sm">
+              {queueInfo ? (
+                <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
+                  Follow-up {queueInfo.current} of {queueInfo.total}
+                  {client?.name ? ` · ${client.name}` : ''}
+                </p>
+              ) : (
+                <div className="flex-1" />
+              )}
+              {onSkip ? (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={onSkip}>
+                  Skip
+                </button>
+              ) : null}
+              {enableDocumentAiChat ? (
+                <button
+                  type="button"
+                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-[#1c1917] px-4 text-sm font-semibold text-[#f7f4ee] hover:bg-black"
+                  onClick={() => setAiChatOpen(true)}
+                >
+                  <SparklesIcon className="h-4 w-4" />
+                  AI
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn btn-ghost btn-sm btn-circle"
-                onClick={() => setShowCompose(false)}
+                onClick={() => {
+                  if (startInCompose) onClose();
+                  else setShowCompose(false);
+                }}
                 aria-label="Close compose"
               >
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            <div className="m-4 mt-1 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-            <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4">
+            <div className="m-4 mt-1 flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+            <div className="flex flex-1 flex-col px-5 py-5 space-y-4">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="font-semibold text-sm">To</label>
@@ -2310,7 +2536,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                   textAlign: composeBodyIsRTL ? 'right' : 'left',
                   direction: composeBodyIsRTL ? 'rtl' : 'ltr'
                 }}
-                className="w-full px-4 py-3 resize-y min-h-[240px]"
+                className="w-full min-h-[280px] overflow-hidden px-4 py-3 resize-none"
               />
               <ComposeAiEmptyPrompt
                 visible={!composeBody.trim() && !isLoadingAI}
@@ -2327,7 +2553,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
               ) : null}
               </ComposeBodyWithSignature>
             </div>
-            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between gap-4">
+            <div className="sticky bottom-0 z-10 flex items-center justify-between gap-4 border-t border-gray-200 bg-white px-6 py-4">
               {/* Left side - Buttons and Template Filters */}
               <div className="flex items-center gap-4 flex-wrap">
                 {/* Circle action buttons */}
@@ -2645,6 +2871,29 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         onClose={() => setShowEmailSentModal(false)}
         recipient={client?.email}
       />
+      {enableDocumentAiChat ? (
+        <ContractAiReviewPanel
+          isOpen={aiChatOpen}
+          onClose={() => setAiChatOpen(false)}
+          initialSummary={null}
+          messages={aiChatMessages}
+          remarks={aiChatRemarks}
+          onRemarksChange={setAiChatRemarks}
+          onApplyRemarks={() => void handleApplyEmailAiChat()}
+          isApplying={aiChatApplying}
+          thinkingText={aiChatThinking}
+          zIndex={10050}
+          title={
+            <span className="flex items-center gap-2.5">
+              <ChatBubbleLeftRightIcon className="h-7 w-7 shrink-0 text-violet-600" />
+              <span>AI follow-up assistant</span>
+            </span>
+          }
+          subtitle=""
+          placeholder="e.g. Write a short follow-up asking if they reviewed the offer…"
+          conversationOnly
+        />
+      ) : null}
     </>
   );
 };

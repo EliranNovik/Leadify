@@ -14,7 +14,24 @@ export type WordDocumentAiInput = {
   language?: string | null;
   category?: string | null;
   chatHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /** Full CRM case file (same pack as pipeline AI follow-up). */
+  caseContext?: string | null;
+  purpose?: 'document' | 'email_followup';
 };
+
+function toWordDocumentAiBody(input: WordDocumentAiInput): Record<string, unknown> {
+  return {
+    currentDocumentText: input.currentDocumentText,
+    userRemarks: input.userRemarks ?? '',
+    clientName: input.clientName ?? '',
+    leadNumber: input.leadNumber ?? '',
+    language: input.language ?? '',
+    category: input.category ?? '',
+    chatHistory: input.chatHistory ?? [],
+    caseContext: input.caseContext ?? '',
+    purpose: input.purpose ?? 'document',
+  };
+}
 
 function normalizeResult(data: Record<string, unknown>): WordDocumentAiChatResult {
   if (data?.intent === 'question') {
@@ -48,15 +65,7 @@ async function invokeWordDocumentAi(
   if (onThinking) {
     try {
       const data = await consumeWordDocumentAiReviewSse<Record<string, unknown>>(
-        {
-          currentDocumentText: input.currentDocumentText,
-          userRemarks: input.userRemarks ?? '',
-          clientName: input.clientName ?? '',
-          leadNumber: input.leadNumber ?? '',
-          language: input.language ?? '',
-          category: input.category ?? '',
-          chatHistory: input.chatHistory ?? [],
-        },
+        toWordDocumentAiBody(input),
         onThinking,
       );
       if (data?.error) throw new Error(String(data.error));
@@ -68,15 +77,7 @@ async function invokeWordDocumentAi(
   }
 
   const { data, error } = await supabase.functions.invoke('ai-word-document', {
-    body: {
-      currentDocumentText: input.currentDocumentText,
-      userRemarks: input.userRemarks ?? '',
-      clientName: input.clientName ?? '',
-      leadNumber: input.leadNumber ?? '',
-      language: input.language ?? '',
-      category: input.category ?? '',
-      chatHistory: input.chatHistory ?? [],
-    },
+    body: toWordDocumentAiBody(input),
   });
 
   if (error) throw new Error(error.message || 'Failed to update document with AI');

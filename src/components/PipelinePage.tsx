@@ -55,6 +55,7 @@ import {
   type PipelineRailAction,
 } from './pipeline/pipelineActions';
 import { PipelineBulkStageBar, PipelineBulkStageSettings } from './pipeline/PipelineBulkStageControls';
+import PipelineFollowupBar from './pipeline/PipelineFollowupBar';
 import LeadFollowupAiDrawer from './LeadFollowupAiDrawer';
 import type { Lead } from '../lib/supabase';
 import PipelineEmployeePicker from './pipeline/PipelineEmployeePicker';
@@ -1028,11 +1029,27 @@ const PipelinePage: React.FC = () => {
   const [bulkStageApplying, setBulkStageApplying] = useState(false);
   const [bulkStageOptions, setBulkStageOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [stageRefreshToken, setStageRefreshToken] = useState(0);
+  const [followupSelectedLeads, setFollowupSelectedLeads] = useState<PipelineActionLead[]>([]);
+  const [followupQueue, setFollowupQueue] = useState<PipelineActionLead[]>([]);
+  const [followupQueueIndex, setFollowupQueueIndex] = useState(0);
+  const [followupActiveLead, setFollowupActiveLead] = useState<PipelineActionLead | null>(null);
+  const [followupStarting, setFollowupStarting] = useState(false);
+  const followupQueueRef = useRef<PipelineActionLead[]>([]);
+  const followupQueueIndexRef = useRef(0);
   const clearBulkStageMode = useCallback(() => {
     setBulkStageMode(false);
     setBulkSelectedLeads([]);
     setBulkStageId('');
     setBulkStageApplying(false);
+  }, []);
+  const clearFollowupSelection = useCallback(() => {
+    setFollowupSelectedLeads([]);
+    setFollowupQueue([]);
+    setFollowupQueueIndex(0);
+    setFollowupActiveLead(null);
+    setFollowupStarting(false);
+    followupQueueRef.current = [];
+    followupQueueIndexRef.current = 0;
   }, []);
   // Card ("box") view is switched off for now: the toggle is commented out below and the table
   // is the only view. The card markup is kept so it can be turned back on.
@@ -3043,9 +3060,12 @@ const PipelinePage: React.FC = () => {
       special_notes: lead.special_notes,
       next_followup: lead.next_followup,
       topic: lead.topic,
+      language: lead.language,
+      category: lead.category,
     });
 
   const runRailAction = async (action: PipelineRailAction, lead: PipelineActionLead) => {
+    if (action === 'followup') return;
     setRailLead(lead);
     if (action === 'finance') setArmedAction(null);
     if (action === 'ai') {
@@ -3092,8 +3112,13 @@ const PipelinePage: React.FC = () => {
       setBulkSelectedLeads([]);
       setBulkStageId('');
     }
+    if (action !== 'followup') {
+      setFollowupSelectedLeads([]);
+      setFollowupActiveLead(null);
+    }
     if (armedAction === action) {
       setArmedAction(null);
+      if (action === 'followup') clearFollowupSelection();
       return;
     }
     setArmedAction(action);
@@ -3104,9 +3129,57 @@ const PipelinePage: React.FC = () => {
     setRailLead(null);
     setSelectedRowId(null);
     setFollowupLead(null);
+    setFollowupSelectedLeads([]);
+    setFollowupActiveLead(null);
     setBulkStageMode(true);
     setSettingsOpen(true);
   }, []);
+
+  const startFollowupSend = async () => {
+    if (followupSelectedLeads.length === 0 || followupStarting) return;
+    setFollowupStarting(true);
+    try {
+      const hydrated = await hydratePipelineActionLead(followupSelectedLeads[0]);
+      const queue = [hydrated, ...followupSelectedLeads.slice(1)];
+      followupQueueRef.current = queue;
+      followupQueueIndexRef.current = 0;
+      setFollowupQueue(queue);
+      setFollowupQueueIndex(0);
+      setFollowupActiveLead(hydrated);
+    } catch (error) {
+      console.error('Failed to start follow-up queue', error);
+      toast.error('Could not open follow-up email');
+    } finally {
+      setFollowupStarting(false);
+    }
+  };
+
+  const advanceFollowupQueue = async () => {
+    const nextIndex = followupQueueIndexRef.current + 1;
+    const queue = followupQueueRef.current;
+    if (nextIndex >= queue.length) {
+      toast.success(
+        queue.length > 1 ? `Finished follow-ups for ${queue.length} leads` : 'Follow-up sent',
+      );
+      setArmedAction(null);
+      clearFollowupSelection();
+      return;
+    }
+    followupQueueIndexRef.current = nextIndex;
+    setFollowupQueueIndex(nextIndex);
+    try {
+      const hydrated = await hydratePipelineActionLead(queue[nextIndex]);
+      setFollowupActiveLead(hydrated);
+    } catch (error) {
+      console.error('Failed to open next follow-up', error);
+      toast.error('Could not open the next lead');
+    }
+  };
+
+  const cancelFollowupQueue = () => {
+    setArmedAction(null);
+    clearFollowupSelection();
+  };
 
   useEffect(() => {
     if (!bulkStageMode) return;
@@ -3153,6 +3226,16 @@ const PipelinePage: React.FC = () => {
       openLeadFromRowClick(event, lead.navId, navigate);
       return;
     }
+    if (armedAction === 'followup') {
+      setFollowupSelectedLeads((prev) => {
+        const id = String(lead.id);
+        if (prev.some((row) => String(row.id) === id)) {
+          return prev.filter((row) => String(row.id) !== id);
+        }
+        return [...prev, lead];
+      });
+      return;
+    }
     if (bulkStageMode) {
       setBulkSelectedLeads((prev) => {
         const id = String(lead.id);
@@ -3194,10 +3277,11 @@ const PipelinePage: React.FC = () => {
       setArmedAction(null);
       setSettingsOpen(false);
       clearBulkStageMode();
+      clearFollowupSelection();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [clearBulkStageMode]);
+  }, [clearBulkStageMode, clearFollowupSelection]);
 
   const handleTimeline = (lead: LeadForPipeline) => {
     navigate(`/clients/${lead.lead_number}?tab=interactions`);
@@ -5228,6 +5312,15 @@ const PipelinePage: React.FC = () => {
     }
   };
 
+  const followupPicking = armedAction === 'followup';
+  const leadPicking = Boolean(armedAction) || bulkStageMode;
+  const leadMultiSelect = bulkStageMode || followupPicking;
+  const pickedLeadIds = bulkStageMode
+    ? bulkSelectedLeads.map((lead) => String(lead.id))
+    : followupPicking
+      ? followupSelectedLeads.map((lead) => String(lead.id))
+      : undefined;
+
   return (
     <div className="flex min-h-full w-full bg-[#f3f4f6]">
       <PipelineActionSidebar
@@ -5240,8 +5333,9 @@ const PipelinePage: React.FC = () => {
       >
         <div className="space-y-4">
           <p className="text-xs leading-relaxed text-gray-500">
-            Click AI, Email, Call, WhatsApp or Finance, then click a lead. If a lead is already
-            selected, the action runs immediately. Cmd/Ctrl-click a row to open the client page.
+            Click Follow up, then select one or more leads and tap Send follow up. Email, Call,
+            WhatsApp and Finance still run on a single click. Cmd/Ctrl-click a row to open the
+            client page.
           </p>
           {isSuperUser ? (
             <PipelineBulkStageSettings
@@ -5406,6 +5500,17 @@ const PipelinePage: React.FC = () => {
       {/* Animated on tab change without a key, so the case pipeline is not remounted */}
       <div ref={tabPanelRef}>
       {bulkStageMode ? <PipelineBulkStageBar {...bulkStageControls} /> : null}
+      {followupPicking && !followupActiveLead ? (
+        <PipelineFollowupBar
+          selectedCount={followupSelectedLeads.length}
+          starting={followupStarting}
+          onSend={() => void startFollowupSend()}
+          onCancel={() => {
+            setArmedAction(null);
+            clearFollowupSelection();
+          }}
+        />
+      ) : null}
       {isCaseTab ? (
         <CasePipelineView
           key={pipelineViewIdentityKey(viewAsForPipeline)}
@@ -5415,9 +5520,9 @@ const PipelinePage: React.FC = () => {
           onCountsChange={setCaseRoleCounts}
           viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
-          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
-          picking={Boolean(armedAction) || bulkStageMode}
-          multiSelect={bulkStageMode}
+          selectedLeadIds={pickedLeadIds}
+          picking={leadPicking}
+          multiSelect={leadMultiSelect}
           onSelectLead={handlePipelineLeadChosen}
           refreshToken={stageRefreshToken}
         />
@@ -5427,9 +5532,9 @@ const PipelinePage: React.FC = () => {
           onCountChange={handleExpertCount}
           viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
-          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
-          picking={Boolean(armedAction) || bulkStageMode}
-          multiSelect={bulkStageMode}
+          selectedLeadIds={pickedLeadIds}
+          picking={leadPicking}
+          multiSelect={leadMultiSelect}
           onSelectLead={handlePipelineLeadChosen}
           refreshToken={stageRefreshToken}
         />
@@ -5439,9 +5544,9 @@ const PipelinePage: React.FC = () => {
           onCountChange={handleHandlerCount}
           viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
-          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
-          picking={Boolean(armedAction) || bulkStageMode}
-          multiSelect={bulkStageMode}
+          selectedLeadIds={pickedLeadIds}
+          picking={leadPicking}
+          multiSelect={leadMultiSelect}
           onSelectLead={handlePipelineLeadChosen}
           refreshToken={stageRefreshToken}
         />
@@ -5451,9 +5556,9 @@ const PipelinePage: React.FC = () => {
           onCountChange={handleRetentionCount}
           viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
-          selectedLeadIds={bulkStageMode ? bulkSelectedLeads.map((lead) => String(lead.id)) : undefined}
-          picking={Boolean(armedAction) || bulkStageMode}
-          multiSelect={bulkStageMode}
+          selectedLeadIds={pickedLeadIds}
+          picking={leadPicking}
+          multiSelect={leadMultiSelect}
           onSelectLead={handlePipelineLeadChosen}
           refreshToken={stageRefreshToken}
         />
@@ -5754,7 +5859,7 @@ const PipelinePage: React.FC = () => {
           >
             <thead className="sticky top-0 z-10 bg-[#f3f4f6] text-sm uppercase tracking-wide text-gray-500">
               <tr>
-                <PipelineRowPickHeader visible={Boolean(armedAction) || bulkStageMode} />
+                <PipelineRowPickHeader visible={leadPicking} />
                 <th className="py-3 px-2 text-left">Lead</th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('follow_up')}>
                   Follow Up {sortColumn === 'follow_up' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
@@ -5790,7 +5895,7 @@ const PipelinePage: React.FC = () => {
             <tbody>
               {isLoading && leads.length === 0 ? (
                 <tr>
-                  <td colSpan={13 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-12">
+                  <td colSpan={13 + (leadPicking ? 1 : 0)} className="bg-white text-center py-12">
                     <div className="flex flex-col items-center justify-center gap-4">
                       <div className="loading loading-spinner loading-lg text-primary"></div>
                       <p className="text-base font-medium text-base-content/70">
@@ -5800,7 +5905,7 @@ const PipelinePage: React.FC = () => {
                   </td>
                 </tr>
               ) : sortedLeads.length === 0 ? (
-                <tr><td colSpan={13 + (armedAction || bulkStageMode ? 1 : 0)} className="bg-white text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={13 + (leadPicking ? 1 : 0)} className="bg-white text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => {
                   const isExpanded = expandedRows.has(lead.id);
@@ -5810,12 +5915,13 @@ const PipelinePage: React.FC = () => {
                     className={`pipeline-flat-row group relative cursor-pointer [&>td]:border-b [&>td]:border-gray-100 ${
                       selectedRowId === lead.id ||
                       railLead?.id === String(lead.id) ||
-                      (bulkStageMode && bulkSelectedLeads.some((row) => String(row.id) === String(lead.id)))
+                      (bulkStageMode && bulkSelectedLeads.some((row) => String(row.id) === String(lead.id))) ||
+                      (followupPicking && followupSelectedLeads.some((row) => String(row.id) === String(lead.id)))
                         ? 'pipeline-flat-row-selected'
                         : ''
                     }`}
                     onClick={(e) => {
-                      if (bulkStageMode) {
+                      if (bulkStageMode || followupPicking) {
                         handleRowSelect(lead.id, e);
                         return;
                       }
@@ -5827,11 +5933,13 @@ const PipelinePage: React.FC = () => {
                     style={{ overflow: 'visible' }}
                   >
                         <PipelineRowPickCell
-                          visible={Boolean(armedAction) || bulkStageMode}
+                          visible={leadPicking}
                           selected={
-                            bulkStageMode
-                              ? bulkSelectedLeads.some((row) => String(row.id) === String(lead.id))
-                              : railLead?.id === String(lead.id)
+                            followupPicking
+                              ? followupSelectedLeads.some((row) => String(row.id) === String(lead.id))
+                              : bulkStageMode
+                                ? bulkSelectedLeads.some((row) => String(row.id) === String(lead.id))
+                                : railLead?.id === String(lead.id)
                           }
                           name={lead.name}
                           onPick={(e) => handleRowSelect(lead.id, e)}
@@ -6038,7 +6146,7 @@ const PipelinePage: React.FC = () => {
                   {isExpanded && (
                     <tr>
                       <td
-                        colSpan={13 + (armedAction || bulkStageMode ? 1 : 0)}
+                        colSpan={13 + (leadPicking ? 1 : 0)}
                         className="border-b border-gray-100 bg-white px-4 py-4"
                       >
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -6485,6 +6593,35 @@ const PipelinePage: React.FC = () => {
           }}
         />
       )}
+
+      {followupActiveLead ? (
+        <SchedulerEmailThreadModal
+          key={String(followupActiveLead.id)}
+          isOpen
+          startInCompose
+          enableDocumentAiChat
+          queueInfo={{
+            current: followupQueueIndex + 1,
+            total: followupQueue.length || followupSelectedLeads.length || 1,
+          }}
+          onSent={() => void advanceFollowupQueue()}
+          onSkip={() => void advanceFollowupQueue()}
+          onClose={cancelFollowupQueue}
+          client={{
+            id: String(followupActiveLead.id),
+            name: followupActiveLead.name || '',
+            lead_number: followupActiveLead.lead_number || '',
+            email: followupActiveLead.email || undefined,
+            lead_type: followupActiveLead.lead_type === 'legacy' ? 'legacy' : 'new',
+            topic: followupActiveLead.topic || undefined,
+            language: followupActiveLead.language,
+            category: followupActiveLead.category,
+          }}
+          onClientUpdate={async () => {
+            await fetchLeads();
+          }}
+        />
+      ) : null}
       
       {/* Drawer for lead summary */}
       {drawerOpen && selectedLead && !isDocumentModalOpen && !contactDrawerOpen && !showEditLeadDrawer && (

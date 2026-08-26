@@ -15,6 +15,13 @@ import EmailThreadModal from './components/EmailThreadModal';
 import ContactSelectorModal from './components/ContactSelectorModal';
 import { supabase } from './lib/supabase';
 import { persistClientToSessionStorage } from './lib/clientSessionCache';
+import {
+  resolveLeadCategoryName,
+  resolveLeadLanguageName,
+  resolveLeadMetaChips,
+  resolveLeadSourceName,
+  writeResolvedLeadMeta,
+} from './lib/leadMetaDisplay';
 import { CelebrationProvider } from './contexts/CelebrationContext';
 import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
@@ -329,7 +336,15 @@ const AppContentInner: React.FC = () => {
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
-            )
+            ),
+            misc_language!leads_lead_language_id_fkey ( id, name ),
+            misc_category!leads_lead_category_id_fkey (
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id ( id, name )
+            ),
+            misc_leadsource!leads_lead_source_id_fkey ( id, name )
           `)
           .eq('id', legacyId)
           .single();
@@ -384,63 +399,27 @@ const AppContentInner: React.FC = () => {
           console.error('Error fetching legacy emails:', emailsError);
         }
 
-        // Fetch language name if language_id exists
-        let languageName = '';
-        if (legacyLead.language_id) {
-          try {
-            const { data: languageData, error: languageError } = await supabase
-              .from('misc_language')
-              .select('name')
-              .eq('id', legacyLead.language_id)
-              .maybeSingle();
-
-            if (!languageError && languageData?.name) {
-              languageName = languageData.name;
-              console.log('✅ App.tsx - Fetched language name:', { language_id: legacyLead.language_id, languageName });
-            } else {
-              console.warn('⚠️ App.tsx - Could not fetch language name for language_id:', legacyLead.language_id, languageError);
-            }
-          } catch (langError) {
-            console.error('Error fetching language name:', langError);
-          }
-        } else {
-          console.log('⚠️ App.tsx - No language_id in legacy lead, language_id:', legacyLead.language_id);
-        }
-
-        // Fetch category name if category_id exists
-        let categoryName = '';
-        if (legacyLead.category_id) {
-          try {
-            const { data: categoryData, error: categoryError } = await supabase
-              .from('misc_category')
-              .select('name')
-              .eq('id', legacyLead.category_id)
-              .maybeSingle();
-
-            if (!categoryError && categoryData?.name) {
-              categoryName = categoryData.name;
-              console.log('✅ App.tsx - Fetched category name:', { category_id: legacyLead.category_id, categoryName });
-            } else {
-              console.warn('⚠️ App.tsx - Could not fetch category name for category_id:', legacyLead.category_id, categoryError);
-            }
-          } catch (catError) {
-            console.error('Error fetching category name:', catError);
-          }
-        }
-
-        // Preserve existing selectedClient properties that might be computed/derived
         const existingClient = selectedClient;
-        // Use fetched language name if available, otherwise preserve existing if it's valid (not empty string), otherwise empty
-        const finalLanguage = languageName || (existingClient?.language && existingClient.language.trim() !== '' && existingClient.language !== String(legacyLead.language_id || '') ? existingClient.language : '');
-        // Use fetched category name if available, otherwise preserve existing if it's valid
-        const finalCategory = categoryName || (existingClient?.category && existingClient.category.trim() !== '' && existingClient.category !== String(legacyLead.category_id || '') ? existingClient.category : '');
+        const languageName =
+          resolveLeadLanguageName(legacyLead) ||
+          (existingClient?.language && existingClient.language !== String(legacyLead.language_id || '')
+            ? existingClient.language
+            : '');
+        const categoryName =
+          resolveLeadCategoryName(legacyLead) ||
+          (existingClient?.category && existingClient.category !== String(legacyLead.category_id || '')
+            ? existingClient.category
+            : '');
+        const sourceName =
+          resolveLeadSourceName(legacyLead) ||
+          (existingClient?.source && String(existingClient.source).trim() !== String(legacyLead.source_id || '')
+            ? existingClient.source
+            : '');
 
         const preservedProperties = {
-          // Use fetched language name, or preserve existing if it exists and is valid, otherwise use empty string
-          language: finalLanguage,
-          // Preserve category name if it exists (it's computed from category_id)
-          category: finalCategory,
-          // Preserve other computed properties - use database values as source of truth (database is authoritative)
+          language: languageName,
+          category: categoryName,
+          source: sourceName,
           total_base: legacyLead.total_base !== null && legacyLead.total_base !== undefined ? legacyLead.total_base : existingClient?.total_base,
           total: legacyLead.total !== null && legacyLead.total !== undefined ? legacyLead.total : existingClient?.total,
           subcontractor_fee: legacyLead.subcontractor_fee !== null && legacyLead.subcontractor_fee !== undefined ? legacyLead.subcontractor_fee : existingClient?.subcontractor_fee,
@@ -448,44 +427,26 @@ const AppContentInner: React.FC = () => {
           master_id: legacyLead.master_id !== null && legacyLead.master_id !== undefined ? legacyLead.master_id : existingClient?.master_id,
         };
 
-        console.log('🔍 App.tsx - Preserving properties during refresh:', {
-          legacyLeadLanguageId: legacyLead.language_id,
-          fetchedLanguageName: languageName,
-          existingLanguage: existingClient?.language,
-          finalLanguage: preservedProperties.language,
-          existingCategory: existingClient?.category,
-          existingTotalBase: existingClient?.total_base,
-          legacyTotalBase: legacyLead.total_base,
-          existingTotal: existingClient?.total,
-          legacyTotal: legacyLead.total,
-          existingSubcontractorFee: existingClient?.subcontractor_fee,
-          legacySubcontractorFee: legacyLead.subcontractor_fee,
-          existingMasterId: existingClient?.master_id,
-          legacyMasterId: legacyLead.master_id,
-          preservedProperties
-        });
-
-        // Transform legacy lead to match new lead structure
         const clientData = {
           ...legacyLead,
-          ...preservedProperties, // Merge preserved properties
+          ...preservedProperties,
           id: `legacy_${legacyLead.id}`,
           lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
           stage: String(legacyLead.stage || ''),
-          source: String(legacyLead.source_id || ''),
+          source: preservedProperties.source || existingClient?.source || '',
+          source_id: legacyLead.source_id ?? existingClient?.source_id ?? null,
           created_at: legacyLead.cdate,
           updated_at: legacyLead.udate,
           notes: legacyLead.notes || '',
           special_notes: legacyLead.special_notes || '',
           next_followup: legacyLead.next_followup || '',
           probability: String(legacyLead.probability || ''),
-          // Use preserved category if available, otherwise use ID
-          category: preservedProperties.category || String(legacyLead.category_id || legacyLead.category || ''),
-          // Use preserved language if available, otherwise use ID
-          language: preservedProperties.language || String(legacyLead.language_id || ''),
+          category: preservedProperties.category || existingClient?.category || '',
+          language: preservedProperties.language || existingClient?.language || '',
+          language_id: legacyLead.language_id ?? existingClient?.language_id ?? null,
+          topic: legacyLead.topic || existingClient?.topic || '',
           balance: String(legacyLead.total || ''),
           balance_currency: legacyLead.accounting_currencies?.name || (() => {
-            // Fallback currency mapping based on currency_id
             switch (legacyLead.currency_id) {
               case 1: return '₪';
               case 2: return '€';
@@ -496,41 +457,33 @@ const AppContentInner: React.FC = () => {
           })(),
           lead_type: 'legacy',
           client_country: null,
-          emails: legacyEmails || [],
-          closer: null,
-          handler: null,
+          emails: legacyEmails || existingClient?.emails || [],
+          closer: existingClient?.closer ?? null,
+          handler: existingClient?.handler ?? null,
           unactivation_reason: legacyLead.unactivation_reason || null,
           deactivate_note: legacyLead.deactivate_note || null,
         };
 
-        console.log('✅ Legacy client data refreshed:', {
-          emailsFound: legacyEmails?.length || 0,
-          clientId: clientData.id,
-          language: clientData.language,
-          category: clientData.category,
-          total_base: clientData.total_base,
-          total: clientData.total,
-          subcontractor_fee: clientData.subcontractor_fee,
-          master_id: clientData.master_id
+        writeResolvedLeadMeta(clientData, resolveLeadMetaChips(clientData));
+        setSelectedClient((prev: any) => {
+          const sameLead = prev && String(prev.id) === String(clientData.id);
+          if (!sameLead) {
+            persistClientToSessionStorage(clientData);
+            return clientData;
+          }
+          const merged = {
+            ...prev,
+            ...clientData,
+            language: clientData.language || prev.language,
+            category: clientData.category || prev.category,
+            source: clientData.source || prev.source,
+            topic: clientData.topic || prev.topic,
+            closer: clientData.closer ?? prev.closer,
+            handler: clientData.handler ?? prev.handler,
+          };
+          persistClientToSessionStorage(merged);
+          return merged;
         });
-
-        // Check if this should be shown as unactivated view
-        const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
-        const unactivationReason = isLegacy ? clientData.deactivate_note : clientData.unactivation_reason;
-        const isUnactivated = isLegacy ?
-          (String(clientData.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
-          ((unactivationReason && unactivationReason.trim() !== '') || false);
-
-        console.log('🔍 App.tsx - Legacy unactivation check:', {
-          isLegacy,
-          stage: clientData.stage,
-          deactivate_note: clientData.deactivate_note,
-          unactivation_reason: clientData.unactivation_reason,
-          isUnactivated
-        });
-
-        setSelectedClient(clientData);
-        persistClientToSessionStorage(clientData);
       } else {
         // Handle new leads
         console.log('🔄 Refreshing new lead data for ID:', clientId);
@@ -551,7 +504,15 @@ const AppContentInner: React.FC = () => {
               id,
               name,
               iso_code
-            )
+            ),
+            misc_category!fk_leads_category_id (
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id ( id, name )
+            ),
+            misc_leadsource!fk_leads_source_id ( id, name ),
+            misc_language!fk_leads_language_id ( id, name )
           `)
           .eq('id', clientId)
           .single();
@@ -594,6 +555,12 @@ const AppContentInner: React.FC = () => {
         // CRITICAL: Preserve ALL financial columns exactly as they come from the database
         setSelectedClient((prev: any) => {
           const sameLead = prev != null && String(prev.id) === String(data.id);
+          const resolvedLanguage = resolveLeadLanguageName(data) || (sameLead ? prev?.language : data.language) || '';
+          const resolvedCategory =
+            resolveLeadCategoryName(data) ||
+            (sameLead && prev?.category && String(prev.category).trim() !== '' ? prev.category : data.category) ||
+            '';
+          const resolvedSource = resolveLeadSourceName(data) || (sameLead ? prev?.source : '') || '';
           const newClientData = {
             ...data,
             balance: data.balance,
@@ -607,20 +574,13 @@ const AppContentInner: React.FC = () => {
             number_of_applicants_meeting: data.number_of_applicants_meeting,
             balance_currency: currencySymbol,
             proposal_currency: currencySymbol,
-            category:
-              sameLead && prev?.category && String(prev.category).trim() !== ''
-                ? prev.category
-                : data.category || '',
+            language: resolvedLanguage,
+            category: resolvedCategory,
+            source: resolvedSource,
+            topic: data.topic || (sameLead ? prev?.topic : '') || '',
             emails: data.emails ? [...(Array.isArray(data.emails) ? data.emails : [])] : [],
           };
-          console.log('🔄 Setting selectedClient with fresh data:', {
-            currency_id: newClientData.currency_id,
-            currency_iso_code: currencyData?.iso_code,
-            currency_symbol: currencySymbol,
-            balance: newClientData.balance,
-            category: newClientData.category,
-            active_handler_type: (newClientData as any).active_handler_type,
-          });
+          writeResolvedLeadMeta(newClientData, resolveLeadMetaChips(newClientData));
           persistClientToSessionStorage(newClientData);
           return newClientData;
         });

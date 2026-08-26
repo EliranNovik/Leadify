@@ -4567,7 +4567,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               </div>
             </aside>
 
-            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-100">
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-slate-100 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
             <div className="absolute right-3 top-3 z-10 md:right-4">
               <button
                 type="button"
@@ -4578,8 +4578,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            <div className="m-4 mt-12 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-            <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 min-h-0 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
+            <div className="m-4 mt-12 flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+            <div className="flex flex-1 flex-col space-y-4 px-5 py-5">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="font-semibold text-sm">To</label>
@@ -4723,7 +4723,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   textAlign: newMessageIsRTL ? 'right' : 'left',
                   direction: newMessageIsRTL ? 'rtl' : 'ltr'
                 }}
-                className="w-full px-4 py-3 resize-y min-h-[240px]"
+                className="w-full min-h-[280px] overflow-hidden px-4 py-3 resize-none"
               />
               <ComposeAiEmptyPrompt
                 visible={!newMessage.trim() && !isLoadingAI}

@@ -24,6 +24,8 @@ type ContractAiReviewPanelProps = {
   placeholder?: string;
   /** Plain chat — no “What changed” / Suggestion labels or change-diff layout. */
   conversationOnly?: boolean;
+  /** Sheet stacking order (compose overlays sit above 10000). */
+  zIndex?: number;
 };
 
 const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
@@ -45,6 +47,7 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
   subtitle = 'Ask questions or request contract changes',
   placeholder = 'Type text...',
   conversationOnly = false,
+  zIndex,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -152,12 +155,12 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
           border-top-left-radius: 2rem !important;
         }
         .contract-ai-input-area {
-          background: #fff;
-          box-shadow: 0 -2px 12px 0 rgba(31,38,135,0.06);
+          background: #f9fafb;
+          box-shadow: none;
         }
         .contract-ai-input-shell {
           border-radius: 9999px;
-          background: #f9fafb;
+          background: #fff;
           border: none;
         }
         .contract-ai-input-shell:focus-within {
@@ -196,14 +199,15 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
             <XMarkIcon className="h-5 w-5" />
           </button>
         }
+        zIndex={zIndex ?? 70}
         desktopLayout="drawer-right"
         mobileFullHeight
-        zIndex={70}
-        sheetClassName="print-hide md:max-w-md"
+        sheetClassName="print-hide !bg-gray-50 md:max-w-md"
         overlayClassName="md:bg-transparent md:pointer-events-none"
         scrollLock="mobile"
-        contentClassName="!p-0 bg-gray-100"
-        footerClassName="border-t-0"
+        contentClassName="!p-0 bg-gray-50"
+        headerClassName="!bg-gray-50 border-gray-200/70"
+        footerClassName="border-t-0 !bg-gray-50"
         footer={
           <div className="contract-ai-input-area p-4 pt-3" data-sheet-no-drag>
             <div className="flex items-end gap-2">
@@ -217,10 +221,9 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
                   onChange={(e) => onRemarksChange(e.target.value)}
                   disabled={isApplying}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      onApplyRemarks();
-                    }
+                    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+                    e.preventDefault();
+                    if (!isApplying && remarks.trim()) onApplyRemarks();
                   }}
                 />
               </div>

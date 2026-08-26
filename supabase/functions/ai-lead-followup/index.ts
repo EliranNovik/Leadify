@@ -161,6 +161,110 @@ function mapMeeting(row: MeetingRow) {
   };
 }
 
+function parseProformaName(raw: unknown): string {
+  if (raw == null || raw === '') return '';
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(String(raw)) : raw;
+    if (parsed && typeof parsed === 'object' && parsed !== null && 'proformaName' in parsed) {
+      return String((parsed as { proformaName?: unknown }).proformaName || '').trim();
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+function poaTypeLabel(row: Record<string, unknown>): string {
+  const nested = row.poa_types as { name?: unknown; key?: unknown } | { name?: unknown; key?: unknown }[] | null;
+  const type = Array.isArray(nested) ? nested[0] : nested;
+  return String(type?.name || type?.key || '').trim();
+}
+
+function assembleCaseFile(args: {
+  caseBlock: Record<string, unknown>;
+  meetings: ReturnType<typeof mapMeeting>[];
+  interactions: Interaction[];
+  unpaid: number;
+  paid: number;
+  nextDue: unknown;
+  paymentRowCount: number;
+  recent: Interaction[];
+  stats: Record<string, unknown>;
+  contractsBlock?: string;
+  poaBlock?: string;
+  proformasBlock?: string;
+}): string {
+  const formatLine = (items: Array<string | null | undefined>) =>
+    items.filter((item) => item && String(item).trim()).join(' · ');
+
+  const factsBlock =
+    [args.caseBlock.facts, args.caseBlock.specialNotes, args.caseBlock.generalNotes, args.caseBlock.schedulingNotes]
+      .filter((item) => item && String(item).trim())
+      .join('\n\n') || '(none on file)';
+
+  const meetingNarrative =
+    args.meetings
+      .map((m) => {
+        const header = formatLine([String(m.date || ''), String(m.status || '')]);
+        const body = [m.summaryNotes, m.brief, m.expertNotes].filter(Boolean).join('\n');
+        if (!body) return header ? `${header}: (no notes)` : '';
+        return `${header}\n${body}`;
+      })
+      .filter(Boolean)
+      .slice(0, 6)
+      .join('\n---\n') || '(no meeting notes)';
+
+  const whatsappBlock =
+    args.interactions
+      .filter((i) => i.channel === 'whatsapp' && i.preview)
+      .slice(0, 12)
+      .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)}: ${i.preview}`)
+      .join('\n') || '(none)';
+
+  const emailBlock =
+    args.interactions
+      .filter((i) => i.channel === 'email' && (i.preview || i.subject))
+      .slice(0, 8)
+      .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)} ${i.subject || ''}: ${i.preview}`)
+      .join('\n') || '(none)';
+
+  return `CASE FILE — facts and notes:
+${factsBlock}
+
+MEETING SUMMARIES (newest first):
+${meetingNarrative}
+
+WHATSAPP (newest first):
+${whatsappBlock}
+
+EMAIL (newest first):
+${emailBlock}
+
+CRM fields:
+${JSON.stringify(args.caseBlock)}
+
+CONTRACTS (SIGNED vs NOT SIGNED + signing_link — never invent a URL):
+${args.contractsBlock?.trim() || '(no contract on file)'}
+
+POWER OF ATTORNEY / POA (SIGNED vs NOT SIGNED + poa_link — never invent a URL):
+${args.poaBlock?.trim() || '(no POA on file)'}
+
+PROFORMA INVOICES (invoice_link — never invent a URL):
+${args.proformasBlock?.trim() || '(no proforma on file)'}
+
+Meetings (dates/status):
+${JSON.stringify(args.meetings.map((m) => ({ date: m.date, time: m.time, status: m.status, location: m.location, amount: m.amount })))}
+
+Payments:
+${JSON.stringify({ unpaid: args.unpaid, paid: args.paid, nextDue: args.nextDue, rowCount: args.paymentRowCount })}
+
+Recent interactions (newest first):
+${JSON.stringify(args.recent)}
+
+Computed stats:
+${JSON.stringify(args.stats)}`;
+}
+
 async function sha256(text: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(buf))
@@ -192,7 +296,12 @@ serve(async (req) => {
     if (!user) return json({ error: 'Unauthorized' }, 401);
 
     const body = await req.json().catch(() => ({}));
-    const { isLegacy: isLegacyFlag } = body as { leadId?: string; isLegacy?: boolean; force?: boolean };
+    const { isLegacy: isLegacyFlag, caseFileOnly } = body as {
+      leadId?: string;
+      isLegacy?: boolean;
+      force?: boolean;
+      caseFileOnly?: boolean;
+    };
     const force = body?.force === true;
     const leadId = String(body?.leadId ?? '').trim();
     if (!leadId) return json({ error: 'leadId is required' }, 400);
@@ -280,6 +389,54 @@ serve(async (req) => {
             .limit(10)
         : Promise.resolve({ data: [] as MeetingRow[], error: null });
 
+    const contractQuery = ref.isLegacy
+      ? supabase
+          .from('contracts')
+          .select('id, status, signed_at, public_token, total_amount')
+          .eq('legacy_id', ref.legacyId)
+          .order('created_at', { ascending: false })
+          .limit(8)
+      : supabase
+          .from('contracts')
+          .select('id, status, signed_at, public_token, total_amount')
+          .eq('client_id', ref.uuid)
+          .order('created_at', { ascending: false })
+          .limit(8);
+
+    const legacyContactContractQuery = ref.isLegacy
+      ? supabase
+          .from('lead_leadcontact')
+          .select('id, public_token, signed_contract_html, contract_html, main')
+          .eq('lead_id', ref.legacyId)
+          .limit(8)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null });
+
+    const poaQuery = ref.isLegacy
+      ? supabase
+          .from('poa_documents')
+          .select('id, secure_token, status, signed_at, signer_name, language, poa_types(name, key)')
+          .eq('legacy_lead_id', ref.legacyId)
+          .neq('status', 'cancelled')
+          .order('created_at', { ascending: false })
+          .limit(8)
+      : supabase
+          .from('poa_documents')
+          .select('id, secure_token, status, signed_at, signer_name, language, poa_types(name, key)')
+          .eq('new_lead_id', ref.uuid)
+          .neq('status', 'cancelled')
+          .order('created_at', { ascending: false })
+          .limit(8);
+
+    const legacyProformaQuery = ref.isLegacy
+      ? supabase
+          .from('proformainvoice')
+          .select('id, total, total_base, cdate, public_token, notes, cxd_date')
+          .eq('lead_id', ref.legacyId)
+          .is('cxd_date', null)
+          .order('cdate', { ascending: false })
+          .limit(8)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null });
+
     const paymentQuery = ref.isLegacy
       ? supabase
           .from('finances_paymentplanrow')
@@ -290,11 +447,11 @@ serve(async (req) => {
           .limit(8)
       : supabase
           .from('payment_plans')
-          .select('value, due_date, paid, paid_at, cancel_date')
+          .select('id, value, due_date, paid, paid_at, cancel_date, public_token, proforma')
           .eq('lead_id', ref.uuid)
           .is('cancel_date', null)
           .order('due_date', { ascending: true })
-          .limit(8);
+          .limit(12);
 
     const manualQuery = ref.isLegacy
       ? supabase
@@ -327,6 +484,10 @@ serve(async (req) => {
       manualRes,
       stageRes,
       sourceRes,
+      contractRes,
+      legacyContactContractRes,
+      poaRes,
+      legacyProformaRes,
     ] = await Promise.all([
       waQuery,
       emailQuery,
@@ -337,6 +498,10 @@ serve(async (req) => {
       manualQuery,
       stageQuery,
       sourceQuery,
+      contractQuery,
+      legacyContactContractQuery,
+      poaQuery,
+      legacyProformaQuery,
     ]);
 
     for (const row of waRes.data || []) {
@@ -550,11 +715,140 @@ serve(async (req) => {
       lastMessagePreview: last?.preview || null,
     };
 
+    const PUBLIC_APP_BASE = 'https://rainmakerqueen.org';
+    const contractLines: string[] = [];
+    for (const row of (contractRes.data || []) as Array<Record<string, unknown>>) {
+      const signed = Boolean(row.signed_at) || String(row.status || '').toLowerCase() === 'signed';
+      let token = String(row.public_token || '');
+      if (!token && row.id) {
+        token = crypto.randomUUID();
+        await supabase.from('contracts').update({ public_token: token }).eq('id', row.id);
+      }
+      const link = token ? `${PUBLIC_APP_BASE}/public-contract/${row.id}/${token}` : '';
+      contractLines.push(
+        `- ${signed ? 'SIGNED' : 'NOT SIGNED'} | status=${row.status || (signed ? 'signed' : 'draft')}${
+          row.signed_at ? ` | signed_at=${row.signed_at}` : ''
+        }${row.total_amount != null ? ` | amount=${row.total_amount}` : ''} | signing_link=${link || '(none)'}`,
+      );
+    }
+    for (const row of (legacyContactContractRes.data || []) as Array<Record<string, unknown>>) {
+      if (!row.contract_html && !row.signed_contract_html && !row.public_token) continue;
+      const signed = Boolean(row.signed_contract_html);
+      let token = String(row.public_token || '');
+      if (!token && row.id != null) {
+        token = crypto.randomUUID();
+        await supabase.from('lead_leadcontact').update({ public_token: token }).eq('id', row.id);
+      }
+      const link = token ? `${PUBLIC_APP_BASE}/public-legacy-contract/${row.id}/${token}` : '';
+      contractLines.push(
+        `- ${signed ? 'SIGNED' : 'NOT SIGNED'} | status=${signed ? 'signed' : 'draft'} | source=legacy_contact | signing_link=${link || '(none)'}`,
+      );
+    }
+    const contractsBlock = contractLines.join('\n');
+
+    let poaRows = ((poaRes as { data?: unknown[] }).data || []) as Array<Record<string, unknown>>;
+    if ((poaRes as { error?: { message?: string } }).error) {
+      const fallback = ref.isLegacy
+        ? await supabase
+            .from('poa_documents')
+            .select('id, secure_token, status, signed_at, signer_name, language')
+            .eq('legacy_lead_id', ref.legacyId)
+            .neq('status', 'cancelled')
+            .order('created_at', { ascending: false })
+            .limit(8)
+        : await supabase
+            .from('poa_documents')
+            .select('id, secure_token, status, signed_at, signer_name, language')
+            .eq('new_lead_id', ref.uuid)
+            .neq('status', 'cancelled')
+            .order('created_at', { ascending: false })
+            .limit(8);
+      poaRows = (fallback.data || []) as Array<Record<string, unknown>>;
+    }
+    const poaLines: string[] = [];
+    for (const row of poaRows) {
+      const token = String(row.secure_token || '').trim();
+      if (!token) continue;
+      const signed = Boolean(row.signed_at) || String(row.status || '').toLowerCase() === 'signed';
+      const typeName = poaTypeLabel(row);
+      poaLines.push(
+        `- ${signed ? 'SIGNED' : 'NOT SIGNED'} | status=${row.status || (signed ? 'signed' : 'pending')}${
+          typeName ? ` | type=${typeName}` : ''
+        }${row.signer_name ? ` | signer=${row.signer_name}` : ''}${
+          row.signed_at ? ` | signed_at=${row.signed_at}` : ''
+        } | poa_link=${PUBLIC_APP_BASE}/poa/${encodeURIComponent(token)}`,
+      );
+    }
+    const poaBlock = poaLines.join('\n');
+
+    const proformaLines: string[] = [];
+    if (!ref.isLegacy) {
+      for (const row of (paymentRows || []) as Array<Record<string, unknown>>) {
+        const name = parseProformaName(row.proforma);
+        const hasDoc = Boolean(name) || (row.proforma != null && String(row.proforma).trim() !== '');
+        if (!hasDoc) continue;
+        let token = String(row.public_token || '').trim();
+        if (!token && row.id != null) {
+          token = crypto.randomUUID();
+          await supabase.from('payment_plans').update({ public_token: token }).eq('id', row.id);
+        }
+        const link = token ? `${PUBLIC_APP_BASE}/public-proforma/${row.id}/${token}` : '(none)';
+        const paidFlag = row.paid === true;
+        proformaLines.push(
+          `- ${paidFlag ? 'PAID' : 'UNPAID'} | source=new | name=${name || 'Proforma'}${
+            row.value != null ? ` | amount=${row.value}` : ''
+          }${row.due_date ? ` | due=${row.due_date}` : ''} | invoice_link=${link}`,
+        );
+      }
+    }
+    for (const row of (legacyProformaRes.data || []) as Array<Record<string, unknown>>) {
+      let token = String(row.public_token || '').trim();
+      if (!token && row.id != null) {
+        token = crypto.randomUUID();
+        await supabase.from('proformainvoice').update({ public_token: token }).eq('id', row.id);
+      }
+      const link = token ? `${PUBLIC_APP_BASE}/public-proforma-legacy/${row.id}/${token}` : '(none)';
+      const amount = row.total ?? row.total_base;
+      proformaLines.push(
+        `- OPEN | source=legacy | date=${row.cdate || ''}${
+          amount != null ? ` | amount=${amount}` : ''
+        } | invoice_link=${link}`,
+      );
+    }
+    const proformasBlock = proformaLines.join('\n');
+
+    const caseFile = assembleCaseFile({
+      caseBlock,
+      meetings,
+      interactions,
+      unpaid,
+      paid,
+      nextDue,
+      paymentRowCount: paymentRows.length,
+      recent,
+      stats,
+      contractsBlock,
+      poaBlock,
+      proformasBlock,
+    });
+
+    if (caseFileOnly === true) {
+      return json({
+        success: true,
+        caseFile,
+        caseBlock,
+        stats,
+      });
+    }
+
     const fingerprint = await sha256(
       JSON.stringify({
         caseBlock,
         meetings,
         payments: { unpaid, paid, nextDue, rowCount: paymentRows.length },
+        contractsBlock,
+        poaBlock,
+        proformasBlock,
         recent,
       }),
     );
@@ -603,39 +897,6 @@ serve(async (req) => {
       return json({ error: 'OpenAI API key not configured', code: 'NO_OPENAI_KEY' }, 503);
     }
 
-    const formatLine = (items: Array<string | null | undefined>) =>
-      items.filter((item) => item && String(item).trim()).join(' · ');
-
-    const factsBlock = [caseBlock.facts, caseBlock.specialNotes, caseBlock.generalNotes, caseBlock.schedulingNotes]
-      .filter((item) => item && String(item).trim())
-      .join('\n\n') || '(none on file)';
-
-    const meetingNarrative =
-      meetings
-        .map((m) => {
-          const header = formatLine([String(m.date || ''), String(m.status || '')]);
-          const body = [m.summaryNotes, m.brief, m.expertNotes].filter(Boolean).join('\n');
-          if (!body) return header ? `${header}: (no notes)` : '';
-          return `${header}\n${body}`;
-        })
-        .filter(Boolean)
-        .slice(0, 6)
-        .join('\n---\n') || '(no meeting notes)';
-
-    const whatsappBlock =
-      interactions
-        .filter((i) => i.channel === 'whatsapp' && i.preview)
-        .slice(0, 12)
-        .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)}: ${i.preview}`)
-        .join('\n') || '(none)';
-
-    const emailBlock =
-      interactions
-        .filter((i) => i.channel === 'email' && (i.preview || i.subject))
-        .slice(0, 8)
-        .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)} ${i.subject || ''}: ${i.preview}`)
-        .join('\n') || '(none)';
-
     const systemPrompt =
       'You are an expert CRM assistant for a citizenship and immigration law firm. ' +
       'Judge whether THIS lead is worth following up NOW, not lifetime case success. ' +
@@ -661,32 +922,7 @@ serve(async (req) => {
   "risks": ["optional risks"]
 }
 
-CASE FILE — facts and notes:
-${factsBlock}
-
-MEETING SUMMARIES (newest first):
-${meetingNarrative}
-
-WHATSAPP (newest first):
-${whatsappBlock}
-
-EMAIL (newest first):
-${emailBlock}
-
-CRM fields:
-${JSON.stringify(caseBlock)}
-
-Meetings (dates/status):
-${JSON.stringify(meetings.map((m) => ({ date: m.date, time: m.time, status: m.status, location: m.location, amount: m.amount })))}
-
-Payments:
-${JSON.stringify({ unpaid, paid, nextDue, rowCount: paymentRows.length })}
-
-Recent interactions (newest first):
-${JSON.stringify(recent)}
-
-Computed stats:
-${JSON.stringify(stats)}${
+${caseFile}${
       !ref.isLegacy
         ? `
 

@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import {
@@ -25,6 +25,25 @@ import {
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
 import { displaySymbolForPaymentSave } from '../lib/paymentPlanCurrency';
+import { parseLeadCurrencyId, resolveLeadCurrencyName } from '../lib/leadCurrencyDisplay';
+import {
+  ensureLeadCategories,
+  ensureLeadLanguages,
+  getCachedCategoriesSync,
+  getCachedLanguagesSync,
+  lookupLanguageNameById,
+  primeLeadCategoriesCache,
+  primeLeadLanguagesCache,
+  resolveLeadCategoryName,
+  resolveLeadLanguageName,
+  resolveLeadMetaChips,
+  resolveLeadSourceName,
+  writeResolvedLeadMeta,
+} from '../lib/leadMetaDisplay';
+import {
+  readClientsTabCache,
+  writeClientsTabCache,
+} from '../lib/clientsTabCache';
 import { isExpenseNoVatPayment } from '../lib/proformaVat';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { useRealtimeRefresh, type RealtimeTableSubscription } from '../hooks/useRealtimeRefresh';
@@ -241,6 +260,54 @@ type PaymentPlanBadgeCache = {
 };
 /** Per-lead payment plan + next-due snapshot so the stage-105 banner does not flicker on navigation. */
 const paymentPlanBadgeCache = new Map<string, PaymentPlanBadgeCache>();
+
+function paymentPlanStorageLeadKey(clientId: string): string {
+  if (clientId.startsWith('legacy_')) return `legacy:${clientId.replace(/^legacy_/, '')}`;
+  return `new:${clientId.toLowerCase()}`;
+}
+
+function readPersistedPaymentPlanBadge(clientId: string): PaymentPlanBadgeCache | null {
+  const mem = paymentPlanBadgeCache.get(clientId);
+  if (mem) return mem;
+  const stored = readClientsTabCache<PaymentPlanBadgeCache>(
+    paymentPlanStorageLeadKey(clientId),
+    'paymentPlan',
+  );
+  if (stored) paymentPlanBadgeCache.set(clientId, stored);
+  return stored;
+}
+
+function persistPaymentPlanBadge(clientId: string, entry: PaymentPlanBadgeCache) {
+  paymentPlanBadgeCache.set(clientId, entry);
+  writeClientsTabCache(paymentPlanStorageLeadKey(clientId), 'paymentPlan', entry);
+}
+
+/** Prefer live state; if the plan is still loading, reuse session cache so the header never paints the unlocked total. */
+function resolvePaymentPlanBadgeForDisplay(
+  clientId: string | null | undefined,
+  live: {
+    hasPaymentPlan: boolean | null;
+    nextDuePayment: any;
+    base: number | null;
+    vat: number | null;
+    expenseNoVat: number | null;
+    gross: number | null;
+    currencyId: number | null;
+  },
+) {
+  if (!clientId || live.hasPaymentPlan !== null) return live;
+  const cached = readPersistedPaymentPlanBadge(clientId);
+  if (!cached) return live;
+  return {
+    hasPaymentPlan: cached.hasPlan,
+    nextDuePayment: cached.nextDuePayment,
+    base: cached.base,
+    vat: cached.vat,
+    expenseNoVat: cached.expenseNoVat,
+    gross: cached.gross,
+    currencyId: cached.currencyId,
+  };
+}
 /** Tag manager / saveLeadTags: VITE_DEBUG_TAGS=true, or window.__CLIENTS_TAG_DEBUG__ = true, or CLIENTS_DEBUG */
 const CLIENTS_TAG_DEBUG =
   import.meta.env.DEV ||
@@ -657,8 +724,10 @@ const Clients: React.FC<ClientsProps> = ({
   // State to store employee availability data (unavailable_times and unavailable_ranges)
   const [employeeAvailabilityData, setEmployeeAvailabilityData] = useState<{ [key: string]: any[] }>({});
   // State to store all categories for name lookup
-  const [allCategories, setAllCategories] = useState<any[]>([]);
-  const [allLanguages, setAllLanguages] = useState<Array<{ id: number; name: string | null }>>([]);
+  const [allCategories, setAllCategories] = useState<any[]>(() => getCachedCategoriesSync());
+  const [allLanguages, setAllLanguages] = useState<Array<{ id: number | string; name: string | null }>>(
+    () => getCachedLanguagesSync(),
+  );
   const [allCountries, setAllCountries] = useState<Array<{ id: number; name: string; iso_code?: string | null }>>([]);
   // State for country codes (for phone code dropdowns)
   const [countryCodes, setCountryCodes] = useState<Array<{ code: string; country: string; name: string }>>([
@@ -882,45 +951,8 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
 
-  // Helper function to get currency name from currency ID (defaults to currency_id 1)
-  // Always uses accounting_currencies.name column, never hardcoded values
   const getCurrencyName = (currencyId: string | number | null | undefined, accountingCurrencies?: any): string => {
-    // Default to currency_id 1 if not set
-    const finalCurrencyId = currencyId ?? 1;
-
-    // First, try to use accounting_currencies join data if provided
-    if (accountingCurrencies) {
-      const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-      if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-        return currencyRecord.name.trim();
-      }
-    }
-
-    // Find currency in loaded currencies
-    const currency = currencies.find((curr: any) => {
-      const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-      const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-      const targetId = typeof finalCurrencyId === 'string' ? parseInt(finalCurrencyId, 10) : Number(finalCurrencyId);
-      return !isNaN(currIdNum) && !isNaN(targetId) && currIdNum === targetId;
-    });
-
-    if (currency && currency.name && currency.name.trim() !== '') {
-      return currency.name.trim();
-    }
-
-    // Fallback: try to get currency_id 1
-    const defaultCurrency = currencies.find((curr: any) => {
-      const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-      const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-      return !isNaN(currIdNum) && currIdNum === 1;
-    });
-
-    if (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') {
-      return defaultCurrency.name.trim();
-    }
-
-    // Ultimate fallback: return empty string (should not happen if currencies are loaded)
-    return '';
+    return resolveLeadCurrencyName(currencyId, accountingCurrencies, currencies);
   };
 
   // Helper function to get currency symbol from currency ID or currency name (for backward compatibility)
@@ -1638,24 +1670,9 @@ const Clients: React.FC<ClientsProps> = ({
 
     const fetchCategories = async () => {
       try {
-        const { data, error } = await supabase
-          .from('misc_category')
-          .select(`
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id (
-              id,
-              name
-            )
-          `)
-          .order('name', { ascending: true });
-
-        if (error) {
-          console.error('Clients: Error fetching categories:', error);
-        } else if (data) {
-          // Store the full category data with parent information
-          // Categories loaded successfully
+        const data = await ensureLeadCategories();
+        if (data) {
+          primeLeadCategoriesCache(data);
           setAllCategories(data);
         }
       } catch (err) {
@@ -1665,14 +1682,9 @@ const Clients: React.FC<ClientsProps> = ({
 
     const fetchLanguages = async () => {
       try {
-        const { data, error } = await supabase
-          .from('misc_language')
-          .select('id, name')
-          .order('name', { ascending: true });
-
-        if (error) {
-          console.error('Clients: Error fetching languages:', error);
-        } else if (data) {
+        const data = await ensureLeadLanguages();
+        if (data) {
+          primeLeadLanguagesCache(data);
           setAllLanguages(data);
         }
       } catch (err) {
@@ -1746,15 +1758,15 @@ const Clients: React.FC<ClientsProps> = ({
       }
     };
 
-    // Call reference fetches on mount (categories come from loadBackgroundData to avoid duplicate fetch)
+    // Call reference fetches on mount (categories come from loadBackgroundData / shared cache)
     fetchEmployees();
     fetchLanguages();
+    fetchCategories();
     fetchCountries();
     fetchCountryCodes();
     fetchAvailableStages();
   }, []);
 
-  const lastCategoryRefreshIds = useRef<Set<string>>(new Set());
   const isBalanceUpdatingRef = useRef<boolean>(false);
   const [isClientSyncing, setIsClientSyncing] = useState(false);
   const lastClientRefreshAtRef = useRef(0);
@@ -2296,17 +2308,17 @@ const Clients: React.FC<ClientsProps> = ({
       let currency = '';
 
       if (isLegacyLead) {
-        // For legacy leads, use balance_currency or get from currency_id
-        currency = selectedClient.balance_currency || getCurrencyName((selectedClient as any).currency_id, (selectedClient as any).accounting_currencies);
+        currency = getCurrencyName(
+          (selectedClient as any).currency_id,
+          (selectedClient as any).accounting_currencies,
+        );
       } else {
-        // For new leads, use currency_id -> accounting_currencies.name (defaults to currency_id 1)
         const currencyId = (selectedClient as any).currency_id ?? 1;
         currency = getCurrencyName(currencyId, (selectedClient as any).accounting_currencies);
       }
 
-      // Fallback to currency_id 1 if still empty
       if (!currency || currency.trim() === '') {
-        currency = getCurrencyName(1);
+        currency = resolveLeadCurrencyName((selectedClient as any).currency_id ?? 1, null, currencies);
       }
 
       setNewPayment(prev => ({ ...prev, currency }));
@@ -3057,20 +3069,10 @@ const Clients: React.FC<ClientsProps> = ({
           // Transform legacy lead to match new lead structure
           const legacyStageId = resolveStageId(data.stage);
           const { name: stageNameFromJoin, colour: stageColourFromJoin } = getStageDisplayFromJoin(data.stage_info, data.stage);
-          // Extract language name from joined table (with fallback fetch if join missing)
-          let languageName = getLanguageDisplayFromJoin(data) ?? '';
-          if (!languageName && data.language_id) {
-            try {
-              const { data: langData } = await supabase
-                .from('misc_language')
-                .select('name')
-                .eq('id', data.language_id)
-                .maybeSingle();
-              if (langData?.name) languageName = langData.name;
-            } catch (langError) {
-              console.error('Error fetching language name:', langError);
-            }
-          }
+          const languageName =
+            getLanguageDisplayFromJoin(data) ??
+            lookupLanguageNameById(data.language_id, allLanguages) ??
+            '';
 
           // Create transformed data by explicitly selecting only the fields we want
           // This ensures unwanted fields (description, tracking fields, language_id) are never included
@@ -3088,6 +3090,8 @@ const Clients: React.FC<ClientsProps> = ({
             stage_name: stageNameFromJoin || undefined,
             stage_colour: stageColourFromJoin || undefined,
             source: getSourceDisplayFromJoin(data) ?? String(data.source_id ?? ''),
+            source_id: data.source_id ?? null,
+            misc_leadsource: data.misc_leadsource ?? null,
             created_at: data.cdate,
             updated_at: data.udate,
             file_id: data.file_id != null && String(data.file_id).trim() !== '' && String(data.file_id).trim() !== '0000' ? String(data.file_id).trim() : '',
@@ -3097,28 +3101,21 @@ const Clients: React.FC<ClientsProps> = ({
             probability: data.probability !== null && data.probability !== undefined ? Number(data.probability) : 0,
             category: getCategoryDisplayFromJoin(data) ?? getCategoryName(data.category_id, data.category),
             category_id: data.category_id ?? null,
+            misc_category: data.misc_category ?? null,
             language: languageName, // Always use the language name (never use ID)
+            language_id: data.language_id ?? null,
+            misc_language: data.misc_language ?? null,
             balance: String(data.total || ''), // Map total to balance
             total: data.total || null, // Include total for balance badge logic
             total_base: data.total_base || null, // Include total_base for balance badge logic (when currency_id is 1)
             subcontractor_fee: data.subcontractor_fee ?? null, // Denormalized SUM(lead_subcontractor_fees.amount)
             client_paid: data.client_paid !== false,
             external_firm_id: data.external_firm_id || null,
-            balance_currency: (() => {
-              // Use accounting_currencies name if available, otherwise fallback
-              if (legacyCurrencyRecord?.name) {
-                return legacyCurrencyRecord.name;
-              } else {
-                // Fallback currency mapping based on currency_id
-                switch (data.currency_id) {
-                  case 1: return '₪';
-                  case 2: return '€';
-                  case 3: return '$';
-                  case 4: return '£';
-                  default: return '₪';
-                }
-              }
-            })(),
+            balance_currency: resolveLeadCurrencyName(
+              data.currency_id,
+              legacyCurrencyRecord,
+              currencies,
+            ),
             currency_id: data.currency_id || null, // Include currency_id for BalanceEditModal
             accounting_currencies: legacyCurrencyRecord || null, // Include accounting_currencies join for BalanceEditModal
             lead_type: 'legacy',
@@ -3175,7 +3172,6 @@ const Clients: React.FC<ClientsProps> = ({
             expert_notes_last_edited_at: data.expert_notes_last_edited_at || null,
             handler_notes_last_edited_by: data.handler_notes_last_edited_by || null,
             handler_notes_last_edited_at: data.handler_notes_last_edited_at || null,
-            // Note: language_id is excluded as we use language (name) instead
           };
           const normalizedTransformedData = normalizeClientStage(transformedData);
           setSelectedClient((prev: any) => {
@@ -3216,7 +3212,8 @@ const Clients: React.FC<ClientsProps> = ({
                 name
               )
             ),
-            misc_leadsource!fk_leads_source_id ( id, name )
+            misc_leadsource!fk_leads_source_id ( id, name ),
+            misc_language!fk_leads_language_id ( id, name )
           `)
           .eq('id', selectedClient.id)
           .single();
@@ -3232,7 +3229,14 @@ const Clients: React.FC<ClientsProps> = ({
             category: data.category,
             allCategoriesLoaded: allCategories.length > 0
           });
-          const categoryName = getCategoryDisplayFromJoin(data) ?? getCategoryName(data.category_id, data.category);
+          const categoryName =
+            getCategoryDisplayFromJoin(data) ??
+            getCategoryName(data.category_id, data.category) ??
+            resolveLeadCategoryName(data, allCategories);
+          const languageName =
+            getLanguageDisplayFromJoin(data) ??
+            resolveLeadLanguageName(data, allLanguages);
+          const sourceName = resolveLeadSourceName(data, sourceOptions);
           const newLeadStageId = resolveStageId(data.stage);
 
           // Extract currency data from joined table (like legacy leads)
@@ -3240,25 +3244,19 @@ const Clients: React.FC<ClientsProps> = ({
             ? (Array.isArray(data.accounting_currencies) ? data.accounting_currencies[0] : data.accounting_currencies)
             : null;
 
-          // Currency is resolved from currency_id -> accounting_currencies.name
-          // Always use accounting_currencies.name column (like legacy leads)
-          // Default to currency_id 1 if no currency_id is set
-          const finalCurrencyId = data.currency_id ?? selectedClient?.currency_id ?? 1;
+          const finalCurrencyId = parseLeadCurrencyId(data.currency_id) ?? 1;
 
-          // If currency_id is 1 but we don't have the join data, fetch it
-          let finalCurrencyRecord = currencyRecord;
-          if (finalCurrencyId === 1 && !finalCurrencyRecord) {
-            // Try to find currency_id 1 from loaded currencies
-            const defaultCurrency = currencies.find((curr: any) => {
-              const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-              const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-              return !isNaN(currIdNum) && currIdNum === 1;
-            });
-            if (defaultCurrency) {
+          const joinMatches =
+            currencyRecord &&
+            parseLeadCurrencyId((currencyRecord as { id?: unknown }).id) === finalCurrencyId;
+          let finalCurrencyRecord = joinMatches ? currencyRecord : null;
+          if (!finalCurrencyRecord) {
+            const fromCatalog = currencies.find((curr: any) => parseLeadCurrencyId(curr.id) === finalCurrencyId);
+            if (fromCatalog) {
               finalCurrencyRecord = {
-                id: defaultCurrency.id,
-                name: defaultCurrency.name,
-                iso_code: defaultCurrency.iso_code
+                id: fromCatalog.id,
+                name: fromCatalog.name,
+                iso_code: fromCatalog.iso_code,
               };
             }
           }
@@ -3271,8 +3269,9 @@ const Clients: React.FC<ClientsProps> = ({
 
           const transformedData = {
             ...data,
-            category: categoryName,
-            source: getSourceDisplayFromJoin(data) ?? '',
+            category: categoryName || data.category || '',
+            language: languageName || data.language || '',
+            source: sourceName || undefined,
             stage: newLeadStageId ?? (typeof data.stage === 'number' ? data.stage : null),
             emails: [],
             handler:
@@ -3302,8 +3301,34 @@ const Clients: React.FC<ClientsProps> = ({
           setSelectedClient((prev: any) => {
             // Silent sync: merge onto the same lead identity so keep-alive tabs / header don't remount.
             if (prev && String(prev.id) === String(normalizedTransformedData.id)) {
-              return { ...prev, ...normalizedTransformedData, id: prev.id, lead_type: prev.lead_type ?? normalizedTransformedData.lead_type };
+              const merged = {
+                ...prev,
+                ...normalizedTransformedData,
+                id: prev.id,
+                lead_type: prev.lead_type ?? normalizedTransformedData.lead_type,
+                language: normalizedTransformedData.language || prev.language,
+                category: normalizedTransformedData.category || prev.category,
+                source: normalizedTransformedData.source || prev.source,
+                topic: normalizedTransformedData.topic || prev.topic,
+              };
+              writeResolvedLeadMeta(
+                merged,
+                resolveLeadMetaChips(merged, {
+                  languages: allLanguages,
+                  categories: allCategories,
+                  sources: sourceOptions,
+                }),
+              );
+              return merged;
             }
+            writeResolvedLeadMeta(
+              normalizedTransformedData,
+              resolveLeadMetaChips(normalizedTransformedData, {
+                languages: allLanguages,
+                categories: allCategories,
+                sources: sourceOptions,
+              }),
+            );
             return normalizedTransformedData;
           });
           persistClientData(normalizedTransformedData);
@@ -3316,36 +3341,44 @@ const Clients: React.FC<ClientsProps> = ({
     } catch (error) {
       console.error('Error refreshing client data:', error);
     }
-  }, [selectedClient?.id, setSelectedClient, allCategories, allEmployees, normalizeClientStage, resolveStageId]);
+  }, [selectedClient?.id, setSelectedClient, allCategories, allLanguages, sourceOptions, allEmployees, normalizeClientStage, resolveStageId]);
 
-  // Refresh client data when categories are loaded to update category names
+  // When lookup catalogs arrive, fill badge names locally — skip a full lead refetch.
   useEffect(() => {
-    if (allCategories.length === 0 || !selectedClient?.id) {
+    if (!selectedClient?.id) return;
+    if (allCategories.length === 0 && allLanguages.length === 0 && sourceOptions.length === 0) {
       return;
     }
 
-    // Skip if balance is being updated - let refreshClientData handle it
-    if (isBalanceUpdatingRef.current) {
-      console.log('⏸️ Skipping onClientUpdate - balance update in progress');
-      return;
-    }
-
-    const clientIdKey = selectedClient.id.toString();
-    if (lastCategoryRefreshIds.current.has(clientIdKey)) {
-      return;
-    }
-
-    const refreshClientData = async () => {
-      try {
-        await onClientUpdate();
-        lastCategoryRefreshIds.current.add(clientIdKey);
-      } catch (error) {
-        console.error('🔄 onClientUpdate failed:', error);
+    setSelectedClient((prev: any) => {
+      if (!prev || String(prev.id) !== String(selectedClient.id)) return prev;
+      const nextCategory = resolveLeadCategoryName(prev, allCategories);
+      const nextLanguage = resolveLeadLanguageName(prev, allLanguages);
+      const nextSource = resolveLeadSourceName(prev, sourceOptions);
+      if (
+        (!nextCategory || nextCategory === prev.category) &&
+        (!nextLanguage || nextLanguage === prev.language) &&
+        (!nextSource || nextSource === prev.source)
+      ) {
+        return prev;
       }
-    };
-
-    refreshClientData();
-  }, [allCategories, selectedClient?.id, onClientUpdate]);
+      const merged = {
+        ...prev,
+        category: nextCategory || prev.category,
+        language: nextLanguage || prev.language,
+        source: nextSource || prev.source,
+      };
+      writeResolvedLeadMeta(
+        merged,
+        resolveLeadMetaChips(merged, {
+          languages: allLanguages,
+          categories: allCategories,
+          sources: sourceOptions,
+        }),
+      );
+      return merged;
+    });
+  }, [allCategories, allLanguages, sourceOptions, selectedClient?.id, setSelectedClient]);
 
   // Find duplicate contacts when selectedClient changes - run immediately without delay
   useEffect(() => {
@@ -3486,6 +3519,14 @@ const Clients: React.FC<ClientsProps> = ({
               }
               // Set loading to false and client data; refresh in background so data stays current
               setLocalLoading(false);
+              writeResolvedLeadMeta(
+                normalizedPersistedData,
+                resolveLeadMetaChips(normalizedPersistedData, {
+                  languages: allLanguages,
+                  categories: allCategories,
+                  sources: sourceOptions,
+                }),
+              );
               setSelectedClient(normalizedPersistedData);
               // Restore duplicate contacts from cache if available, otherwise fetch
               const dupKey = `clientsPage_duplicateContacts_${effectiveLeadNumber}`;
@@ -3926,13 +3967,16 @@ const Clients: React.FC<ClientsProps> = ({
                           : 'Not assigned'),
                     // Include currency_id and accounting_currencies join, but NOT balance_currency/proposal_currency
                     // Default to currency_id 1 if not set
-                    currency_id: chosenLead.currency_id ?? 1,
-                    accounting_currencies: currencyRecord || (chosenLead.currency_id === null || chosenLead.currency_id === undefined ?
-                      currencies.find((curr: any) => {
-                        const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-                        const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-                        return !isNaN(currIdNum) && currIdNum === 1;
-                      }) || null : null),
+                    currency_id: parseLeadCurrencyId(chosenLead.currency_id) ?? 1,
+                    accounting_currencies: (() => {
+                      const cid = parseLeadCurrencyId(chosenLead.currency_id) ?? 1;
+                      const joinId = parseLeadCurrencyId(currencyRecord?.id);
+                      if (currencyRecord && joinId === cid) return currencyRecord;
+                      const fromCatalog = currencies.find((curr: any) => parseLeadCurrencyId(curr.id) === cid);
+                      return fromCatalog
+                        ? { id: fromCatalog.id, name: fromCatalog.name, iso_code: fromCatalog.iso_code }
+                        : null;
+                    })(),
                   };
                   break; // Found it, stop searching
                 }
@@ -3957,11 +4001,12 @@ const Clients: React.FC<ClientsProps> = ({
                 const legacyStageId = resolveStageId(legacyLead.stage);
                 const { name: stageNameFromJoin, colour: stageColourFromJoin } = getStageDisplayFromJoin(legacyLead.stage_info, legacyLead.stage);
 
-                // Use language from join only (no sequential fetch) — refreshClientData will backfill if needed
-                const languageName = getLanguageDisplayFromJoin(legacyLead) ?? '';
+                // Resolve language from join, then language_id + catalog (no extra sequential fetch)
+                const languageName =
+                  getLanguageDisplayFromJoin(legacyLead) ??
+                  lookupLanguageNameById(legacyLead.language_id, allLanguages) ??
+                  '';
 
-                // Create transformed data by explicitly selecting only the fields we want
-                // This ensures unwanted fields (description, tracking fields, language_id) are never included
                 clientData = {
                   id: `legacy_${legacyLead.id}`,
                   name: legacyLead.name || '',
@@ -3976,6 +4021,8 @@ const Clients: React.FC<ClientsProps> = ({
                   stage_name: stageNameFromJoin || undefined,
                   stage_colour: stageColourFromJoin || undefined,
                   source: getSourceDisplayFromJoin(legacyLead) ?? String(legacyLead.source_id || ''),
+                  source_id: legacyLead.source_id ?? null,
+                  misc_leadsource: legacyLead.misc_leadsource ?? null,
                   created_at: legacyLead.cdate,
                   updated_at: legacyLead.udate,
                   file_id: (legacyLead as any).file_id != null && String((legacyLead as any).file_id).trim() !== '' && String((legacyLead as any).file_id).trim() !== '0000' ? String((legacyLead as any).file_id).trim() : '',
@@ -3985,17 +4032,16 @@ const Clients: React.FC<ClientsProps> = ({
                   probability: legacyLead.probability !== null && legacyLead.probability !== undefined ? Number(legacyLead.probability) : 0,
                   category: getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id, legacyLead.category),
                   category_id: legacyLead.category_id ?? null,
+                  misc_category: legacyLead.misc_category ?? null,
                   language: languageName, // Always use the language name (never use ID)
+                  language_id: legacyLead.language_id ?? null,
+                  misc_language: legacyLead.misc_language ?? null,
                   balance: String(legacyLead.total || ''),
-                  balance_currency: legacyCurrencyRecord?.name || (() => {
-                    switch (legacyLead.currency_id) {
-                      case 1: return '₪';
-                      case 2: return '€';
-                      case 3: return '$';
-                      case 4: return '£';
-                      default: return '₪';
-                    }
-                  })(),
+                  balance_currency: resolveLeadCurrencyName(
+                    legacyLead.currency_id,
+                    legacyCurrencyRecord,
+                    currencies,
+                  ),
                   lead_type: 'legacy',
                   client_country: null,
                   client_paid: (legacyLead as any).client_paid !== false,
@@ -4043,7 +4089,6 @@ const Clients: React.FC<ClientsProps> = ({
                   expert_notes_last_edited_at: legacyLead.expert_notes_last_edited_at || null,
                   handler_notes_last_edited_by: legacyLead.handler_notes_last_edited_by || null,
                   handler_notes_last_edited_at: legacyLead.handler_notes_last_edited_at || null,
-                  // Note: language_id is excluded as we use language (name) instead
                 };
                 break; // Found it, stop searching
               } else if (type === 'lead_number' && data && !error) {
@@ -4244,6 +4289,14 @@ const Clients: React.FC<ClientsProps> = ({
             // the useEffect hooks will fetch it from the database
 
             clientsPerfMark('process-done');
+            writeResolvedLeadMeta(
+              normalizedClient,
+              resolveLeadMetaChips(normalizedClient, {
+                languages: allLanguages,
+                categories: allCategories,
+                sources: sourceOptions,
+              }),
+            );
             setSelectedClient(normalizedClient);
             lastClientRefreshAtRef.current = Date.now();
 
@@ -4519,6 +4572,11 @@ const Clients: React.FC<ClientsProps> = ({
             // Also set allCategories from cache if available (for getCategoryName)
             if (data.categoryObjects && Array.isArray(data.categoryObjects)) {
               setAllCategories(data.categoryObjects);
+              primeLeadCategoriesCache(data.categoryObjects);
+            }
+            if (Array.isArray(data.languageObjects) && data.languageObjects.length > 0) {
+              setAllLanguages(data.languageObjects);
+              primeLeadLanguagesCache(data.languageObjects);
             }
             if (Array.isArray(data.sourceOptions) && data.sourceOptions.length > 0) {
               setSourceOptions(data.sourceOptions);
@@ -4562,21 +4620,10 @@ const Clients: React.FC<ClientsProps> = ({
 
       try {
         // Fetch all non-essential data in parallel for better performance
-        const [categoriesResult, sourcesResult, languagesResult, currenciesResult, meetingLocationsResult, tagsResult] = await Promise.all([
-          // Fetch categories with their parent main category names using JOINs
-          supabase.from('misc_category')
-            .select(`
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id (
-                id,
-                name
-              )
-            `)
-            .order('name', { ascending: true }),
+        const [categoriesData, sourcesResult, languagesData, currenciesResult, meetingLocationsResult, tagsResult] = await Promise.all([
+          ensureLeadCategories(),
           fetchActiveLeadSourceOptions(),
-          supabase.from('misc_language').select('name'),
+          ensureLeadLanguages(),
           // Fetch currencies (try both tables)
           Promise.all([
             supabase.from('currencies').select('id, front_name, iso_code, name').order('id'),
@@ -4592,26 +4639,28 @@ const Clients: React.FC<ClientsProps> = ({
         ]);
 
         // Process dropdown data results
-        if (!categoriesResult.error && categoriesResult.data) {
-          // Create formatted category names with parent main category
-          const formattedNames = categoriesResult.data.map((category: any) => {
+        if (Array.isArray(categoriesData) && categoriesData.length > 0) {
+          const formattedNames = categoriesData.map((category: any) => {
             if (category.misc_maincategory) {
               return `${category.name} (${category.misc_maincategory.name})`;
             } else {
-              return category.name; // Fallback if no parent main category
+              return category.name;
             }
           }).filter(Boolean);
           setMainCategories(formattedNames);
-          setAllCategories(categoriesResult.data);
+          setAllCategories(categoriesData);
+          primeLeadCategoriesCache(categoriesData);
         }
 
         if (Array.isArray(sourcesResult) && sourcesResult.length > 0) {
           setSourceOptions(sourcesResult);
         }
 
-        if (!languagesResult.error && languagesResult.data) {
-          const names = languagesResult.data.map((row: any) => row.name).filter(Boolean);
+        if (Array.isArray(languagesData) && languagesData.length > 0) {
+          const names = languagesData.map((row: any) => row.name).filter(Boolean);
           setLanguagesList(names);
+          primeLeadLanguagesCache(languagesData);
+          setAllLanguages(languagesData);
         }
 
         // Process currencies
@@ -4661,19 +4710,20 @@ const Clients: React.FC<ClientsProps> = ({
 
         // Cache the data for future use (use the state values that were just set)
         const dataToCache = {
-          categories: mainCategories.length > 0 ? mainCategories : (categoriesResult.data ? categoriesResult.data.map((category: any) => {
+          categories: mainCategories.length > 0 ? mainCategories : (categoriesData ? categoriesData.map((category: any) => {
             if (category.misc_maincategory) {
               return `${category.name} (${category.misc_maincategory.name})`;
             } else {
               return category.name;
             }
           }).filter(Boolean) : []),
-          categoryObjects: categoriesResult.data || [], // Store raw category objects for getCategoryName
+          categoryObjects: categoriesData || [],
+          languageObjects: languagesData || [],
           sourceOptions:
             sourceOptions.length > 0
               ? sourceOptions
               : (Array.isArray(sourcesResult) ? sourcesResult : []),
-          languages: languagesList.length > 0 ? languagesList : (languagesResult.data ? languagesResult.data.map((row: any) => row.name).filter(Boolean) : []),
+          languages: languagesList.length > 0 ? languagesList : (languagesData ? languagesData.map((row: any) => row.name).filter(Boolean) : []),
           currencies: currencies.length > 0 ? currencies : ((currenciesResult.newCurrencies?.data && currenciesResult.newCurrencies.data.length > 0) ? currenciesResult.newCurrencies.data : (currenciesResult.legacyCurrencies?.data ? currenciesResult.legacyCurrencies.data.map((currency: any) => ({
             id: currency.id.toString(),
             front_name: currency.iso_code === 'NIS' ? '₪' : currency.iso_code === 'EUR' ? '€' : currency.iso_code === 'USD' ? '$' : currency.iso_code === 'GBP' ? '£' : currency.iso_code,
@@ -10333,7 +10383,7 @@ const Clients: React.FC<ClientsProps> = ({
       expenseNoVat: planRes.expenseNoVat ?? null,
       currencyId: planRes.currencyId ?? null,
     };
-    paymentPlanBadgeCache.set(clientId, entry);
+    persistPaymentPlanBadge(clientId, entry);
     setHasPaymentPlan(entry.hasPlan);
     setNextDuePayment(entry.nextDuePayment);
     setPaymentPlanBaseTotal(entry.base);
@@ -10343,7 +10393,7 @@ const Clients: React.FC<ClientsProps> = ({
     setPaymentPlanCurrencyId(entry.currencyId);
   }, [fetchPaymentPlanTotal, fetchNextDuePayment]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const clientId = selectedClient?.id ? String(selectedClient.id) : null;
     paymentPlanActiveClientRef.current = clientId;
 
@@ -10358,7 +10408,7 @@ const Clients: React.FC<ClientsProps> = ({
       return;
     }
 
-    const cached = paymentPlanBadgeCache.get(clientId);
+    const cached = readPersistedPaymentPlanBadge(clientId);
     if (cached) {
       setHasPaymentPlan(cached.hasPlan);
       setNextDuePayment(cached.nextDuePayment);
@@ -10370,6 +10420,11 @@ const Clients: React.FC<ClientsProps> = ({
     } else {
       setHasPaymentPlan(null);
       setNextDuePayment(null);
+      setPaymentPlanBaseTotal(null);
+      setPaymentPlanVatTotal(null);
+      setPaymentPlanExpenseNoVatTotal(null);
+      setPaymentPlanGrossTotal(null);
+      setPaymentPlanCurrencyId(null);
     }
 
     void refreshPaymentPlanBadge(clientId);
@@ -12245,16 +12300,28 @@ const Clients: React.FC<ClientsProps> = ({
       : null;
 
   const visitedTabDefs = tabs.filter((tab) => visitedTabs.includes(tab.id));
+  const paymentPlanDisplay = resolvePaymentPlanBadgeForDisplay(
+    selectedClient?.id ? String(selectedClient.id) : null,
+    {
+      hasPaymentPlan,
+      nextDuePayment,
+      base: paymentPlanBaseTotal,
+      vat: paymentPlanVatTotal,
+      expenseNoVat: paymentPlanExpenseNoVatTotal,
+      gross: paymentPlanGrossTotal,
+      currencyId: paymentPlanCurrencyId,
+    },
+  );
   const showTabPaymentBanner =
     Boolean(selectedClient) &&
     (areStagesEquivalent(currentStageName, 'Handler Set') ||
       (isStageNumeric && stageNumeric === 105) ||
       Number((selectedClient as any)?.stage) === 105) &&
-    shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment);
+    shouldShowHandlerPaymentBanner(paymentPlanDisplay.hasPaymentPlan, paymentPlanDisplay.nextDuePayment);
   const tabPageHeaderExtra = showTabPaymentBanner ? (
     <HandlerPaymentPlanBanner
-      hasPaymentPlan={hasPaymentPlan}
-      nextDuePayment={nextDuePayment}
+      hasPaymentPlan={paymentPlanDisplay.hasPaymentPlan}
+      nextDuePayment={paymentPlanDisplay.nextDuePayment}
       variant="inline"
     />
   ) : null;
@@ -13419,49 +13486,13 @@ const Clients: React.FC<ClientsProps> = ({
         balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
       }
 
-      if (hasPaymentPlan === true && paymentPlanGrossTotal !== null) {
-        balanceValue = paymentPlanGrossTotal;
+      if (paymentPlanDisplay.hasPaymentPlan === true && paymentPlanDisplay.gross !== null) {
+        balanceValue = paymentPlanDisplay.gross;
       }
 
-      let balanceCurrency: string | null = null;
+      const numericCurrencyId = parseLeadCurrencyId((selectedClient as any).currency_id) ?? 1;
       const accountingCurrencies = (selectedClient as any).accounting_currencies;
-      if (accountingCurrencies) {
-        const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-        if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-          balanceCurrency = currencyRecord.name.trim();
-        }
-      }
-
-      if (!inactiveIsLegacy) {
-        const currencyId = (selectedClient as any)?.currency_id ?? 1;
-        const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-        if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-          balanceCurrency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-          if (!balanceCurrency || balanceCurrency.trim() === '') {
-            balanceCurrency = getCurrencyName(1);
-          }
-        } else {
-          balanceCurrency = getCurrencyName(1);
-        }
-      } else {
-        if (!balanceCurrency || balanceCurrency.trim() === '') {
-          balanceCurrency = selectedClient.balance_currency || null;
-        }
-        if ((!balanceCurrency || balanceCurrency.trim() === '') && (selectedClient as any).currency_id) {
-          const currencyId = (selectedClient as any).currency_id;
-          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-          if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-            balanceCurrency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-            if (!balanceCurrency || balanceCurrency.trim() === '') {
-              balanceCurrency = getCurrencyName(1);
-            }
-          }
-        }
-      }
-
-      if (!balanceCurrency || balanceCurrency.trim() === '') {
-        balanceCurrency = getCurrencyName(1);
-      }
+      let balanceCurrency: string | null = getCurrencyName(numericCurrencyId, accountingCurrencies) || null;
 
       if (!(balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0'))) {
         return null;
@@ -13770,12 +13801,12 @@ const Clients: React.FC<ClientsProps> = ({
             masterLeadNumber={masterLeadNumber}
             isMasterLead={isMasterLead}
             subLeadsCount={isMasterLead ? subLeads.length : (isSubLead ? masterSubLeadsCount : 0)}
-            nextDuePayment={nextDuePayment}
+            nextDuePayment={paymentPlanDisplay.nextDuePayment}
             setIsBalanceModalOpen={setIsBalanceModalOpen}
-            hasPaymentPlan={hasPaymentPlan}
-            paymentPlanBaseTotal={paymentPlanBaseTotal}
-            paymentPlanVatTotal={paymentPlanVatTotal}
-            paymentPlanExpenseNoVatTotal={paymentPlanExpenseNoVatTotal}
+            hasPaymentPlan={paymentPlanDisplay.hasPaymentPlan}
+            paymentPlanBaseTotal={paymentPlanDisplay.base}
+            paymentPlanVatTotal={paymentPlanDisplay.vat}
+            paymentPlanExpenseNoVatTotal={paymentPlanDisplay.expenseNoVat}
             currentStageName={currentStageName}
             handleStartCase={handleStartCase}
             updateLeadStage={updateLeadStage}
