@@ -865,6 +865,7 @@ export function SubEffortsLogModal({
   clientId = null,
   caseDocumentsSubfolder = CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
   initialSelectedRowId,
+  initialClientUploadsOpen = false,
   onRefresh,
   subEffortOptions = [],
   isLoadingSubEffortOptions = false,
@@ -885,6 +886,8 @@ export function SubEffortsLogModal({
   clientId?: string | null;
   caseDocumentsSubfolder?: string | null;
   initialSelectedRowId?: string | number | null;
+  /** Open the Client uploads documents table as soon as this modal opens. */
+  initialClientUploadsOpen?: boolean;
   onRefresh?: () => void;
   subEffortOptions?: Array<{ id: number; name: string }>;
   isLoadingSubEffortOptions?: boolean;
@@ -1848,7 +1851,11 @@ export function SubEffortsLogModal({
     if (initialSelectedRowId != null) {
       setSelectedId(initialSelectedRowId);
     }
-  }, [open, initialSelectedRowId]);
+    if (initialClientUploadsOpen) {
+      setDocCategoryBoxesOpen(true);
+      setClientUploadsOpen(true);
+    }
+  }, [open, initialSelectedRowId, initialClientUploadsOpen]);
 
   React.useEffect(() => {
     if (!open) return;

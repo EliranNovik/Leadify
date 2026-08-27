@@ -133,7 +133,7 @@ export function formatCountdownSeconds(totalSeconds: number): string {
 
 /**
  * Clock out and refresh local clock-in cache. Keeps the Supabase session signed in.
- * OPTIONAL CLOCK-IN: does not force the user out of the CRM or onto a gate screen.
+ * If the employee has require_clock_in, the CRM gate will re-block after refresh.
  */
 export async function clockOutKeepSession(employeeId: number): Promise<void> {
   const record = await fetchActiveClockInRecord(employeeId);
@@ -141,6 +141,9 @@ export async function clockOutKeepSession(employeeId: number): Promise<void> {
     await clockOutEmployeeRecord(record);
   }
   clearClockInGateCache();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('clock-in-session-changed'));
+  }
 }
 
 /** @deprecated Prefer clockOutKeepSession — no longer signs out of Supabase. */

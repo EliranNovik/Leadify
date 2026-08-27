@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
     UserIcon,
     EnvelopeIcon,
@@ -17,6 +17,7 @@ import {
     ArrowRightIcon,
     PencilIcon,
     ChevronDownIcon,
+    ChevronRightIcon,
     PlayIcon,
     DocumentCheckIcon,
     NoSymbolIcon,
@@ -37,9 +38,10 @@ import {
     LinkIcon,
     FlagIcon,
     XMarkIcon,
+    ShareIcon,
+    MagnifyingGlassIcon,
     RectangleStackIcon,
     LockClosedIcon,
-    ChevronRightIcon,
     DocumentArrowUpIcon,
     DocumentPlusIcon,
     BookmarkIcon,
@@ -67,6 +69,8 @@ import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import { FaWhatsapp } from 'react-icons/fa';
 import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAndVatForCurrency, pickUnpaidExpenseForCurrency, type UnpaidByCurrencyMap, type UnpaidExpenseByCurrencyMap } from '../lib/financeUnpaidTotal';
 import { useAuthContext } from '../contexts/AuthContext';
+import { createLeadShare, resolveAuthEmployeeId } from '../lib/leadShares';
+import { buildCalendarClientRoute } from '../lib/calendarClientRoute';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { SubEffortsLogModal } from './SubEffortsLogModal';
 // import { SubEffortsLogSidebar } from './SubEffortsLogSidebar';
@@ -662,6 +666,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     showHandlerPaymentBanner = true,
 }) => {
     const navigate = useNavigate();
+    const [searchParams, setSearchParams] = useSearchParams();
     const sidebarPadClass = navRail ? CLIENT_HEADER_NAV_RAIL_PAD : CLIENT_HEADER_SIDEBAR_PAD;
     const pagePadClass = navRail ? CLIENT_HEADER_PAGE_X_WITH_RAIL : CLIENT_HEADER_PAGE_X;
     const [subEfforts, setSubEfforts] = useState<Array<{ id: number; name: string; sort_order: number }>>([]);
@@ -670,6 +675,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isLoadingLeadSubEfforts, setIsLoadingLeadSubEfforts] = useState(false);
     const [isSubEffortsModalOpen, setIsSubEffortsModalOpen] = useState(false);
     const [subEffortsModalRowId, setSubEffortsModalRowId] = useState<string | number | null>(null);
+    const [initialClientUploadsOpen, setInitialClientUploadsOpen] = useState(false);
     const [subEffortAddOptions, setSubEffortAddOptions] = useState<
         Array<{ id: number; name: string; sort_order: number; default_client_visible: boolean }>
     >([]);
@@ -682,12 +688,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [clientPortalModalOpen, setClientPortalModalOpen] = useState(false);
     const [moreActionsSheetOpen, setMoreActionsSheetOpen] = useState(false);
     const [headerActionsMenuOpen, setHeaderActionsMenuOpen] = useState(false);
+    const [sharePanelOpen, setSharePanelOpen] = useState(false);
+    const [shareSearch, setShareSearch] = useState('');
+    const [shareSelectedEmployeeId, setShareSelectedEmployeeId] = useState<number | null>(null);
+    const [shareSubmitting, setShareSubmitting] = useState(false);
+    const [currentShareEmployeeId, setCurrentShareEmployeeId] = useState<number | null>(null);
     const [inactiveNotesExpanded, setInactiveNotesExpanded] = useState(false);
     const headerActionsMenuRef = useRef<HTMLDivElement | null>(null);
 
     const closeMoreActionsSheet = useCallback(() => setMoreActionsSheetOpen(false), []);
     const closeHeaderActionsMenu = useCallback(() => {
         setHeaderActionsMenuOpen(false);
+        setSharePanelOpen(false);
+        setShareSearch('');
+        setShareSelectedEmployeeId(null);
     }, []);
     const toggleHeaderActionsMenu = useCallback(
         () => setHeaderActionsMenuOpen((open) => !open),
@@ -1375,7 +1389,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     const fetchLeadSubEfforts = useCallback(async () => {
         if (!selectedClient?.id) return;
-        if (!subEffortsStageFlags.fetchLeadSubEffortRows) return;
+        if (!subEffortsStageFlags.fetchLeadSubEffortRows && !isSubEffortsModalOpen) return;
         if (subEffortsFetchInFlightRef.current) return;
 
         const { legacyId, newLeadId } = leadSubEffortIdentity(selectedClient);
@@ -1488,6 +1502,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         selectedClient?.id,
         selectedClient?.lead_type,
         subEffortsStageFlags.fetchLeadSubEffortRows,
+        isSubEffortsModalOpen,
         leadMiscCategoryId,
     ]);
 
@@ -1499,6 +1514,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setSubEffortsModalRowId(rowId ?? null);
         setIsSubEffortsModalOpen(true);
     }, []);
+
+    useEffect(() => {
+        if (!selectedClient?.id) return;
+        const openUploads = searchParams.get('clientUploads') === '1';
+        const openSub = searchParams.get('subEfforts') === '1' || openUploads;
+        if (!openSub) return;
+
+        setInitialClientUploadsOpen(openUploads);
+        openSubEffortsModal(null);
+
+        const next = new URLSearchParams(searchParams);
+        next.delete('subEfforts');
+        next.delete('clientUploads');
+        setSearchParams(next, { replace: true });
+    }, [selectedClient?.id, searchParams, setSearchParams, openSubEffortsModal]);
 
     useEffect(() => {
         if (!isSubEffortsModalOpen) return;
@@ -2903,6 +2933,63 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     const leadIdentifier = getLeadIdentifier();
 
+    const shareableEmployees = useMemo(() => {
+        const term = shareSearch.trim().toLowerCase();
+        return (employeesToUse || [])
+            .filter((emp: any) => {
+                const id = Number(emp?.id);
+                if (!Number.isFinite(id) || id <= 0) return false;
+                if (currentShareEmployeeId && id === currentShareEmployeeId) return false;
+                const name = String(emp.display_name || emp.official_name || '').trim();
+                if (!name) return false;
+                if (!term) return true;
+                return name.toLowerCase().includes(term);
+            })
+            .sort((a: any, b: any) =>
+                String(a.display_name || '').localeCompare(String(b.display_name || ''), undefined, { sensitivity: 'base' }),
+            );
+    }, [employeesToUse, shareSearch, currentShareEmployeeId]);
+
+    const handleShareLead = async () => {
+        if (!shareSelectedEmployeeId || shareSubmitting) return;
+        const routeId = String(leadIdentifier || selectedClient?.lead_number || '').trim();
+        if (!routeId) {
+            toast.error('Lead number required');
+            return;
+        }
+        setShareSubmitting(true);
+        try {
+            let fromId = currentShareEmployeeId;
+            if (!fromId) {
+                fromId = await resolveAuthEmployeeId(user?.id);
+                setCurrentShareEmployeeId(fromId);
+            }
+            if (!fromId) {
+                toast.error('Could not identify your employee profile');
+                return;
+            }
+            const selected = employeesToUse.find((emp: any) => Number(emp.id) === shareSelectedEmployeeId);
+            const result = await createLeadShare({
+                leadNumber: String(selectedClient?.lead_number || routeId).trim(),
+                leadRouteId: buildCalendarClientRoute(selectedClient),
+                leadName: selectedClient?.name ? String(selectedClient.name).trim() : null,
+                sharedByEmployeeId: fromId,
+                sharedWithEmployeeId: shareSelectedEmployeeId,
+            });
+            if (!result.ok) {
+                toast.error(result.message);
+                return;
+            }
+            toast.success(`Shared with ${selected?.display_name || 'employee'}`);
+            closeHeaderActionsMenu();
+        } catch (error) {
+            console.error('Share lead failed:', error);
+            toast.error('Could not share lead');
+        } finally {
+            setShareSubmitting(false);
+        }
+    };
+
     const handleTimelineClick = () => {
         if (!leadIdentifier) return;
         const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
@@ -3374,6 +3461,91 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const items = getHeaderActionItems();
         return (
             <div className="flex flex-col">
+                <div data-keep-actions-open className="mb-1">
+                    <button
+                        type="button"
+                        className={`${MORE_ACTIONS_SHEET_ITEM} ${sharePanelOpen ? 'bg-neutral-50' : ''}`}
+                        onClick={() => {
+                            setSharePanelOpen((open) => {
+                                const next = !open;
+                                if (next && !currentShareEmployeeId && user?.id) {
+                                    void resolveAuthEmployeeId(user.id).then((id) => {
+                                        if (id) setCurrentShareEmployeeId(id);
+                                    });
+                                }
+                                if (!next) {
+                                    setShareSearch('');
+                                    setShareSelectedEmployeeId(null);
+                                }
+                                return next;
+                            });
+                        }}
+                    >
+                        <span className={MORE_ACTIONS_ICON_BOX}>
+                            <ShareIcon className={HEADER_ACTION_ICON} aria-hidden />
+                        </span>
+                        <span className="min-w-0 flex-1">Share</span>
+                        <ChevronDownIcon
+                            className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${sharePanelOpen ? 'rotate-180 text-black' : ''}`}
+                            aria-hidden
+                        />
+                    </button>
+                    {sharePanelOpen ? (
+                        <div className="mt-1 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+                            <label className="relative block">
+                                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" aria-hidden />
+                                <input
+                                    type="search"
+                                    className="input input-bordered h-10 w-full rounded-lg border-neutral-200 bg-white pl-9 text-sm"
+                                    placeholder="Search employee"
+                                    value={shareSearch}
+                                    onChange={(e) => setShareSearch(e.target.value)}
+                                    autoFocus
+                                />
+                            </label>
+                            <div className="mt-2 max-h-52 overflow-y-auto rounded-lg bg-white">
+                                {shareableEmployees.length === 0 ? (
+                                    <p className="px-3 py-4 text-center text-sm text-neutral-500">No employees found</p>
+                                ) : (
+                                    shareableEmployees.map((emp: any) => {
+                                        const empId = Number(emp.id);
+                                        const selected = shareSelectedEmployeeId === empId;
+                                        const photoUrl = String(emp.photo_url || emp.photo || '').trim();
+                                        const initials = getEmployeeInitials(emp.display_name);
+                                        return (
+                                            <button
+                                                key={empId}
+                                                type="button"
+                                                className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-neutral-50 ${selected ? 'bg-neutral-100' : ''}`}
+                                                onClick={() => setShareSelectedEmployeeId(empId)}
+                                            >
+                                                {photoUrl ? (
+                                                    <img src={photoUrl} alt="" className="h-8 w-8 shrink-0 rounded-full object-cover bg-neutral-200" />
+                                                ) : (
+                                                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neutral-200 text-[11px] font-semibold text-neutral-700">
+                                                        {initials}
+                                                    </span>
+                                                )}
+                                                <span className="min-w-0 flex-1 truncate font-medium text-black">{emp.display_name}</span>
+                                            </button>
+                                        );
+                                    })
+                                )}
+                            </div>
+                            <div className="mt-3 flex justify-end">
+                            <button
+                                type="button"
+                                className="inline-flex h-9 items-center gap-1.5 rounded-full bg-black px-4 text-sm font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={!shareSelectedEmployeeId || shareSubmitting}
+                                onClick={() => void handleShareLead()}
+                            >
+                                <ShareIcon className="h-4 w-4" aria-hidden />
+                                {shareSubmitting ? 'Sharing…' : 'Share'}
+                            </button>
+                            </div>
+                        </div>
+                    ) : null}
+                </div>
                 {items.map((item) => (
                     <button
                         key={item.key}
@@ -5771,6 +5943,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <div
                         onClick={(e) => {
                             const target = e.target as HTMLElement;
+                            if (target.closest('[data-keep-actions-open]')) return;
                             if (target.closest('button, a, [role="button"]')) {
                                 closeHeaderActionsMenu();
                                 closeMoreActionsSheet();
@@ -6218,18 +6391,22 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     showTrigger={false}
                 />
             )}
-            {selectedClient && subEffortsStageFlags.fetchLeadSubEffortRows && (
+            {selectedClient && (subEffortsStageFlags.fetchLeadSubEffortRows || isSubEffortsModalOpen) && (
                 <>
                     {/* Floating side-tab scroll indicator removed — open sub efforts from header actions instead. */}
                     <SubEffortsLogModal
                         open={isSubEffortsModalOpen}
-                        onClose={() => setIsSubEffortsModalOpen(false)}
+                        onClose={() => {
+                            setIsSubEffortsModalOpen(false);
+                            setInitialClientUploadsOpen(false);
+                        }}
                         rows={leadSubEfforts}
                         leadNumber={headerDocsLeadNumber || selectedClient?.lead_number || null}
                         clientName={selectedClient?.name || null}
                         leadStage={(selectedClient as any)?.stage ?? null}
                         clientId={(selectedClient as any)?.id ?? null}
                         initialSelectedRowId={subEffortsModalRowId}
+                        initialClientUploadsOpen={initialClientUploadsOpen}
                         onRefresh={() => void fetchLeadSubEfforts()}
                         categoryLinkedCount={subEfforts.length}
                         hasLeadCaseType={leadMiscCategoryId != null}

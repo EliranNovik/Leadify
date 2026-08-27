@@ -315,6 +315,14 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       hideInEdit: true // Toggle in table only
     },
     {
+      name: 'require_clock_in',
+      label: 'Must clock in to use CRM',
+      type: 'boolean' as const,
+      required: false,
+      hideInEdit: true, // Toggle in table only
+      defaultValue: false,
+    },
+    {
       name: 'lead_time_reporting_enabled',
       label: 'Lead time reporting',
       type: 'boolean' as const,

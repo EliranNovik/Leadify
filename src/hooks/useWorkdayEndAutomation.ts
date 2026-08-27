@@ -121,8 +121,6 @@ export function useWorkdayEndAutomation({
         return;
       }
       await clockOutKeepSession(employeeId);
-      // OPTIONAL CLOCK-IN: stay signed in and stay on the current page after auto clock-out.
-      // (Previously: window.location.href = '/' to return to the forced gate.)
       toast.success('Clocked out for the day');
       autoLogoutInFlightRef.current = false;
       setPhase('idle');

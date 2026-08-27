@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { XMarkIcon, ClockIcon, CheckCircleIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import ClockStatusIcon from './ClockStatusIcon';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -27,9 +28,6 @@ import {
   fetchPendingHomeWfhApproval,
 } from '../lib/employeeClockInApproval';
 import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
-// OPTIONAL CLOCK-IN: gate cache / data-block helpers no longer used on clock-out.
-// import { clearClockInGateCache } from '../lib/clockInGateCache';
-// import { setClockInGateBlocksDataAccess } from '../lib/clockInGateFetchPolicy';
 import {
   type HomeWfhApprovalSnapshot,
   useHomeWfhApprovalAutoClockIn,
@@ -563,8 +561,8 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
         persistLastSelectedWorkplaceId(clockOutLocationId);
       }
 
-      // OPTIONAL CLOCK-IN: stay in the app after clock-out. Do not reopen the gate
-      // or block data access. (Previously: clearClockInGateCache + setBlocks(true).)
+      // Refresh the gate: employees with require_clock_in will be blocked again;
+      // others stay in the app.
       try {
         await refreshClockInGate?.();
       } catch (gateError) {
@@ -617,6 +615,21 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
     isGateStyle
       ? 'bg-white/25 text-white hover:bg-white/35'
       : 'bg-black/10 text-gray-900 hover:bg-black/15',
+  ].join(' ');
+
+  const circleModalBtnHoverClass =
+    'origin-center transition-transform duration-300 ease-out hover:scale-110 active:scale-95 disabled:hover:scale-100 disabled:active:scale-100';
+
+  const clockInActionBtnClass = [
+    'btn border-0 outline-none ring-0 backdrop-blur-md transition-all duration-200 disabled:opacity-60',
+    'bg-gradient-to-r from-emerald-500 via-green-500 to-teal-500 text-white',
+    'shadow-lg shadow-emerald-500/35 hover:from-emerald-400 hover:via-green-400 hover:to-teal-400 hover:shadow-emerald-400/45',
+  ].join(' ');
+
+  const clockOutActionBtnClass = [
+    'btn border-0 outline-none ring-0 backdrop-blur-md transition-all duration-200 disabled:opacity-60',
+    'bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-white',
+    'shadow-lg shadow-violet-500/35 hover:from-violet-500 hover:via-purple-500 hover:to-indigo-400 hover:shadow-violet-400/45',
   ].join(' ');
 
   const workplacePicker = (
@@ -898,7 +911,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                       <span className="loading loading-spinner loading-md" />
                     ) : (
                       <>
-                        <ClockIcon className="w-6 h-6 md:w-7 md:h-7" />
+                        <ClockStatusIcon className="w-6 h-6 md:w-7 md:h-7" />
                         <span className="font-semibold text-lg md:text-xl">
                           {pendingHomeApproval ? 'Approval pending' : 'Send for approval'}
                         </span>
@@ -910,13 +923,16 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                     type="button"
                     onClick={handleClockIn}
                     disabled={isLoading || selectedWorkplaceId == null}
-                    className={`${glassActionBtnClass} rounded-full h-20 min-h-20 px-10 gap-3 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl`}
+                    className={`${clockInActionBtnClass} ${circleModalBtnHoverClass} rounded-full h-20 min-h-20 px-10 gap-3 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl`}
+                    style={{
+                      backgroundImage: 'linear-gradient(to right, #10b981, #22c55e, #14b8a6)',
+                    }}
                   >
                     {isLoading ? (
                       <span className="loading loading-spinner loading-md md:loading-lg" />
                     ) : (
                       <>
-                        <ClockIcon className="w-8 h-8 md:w-9 md:h-9" />
+                        <ClockStatusIcon className="w-8 h-8 md:w-9 md:h-9" />
                         <span className="font-semibold">Clock In</span>
                       </>
                     )}
@@ -927,7 +943,12 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                   type="button"
                   onClick={handleClockOut}
                   disabled={isLoading}
-                  className={`${glassActionBtnClass} rounded-full h-20 min-h-20 px-10 gap-3 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl`}
+                  className={`${isGateStyle ? glassActionBtnClass : clockOutActionBtnClass} ${circleModalBtnHoverClass} rounded-full h-20 min-h-20 px-10 gap-3 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl`}
+                  style={
+                    isGateStyle
+                      ? undefined
+                      : { backgroundImage: 'linear-gradient(to right, #7c3aed, #8b5cf6, #6366f1)' }
+                  }
                 >
                   {isLoading ? (
                     <span className="loading loading-spinner loading-md md:loading-lg" />

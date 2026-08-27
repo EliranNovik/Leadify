@@ -10,6 +10,7 @@ import { supabase } from '../lib/supabase';
 import {
   fetchClockInGateProfile,
   fetchIsEmployeeClockedIn,
+  fetchRequireClockInFlag,
   isClockInGateOpen,
   resolveClockInGateStatus,
   type ClockInGateStatus,
@@ -27,13 +28,8 @@ import {
   type ClockInGateContextValue,
 } from './clockInGateContextValue';
 
-/**
- * OPTIONAL CLOCK-IN: never block Supabase REST when the user is not clocked in.
- * Forced gate used to call setClockInGateBlocksDataAccess(true) while blocked —
- * restore those call sites from git history / ClockInGate.forced.bak.tsx if needed.
- */
-function setGateDataAccessBlocked(_blocked: boolean): void {
-  setClockInGateBlocksDataAccess(false);
+function setGateDataAccessBlocked(blocked: boolean): void {
+  setClockInGateBlocksDataAccess(blocked);
 }
 
 function readCachedGateState(userId: string | undefined) {
@@ -153,8 +149,12 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
               priorEmployeeId,
             );
             setEmployeeId(priorEmployeeId);
+            const requireClockIn = await fetchRequireClockInFlag(priorEmployeeId);
             const stillIn = await fetchIsEmployeeClockedIn(priorEmployeeId);
-            const nextStatus: ClockInGateStatus = stillIn ? 'allowed' : 'blocked';
+            const nextStatus = resolveClockInGateStatus(
+              { isExternalUser: false, employeeId: priorEmployeeId, requireClockIn },
+              stillIn,
+            );
             setStatus(nextStatus);
             setGateDataAccessBlocked(nextStatus === 'blocked');
             writeClockInGateCache(user.id, nextStatus, priorEmployeeId);
@@ -163,7 +163,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
 
           setEmployeeId(null);
           setStatus('no_employee');
-          setGateDataAccessBlocked(true);
+          setGateDataAccessBlocked(false);
           writeClockInGateCache(user.id, 'no_employee', null);
           return;
         }
@@ -171,7 +171,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         if (profile.employeeId == null) {
           setEmployeeId(null);
           setStatus('no_employee');
-          setGateDataAccessBlocked(true);
+          setGateDataAccessBlocked(false);
           writeClockInGateCache(user.id, 'no_employee', null);
           return;
         }
@@ -256,7 +256,11 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
       void refreshClockInGate();
     };
     window.addEventListener('admin-profile-bypass-changed', onBypassChanged);
-    return () => window.removeEventListener('admin-profile-bypass-changed', onBypassChanged);
+    window.addEventListener('clock-in-session-changed', onBypassChanged);
+    return () => {
+      window.removeEventListener('admin-profile-bypass-changed', onBypassChanged);
+      window.removeEventListener('clock-in-session-changed', onBypassChanged);
+    };
   }, [refreshClockInGate]);
 
   const value = useMemo<ClockInGateContextValue>(() => ({

@@ -62,6 +62,7 @@ import {
 import { fetchFlagTypes, flagTypeLabel, type FlagTypeRow } from '../lib/userContentFlags';
 import { useExternalUser } from '../hooks/useExternalUser';
 import { getRoleDisplayName } from '../lib/employeeRoles';
+import { fetchClockedInEmployeeIds } from '../lib/employeeClockInStatus';
 
 interface User {
   id: string;
@@ -547,6 +548,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   // Online status state
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [lastOnlineTimes, setLastOnlineTimes] = useState<Map<string, Date>>(new Map());
+  const [clockedInEmployeeIds, setClockedInEmployeeIds] = useState<Set<number>>(() => new Set());
   const [typingUsers, setTypingUsers] = useState<Map<number, { userId: string; userName: string }>>(new Map());
 
   // Contact availability map (for sidebar)
@@ -601,6 +603,74 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   const [desktopChatTopChromeHeight, setDesktopChatTopChromeHeight] = useState(64);
   const [desktopChatComposerHeight, setDesktopChatComposerHeight] = useState(64);
   const [mobileChatHeaderHeight, setMobileChatHeaderHeight] = useState(56);
+
+  const userEmployeeIdByUserId = useMemo(() => {
+    const map = new Map<string, number>();
+    const add = (userId?: string | number | null, employeeId?: number | null) => {
+      if (userId == null || employeeId == null) return;
+      const id = Number(employeeId);
+      if (!Number.isNaN(id)) map.set(String(userId), id);
+    };
+    add(currentUser?.id, currentUser?.employee_id ?? null);
+    for (const user of allUsers) {
+      add(user.id, user.employee_id ?? null);
+    }
+    for (const conversation of conversations) {
+      for (const participant of conversation.participants ?? []) {
+        add(participant.user_id ?? participant.user?.id, participant.user?.employee_id ?? null);
+      }
+    }
+    if (selectedConversation?.participants) {
+      for (const participant of selectedConversation.participants) {
+        add(participant.user_id ?? participant.user?.id, participant.user?.employee_id ?? null);
+      }
+    }
+    for (const message of messages) {
+      add(message.sender_id, message.sender?.employee_id ?? null);
+    }
+    return map;
+  }, [currentUser, allUsers, conversations, selectedConversation, messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshClockedIn = async () => {
+      try {
+        const ids = await fetchClockedInEmployeeIds();
+        if (!cancelled) setClockedInEmployeeIds(ids);
+      } catch (error) {
+        console.error('Failed to load clock-in status for RMQ avatars:', error);
+      }
+    };
+
+    void refreshClockedIn();
+
+    const channel = supabase
+      .channel('rmq-employee-clock-in-status')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'employee_clock_in' },
+        () => {
+          void refreshClockedIn();
+        },
+      )
+      .subscribe();
+
+    const onSessionChanged = () => {
+      void refreshClockedIn();
+    };
+    window.addEventListener('clock-in-session-changed', onSessionChanged);
+    const poll = window.setInterval(() => {
+      void refreshClockedIn();
+    }, 60_000);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('clock-in-session-changed', onSessionChanged);
+      window.clearInterval(poll);
+      void supabase.removeChannel(channel);
+    };
+  }, []);
 
   // Keep message-thread padding in sync with overlay glass header/composer heights
   useEffect(() => {
@@ -731,6 +801,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     gradientClass?: string;
     textClass?: string;
     loading?: 'eager' | 'lazy';
+    showClockDot?: boolean;
+    clockDotBorderClass?: string;
   }
 
   const handleAvatarError = useCallback((userIdKey: string) => {
@@ -755,27 +827,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     borderClass = 'border border-green-200',
     gradientClass = '',
     textClass = 'text-sm',
-    loading = 'eager'
+    loading = 'eager',
+    showClockDot = true,
+    clockDotBorderClass = 'border-white dark:border-base-100',
   }: AvatarOptions) => {
     const fallbackKey = userId ? String(userId) : name || 'unknown';
-    if (photoUrl && !failedPhotoIds[fallbackKey]) {
-      return (
-        <img
-          src={photoUrl}
-          alt={name}
-          loading={loading}
-          decoding="async"
-          className={`${sizeClass} rounded-full object-cover ${borderClass} bg-base-200`}
-          onError={() => handleAvatarError(fallbackKey)}
-        />
-      );
-    }
-
-    return (
+    const photo = photoUrl && !failedPhotoIds[fallbackKey] ? (
+      <img
+        src={photoUrl}
+        alt={name}
+        loading={loading}
+        decoding="async"
+        className={`${sizeClass} rounded-full object-cover ${borderClass} bg-base-200`}
+        onError={() => handleAvatarError(fallbackKey)}
+      />
+    ) : (
       <div
         className={`${sizeClass} rounded-full bg-green-100 dark:bg-green-900/30 ${gradientClass ? `bg-gradient-to-br ${gradientClass}` : ''} flex items-center justify-center text-green-700 dark:text-green-400 font-bold ${textClass} ${borderClass} shadow-[0_4px_12px_rgba(16,185,129,0.2)]`}
       >
         {getInitials(name)}
+      </div>
+    );
+
+    const skipTinyDot = /\bw-5\b/.test(sizeClass);
+    const employeeId = userId != null ? userEmployeeIdByUserId.get(String(userId)) : undefined;
+    if (!showClockDot || skipTinyDot || employeeId == null) return photo;
+
+    const isClockedIn = clockedInEmployeeIds.has(employeeId);
+    const dotSize = /\bw-(8|9)\b/.test(sizeClass)
+      ? 'h-2.5 w-2.5'
+      : /\bw-14\b/.test(sizeClass)
+        ? 'h-3.5 w-3.5'
+        : 'h-3 w-3';
+
+    return (
+      <div className="relative inline-flex shrink-0">
+        {photo}
+        <span
+          className={`absolute bottom-0 right-0 rounded-full border-2 ${dotSize} ${isClockedIn ? 'bg-emerald-500' : 'bg-red-500'} ${clockDotBorderClass}`}
+          title={isClockedIn ? 'Clocked in' : 'Clocked out'}
+          aria-label={isClockedIn ? 'Clocked in' : 'Clocked out'}
+        />
       </div>
     );
   };
@@ -8515,7 +8607,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
-                const isOnline = onlineUsers.has(String(user.id));
                 const isSelectedContact = selectedConversation?.type === 'direct' && selectedConversation.participants?.some(p => p.user_id === user.id);
 
                 const contactListTitle =
@@ -8543,15 +8634,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           sizeClass: 'w-12 h-12',
                           borderClass: '',
                           textClass: 'text-sm',
+                          clockDotBorderClass: isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100',
                         })}
                         {isUnavailable && (
                             <div className={`absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/40' : 'border-base-100'}`}>
                               <ClockIcon className="w-3 h-3 text-white" />
                             </div>
                           )}
-                        {!isUnavailable && isOnline && (
-                          <div className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 bg-emerald-500 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100'}`} title="Online" />
-                        )}
                       </div>
 
                       <div className="min-w-0 flex-1 py-0.5">
@@ -8835,7 +8924,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
-                const isOnline = onlineUsers.has(String(user.id));
                 const isSelectedContact = selectedConversation?.type === 'direct' && selectedConversation.participants?.some(p => p.user_id === user.id);
 
                 const contactListTitle =
@@ -8861,14 +8949,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           sizeClass: 'w-14 h-14',
                           borderClass: '',
                           textClass: 'text-base',
+                          clockDotBorderClass: isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100',
                         })}
                         {isUnavailable && (
                           <div className={`absolute -top-0.5 -right-0.5 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center border-2 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/40' : 'border-base-100'}`}>
                             <ClockIcon className="w-3.5 h-3.5 text-white" />
                           </div>
-                        )}
-                        {!isUnavailable && isOnline && (
-                          <div className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 bg-emerald-500 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100'}`} title="Online" />
                         )}
                       </div>
 
@@ -9035,9 +9121,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                         const op = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
                         if (op?.user) {
                           const otherUserId = op.user.id ? String(op.user.id) : null;
+                          const otherEmployeeId = op.user.employee_id != null ? Number(op.user.employee_id) : null;
+                          const hasEmployee = otherEmployeeId != null && !Number.isNaN(otherEmployeeId);
+                          const isClockedIn = hasEmployee ? clockedInEmployeeIds.has(otherEmployeeId) : false;
                           const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
-                          if (otherUserId && process.env.NODE_ENV === 'development') {
-                          }
 
                           const peerRole = getRoleDisplayName(op.user.tenants_employee?.bonuses_role || '');
                           return (
@@ -9049,14 +9136,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               </div>
                               {!isEmployeeUnavailable ? (
                                 <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-base-content/65">
-                                  <span className={isOnline ? 'font-medium text-emerald-600' : 'text-base-content/50'}>
-                                    {isOnline ? '● Online' : '● Offline'}
-                                  </span>
+                                  {hasEmployee ? (
+                                    <span className={isClockedIn ? 'font-medium text-emerald-600' : 'font-medium text-red-500'}>
+                                      {isClockedIn ? '● Clocked in' : '● Clocked out'}
+                                    </span>
+                                  ) : (
+                                    <span className={isOnline ? 'font-medium text-emerald-600' : 'text-base-content/50'}>
+                                      {isOnline ? '● Online' : '● Offline'}
+                                    </span>
+                                  )}
                                   <span className="text-base-content/30" aria-hidden>
                                     ·
                                   </span>
                                   <span className="text-base-content/75">{peerRole || 'Member'}</span>
-                                  {!isOnline && otherUserId && lastOnlineTimes.has(otherUserId) && (
+                                  {!hasEmployee && !isOnline && otherUserId && lastOnlineTimes.has(otherUserId) && (
                                     <>
                                       <span className="text-base-content/30" aria-hidden>
                                         ·
@@ -10535,8 +10628,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           'Unknown User';
                         const photoUrl = otherParticipant.user.tenants_employee?.photo_url;
                         const avatarKey = otherParticipant.user.id || otherParticipant.user_id;
-                        const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
-                        const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
                         const handleAvatarClick = async () => {
                           const employee = otherParticipant.user?.tenants_employee;
                           if (employee) {
@@ -10591,12 +10682,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 borderClass: 'border border-base-300',
                                 textClass: 'text-sm',
                               })}
-                              <div
-                                className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-base-100 shadow-sm"
-                                style={{
-                                  backgroundColor: isOnline ? '#10b981' : '#9ca3af'
-                                }}
-                              />
                             </div>
                             <h2 className="font-semibold text-sm text-base-content truncate">
                               {name}

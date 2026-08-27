@@ -28,6 +28,7 @@ import {
   formatMeetingAttendeesDisplay,
 } from '../lib/staffMeetingParticipants';
 import { isMeetingBookedViaClientPortal } from '../lib/clientBookingApi';
+import { buildCalendarClientRoute as buildClientRoute } from '../lib/calendarClientRoute';
 import ClientPortalBookingBadge from './client-booking/ClientPortalBookingBadge';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -4185,58 +4186,6 @@ const CalendarPage: React.FC = () => {
     if (customUrl) return customUrl;
 
     return normalizeMeetingJoinLink(defaultLink);
-  };
-
-  // Helper function to build client route (similar to SchedulerToolPage and Clients.tsx)
-  const buildClientRoute = (lead: any): string => {
-    if (!lead) return '/clients';
-
-    // For new leads
-    if (lead.lead_type === 'new' && lead.lead_number) {
-      const isSubLead = lead.lead_number.includes('/');
-      if (isSubLead) {
-        // Sublead: use manual_id first if available, otherwise use base lead_number
-        // For new leads subleads, prefer manual_id over lead_number for the path
-        const manualId = lead.manual_id || null;
-        if (manualId) {
-          // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
-          return `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(lead.lead_number)}`;
-        } else {
-          // Sublead without manual_id: extract base from lead_number
-          const baseLeadNumber = lead.lead_number.split('/')[0];
-          return `/clients/${encodeURIComponent(baseLeadNumber)}?lead=${encodeURIComponent(lead.lead_number)}`;
-        }
-      } else {
-        // Regular new lead: use manual_id if available, otherwise use lead_number
-        const identifier = lead.manual_id || lead.lead_number || '';
-        return `/clients/${encodeURIComponent(identifier)}`;
-      }
-    }
-    // For legacy leads
-    else if (lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_')) {
-      const legacyId = lead.id?.toString().replace('legacy_', '') || lead.id;
-      const isSubLead = lead.lead_number && lead.lead_number.includes('/');
-
-      if (isSubLead) {
-        // Legacy sublead: use numeric ID in path, formatted lead_number in query
-        return `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number)}`;
-      } else {
-        // Legacy master lead: use numeric ID
-        return `/clients/${encodeURIComponent(legacyId)}`;
-      }
-    }
-    // Fallback: check if lead_number contains '/' (sublead pattern)
-    else if (lead.lead_number) {
-      const isSubLead = lead.lead_number.includes('/');
-      if (isSubLead) {
-        const baseLeadNumber = lead.lead_number.split('/')[0];
-        return `/clients/${encodeURIComponent(baseLeadNumber)}?lead=${encodeURIComponent(lead.lead_number)}`;
-      } else {
-        return `/clients/${encodeURIComponent(lead.lead_number)}`;
-      }
-    }
-
-    return '/clients';
   };
 
   const renderStaffMeetingLeadLabel = (meeting: any, lead: any) => {

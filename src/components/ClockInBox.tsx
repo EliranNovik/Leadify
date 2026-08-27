@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ClockIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
+import { ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
+import ClockStatusIcon from './ClockStatusIcon';
 import ClockInModal from './ClockInModal';
 import ManualClockInApprovalModal from './ManualClockInApprovalModal';
 import { supabase } from '../lib/supabase';
@@ -279,7 +280,8 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
               isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
             }`}
           >
-            <ClockIcon
+            <ClockStatusIcon
+              checked={isClockedIn}
               className={`w-7 h-7 md:w-7 md:h-7 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
             />
           </div>
@@ -316,18 +318,12 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
         </div>
 
         {!isSuperUser && (
-        <svg
+        <ClockStatusIcon
+          checked={isClockedIn}
           className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${
             isDark2Theme ? 'text-base-content/35' : 'text-white/40'
           }`}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          viewBox="0 0 32 32"
-        >
-          <circle cx="16" cy="16" r="12" />
-          <path d="M16 10v6l4 2" strokeLinecap="round" />
-        </svg>
+        />
         )}
       </div>
 

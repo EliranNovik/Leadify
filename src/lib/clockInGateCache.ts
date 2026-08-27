@@ -1,6 +1,6 @@
 import type { ClockInGateStatus } from './employeeClockInGate';
 
-const CACHE_KEY = 'clock_in_gate_v1';
+const CACHE_KEY = 'clock_in_gate_v2';
 
 type ClockInGateCacheEntry = {
   userId: string;

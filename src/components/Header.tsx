@@ -19,6 +19,7 @@ import {
   Bars3Icon,
   MagnifyingGlassIcon,
   BellIcon,
+  CheckIcon,
   XMarkIcon,
   HashtagIcon,
   EnvelopeIcon,
@@ -38,11 +39,18 @@ import {
   Cog6ToothIcon,
   ShieldCheckIcon,
   ClipboardDocumentCheckIcon,
+  ArrowUpTrayIcon,
+  ArrowDownTrayIcon,
+  DocumentIcon,
+  DocumentTextIcon,
+  PhotoIcon,
+  TableCellsIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
+import WhatsAppDoubleCheckIcon from './whatsapp/WhatsAppDoubleCheckIcon';
 import AdminChangeUserModal from './AdminChangeUserModal';
 import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
@@ -78,6 +86,21 @@ import {
   fetchHeaderUnreadEmailsForBadge,
   isHeaderEmailBlocked,
 } from '../lib/headerEmailNotifications';
+import {
+  buildClientUploadsDeepLink,
+  downloadClientUploadNotificationFile,
+  fetchClientUploadLeadNotifications,
+  readSeenClientUploadDocumentIds,
+  rememberSeenClientUploadDocumentIds,
+  type ClientUploadLeadNotification,
+} from '../lib/headerClientUploadNotifications';
+import { fetchClockedInEmployeeIds } from '../lib/employeeClockInStatus';
+import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
+import {
+  fetchUnreadLeadShares,
+  markLeadSharesRead,
+  type LeadShareNotification,
+} from '../lib/leadShares';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -110,6 +133,7 @@ interface AssignmentNotification {
   leadId: string | number;
   leadRouteId: string | number;
   leadNumber: string;
+  leadName: string | null;
   roleLabel: string;
   updatedAt?: string;
 }
@@ -154,6 +178,11 @@ const ASSIGNMENT_ROLE_FIELDS = [
 ] as const;
 
 const ASSIGNMENT_SEEN_STORAGE_KEY = 'rmq_assignment_seen_v1';
+const NOTIFICATION_DROPDOWN_WIDTH_MOBILE = 288;
+const NOTIFICATION_DROPDOWN_WIDTH_DESKTOP = 500;
+const NOTIFICATION_ROW_ICON_CLASS = 'w-5 h-5';
+
+type NotificationThemeFilter = 'all' | 'shared' | 'uploads' | 'whatsapp' | 'email' | 'rmq' | 'assignments';
 
 interface RMQMessage {
   id: number;
@@ -165,7 +194,9 @@ interface RMQMessage {
   sender: {
     id: string;
     full_name: string;
+    employee_id?: number | null;
     tenants_employee?: {
+      id?: number;
       display_name: string;
       photo_url?: string;
     };
@@ -202,6 +233,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   /** Cleared on re-enter; prevents stacked timeouts when moving bar → portaled preview */
   const searchHoverCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [notificationThemeFilter, setNotificationThemeFilter] = useState<NotificationThemeFilter>('all');
+  const [notificationSelectMode, setNotificationSelectMode] = useState(false);
+  const [selectedNotificationKeys, setSelectedNotificationKeys] = useState<Set<string>>(new Set());
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -283,10 +317,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [assignmentNotifications, setAssignmentNotifications] = useState<AssignmentNotification[]>([]);
   const [seenAssignmentKeys, setSeenAssignmentKeys] = useState<Set<string>>(new Set());
+  const [clientUploadNotifications, setClientUploadNotifications] = useState<ClientUploadLeadNotification[]>([]);
+  const [leadShareNotifications, setLeadShareNotifications] = useState<LeadShareNotification[]>([]);
+  const [seenClientUploadDocIds, setSeenClientUploadDocIds] = useState<Set<string>>(new Set());
 
   // RMQ Messages state
   const [rmqMessages, setRmqMessages] = useState<RMQMessage[]>([]);
   const [rmqUnreadCount, setRmqUnreadCount] = useState(0);
+  const [clockedInEmployeeIds, setClockedInEmployeeIds] = useState<Set<number>>(() => new Set());
   const [whatsappLeadsMessages, setWhatsappLeadsMessages] = useState<any[]>([]);
   const [whatsappLeadsUnreadCount, setWhatsappLeadsUnreadCount] = useState(0);
   const [whatsappClientsUnreadCount, setWhatsappClientsUnreadCount] = useState(0);
@@ -322,7 +360,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const stageIdsReadyRef = useRef(false);
   const resolvingStageIdsRef = useRef<Promise<void> | null>(null);
 
-  const unreadCount = rmqUnreadCount + (isSuperUser ? whatsappLeadsUnreadCount : 0) + assignmentNotifications.length + (isSuperUser ? emailLeadUnreadCount : 0);
+  const unreadCount = rmqUnreadCount + (isSuperUser ? whatsappLeadsUnreadCount : 0) + assignmentNotifications.length + (isSuperUser ? emailLeadUnreadCount : 0) + clientUploadNotifications.length + leadShareNotifications.length;
 
   // Reactive theme detection
   useEffect(() => {
@@ -371,6 +409,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
+
+  useEffect(() => {
+    if (!authContextUser?.id) {
+      setSeenClientUploadDocIds(new Set());
+      setClientUploadNotifications([]);
+      return;
+    }
+    setSeenClientUploadDocIds(readSeenClientUploadDocumentIds(authContextUser.id));
+  }, [authContextUser?.id]);
 
   // Load dismissed assignment keys from database
   useEffect(() => {
@@ -1763,7 +1810,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             sender:users!sender_id(
               id,
               full_name,
+              employee_id,
               tenants_employee!left(
+                id,
                 display_name,
                 photo_url
               )
@@ -1814,6 +1863,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       // Calculate unread count based on actual messages fetched
       setRmqUnreadCount(messagesWithConversations.length);
+      try {
+        setClockedInEmployeeIds(await fetchClockedInEmployeeIds());
+      } catch (clockError) {
+        console.error('Failed to load clock-in status for RMQ notifications:', clockError);
+      }
     } catch (error) {
       console.error('Error in fetchRmqMessages:', error);
     }
@@ -1893,7 +1947,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           leadMap.set(phoneNumber, {
             phone_number: phoneNumber,
             sender_name: message.sender_name,
-            latest_message: message.message,
+            latest_message: message.caption || message.message,
+            latest_message_type: message.message_type,
+            latest_voice_note: Boolean(message.voice_note),
             latest_message_time: message.sent_at,
             message_count: 1,
             id: message.id // Use the latest message ID as the group ID
@@ -1903,7 +1959,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           existingLead.message_count++;
           // Keep the latest message
           if (new Date(message.sent_at) > new Date(existingLead.latest_message_time)) {
-            existingLead.latest_message = message.message;
+            existingLead.latest_message = message.caption || message.message;
+            existingLead.latest_message_type = message.message_type;
+            existingLead.latest_voice_note = Boolean(message.voice_note);
             existingLead.latest_message_time = message.sent_at;
             existingLead.id = message.id;
           }
@@ -2855,15 +2913,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const handleNotificationClick = () => {
     const newShowState = !showNotifications;
     setShowNotifications(newShowState);
+    if (newShowState) {
+      setNotificationSelectMode(false);
+      setSelectedNotificationKeys(new Set());
+    }
 
     if (newShowState) {
+      setNotificationThemeFilter('all');
       const anchor =
         (isMobile ? profileButtonRefMobile.current : notificationsButtonRef.current) ??
         notificationsButtonRef.current;
       const rect = anchor?.getBoundingClientRect();
       if (rect) {
         // Keep the dropdown within the viewport, opening below the bell.
-        const width = isMobile ? 288 : 320; // w-72 / w-80
+        const width = isMobile ? NOTIFICATION_DROPDOWN_WIDTH_MOBILE : NOTIFICATION_DROPDOWN_WIDTH_DESKTOP;
         const gutter = 12;
         const left = Math.max(
           gutter,
@@ -2885,6 +2948,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
     if (newShowState && (currentUser || currentUserEmployee)) {
       fetchAssignmentNotifications();
+      void fetchClientUploadNotifications();
+      void fetchLeadShareNotifications();
     }
   };
 
@@ -2897,7 +2962,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         notificationsButtonRef.current;
       const rect = anchor?.getBoundingClientRect();
       if (!rect) return;
-      const width = isMobile ? 288 : 320;
+      const width = isMobile ? NOTIFICATION_DROPDOWN_WIDTH_MOBILE : NOTIFICATION_DROPDOWN_WIDTH_DESKTOP;
       const gutter = 12;
       const left = Math.max(
         gutter,
@@ -2920,6 +2985,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (assignmentNotifications.length > 0) {
         rememberAssignments(assignmentNotifications.map(notification => notification.key));
         setAssignmentNotifications([]);
+      }
+      if (clientUploadNotifications.length > 0 && authContextUser?.id) {
+        const ids = clientUploadNotifications.flatMap((n) => n.documentIds);
+        setSeenClientUploadDocIds(rememberSeenClientUploadDocumentIds(authContextUser.id, ids));
+        setClientUploadNotifications([]);
+      }
+      if (leadShareNotifications.length > 0) {
+        void markLeadSharesRead(leadShareNotifications.map((item) => item.id));
+        setLeadShareNotifications([]);
       }
       return;
     }
@@ -2999,10 +3073,80 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         rememberAssignments(assignmentNotifications.map(notification => notification.key));
         setAssignmentNotifications([]);
       }
+      if (clientUploadNotifications.length > 0 && currentUser?.id) {
+        const ids = clientUploadNotifications.flatMap((n) => n.documentIds);
+        setSeenClientUploadDocIds(rememberSeenClientUploadDocumentIds(currentUser.id, ids));
+        setClientUploadNotifications([]);
+      }
+      if (leadShareNotifications.length > 0) {
+        await markLeadSharesRead(leadShareNotifications.map((item) => item.id));
+        setLeadShareNotifications([]);
+      }
 
     } catch (error) {
       console.error('Error marking all conversations as read:', error);
     }
+  };
+
+  const toggleNotificationSelected = (key: string) => {
+    setSelectedNotificationKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const runOrSelectNotification = (key: string, open: () => void) => {
+    if (notificationSelectMode) {
+      toggleNotificationSelected(key);
+      return;
+    }
+    open();
+  };
+
+  const markSelectedNotificationsAsRead = async () => {
+    const keys = [...selectedNotificationKeys];
+    if (keys.length === 0) {
+      await markAllAsRead();
+      setNotificationSelectMode(false);
+      return;
+    }
+
+    for (const key of keys) {
+      if (key.startsWith('upload:')) {
+        const notification = clientUploadNotifications.find((item) => `upload:${item.key}` === key);
+        if (notification) dismissClientUploadNotification(notification);
+        continue;
+      }
+      if (key.startsWith('whatsapp:')) {
+        const message = whatsappLeadsMessages.find((item) => `whatsapp:${item.id}` === key);
+        if (message) await handleWhatsappMessageRead(message);
+        continue;
+      }
+      if (key.startsWith('email:')) {
+        const message = emailLeadMessages.find((item) => `email:${item.id}` === key);
+        if (message) await handleEmailLeadMessageRead(message);
+        continue;
+      }
+      if (key.startsWith('rmq:')) {
+        const conversationId = Number(key.slice('rmq:'.length));
+        if (Number.isFinite(conversationId)) dismissRmqConversation(conversationId);
+        continue;
+      }
+      if (key.startsWith('assign:')) {
+        const notification = assignmentNotifications.find((item) => `assign:${item.key}` === key);
+        if (notification) dismissAssignmentNotification(notification);
+        continue;
+      }
+      if (key.startsWith('share:')) {
+        const notification = leadShareNotifications.find((item) => `share:${item.id}` === key);
+        if (notification) void dismissLeadShareNotification(notification);
+      }
+    }
+
+    setSelectedNotificationKeys(new Set());
+    setNotificationSelectMode(false);
   };
 
   const handleAIClick = () => {
@@ -3141,44 +3285,86 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return 'Group Chat';
   };
 
-  const getConversationIcon = (message: RMQMessage): JSX.Element => {
-    if (message.conversation.type === 'group') {
-      return (
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white text-sm font-bold">
-          <UserGroupIcon className="w-4 h-4" />
-        </div>
-      );
+  const getNotificationMediaAction = (
+    messageType: string | null | undefined,
+    content: string | null | undefined,
+    extra?: { voiceNote?: boolean },
+  ): { verb: string; body: string | null } => {
+    const type = String(messageType || '').toLowerCase();
+    const text = String(content || '').trim();
+    if (type === 'image' || type === 'album') {
+      return { verb: ' sent an image', body: text || null };
     }
-
-    // For direct messages, show sender's photo or initials
-    const senderName = message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
-    const photoUrl = message.sender.tenants_employee?.photo_url;
-
-    if (photoUrl && photoUrl.trim() !== '') {
-      return (
-        <img
-          src={photoUrl}
-          alt={senderName}
-          className="w-8 h-8 rounded-full object-cover"
-        />
-      );
+    if (type === 'voice' || type === 'audio' || extra?.voiceNote) {
+      return { verb: ' sent a voice message', body: null };
     }
+    if (type === 'video') {
+      return { verb: ' sent a video', body: null };
+    }
+    if (type === 'file' || type === 'document') {
+      return { verb: ' sent a file', body: text || null };
+    }
+    return { verb: ' wrote', body: text || null };
+  };
 
+  const renderNotificationTitleAction = (name: string, verb: string, body: string | null) => (
+    <p className="text-sm truncate leading-snug">
+      <span className="font-semibold text-gray-900">{name}</span>
+      <span className="font-normal text-gray-500">{verb}</span>
+      {body ? <span className="font-normal text-gray-900">{` ${body}`}</span> : null}
+    </p>
+  );
+
+  const renderNotificationStackedAction = (name: string, verb: string, body: string | null) => (
+    <>
+      <p className="text-sm font-semibold text-gray-900 truncate">{name}</p>
+      <p className="mt-0.5 truncate text-xs">
+        <span className="text-gray-500">{verb.trim()}</span>
+        {body ? <span className="text-gray-900">{` ${body}`}</span> : null}
+      </p>
+    </>
+  );
+
+  const renderNotificationSelectControl = (key: string) => {
+    if (!notificationSelectMode) return null;
+    const selected = selectedNotificationKeys.has(key);
     return (
-      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold ${isAltTheme ? 'bg-green-600' : 'bg-purple-500'}`}>
-        {senderName.charAt(0).toUpperCase()}
+      <div
+        className={`mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[4px] border ${
+          selected
+            ? 'border-gray-700 bg-gray-800 text-white dark:border-base-content dark:bg-base-content dark:text-base-100'
+            : 'border-gray-300 bg-white dark:border-base-content/30 dark:bg-transparent'
+        }`}
+        aria-hidden
+      >
+        {selected ? <CheckIcon className="h-3 w-3 stroke-[3]" /> : null}
       </div>
     );
   };
 
-  const getMessageDisplayText = (message: RMQMessage): string => {
-    if (message.conversation.type === 'group') {
-      const senderName = message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
-      return `${senderName}: ${message.content}`;
-    }
+  const formatUploadFileSizeMb = (bytes: number | null | undefined): string | null => {
+    if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return null;
+    const mb = bytes / (1024 * 1024);
+    if (mb < 0.01) return '0.01 MB';
+    return `${mb < 10 ? mb.toFixed(2) : mb.toFixed(1)} MB`;
+  };
 
-    // For direct messages, just show the content without sender name
-    return message.content;
+  const getUploadFileTypeIcon = (fileName?: string | null, mimeType?: string | null) => {
+    const name = String(fileName || '').toLowerCase();
+    const mime = String(mimeType || '').toLowerCase();
+    if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|bmp|svg)$/.test(name)) {
+      return { Icon: PhotoIcon, className: 'text-sky-500' };
+    }
+    if (mime.includes('pdf') || name.endsWith('.pdf')) {
+      return { Icon: DocumentTextIcon, className: 'text-red-500' };
+    }
+    if (mime.includes('sheet') || mime.includes('excel') || /\.(xlsx?|csv)$/.test(name)) {
+      return { Icon: TableCellsIcon, className: 'text-emerald-600' };
+    }
+    if (mime.includes('word') || mime.includes('document') || /\.(docx?|rtf)$/.test(name)) {
+      return { Icon: DocumentIcon, className: 'text-blue-600' };
+    }
+    return { Icon: DocumentIcon, className: 'text-amber-500' };
   };
 
   const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
@@ -3304,7 +3490,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         legacyOrFilter
           ? supabase
             .from('leads_lead')
-            .select(`id, lead_number, manual_id, udate, ${legacyRoleFields}`)
+            .select(`id, lead_number, manual_id, name, udate, ${legacyRoleFields}`)
             .or(legacyOrFilter)
             .order('udate', { ascending: false })
             .limit(50)
@@ -3312,7 +3498,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         newOrFilter
           ? supabase
             .from('leads')
-            .select(`id, lead_number, manual_id, created_at, ${newRoleFields}`)
+            .select(`id, lead_number, manual_id, name, created_at, ${newRoleFields}`)
             .or(newOrFilter)
             .order('created_at', { ascending: false })
             .limit(50)
@@ -3390,6 +3576,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               leadId: row.id,
               leadRouteId: getLeadRouteIdentifier(row, table),
               leadNumber: getLeadRouteIdentifier(row, table),
+              leadName: String(row.name ?? '').trim() || null,
               roleLabel: role.label,
               updatedAt: timestamp,
             });
@@ -3423,6 +3610,112 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }, 60000);
     return () => clearInterval(interval);
   }, [currentUser, currentUserEmployee, fetchAssignmentNotifications]);
+
+  const fetchClientUploadNotifications = useCallback(async () => {
+    const numericEmployeeId = await resolveNumericEmployeeId();
+    if (!numericEmployeeId) {
+      setClientUploadNotifications([]);
+      return;
+    }
+    try {
+      const displayNames = [
+        currentUserEmployee?.display_name,
+        currentUser?.full_name,
+        userFullName,
+      ]
+        .filter(Boolean)
+        .map((value) => String(value).trim())
+        .filter((value) => value.length > 0);
+      const rows = await fetchClientUploadLeadNotifications({
+        employeeId: numericEmployeeId,
+        displayNames,
+        bonusesRole: currentUserEmployee?.bonuses_role ?? null,
+        seenDocumentIds: seenClientUploadDocIds,
+      });
+      setClientUploadNotifications(rows);
+    } catch (error) {
+      console.error('Error fetching client upload notifications:', error);
+    }
+  }, [
+    resolveNumericEmployeeId,
+    currentUserEmployee?.display_name,
+    currentUserEmployee?.bonuses_role,
+    currentUser?.full_name,
+    userFullName,
+    seenClientUploadDocIds,
+  ]);
+
+  useEffect(() => {
+    if (!currentUser && !currentUserEmployee) return;
+    void fetchClientUploadNotifications();
+    const interval = setInterval(() => {
+      void fetchClientUploadNotifications();
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [currentUser, currentUserEmployee, fetchClientUploadNotifications]);
+
+  const fetchLeadShareNotifications = useCallback(async () => {
+    const numericEmployeeId = await resolveNumericEmployeeId();
+    if (!numericEmployeeId) {
+      setLeadShareNotifications([]);
+      return;
+    }
+    try {
+      const rows = await fetchUnreadLeadShares(Number(numericEmployeeId));
+      setLeadShareNotifications(rows);
+      try {
+        setClockedInEmployeeIds(await fetchClockedInEmployeeIds());
+      } catch {
+        // keep last known clock-in set
+      }
+    } catch (error) {
+      console.error('Error fetching lead share notifications:', error);
+    }
+  }, [resolveNumericEmployeeId]);
+
+  useEffect(() => {
+    if (!currentUser && !currentUserEmployee) return;
+    void fetchLeadShareNotifications();
+    const interval = setInterval(() => {
+      void fetchLeadShareNotifications();
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [currentUser, currentUserEmployee, fetchLeadShareNotifications]);
+
+  const dismissClientUploadNotification = useCallback((notification: ClientUploadLeadNotification) => {
+    const userId = currentUser?.id || authContextUser?.id;
+    if (userId) {
+      setSeenClientUploadDocIds(
+        rememberSeenClientUploadDocumentIds(userId, notification.documentIds),
+      );
+    }
+    setClientUploadNotifications((prev) => prev.filter((row) => row.key !== notification.key));
+  }, [authContextUser?.id, currentUser?.id]);
+
+  const handleClientUploadOpen = useCallback((notification: ClientUploadLeadNotification) => {
+    dismissClientUploadNotification(notification);
+    setShowNotifications(false);
+    navigate(buildClientUploadsDeepLink(notification.leadRouteId || notification.leadNumber));
+  }, [dismissClientUploadNotification, navigate]);
+
+  const handleClientUploadDownload = useCallback(async (
+    event: React.MouseEvent,
+    notification: ClientUploadLeadNotification,
+  ) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const doc = notification.singleDocument;
+    if (!doc) return;
+    try {
+      await downloadClientUploadNotificationFile({
+        fileName: doc.fileName,
+        storagePath: doc.storagePath,
+      });
+    } catch (error) {
+      console.error('Client upload notification download failed:', error);
+      toast.error('Failed to download document');
+    }
+  }, []);
 
   const handleRmqMessageClick = async (message: RMQMessage) => {
     // Close notifications dropdown
@@ -3521,10 +3814,82 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
-  const dismissRmqMessage = (messageId: number) => {
-    setRmqMessages(prev => prev.filter(m => m.id !== messageId));
-    setRmqUnreadCount(prev => Math.max(0, prev - 1));
+  const dismissRmqConversation = (conversationId: number) => {
+    setRmqMessages((prev) => {
+      const next = prev.filter((m) => m.conversation_id !== conversationId);
+      setRmqUnreadCount(next.length);
+      return next;
+    });
   };
+
+  const rmqConversationNotifications = useMemo(() => {
+    const byConversation = new Map<number, { latest: RMQMessage; count: number }>();
+    for (const message of rmqMessages) {
+      const existing = byConversation.get(message.conversation_id);
+      if (!existing) {
+        byConversation.set(message.conversation_id, { latest: message, count: 1 });
+        continue;
+      }
+      existing.count += 1;
+      if (new Date(message.sent_at).getTime() > new Date(existing.latest.sent_at).getTime()) {
+        existing.latest = message;
+      }
+    }
+    return Array.from(byConversation.values()).sort(
+      (a, b) => new Date(b.latest.sent_at).getTime() - new Date(a.latest.sent_at).getTime(),
+    );
+  }, [rmqMessages]);
+
+  const notificationThemeTabs = useMemo(() => {
+    const tabs: Array<{
+      id: NotificationThemeFilter;
+      label: string;
+      count: number;
+      activeClass: string;
+    }> = [
+      { id: 'all', label: 'All', count: unreadCount, activeClass: 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' },
+      { id: 'shared', label: 'Shared', count: leadShareNotifications.length, activeClass: 'bg-yellow-500 text-white' },
+      { id: 'uploads', label: 'Uploads', count: clientUploadNotifications.length, activeClass: 'bg-gray-600 text-white' },
+    ];
+    if (isSuperUser) {
+      tabs.push({ id: 'whatsapp', label: 'WhatsApp', count: whatsappLeadsMessages.length, activeClass: 'bg-green-600 text-white' });
+      tabs.push({ id: 'email', label: 'Email', count: emailLeadMessages.length, activeClass: isAltTheme ? 'bg-green-600 text-white' : 'bg-blue-600 text-white' });
+    }
+    tabs.push({ id: 'rmq', label: 'RMQ', count: rmqConversationNotifications.length, activeClass: isAltTheme ? 'bg-green-600 text-white' : 'bg-purple-600 text-white' });
+    tabs.push({ id: 'assignments', label: 'Assigned', count: assignmentNotifications.length, activeClass: 'bg-orange-600 text-white' });
+    return tabs;
+  }, [
+    unreadCount,
+    leadShareNotifications.length,
+    clientUploadNotifications.length,
+    isSuperUser,
+    whatsappLeadsMessages.length,
+    emailLeadMessages.length,
+    rmqConversationNotifications.length,
+    assignmentNotifications.length,
+    isAltTheme,
+  ]);
+
+  const showShareNotifications =
+    notificationThemeFilter === 'shared' ||
+    (notificationThemeFilter === 'all' && leadShareNotifications.length > 0);
+  const showUploadNotifications =
+    notificationThemeFilter === 'uploads' ||
+    (notificationThemeFilter === 'all' && clientUploadNotifications.length > 0);
+  const showWhatsappNotifications =
+    isSuperUser &&
+    (notificationThemeFilter === 'whatsapp' ||
+      (notificationThemeFilter === 'all' && whatsappLeadsMessages.length > 0));
+  const showEmailNotifications =
+    isSuperUser &&
+    (notificationThemeFilter === 'email' ||
+      (notificationThemeFilter === 'all' && emailLeadMessages.length > 0));
+  const showRmqNotifications =
+    Boolean(currentUser) &&
+    (notificationThemeFilter === 'all' || notificationThemeFilter === 'rmq');
+  const showAssignmentNotifications =
+    notificationThemeFilter === 'assignments' ||
+    (notificationThemeFilter === 'all' && assignmentNotifications.length > 0);
 
   const dismissAssignmentNotification = (notification: AssignmentNotification) => {
     rememberAssignments([notification.key]);
@@ -3536,6 +3901,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setAssignmentNotifications(prev => prev.filter(item => item.key !== notification.key));
     setShowNotifications(false);
     navigate(`/clients/${notification.leadRouteId}`);
+  };
+
+  const dismissLeadShareNotification = (notification: LeadShareNotification) => {
+    void markLeadSharesRead([notification.id]);
+    setLeadShareNotifications((prev) => prev.filter((item) => item.id !== notification.id));
+  };
+
+  const handleLeadShareOpen = (notification: LeadShareNotification) => {
+    dismissLeadShareNotification(notification);
+    setShowNotifications(false);
+    navigate(resolveLeadShareClientRoute(notification));
   };
 
   // Helper function to get contrasting text color based on background
@@ -5065,238 +5441,541 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             <button
               type="button"
               ref={notificationsButtonRef}
-              className="btn btn-ghost h-10 w-10 min-h-10 min-w-10 p-0 border-0 mr-0 rounded-lg text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 md:mr-1 md:h-12 md:w-12 md:min-h-12 md:min-w-12 md:rounded-full"
+              className="relative btn btn-ghost h-10 w-10 min-h-10 min-w-10 p-0 border-0 mr-0 overflow-visible rounded-lg text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 md:mr-1 md:h-12 md:w-12 md:min-h-12 md:min-w-12 md:rounded-full"
               onClick={handleNotificationClick}
             >
-              <div className="indicator">
-                <BellIcon className="w-7 h-7" />
-                {unreadCount > 0 && (
-                  <span className="indicator-item badge badge-primary min-w-[1rem] h-4 md:min-w-[1.375rem] md:h-5.5 text-[11px] md:text-xs flex items-center justify-center px-1">{unreadCount}</span>
-                )}
-              </div>
+              <BellIcon className="w-7 h-7" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
             </button>
 
             {showNotifications && typeof window !== 'undefined' && createPortal((
               <div
                 data-notification-dropdown
-                className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-[9999] border border-gray-200 dark:border-gray-600 fixed ${isMobile ? 'notification-dropdown-mobile text-[13px]' : 'text-sm'}`}
+                className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-[9999] border border-gray-100 dark:border-gray-700 fixed ${isMobile ? 'notification-dropdown-mobile text-[13px]' : 'text-sm'}`}
                 style={{
                   top: notificationsDropdownPosition.top,
                   left: notificationsDropdownPosition.left,
-                  width: notificationsDropdownPosition.width || (isMobile ? 288 : 320),
+                  width: notificationsDropdownPosition.width || (isMobile ? NOTIFICATION_DROPDOWN_WIDTH_MOBILE : NOTIFICATION_DROPDOWN_WIDTH_DESKTOP),
                   maxWidth: 'calc(100vw - 24px)',
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className={`border-b border-gray-200 ${isMobile ? 'p-3' : 'p-4'}`}>
+                <div className={`notification-breakdots ${isMobile ? 'p-3 pb-2' : 'p-4 pb-3'}`}>
                   <div className="flex justify-between items-center">
                     <h3 className={`font-semibold text-gray-900 ${isMobile ? 'text-sm' : ''}`}>Messages</h3>
-                    <button
-                      className={`btn btn-ghost whitespace-nowrap text-gray-700 hover:text-gray-900 ${isMobile ? 'btn-xs text-[13px]' : 'btn-xs'}`}
-                      onClick={markAllAsRead}
-                    >
-                      Read
-                    </button>
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        className={`btn btn-ghost btn-xs btn-circle h-7 w-7 min-h-0 ${
+                          notificationSelectMode
+                            ? 'bg-gray-200 text-gray-900 dark:bg-base-300 dark:text-base-content'
+                            : 'text-gray-400 hover:text-gray-700 dark:text-base-content/50 dark:hover:text-base-content'
+                        }`}
+                        aria-label={notificationSelectMode ? 'Cancel selection' : 'Select notifications'}
+                        aria-pressed={notificationSelectMode}
+                        title={notificationSelectMode ? 'Cancel selection' : 'Select notifications'}
+                        onClick={() => {
+                          if (notificationSelectMode) {
+                            setNotificationSelectMode(false);
+                            setSelectedNotificationKeys(new Set());
+                          } else {
+                            setNotificationSelectMode(true);
+                          }
+                        }}
+                      >
+                        <WhatsAppDoubleCheckIcon className="h-5 w-5" strokeWidth={2.75} />
+                      </button>
+                      <button
+                        className={`btn btn-ghost whitespace-nowrap text-gray-700 hover:text-gray-900 ${isMobile ? 'btn-xs text-[13px]' : 'btn-xs'}`}
+                        onClick={() => void markSelectedNotificationsAsRead()}
+                      >
+                        {selectedNotificationKeys.size > 0 ? 'Mark as read' : 'Read all'}
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="mt-2.5 rounded-full bg-gray-100 p-[3px] shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)] dark:bg-base-300"
+                    role="tablist"
+                    aria-label="Filter notifications by type"
+                  >
+                    <div className="flex gap-[2px] overflow-x-auto scrollbar-hide">
+                    {notificationThemeTabs.map((tab) => {
+                      const active = notificationThemeFilter === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={active}
+                          onClick={() => setNotificationThemeFilter(tab.id)}
+                          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-all ${
+                            active
+                              ? 'bg-white text-gray-900 shadow-sm dark:bg-base-100 dark:text-base-content'
+                              : 'bg-transparent text-gray-500 hover:text-gray-700 dark:text-base-content/55'
+                          }`}
+                        >
+                          {tab.label}
+                          {tab.count > 0 && (
+                            <span
+                              className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold leading-none ${
+                                active ? 'bg-gray-100 text-gray-700 dark:bg-base-300' : 'text-gray-400 dark:text-base-content/45'
+                              }`}
+                            >
+                              {tab.count > 99 ? '99+' : tab.count}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                    </div>
                   </div>
                 </div>
-                <div className="max-h-96 overflow-y-auto">
-                  {/* WhatsApp Leads Messages Section - Only for superusers */}
-                  {isSuperUser && whatsappLeadsMessages.length > 0 && (
-                    <div className="border-b border-gray-200">
-                      <div className="p-3 bg-green-50 border-b border-green-100">
-                        <div className="flex items-center gap-2">
-                          <FaWhatsapp className="w-4 h-4 text-green-600" />
-                          <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
-                        </div>
+                <div className={`overflow-y-auto divide-y divide-dotted divide-gray-200 ${isMobile ? 'max-h-96' : 'max-h-[min(36rem,72vh)]'}`}>
+                  {showShareNotifications && (
+                    <div>
+                      <div className="px-3 py-2.5 bg-yellow-50">
+                        <span className="text-sm font-semibold text-yellow-800">Shared</span>
                       </div>
-                      {whatsappLeadsMessages.map((message) => (
-                        <div key={message.id} className="border-b border-green-100">
-                          <div
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => handleWhatsappLeadsClick(message.phone_number)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                handleWhatsappLeadsClick(message.phone_number);
-                              }
-                            }}
-                            className="w-full p-4 text-left hover:bg-green-50 transition-colors duration-200 cursor-pointer"
-                          >
-                            <div className="flex gap-3">
-                              <div className="flex-shrink-0">
-                                <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
-                                  <PhoneIcon className="w-4 h-4 text-green-600" />
+                      {leadShareNotifications.length > 0 ? (
+                      <div className="divide-y divide-dotted divide-gray-200">
+                      {leadShareNotifications.map((notification) => {
+                        const notificationKey = `share:${notification.id}`;
+                        const isSelected = selectedNotificationKeys.has(notificationKey);
+                        const photoUrl = notification.sharedByPhotoUrl?.trim() || '';
+                        const employeeId = notification.sharedByEmployeeId;
+                        const hasEmployee = Number.isFinite(employeeId) && employeeId > 0;
+                        const isClockedIn = hasEmployee && clockedInEmployeeIds.has(employeeId);
+                        const nameParts = notification.sharedByName.trim().split(/\s+/).filter(Boolean);
+                        const initials =
+                          nameParts.length >= 2
+                            ? `${nameParts[0][0]}${nameParts[nameParts.length - 1][0]}`.toUpperCase()
+                            : notification.sharedByName.slice(0, 2).toUpperCase();
+                        return (
+                          <div key={notification.id} className="cursor-pointer">
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={notificationSelectMode ? isSelected : undefined}
+                              onClick={() => runOrSelectNotification(notificationKey, () => handleLeadShareOpen(notification))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  runOrSelectNotification(notificationKey, () => handleLeadShareOpen(notification));
+                                }
+                              }}
+                              className={`w-full p-4 text-left transition-colors duration-200 hover:bg-yellow-50 ${isSelected ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                            >
+                              <div className="flex gap-3">
+                                {renderNotificationSelectControl(notificationKey)}
+                                <div className="relative flex-shrink-0">
+                                  {photoUrl ? (
+                                    <img
+                                      src={photoUrl}
+                                      alt=""
+                                      className="h-11 w-11 rounded-full object-cover bg-gray-100"
+                                    />
+                                  ) : (
+                                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold text-gray-700">
+                                      {initials || 'U'}
+                                    </div>
+                                  )}
+                                  {hasEmployee && (
+                                    <span
+                                      className={`absolute -bottom-px -right-px h-3.5 w-3.5 rounded-full border-2 border-white dark:border-base-100 ${isClockedIn ? 'bg-emerald-500' : 'bg-red-500'}`}
+                                      title={isClockedIn ? 'Clocked in' : 'Clocked out'}
+                                    />
+                                  )}
                                 </div>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between">
-                                  <p className="text-sm font-semibold text-gray-900 truncate">
-                                    {message.sender_name && message.sender_name !== message.phone_number && !message.sender_name.match(/^\d+$/)
-                                      ? message.sender_name
-                                      : message.phone_number}
-                                  </p>
-                                  <p className="text-xs text-gray-500">
-                                    {new Date(message.latest_message_time).toLocaleTimeString([], {
-                                      hour: '2-digit',
-                                      minute: '2-digit'
-                                    })}
-                                  </p>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <p className="text-sm leading-relaxed min-w-0">
+                                      <span className="font-semibold text-gray-900">{notification.sharedByName}</span>
+                                      <span className="text-gray-500"> shared with you lead </span>
+                                      <span className="font-semibold text-gray-900">
+                                        {notification.leadNumber}
+                                        {notification.leadName ? ` ${notification.leadName}` : ''}
+                                      </span>
+                                      <span className="text-gray-900">.</span>
+                                    </p>
+                                    {notification.createdAt ? (
+                                      <p className="text-xs text-gray-500 shrink-0">
+                                        {formatMessageTime(notification.createdAt)}
+                                      </p>
+                                    ) : null}
+                                  </div>
                                 </div>
-                                <p className="text-xs text-gray-600 mt-1 truncate">
-                                  {message.latest_message}
-                                </p>
-                                {message.message_count > 1 && (
-                                  <p className="text-xs text-green-600 mt-1">
-                                    {message.message_count} messages
-                                  </p>
-                                )}
                               </div>
                             </div>
                           </div>
-                          <div className="px-4 py-2 border-t border-green-100 flex justify-end">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleWhatsappMessageRead(message);
-                              }}
-                              className="text-xs font-medium text-green-700 hover:text-green-900"
-                            >
-                              Dismiss
-                            </button>
-                          </div>
+                        );
+                      })}
+                      </div>
+                      ) : (
+                        <div className="p-6 text-center text-gray-500">
+                          <p className="text-sm">No shared leads</p>
                         </div>
-                      ))}
+                      )}
                     </div>
                   )}
-                  {/* Email Leads Messages Section - Only for superusers */}
-                  {isSuperUser && emailLeadMessages.length > 0 && (
-                    <div className="border-b border-gray-200">
-                      <div className={`p-3 border-b ${isAltTheme ? 'bg-green-50 border-green-100' : 'bg-blue-50 border-blue-100'}`}>
-                        <div className="flex items-center gap-2">
-                          <EnvelopeIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`} />
-                          <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-blue-800'}`}>Email Leads</span>
-                        </div>
+                  {showUploadNotifications && (
+                    <div>
+                      <div className="px-3 py-2.5 bg-gray-100">
+                        <span className="text-sm font-semibold text-gray-800">
+                          Client uploads
+                        </span>
                       </div>
-                      {emailLeadMessages.map((message) => (
-                        <div key={message.id} className={`border-b ${isAltTheme ? 'border-green-100' : 'border-blue-100'}`}>
+                      {clientUploadNotifications.length > 0 ? (
+                      <div className="divide-y divide-dotted divide-gray-200">
+                      {clientUploadNotifications.map((notification) => {
+                        const contactLabel = notification.contactNames.join(', ');
+                        const typeLabel = notification.documentTypes.join(', ');
+                        const notificationKey = `upload:${notification.key}`;
+                        const isSelected = selectedNotificationKeys.has(notificationKey);
+                        return (
                           <div
-                            role="button"
-                            tabIndex={0}
-                            onClick={handleEmailLeadClick}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                handleEmailLeadClick();
-                              }
-                            }}
-                            className={`w-full p-4 text-left transition-colors duration-200 cursor-pointer ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-blue-50'}`}
-                          >
-                            <div className="flex gap-3">
-                              <div className="flex-shrink-0">
-                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isAltTheme ? 'bg-green-100' : 'bg-blue-100'}`}>
-                                  <EnvelopeIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`} />
-                                </div>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between">
-                                  <p className="text-sm font-semibold text-gray-900 truncate">
-                                    {message.sender_name || message.sender_email || 'Unknown Sender'}
-                                  </p>
-                                  <p className="text-xs text-gray-500">
-                                    {new Date(message.latest_sent_at).toLocaleTimeString([], {
-                                      hour: '2-digit',
-                                      minute: '2-digit'
-                                    })}
-                                  </p>
-                                </div>
-                                <p className="text-xs text-gray-600 mt-1 truncate">
-                                  {message.latest_subject}
-                                </p>
-                                {message.latest_preview && (
-                                  <p className="text-xs text-gray-500 mt-1 truncate">
-                                    {message.latest_preview.replace(/<[^>]+>/g, '')}
-                                  </p>
-                                )}
-                                {message.message_count > 1 && (
-                                  <p className={`text-xs mt-1 ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`}>
-                                    {message.message_count} messages
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          <div className={`px-4 py-2 border-t flex justify-end ${isAltTheme ? 'border-green-100' : 'border-blue-100'}`}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEmailLeadMessageRead(message);
-                              }}
-                              className={`text-xs font-medium ${isAltTheme ? 'text-green-700 hover:text-green-900' : 'text-blue-700 hover:text-blue-900'}`}
-                            >
-                              Dismiss
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* RMQ Messages Section */}
-                  {currentUser && (
-                    <div className="border-b border-gray-200">
-                      <div className={`p-3 border-b ${isAltTheme ? 'bg-green-50 border-green-100' : 'bg-purple-50 border-purple-100'}`}>
-                        <div className="flex items-center gap-2">
-                          <ChatBubbleLeftRightIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
-                          <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-purple-800'}`}>RMQ Messages</span>
-                        </div>
-                      </div>
-                      {rmqMessages.length > 0 ? (
-                        rmqMessages.map((message) => (
-                          <div
-                            key={message.id}
-                            className={`border-b cursor-pointer ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}
+                            key={notification.key}
+                            className="cursor-pointer"
                           >
                             <div
                               role="button"
                               tabIndex={0}
-                              onClick={() => handleRmqMessageClick(message)}
+                              aria-pressed={notificationSelectMode ? isSelected : undefined}
+                              onClick={() => runOrSelectNotification(notificationKey, () => handleClientUploadOpen(notification))}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' || e.key === ' ') {
                                   e.preventDefault();
-                                  handleRmqMessageClick(message);
+                                  runOrSelectNotification(notificationKey, () => handleClientUploadOpen(notification));
                                 }
                               }}
-                              className={`w-full p-4 text-left transition-colors duration-200 ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-purple-50'}`}
+                              className={`w-full p-4 text-left transition-colors duration-200 hover:bg-gray-50 ${isSelected ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                             >
                               <div className="flex gap-3">
-                                <div className="flex-shrink-0">
-                                  {getConversationIcon(message)}
+                                {renderNotificationSelectControl(notificationKey)}
+                                <div className="flex-shrink-0 pt-0.5">
+                                  <ArrowUpTrayIcon className={`${NOTIFICATION_ROW_ICON_CLASS} text-gray-600`} />
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-semibold text-gray-900 truncate">
-                                    {getConversationTitle(message)}
-                                  </p>
-                                  <p className="text-xs text-gray-600 mt-1 truncate">
-                                    {getMessageDisplayText(message)}
-                                  </p>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-sm font-semibold text-gray-900 truncate">
+                                        {notification.leadName || notification.leadNumber}
+                                      </p>
+                                      <p className="text-xs mt-1 truncate">
+                                        <span className="text-gray-900">
+                                          {notification.leadNumber}
+                                          {contactLabel ? ` · ${contactLabel}` : ''}
+                                        </span>
+                                        <span className="text-gray-500">
+                                          {` uploaded ${notification.documentCount} ${notification.documentCount === 1 ? 'document' : 'documents'}${typeLabel ? ` (${typeLabel})` : ''}`}
+                                        </span>
+                                      </p>
+                                      {notification.singleDocument ? (
+                                        <div className="mt-1.5 inline-flex max-w-[18rem] items-center gap-1.5 rounded-md border border-gray-100 bg-gray-50 px-1.5 py-1 dark:border-base-300 dark:bg-base-200">
+                                          {(() => {
+                                            const { Icon: FileTypeIcon, className: iconColorClass } = getUploadFileTypeIcon(
+                                              notification.singleDocument.fileName,
+                                              notification.singleDocument.mimeType,
+                                            );
+                                            const sizeLabel = formatUploadFileSizeMb(notification.singleDocument.fileSize);
+                                            return (
+                                              <>
+                                                <FileTypeIcon className={`h-7 w-7 shrink-0 ${iconColorClass}`} />
+                                                <div className="min-w-0 flex-1">
+                                                  <p
+                                                    className="truncate text-xs font-medium leading-tight text-gray-800 dark:text-base-content"
+                                                    title={notification.singleDocument.fileName}
+                                                  >
+                                                    {notification.singleDocument.fileName}
+                                                  </p>
+                                                  {sizeLabel ? (
+                                                    <p className="mt-0.5 text-[10px] leading-none text-gray-400">
+                                                      {sizeLabel}
+                                                    </p>
+                                                  ) : null}
+                                                </div>
+                                              </>
+                                            );
+                                          })()}
+                                          <button
+                                            type="button"
+                                            className="btn btn-ghost btn-xs btn-circle shrink-0 h-6 w-6 min-h-0 text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-base-content/60 dark:hover:bg-base-100"
+                                            aria-label={`Download ${notification.singleDocument.fileName}`}
+                                            title="Download"
+                                            onClick={(e) => void handleClientUploadDownload(e, notification)}
+                                          >
+                                            <ArrowDownTrayIcon className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    <div className="flex flex-col items-end shrink-0">
+                                      <p className="text-xs text-gray-500">
+                                        {formatMessageTime(notification.latestAt)}
+                                      </p>
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                            <div className={`px-4 pb-3 border-t flex items-center justify-between text-xs md:text-[11px] text-gray-500 ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}>
-                              <span>{formatMessageTime(message.sent_at)}</span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  dismissRmqMessage(message.id);
-                                }}
-                                className={`text-xs font-medium ${isAltTheme ? 'text-green-700 hover:text-green-900' : 'text-purple-700 hover:text-purple-900'}`}
-                              >
-                                Dismiss
-                              </button>
+                          </div>
+                        );
+                      })}
+                      </div>
+                      ) : (
+                        <div className="p-6 text-center text-gray-500">
+                          <p className="text-sm">No client uploads</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {/* WhatsApp Leads Messages Section - Only for superusers */}
+                  {showWhatsappNotifications && (
+                    <div>
+                      <div className="px-3 py-2.5 bg-green-50">
+                        <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
+                      </div>
+                      {whatsappLeadsMessages.length > 0 ? (
+                      <div className="divide-y divide-dotted divide-gray-200">
+                      {whatsappLeadsMessages.map((message) => {
+                        const whatsappName =
+                          message.sender_name && message.sender_name !== message.phone_number && !String(message.sender_name).match(/^\d+$/)
+                            ? message.sender_name
+                            : message.phone_number;
+                        const whatsappAction = getNotificationMediaAction(
+                          message.latest_message_type,
+                          message.latest_message,
+                          { voiceNote: Boolean(message.latest_voice_note) },
+                        );
+                        const notificationKey = `whatsapp:${message.id}`;
+                        const isSelected = selectedNotificationKeys.has(notificationKey);
+                        return (
+                        <div key={message.id}>
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={notificationSelectMode ? isSelected : undefined}
+                            onClick={() => runOrSelectNotification(notificationKey, () => handleWhatsappLeadsClick(message.phone_number))}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                runOrSelectNotification(notificationKey, () => handleWhatsappLeadsClick(message.phone_number));
+                              }
+                            }}
+                            className={`w-full p-4 text-left hover:bg-green-50 transition-colors duration-200 cursor-pointer ${isSelected ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                          >
+                            <div className="flex gap-3">
+                              {renderNotificationSelectControl(notificationKey)}
+                              <div className="flex-shrink-0 pt-0.5">
+                                <FaWhatsapp className={`${NOTIFICATION_ROW_ICON_CLASS} text-green-600`} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    {renderNotificationStackedAction(whatsappName, whatsappAction.verb, whatsappAction.body)}
+                                  </div>
+                                  <div className="flex flex-col items-end shrink-0">
+                                    <p className="text-xs text-gray-500">
+                                      {new Date(message.latest_message_time).toLocaleTimeString([], {
+                                        hour: '2-digit',
+                                        minute: '2-digit'
+                                      })}
+                                    </p>
+                                    {message.message_count > 0 && (
+                                      <span className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-green-600 text-[10px] font-semibold leading-none text-white">
+                                        {message.message_count}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        ))
+                        </div>
+                        );
+                      })}
+                      </div>
+                      ) : (
+                        <div className="p-6 text-center text-gray-500">
+                          <p className="text-sm">No WhatsApp messages</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {/* Email Leads Messages Section - Only for superusers */}
+                  {showEmailNotifications && (
+                    <div>
+                      <div className={`px-3 py-2.5 ${isAltTheme ? 'bg-green-50' : 'bg-blue-50'}`}>
+                        <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-blue-800'}`}>Email Leads</span>
+                      </div>
+                      {emailLeadMessages.length > 0 ? (
+                      <div className="divide-y divide-dotted divide-gray-200">
+                      {emailLeadMessages.map((message) => {
+                        const notificationKey = `email:${message.id}`;
+                        const isSelected = selectedNotificationKeys.has(notificationKey);
+                        return (
+                        <div key={message.id}>
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={notificationSelectMode ? isSelected : undefined}
+                            onClick={() => runOrSelectNotification(notificationKey, handleEmailLeadClick)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                runOrSelectNotification(notificationKey, handleEmailLeadClick);
+                              }
+                            }}
+                            className={`w-full p-4 text-left transition-colors duration-200 cursor-pointer ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-blue-50'} ${isSelected ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                          >
+                            <div className="flex gap-3">
+                              {renderNotificationSelectControl(notificationKey)}
+                              <div className="flex-shrink-0 pt-0.5">
+                                <EnvelopeIcon className={`${NOTIFICATION_ROW_ICON_CLASS} ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    {renderNotificationStackedAction(
+                                      message.sender_name || message.sender_email || 'Unknown Sender',
+                                      ' wrote',
+                                      (message.latest_subject && message.latest_subject !== 'No Subject'
+                                        ? message.latest_subject
+                                        : (message.latest_preview || '').replace(/<[^>]+>/g, '').trim()) || null,
+                                    )}
+                                  </div>
+                                  <div className="flex flex-col items-end shrink-0">
+                                    <p className="text-xs text-gray-500">
+                                      {new Date(message.latest_sent_at).toLocaleTimeString([], {
+                                        hour: '2-digit',
+                                        minute: '2-digit'
+                                      })}
+                                    </p>
+                                    {message.message_count > 0 && (
+                                      <span className={`mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold leading-none text-white ${isAltTheme ? 'bg-green-600' : 'bg-blue-600'}`}>
+                                        {message.message_count}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        );
+                      })}
+                      </div>
+                      ) : (
+                        <div className="p-6 text-center text-gray-500">
+                          <p className="text-sm">No email messages</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* RMQ Messages Section */}
+                  {showRmqNotifications && (
+                    <div>
+                      <div className={`px-3 py-2.5 ${isAltTheme ? 'bg-green-50' : 'bg-purple-50'}`}>
+                        <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-purple-800'}`}>RMQ Messages</span>
+                      </div>
+                      {rmqConversationNotifications.length > 0 ? (
+                        <div className="divide-y divide-dotted divide-gray-200">
+                        {rmqConversationNotifications.map(({ latest: message, count }) => {
+                          const senderEmployee = Array.isArray(message.sender?.tenants_employee)
+                            ? message.sender.tenants_employee[0]
+                            : message.sender?.tenants_employee;
+                          const rmqSenderName =
+                            senderEmployee?.display_name ||
+                            message.sender.full_name ||
+                            'Someone';
+                          const rmqAction = getNotificationMediaAction(message.message_type, message.content);
+                          const photoUrl = senderEmployee?.photo_url?.trim() || '';
+                          const employeeIdRaw = message.sender.employee_id ?? senderEmployee?.id;
+                          const employeeId = employeeIdRaw != null ? Number(employeeIdRaw) : NaN;
+                          const hasEmployee = Number.isFinite(employeeId);
+                          const isClockedIn = hasEmployee && clockedInEmployeeIds.has(employeeId);
+                          const nameParts = rmqSenderName.trim().split(/\s+/).filter(Boolean);
+                          const initials =
+                            nameParts.length >= 2
+                              ? `${nameParts[0][0]}${nameParts[nameParts.length - 1][0]}`.toUpperCase()
+                              : rmqSenderName.slice(0, 2).toUpperCase();
+                          const notificationKey = `rmq:${message.conversation_id}`;
+                          const isSelected = selectedNotificationKeys.has(notificationKey);
+                          return (
+                          <div
+                            key={message.conversation_id}
+                            className="cursor-pointer"
+                          >
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={notificationSelectMode ? isSelected : undefined}
+                              onClick={() => runOrSelectNotification(notificationKey, () => handleRmqMessageClick(message))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  runOrSelectNotification(notificationKey, () => handleRmqMessageClick(message));
+                                }
+                              }}
+                              className={`w-full p-4 text-left transition-colors duration-200 ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-purple-50'} ${isSelected ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                            >
+                              <div className="flex gap-3">
+                                {renderNotificationSelectControl(notificationKey)}
+                                <div className="relative flex-shrink-0">
+                                  {photoUrl ? (
+                                    <img
+                                      src={photoUrl}
+                                      alt=""
+                                      className="h-11 w-11 rounded-full object-cover bg-gray-100"
+                                    />
+                                  ) : (
+                                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold text-gray-700">
+                                      {initials || 'U'}
+                                    </div>
+                                  )}
+                                  {hasEmployee && (
+                                    <span
+                                      className={`absolute -bottom-px -right-px h-3.5 w-3.5 rounded-full border-2 border-white dark:border-base-100 ${isClockedIn ? 'bg-emerald-500' : 'bg-red-500'}`}
+                                      title={isClockedIn ? 'Clocked in' : 'Clocked out'}
+                                    />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
+                                      {message.conversation.type === 'direct' ? (
+                                        renderNotificationTitleAction(rmqSenderName, rmqAction.verb, rmqAction.body)
+                                      ) : (
+                                        <>
+                                          <p className="text-sm font-semibold text-gray-900 truncate">
+                                            {getConversationTitle(message)}
+                                          </p>
+                                          {renderNotificationTitleAction(rmqSenderName, rmqAction.verb, rmqAction.body)}
+                                        </>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-col items-end shrink-0">
+                                      <p className="text-xs text-gray-500">
+                                        {formatMessageTime(message.sent_at)}
+                                      </p>
+                                      {count > 0 && (
+                                        <span className={`mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold leading-none text-white ${isAltTheme ? 'bg-green-600' : 'bg-purple-600'}`}>
+                                          {count}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          );
+                        })}
+                        </div>
                       ) : (
                         <div className="p-4 text-center text-gray-500">
                           <ChatBubbleLeftRightIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
@@ -5307,58 +5986,63 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   )}
 
                   {/* Lead Assignment Notifications */}
-                  {assignmentNotifications.length > 0 && (
-                    <div className="border-b border-gray-200">
-                      <div className={`p-3 border-b ${isAltTheme ? 'bg-green-50 border-green-100' : 'bg-purple-50 border-purple-100'}`}>
-                        <div className="flex items-center gap-2">
-                          <UserGroupIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
-                          <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-purple-800'}`}>Lead Assignments</span>
-                        </div>
+                  {showAssignmentNotifications && (
+                    <div>
+                      <div className="px-3 py-2.5 bg-orange-50">
+                        <span className="text-sm font-semibold text-orange-800">Lead Assignments</span>
                       </div>
-                      {assignmentNotifications.map(notification => (
+                      {assignmentNotifications.length > 0 ? (
+                      <div className="divide-y divide-dotted divide-gray-200">
+                      {assignmentNotifications.map(notification => {
+                        const notificationKey = `assign:${notification.key}`;
+                        const isSelected = selectedNotificationKeys.has(notificationKey);
+                        return (
                         <div
                           key={notification.key}
-                          className={`border-b cursor-pointer ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}
+                          className="cursor-pointer"
                         >
                           <div
                             role="button"
                             tabIndex={0}
-                            onClick={() => handleAssignmentOpen(notification)}
+                            aria-pressed={notificationSelectMode ? isSelected : undefined}
+                            onClick={() => runOrSelectNotification(notificationKey, () => handleAssignmentOpen(notification))}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                handleAssignmentOpen(notification);
+                                runOrSelectNotification(notificationKey, () => handleAssignmentOpen(notification));
                               }
                             }}
-                            className={`w-full text-left p-4 transition-colors duration-200 ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-purple-50'}`}
+                            className={`w-full text-left p-4 transition-colors duration-200 hover:bg-orange-50 ${isSelected ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                           >
                             <div className="flex items-start gap-3">
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isAltTheme ? 'bg-green-100' : 'bg-purple-100'}`}>
-                                <UserIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-700' : 'text-purple-700'}`} />
+                              {renderNotificationSelectControl(notificationKey)}
+                              <div className="flex-shrink-0 pt-0.5">
+                                <UserGroupIcon className={`${NOTIFICATION_ROW_ICON_CLASS} text-orange-600`} />
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="text-sm text-gray-800 leading-relaxed">
-                                  <span className="font-semibold">{userFullName || 'You'}</span>, you have been assigned as{' '}
-                                  <span className="font-semibold">{notification.roleLabel}</span> to lead{' '}
-                                  <span className="font-semibold">{notification.leadNumber}</span>.
+                                <p className="text-sm leading-relaxed pr-1">
+                                  <span className="text-gray-900">You</span>
+                                  <span className="text-gray-500"> have been assigned as </span>
+                                  <span className="font-semibold text-gray-900">{notification.roleLabel}</span>
+                                  <span className="text-gray-500"> in lead </span>
+                                  <span className="font-semibold text-gray-900">
+                                    {notification.leadNumber}
+                                    {notification.leadName ? ` ${notification.leadName}` : ''}
+                                  </span>
+                                  <span className="text-gray-900">.</span>
                                 </p>
-                                <p className={`text-xs mt-2 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`}>Tap to open lead</p>
                               </div>
                             </div>
                           </div>
-                          <div className={`px-4 pb-3 border-t flex justify-end ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                dismissAssignmentNotification(notification);
-                              }}
-                              className="text-xs font-medium text-purple-700 hover:text-purple-900"
-                            >
-                              Dismiss
-                            </button>
-                          </div>
                         </div>
-                      ))}
+                        );
+                      })}
+                      </div>
+                      ) : (
+                        <div className="p-6 text-center text-gray-500">
+                          <p className="text-sm">No lead assignments</p>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -5366,6 +6050,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {rmqMessages.length === 0 &&
                     (isSuperUser ? (whatsappLeadsMessages.length === 0 && emailLeadMessages.length === 0) : true) &&
                     assignmentNotifications.length === 0 &&
+                    clientUploadNotifications.length === 0 &&
+                    leadShareNotifications.length === 0 &&
                     !currentUser && (
                       <div className="p-8 text-center text-gray-500">
                         <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
@@ -5522,15 +6208,42 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         .dark .notification-dropdown .text-gray-500 {
           color: #9ca3af !important;
         }
-        /* Ensure borders are visible in dark mode */
-        .dark .notification-dropdown .border-gray-200 {
-          border-color: #374151 !important;
+        /* Breakdots: larger dots, inset from the box edges */
+        .notification-dropdown .border-gray-100 {
+          border-color: rgba(0, 0, 0, 0.04) !important;
         }
-        .dark .notification-dropdown .border-gray-100,
-        .dark .notification-dropdown .border-green-100,
-        .dark .notification-dropdown .border-blue-100,
-        .dark .notification-dropdown .border-purple-100 {
-          border-color: #374151 !important;
+        .notification-dropdown .notification-breakdots {
+          position: relative;
+        }
+        .notification-dropdown .notification-breakdots::after,
+        .notification-dropdown .divide-y > :not([hidden]) ~ :not([hidden])::before {
+          content: '';
+          position: absolute;
+          left: 1rem;
+          right: 1rem;
+          height: 1px;
+          pointer-events: none;
+          background: rgba(0, 0, 0, 0.04);
+        }
+        .notification-dropdown .notification-breakdots::after {
+          bottom: 0;
+          transform: translateY(50%);
+        }
+        .notification-dropdown .divide-y > :not([hidden]) ~ :not([hidden]) {
+          border-top: none !important;
+          position: relative;
+        }
+        .notification-dropdown .divide-y > :not([hidden]) ~ :not([hidden])::before {
+          top: 0;
+          transform: translateY(-50%);
+        }
+        .dark .notification-dropdown .border-gray-200,
+        .dark .notification-dropdown .border-gray-100 {
+          border-color: rgba(255, 255, 255, 0.05) !important;
+        }
+        .dark .notification-dropdown .notification-breakdots::after,
+        .dark .notification-dropdown .divide-y > :not([hidden]) ~ :not([hidden])::before {
+          background: rgba(255, 255, 255, 0.06);
         }
         /* Update colored section backgrounds for dark mode */
         .dark .notification-dropdown .bg-green-50 {
@@ -5542,20 +6255,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         .dark .notification-dropdown .bg-purple-50 {
           background-color: #2a1f3a !important;
         }
+        .dark .notification-dropdown .bg-orange-50 {
+          background-color: #3a2a1f !important;
+        }
+        .dark .notification-dropdown .bg-yellow-50 {
+          background-color: #3a351f !important;
+        }
         /* Remove hover effects in dark mode - use very high specificity */
         .dark .notification-dropdown div.hover\:bg-green-50:hover,
         .dark .notification-dropdown div.hover\:bg-blue-50:hover,
-        .dark .notification-dropdown div.hover\:bg-green-50:hover,
         .dark .notification-dropdown div.hover\:bg-purple-50:hover,
+        .dark .notification-dropdown div.hover\:bg-orange-50:hover,
+        .dark .notification-dropdown div.hover\:bg-yellow-50:hover,
         .dark .notification-dropdown button.hover\:bg-green-50:hover,
         .dark .notification-dropdown button.hover\:bg-blue-50:hover,
-        .dark .notification-dropdown button.hover\:bg-purple-50:hover {
+        .dark .notification-dropdown button.hover\:bg-purple-50:hover,
+        .dark .notification-dropdown button.hover\:bg-orange-50:hover,
+        .dark .notification-dropdown button.hover\:bg-yellow-50:hover {
           background-color: transparent !important;
         }
         /* Override any element with hover background classes */
         .dark .notification-dropdown [class*="hover:bg-green-50"]:hover,
         .dark .notification-dropdown [class*="hover:bg-blue-50"]:hover,
-        .dark .notification-dropdown [class*="hover:bg-purple-50"]:hover {
+        .dark .notification-dropdown [class*="hover:bg-purple-50"]:hover,
+        .dark .notification-dropdown [class*="hover:bg-orange-50"]:hover,
+        .dark .notification-dropdown [class*="hover:bg-yellow-50"]:hover {
           background-color: transparent !important;
         }
         .search-input-placeholder::placeholder {

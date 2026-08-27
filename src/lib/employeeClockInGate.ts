@@ -10,6 +10,8 @@ export type ClockInGateStatus =
 export type ClockInGateProfile = {
   isExternalUser: boolean;
   employeeId: number | null;
+  /** From tenants_employee.require_clock_in. Default false = optional clock-in. */
+  requireClockIn: boolean;
 };
 
 export type FetchClockInGateProfileResult = {
@@ -36,11 +38,31 @@ function toEmployeeId(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function emptyProfile(): ClockInGateProfile {
+  return { isExternalUser: false, employeeId: null, requireClockIn: false };
+}
+
 function profileFromRow(row: { employee_id?: unknown; extern?: unknown } | null): ClockInGateProfile {
   return {
     isExternalUser: parseExternFlag(row?.extern),
     employeeId: toEmployeeId(row?.employee_id),
+    requireClockIn: false,
   };
+}
+
+export async function fetchRequireClockInFlag(employeeId: number): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('tenants_employee')
+    .select('require_clock_in')
+    .eq('id', employeeId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn('Clock-in gate: failed to load require_clock_in; treating as off', error);
+    return false;
+  }
+
+  return data?.require_clock_in === true;
 }
 
 async function queryClockInGateProfileRow(
@@ -103,7 +125,7 @@ export async function fetchClockInGateProfile(
   if (error) {
     console.error('Clock-in gate: failed to load user profile', error);
     return {
-      profile: { isExternalUser: false, employeeId: null },
+      profile: emptyProfile(),
       userRowFound: false,
       queryFailed: true,
     };
@@ -117,7 +139,7 @@ export async function fetchClockInGateProfile(
     if (retry.error) {
       console.error('Clock-in gate: failed to load user profile (retry)', retry.error);
       return {
-        profile: { isExternalUser: false, employeeId: null },
+        profile: emptyProfile(),
         userRowFound: false,
         queryFailed: true,
       };
@@ -127,14 +149,19 @@ export async function fetchClockInGateProfile(
 
   if (!row) {
     return {
-      profile: { isExternalUser: false, employeeId: null },
+      profile: emptyProfile(),
       userRowFound: false,
       queryFailed: false,
     };
   }
 
+  const profile = profileFromRow(row);
+  if (profile.employeeId != null) {
+    profile.requireClockIn = await fetchRequireClockInFlag(profile.employeeId);
+  }
+
   return {
-    profile: profileFromRow(row),
+    profile,
     userRowFound: true,
     queryFailed: false,
   };
@@ -164,9 +191,11 @@ export function resolveClockInGateStatus(
 ): ClockInGateStatus {
   if (profile.isExternalUser) return 'exempt';
   if (profile.employeeId == null) return 'no_employee';
-  return isClockedIn ? 'allowed' : 'blocked';
+  if (isClockedIn) return 'allowed';
+  if (!profile.requireClockIn) return 'exempt';
+  return 'blocked';
 }
 
 export function isClockInGateOpen(status: ClockInGateStatus): boolean {
-  return status === 'exempt' || status === 'allowed';
+  return status === 'exempt' || status === 'allowed' || status === 'no_employee';
 }

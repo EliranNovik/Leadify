@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { isRefreshTokenReuseRaceError, supabase } from '../lib/supabase';
 /**
  * Office entry-kiosk QR handler (`/clock-in/entry?token=…`).
- * Independent of the forced CRM clock-in gate (which is currently optional/disabled).
+ * Independent of the CRM clock-in gate (`tenants_employee.require_clock_in`).
  * Scanning still clocks the employee in or out via the backend kiosk APIs.
  */
 import {
