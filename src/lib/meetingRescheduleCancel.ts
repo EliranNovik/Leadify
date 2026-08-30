@@ -19,6 +19,41 @@ export function localTodayYmd(): string {
 export const ACTIVE_MEETING_STATUS_FILTER =
   'status.is.null,and(status.neq.canceled,status.neq.cancelled)';
 
+type DatedMeeting = {
+  id?: unknown;
+  meeting_date?: string | null;
+  meeting_time?: string | null;
+};
+
+/** Upcoming first (date asc), then past (most recent first). */
+export function sortMeetingsForRescheduleCancel<T extends DatedMeeting>(
+  meetings: T[],
+  today = localTodayYmd(),
+): T[] {
+  return [...meetings].sort((a, b) => {
+    const aDate = String(a.meeting_date || '');
+    const bDate = String(b.meeting_date || '');
+    const aPast = Boolean(aDate) && aDate < today;
+    const bPast = Boolean(bDate) && bDate < today;
+    if (aPast !== bPast) return aPast ? 1 : -1;
+    const dateCmp = aDate.localeCompare(bDate);
+    if (dateCmp !== 0) return aPast ? -dateCmp : dateCmp;
+    return String(a.meeting_time || '').localeCompare(String(b.meeting_time || ''));
+  });
+}
+
+/** Select all upcoming meetings, or the most recent past meeting when none are upcoming. */
+export function defaultMeetingIdsToCancel<T extends DatedMeeting>(
+  meetings: T[],
+  today = localTodayYmd(),
+): number[] {
+  const upcoming = meetings.filter((m) => String(m.meeting_date || '') >= today);
+  const source = upcoming.length > 0 ? upcoming : meetings.slice(0, 1);
+  return source
+    .map((m) => Number(m.id))
+    .filter((id) => Number.isFinite(id));
+}
+
 export function parseLegacyLeadId(clientId: string | number): number | string {
   const raw = String(clientId).replace(/^legacy_/i, '');
   return /^\d+$/.test(raw) ? parseInt(raw, 10) : raw;

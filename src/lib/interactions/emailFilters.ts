@@ -562,8 +562,7 @@ export async function fetchEmailBodiesByIds(
             Boolean(id) &&
             !id.startsWith('temp_') &&
             !id.startsWith('optimistic_') &&
-            !id.startsWith('local-') &&
-            !id.startsWith('offer_'),
+            !id.startsWith('local-'),
         ),
     ),
   ).slice(0, Math.max(1, limit));

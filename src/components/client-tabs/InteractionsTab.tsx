@@ -25,6 +25,7 @@ import {
   MagnifyingGlassIcon,
   PlusIcon,
   DocumentTextIcon,
+  DocumentCheckIcon,
   LinkIcon,
   UserPlusIcon,
   CheckIcon,
@@ -93,6 +94,11 @@ import {
   emailBodyLooksStableForReading,
 } from './interactionsEmailViewUtils';
 import { InteractionsEmailModal, resolveOutgoingSenderLabel, TeamAvatar } from './InteractionsEmailModal';
+import {
+  TimelineAttachmentPreviews,
+  type TimelinePreviewItem,
+  type TimelinePreviewKind,
+} from './TimelineAttachmentPreviews';
 import { lookupEmployeePhotoFromMap, resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
 import { COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from '../signature/ComposeSignaturePreview';
 import { EmailMessageActionsDropdown } from './EmailMessageActionsDropdown';
@@ -113,6 +119,7 @@ import {
   displayConversationSubject,
   emailInteractionVisibleOnTimeline,
   EMAIL_LIST_SELECT,
+  EMAIL_MODAL_SELECT,
   dedupeTimelineEmailLikeRows,
 } from '../../lib/interactions/emailFilters';
 import { interactionTimestampMs } from '../../lib/interactions/timelineTimestamp';
@@ -128,6 +135,12 @@ import {
 import { INTERACTIONS_TIMELINE_INVALIDATE_EVENT } from '../../lib/interactionsTimelineInvalidation';
 import { processWhatsAppTemplateMessage } from '../../lib/interactions/whatsappTimeline';
 import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
+import {
+  bodyHasContractLink,
+  buildClickableContractLinkAnchor,
+  fetchLeadContractPublicLink,
+  labelForContractLink,
+} from '../../lib/leadContractLink';
 import {
   interactionRowToConversationFlag,
   conversationFlagKey,
@@ -385,6 +398,138 @@ function emailAttachmentViewerId(emailId: string, attachment: any, idx: number):
   return attId ? `${emailId}:${attId}` : `${emailId}:${name}:${idx}`;
 }
 
+function toAbsoluteAppUrl(path: string): string {
+  if (/^(https?:|blob:|data:)/i.test(path)) return path;
+  if (typeof window !== 'undefined') {
+    return `${window.location.origin}${path.startsWith('/') ? path : `/${path}`}`;
+  }
+  return path;
+}
+
+function resolveWhatsAppTimelineMediaUrl(mediaRef?: string | null): string | null {
+  if (!mediaRef) return null;
+  if (mediaRef.startsWith('http') || mediaRef.startsWith('data:') || mediaRef.startsWith('blob:')) {
+    return mediaRef;
+  }
+  if (mediaRef.startsWith('/api/')) return toAbsoluteAppUrl(mediaRef);
+  return toAbsoluteAppUrl(buildApiUrl(`/api/whatsapp/media/${mediaRef}`));
+}
+
+function whatsappTimelineMediaKind(
+  messageType?: string | null,
+  filename?: string | null,
+  mediaRef?: string | null,
+  mimeType?: string | null,
+): TimelinePreviewKind {
+  const t = String(messageType || '').toLowerCase();
+  const mime = String(mimeType || '').toLowerCase();
+  const name = String(filename || mediaRef || '');
+  if (t === 'image' || t === 'sticker' || mime.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(name)) {
+    return 'image';
+  }
+  if (t === 'video' || mime.startsWith('video/') || /\.(mp4|mov|webm|3gp)$/i.test(name)) return 'video';
+  if (
+    t === 'audio' ||
+    t === 'voice' ||
+    t === 'ptt' ||
+    mime.startsWith('audio/') ||
+    /\.(mp3|ogg|wav|m4a|opus|aac)$/i.test(name)
+  ) {
+    return 'audio';
+  }
+  if (/\.pdf$/i.test(name) || t.includes('pdf') || mime.includes('pdf')) return 'pdf';
+  if (t === 'document' || t === 'file') return 'file';
+  return 'file';
+}
+
+function emailAttachmentTimelineKind(attachment: any): TimelinePreviewKind {
+  const doc = classifyEmailAttachmentDocType(
+    attachment?.name || attachment?.filename,
+    attachment?.contentType || attachment?.content_type || attachment?.mimeType,
+  );
+  if (doc === 'Image') return 'image';
+  if (doc === 'PDF') return 'pdf';
+  return 'file';
+}
+
+function findEmailForTimelineRow(row: Interaction, emails: any[]): any | null {
+  return (
+    emails.find(
+      (e) =>
+        String(e.id) === String(row.id) ||
+        (e.message_id != null && String(e.message_id) === String(row.message_id || row.id)),
+    ) || null
+  );
+}
+
+function buildEmailTimelinePreviewItems(
+  row: Interaction,
+  emails: any[],
+  onOpen: (emailId: string, attachment: any, siblings: any[]) => void,
+): TimelinePreviewItem[] {
+  const match = findEmailForTimelineRow(row, emails);
+  const files = fileAttachmentsForUi(
+    parseEmailAttachmentsFromDb(row.attachments ?? match?.attachments),
+  );
+  return files.map((att, idx) => {
+    const kind = emailAttachmentTimelineKind(att);
+    const previewUrl = kind === 'image' ? emailAttachmentDataUrl(att) : null;
+    const size = formatAttachmentBytes(att.size || att.contentSize);
+    return {
+      key: emailAttachmentViewerId(String(row.id), att, idx),
+      name: String(att.name || att.filename || `Attachment ${idx + 1}`),
+      previewUrl,
+      kind: previewUrl ? kind : kind === 'pdf' ? 'pdf' : 'file',
+      meta: size || undefined,
+      onClick: () => onOpen(String(row.id), att, files),
+    };
+  });
+}
+
+function buildWhatsAppTimelinePreviewItems(
+  row: Interaction,
+  onOpen: (row: Interaction) => void,
+): TimelinePreviewItem[] {
+  const mediaRef = row.media_url || row.media_id || null;
+  const type = String(row.message_type || '').toLowerCase();
+  const isMediaType = [
+    'image',
+    'video',
+    'audio',
+    'document',
+    'sticker',
+    'voice',
+    'ptt',
+    'file',
+  ].includes(type);
+  if (!mediaRef && !isMediaType) return [];
+  const kind = whatsappTimelineMediaKind(
+    row.message_type,
+    row.media_filename,
+    mediaRef,
+    row.media_mime_type,
+  );
+  const name =
+    row.media_filename ||
+    row.caption ||
+    (kind === 'image'
+      ? 'Image'
+      : kind === 'video'
+        ? 'Video'
+        : kind === 'audio'
+          ? 'Audio'
+          : 'Attachment');
+  return [
+    {
+      key: `wa-${row.id}`,
+      name,
+      previewUrl: resolveWhatsAppTimelineMediaUrl(mediaRef),
+      kind,
+      onClick: () => onOpen(row),
+    },
+  ];
+}
+
 interface CallLog {
   id: number;
   cdate: string;
@@ -435,6 +580,13 @@ interface Interaction {
   recipient_list?: string | null; // Recipient list for email interactions
   phone_number?: string | null; // Phone number for WhatsApp interactions
   recipient_name?: string | null; // Recipient name for "To:" display in timeline
+  attachments?: any[];
+  media_url?: string | null;
+  media_id?: string | null;
+  message_type?: string | null;
+  media_filename?: string | null;
+  media_mime_type?: string | null;
+  caption?: string | null;
 }
 
 interface EmailTemplate {
@@ -1715,6 +1867,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [showComposeLinkForm, setShowComposeLinkForm] = useState(false);
   const [composeLinkLabel, setComposeLinkLabel] = useState('');
   const [composeLinkUrl, setComposeLinkUrl] = useState('');
+  const [insertingComposeContractLink, setInsertingComposeContractLink] = useState(false);
   
   // Lead contacts modal state
   const [showComposeContactsModal, setShowComposeContactsModal] = useState(false);
@@ -2207,6 +2360,41 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     });
 
     handleCancelComposeLink();
+  };
+
+  const handleInsertComposeAgreementLink = async () => {
+    if (!client || insertingComposeContractLink) return;
+    if (bodyHasContractLink(composeBody)) {
+      toast('Agreement link is already in the email.');
+      return;
+    }
+    setInsertingComposeContractLink(true);
+    try {
+      const link = await fetchLeadContractPublicLink(
+        String(client.id),
+        client.lead_type === 'legacy' || String(client.id).startsWith('legacy_'),
+      );
+      if (!link) {
+        toast.error('No agreement or contract link is available for this client.');
+        return;
+      }
+      const linkLine = buildClickableContractLinkAnchor(
+        link.url,
+        link.signed,
+        client.lead_number ? String(client.lead_number) : '',
+      );
+      setComposeBody(prev => {
+        const existing = prev || '';
+        const trimmedExisting = existing.replace(/\s*$/, '');
+        return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
+      });
+      toast.success(`${labelForContractLink(link.signed)} added`);
+    } catch (error) {
+      console.error('Failed to insert agreement link:', error);
+      toast.error('Failed to add the agreement link.');
+    } finally {
+      setInsertingComposeContractLink(false);
+    }
   };
 
   // Handle opening compose contacts modal
@@ -3190,10 +3378,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 String(e.message_id) === String((row as any).message_id || row.id)),
           ) || null;
         if (!match) return row;
+        const incomingAtts = parseEmailAttachmentsFromDb(match.attachments);
+        const currentAtts = parseEmailAttachmentsFromDb(row.attachments);
+        const shouldCopyAtts =
+          fileAttachmentsForUi(incomingAtts).length > fileAttachmentsForUi(currentAtts).length;
         const incoming = ensureFormattedEmailHtml(
           match.body_html || match.bodyPreview || match.body_preview || '',
         );
-        if (!incoming) return row;
+        if (!incoming) {
+          if (!shouldCopyAtts) return row;
+          changed = true;
+          return { ...row, attachments: incomingAtts };
+        }
         const currentLen = emailBodyPlainTextLength(row.content);
         const incomingLen = emailBodyPlainTextLength(incoming);
         const currentBreaks = countEmailBreakSignals(row.content);
@@ -3204,18 +3400,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           currentBreaks >= 2 &&
           (incomingBreaks < currentBreaks || incomingDensity < currentDensity * 0.45)
         ) {
-          return row;
+          if (!shouldCopyAtts) return row;
+          changed = true;
+          return { ...row, attachments: incomingAtts };
         }
         const shouldUpgrade =
           incomingLen > currentLen + 40 ||
           (isTimelinePrewrapHtml(incoming) && !isTimelinePrewrapHtml(String(row.content || '')));
-        if (!shouldUpgrade) return row;
+        if (!shouldUpgrade && !shouldCopyAtts) return row;
         changed = true;
         return {
           ...row,
-          content: incoming,
-          body_html: match.body_html || incoming,
-          body_preview: match.body_preview || match.bodyPreview || incoming,
+          ...(shouldUpgrade
+            ? {
+                content: incoming,
+                body_html: match.body_html || incoming,
+                body_preview: match.body_preview || match.bodyPreview || incoming,
+              }
+            : {}),
+          ...(shouldCopyAtts ? { attachments: incomingAtts } : {}),
         };
       });
 
@@ -3952,7 +4155,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   let query = supabase
                     .from('whatsapp_messages')
                     .select(
-                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id'
+                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id, media_url, media_id, message_type, media_filename, media_mime_type, caption'
                     )
                     .limit(FETCH_BATCH_SIZE);
                   if (isLegacyLead) {
@@ -4031,6 +4234,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               contact_id: msg.contact_id || null,
               phone_number: msg.phone_number || null,
               template_id: msg.template_id || null,
+              media_url: msg.media_url || null,
+              media_id: msg.media_id || null,
+              message_type: msg.message_type || null,
+              media_filename: msg.media_filename || null,
+              media_mime_type: msg.media_mime_type || null,
+              caption: msg.caption || null,
             };
           }).filter((msg: any) => msg !== null),
 
@@ -4659,6 +4868,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             sender_email: senderEmail || null,
             recipient_list: e.recipient_list || null,
             employee_recipient_name: employeeRecipientName, // Store employee recipient for incoming emails
+            attachments: parseEmailAttachmentsFromDb(e.attachments),
           };
           })
           .filter((interaction: any) => interaction !== null);
@@ -4666,6 +4876,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         if (emailsNeedingHydration.length > 0 && userId) {
           const emailsToHydrate = emailsNeedingHydration.slice(0, 10).map((e: any) => ({
             id: stableEmailRowId(e),
+            message_id: e.message_id || null,
             subject: e.subject || '',
             bodyPreview: e.body_preview || '',
             body_html: e.body_html || null,
@@ -5558,7 +5769,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     if (!messages || messages.length === 0) return;
 
     const requiresHydration = messages.filter((message) => {
-      if (message.id && (message.id.startsWith('offer_') || message.id.startsWith('optimistic_'))) {
+      if (message.id && message.id.startsWith('optimistic_')) {
         return false;
       }
 
@@ -5567,18 +5778,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const hasBodyHtml = Boolean(message.body_html && message.body_html.trim());
       if (hasBodyHtml && displayLen > 0) return false;
 
-      if (displayLen === 0) return true;
-
-      const plain = String(display)
-        .replace(/<[^>]*>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      const truncated =
-        plain.endsWith('...') ||
-        plain.endsWith('…') ||
-        plain === String(message.subject || '').trim() ||
-        displayLen < 40;
-      return !hasBodyHtml && truncated;
+      return !hasBodyHtml;
     });
 
     if (requiresHydration.length === 0) return;
@@ -5685,23 +5885,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             const incomingLen = emailBodyPlainTextLength(incoming);
             const currentDensity = currentBreaks / Math.max(currentLen, 1);
             const incomingDensity = incomingBreaks / Math.max(incomingLen, 1);
+            const hydratedAtts =
+              update.attachments && update.attachments.length > 0
+                ? parseEmailAttachmentsFromDb(update.attachments)
+                : null;
             if (
               currentBreaks >= 2 &&
               (incomingBreaks < currentBreaks || incomingDensity < currentDensity * 0.45)
             ) {
-              return row;
+              return hydratedAtts ? { ...row, attachments: hydratedAtts } : row;
             }
             if (
               emailBodyLooksStableForReading(row.content) &&
               incomingLen <= currentLen + 40
             ) {
-              return row;
+              return hydratedAtts ? { ...row, attachments: hydratedAtts } : row;
             }
             return {
               ...row,
               content: incoming,
               body_html: incoming,
               body_preview: update.preview,
+              ...(hydratedAtts ? { attachments: hydratedAtts } : {}),
             };
           }),
         );
@@ -5805,14 +6010,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
     if (seed.length > 0) {
       const normalized = dedupeEmailsForSidepanel(seed).map((e: any) => {
-        const raw = e.body_html || e.bodyPreview || e.body_preview || '';
-        if (!raw || isTimelinePrewrapHtml(raw)) return e;
-        const formatted = ensureFormattedEmailHtml(raw);
+        const rawHtml = typeof e.body_html === 'string' ? e.body_html.trim() : '';
+        if (!rawHtml || isTimelinePrewrapHtml(rawHtml)) return e;
+        const formatted = ensureFormattedEmailHtml(rawHtml);
         return {
           ...e,
           body_html: formatted,
-          bodyPreview: formatted,
-          body_preview: formatted,
         };
       });
       if (stillCurrent()) {
@@ -5851,7 +6054,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         clientId: clientNow.id,
         emailFilters,
         limit: EMAIL_MODAL_LIMIT,
-        select: EMAIL_LIST_SELECT,
+        select: EMAIL_MODAL_SELECT,
         matchByAddress: true,
         contactIds: [
           selectedContact?.contact?.id,
@@ -5929,10 +6132,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
 
       const emailsNeedingHydration = mergedForUi.filter((e: any) => {
-        const html = e.body_html || e.bodyPreview || e.body_preview || '';
-        if (!html || String(html).trim() === '') return true;
-        if (isTimelinePrewrapHtml(html) && emailBodyPlainTextLength(html) >= 100) return false;
-        return !e.body_html || e.body_html.trim() === '';
+        if (String(e.id || '').startsWith('optimistic_')) return false;
+        return !e.body_html || !String(e.body_html).trim();
       });
 
       const pendingJumpId = activeEmailIdRef.current;
@@ -6211,6 +6412,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           sender_email: userEmail || null,
           recipient_list: recipientList,
           contact_id: contactId || null,
+          attachments: composeAttachments,
         },
         ...prev,
       ]);
@@ -6448,6 +6650,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const previousUrls = attachmentViewerBlobUrlsRef.current;
       attachmentViewerBlobUrlsRef.current = [];
 
+      const immediateDocs: DocumentViewerItem[] = gallerySources.map((s, i) => ({
+        id: emailAttachmentViewerId(s.emailId, s.attachment, i),
+        name: String(s.attachment?.name || `Attachment ${i + 1}`),
+        url: emailAttachmentDataUrl(s.attachment) || '',
+        fileType: String(
+          s.attachment?.contentType ||
+            s.attachment?.content_type ||
+            s.attachment?.mimeType ||
+            '',
+        ),
+      }));
+      setAttachmentViewerDocs(immediateDocs);
+      setAttachmentViewerIndex(initialIndex);
+      setAttachmentViewerOpen(true);
+
       try {
         const clickedUrl = await resolveEmailAttachmentPreviewUrl(
           gallerySources[initialIndex].emailId,
@@ -6459,21 +6676,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
         for (const url of previousUrls) URL.revokeObjectURL(url);
 
-        const docs: DocumentViewerItem[] = gallerySources.map((s, i) => ({
-          id: emailAttachmentViewerId(s.emailId, s.attachment, i),
-          name: String(s.attachment?.name || `Attachment ${i + 1}`),
-          url: i === initialIndex ? clickedUrl : '',
-          fileType: String(
-            s.attachment?.contentType ||
-              s.attachment?.content_type ||
-              s.attachment?.mimeType ||
-              '',
-          ),
-        }));
-
-        setAttachmentViewerDocs(docs);
-        setAttachmentViewerIndex(initialIndex);
-        setAttachmentViewerOpen(true);
+        setAttachmentViewerDocs((prev) => {
+          if (initialIndex >= prev.length) return prev;
+          const next = [...prev];
+          next[initialIndex] = { ...next[initialIndex], url: clickedUrl };
+          return next;
+        });
 
         const remaining = gallerySources
           .map((s, i) => ({ s, i }))
@@ -6528,6 +6736,50 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     },
     [resolveEmailAttachmentPreviewUrl, showReconnectModal],
   );
+
+  const handleOpenWhatsAppTimelineMedia = useCallback((row: Interaction) => {
+    const mediaUrl = resolveWhatsAppTimelineMediaUrl(row.media_url || row.media_id);
+    if (!mediaUrl) {
+      toast.error('Attachment preview is not available.');
+      return;
+    }
+    const kind = whatsappTimelineMediaKind(
+      row.message_type,
+      row.media_filename,
+      row.media_url || row.media_id,
+      row.media_mime_type,
+    );
+    const mime =
+      kind === 'image'
+        ? 'image/jpeg'
+        : kind === 'video'
+          ? 'video/mp4'
+          : kind === 'pdf'
+            ? 'application/pdf'
+            : kind === 'audio'
+              ? 'audio/mpeg'
+              : '';
+    const name =
+      row.media_filename ||
+      row.caption ||
+      (kind === 'image'
+        ? 'Image'
+        : kind === 'video'
+          ? 'Video'
+          : kind === 'audio'
+            ? 'Audio'
+            : 'Attachment');
+    setAttachmentViewerDocs([
+      {
+        id: `wa-${row.id}`,
+        name,
+        url: mediaUrl,
+        fileType: mime,
+      },
+    ]);
+    setAttachmentViewerIndex(0);
+    setAttachmentViewerOpen(true);
+  }, []);
 
   const openComposeForEmailMessage = useCallback(
     (message: any, mode: 'reply' | 'forward') => {
@@ -8574,6 +8826,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             />
                           )}
 
+                          {(row.kind === 'email' || row.kind === 'whatsapp') && (
+                            <TimelineAttachmentPreviews
+                              items={
+                                row.kind === 'email'
+                                  ? buildEmailTimelinePreviewItems(row, emails, handleOpenEmailAttachment)
+                                  : buildWhatsAppTimelinePreviewItems(row, handleOpenWhatsAppTimelineMedia)
+                              }
+                            />
+                          )}
+
                           {row.kind === 'email' && !row.editable && (
                             <div onClick={(e) => e.stopPropagation()}>
                               <EmailMessageComments
@@ -9344,6 +9606,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             title={showComposeLinkForm ? 'Hide link form' : 'Add link'}
                           >
                             <LinkIcon className="w-6 h-6" />
+                          </button>
+
+                          {/* Add agreement / contract link */}
+                          <button
+                            type="button"
+                            className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
+                              bodyHasContractLink(composeBody) ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                            }`}
+                            style={COMPOSE_ACTION_BUTTON_STYLE}
+                            onClick={() => void handleInsertComposeAgreementLink()}
+                            disabled={sending || insertingComposeContractLink || !client}
+                            title="Contract"
+                          >
+                            {insertingComposeContractLink ? (
+                              <span className="loading loading-spinner loading-sm" />
+                            ) : (
+                              <DocumentCheckIcon className="w-6 h-6" />
+                            )}
                           </button>
                           
                           {/* Add Contacts from Lead Button */}
@@ -10340,6 +10620,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         </div>,
         document.body
       )} */}
+      <DocumentViewerModal
+        isOpen={attachmentViewerOpen && attachmentViewerDocs.length > 0}
+        onClose={closeAttachmentViewer}
+        documents={attachmentViewerDocs}
+        initialIndex={attachmentViewerIndex}
+      />
       <EmailSentSuccessModal
         open={showEmailSentModal}
         onClose={() => setShowEmailSentModal(false)}

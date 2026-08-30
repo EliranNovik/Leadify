@@ -1,9 +1,30 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon } from '@heroicons/react/24/solid';
+import { ArrowDownTrayIcon, CalendarDaysIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, PhotoIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { FaRobot } from 'react-icons/fa';
-import { useMsal } from '@azure/msal-react';
+import { executeRmqAiTool, RMQ_AI_SYSTEM_PROMPT, RMQ_AI_TOOLS } from '../lib/rmqAiChatTools';
+import { ChatLeadNumberText, parseChatLeadNumber } from './ChatLeadNumberText';
+import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
+import {
+  applyAiInputSuggestion,
+  extractConversationHints,
+  ghostSuffixFor,
+  loadAutocompleteEmployeeNames,
+  scoreRmqAiInputSuggestions,
+  type AiInputSuggestion,
+} from '../lib/rmqAiInputAutocomplete';
+import { isInternalAppPath } from '../lib/crmAppMap';
+import {
+  isRmqExcelHref,
+  rememberRmqAiFile,
+  resolveRmqExcelFile,
+  takeRmqAiToolFiles,
+  triggerBrowserDownload,
+  type RmqAiChatFile,
+} from '../lib/rmqAiExcel';
 
 interface AIChatWindowProps {
   isOpen: boolean;
@@ -19,6 +40,7 @@ interface Message {
   content: string;
   tool_calls?: any[];
   tool_call_id?: string;
+  attachments?: RmqAiChatFile[];
 }
 
 interface ChatHistory {
@@ -31,226 +53,35 @@ interface ChatHistory {
   tags: string[];
 }
 
-interface NewLeadResult {
-  id: string; // This will be a UUID string
-  lead_number: string;
-  name: string;
-  email: string;
-}
+const READY_ASKS = [
+  {
+    label: 'Signed today',
+    hint: 'Closed deals from today',
+    prompt: 'List signed contracts today with lead numbers, names, amounts, and closers.',
+    Icon: DocumentCheckIcon,
+    badge: 'bg-emerald-100 text-emerald-700',
+  },
+  {
+    label: 'Clocked in now',
+    hint: 'Who is at the office',
+    prompt: 'Who is clocked in right now, and where?',
+    Icon: ClockOutlineIcon,
+    badge: 'bg-violet-100 text-violet-700',
+  },
+  {
+    label: 'Meetings today',
+    hint: 'Your meetings as manager, helper, guest, or participant',
+    prompt:
+      'List my meetings today. Call list_meetings with scope=mine. Only include meetings where I am meeting manager, helper, guest, or a participant. Show time, lead number, and my role.',
+    Icon: CalendarDaysIcon,
+    badge: 'bg-sky-100 text-sky-700',
+  },
+] as const;
 
-// Functions that the AI can call
-const executeTool = async (tool_call: any, onClientUpdate?: () => void) => {
-  const functionName = tool_call.function.name;
-  const args = JSON.parse(tool_call.function.arguments);
-  let result;
-
-  try {
-    if (functionName === 'create_lead') {
-      // Get current user info from MSAL
-      const { instance } = useMsal();
-      const account = instance?.getAllAccounts()[0];
-      let currentUserEmail = account?.username || null;
-      
-      // Try to use the wrapper function that syncs sequences, fall back to v3 if it doesn't exist
-      let data, error;
-      try {
-        const result = await supabase.rpc('create_new_lead_v4', {
-          p_lead_name: args.name,
-          p_lead_email: args.email || null,
-          p_lead_phone: args.phone || null,
-          p_lead_topic: args.topic,
-          p_lead_language: args.language || 'English',
-          p_created_by: currentUserEmail,
-          p_balance_currency: 'NIS',
-          p_proposal_currency: 'NIS',
-        });
-        data = result.data;
-        error = result.error;
-        
-        // If the wrapper function doesn't exist, fall back to the original function
-        if (error && error.message?.includes('function') && error.message?.includes('does not exist')) {
-          const fallbackResult = await supabase.rpc('create_new_lead_v3', {
-            p_lead_name: args.name,
-            p_lead_email: args.email || null,
-            p_lead_phone: args.phone || null,
-            p_lead_topic: args.topic,
-            p_lead_language: args.language || 'English',
-            p_created_by: currentUserEmail,
-          });
-          data = fallbackResult.data;
-          error = fallbackResult.error;
-        }
-      } catch (rpcError) {
-        error = rpcError as any;
-      }
-      
-      if (error) throw error;
-      // The RPC function returns an array, so we take the first element
-      const newLead = data?.[0] as NewLeadResult;
-      if (!newLead) throw new Error("No data returned from lead creation.");
-
-      result = `Successfully created lead ${newLead.name} with Lead Number ${newLead.lead_number}.`;
-      if (onClientUpdate) onClientUpdate(); // Refresh the main client list
-    } else if (functionName === 'create_meeting') {
-      const { data, error } = await supabase
-        .from('leads')
-        .update({
-          meeting_date: args.meeting_date,
-          meeting_time: args.meeting_time,
-          meeting_brief: args.meeting_brief,
-        })
-        .eq('lead_number', args.lead_number)
-        .select()
-        .single();
-      if (error) throw error;
-      result = `Successfully scheduled meeting for lead ${data.name} (${data.lead_number}).`;
-       if (onClientUpdate) onClientUpdate(); // Refresh the main client list
-    } else if (functionName === 'query_executor') {
-      result = await executeDynamicQuery(args);
-    } else {
-      result = `Unknown function: ${functionName}`;
-    }
-    toast.success(result);
-    return result;
-  } catch (error: any) {
-    const errorMessage = `Error executing ${functionName}: ${error.message}`;
-    toast.error(errorMessage);
-    return errorMessage;
-  }
-};
-
-// Whitelist of allowed tables and columns for security
-const allowedTables = {
-  leads: ["id", "lead_number", "name", "email", "phone", "topic", "category", "stage", "created_at", "expert", "closer", "proposal_total", "proposal_currency", "balance", "balance_currency", "date_signed", "next_followup"],
-  meetings: ["id", "client_id", "meeting_date", "meeting_time", "meeting_brief", "meeting_amount", "meeting_currency", "created_at"],
-  interactions: ["id", "client_id", "interaction_type", "interaction_date", "interaction_notes", "created_at"]
-};
-
-// Allowed operations
-const allowedOperations = ["count", "avg", "sum", "min", "max", "distinct", "select"];
-
-// Allowed operators for filters
-const allowedOperators = ["=", "!=", "<", "<=", ">", ">=", "like"];
-
-// Execute dynamic query with security validation
-const executeDynamicQuery = async (args: any): Promise<string> => {
-  const { table, operation, column, filters = [], group_by, limit, offset } = args;
-
-  // Security validation
-  if (!allowedTables[table as keyof typeof allowedTables]) {
-    throw new Error(`Table '${table}' is not allowed. Allowed tables: ${Object.keys(allowedTables).join(', ')}`);
-  }
-
-  if (!allowedOperations.includes(operation)) {
-    throw new Error(`Operation '${operation}' is not allowed. Allowed operations: ${allowedOperations.join(', ')}`);
-  }
-
-  // Validate column exists in allowed columns
-  if (column && !allowedTables[table as keyof typeof allowedTables].includes(column)) {
-    throw new Error(`Column '${column}' is not allowed for table '${table}'. Allowed columns: ${allowedTables[table as keyof typeof allowedTables].join(', ')}`);
-  }
-
-  // Validate group_by column
-  if (group_by && !allowedTables[table as keyof typeof allowedTables].includes(group_by)) {
-    throw new Error(`Group by column '${group_by}' is not allowed for table '${table}'. Allowed columns: ${allowedTables[table as keyof typeof allowedTables].join(', ')}`);
-  }
-
-  // Validate filters
-  for (const filter of filters) {
-    if (!allowedTables[table as keyof typeof allowedTables].includes(filter.column)) {
-      throw new Error(`Filter column '${filter.column}' is not allowed for table '${table}'. Allowed columns: ${allowedTables[table as keyof typeof allowedTables].join(', ')}`);
-    }
-    if (!allowedOperators.includes(filter.operator)) {
-      throw new Error(`Filter operator '${filter.operator}' is not allowed. Allowed operators: ${allowedOperators.join(', ')}`);
-    }
-  }
-
-  // For aggregate operations, use RPC
-  if (['avg', 'sum', 'min', 'max', 'distinct'].includes(operation)) {
-    return await executeAggregateQuery(table, operation, column, filters, group_by);
-  }
-
-  // For count and select operations, use a simpler approach
-  try {
-    if (operation === 'count') {
-      const { count, error } = await supabase
-        .from(table)
-        .select('*', { count: 'exact', head: true });
-      
-      if (error) throw error;
-      return `Found ${count || 0} records in ${table}`;
-    } else if (operation === 'select') {
-      const selectColumns = column ? [column] : allowedTables[table as keyof typeof allowedTables];
-      
-      const { data, error } = await supabase
-        .from(table)
-        .select(selectColumns.join(','));
-      
-      if (error) throw error;
-
-      if (!data || data.length === 0) {
-        return `No records found in ${table} matching the criteria.`;
-      }
-      
-      const records = data.slice(0, 10); // Limit display to 10 records
-      const displayData = records.map((record: any) => {
-        if (column) {
-          return record[column];
-        }
-        return Object.entries(record)
-          .map(([key, value]) => `${key}: ${value}`)
-          .join(', ');
-      });
-      
-      let result = `Found ${data.length} records in ${table}:\n`;
-      result += displayData.map((item: string, index: number) => `${index + 1}. ${item}`).join('\n');
-      
-      if (data.length > 10) {
-        result += `\n... and ${data.length - 10} more records`;
-      }
-      
-      return result;
-    }
-  } catch (error: any) {
-    throw new Error(`Query execution failed: ${error.message}`);
-  }
-
-  throw new Error(`Unsupported operation: ${operation}`);
-};
-
-// Execute aggregate queries using RPC
-const executeAggregateQuery = async (table: string, operation: string, column: string, filters: any[], group_by?: string): Promise<string> => {
-  // Build filter conditions for RPC
-  const filterConditions = filters.map(filter => ({
-    column: filter.column,
-    operator: filter.operator,
-    value: filter.value
-  }));
-
-  const { data, error } = await supabase.rpc('execute_aggregate_query', {
-    p_table: table,
-    p_operation: operation,
-    p_column: column,
-    p_filters: filterConditions,
-    p_group_by: group_by
-  });
-
-  if (error) throw error;
-
-  // Format the result
-  if (operation === 'avg') {
-    return `Average ${column} in ${table}: ${data?.result || 0}`;
-  } else if (operation === 'sum') {
-    return `Sum of ${column} in ${table}: ${data?.result || 0}`;
-  } else if (operation === 'min') {
-    return `Minimum ${column} in ${table}: ${data?.result || 0}`;
-  } else if (operation === 'max') {
-    return `Maximum ${column} in ${table}: ${data?.result || 0}`;
-  } else if (operation === 'distinct') {
-    return `Distinct values of ${column} in ${table}: ${data?.result || 0}`;
-  }
-
-  return JSON.stringify(data);
+const isVisibleChatMessage = (message: Message) => {
+  if (message.role === 'tool') return false;
+  if (message.role === 'assistant' && message.tool_calls?.length && !message.content) return false;
+  return true;
 };
 
 const sanitizeMessages = (messages: Message[]) => {
@@ -258,16 +89,25 @@ const sanitizeMessages = (messages: Message[]) => {
   if (!messages || messages.length === 0) return [];
 
   for (const message of messages) {
-    const lastMessage = sanitized.length > 0 ? sanitized[sanitized.length - 1] : null;
-
-    // Skip empty assistant messages that might be leftover placeholders
-    if (message.role === 'assistant' && !message.content && !message.tool_calls) {
+    if (
+      message.content === 'AI is thinking...' ||
+      message.content === 'Looking up CRM data...'
+    ) {
+      continue;
+    }
+    if (message.role === 'assistant' && !message.content && !message.tool_calls?.length) {
       continue;
     }
 
-    if (lastMessage && lastMessage.role === message.role) {
-      // If two messages in a row have the same role, replace the last one.
-      // This is a simple way to recover from conversational errors.
+    const lastMessage = sanitized.length > 0 ? sanitized[sanitized.length - 1] : null;
+    const canCollapse =
+      lastMessage &&
+      lastMessage.role === message.role &&
+      message.role !== 'tool' &&
+      !lastMessage.tool_calls?.length &&
+      !message.tool_calls?.length;
+
+    if (canCollapse) {
       sanitized[sanitized.length - 1] = message;
     } else {
       sanitized.push(message);
@@ -277,11 +117,18 @@ const sanitizeMessages = (messages: Message[]) => {
 };
 
 const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate, userName, isFullPage = false, onToggleFullPage }) => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [caret, setCaret] = useState(0);
+  const [employeeNames, setEmployeeNames] = useState<string[]>([]);
+  const [suggestDismissed, setSuggestDismissed] = useState(false);
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
   const [aiIconAnim, setAiIconAnim] = useState(false);
@@ -294,6 +141,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historySelecting, setHistorySelecting] = useState(false);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -302,6 +151,87 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   };
 
   useEffect(scrollToBottom, [messages]);
+
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (attachMenuRef.current?.contains(target)) return;
+      setAttachMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAttachMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [attachMenuOpen]);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [input]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    void loadAutocompleteEmployeeNames().then((names) => {
+      if (!cancelled) setEmployeeNames(names);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const conversationHints = useMemo(() => extractConversationHints(messages), [messages]);
+  const lastAssistant = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message.role !== 'assistant' || !message.content) continue;
+      if (message.content === 'AI is thinking...' || message.content === 'Looking up CRM data...') continue;
+      return typeof message.content === 'string' ? message.content : '';
+    }
+    return '';
+  }, [messages]);
+  const suggestions = useMemo(
+    () =>
+      scoreRmqAiInputSuggestions({
+        input,
+        caret,
+        employees: employeeNames,
+        conversationLeads: conversationHints.leads,
+        conversationNames: conversationHints.names,
+        historyTitles: chatHistory
+          .map((chat) => chat.title)
+          .filter((title) => title && title.length > 8 && !/^new conversation/i.test(title))
+          .slice(0, 20),
+        lastAssistant,
+      }),
+    [input, caret, employeeNames, conversationHints, chatHistory, lastAssistant],
+  );
+  const visibleSuggestions = suggestDismissed || attachMenuOpen ? [] : suggestions;
+  const activeSuggestion =
+    visibleSuggestions.find((item) => ghostSuffixFor(input, caret, item)) || null;
+  const ghostSuffix = ghostSuffixFor(input, caret, activeSuggestion);
+
+  const applySuggestion = (suggestion: AiInputSuggestion) => {
+    const currentCaret = textareaRef.current?.selectionStart ?? caret;
+    const { next, caret: nextCaret } = applyAiInputSuggestion(input, currentCaret, suggestion);
+    setInput(next);
+    setCaret(nextCaret);
+    setSuggestDismissed(false);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
   
   // Mobile detection and keyboard handling
   useEffect(() => {
@@ -346,7 +276,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       
       setMessages([{ 
         role: 'assistant', 
-        content: greeting
+        content: `${greeting} I can look up any lead, summarize the case, and pull CRM numbers from the database.`
       }]);
     }
   }, [isOpen, messages.length, userName]);
@@ -356,21 +286,26 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     handleSend(action);
   };
 
-  // Handle image selection (multi-image)
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length + images.length > 10) {
-      alert('You can upload up to 10 images.');
-      return;
+  const addImageFiles = (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    if (!imageFiles.length) return 0;
+    if (imageFiles.length + images.length > 10) {
+      toast.error('You can upload up to 10 images.');
+      return 0;
     }
-    setImages(prev => [...prev, ...files]);
-    files.forEach(file => {
+    setImages((prev) => [...prev, ...imageFiles]);
+    imageFiles.forEach((file) => {
       const reader = new FileReader();
       reader.onload = (ev) => {
-        setImagePreviews(prev => [...prev, ev.target?.result as string]);
+        setImagePreviews((prev) => [...prev, ev.target?.result as string]);
       };
       reader.readAsDataURL(file);
     });
+    return imageFiles.length;
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    addImageFiles(Array.from(e.target.files || []));
   };
 
   // Remove selected image by index
@@ -385,7 +320,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (!content) return null;
     
     // First, normalize excessive dashes (replace multiple dashes with proper formatting)
-    let normalized = content.replace(/^[-]{2,}/gm, '').replace(/[-]{3,}/g, '—');
+    let normalized = content
+      .replace(/^[-]{2,}/gm, '')
+      .replace(/[-]{3,}/g, '—')
+      .replace(/\[(?:#)?([LC]\d+(?:\/\d+)?)\]\((?:#|javascript:[^)]*)?\)/gi, '$1');
     
     // Split by double newlines for paragraphs, but preserve single newlines within paragraphs
     const blocks = normalized.split(/\n\n+/).filter(p => p.trim());
@@ -407,7 +345,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               {lines.map((line, idx) => {
                 const cleanItem = line.trim().replace(/^\d+[.)]\s/, '').trim();
                 const formatted = formatInlineText(cleanItem);
-                return <li key={idx} className="text-base leading-relaxed pl-1">{formatted}</li>;
+                return <li key={idx} className="text-sm leading-relaxed pl-1">{formatted}</li>;
               })}
             </ol>
           );
@@ -417,7 +355,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               {lines.map((line, idx) => {
                 const cleanItem = line.trim().replace(/^[-*•]\s/, '').trim();
                 const formatted = formatInlineText(cleanItem);
-                return <li key={idx} className="text-base leading-relaxed pl-1">{formatted}</li>;
+                return <li key={idx} className="text-sm leading-relaxed pl-1">{formatted}</li>;
               })}
             </ul>
           );
@@ -427,7 +365,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       // Regular paragraph - join lines with proper spacing
       const paragraphText = lines.join(' ').trim();
       return (
-        <p key={bIdx} className="my-2.5 text-base leading-relaxed">
+        <p key={bIdx} className="my-2.5 text-sm leading-relaxed">
           {formatInlineText(paragraphText)}
         </p>
       );
@@ -445,11 +383,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     const patterns = [
       { 
         regex: /\*\*([^*]+)\*\*/g, 
-        render: (match: string) => <strong key={`format-${keyCounter++}`} className="font-semibold">{match}</strong> 
+        render: (match: string) => (
+          <strong key={`format-${keyCounter++}`} className="font-semibold">
+            <ChatLeadNumberText text={match} onOpen={onClose} />
+          </strong>
+        )
       },
       { 
         regex: /\*([^*]+)\*/g, 
-        render: (match: string) => <em key={`format-${keyCounter++}`} className="italic">{match}</em> 
+        render: (match: string) => (
+          <em key={`format-${keyCounter++}`} className="italic">
+            <ChatLeadNumberText text={match} onOpen={onClose} />
+          </em>
+        )
       },
       { 
         regex: /`([^`]+)`/g, 
@@ -461,17 +407,68 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       },
       { 
         regex: /\[([^\]]+)\]\(([^)]+)\)/g, 
-        render: (match: string, url: string) => (
-          <a 
-            key={`format-${keyCounter++}`} 
-            href={url} 
-            target="_blank" 
-            rel="noopener noreferrer" 
-            className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"
-          >
-            {match}
-          </a>
-        ) 
+        render: (match: string, url: string) => {
+          const excelFile = isRmqExcelHref(url) ? resolveRmqExcelFile(url) : null;
+          const isExcel =
+            Boolean(excelFile) ||
+            /\.xlsx(\?|#|$)/i.test(url) ||
+            url.startsWith('data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+          if (isExcel) {
+            const file = excelFile || { filename: match.replace(/^Download\s+/i, '').trim() || 'export.xlsx', url };
+            return (
+              <button
+                key={`format-${keyCounter++}`}
+                type="button"
+                onClick={() => {
+                  if (!file.url) {
+                    toast.error('This Excel file is no longer available. Ask me to create it again.');
+                    return;
+                  }
+                  triggerBrowserDownload(file);
+                }}
+                className="inline-flex items-center gap-1 font-semibold text-blue-600 underline hover:text-blue-800"
+              >
+                <ArrowDownTrayIcon className="h-4 w-4" />
+                {match}
+              </button>
+            );
+          }
+          const leadFromLabel = parseChatLeadNumber(match);
+          const leadFromUrl = parseChatLeadNumber(url.replace(/^\/clients\/?/i, ''));
+          const leadNumber = leadFromLabel || leadFromUrl;
+          const to = isInternalAppPath(url)
+            ? url
+            : leadNumber
+              ? resolveLeadShareClientRoute({ leadNumber })
+              : '';
+          if (to) {
+            return (
+              <Link
+                key={`format-${keyCounter++}`}
+                to={to}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onClose();
+                }}
+                className="font-semibold text-violet-700 underline hover:text-violet-900"
+                title={leadNumber ? `Open client ${leadNumber}` : match}
+              >
+                {leadNumber || match}
+              </Link>
+            );
+          }
+          return (
+            <a 
+              key={`format-${keyCounter++}`} 
+              href={url} 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"
+            >
+              {match}
+            </a>
+          );
+        }
       },
     ];
     
@@ -511,7 +508,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       if (matchInfo.index > currentIndex) {
         const plainText = text.substring(currentIndex, matchInfo.index);
         if (plainText) {
-          parts.push(<span key={`text-${keyCounter++}`}>{plainText}</span>);
+          parts.push(
+            <span key={`text-${keyCounter++}`}>
+              <ChatLeadNumberText text={plainText} onOpen={onClose} />
+            </span>,
+          );
         }
       }
       
@@ -531,11 +532,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (currentIndex < text.length) {
       const remaining = text.substring(currentIndex);
       if (remaining) {
-        parts.push(<span key={`text-${keyCounter++}`}>{remaining}</span>);
+        parts.push(
+          <span key={`text-${keyCounter++}`}>
+            <ChatLeadNumberText text={remaining} onOpen={onClose} />
+          </span>,
+        );
       }
     }
     
-    return parts.length > 0 ? <>{parts}</> : <span>{text}</span>;
+    return parts.length > 0 ? <>{parts}</> : <ChatLeadNumberText text={text} onOpen={onClose} />;
   };
 
   const handleSend = async (customInput?: string) => {
@@ -564,6 +569,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setMessages(newMessages);
     if (!customInput) {
       setInput('');
+      setCaret(0);
+      setSuggestDismissed(true);
     }
     setImages([]);
     setImagePreviews([]);
@@ -572,30 +579,97 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     // Add a loading message
     setMessages(prev => [...prev, { role: 'assistant', content: 'AI is thinking...' }]);
     
-    const messagesForApi = sanitizeMessages(newMessages);
+    const messagesForApi = sanitizeMessages(newMessages).map(({ attachments: _attachments, ...message }) => message);
 
-    try {
+    const callChat = async (payloadMessages: Message[], includeImages = false) => {
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
         },
-        body: JSON.stringify({ 
-          messages: messagesForApi,
-          images: imagesData
+        body: JSON.stringify({
+          messages: [{ role: 'system', content: RMQ_AI_SYSTEM_PROMPT }, ...payloadMessages],
+          images: includeImages ? imagesData : [],
+          tools: RMQ_AI_TOOLS,
         }),
       });
-
+      const data = await response.json();
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `Request failed with status ${response.status}`);
+        throw new Error(data.error || `Request failed with status ${response.status}`);
       }
-      
-      const aiResponseMessage = await response.json();
-      
-      // Replace loading message with actual response
-      setMessages(prev => [...prev.slice(0, -1), aiResponseMessage]);
+      return data as Message;
+    };
+
+    try {
+      let conversation = messagesForApi;
+      let aiResponseMessage: Message | null = null;
+      const createdFiles: RmqAiChatFile[] = [];
+      const appMapLinks: string[] = [];
+      for (let round = 0; round < 6; round += 1) {
+        const reply = await callChat(conversation, round === 0);
+        if (reply.tool_calls?.length) {
+          conversation = [
+            ...conversation,
+            { role: 'assistant', content: reply.content || '', tool_calls: reply.tool_calls },
+          ];
+          setMessages((prev) => [
+            ...prev.slice(0, -1),
+            { role: 'assistant', content: 'Looking up CRM data...' },
+          ]);
+          for (const toolCall of reply.tool_calls) {
+            const toolResult = await executeRmqAiTool(toolCall);
+            const fnName = toolCall?.function?.name;
+            createdFiles.push(...takeRmqAiToolFiles());
+            if (fnName === 'find_app_page') {
+              for (const line of String(toolResult).split('\n')) {
+                const match = line.match(/\[([^\]]+)\]\((\/[^)]+)\)/);
+                if (match) appMapLinks.push(`[${match[1]}](${match[2]})`);
+              }
+            }
+            if (fnName === 'create_lead' || fnName === 'create_meeting') {
+              if (!String(toolResult).startsWith('Error')) {
+                toast.success(toolResult);
+                onClientUpdate?.();
+              } else {
+                toast.error(toolResult);
+              }
+            }
+            if (fnName === 'create_excel_sheet' && !String(toolResult).startsWith('Could not') && !String(toolResult).startsWith('create_excel_sheet')) {
+              toast.success('Excel file ready to download');
+            }
+            conversation = [
+              ...conversation,
+              { role: 'tool', content: toolResult, tool_call_id: toolCall.id },
+            ];
+          }
+          continue;
+        }
+        aiResponseMessage = reply;
+        break;
+      }
+
+      const replyContent = aiResponseMessage?.content || '';
+      const missingFileLinks = createdFiles.filter((file) => !replyContent.includes(`rmq-excel://${file.id}`));
+      const missingMapLinks = appMapLinks.filter((link) => !replyContent.includes(link.slice(link.indexOf(']('))));
+      const extraLinks = [
+        ...missingFileLinks.map((file) => `[Download ${file.filename}](rmq-excel://${file.id})`),
+        ...missingMapLinks,
+      ];
+      const withLinks = extraLinks.length
+        ? `${replyContent}${replyContent ? '\n\n' : ''}${extraLinks.join('\n')}`
+        : replyContent;
+
+      setMessages((prev) => [
+        ...prev.slice(0, -1),
+        {
+          role: 'assistant',
+          content:
+            withLinks ||
+            'I looked up the CRM data but could not finish a reply. Please try again.',
+          attachments: createdFiles.length ? createdFiles : undefined,
+        },
+      ]);
 
     } catch (error) {
       console.error('Error in handleSend:', error);
@@ -633,19 +707,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     e.preventDefault();
     e.stopPropagation();
     setIsDragActive(false);
-    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-    if (files.length + images.length > 10) {
-      alert('You can upload up to 10 images.');
-      return;
-    }
-    setImages(prev => [...prev, ...files]);
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        setImagePreviews(prev => [...prev, ev.target?.result as string]);
-      };
-      reader.readAsDataURL(file);
-    });
+    addImageFiles(Array.from(e.dataTransfer.files));
   };
 
   const handleAiIconClick = () => {
@@ -690,7 +752,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (messages.length <= 1) return; // Don't save if only greeting message
     
     try {
-      const messagesToSave = messages.filter(msg => msg.content !== '...'); // Remove placeholder
+      const messagesToSave = messages.filter(
+        (msg) =>
+          isVisibleChatMessage(msg) &&
+          msg.content !== '...' &&
+          msg.content !== 'AI is thinking...' &&
+          msg.content !== 'Looking up CRM data...',
+      );
       const user = (await supabase.auth.getUser()).data.user;
       if (!user) throw new Error('User not authenticated');
       
@@ -760,7 +828,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       
       if (error) throw error;
       
-      setMessages(data.messages);
+      const loaded = (data.messages || []) as Message[];
+      for (const message of loaded) {
+        for (const file of message.attachments || []) {
+          if (file?.id && file.url) rememberRmqAiFile(file);
+        }
+      }
+      setMessages(loaded);
       setCurrentChatId(chatId);
       setShowHistoryPanel(false);
       toast.success(`Loaded: ${data.title}`);
@@ -773,32 +847,54 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const startNewChat = () => {
     setMessages([{ 
       role: 'assistant', 
-      content: userName ? `Hi ${userName}, how can I help you?` : "Hello! How can I help you?"
+      content: userName
+        ? `Hi ${userName}, how can I help you? I can look up any lead, summarize the case, and pull CRM numbers from the database.`
+        : 'Hello! How can I help you? I can look up any lead, summarize the case, and pull CRM numbers from the database.',
     }]);
     setCurrentChatId(null);
     setShowHistoryPanel(false);
+    setHistorySelecting(false);
+    setSelectedHistoryIds([]);
   };
 
-  const deleteChat = async (chatId: string) => {
-    if (!confirm('Are you sure you want to delete this chat?')) return;
-    
+  const toggleHistorySelection = (chatId: string) => {
+    setSelectedHistoryIds((prev) =>
+      prev.includes(chatId) ? prev.filter((id) => id !== chatId) : [...prev, chatId],
+    );
+  };
+
+  const handleHistoryDeleteClick = () => {
+    if (!historySelecting) {
+      setHistorySelecting(true);
+      setSelectedHistoryIds([]);
+      return;
+    }
+    if (selectedHistoryIds.length === 0) {
+      setHistorySelecting(false);
+      return;
+    }
+    const count = selectedHistoryIds.length;
+    if (!confirm(`Delete ${count} conversation${count === 1 ? '' : 's'}? This cannot be undone.`)) {
+      return;
+    }
+    void deleteChats(selectedHistoryIds);
+  };
+
+  const deleteChats = async (chatIds: string[]) => {
+    if (chatIds.length === 0) return;
     try {
-      const { error } = await supabase
-        .from('ai_chat_history')
-        .delete()
-        .eq('id', chatId);
-      
+      const { error } = await supabase.from('ai_chat_history').delete().in('id', chatIds);
       if (error) throw error;
-      
-      if (currentChatId === chatId) {
+      if (currentChatId && chatIds.includes(currentChatId)) {
         startNewChat();
       }
-      
+      setHistorySelecting(false);
+      setSelectedHistoryIds([]);
       loadChatHistory(historySearchTerm);
-      toast.success('Chat deleted');
+      toast.success(chatIds.length === 1 ? 'Chat deleted' : `${chatIds.length} chats deleted`);
     } catch (error) {
-      console.error('Error deleting chat:', error);
-      toast.error('Failed to delete chat');
+      console.error('Error deleting chats:', error);
+      toast.error('Failed to delete chats');
     }
   };
 
@@ -822,9 +918,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   return (
     <div
       className={`fixed z-50 flex flex-col transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
-        isFullPage 
+          isFullPage 
           ? 'left-0 top-0 w-full h-full' 
-          : 'right-0 top-0 bottom-0 w-full max-w-2xl'
+          : `right-0 top-0 bottom-0 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
       }`}
       style={{ 
         height: '100dvh', 
@@ -840,24 +936,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       onDrop={handleDrop}
     >
       <style>{`
-        .ai-glass {
-          background: rgba(255,255,255,0.85);
-          backdrop-filter: blur(18px) saturate(1.2);
-          -webkit-backdrop-filter: blur(18px) saturate(1.2);
-          border-left: 1.5px solid rgba(120,120,180,0.10);
-          box-shadow: 0 8px 32px 0 rgba(31,38,135,0.10);
-          border-top-left-radius: 2rem;
-          border-bottom-left-radius: 2rem;
-        }
+        .ai-glass,
         .ai-glass-fullpage {
-          background: rgba(255,255,255,0.95);
-          backdrop-filter: blur(18px) saturate(1.2);
-          -webkit-backdrop-filter: blur(18px) saturate(1.2);
-          box-shadow: 0 8px 32px 0 rgba(31,38,135,0.10);
+          background: #f9fafb;
+          box-shadow: none;
           border-radius: 0;
-        }
-        .ai-header-gradient {
-          background: linear-gradient(90deg, #7c3aed 0%, #38bdf8 100%);
         }
         .ai-bubble-user {
           background: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
@@ -866,16 +949,30 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           border-top-left-radius: 2rem !important;
         }
         .ai-bubble-assistant {
-          background: rgba(255,255,255,0.95);
+          background: #fff;
           color: #1f2937;
           border-bottom-left-radius: 2rem !important;
           border-top-right-radius: 2rem !important;
-          border: 1px solid #e5e7eb;
-          box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+          border: none;
+          box-shadow: none;
+          outline: none;
         }
         
         .ai-bubble-assistant .prose {
           color: #1f2937;
+        }
+        .ai-bubble-user .prose,
+        .ai-bubble-user .prose p,
+        .ai-bubble-user .prose li,
+        .ai-bubble-user .prose strong {
+          color: #fff;
+        }
+        .ai-bubble-user .chat-lead-number-link {
+          color: #fff !important;
+          text-decoration: underline;
+        }
+        .ai-bubble-assistant .chat-lead-number-link {
+          color: #3b28c7;
         }
         
         .ai-bubble-assistant .prose p {
@@ -915,11 +1012,33 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           transition: background 0.2s, color 0.2s;
         }
 
-        .ai-input-area {
-          background: rgba(255,255,255,0.95);
-          box-shadow: 0 2px 12px 0 rgba(31,38,135,0.07);
-          border-radius: 1.5rem;
-          border: 1px solid #e0e7ef;
+        .contract-ai-input-area {
+          background: transparent;
+          box-shadow: none;
+        }
+        .contract-ai-input-shell {
+          border-radius: 9999px;
+          background: #fff;
+          border: none;
+          box-shadow: 0 10px 32px rgba(15, 23, 42, 0.1);
+        }
+        .contract-ai-input-shell:focus-within {
+          outline: none;
+          box-shadow: none;
+        }
+        .contract-ai-input-area textarea {
+          overflow-y: auto;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+          outline: none;
+          box-shadow: none;
+        }
+        .contract-ai-input-area textarea:focus {
+          outline: none;
+          box-shadow: none;
+        }
+        .contract-ai-input-area textarea::-webkit-scrollbar {
+          display: none;
         }
         @keyframes ai-pulse {
           0% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 0 #fff); }
@@ -946,8 +1065,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         
         /* Mobile input focus styles */
         @media (max-width: 768px) {
-          .ai-input-area input:focus {
-            font-size: 16px; /* Prevents zoom on iOS */
+          .contract-ai-input-area textarea:focus {
+            font-size: 16px;
           }
         }
         
@@ -958,9 +1077,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           -webkit-box-orient: vertical;
           overflow: hidden;
         }
+        .ai-chat-header {
+          background: rgba(255, 255, 255, 0.42);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.45);
+          box-shadow: 0 8px 32px rgba(15, 23, 42, 0.04);
+          backdrop-filter: blur(22px) saturate(1.6);
+          -webkit-backdrop-filter: blur(22px) saturate(1.6);
+        }
+        .ai-chat-under-header {
+          padding-top: calc(3.35rem + max(1rem, env(safe-area-inset-top, 0px)));
+        }
       `}</style>
       <div 
-        className={`${isFullPage ? 'ai-glass-fullpage' : 'ai-glass'} flex flex-col h-full w-full`}
+        className={`${isFullPage ? 'ai-glass-fullpage' : 'ai-glass'} relative flex h-full w-full flex-col`}
         style={{
           ...(isMobile && {
             height: '100dvh',
@@ -969,8 +1098,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }}
       >
         {/* Header */}
-        <div className={`ai-header-gradient sticky top-0 z-20 p-4 flex items-center justify-between ${isFullPage ? 'rounded-none' : 'rounded-tl-2xl'}`} style={{boxShadow:'0 2px 12px 0 rgba(31,38,135,0.07)'}}>
-          <div className="flex items-center gap-3">
+        <div className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center justify-between px-5 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
+          <div className="flex items-center gap-2.5">
             <button
               className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
               style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
@@ -978,167 +1107,88 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               tabIndex={0}
               aria-label="AI Icon"
             >
-              <FaRobot className="h-9 w-9 text-white drop-shadow" />
+              <FaRobot className="h-7 w-7 text-violet-600" />
             </button>
-            <h3 className="font-extrabold text-xl text-white tracking-tight drop-shadow">RMQ AI</h3>
+            <h3 className="text-lg font-semibold text-gray-900">RMQ AI</h3>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <button
               onClick={() => setShowHistoryPanel(!showHistoryPanel)}
-              className={`ai-quick-btn ${showHistoryPanel ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}`}
+              className={`btn btn-ghost btn-sm btn-square ${showHistoryPanel ? 'text-violet-700' : 'text-base-content/60'}`}
               title="Chat History"
             >
-              <ChatBubbleLeftRightIcon className="w-4 h-4" />
+              <ChatBubbleLeftRightIcon className="h-5 w-5" />
             </button>
-          </div>
-          <div className="flex items-center gap-2">
             {onToggleFullPage && (
               <button 
-                className="btn btn-sm btn-ghost btn-circle hover:bg-white/20 text-white" 
+                className="btn btn-ghost btn-sm btn-square text-base-content/60"
                 onClick={onToggleFullPage}
                 title={isFullPage ? "Exit full page" : "Enter full page"}
               >
                 {isFullPage ? (
-                  <ArrowsPointingInIcon className="w-5 h-5" />
+                  <ArrowsPointingInIcon className="h-5 w-5" />
                 ) : (
-                  <ArrowsPointingOutIcon className="w-5 h-5" />
+                  <ArrowsPointingOutIcon className="h-5 w-5" />
                 )}
               </button>
             )}
-            <button className="btn btn-sm btn-ghost btn-circle hover:bg-white/20 text-white" onClick={onClose}>
-              <XMarkIcon className="w-6 h-6" />
+            <button className="btn btn-ghost btn-sm btn-square text-base-content/60" onClick={onClose} aria-label="Close">
+              <XMarkIcon className="h-5 w-5" />
             </button>
           </div>
         </div>
 
         {/* Main Content Area */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Chat Area */}
-          <div className={`flex flex-col ${showHistoryPanel ? 'w-2/3' : 'w-full'} transition-all duration-300`}>
-            {/* Messages */}
-            <div 
-              className="flex-1 overflow-y-auto p-6 space-y-6"
-              style={{
-                ...(isMobile && keyboardOpen && {
-                  paddingBottom: '120px' // Add space for fixed input
-                })
-              }}
-            >
-              {messages.map((msg, idx) => (
-                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}>
-                  <div className={`max-w-[75%] px-5 py-4 rounded-2xl shadow-sm ai-bubble-${msg.role} ${msg.content === 'AI is thinking...' ? 'opacity-75' : ''}`} style={{fontSize:'1.05rem', lineHeight:1.7}}>
-                    {/* Render message content, supporting OpenAI Vision format */}
-                    {Array.isArray(msg.content) ? (
-                      msg.content.map((item, i) => {
-                        if (item.type === 'text') {
-                          return <div key={i} className="prose prose-sm max-w-none">{formatMessageContent(item.text)}</div>;
-                        } else if (item.type === 'image_url') {
-                          return <img key={i} src={item.image_url.url} alt="uploaded" className="max-w-xs my-2 rounded-lg border border-base-300 shadow-sm" />;
-                        } else {
-                          return null;
-                        }
-                      })
-                    ) : (
-                      <div className="prose prose-sm max-w-none">
-                        {msg.content === 'AI is thinking...' ? (
-                          <div className="flex items-center gap-2 text-gray-500 italic">
-                            <div className="loading loading-spinner loading-sm"></div>
-                            <span>{msg.content}</span>
-                          </div>
-                        ) : (
-                          formatMessageContent(msg.content)
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Image previews above input */}
-            {imagePreviews.length > 0 && (
-              <div className="flex gap-2 px-4 pt-2 pb-1 overflow-x-auto border-t border-base-200 bg-base-100">
-                {imagePreviews.map((preview, idx) => (
-                  <div key={idx} className="relative">
-                    <img src={preview} alt="preview" className="w-20 h-20 object-cover rounded-lg border border-base-300" />
-                    <button onClick={() => handleRemoveImage(idx)} className="absolute top-0 right-0 bg-base-100 rounded-full p-1 shadow hover:bg-error hover:text-white transition-colors">
-                      ×
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {showHistoryPanel && (
+            <div className="ai-chat-under-header flex w-72 shrink-0 flex-col overflow-hidden rounded-r-3xl border-r border-gray-200/70 bg-white md:w-96">
+              <div className="border-b border-gray-100 bg-white p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h3 className="font-semibold text-gray-900">Chat History</h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleHistoryDeleteClick}
+                      className={`inline-flex h-9 items-center justify-center rounded-full px-3 text-sm font-semibold shadow-sm transition ${
+                        historySelecting
+                          ? selectedHistoryIds.length > 0
+                            ? 'bg-red-600 text-white hover:bg-red-700'
+                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          : 'bg-gray-100 text-red-500 hover:bg-red-50'
+                      }`}
+                      title={
+                        historySelecting
+                          ? selectedHistoryIds.length > 0
+                            ? `Delete ${selectedHistoryIds.length} selected`
+                            : 'Cancel selection'
+                          : 'Select chats to delete'
+                      }
+                      aria-label={
+                        historySelecting
+                          ? selectedHistoryIds.length > 0
+                            ? 'Confirm delete'
+                            : 'Cancel selection'
+                          : 'Delete chats'
+                      }
+                    >
+                      <TrashIcon className="h-5 w-5" />
+                      {historySelecting && selectedHistoryIds.length > 0 ? (
+                        <span className="ml-1">{selectedHistoryIds.length}</span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={startNewChat}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-full bg-violet-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700"
+                      title="Start New Chat"
+                    >
+                      <PlusIcon className="h-4 w-4" strokeWidth={2.5} />
+                      New
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
-
-            {/* Input */}
-            <div 
-              className={`ai-input-area p-4 flex items-end gap-2 border-t border-base-200 ${
-                isMobile && keyboardOpen ? 'pb-safe' : ''
-              }`}
-              style={{
-                ...(isMobile && keyboardOpen && {
-                  position: 'fixed',
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  zIndex: 60,
-                  backgroundColor: 'rgba(255,255,255,0.95)',
-                  backdropFilter: 'blur(18px) saturate(1.2)',
-                  borderTop: '1px solid #e0e7ef',
-                  paddingBottom: 'env(safe-area-inset-bottom, 1rem)'
-                })
-              }}
-            >
-              <input
-                type="text"
-                className="input input-bordered flex-1 bg-white/80 focus:bg-white/95 rounded-full px-5 py-3 text-base shadow-sm border border-base-200"
-                placeholder="Type your message..."
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              />
-              <input
-                type="file"
-                accept="image/*"
-                className="hidden"
-                ref={fileInputRef}
-                onChange={handleImageChange}
-                multiple
-              />
-              <button
-                className="btn btn-ghost btn-circle hover:bg-primary/10"
-                onClick={() => fileInputRef.current?.click()}
-                title="Upload images"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5V19a2.003 2.003 0 002 2h14a2.003 2.003 0 002-2v-2.5M16.5 12.5l-4.5 4.5-4.5-4.5M12 3v13.5" />
-                </svg>
-              </button>
-              <button className="btn btn-primary ml-2 px-6 py-2 rounded-full shadow-lg text-base font-semibold transition-all duration-150 hover:scale-105 hover:bg-primary/90" onClick={() => handleSend()} disabled={isLoading || (!input.trim() && images.length === 0)}>
-                Send
-              </button>
-            </div>
-          </div>
-
-          {/* Chat History Panel */}
-          {showHistoryPanel && (
-            <div className="w-1/3 border-l border-gray-200 bg-gray-50 flex flex-col">
-              {/* History Header */}
-              <div className="p-4 border-b border-gray-200 bg-white">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-semibold text-gray-900">Chat History</h3>
-                  <button
-                    onClick={startNewChat}
-                    className="btn btn-sm btn-primary"
-                    title="Start New Chat"
-                  >
-                    New
-                  </button>
                 </div>
-                
-                {/* Search Bar */}
                 <div className="relative">
-                  <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                   <input
                     type="text"
                     placeholder="Search conversations..."
@@ -1147,85 +1197,357 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       setHistorySearchTerm(e.target.value);
                       loadChatHistory(e.target.value);
                     }}
-                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                    className="w-full rounded-xl border-0 bg-gray-100 py-2 pl-10 pr-4 text-sm text-gray-900 placeholder:text-gray-500 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0"
                   />
                 </div>
               </div>
-
-              {/* History List */}
-              <div className="flex-1 overflow-y-auto">
+              <div className="flex-1 overflow-y-auto bg-white p-3">
                 {isLoadingHistory ? (
-                  <div className="flex items-center justify-center h-32">
-                    <div className="loading loading-spinner loading-md text-blue-600"></div>
+                  <div className="flex h-32 items-center justify-center">
+                    <div className="loading loading-spinner loading-md text-violet-600"></div>
                   </div>
                 ) : chatHistory.length === 0 ? (
-                  <div className="p-8 text-center text-gray-500">
-                    <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                  <div className="rounded-2xl bg-white p-8 text-center text-gray-500">
+                    <ChatBubbleLeftRightIcon className="mx-auto mb-4 h-12 w-12 text-gray-300" />
                     <p className="text-lg font-medium">No conversations yet</p>
                     <p className="text-sm">Start chatting to see your history here</p>
                   </div>
                 ) : (
-                  <div className="divide-y divide-gray-200">
-                    {chatHistory.map((chat) => (
+                  <div className="space-y-2">
+                    {chatHistory.map((chat) => {
+                      const isSelected = selectedHistoryIds.includes(chat.id);
+                      return (
                       <div
                         key={chat.id}
-                        className={`p-4 hover:bg-gray-100 cursor-pointer transition-colors ${
-                          currentChatId === chat.id ? 'bg-blue-50 border-r-2 border-blue-500' : ''
+                        className={`cursor-pointer rounded-l-xl rounded-r-3xl bg-white p-4 ring-1 transition-colors ${
+                          historySelecting && isSelected
+                            ? 'ring-2 ring-red-400'
+                            : currentChatId === chat.id
+                              ? 'ring-2 ring-violet-400'
+                              : 'ring-gray-100 hover:ring-gray-200'
                         }`}
-                        onClick={() => loadChat(chat.id)}
+                        onClick={() =>
+                          historySelecting ? toggleHistorySelection(chat.id) : loadChat(chat.id)
+                        }
                       >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1 min-w-0">
-                            <h4 className="font-medium text-gray-900 truncate text-sm">
+                        <div className="flex items-start gap-3">
+                          {historySelecting ? (
+                            <span
+                              className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                                isSelected
+                                  ? 'border-red-500 bg-red-500 text-white'
+                                  : 'border-gray-300 bg-white'
+                              }`}
+                              aria-hidden
+                            >
+                              {isSelected ? <CheckIcon className="h-3.5 w-3.5" strokeWidth={3} /> : null}
+                            </span>
+                          ) : null}
+                          <div className="min-w-0 flex-1">
+                            <h4 className="truncate text-sm font-medium text-gray-900">
                               {chat.title}
                             </h4>
-                            <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
-                              <ClockIcon className="w-3 h-3" />
+                            <div className="mt-1 flex items-center gap-2 text-xs text-gray-500">
+                              <ClockIcon className="h-3 w-3" />
                               <span>{new Date(chat.updated_at).toLocaleDateString()}</span>
                               <span>•</span>
                               <span>{chat.message_count} messages</span>
                             </div>
                             {chat.summary && (
-                              <p className="text-xs text-gray-600 mt-1 line-clamp-2">
+                              <p className="mt-1 line-clamp-2 text-xs text-gray-600">
                                 {chat.summary}
                               </p>
                             )}
                             {chat.tags && chat.tags.length > 0 && (
-                              <div className="flex flex-wrap gap-1 mt-2">
+                              <div className="mt-2 flex flex-wrap gap-1">
                                 {chat.tags.slice(0, 3).map((tag, idx) => (
                                   <span
                                     key={idx}
-                                    className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full"
+                                    className="rounded-full bg-violet-100 px-2 py-1 text-xs text-violet-700"
                                   >
                                     {tag}
                                   </span>
                                 ))}
                                 {chat.tags.length > 3 && (
-                                  <span className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-full">
+                                  <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
                                     +{chat.tags.length - 3}
                                   </span>
                                 )}
                               </div>
                             )}
                           </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteChat(chat.id);
-                            }}
-                            className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50 ml-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                            title="Delete chat"
-                          >
-                            ×
-                          </button>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
             </div>
           )}
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
+            {/* Messages */}
+            <div 
+              className="ai-chat-under-header min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 pb-28 md:px-5 md:pb-32"
+              style={{
+                ...(isMobile && keyboardOpen && {
+                  paddingBottom: '120px'
+                })
+              }}
+            >
+              {messages.filter(isVisibleChatMessage).map((msg, idx) => (
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div
+                    className={`max-w-[85%] rounded-2xl px-5 py-4 ai-bubble-${msg.role} ${
+                      msg.content === 'AI is thinking...' || msg.content === 'Looking up CRM data...' ? 'opacity-80' : ''
+                    }`}
+                    style={{ fontSize: '1rem', lineHeight: 1.7 }}
+                  >
+                    {Array.isArray(msg.content) ? (
+                      msg.content.map((item, i) => {
+                        if (item.type === 'text') {
+                          return (
+                            <div key={i} className={`prose prose-sm max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'}`}>
+                              {formatMessageContent(item.text)}
+                            </div>
+                          );
+                        }
+                        if (item.type === 'image_url') {
+                          return <img key={i} src={item.image_url.url} alt="uploaded" className="my-2 max-w-xs rounded-xl" />;
+                        }
+                        return null;
+                      })
+                    ) : msg.content === 'AI is thinking...' || msg.content === 'Looking up CRM data...' ? (
+                      <p className="flex items-center gap-2 text-sm leading-relaxed text-gray-600">
+                        <span className="loading loading-spinner loading-sm" />
+                        <span>{msg.content === 'Looking up CRM data...' ? 'Looking up CRM data…' : 'Starting…'}</span>
+                      </p>
+                    ) : (
+                      <div className={`prose prose-sm max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'}`}>
+                        {formatMessageContent(msg.content)}
+                      </div>
+                    )}
+                    {msg.role === 'assistant' && msg.attachments?.length ? (
+                      <div className="mt-3 flex flex-col gap-2">
+                        {msg.attachments.map((file) => (
+                          <button
+                            key={file.id}
+                            type="button"
+                            onClick={() => {
+                              const live = resolveRmqExcelFile(file.id) || file;
+                              if (!live.url) {
+                                toast.error('This Excel file is no longer available. Ask me to create it again.');
+                                return;
+                              }
+                              triggerBrowserDownload(live);
+                            }}
+                            className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-left text-sm font-semibold text-violet-800 hover:bg-violet-100"
+                          >
+                            <ArrowDownTrayIcon className="h-4 w-4 shrink-0" />
+                            <span className="min-w-0 truncate">Download {file.filename}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            <div
+              className={`contract-ai-input-area pointer-events-none absolute inset-x-0 bottom-0 z-20 px-4 pb-4 pt-2 md:px-5 ${isMobile && keyboardOpen ? 'pb-safe' : ''}`}
+              style={{
+                ...(isMobile && keyboardOpen && {
+                  position: 'fixed',
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  zIndex: 60,
+                  backgroundColor: 'transparent',
+                  paddingBottom: 'env(safe-area-inset-bottom, 1rem)'
+                })
+              }}
+            >
+              {imagePreviews.length > 0 && (
+                <div className="pointer-events-auto mb-2 flex gap-2 overflow-x-auto">
+                  {imagePreviews.map((preview, idx) => (
+                    <div key={idx} className="relative">
+                      <img src={preview} alt="preview" className="h-16 w-16 rounded-xl object-cover shadow-md" />
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveImage(idx)}
+                        className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs text-gray-600 shadow-sm"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="pointer-events-auto flex items-end gap-2">
+                <div className="contract-ai-input-shell relative flex min-w-0 flex-1 items-end overflow-visible">
+                  <div className="relative shrink-0 self-center pl-1.5" ref={attachMenuRef}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-circle btn-sm h-10 w-10 text-slate-500 hover:bg-gray-100"
+                      onClick={() => setAttachMenuOpen((open) => !open)}
+                      disabled={isLoading}
+                      aria-expanded={attachMenuOpen}
+                      aria-haspopup="menu"
+                      title="Add"
+                      aria-label="Add"
+                    >
+                      <PlusIcon className="h-5 w-5" />
+                    </button>
+                    {attachMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute bottom-full left-0 z-50 mb-2 w-80 rounded-2xl border border-gray-100 bg-white py-1.5 shadow-lg"
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                          onClick={() => {
+                            setAttachMenuOpen(false);
+                            fileInputRef.current?.click();
+                          }}
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600">
+                            <PhotoIcon className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 leading-snug">
+                            <span className="text-sm font-medium text-gray-900">Images</span>
+                            {' '}
+                            <span className="text-xs text-gray-500">Attach photos to this chat</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                          onClick={() => {
+                            setAttachMenuOpen(false);
+                            onClose();
+                            navigate('/documents');
+                          }}
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+                            <DocumentArrowUpIcon className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 leading-snug">
+                            <span className="text-sm font-medium text-gray-900">Documents</span>
+                            {' '}
+                            <span className="text-xs text-gray-500">Open the documents folder</span>
+                          </span>
+                        </button>
+                        <div className="my-1 border-t border-gray-100" />
+                        <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                          Quick asks
+                        </p>
+                        {READY_ASKS.map(({ label, hint, prompt, Icon, badge }) => (
+                          <button
+                            key={label}
+                            type="button"
+                            role="menuitem"
+                            className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                            onClick={() => {
+                              setAttachMenuOpen(false);
+                              handleQuickAction(prompt);
+                            }}
+                          >
+                            <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${badge}`}>
+                              <Icon className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 leading-snug">
+                              <span className="text-sm font-medium text-gray-900">{label}</span>
+                              {' '}
+                              <span className="text-xs text-gray-500">{hint}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="relative min-w-0 flex-1">
+                    {ghostSuffix ? (
+                      <div
+                        aria-hidden
+                        className="pointer-events-none absolute inset-0 overflow-hidden py-3 pl-1 pr-5 text-base leading-relaxed text-gray-400"
+                      >
+                        <span className="invisible whitespace-pre-wrap break-words">{input}</span>
+                        <span className="whitespace-pre-wrap break-words">{ghostSuffix}</span>
+                      </div>
+                    ) : null}
+                    <textarea
+                      ref={textareaRef}
+                      rows={1}
+                      className="relative min-h-[3rem] min-w-0 w-full resize-none border-0 bg-transparent py-3 pl-1 pr-5 text-base leading-relaxed text-gray-900 placeholder:text-gray-500 focus:outline-none focus:ring-0"
+                      placeholder="Ask anything..."
+                      value={input}
+                      onChange={(e) => {
+                        setInput(e.target.value);
+                        setCaret(e.target.selectionStart ?? e.target.value.length);
+                        setSuggestDismissed(false);
+                      }}
+                      onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? input.length)}
+                      onClick={(e) => setCaret(e.currentTarget.selectionStart ?? input.length)}
+                      disabled={isLoading}
+                      onPaste={(e) => {
+                        const pasted = Array.from(e.clipboardData?.files || []).filter((file) =>
+                          file.type.startsWith('image/'),
+                        );
+                        if (!pasted.length) return;
+                        e.preventDefault();
+                        addImageFiles(pasted);
+                      }}
+                      onKeyDown={(e) => {
+                        const atEnd = (e.currentTarget.selectionStart ?? 0) >= input.length;
+                        if (activeSuggestion && ghostSuffix) {
+                          if (e.key === 'Tab' || (e.key === 'ArrowRight' && !e.shiftKey && atEnd)) {
+                            e.preventDefault();
+                            applySuggestion(activeSuggestion);
+                            return;
+                          }
+                          if (e.key === 'Escape') {
+                            e.preventDefault();
+                            setSuggestDismissed(true);
+                            return;
+                          }
+                        }
+                        if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+                        e.preventDefault();
+                        if (!isLoading && (input.trim() || images.length > 0)) handleSend();
+                      }}
+                    />
+                  </div>
+                </div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  ref={fileInputRef}
+                  onChange={handleImageChange}
+                  multiple
+                />
+                <button
+                  type="button"
+                  className="btn btn-circle h-12 w-12 shrink-0 border-0 bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg hover:from-violet-700 hover:to-indigo-700 disabled:opacity-60"
+                  onClick={() => handleSend()}
+                  disabled={isLoading || (!input.trim() && images.length === 0)}
+                  aria-label="Send"
+                  title="Send"
+                >
+                  {isLoading ? (
+                    <span className="loading loading-spinner loading-sm" />
+                  ) : (
+                    <PaperAirplaneIcon className="h-5 w-5" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         {isDragActive && (

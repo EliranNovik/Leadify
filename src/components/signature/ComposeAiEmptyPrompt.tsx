@@ -123,7 +123,7 @@ export const ComposeAiEmptyPrompt: React.FC<ComposeAiEmptyPromptProps> = ({
             type="button"
             onClick={onClick}
             disabled={disabled}
-            className="pointer-events-auto inline-flex shrink-0 items-center gap-1.5 rounded-full bg-[#4218CC] px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#3514a8] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4218CC]/40 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+            className="pointer-events-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#4218CC] bg-white px-3 py-1.5 text-xs font-semibold text-[#4218CC] hover:bg-[#4218CC]/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4218CC]/40 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <SparklesIcon className="h-3.5 w-3.5" />
             Create email with AI

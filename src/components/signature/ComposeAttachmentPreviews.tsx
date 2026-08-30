@@ -91,7 +91,7 @@ const ComposeAttachmentCard: React.FC<{
   }, [pdf, file]);
 
   return (
-    <div className="relative w-32 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div className="relative w-40 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="relative aspect-[3/4] w-full bg-slate-100">
         {image && objectUrl ? (
           <img src={objectUrl} alt={file.name} className="h-full w-full object-contain bg-white" />

@@ -2,19 +2,59 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { InteractionRequiredAuthError, IPublicClientApplication } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
 import { sendEmailViaBackend } from '../lib/mailboxApi';
-import { convertBodyToHtml } from '../lib/emailBodyHtml';
+import { convertBodyToHtml, escapeHtml } from '../lib/emailBodyHtml';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
 import { supabase } from '../lib/supabase';
 import { saveOutgoingEmailRecord } from '../lib/saveOutgoingEmailRecord';
 import { saveLeadPriceOffer } from '../lib/leadPriceOfferVersions';
-import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
+import { fetchLeadCaseFileForAi, parseFollowupDocumentLinks, formatRequiredDocumentLinksBlock, applyCrmDocumentLinksToEmailDraft } from '../lib/leadFollowupAiApi';
+import {
+  applyContractLinkPreviewHtml,
+  bodyHasContractLink,
+  buildClickableContractLinkHtml,
+  fetchLeadContractPublicLink,
+  labelForContractLink,
+  stripLooseContractPreviewText,
+} from '../lib/leadContractLink';
+import { sendWordDocumentAiChatMessage } from '../lib/wordDocumentAiApi';
 import { updateLeadStageWithHistory } from '../lib/leadStageManager';
-import { PaperAirplaneIcon, PlusIcon, XMarkIcon, ChevronDownIcon, PaperClipIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
+import { PaperAirplaneIcon, PlusIcon, XMarkIcon, ChevronDownIcon, PaperClipIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ChatBubbleLeftRightIcon, DocumentTextIcon, DocumentCheckIcon, Bars3BottomLeftIcon, Bars3BottomRightIcon, BoldIcon, UnderlineIcon } from '@heroicons/react/24/outline';
+import { EditorContent, useEditor } from '@tiptap/react';
+import { StarterKit } from '@tiptap/starter-kit';
+import { Placeholder } from '@tiptap/extension-placeholder';
+import { TextAlign } from '@tiptap/extension-text-align';
+import { Highlight } from '@tiptap/extension-highlight';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { FontSize } from '@tiptap/extension-font-size';
+import { Underline } from '@tiptap/extension-underline';
+import { Link } from '@tiptap/extension-link';
+import { ContractLinkPreview } from './signature/ContractLinkPreviewExtension';
 import { fetchLeadContacts, ContactInfo } from '../lib/contactHelpers';
-import { fetchStageNames, normalizeStageName } from '../lib/stageUtils';
-import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
+import { fetchStageNames, normalizeStageName, getStageName, getStageColour, getSoftStageBadgeStyle } from '../lib/stageUtils';
+import { ComposeBodyWithSignature, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
+
+const PRICE_OFFER_ACTION_BUTTON_CLASS =
+  'btn btn-circle border-0 bg-white text-gray-600 shadow-sm hover:bg-white hover:shadow transition-all hover:scale-105';
+
+const PRICE_OFFER_ACTION_BUTTON_STYLE: React.CSSProperties = {
+  backgroundColor: '#ffffff',
+  color: '#4B5563',
+  width: 44,
+  height: 44,
+};
+
+const PRICE_OFFER_LABELED_BUTTON_CLASS =
+  'inline-flex h-11 items-center gap-1.5 rounded-full border-0 bg-white px-3 text-sm font-medium text-gray-600 shadow-sm transition-all hover:scale-105 hover:bg-white hover:shadow disabled:opacity-40';
+
+const PRICE_OFFER_LABELED_BUTTON_STYLE: React.CSSProperties = {
+  backgroundColor: '#ffffff',
+  color: '#4B5563',
+  height: 44,
+};
 import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
-import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
+import { ComposeAiEmptyPrompt, ComposeAiRedoButton, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
+import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
+import { cleanMeetingBriefText, hasHebrewText } from '../lib/meetingSummaryNotesApi';
 
 interface SendPriceOfferModalProps {
   isOpen: boolean;
@@ -45,6 +85,116 @@ type EmployeeSuggestion = {
 };
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** CRM already appends the company signature — drop anything after the sign-off. */
+const stripAiEmailSignature = (text: string): string => {
+  const normalized = text.replace(/\r\n/g, '\n').trimEnd();
+  const lines = normalized.split('\n');
+  const closeRe =
+    /^(best regards|kind regards|warm regards|with regards|regards|sincerely|yours sincerely|yours truly|thanks|thank you|בברכה|בכבוד רב)\s*,?\s*$/i;
+  let closeIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (closeRe.test(lines[i].trim())) closeIdx = i;
+  }
+  if (closeIdx >= 0) return lines.slice(0, closeIdx + 1).join('\n').trim();
+  return normalized.replace(
+    /\n+(?:\[your name\]|\[your position\]|decker,?\s*pex[\s\S]*)$/i,
+    '',
+  ).trim();
+};
+
+const PRICE_OFFER_AI_DRAFT_PROMPT =
+  'Write a professional price offer email for this client. State the offer amount clearly. Use the CRM case file, meeting brief, and language. Do not invent facts.';
+
+const MEETING_SUMMARY_RULE = '────────';
+const MEETING_SUMMARY_TITLE_EN = 'Meeting Summary';
+const MEETING_SUMMARY_TITLE_HE = 'סיכום פגישה';
+
+const meetingSummaryTitle = (summary: string) =>
+  hasHebrewText(summary) ? MEETING_SUMMARY_TITLE_HE : MEETING_SUMMARY_TITLE_EN;
+
+const buildMeetingSummaryPlainBlock = (summary: string) => {
+  const text = cleanMeetingBriefText(summary);
+  return `${meetingSummaryTitle(text)}\n${text}`;
+};
+
+const bodyHasMeetingSummaryBlock = (text: string) => {
+  const plain = text.replace(/\u0332/g, '');
+  return plain.includes(MEETING_SUMMARY_TITLE_EN) || plain.includes(MEETING_SUMMARY_TITLE_HE);
+};
+
+const buildMeetingSummaryHtmlBlock = (title: string, summary: string) => {
+  const dir = hasHebrewText(summary) ? 'rtl' : 'ltr';
+  const align = dir === 'rtl' ? 'right' : 'left';
+  const paragraphs = escapeHtml(summary).replace(/\n/g, '<br>');
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0;border-collapse:collapse;">
+  <tr>
+    <td style="width:3px;background:#4218CC;font-size:0;line-height:0;">&nbsp;</td>
+    <td dir="${dir}" style="padding:14px 18px;background:#f6f5f2;text-align:${align};">
+      <div style="font-size:12px;font-weight:600;letter-spacing:0.08em;${
+        title === MEETING_SUMMARY_TITLE_HE ? '' : 'text-transform:uppercase;'
+      }color:#4218CC;margin-bottom:8px;">${escapeHtml(title)}</div>
+      <div style="font-size:14px;line-height:1.65;color:#374151;">${paragraphs}</div>
+    </td>
+  </tr>
+</table>`;
+};
+
+const applyMeetingSummaryHtml = (text: string, summary = '') => {
+  const withLegacyRules = text.replace(
+    new RegExp(
+      `(${MEETING_SUMMARY_TITLE_EN}|${MEETING_SUMMARY_TITLE_HE})\\n${MEETING_SUMMARY_RULE}\\n([\\s\\S]*?)\\n${MEETING_SUMMARY_RULE}`,
+      'g',
+    ),
+    (_match, title: string, content: string) => buildMeetingSummaryHtmlBlock(title, content.trim()),
+  );
+  const cleaned = cleanMeetingBriefText(summary);
+  if (!cleaned) return withLegacyRules;
+  const title = meetingSummaryTitle(cleaned);
+  const candidates = [
+    `${title}\n${cleaned}`,
+    `${title}\n\n${cleaned}`,
+  ];
+  for (const block of candidates) {
+    if (withLegacyRules.includes(block)) {
+      return withLegacyRules.replace(block, buildMeetingSummaryHtmlBlock(title, cleaned));
+    }
+  }
+  return withLegacyRules;
+};
+
+const COMPOSE_FONT_SIZES = ['12px', '14px', '16px', '18px', '22px'] as const;
+const HIGHLIGHT_YELLOW = '#fef08a';
+
+const htmlToPlain = (html: string) =>
+  String(html || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+const isComposeBodyEmpty = (html: string) => !htmlToPlain(html);
+
+const textToEditorHtml = (text: string) => {
+  const source = String(text || '').replace(/\r\n/g, '\n');
+  if (!source.trim()) return '';
+  if (/<[a-z][\s\S]*>/i.test(source)) return source;
+  return source
+    .split(/\n{2,}/)
+    .map(para => `<p>${escapeHtml(para).replace(/\n/g, '<br>')}</p>`)
+    .join('');
+};
+
+const FORMAT_BTN_CLASS =
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-gray-600 transition hover:bg-white disabled:opacity-40';
+const FORMAT_BTN_ACTIVE_CLASS =
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#4218CC] text-white transition disabled:opacity-40';
 
 async function fetchCurrentUserFullName() {
   const { data: { user } } = await supabase.auth.getUser();
@@ -279,12 +429,21 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
   // Attachments state
   const [attachments, setAttachments] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentsSectionRef = useRef<HTMLDivElement>(null);
   
   // AI suggestions state
-  const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
   const [aiDraftActive, setAiDraftActive] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(true);
+  const [aiChatMessages, setAiChatMessages] = useState<ContractAiReviewMessage[]>([]);
+  const [aiChatRemarks, setAiChatRemarks] = useState('');
+  const [aiChatApplying, setAiChatApplying] = useState(false);
+  const [aiChatThinking, setAiChatThinking] = useState<string | null>(null);
+  const [meetingSummary, setMeetingSummary] = useState('');
+  const [insertingContractLink, setInsertingContractLink] = useState(false);
+  const caseFileRef = useRef('');
+  const caseFilePromiseRef = useRef<Promise<string> | null>(null);
   
   // Lead contacts modal state
   const [showContactsModal, setShowContactsModal] = useState(false);
@@ -347,7 +506,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     setLinkUrl('');
 
     setSubject(defaultSubject);
-    setBody('');
+    setComposeBody('');
     setAiDraftActive(false);
     setTotal(
       client?.proposal_total !== null && client?.proposal_total !== undefined
@@ -373,8 +532,69 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     // Reset AI suggestions
     setAiSuggestions([]);
     setShowAISuggestions(false);
-    setIsLoadingAI(false);
+    setAiChatOpen(true);
+    setAiChatMessages([]);
+    setAiChatRemarks('');
+    setAiChatApplying(false);
+    setAiChatThinking(null);
+    setMeetingSummary('');
+    setInsertingContractLink(false);
   }, [isOpen, client, defaultSubject]);
+
+  useEffect(() => {
+    if (!isOpen || !client?.id) {
+      caseFileRef.current = '';
+      caseFilePromiseRef.current = null;
+      return;
+    }
+    const leadId = String(client.id);
+    const promise = fetchLeadCaseFileForAi({
+      leadId,
+      isLegacy: client.lead_type === 'legacy' || leadId.startsWith('legacy_'),
+    })
+      .then((text) => {
+        caseFileRef.current = text;
+        return text;
+      })
+      .catch((error) => {
+        console.warn('Failed to load CRM case file for price-offer AI', error);
+        caseFileRef.current = '';
+        return '';
+      });
+    caseFilePromiseRef.current = promise;
+  }, [isOpen, client?.id, client?.lead_type]);
+
+  useEffect(() => {
+    if (!isOpen || !client?.id) {
+      setMeetingSummary('');
+      return;
+    }
+    let cancelled = false;
+    const loadMeetingSummary = async () => {
+      const isLegacy = client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+      const query = supabase
+        .from('meetings')
+        .select('meeting_summary_notes, meeting_brief')
+        .order('meeting_date', { ascending: false })
+        .limit(1);
+      const { data, error } = isLegacy
+        ? await query.eq('legacy_lead_id', String(client.id).replace(/^legacy_/i, ''))
+        : await query.eq('client_id', client.id);
+      if (cancelled) return;
+      if (error || !data?.[0]) {
+        setMeetingSummary('');
+        return;
+      }
+      const text =
+        String(data[0].meeting_summary_notes ?? '').trim() ||
+        String(data[0].meeting_brief ?? '').trim();
+      setMeetingSummary(cleanMeetingBriefText(text));
+    };
+    void loadMeetingSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, client?.id, client?.lead_type]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -546,7 +766,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || selectedTemplateId === null) return;
-    setBody(prev => updateOfferBodyWithTotal(prev, total, currency));
+    setComposeBody(prev => updateOfferBodyWithTotal(prev, total, currency));
   }, [total, currency, selectedTemplateId, isOpen]);
 
   // Search employees locally - must be before early return to follow rules of hooks
@@ -562,12 +782,68 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       .slice(0, 10); // Limit to 10 results
   }, [employees]);
 
-  const { typewrite: typewriteComposeAi, cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(setBody);
+  const syncingEditorRef = useRef(false);
+  const composeEditorRef = useRef<ReturnType<typeof useEditor>>(null);
+  const [, bumpEditorUi] = useState(0);
+
+  const editor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({ heading: false }),
+      Underline,
+      TextStyle,
+      FontSize,
+      Highlight.configure({ multicolor: true }),
+      TextAlign.configure({ types: ['paragraph'] }),
+      Link.configure({
+        openOnClick: false,
+        autolink: true,
+        HTMLAttributes: {
+          class: 'text-[#4218CC] underline',
+          target: '_blank',
+          rel: 'noopener noreferrer',
+        },
+      }),
+      ContractLinkPreview,
+      Placeholder.configure({ placeholder: 'Type your message...' }),
+    ],
+    content: '',
+    editorProps: {
+      attributes: {
+        class:
+          'price-offer-compose-editor min-h-[240px] outline-none text-[15px] leading-relaxed text-gray-900',
+      },
+    },
+    onUpdate: ({ editor: next }) => {
+      if (syncingEditorRef.current) return;
+      setBody(next.getHTML());
+      bumpEditorUi(n => n + 1);
+    },
+    onSelectionUpdate: () => bumpEditorUi(n => n + 1),
+  });
+  composeEditorRef.current = editor;
+
+  const setComposeBody = useCallback((next: string | ((prev: string) => string)) => {
+    setBody(prev => {
+      const raw = typeof next === 'function' ? next(prev) : next;
+      const html = textToEditorHtml(raw);
+      const ed = composeEditorRef.current;
+      if (ed) {
+        syncingEditorRef.current = true;
+        ed.commands.setContent(html || '');
+        syncingEditorRef.current = false;
+      }
+      return html;
+    });
+  }, []);
+
+  const { cancel: cancelComposeAiTypewrite } = useComposeAiTypewriter(setComposeBody);
 
   if (!isOpen) return null;
 
   const closeModal = () => {
     if (sending) return;
+    setAiChatOpen(false);
     onClose();
   };
 
@@ -600,13 +876,14 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     }
 
     const label = linkLabel.trim();
-    setBody(prev => {
-      const existing = prev || '';
-      const trimmedExisting = existing.replace(/\s*$/, '');
-      // Use markdown-style link format: [label](url) or just the URL if no label
-      const linkLine = label ? `[${label}](${formattedUrl})` : formattedUrl;
-      return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
-    });
+    const linkHtml = label
+      ? `<p><a href="${escapeHtml(formattedUrl)}">${escapeHtml(label)}</a></p>`
+      : `<p><a href="${escapeHtml(formattedUrl)}">${escapeHtml(formattedUrl)}</a></p>`;
+    if (composeEditorRef.current) {
+      composeEditorRef.current.chain().focus().insertContent(linkHtml).run();
+    } else {
+      setComposeBody(prev => `${prev || ''}${linkHtml}`);
+    }
 
     handleCancelLink();
   };
@@ -671,68 +948,211 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
   // Handle file upload
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
     setAttachments(prev => [...prev, ...files]);
+    event.target.value = '';
+    window.setTimeout(() => {
+      attachmentsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 50);
   };
 
   const removeAttachment = (index: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Handle AI suggestions
-  const handleAISuggestions = async (options?: { redo?: boolean }) => {
-    if (!client || isLoadingAI) return;
+  const applyAISuggestion = (suggestion: string) => {
+    setComposeBody(suggestion);
+    setShowAISuggestions(false);
+    setAiSuggestions([]);
+  };
 
-    const previousDraft = body.trim();
-    const createNew = Boolean(options?.redo) || !previousDraft;
-    if (options?.redo) {
-      cancelComposeAiTypewrite();
-      setBody('');
-      setAiDraftActive(false);
+  const applyPriceOfferAiDraft = (text: string) => {
+    const trimmed = stripAiEmailSignature(
+      text.replace(/\[\[\/?[A-Z]+(?::[^\]]+)?\]\]/g, '').replace(/\r\n/g, '\n').trim(),
+    );
+    const subjectMatch = trimmed.match(/^Subject:\s*(.+?)\n(?:\s*\n)?([\s\S]*)$/i);
+    if (subjectMatch) {
+      const nextSubject = subjectMatch[1].trim();
+      if (nextSubject) setSubject(nextSubject);
+      setComposeBody(applyContractLinkPreviewHtml(stripAiEmailSignature(subjectMatch[2])));
+      setAiDraftActive(true);
+      return;
     }
-    setIsLoadingAI(true);
-    if (!createNew) setShowAISuggestions(true);
-    
+    setComposeBody(applyContractLinkPreviewHtml(trimmed));
+    setAiDraftActive(true);
+  };
+
+  const handleApplyPriceOfferAiChat = async (remarksOverride?: string) => {
+    const remarks = (remarksOverride ?? aiChatRemarks).trim();
+    if (!remarks || !client || aiChatApplying) return;
+    setAiChatOpen(true);
+    setAiChatApplying(true);
+    setAiChatThinking('Opening the case file…');
+    setAiChatMessages((prev) => [...prev, { role: 'user', content: remarks }]);
+    setAiChatRemarks('');
     try {
-      const requestType = createNew ? 'suggest' : 'improve';
-      
-      const result = await fetchAiMessageSuggestion({
-        currentMessage: previousDraft,
-        conversationHistory: [],
-        clientName: client?.name || 'Client',
-        requestType
-      });
-      
-      if (result.success) {
-        const suggestion = result.suggestion.trim();
-        if (createNew && isUsableAiDraft(suggestion)) {
-          setShowAISuggestions(false);
-          setAiSuggestions([]);
-          typewriteComposeAi(suggestion);
-          setAiDraftActive(true);
-        } else {
-          setAiSuggestions([suggestion]);
+      let caseContext =
+        caseFileRef.current ||
+        (caseFilePromiseRef.current ? await caseFilePromiseRef.current : '') ||
+        (await fetchLeadCaseFileForAi({
+          leadId: String(client.id),
+          isLegacy: client.lead_type === 'legacy' || String(client.id).startsWith('legacy_'),
+        }).catch(() => ''));
+      let links = parseFollowupDocumentLinks(caseContext);
+      if (!links.contractSigningUrl && !links.poaUrl && !links.invoiceUrl) {
+        const fresh = await fetchLeadCaseFileForAi({
+          leadId: String(client.id),
+          isLegacy: client.lead_type === 'legacy' || String(client.id).startsWith('legacy_'),
+        }).catch(() => '');
+        if (fresh) {
+          caseContext = fresh;
+          caseFileRef.current = fresh;
+          links = parseFollowupDocumentLinks(fresh);
         }
-      } else {
-        if (result.code === 'OPENAI_QUOTA') {
-          toast.error('AI quota exceeded. Please try again later.');
-          setAiSuggestions(['Sorry, AI is temporarily unavailable (quota exceeded).']);
-          return;
-        }
-        throw new Error(result.error || 'Failed to get AI suggestions');
       }
-    } catch (error) {
-      console.error('Error getting AI suggestions:', error);
-      toast.error('Failed to get AI suggestions. Please try again later.');
-      setAiSuggestions(['Sorry, AI suggestions are not available right now.']);
+      const requiredLinks = formatRequiredDocumentLinksBlock(links);
+      setAiChatThinking('Reading the case and your request…');
+      const offerAmount = [total.trim(), currency.trim()].filter(Boolean).join(' ');
+      const meetingBrief =
+        meetingSummary.trim() ||
+        String(client.meeting_brief || client.meeting_summary_notes || '').trim();
+      const offerContext = [
+        'This is a FIRST PRICE OFFER email after a meeting (not a later follow-up).',
+        offerAmount ? `Offer amount to state in the email: ${offerAmount}` : '',
+        meetingBrief ? `Meeting brief:\n${meetingBrief}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      const currentDocumentText = `Subject: ${subject || `(price offer for ${client.name || 'client'})`}\n\n${
+        htmlToPlain(body) || '(empty price-offer email — draft one for this client)'
+      }`;
+      const userRemarks = [
+        remarks,
+        offerContext,
+        requiredLinks,
+        caseContext
+          ? `[BACKGROUND CASE FILE — use these facts. Copy REQUIRED LINKS exactly when needed. Do not dump this file into the email. Never use example.com.]\n${caseContext}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      const result = await sendWordDocumentAiChatMessage(
+        {
+          currentDocumentText,
+          userRemarks,
+          clientName: client.name,
+          leadNumber: client.lead_number,
+          language: client.language,
+          category: client.category,
+          chatHistory: aiChatMessages.map((m) => ({
+            role: m.role,
+            content:
+              m.role === 'assistant' && m.kind === 'change'
+                ? 'Updated the price offer email.'
+                : m.content,
+          })),
+          caseContext: [offerContext, requiredLinks, caseContext].filter(Boolean).join('\n\n'),
+          purpose: 'email_followup',
+        },
+        (text) => setAiChatThinking(text),
+      );
+      if (result.intent === 'action') {
+        applyPriceOfferAiDraft(
+          applyCrmDocumentLinksToEmailDraft(result.improvedDocumentText, links, remarks),
+        );
+      }
+      setAiChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          kind: result.intent === 'question' ? 'answer' : 'change',
+          content:
+            result.intent === 'question'
+              ? result.answer
+              : result.changeSummary || 'Done — I updated the price offer email.',
+        },
+      ]);
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : 'AI request failed');
     } finally {
-      setIsLoadingAI(false);
+      setAiChatApplying(false);
+      setAiChatThinking(null);
     }
   };
 
-  const applyAISuggestion = (suggestion: string) => {
-    setBody(suggestion);
-    setShowAISuggestions(false);
-    setAiSuggestions([]);
+  const handleCreateEmailWithAi = () => {
+    if (aiChatApplying || !client) return;
+    void handleApplyPriceOfferAiChat(PRICE_OFFER_AI_DRAFT_PROMPT);
+  };
+
+  const handleInsertMeetingSummary = () => {
+    const text = meetingSummary.trim();
+    if (!text) {
+      toast.error('No meeting summary is saved for this client.');
+      return;
+    }
+    if (bodyHasMeetingSummaryBlock(body)) {
+      toast('Meeting summary is already in the email.');
+      return;
+    }
+    const title = meetingSummaryTitle(text);
+    const summaryHtml = `<p><strong>${escapeHtml(title)}</strong></p>${text
+      .split(/\n{2,}/)
+      .map(para => `<p>${escapeHtml(para).replace(/\n/g, '<br>')}</p>`)
+      .join('')}`;
+    cancelComposeAiTypewrite();
+    if (composeEditorRef.current) {
+      composeEditorRef.current.chain().focus().insertContent(summaryHtml).run();
+    } else {
+      setComposeBody(prev => `${prev || ''}${summaryHtml}`);
+    }
+  };
+
+  const handleInsertAgreementLink = async () => {
+    if (!client || insertingContractLink) return;
+    if (bodyHasContractLink(body)) {
+      toast('Agreement link is already in the email.');
+      return;
+    }
+    setInsertingContractLink(true);
+    try {
+      const link = await fetchLeadContractPublicLink(
+        String(client.id),
+        client.lead_type === 'legacy' || String(client.id).startsWith('legacy_'),
+      );
+      if (!link) {
+        toast.error('No agreement or contract link is available for this client.');
+        return;
+      }
+      cancelComposeAiTypewrite();
+      const leadNumber = client.lead_number ? String(client.lead_number) : '';
+      const editor = composeEditorRef.current;
+      if (editor) {
+        const cleaned = stripLooseContractPreviewText(editor.getHTML());
+        if (cleaned !== editor.getHTML()) {
+          editor.commands.setContent(cleaned || '');
+        }
+        const inserted = editor.chain().focus().insertContractLinkPreview({
+          href: link.url,
+          signed: link.signed,
+          leadNumber,
+        }).run();
+        if (!inserted || !bodyHasContractLink(editor.getHTML())) {
+          editor.commands.setContent(
+            `${stripLooseContractPreviewText(editor.getHTML())}${buildClickableContractLinkHtml(link.url, link.signed, leadNumber)}`,
+          );
+        }
+      } else {
+        setComposeBody(prev => `${prev || ''}${buildClickableContractLinkHtml(link.url, link.signed, leadNumber)}`);
+      }
+      toast.success(`${labelForContractLink(link.signed)} added`);
+    } catch (error) {
+      console.error('Failed to insert agreement link:', error);
+      toast.error('Failed to add the agreement link.');
+    } finally {
+      setInsertingContractLink(false);
+    }
   };
   
   // Handle opening contacts modal
@@ -855,7 +1275,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       .replace(/\{client_name\}/gi, clientName)
       .replace(/\{lead_number\}/gi, leadNumber);
 
-    setBody(templatedBody || template.content || template.rawContent);
+    setComposeBody(templatedBody || template.content || template.rawContent);
     setTemplateSearch(template.name);
     setShowTemplateDropdown(false);
   };
@@ -909,7 +1329,9 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
       const closerName = (await fetchCurrentUserFullName()) || 'Current User';
 
-      const htmlBody = convertBodyToHtml(body, { markdownLinks: true });
+      const htmlBody = convertBodyToHtml(applyMeetingSummaryHtml(body, meetingSummary), {
+        markdownLinks: true,
+      });
       const { html: htmlWithSignature, inlineAttachments } = await buildOutgoingHtmlWithSignature(htmlBody);
       
       // Prepare attachments if any
@@ -926,7 +1348,8 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       const now = new Date();
       const recipientListForLog = [...finalToRecipients, ...finalCcRecipients].join(', ');
       const messageId = `offer_${isLegacyLead ? `legacy_${legacyId}` : client?.id}_${now.getTime()}`;
-      const bodyPreview = body.length > 500 ? body.substring(0, 500) : body;
+      const plainBody = htmlToPlain(body);
+      const bodyPreview = plainBody;
       let parsedTotal: number | null = null;
       if (total !== null && total !== undefined && String(total).trim() !== '') {
         const numericTotal = Number(total);
@@ -1004,13 +1427,13 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       // For legacy leads, only include fields that exist in leads_lead table
       if (isLegacyLead) {
         additionalFields = {
-          proposal: body, // Store proposal text in 'proposal' column (not 'proposal_text')
+          proposal: plainBody,
           total: parsedTotal ? String(parsedTotal) : null, // Use 'total' instead of 'balance', convert to string
           currency_id: currencyNameToId(currency), // Use 'currency_id' instead of 'balance_currency', convert to ID
         };
         console.log('💾 Saving proposal for legacy lead:', {
           legacyId,
-          proposal: body.substring(0, 100) + '...',
+          proposal: plainBody.substring(0, 100) + '...',
           total: parsedTotal,
           currency_id: currencyNameToId(currency),
           additionalFields,
@@ -1018,7 +1441,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       } else {
         // For new leads, include all proposal and balance fields
         additionalFields = {
-          proposal_text: body,
+          proposal_text: plainBody,
           proposal_total: parsedTotal,
           proposal_currency: currency,
           closer: closerName,
@@ -1208,21 +1631,56 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     );
   };
 
+  const stageStr =
+    client?.stage != null && String(client.stage).trim() !== '' ? String(client.stage) : '';
+  const stageLabel = stageStr
+    ? /^\d+$/.test(stageStr)
+      ? getStageName(stageStr) || stageStr
+      : stageStr
+    : '';
+  const stageBadgeStyle = stageStr ? getSoftStageBadgeStyle(getStageColour(stageStr), stageStr) : null;
+
   return (
-    <div className="fixed inset-0 z-[70]">
+    <div className={`fixed inset-0 z-[70] send-price-offer-modal ${aiChatOpen ? 'md:pr-[28rem]' : ''}`}>
       <div className="absolute inset-0 bg-black/40" />
-      <div className="relative z-10 flex flex-col h-full bg-base-100">
-        <header className="px-6 py-4 border-b border-base-200 flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold">Send Price Offer</h2>
-            <p className="text-sm text-base-content/60">Create and send a customized price offer to the client.</p>
+      <div className="relative z-10 flex h-full flex-col bg-base-100">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+        <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-white/40 bg-white/45 px-6 py-4 shadow-[0_1px_0_0_rgba(255,255,255,0.55)] backdrop-blur-xl backdrop-saturate-150">
+          <div className="flex min-w-0 items-center gap-3">
+            <h2 className="shrink-0 text-2xl font-bold">Send Price Offer</h2>
+            {(client?.lead_number || client?.name) && (
+              <p className="truncate text-sm font-medium text-base-content/55">
+                {[client?.lead_number, client?.name].filter(Boolean).join(' · ')}
+              </p>
+            )}
+            {stageLabel && stageBadgeStyle ? (
+              <span
+                className="badge stage-badge shrink-0 rounded-full border-0 px-2.5 py-0.5 text-xs font-medium"
+                style={{ backgroundColor: stageBadgeStyle.backgroundColor, color: stageBadgeStyle.color }}
+                title={stageLabel}
+              >
+                {stageLabel}
+              </span>
+            ) : null}
           </div>
-          <button className="btn btn-ghost" onClick={closeModal} disabled={sending}>
-            <XMarkIcon className="w-6 h-6" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 bg-transparent text-black hover:opacity-70 disabled:opacity-50"
+              onClick={() => setAiChatOpen(true)}
+              disabled={sending || !client}
+              title="AI price offer assistant"
+            >
+              <SparklesIcon className="h-5 w-5" />
+              <span className="text-sm font-semibold">AI</span>
+            </button>
+            <button className="btn btn-ghost" onClick={closeModal} disabled={sending}>
+              <XMarkIcon className="w-6 h-6" />
+            </button>
+          </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+        <main className="space-y-6 px-6 py-6">
           <section className="space-y-2">
             <label className="font-semibold text-sm">To</label>
             {renderRecipients('to')}
@@ -1273,12 +1731,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
                     <XMarkIcon className="w-4 h-4" />
                   </button>
                 </div>
-                {isLoadingAI ? (
-                  <div className="flex items-center gap-2 text-sm text-blue-600">
-                    <span className="loading loading-spinner loading-sm" />
-                    Getting AI suggestions...
-                  </div>
-                ) : aiSuggestions.length > 0 ? (
+                {aiSuggestions.length > 0 ? (
                   <div 
                     className="p-3 rounded-lg border border-blue-200 bg-white cursor-pointer hover:bg-blue-50 transition-colors"
                     onClick={() => applyAISuggestion(aiSuggestions[0])}
@@ -1331,39 +1784,50 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
             <ComposeBodyWithSignature
               afterSignature={
-                <ComposeAttachmentPreviews files={attachments} onRemove={removeAttachment} />
+                attachments.length > 0 ? (
+                  <div ref={attachmentsSectionRef} className="mt-4 border-t border-slate-100 px-4 pb-6 pt-4">
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Attachments
+                    </p>
+                    <ComposeAttachmentPreviews
+                      files={attachments}
+                      onRemove={removeAttachment}
+                      className=""
+                    />
+                  </div>
+                ) : null
               }
             >
-            <div className="relative">
-            <textarea
-              className="textarea w-full min-h-[240px]"
-              value={body}
-              placeholder={body.trim() || isLoadingAI ? '' : 'Type your message...'}
-              onChange={event => {
-                cancelComposeAiTypewrite();
-                setBody(event.target.value);
-              }}
+            <div className="relative" onKeyDown={() => cancelComposeAiTypewrite()}>
+            <EditorContent
+              editor={editor}
+              className="min-h-[240px] [&_.ProseMirror]:min-h-[240px] [&_.ProseMirror]:outline-none [&_.ProseMirror_a:not(.contract-link-preview-btn)]:text-[#4218CC] [&_.ProseMirror_a:not(.contract-link-preview-btn)]:underline [&_.ProseMirror_p.is-editor-empty:first-child]:before:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child]:before:float-left [&_.ProseMirror_p.is-editor-empty:first-child]:before:h-0 [&_.ProseMirror_p.is-editor-empty:first-child]:before:text-gray-400 [&_.ProseMirror_p.is-editor-empty:first-child]:before:content-[attr(data-placeholder)]"
             />
             <ComposeAiEmptyPrompt
-              visible={!body.trim() && !isLoadingAI}
-              loading={isLoadingAI && !body.trim()}
-              disabled={isLoadingAI || !client}
-              onClick={handleAISuggestions}
+              visible={isComposeBodyEmpty(body) && !aiChatApplying}
+              loading={aiChatApplying && isComposeBodyEmpty(body)}
+              disabled={aiChatApplying || !client}
+              onClick={handleCreateEmailWithAi}
             />
             </div>
-            {aiDraftActive && body.trim() && !isLoadingAI ? (
+            {aiDraftActive && !isComposeBodyEmpty(body) && !aiChatApplying ? (
               <ComposeAiRedoButton
-                disabled={isLoadingAI || !client}
-                onClick={() => void handleAISuggestions({ redo: true })}
+                disabled={aiChatApplying || !client}
+                onClick={() =>
+                  void handleApplyPriceOfferAiChat(
+                    'Rewrite this price offer email with different wording. Keep the same facts and offer amount.',
+                  )
+                }
               />
             ) : null}
             </ComposeBodyWithSignature>
           </section>
         </main>
+        </div>
 
-        <footer className="px-6 py-4 border-t border-base-200 flex items-center justify-between gap-4">
+        <footer className="flex items-center justify-between gap-4 bg-gray-50 px-6 py-4">
           {/* Left side - Buttons and Template Filters */}
-          <div className="flex items-center gap-4">
+          <div className="flex w-full items-center gap-4">
             {/* Circle action buttons */}
             <div className="flex items-center gap-3">
               <button
@@ -1384,8 +1848,8 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
               {/* Attach Files Button */}
               <button
                 type="button"
-                className={COMPOSE_ACTION_BUTTON_CLASS}
-                style={COMPOSE_ACTION_BUTTON_STYLE}
+                className={PRICE_OFFER_ACTION_BUTTON_CLASS}
+                style={PRICE_OFFER_ACTION_BUTTON_STYLE}
                 onClick={() => fileInputRef.current?.click()}
                 disabled={sending}
                 title="Attach files"
@@ -1393,16 +1857,18 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
                 <PaperClipIcon className="w-6 h-6" />
               </button>
               
-              {/* AI Suggestions Button */}
+              {/* AI assistant Button */}
               <button
                 type="button"
-                onClick={handleAISuggestions}
-                disabled={isLoadingAI || !client}
-                className={COMPOSE_ACTION_BUTTON_CLASS}
-                style={COMPOSE_ACTION_BUTTON_STYLE}
-                title="AI suggestions"
+                onClick={() => setAiChatOpen(true)}
+                disabled={aiChatApplying || !client}
+                className={`${PRICE_OFFER_ACTION_BUTTON_CLASS} ${
+                  aiChatOpen ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                }`}
+                style={PRICE_OFFER_ACTION_BUTTON_STYLE}
+                title="AI price offer assistant"
               >
-                {isLoadingAI ? (
+                {aiChatApplying ? (
                   <span className="loading loading-spinner loading-sm" />
                 ) : (
                   <SparklesIcon className="w-6 h-6" />
@@ -1412,24 +1878,58 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
               {/* Add Link Button */}
               <button
                 type="button"
-                className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
+                className={`${PRICE_OFFER_ACTION_BUTTON_CLASS} ${
                   showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                 }`}
-                style={COMPOSE_ACTION_BUTTON_STYLE}
+                style={PRICE_OFFER_ACTION_BUTTON_STYLE}
                 onClick={() => setShowLinkForm(prev => !prev)}
                 disabled={sending}
                 title={showLinkForm ? 'Hide link form' : 'Add link'}
               >
                 <LinkIcon className="w-6 h-6" />
               </button>
+
+              {/* Add meeting summary */}
+              <button
+                type="button"
+                className={`${PRICE_OFFER_LABELED_BUTTON_CLASS} ${
+                  bodyHasMeetingSummaryBlock(body) ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                }`}
+                style={PRICE_OFFER_LABELED_BUTTON_STYLE}
+                onClick={handleInsertMeetingSummary}
+                disabled={sending || !meetingSummary.trim()}
+                title="Summary"
+              >
+                <DocumentTextIcon className="w-5 h-5" />
+                Summary
+              </button>
+
+              {/* Add agreement / contract link */}
+              <button
+                type="button"
+                className={`${PRICE_OFFER_LABELED_BUTTON_CLASS} ${
+                  bodyHasContractLink(body) ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                }`}
+                style={PRICE_OFFER_LABELED_BUTTON_STYLE}
+                onClick={() => void handleInsertAgreementLink()}
+                disabled={sending || insertingContractLink || !client}
+                title="Contract"
+              >
+                {insertingContractLink ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  <DocumentCheckIcon className="w-5 h-5" />
+                )}
+                Contract
+              </button>
               
               {/* Add Contacts from Lead Button */}
               <button
                 type="button"
-                className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
+                className={`${PRICE_OFFER_ACTION_BUTTON_CLASS} ${
                   showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                 }`}
-                style={COMPOSE_ACTION_BUTTON_STYLE}
+                style={PRICE_OFFER_ACTION_BUTTON_STYLE}
                 onClick={handleOpenContactsModal}
                 disabled={sending || !client}
                 title="Add contacts from lead"
@@ -1437,57 +1937,117 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
                 <UserPlusIcon className="w-6 h-6" />
               </button>
             </div>
+
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+
+            <div
+              className="flex items-center gap-1.5"
+              onMouseDown={event => {
+                if ((event.target as HTMLElement).closest('select')) return;
+                event.preventDefault();
+              }}
+            >
+              <button
+                type="button"
+                className={editor?.isActive({ textAlign: 'left' }) ? FORMAT_BTN_ACTIVE_CLASS : FORMAT_BTN_CLASS}
+                title="Align left"
+                disabled={sending || !editor}
+                onClick={() => {
+                  if (!editor) return;
+                  if (editor.isActive({ textAlign: 'left' })) {
+                    editor.chain().focus().unsetTextAlign().run();
+                    return;
+                  }
+                  editor.chain().focus().setTextAlign('left').run();
+                }}
+              >
+                <Bars3BottomLeftIcon className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className={editor?.isActive({ textAlign: 'right' }) ? FORMAT_BTN_ACTIVE_CLASS : FORMAT_BTN_CLASS}
+                title="Align right"
+                disabled={sending || !editor}
+                onClick={() => {
+                  if (!editor) return;
+                  if (editor.isActive({ textAlign: 'right' })) {
+                    editor.chain().focus().unsetTextAlign().run();
+                    return;
+                  }
+                  editor.chain().focus().setTextAlign('right').run();
+                }}
+              >
+                <Bars3BottomRightIcon className="h-4 w-4" />
+              </button>
+              <select
+                className="h-9 shrink-0 rounded-full border-0 bg-white px-2.5 text-xs font-medium text-gray-600"
+                title="Text size"
+                disabled={sending || !editor}
+                value={
+                  COMPOSE_FONT_SIZES.includes(
+                    String(editor?.getAttributes('textStyle').fontSize || '') as (typeof COMPOSE_FONT_SIZES)[number],
+                  )
+                    ? String(editor?.getAttributes('textStyle').fontSize)
+                    : ''
+                }
+                onChange={event => {
+                  if (!editor) return;
+                  const next = event.target.value;
+                  if (!next) {
+                    editor.chain().focus().unsetFontSize().run();
+                    return;
+                  }
+                  editor.chain().focus().setFontSize(next).run();
+                }}
+              >
+                <option value="">Size</option>
+                {COMPOSE_FONT_SIZES.map(size => (
+                  <option key={size} value={size}>
+                    {size.replace('px', '')}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={editor?.isActive('bold') ? FORMAT_BTN_ACTIVE_CLASS : FORMAT_BTN_CLASS}
+                title="Bold"
+                disabled={sending || !editor}
+                onClick={() => editor?.chain().focus().toggleBold().run()}
+              >
+                <BoldIcon className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className={editor?.isActive('underline') ? FORMAT_BTN_ACTIVE_CLASS : FORMAT_BTN_CLASS}
+                title="Underline"
+                disabled={sending || !editor}
+                onClick={() => editor?.chain().focus().toggleUnderline().run()}
+              >
+                <UnderlineIcon className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className={editor?.isActive('highlight') ? FORMAT_BTN_ACTIVE_CLASS : FORMAT_BTN_CLASS}
+                title="Highlight"
+                disabled={sending || !editor}
+                onClick={() => {
+                  if (!editor) return;
+                  editor.chain().focus().toggleHighlight({ color: HIGHLIGHT_YELLOW }).run();
+                }}
+              >
+                <span className="rounded-sm bg-[#fef08a] px-1 text-[11px] font-bold leading-none text-gray-800">A</span>
+              </button>
+            </div>
             
             {/* Divider */}
             <div className="w-px h-8 bg-base-300" />
             
-            {/* Template filters */}
+            {/* Template picker */}
             <div className="flex items-center gap-2">
-              {/* Language Filter */}
-              <select
-                className="select select-bordered select-sm w-28 text-sm"
-                value={templateLanguageFilter || ''}
-                onChange={(e) => {
-                  setTemplateLanguageFilter(e.target.value || null);
-                  if (!showTemplateDropdown) {
-                    setShowTemplateDropdown(true);
-                  }
-                }}
-                disabled={templatesLoading || sending}
-              >
-                <option value="">Language</option>
-                {availableLanguages.map(lang => (
-                  <option key={lang.id} value={lang.id}>
-                    {lang.name}
-                  </option>
-                ))}
-              </select>
-              
-              {/* Placement Filter */}
-              <select
-                className="select select-bordered select-sm w-36 text-sm"
-                value={templatePlacementFilter ?? ''}
-                onChange={(e) => {
-                  setTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
-                  if (!showTemplateDropdown) {
-                    setShowTemplateDropdown(true);
-                  }
-                }}
-                disabled={templatesLoading || sending}
-              >
-                <option value="">Placement</option>
-                {availablePlacements.map(placement => (
-                  <option key={placement.id} value={placement.id}>
-                    {placement.name}
-                  </option>
-                ))}
-              </select>
-              
-              {/* Template Search */}
-              <div className="relative w-52" ref={templateDropdownRef}>
+              <div className="relative w-64" ref={templateDropdownRef}>
                 <input
                   type="text"
-                  className="input input-bordered input-sm w-full pr-8"
+                  className="input input-bordered input-sm w-full bg-white pr-8"
                   placeholder={templatesLoading ? 'Loading...' : 'Templates...'}
                   value={templateSearch}
                   onChange={event => {
@@ -1503,29 +2063,59 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
                   }}
                   disabled={templatesLoading || sending}
                 />
-                <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <ChevronDownIcon className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                 {showTemplateDropdown && !templatesLoading && (
-                  <div className="absolute bottom-full mb-1 z-20 w-72 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
-                    {filteredTemplates.length === 0 ? (
-                      <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
-                    ) : (
-                      filteredTemplates.map(template => (
-                        <div
-                          key={template.id}
-                          className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                          onClick={() => handleTemplateSelect(template.id)}
-                        >
-                          <div>{template.name}</div>
-                          {(template.placementName || template.languageName) && (
-                            <div className="text-xs text-gray-500">
-                              {template.placementName && <span>{template.placementName}</span>}
-                              {template.placementName && template.languageName && <span> • </span>}
-                              {template.languageName && <span>{template.languageName}</span>}
-                            </div>
-                          )}
-                        </div>
-                      ))
-                    )}
+                  <div className="absolute bottom-full right-0 z-20 mb-2 w-[28rem] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
+                    <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2.5">
+                      <select
+                        className="select select-bordered select-sm min-w-0 flex-1 text-sm"
+                        value={templateLanguageFilter || ''}
+                        onChange={e => setTemplateLanguageFilter(e.target.value || null)}
+                      >
+                        <option value="">Language</option>
+                        {availableLanguages.map(lang => (
+                          <option key={lang.id} value={lang.id}>
+                            {lang.name}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="select select-bordered select-sm min-w-0 flex-1 text-sm"
+                        value={templatePlacementFilter ?? ''}
+                        onChange={e =>
+                          setTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null)
+                        }
+                      >
+                        <option value="">Placement</option>
+                        {availablePlacements.map(placement => (
+                          <option key={placement.id} value={placement.id}>
+                            {placement.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="max-h-56 overflow-y-auto">
+                      {filteredTemplates.length === 0 ? (
+                        <div className="px-3 py-3 text-sm text-gray-500">No templates found</div>
+                      ) : (
+                        filteredTemplates.map(template => (
+                          <div
+                            key={template.id}
+                            className="cursor-pointer px-3 py-2 text-sm hover:bg-gray-100"
+                            onClick={() => handleTemplateSelect(template.id)}
+                          >
+                            <div>{template.name}</div>
+                            {(template.placementName || template.languageName) && (
+                              <div className="text-xs text-gray-500">
+                                {template.placementName && <span>{template.placementName}</span>}
+                                {template.placementName && template.languageName && <span> • </span>}
+                                {template.languageName && <span>{template.languageName}</span>}
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1537,7 +2127,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
                   className="btn btn-ghost btn-sm btn-circle"
                   onClick={() => {
                     setSelectedTemplateId(null);
-                    setBody('');
+                    setComposeBody('');
                     setSubject(defaultSubject);
                     setTemplateSearch('');
                     setShowTemplateDropdown(false);
@@ -1550,6 +2140,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
                   <XMarkIcon className="w-4 h-4" />
                 </button>
               )}
+            </div>
             </div>
           </div>
         </footer>
@@ -1664,6 +2255,28 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
           </div>
         </div>
       )}
+      <ContractAiReviewPanel
+        isOpen={aiChatOpen}
+        onClose={() => setAiChatOpen(false)}
+        initialSummary={null}
+        messages={aiChatMessages}
+        remarks={aiChatRemarks}
+        onRemarksChange={setAiChatRemarks}
+        onApplyRemarks={() => void handleApplyPriceOfferAiChat()}
+        isApplying={aiChatApplying}
+        thinkingText={aiChatThinking}
+        zIndex={10050}
+        title={
+          <span className="flex items-center gap-2.5">
+            <ChatBubbleLeftRightIcon className="h-7 w-7 shrink-0 text-violet-600" />
+            <span>AI price offer assistant</span>
+          </span>
+        }
+        subtitle=""
+        placeholder="e.g. Write a price offer email stating the meeting total…"
+        conversationOnly
+        sheetClassName="!shadow-none"
+      />
     </div>
   );
 };

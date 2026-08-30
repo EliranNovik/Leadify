@@ -144,7 +144,10 @@ export async function saveOutgoingEmailRecord(input: SaveOutgoingEmailRecordInpu
     : input.recipientList;
   const bodyPreview =
     (input.bodyPreview && String(input.bodyPreview).trim()) ||
-    String(input.htmlBody || '').substring(0, 500);
+    String(input.htmlBody || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
 
   let authUserId: string | null = null;
   try {

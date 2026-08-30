@@ -3,6 +3,7 @@ import type { Lead } from './supabase';
 import { getStageName } from './stageUtils';
 import { getFrontendBaseUrl } from './api';
 import { buildPoaUrl } from './poaApi';
+import { applyContractLinkPreviewHtml } from './leadContractLink';
 
 export type LeadFollowupVerdict = 'high' | 'medium' | 'low' | 'not_worth';
 
@@ -371,6 +372,10 @@ export function applyCrmDocumentLinksToEmailDraft(
     if (!item.hasReal.test(next)) {
       next = insertUrlBeforeSignoff(next, item.url);
     }
+  }
+
+  if (links.contractSigningUrl && wantsContract) {
+    next = applyContractLinkPreviewHtml(next);
   }
 
   return next;

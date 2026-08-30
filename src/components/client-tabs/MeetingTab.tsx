@@ -25,9 +25,11 @@ import {
 import {
   ACTIVE_MEETING_STATUS_FILTER,
   cancelMeetingById,
+  defaultMeetingIdsToCancel,
   findMeetingToCancelOnReschedule,
   localTodayYmd,
   parseLegacyLeadId,
+  sortMeetingsForRescheduleCancel,
 } from '../../lib/meetingRescheduleCancel';
 import {
   clientsTabCacheLeadKey,
@@ -101,7 +103,8 @@ import { getValidTeamsLink as getValidTeamsLinkShared } from '../../lib/meetingJ
 import { generateICSFromDateTime, stripHtmlForIcs } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
-import MeetingSummaryNotesModal from './MeetingSummaryNotesModal';
+import MeetingBriefAiPanel from '../meeting/MeetingBriefAiPanel';
+import MeetingSummariesDrawer from './MeetingSummariesDrawer';
 import { replaceEmailTemplateParams, replaceEmailTemplateParamsSync } from '../../lib/emailTemplateParams';
 import { saveOutgoingEmailRecord } from '../../lib/saveOutgoingEmailRecord';
 import { convertBodyToHtml } from '../../lib/emailBodyHtml';
@@ -601,6 +604,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   const [editingBriefId, setEditingBriefId] = useState<number | null>(null);
   const [editedBrief, setEditedBrief] = useState<string>('');
   const [summaryNotesMeeting, setSummaryNotesMeeting] = useState<Meeting | null>(null);
+  const [summaryNotesDraft, setSummaryNotesDraft] = useState('');
+  const [showMeetingSummariesDrawer, setShowMeetingSummariesDrawer] = useState(false);
   const [expandedMeetingId, setExpandedMeetingId] = useState<number | null>(null);
   const [expandedMeetingData, setExpandedMeetingData] = useState<{
     [meetingId: number]: {
@@ -837,6 +842,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     custom_address: '',
   });
   const [meetingsToCancel, setMeetingsToCancel] = useState<number[]>([]);
+  const [rescheduleMeetingPickerOpen, setRescheduleMeetingPickerOpen] = useState(false);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
@@ -1067,11 +1073,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-11 h-11 text-sm';
 
     if (!employee) {
-      return (
-        <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 font-semibold flex-shrink-0`}>
-          --
-        </div>
-      );
+      return null;
     }
 
     const photoUrl = employee.photo_url || employee.photo;
@@ -3630,6 +3632,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   // Split meetings into upcoming and past
   const upcomingMeetings = meetings.filter(m => !isPastMeeting(m));
   const pastMeetings = meetings.filter(m => isPastMeeting(m));
+  const meetingSummariesCount = meetings.filter((m) =>
+    Boolean(m.meeting_summary_notes?.trim() || m.brief?.trim()),
+  ).length;
 
   // Fetch upcoming meetings for reschedule drawer
   useEffect(() => {
@@ -3642,8 +3647,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         .from('meetings')
         .select('*')
         .or(ACTIVE_MEETING_STATUS_FILTER)
-        .gte('meeting_date', localTodayYmd())
-        .order('meeting_date', { ascending: true });
+        .order('meeting_date', { ascending: false });
 
       if (isLegacyLead) {
         query = query.eq('legacy_lead_id', parseLegacyLeadId(client.id));
@@ -3654,12 +3658,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       const { data, error } = await query;
 
       if (!error && data) {
-        setRescheduleMeetings(data);
-        setMeetingsToCancel(
-          data
-            .map((m: any) => Number(m.id))
-            .filter((id: number) => Number.isFinite(id)),
-        );
+        const sorted = sortMeetingsForRescheduleCancel(data);
+        setRescheduleMeetings(sorted);
+        setMeetingsToCancel(defaultMeetingIdsToCancel(sorted));
+        setRescheduleMeetingPickerOpen(false);
       } else {
         setRescheduleMeetings([]);
         setMeetingsToCancel([]);
@@ -5733,8 +5735,17 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     const formattedDate = new Date(meeting.date).toLocaleDateString('en-GB');
 
     const handleEditBrief = () => {
+      const canUseAiSummary = typeof meeting.id === 'number' && !meeting.isLegacy;
+      if (canUseAiSummary) {
+        const existingSummary = meeting.meeting_summary_notes?.trim() || '';
+        const existingBrief = meeting.brief?.trim() || '';
+        setSummaryNotesDraft(existingSummary || existingBrief);
+        setSummaryNotesMeeting(meeting);
+        return;
+      }
       setEditingBriefId(meeting.id);
       setEditedBrief(meeting.brief || '');
+      if (past) setShowPastMeetingsPanel(true);
     };
 
     const handleEditField = (meetingId: number, field: 'expert_notes' | 'handler_notes', currentContent?: string) => {
@@ -6156,22 +6167,41 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       'btn btn-circle h-11 w-11 min-h-11 min-w-11 p-0 shrink-0 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 shadow-sm';
 
     // Action buttons rendered in the vertical side column on the right of the card.
+    const canUseSummaryNotes = typeof meeting.id === 'number' && !meeting.isLegacy;
+    const openSummaryNotes = (e?: React.MouseEvent) => {
+      e?.stopPropagation();
+      const existingSummary = meeting.meeting_summary_notes?.trim() || '';
+      const existingBrief = meeting.brief?.trim() || '';
+      setSummaryNotesDraft(existingSummary || existingBrief);
+      setSummaryNotesMeeting(meeting);
+    };
+    const aiSummaryButton = (
+      <div className="relative shrink-0">
+        <button
+          type="button"
+          className={
+            past
+              ? 'inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/40 bg-white/20 text-white shadow-sm backdrop-blur-md hover:bg-white/30'
+              : 'btn btn-circle h-11 w-11 min-h-11 min-w-11 p-0 shrink-0 border border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100 hover:border-violet-400 shadow-sm'
+          }
+          onClick={openSummaryNotes}
+          title="Meeting Summary (AI)"
+        >
+          <DocumentTextIcon className={past ? 'h-4 w-4' : 'h-5 w-5'} />
+        </button>
+        <span
+          className={`absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full border-2 px-1 text-[10px] font-bold leading-none text-white shadow-sm pointer-events-none ${
+            past ? 'border-white/70 bg-violet-600' : 'border-white bg-violet-600'
+          }`}
+        >
+          AI
+        </span>
+      </div>
+    );
+
     const sideActionButtons = (
       <div className="flex flex-col items-center gap-2 sm:gap-3">
-        {typeof meeting.id === 'number' && !meeting.isLegacy && (
-          <div className="relative shrink-0">
-            <button
-              className="btn btn-circle h-11 w-11 min-h-11 min-w-11 p-0 shrink-0 border border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100 hover:border-violet-400 shadow-sm"
-              onClick={() => setSummaryNotesMeeting(meeting)}
-              title="Meeting Summary (AI)"
-            >
-              <DocumentTextIcon className="w-5 h-5" />
-            </button>
-            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center text-[10px] font-bold leading-none bg-violet-600 text-white rounded-full border-2 border-white shadow-sm pointer-events-none">
-              AI
-            </span>
-          </div>
-        )}
+        {!past && canUseSummaryNotes ? aiSummaryButton : null}
         {/* Edit Button - only for upcoming meetings */}
         {!past && (
           <button
@@ -6442,8 +6472,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       </div>
     );
 
-    const canUseSummaryNotes = typeof meeting.id === 'number' && !meeting.isLegacy;
-    const hasAnyActionButton = canUseSummaryNotes || !past;
+    const hasAnyActionButton = !past;
 
     const amountDisplay =
       meeting.amount && meeting.amount > 0
@@ -6467,7 +6496,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         key={meeting.id}
         className={
           past
-            ? 'relative flex max-w-full rounded-xl border border-gray-300/80 bg-transparent'
+            ? 'relative flex max-w-full rounded-xl border-0 bg-transparent'
             : 'relative flex max-w-full rounded-xl border border-gray-200 bg-white shadow-lg transition-all duration-200 hover:shadow-xl'
         }
       >
@@ -6534,6 +6563,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   {calendarTypeBadge.label}
                 </span>
               )}
+              {past && canUseSummaryNotes ? aiSummaryButton : null}
               {isMeetingBookedViaClientPortal(meeting) ? (
                 <ClientPortalBookingBadge className="shadow-sm" />
               ) : null}
@@ -7628,10 +7658,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         title="Meeting Management"
         subtitle="Schedule and track client meetings"
         actions={
-          <LeadBookingSettingsPanel
-            leadId={String(client?.id ?? '')}
-            leadType={client?.lead_type}
-          />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-full border-0 bg-white px-3.5 py-1.5 text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+              onClick={() => setShowMeetingSummariesDrawer(true)}
+            >
+              <DocumentTextIcon className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
+              Meeting Summaries
+              <span className="tabular-nums text-gray-500">{meetingSummariesCount}</span>
+            </button>
+            <LeadBookingSettingsPanel
+              leadId={String(client?.id ?? '')}
+              leadType={client?.lead_type}
+            />
+          </div>
         }
       />
 
@@ -7746,8 +7787,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
       {/* Upcoming Meetings with Past Meetings toggle */}
       <div className="relative">
-        {/* Upcoming Meetings (main content) - centered */}
-        <div className={`w-full max-w-3xl mx-auto${subEffortsModalOpen ? '' : ' pr-14 sm:pr-16'}`}>
+        {/* Upcoming Meetings (main content) — left-aligned while AI summary drawers are open */}
+        <div
+          className={`w-full max-w-3xl transition-[margin] duration-300 ${
+            summaryNotesMeeting != null && typeof summaryNotesMeeting.id === 'number'
+              ? 'ml-0'
+              : 'mx-auto'
+          }${subEffortsModalOpen ? '' : ' pr-14 sm:pr-16'}`}
+        >
           <div className="flex items-center justify-end mb-5">
             {upcomingMeetings.length > 0 && (
               <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
@@ -7808,40 +7855,129 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         <>
           <div
             className="fixed inset-0 bg-black/20 z-[251]"
-            onClick={() => setShowPastMeetingsPanel(false)}
+            onClick={() => {
+              setShowPastMeetingsPanel(false);
+              if (editingBriefId != null && pastMeetings.some((m) => m.id === editingBriefId)) {
+                closeBriefEditModal();
+              }
+            }}
             aria-hidden="true"
           />
-          <div className="fixed top-0 right-0 bottom-0 z-[260] flex w-full max-w-2xl flex-col border-l border-gray-200 bg-[#f5f5f5] shadow-xl">
-            <div className="flex items-center justify-between border-b border-gray-200/80 bg-[#f5f5f5] px-6 py-4">
-              <h4 className="text-base font-semibold text-gray-900">Past Meetings</h4>
-              <button
-                type="button"
-                onClick={() => setShowPastMeetingsPanel(false)}
-                className="btn btn-ghost btn-sm btn-square"
-                aria-label="Close"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="space-y-6">
-                {pastMeetings.length > 0 ? (
-                  pastMeetings.map(renderMeetingCard)
-                ) : (
-                  <div className="py-8 text-center text-gray-500">
-                    <ClockIcon className="mx-auto mb-3 h-12 w-12 text-gray-300" />
-                    <p className="font-medium">No past meetings</p>
-                    <p className="text-sm">Completed meetings will appear here</p>
+          <div className="fixed inset-y-0 right-0 z-[260] flex max-w-full">
+            {editingBriefId != null && pastMeetings.some((m) => m.id === editingBriefId) ? (
+              <div className="flex h-full w-full max-w-2xl flex-col border-l border-gray-200 bg-gray-50 shadow-xl max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-[1]">
+                <div className="flex shrink-0 items-start justify-between gap-3 px-5 py-4 md:px-6">
+                  <div>
+                    <h4 className="text-lg font-semibold text-gray-900">Meeting brief</h4>
+                    {(() => {
+                      const m = meetings.find((x) => x.id === editingBriefId);
+                      const loc = m ? getMeetingLocationName(m.location) : null;
+                      return (
+                        <div className="mt-1.5 space-y-1 text-sm">
+                          <p className="text-gray-900">
+                            {client.lead_number ? (
+                              <>
+                                <span className="font-semibold">#{String(client.lead_number)}</span>
+                                <span className="mx-1.5 text-gray-300" aria-hidden>
+                                  |
+                                </span>
+                              </>
+                            ) : null}
+                            <span className="font-medium">{client.name || '—'}</span>
+                          </p>
+                          {m ? (
+                            <p className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-gray-500">
+                              <span>{new Date(m.date).toLocaleDateString('en-GB')}</span>
+                              {m.time ? <span>· {m.time.substring(0, 5)}</span> : null}
+                              {loc ? (
+                                <span className="inline-flex min-w-0 max-w-full items-center gap-1">
+                                  <span className="text-gray-300" aria-hidden>
+                                    ·
+                                  </span>
+                                  <MapPinIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                  <span className="truncate">{loc}</span>
+                                </span>
+                              ) : null}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                   </div>
-                )}
+                  <button
+                    type="button"
+                    onClick={closeBriefEditModal}
+                    className="btn btn-ghost btn-sm btn-square shrink-0"
+                    aria-label="Close brief"
+                  >
+                    <XMarkIcon className="h-5 w-5" />
+                  </button>
+                </div>
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-4 md:px-6">
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white">
+                    <textarea
+                      className="h-full w-full flex-1 resize-none border-0 bg-transparent px-4 py-3 text-base leading-relaxed text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-0"
+                      value={editedBrief}
+                      onChange={(e) => setEditedBrief(e.target.value)}
+                      placeholder="Add a meeting brief…"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+                <div
+                  className="flex shrink-0 justify-end gap-2 px-5 py-4 md:px-6"
+                  style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
+                >
+                  <button type="button" className="btn btn-ghost rounded-full px-6" onClick={closeBriefEditModal}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary rounded-full px-8"
+                    onClick={() => editingBriefId != null && handleSaveBrief(editingBriefId)}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            <div className="flex h-full w-full max-w-2xl flex-col border-l border-gray-200 bg-[#f5f5f5] shadow-xl">
+              <div className="flex items-center justify-between border-b border-gray-200/80 bg-[#f5f5f5] px-6 py-4">
+                <h4 className="text-base font-semibold text-gray-900">Past Meetings</h4>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPastMeetingsPanel(false);
+                    if (editingBriefId != null && pastMeetings.some((m) => m.id === editingBriefId)) {
+                      closeBriefEditModal();
+                    }
+                  }}
+                  className="btn btn-ghost btn-sm btn-square"
+                  aria-label="Close"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-6">
+                <div className="space-y-6">
+                  {pastMeetings.length > 0 ? (
+                    pastMeetings.map(renderMeetingCard)
+                  ) : (
+                    <div className="py-8 text-center text-gray-500">
+                      <ClockIcon className="mx-auto mb-3 h-12 w-12 text-gray-300" />
+                      <p className="font-medium">No past meetings</p>
+                      <p className="text-sm">Completed meetings will appear here</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         </>
       )}
 
-      {/* Edit meeting brief — full modal for comfortable writing */}
-      {editingBriefId !== null && (
+      {/* Edit meeting brief — full modal for upcoming meetings */}
+      {editingBriefId !== null && !pastMeetings.some((m) => m.id === editingBriefId) && (
         <div
           className="fixed inset-0 z-[60] flex items-stretch justify-center bg-black/50 p-0 sm:items-center sm:p-4"
           onClick={closeBriefEditModal}
@@ -7960,26 +8096,81 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         </div>
       )}
 
-      <MeetingSummaryNotesModal
+      <MeetingSummariesDrawer
+        open={showMeetingSummariesDrawer}
+        onClose={() => setShowMeetingSummariesDrawer(false)}
+        items={meetings
+          .filter((m) => Boolean(m.meeting_summary_notes?.trim() || m.brief?.trim()))
+          .map((m) => ({
+            id: m.isLegacy ? String(m.id) : Number(m.id),
+            date: m.date,
+            time: m.time,
+            locationLabel: getMeetingLocationName(m.location),
+            notes: m.meeting_summary_notes?.trim() || '',
+            brief: m.brief?.trim() || '',
+            isLegacy: Boolean(m.isLegacy),
+            legacyLeadId: m.isLegacy
+              ? String(client.id ?? '').replace(/^legacy_/i, '')
+              : undefined,
+          }))}
+        resolveEditorDisplayName={resolveEditorDisplayName}
+        onSaved={(meetingId, patch) => {
+          setMeetings((prev) =>
+            prev.map((m) =>
+              String(m.id) === String(meetingId)
+                ? {
+                    ...m,
+                    meeting_summary_notes: patch.notes || null,
+                    brief: patch.brief || '',
+                  }
+                : m,
+            ),
+          );
+        }}
+        onOpenSummaryAi={(item) => {
+          const meeting = meetings.find((m) => String(m.id) === String(item.id));
+          if (!meeting || meeting.isLegacy || typeof meeting.id !== 'number') return;
+          setSummaryNotesDraft(item.notes || meeting.meeting_summary_notes?.trim() || '');
+          setSummaryNotesMeeting(meeting);
+        }}
+      />
+
+      <MeetingBriefAiPanel
         open={summaryNotesMeeting != null && typeof summaryNotesMeeting.id === 'number'}
-        meeting={
-          summaryNotesMeeting && typeof summaryNotesMeeting.id === 'number'
-            ? summaryNotesMeeting
-            : null
-        }
+        onClose={() => {
+          setSummaryNotesMeeting(null);
+          setSummaryNotesDraft('');
+        }}
+        value={summaryNotesDraft}
+        onChange={setSummaryNotesDraft}
         clientName={client.name || 'Client'}
         leadNumber={client.lead_number != null ? String(client.lead_number) : null}
+        leadId={client.id != null ? String(client.id) : null}
+        isLegacy={client.lead_type === 'legacy' || String(client.id ?? '').startsWith('legacy_')}
+        language={client.language != null ? String(client.language) : null}
+        category={client.category != null ? String(client.category) : null}
+        meetingId={
+          summaryNotesMeeting && typeof summaryNotesMeeting.id === 'number'
+            ? summaryNotesMeeting.id
+            : null
+        }
+        previousBrief={summaryNotesMeeting?.brief?.trim() || ''}
+        meetingDate={summaryNotesMeeting?.date ?? null}
+        meetingTime={summaryNotesMeeting?.time ?? null}
         locationLabel={
           summaryNotesMeeting ? getMeetingLocationName(summaryNotesMeeting.location) : null
         }
-        onClose={() => setSummaryNotesMeeting(null)}
         resolveEditorDisplayName={resolveEditorDisplayName}
-        onSaved={(meetingId, notes) => {
-          setMeetings((prev) =>
-            prev.map((m) =>
-              m.id === meetingId ? { ...m, meeting_summary_notes: notes || null } : m,
-            ),
-          );
+        zIndex={showMeetingSummariesDrawer ? 360 : 330}
+        onSaved={(notes) => {
+          const meetingId = summaryNotesMeeting?.id;
+          if (typeof meetingId === 'number') {
+            setMeetings((prev) =>
+              prev.map((m) =>
+                m.id === meetingId ? { ...m, meeting_summary_notes: notes || null } : m,
+              ),
+            );
+          }
           void fetchMeetings();
         }}
       />
@@ -8511,17 +8702,41 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
               {isSchedulePage && (
                 <div className="flex h-full min-h-0 flex-col justify-center rounded-[18px] bg-white p-5 shadow-sm md:p-6 [&_label]:text-gray-500 lg:col-start-1 lg:row-start-2">
-                  <WheelTimePicker
-                    label="Time"
-                    labelClassName="block font-semibold mb-1 text-left"
-                    value={scheduleMeetingFormData.time}
-                    onChange={(time) =>
-                      setScheduleMeetingFormData((prev) => ({ ...prev, time }))
-                    }
-                    minHour={8}
-                    maxHour={23}
-                    disabled={!scheduleMeetingFormData.date}
-                  />
+                  <div className="space-y-4">
+                    <div>
+                      <MeetingFormFieldLabel icon={CalendarDaysIcon}>Date</MeetingFormFieldLabel>
+                      <input
+                        type="date"
+                        className="input input-bordered w-full"
+                        value={scheduleMeetingFormData.date}
+                        onChange={(e) => {
+                          setScheduleMeetingFormData((prev) => ({ ...prev, date: e.target.value }));
+                          setMeetingCountsByTime({});
+                        }}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <MeetingFormFieldLabel icon={ClockIcon}>Time</MeetingFormFieldLabel>
+                      <input
+                        type="time"
+                        className="input input-bordered w-full"
+                        value={scheduleMeetingFormData.time}
+                        onChange={(e) =>
+                          setScheduleMeetingFormData((prev) => ({ ...prev, time: e.target.value }))
+                        }
+                        disabled={!scheduleMeetingFormData.date}
+                      />
+                    </div>
+                    <MeetingDurationField
+                      value={scheduleMeetingFormData.duration}
+                      onChange={(duration) =>
+                        setScheduleMeetingFormData((prev) => ({ ...prev, duration }))
+                      }
+                      startTime={scheduleMeetingFormData.time}
+                      disabled={!scheduleMeetingFormData.date}
+                    />
+                  </div>
                 </div>
               )}
 
@@ -8532,12 +8747,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                     : undefined
                 }
               >
-              {isSchedulePage && !scheduleMeetingFormData.date && (
-                <p className="mb-5 rounded-xl bg-primary/10 px-4 py-3 text-sm text-primary/70">
-                  Pick a date first to enable duration and time.
-                </p>
-              )}
-
               {/* Notify Client Toggle */}
               <div className="mb-6 flex items-center justify-between">
                 <label className="block font-semibold text-base">Notify Client</label>
@@ -8616,7 +8825,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   </select>
                 </div>
 
-                {/* Date */}
+                {!isSchedulePage && (
                 <div>
                   <MeetingFormFieldLabel icon={CalendarDaysIcon}>Date</MeetingFormFieldLabel>
                   <input
@@ -8630,7 +8839,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                     required
                   />
                 </div>
+                )}
 
+                {!isSchedulePage && (
                 <MeetingDurationField
                   value={scheduleMeetingFormData.duration}
                   onChange={(duration) =>
@@ -8639,6 +8850,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   startTime={scheduleMeetingFormData.time}
                   disabled={!scheduleMeetingFormData.date}
                 />
+                )}
 
                 {/* Manager / Helper — Potential Client meetings only */}
                 {normalizeFormCalendarValue(scheduleMeetingFormData.calendar) === 'current' && (
@@ -9253,17 +9465,41 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
               {isReschedulePage && rescheduleOption === 'reschedule' && (
                 <div className="flex h-full min-h-0 flex-col justify-center rounded-[18px] bg-white p-5 shadow-sm md:p-6 [&_label]:text-gray-500 lg:col-start-1 lg:row-start-2">
-                  <WheelTimePicker
-                    label="New Time"
-                    labelClassName="block font-semibold mb-1 text-left"
-                    value={rescheduleFormData.time}
-                    onChange={(time) =>
-                      setRescheduleFormData((prev: any) => ({ ...prev, time }))
-                    }
-                    minHour={8}
-                    maxHour={23}
-                    disabled={!rescheduleFormData.date}
-                  />
+                  <div className="space-y-4">
+                    <div>
+                      <MeetingFormFieldLabel icon={CalendarDaysIcon}>New Date</MeetingFormFieldLabel>
+                      <input
+                        type="date"
+                        className="input input-bordered w-full"
+                        value={rescheduleFormData.date}
+                        onChange={(e) => {
+                          setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }));
+                          setMeetingCountsByTime({});
+                        }}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <MeetingFormFieldLabel icon={ClockIcon}>New Time</MeetingFormFieldLabel>
+                      <input
+                        type="time"
+                        className="input input-bordered w-full"
+                        value={rescheduleFormData.time}
+                        onChange={(e) =>
+                          setRescheduleFormData((prev: any) => ({ ...prev, time: e.target.value }))
+                        }
+                        disabled={!rescheduleFormData.date}
+                      />
+                    </div>
+                    <MeetingDurationField
+                      value={rescheduleFormData.duration}
+                      onChange={(duration) =>
+                        setRescheduleFormData((prev: any) => ({ ...prev, duration }))
+                      }
+                      startTime={rescheduleFormData.time}
+                      disabled={!rescheduleFormData.date}
+                    />
+                  </div>
                 </div>
               )}
 
@@ -9300,8 +9536,52 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                       {rescheduleOption === 'reschedule' ? ' (optional)' : ''}
                     </MeetingFormFieldLabel>
                     <div className="overflow-hidden rounded-xl border border-base-300 bg-base-100">
-                      {rescheduleMeetings.length > 1 && (
-                        <div className="flex items-center justify-between gap-2 border-b border-base-200 px-3 py-2">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-base-200/50"
+                        onClick={() => setRescheduleMeetingPickerOpen((open) => !open)}
+                        aria-expanded={rescheduleMeetingPickerOpen}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium text-base-content">
+                            {(() => {
+                              const selected = rescheduleMeetings.filter((m) =>
+                                meetingsToCancel.includes(Number(m.id)),
+                              );
+                              if (selected.length === 0) return 'Select a meeting';
+                              if (selected.length > 1) {
+                                return `${selected.length} meetings selected`;
+                              }
+                              const meeting = selected[0];
+                              const timeLabel = meeting.meeting_time
+                                ? String(meeting.meeting_time).substring(0, 5)
+                                : '';
+                              return `${meeting.meeting_date}${timeLabel ? ` · ${timeLabel}` : ''}`;
+                            })()}
+                          </span>
+                          {meetingsToCancel.length === 1 ? (
+                            <span className="block truncate text-xs text-base-content/55">
+                              {(() => {
+                                const meeting = rescheduleMeetings.find(
+                                  (m) => Number(m.id) === meetingsToCancel[0],
+                                );
+                                if (!meeting) return '';
+                                return `${meeting.meeting_location || 'Teams'}${
+                                  meeting.meeting_manager ? ` · ${meeting.meeting_manager}` : ''
+                                }`;
+                              })()}
+                            </span>
+                          ) : null}
+                        </span>
+                        <ChevronDownIcon
+                          className={`h-5 w-5 shrink-0 text-base-content/45 transition-transform ${
+                            rescheduleMeetingPickerOpen ? 'rotate-180' : ''
+                          }`}
+                          aria-hidden
+                        />
+                      </button>
+                      {rescheduleMeetingPickerOpen && rescheduleMeetings.length > 1 && (
+                        <div className="flex items-center justify-between gap-2 border-t border-base-200 px-3 py-2">
                           <button
                             type="button"
                             className="btn btn-ghost btn-xs"
@@ -9324,7 +9604,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                           </button>
                         </div>
                       )}
-                      <ul className="max-h-56 divide-y divide-base-200 overflow-y-auto">
+                      {rescheduleMeetingPickerOpen ? (
+                      <ul className="max-h-56 divide-y divide-base-200 overflow-y-auto border-t border-base-200">
                         {rescheduleMeetings.map((meeting) => {
                           const meetingId = Number(meeting.id);
                           const checked = meetingsToCancel.includes(meetingId);
@@ -9379,6 +9660,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                           );
                         })}
                       </ul>
+                      ) : null}
                     </div>
                     {rescheduleOption === 'cancel' && meetingsToCancel.length === 0 ? (
                       <p className="mt-1 text-xs text-error">Select at least one meeting to cancel.</p>
@@ -9453,7 +9735,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                       </select>
                     </div>
 
-                    {/* Date */}
+                    {isReschedulePage ? (
+                      <div
+                        className="md:col-span-2 h-px bg-gray-200/50"
+                        aria-hidden
+                      />
+                    ) : null}
+
+                    {!isReschedulePage && (
                     <div>
                       <MeetingFormFieldLabel icon={CalendarDaysIcon}>New Date</MeetingFormFieldLabel>
                       <input
@@ -9467,7 +9756,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                         required
                       />
                     </div>
+                    )}
 
+                    {!isReschedulePage && (
                     <MeetingDurationField
                       value={rescheduleFormData.duration}
                       onChange={(duration) =>
@@ -9476,6 +9767,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                       startTime={rescheduleFormData.time}
                       disabled={!rescheduleFormData.date}
                     />
+                    )}
 
                     {/* Manager / Helper — Potential Client meetings only */}
                     {normalizeFormCalendarValue(rescheduleFormData.calendar) === 'current' && (

@@ -100,6 +100,7 @@ import {
   DocumentChartBarIcon,
   Cog6ToothIcon,
   SparklesIcon,
+  ArrowsPointingOutIcon,
   XMarkIcon,
   HandThumbUpIcon,
   TagIcon,
@@ -176,9 +177,11 @@ import {
 import {
   ACTIVE_MEETING_STATUS_FILTER,
   cancelMeetingById,
+  defaultMeetingIdsToCancel,
   findMeetingToCancelOnReschedule,
   localTodayYmd,
   parseLegacyLeadId,
+  sortMeetingsForRescheduleCancel,
 } from '../lib/meetingRescheduleCancel';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
@@ -192,6 +195,7 @@ import HeaderRoleAssignField, {
   type AssignFieldEmployeeRef,
 } from './HeaderRoleAssignField';
 import MobileBottomSheet from './MobileBottomSheet';
+import ClientSignedAgreementContractCheck from './ClientSignedAgreementContractCheck';
 import {
   DESKTOP_CENTER_MODAL_PROPS,
   EDIT_FIELD_INPUT,
@@ -203,6 +207,10 @@ import MeetingFormDrawerSheet, {
   MeetingFormDrawerActionButton,
   MeetingFormDrawerFooter,
 } from './meeting/MeetingFormDrawerSheet';
+import MeetingBriefAiPanel, {
+  MEETING_BRIEF_AI_DISMISS_EVENT,
+  MEETING_BRIEF_AI_OPEN_EVENT,
+} from './meeting/MeetingBriefAiPanel';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import CombineLeadsModal from './CombineLeadsModal';
 import {
@@ -212,7 +220,7 @@ import {
 } from '../lib/masterLeadApi';
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { saveOutgoingEmailRecord } from '../lib/saveOutgoingEmailRecord';
-import { saveLeadPriceOffer } from '../lib/leadPriceOfferVersions';
+import { fetchLeadPriceOffers, saveLeadPriceOffer, PRICE_OFFERS_CHANGED_EVENT } from '../lib/leadPriceOfferVersions';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import { addRecentLead } from '../lib/recentSearchStorage';
@@ -1398,6 +1406,33 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }, [location.pathname, location.search, location.hash, navigate, setActiveTab]);
 
+  useEffect(() => {
+    if (!selectedClient?.id) {
+      setPriceOfferSentCount(0);
+      return;
+    }
+    let cancelled = false;
+    const loadCount = async () => {
+      try {
+        const rows = await fetchLeadPriceOffers(selectedClient);
+        if (!cancelled) setPriceOfferSentCount(rows.length);
+      } catch {
+        if (!cancelled) setPriceOfferSentCount(0);
+      }
+    };
+    void loadCount();
+    const onChanged = (event: Event) => {
+      const leadId = (event as CustomEvent)?.detail?.leadId;
+      if (leadId != null && String(leadId) !== String(selectedClient.id)) return;
+      void loadCount();
+    };
+    window.addEventListener(PRICE_OFFERS_CHANGED_EVENT, onChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PRICE_OFFERS_CHANGED_EVENT, onChanged);
+    };
+  }, [selectedClient?.id, selectedClient?.lead_type]);
+
   const [showUpdateDrawer, setShowUpdateDrawer] = useState(false);
   const [meetingNotes, setMeetingNotes] = useState('');
   const [nextFollowup, setNextFollowup] = useState('');
@@ -1408,8 +1443,18 @@ const Clients: React.FC<ClientsProps> = ({
   const [isSavingMeetingEnded, setIsSavingMeetingEnded] = useState(false);
   const [showMeetingIrrelevantModal, setShowMeetingIrrelevantModal] = useState(false);
   const [meetingIrrelevantReason, setMeetingIrrelevantReason] = useState('');
+  const [meetingIrrelevantUnactivationReason, setMeetingIrrelevantUnactivationReason] = useState('');
   const [isProcessingMeetingIrrelevant, setIsProcessingMeetingIrrelevant] = useState(false);
   const [latestMeetingDate, setLatestMeetingDate] = useState<string | null>(null);
+  const [showMeetingBriefPanel, setShowMeetingBriefPanel] = useState(false);
+  const [meetingBriefAiPageOverlay, setMeetingBriefAiPageOverlay] = useState(false);
+  const [showMeetingEndedMoreFields, setShowMeetingEndedMoreFields] = useState(false);
+  const [meetingEndedMeeting, setMeetingEndedMeeting] = useState<{
+    id: number;
+    date: string | null;
+    time: string | null;
+    locationLabel: string | null;
+  } | null>(null);
   const [meetingEndedData, setMeetingEndedData] = useState({
     probability: 50,
     meetingBrief: '',
@@ -1444,6 +1489,9 @@ const Clients: React.FC<ClientsProps> = ({
     const today = new Date();
     return today.toISOString().split('T')[0];
   });
+  const [signedContractReady, setSignedContractReady] = useState(false);
+  const [signedContractMissing, setSignedContractMissing] = useState(false);
+  const [priceOfferSentCount, setPriceOfferSentCount] = useState(0);
   const [showDeclinedDrawer, setShowDeclinedDrawer] = useState(false);
   const [showLeadSummaryDrawer, setShowLeadSummaryDrawer] = useState(false);
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
@@ -1882,6 +1930,7 @@ const Clients: React.FC<ClientsProps> = ({
     custom_address: '',
   });
   const [meetingsToCancel, setMeetingsToCancel] = useState<number[]>([]);
+  const [rescheduleMeetingPickerOpen, setRescheduleMeetingPickerOpen] = useState(false);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   // Toggle for notifying client via email when rescheduling a meeting
   const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(false);
@@ -2779,14 +2828,10 @@ const Clients: React.FC<ClientsProps> = ({
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
 
-      // Get today's date in YYYY-MM-DD format for filtering (local calendar day)
-      const today = localTodayYmd();
-
       let query = supabase
         .from('meetings')
         .select('*')
-        .or(ACTIVE_MEETING_STATUS_FILTER)
-        .gte('meeting_date', today); // Only fetch upcoming meetings (today and future)
+        .or(ACTIVE_MEETING_STATUS_FILTER);
 
       if (isLegacyLead) {
         query = query.eq('legacy_lead_id', parseLegacyLeadId(selectedClient.id));
@@ -2794,15 +2839,13 @@ const Clients: React.FC<ClientsProps> = ({
         query = query.eq('client_id', selectedClient.id);
       }
 
-      const { data, error } = await query.order('meeting_date', { ascending: true });
+      const { data, error } = await query.order('meeting_date', { ascending: false });
 
       if (!error && data) {
-        setRescheduleMeetings(data);
-        setMeetingsToCancel(
-          data
-            .map((m: any) => Number(m.id))
-            .filter((id: number) => Number.isFinite(id)),
-        );
+        const sorted = sortMeetingsForRescheduleCancel(data);
+        setRescheduleMeetings(sorted);
+        setMeetingsToCancel(defaultMeetingIdsToCancel(sorted));
+        setRescheduleMeetingPickerOpen(false);
       } else {
         setRescheduleMeetings([]);
         setMeetingsToCancel([]);
@@ -5530,40 +5573,60 @@ const Clients: React.FC<ClientsProps> = ({
       </div>
     );
 
+    const showRevisedOfferCount =
+      priceOfferSentCount >= 2 ||
+      (priceOfferSentCount >= 1 && areStagesEquivalent(stageName, 'revised_offer'));
+
     return (
-      <div className="relative" ref={dropdownRef}>
-        <button
-          type="button"
-          className={`stage-badge shadow-none ${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' || anchor === 'desktop' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
-            ? 'cursor-pointer hover:scale-[1.02]'
-            : 'cursor-default'
-            }`}
-          style={{
-            background: fallbackStageColour,
-            color: badgeTextColour,
-            fontSize: anchor === 'mobile' ? '1rem' : '0.95rem',
-            fontWeight: 600,
-            borderRadius: '9999px',
-            minHeight: anchor === 'mobile' || anchor === 'desktop' ? '2.25rem' : '2rem',
-            border: `2px solid ${fallbackStageColour}`,
-            boxShadow: 'none',
-          }}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (isSuperuser) {
-              // Always open the dropdown when clicking the stage badge
-              setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));
-            }
-          }}
-          disabled={!isSuperuser}
-        >
-          {stageName}
-          {isSuperuser && (
-            <ChevronDownIcon className={anchor === 'mobile' ? 'w-4 h-4 ml-1 shrink-0' : 'w-3 h-3 ml-1 shrink-0'} />
-          )}
-        </button>
-        {isSuperuser && stageDropdownAnchor === anchor && renderTimelineOverlay(anchor)}
+      <div className="flex items-center gap-1.5">
+        <div className="relative" ref={dropdownRef}>
+          <button
+            type="button"
+            className={`stage-badge shadow-none ${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' || anchor === 'desktop' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
+              ? 'cursor-pointer hover:scale-[1.02]'
+              : 'cursor-default'
+              }`}
+            style={{
+              background: fallbackStageColour,
+              color: badgeTextColour,
+              fontSize: anchor === 'mobile' ? '1rem' : '0.95rem',
+              fontWeight: 600,
+              borderRadius: '9999px',
+              minHeight: anchor === 'mobile' || anchor === 'desktop' ? '2.25rem' : '2rem',
+              border: `2px solid ${fallbackStageColour}`,
+              boxShadow: 'none',
+            }}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (isSuperuser) {
+                // Always open the dropdown when clicking the stage badge
+                setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));
+              }
+            }}
+            disabled={!isSuperuser}
+          >
+            {stageName}
+            {isSuperuser && (
+              <ChevronDownIcon className={anchor === 'mobile' ? 'w-4 h-4 ml-1 shrink-0' : 'w-3 h-3 ml-1 shrink-0'} />
+            )}
+          </button>
+          {isSuperuser && stageDropdownAnchor === anchor && renderTimelineOverlay(anchor)}
+        </div>
+        {showRevisedOfferCount ? (
+          <button
+            type="button"
+            className="inline-flex h-8 min-w-[2rem] items-center justify-center rounded-full bg-gray-100 px-2.5 text-sm font-bold text-gray-600 hover:bg-gray-200"
+            title={`${priceOfferSentCount} price offer${priceOfferSentCount === 1 ? '' : 's'} sent`}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setActiveTabWithUrl('price');
+            }}
+          >
+            {priceOfferSentCount}
+          </button>
+        ) : null}
       </div>
     );
   };
@@ -7181,8 +7244,83 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [showMeetingEndedDrawer, selectedClient?.id, currencies.length]);
 
+  useEffect(() => {
+    const onChange = (event: Event) => {
+      const open = Boolean((event as CustomEvent<{ open?: boolean }>).detail?.open);
+      setMeetingBriefAiPageOverlay(open);
+    };
+    window.addEventListener(MEETING_BRIEF_AI_OPEN_EVENT, onChange);
+    return () => window.removeEventListener(MEETING_BRIEF_AI_OPEN_EVENT, onChange);
+  }, []);
+
+  // The brief is stored on the latest meeting (`meeting_summary_notes`), same row the
+  // Meeting tab's "Meeting Summary (AI)" modal writes to.
+  useEffect(() => {
+    if (!showMeetingEndedDrawer || !selectedClient) {
+      setShowMeetingBriefPanel(false);
+      setShowMeetingEndedMoreFields(false);
+      setMeetingEndedMeeting(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadLatestMeeting = async () => {
+      const isLegacyLead =
+        selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const query = supabase
+        .from('meetings')
+        .select('id, meeting_date, meeting_time, meeting_location, meeting_brief, meeting_summary_notes')
+        .order('meeting_date', { ascending: false })
+        .limit(1);
+
+      const { data, error } = isLegacyLead
+        ? await query.eq('legacy_lead_id', selectedClient.id.toString().replace('legacy_', ''))
+        : await query.eq('client_id', selectedClient.id);
+
+      if (cancelled) return;
+      if (error || !data || data.length === 0) {
+        setMeetingEndedMeeting(null);
+        return;
+      }
+
+      const meeting: any = data[0];
+      const locationName =
+        meetingLocations.find((loc) => String(loc.id) === String(meeting.meeting_location))?.name ||
+        (typeof meeting.meeting_location === 'string' ? meeting.meeting_location : null);
+
+      setMeetingEndedMeeting({
+        id: Number(meeting.id),
+        date: meeting.meeting_date ?? null,
+        time: meeting.meeting_time ?? null,
+        locationLabel: locationName || null,
+      });
+      setLatestMeetingDate(meeting.meeting_date ?? null);
+
+      const existingBrief =
+        String(meeting.meeting_summary_notes ?? '').trim() ||
+        String(meeting.meeting_brief ?? '').trim();
+      if (existingBrief) {
+        setMeetingEndedData(prev =>
+          prev.meetingBrief.trim() ? prev : { ...prev, meetingBrief: existingBrief },
+        );
+      }
+    };
+
+    void loadLatestMeeting();
+    return () => {
+      cancelled = true;
+    };
+  }, [showMeetingEndedDrawer, selectedClient?.id, meetingLocations]);
+
+  const resolveMeetingBriefEditorName = useCallback(async () => {
+    const actor = await fetchStageActorInfo();
+    return actor.fullName;
+  }, []);
+
   const handleMeetingIrrelevant = () => {
     setMeetingIrrelevantReason('');
+    setMeetingIrrelevantUnactivationReason('');
+    setShowMeetingBriefPanel(false);
     setShowMeetingIrrelevantModal(true);
   };
 
@@ -7190,14 +7328,20 @@ const Clients: React.FC<ClientsProps> = ({
     if (isProcessingMeetingIrrelevant) return;
     setShowMeetingIrrelevantModal(false);
     setMeetingIrrelevantReason('');
+    setMeetingIrrelevantUnactivationReason('');
   };
 
   const handleConfirmMeetingIrrelevant = async () => {
     if (!selectedClient) return;
 
-    const trimmedReason = meetingIrrelevantReason.trim();
-    if (!trimmedReason) {
-      toast.error('Please provide a reason for marking the lead as irrelevant');
+    const trimmedNote = meetingIrrelevantReason.trim();
+    const trimmedUnactivationReason = meetingIrrelevantUnactivationReason.trim();
+    if (!trimmedUnactivationReason) {
+      toast.error('Please select a reason for inactivation');
+      return;
+    }
+    if (!trimmedNote) {
+      toast.error('Please provide a note for the inactivation');
       return;
     }
 
@@ -7210,9 +7354,13 @@ const Clients: React.FC<ClientsProps> = ({
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       const tableName = isLegacyLead ? 'leads_lead' : 'leads';
       const clientId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
-      const stageValue = droppedStageId ?? manualStageIdFallbacks.droppedspamirrelevant ?? 91;
+      const stageValue =
+        getStageIdOrWarn('Meeting Irrelevant') ??
+        getStageIdOrWarn('meeting_irrelevant') ??
+        manualStageIdFallbacks.meetingirrelevant ??
+        35;
       if (stageValue === null || Number.isNaN(stageValue)) {
-        toast.error('Unable to resolve the "Dropped (Spam/Irrelevant)" stage. Please contact an administrator.');
+        toast.error('Unable to resolve the "Meeting Irrelevant" stage. Please contact an administrator.');
         setIsProcessingMeetingIrrelevant(false);
         return;
       }
@@ -7220,10 +7368,12 @@ const Clients: React.FC<ClientsProps> = ({
       const updateData: Record<string, any> = {
         unactivated_by: currentUserFullName,
         unactivated_at: timestamp,
-        unactivation_reason: trimmedReason,
+        unactivation_reason: trimmedUnactivationReason,
+        deactivate_notes: trimmedNote,
         stage_changed_by: currentUserFullName,
         stage_changed_at: timestamp,
         stage: stageValue,
+        status: isLegacyLead ? 10 : 'inactive',
       };
 
       const { error } = await supabase
@@ -7243,6 +7393,7 @@ const Clients: React.FC<ClientsProps> = ({
       toast.success('Lead marked as irrelevant successfully');
       setShowMeetingIrrelevantModal(false);
       setMeetingIrrelevantReason('');
+      setMeetingIrrelevantUnactivationReason('');
       setShowMeetingEndedDrawer(false);
       await onClientUpdate();
     } catch (error) {
@@ -7299,6 +7450,21 @@ const Clients: React.FC<ClientsProps> = ({
 
       if (meetingsError) throw meetingsError;
 
+      const incomingSpecialNotes = String(meetingEndedData.specialNotes ?? '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .trim();
+      let nextSpecialNotes: string | null = null;
+      if (incomingSpecialNotes) {
+        const existingSpecialNotes = String(selectedClient.special_notes ?? '')
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .trim();
+        nextSpecialNotes = existingSpecialNotes
+          ? `${existingSpecialNotes}\n${incomingSpecialNotes}`
+          : incomingSpecialNotes;
+      }
+
       // If a meeting exists, update it with the brief and total
       if (meetings && meetings.length > 0) {
         const latestMeetingId = meetings[0].id;
@@ -7306,6 +7472,7 @@ const Clients: React.FC<ClientsProps> = ({
           .from('meetings')
           .update({
             meeting_brief: meetingEndedData.meetingBrief,
+            meeting_summary_notes: meetingEndedData.meetingBrief.trim() || null,
             meeting_amount: proposalTotal,
             meeting_currency: meetingEndedData.proposalCurrency,
           })
@@ -7339,6 +7506,11 @@ const Clients: React.FC<ClientsProps> = ({
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
+        if (nextSpecialNotes != null) {
+          updateData.special_notes = nextSpecialNotes;
+          updateData.special_notes_last_edited_by = actor.fullName;
+          updateData.special_notes_last_edited_at = stageTimestamp;
+        }
         if (hasPaymentPlan !== true) {
           updateData.total = proposalTotal ? String(proposalTotal) : null;
         }
@@ -7361,6 +7533,11 @@ const Clients: React.FC<ClientsProps> = ({
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
+        if (nextSpecialNotes != null) {
+          updateData.special_notes = nextSpecialNotes;
+          updateData.special_notes_last_edited_by = actor.fullName;
+          updateData.special_notes_last_edited_at = stageTimestamp;
+        }
         if (hasPaymentPlan !== true) {
           updateData.proposal_total = proposalTotal;
           updateData.balance = proposalTotal;
@@ -7711,11 +7888,30 @@ const Clients: React.FC<ClientsProps> = ({
   const handleOpenSignedDrawer = () => {
     const today = new Date();
     setSignedDate(today.toISOString().split('T')[0]);
+    setSignedContractReady(false);
+    setSignedContractMissing(false);
     setShowSignedDrawer(true);
   };
 
+  const signedAgreementLeadNumber = useMemo(() => {
+    if (!selectedClient) return '';
+    const fromLead = String(selectedClient.lead_number ?? '').trim();
+    const manualId = String((selectedClient as any)?.manual_id ?? '').trim();
+    return fromLead || manualId;
+  }, [selectedClient]);
+
   const handleSaveSignedDrawer = async () => {
     if (!selectedClient) return;
+    if (!signedContractReady) {
+      toast.error('Please confirm the physical contract, or wait for it to finish loading.');
+      return;
+    }
+    if (signedContractMissing) {
+      const continueWithout = window.confirm(
+        'The physical contract is missing. Do you want to continue without it?',
+      );
+      if (!continueWithout) return;
+    }
 
     try {
       const actor = await fetchStageActorInfo();
@@ -13682,7 +13878,14 @@ const Clients: React.FC<ClientsProps> = ({
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 dark:bg-base-300">
+    <div className="relative min-h-screen bg-gray-100 dark:bg-base-300">
+      {meetingBriefAiPageOverlay ? (
+        <div
+          className="absolute inset-0 z-[280] bg-black/25 backdrop-blur-xl backdrop-saturate-150"
+          onClick={() => window.dispatchEvent(new CustomEvent(MEETING_BRIEF_AI_DISMISS_EVENT))}
+          aria-hidden="true"
+        />
+      ) : null}
       {!selectedClient && !localLoading && (
         <div className="p-6">
           <h1 className="text-2xl font-bold mb-4">Clients</h1>
@@ -14985,7 +15188,7 @@ const Clients: React.FC<ClientsProps> = ({
             desktopLayout="drawer-right"
             zIndex={320}
             contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
-            sheetClassName="md:max-w-lg"
+            sheetClassName="md:max-w-lg meeting-ended-drawer-sheet"
           >
               <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100 p-8 overflow-y-auto">
                 <div className="flex items-center justify-between mb-6">
@@ -15007,14 +15210,31 @@ const Clients: React.FC<ClientsProps> = ({
                       className="range range-primary"
                     />
                   </div>
-                  {/* Meeting Brief */}
+                  {/* Meeting Brief — opens the full-height AI editor beside the drawer */}
                   <div>
                     <label className="block font-semibold mb-1">Meeting Brief:</label>
-                    <textarea
-                      className="textarea textarea-bordered w-full min-h-[120px]"
-                      value={meetingEndedData.meetingBrief}
-                      onChange={e => handleMeetingEndedChange('meetingBrief', e.target.value)}
-                    />
+                    <button
+                      type="button"
+                      className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
+                        showMeetingBriefPanel
+                          ? 'border-primary/50 bg-primary/5'
+                          : 'border-base-300 bg-base-100 hover:border-primary/40 hover:bg-base-200/50'
+                      }`}
+                      onClick={() => setShowMeetingBriefPanel(prev => !prev)}
+                    >
+                      <span className="flex items-center justify-between gap-3">
+                        <span className="inline-flex items-center gap-2 text-sm font-medium text-base-content/70">
+                          <SparklesIcon className="h-4 w-4 text-violet-500" />
+                          {showMeetingBriefPanel ? 'Editor open' : 'Open brief editor · voice & AI summary'}
+                        </span>
+                        <ArrowsPointingOutIcon className="h-4 w-4 shrink-0 text-base-content/40" />
+                      </span>
+                      <span className="mt-2 block whitespace-pre-line text-sm leading-relaxed text-base-content/80 line-clamp-4">
+                        {meetingEndedData.meetingBrief.trim() || (
+                          <span className="text-base-content/40">No brief yet — click to write, record or generate one.</span>
+                        )}
+                      </span>
+                    </button>
                   </div>
                   {/* Number of applicants */}
                   <div>
@@ -15075,63 +15295,6 @@ const Clients: React.FC<ClientsProps> = ({
                       )}
                     </select>
                   </div>
-                  {/* Meeting Total */}
-                  <div>
-                    <label className="block font-semibold mb-1">Meeting Total:</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      value={meetingEndedData.meetingTotal}
-                      onFocus={(e) => e.target.select()}
-                      onChange={e => {
-                        // Only allow numbers and decimal point
-                        let value = e.target.value.replace(/[^0-9.]/g, '');
-                        // Prevent multiple decimal points
-                        const parts = value.split('.');
-                        if (parts.length > 2) {
-                          value = parts[0] + '.' + parts.slice(1).join('');
-                        }
-                        handleMeetingEndedChange('meetingTotal', value);
-                      }}
-                    />
-                  </div>
-                  {/* Meeting total currency */}
-                  <div>
-                    <label className="block font-semibold mb-1">Meeting total currency:</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={meetingEndedData.meetingTotalCurrency}
-                      onChange={e => handleMeetingEndedChange('meetingTotalCurrency', e.target.value)}
-                    >
-                      {currencies.length > 0 ? (
-                        currencies.map((currency) => (
-                          <option key={currency.id} value={currency.iso_code || currency.name}>
-                            {currency.name || currency.iso_code}
-                          </option>
-                        ))
-                      ) : (
-                        <>
-                          <option>NIS</option>
-                          <option>USD</option>
-                          <option>EUR</option>
-                        </>
-                      )}
-                    </select>
-                  </div>
-                  {/* Meeting Payment form */}
-                  <div>
-                    <label className="block font-semibold mb-1">Meeting Payment form:</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={meetingEndedData.meetingPaymentForm}
-                      onChange={e => handleMeetingEndedChange('meetingPaymentForm', e.target.value)}
-                    >
-                      <option value="">---------</option>
-                      <option value="Credit Card">Credit Card</option>
-                      <option value="Bank Transfer">Bank Transfer</option>
-                      <option value="Cash">Cash</option>
-                    </select>
-                  </div>
                   {/* Special notes */}
                   <div>
                     <label className="block font-semibold mb-1">Special notes:</label>
@@ -15152,32 +15315,128 @@ const Clients: React.FC<ClientsProps> = ({
                     />
                   </div>
 
-                  {/* Action Buttons */}
-                  <div className="flex justify-between items-center mt-6">
+                  <div>
                     <button
-                      className="btn btn-error gap-2"
+                      type="button"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-sm font-semibold text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-800"
+                      onClick={() => setShowMeetingEndedMoreFields((prev) => !prev)}
+                      aria-expanded={showMeetingEndedMoreFields}
+                    >
+                      More
+                      {showMeetingEndedMoreFields ? (
+                        <ChevronUpIcon className="h-4 w-4" />
+                      ) : (
+                        <ChevronDownIcon className="h-4 w-4" />
+                      )}
+                    </button>
+                    {showMeetingEndedMoreFields && (
+                      <div className="mt-3 flex flex-col gap-4">
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Total:</label>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            value={meetingEndedData.meetingTotal}
+                            onFocus={(e) => e.target.select()}
+                            onChange={e => {
+                              let value = e.target.value.replace(/[^0-9.]/g, '');
+                              const parts = value.split('.');
+                              if (parts.length > 2) {
+                                value = parts[0] + '.' + parts.slice(1).join('');
+                              }
+                              handleMeetingEndedChange('meetingTotal', value);
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting total currency:</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={meetingEndedData.meetingTotalCurrency}
+                            onChange={e => handleMeetingEndedChange('meetingTotalCurrency', e.target.value)}
+                          >
+                            {currencies.length > 0 ? (
+                              currencies.map((currency) => (
+                                <option key={currency.id} value={currency.iso_code || currency.name}>
+                                  {currency.name || currency.iso_code}
+                                </option>
+                              ))
+                            ) : (
+                              <>
+                                <option>NIS</option>
+                                <option>USD</option>
+                                <option>EUR</option>
+                              </>
+                            )}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Payment form:</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={meetingEndedData.meetingPaymentForm}
+                            onChange={e => handleMeetingEndedChange('meetingPaymentForm', e.target.value)}
+                          >
+                            <option value="">---------</option>
+                            <option value="Credit Card">Credit Card</option>
+                            <option value="Bank Transfer">Bank Transfer</option>
+                            <option value="Cash">Cash</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="mt-6 flex items-center gap-3">
+                    <button
+                      className="inline-flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 shadow-sm transition-all hover:bg-rose-100 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
                       onClick={handleMeetingIrrelevant}
                       disabled={isSavingMeetingEnded}
                     >
-                      <HandThumbDownIcon className="w-5 h-5" />
+                      <HandThumbDownIcon className="h-5 w-5" />
                       Meeting Irrelevant
                     </button>
                     <button
-                      className="btn btn-success gap-2"
+                      className="inline-flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow-md active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
                       onClick={handleSendPriceOffer}
                       disabled={isSavingMeetingEnded}
                     >
                       {isSavingMeetingEnded ? (
                         <span className="loading loading-spinner loading-sm" />
                       ) : (
-                        <DocumentCheckIcon className="w-5 h-5" />
+                        <DocumentCheckIcon className="h-5 w-5" />
                       )}
-                      I have to send Price offer
+                      Send Price offer
                     </button>
                   </div>
                 </div>
               </div>
           </MobileBottomSheet>
+
+          {showMeetingEndedDrawer && (
+            <MeetingBriefAiPanel
+              open={showMeetingBriefPanel}
+              onClose={() => setShowMeetingBriefPanel(false)}
+              value={meetingEndedData.meetingBrief}
+              onChange={next => handleMeetingEndedChange('meetingBrief', next)}
+              clientName={selectedClient?.name || 'Client'}
+              leadNumber={selectedClient?.lead_number != null ? String(selectedClient.lead_number) : null}
+              leadId={selectedClient?.id != null ? String(selectedClient.id) : null}
+              isLegacy={
+                selectedClient?.lead_type === 'legacy' ||
+                String(selectedClient?.id ?? '').startsWith('legacy_')
+              }
+              language={selectedClient?.language != null ? String(selectedClient.language) : null}
+              category={selectedClient?.category != null ? String(selectedClient.category) : null}
+              meetingId={meetingEndedMeeting?.id ?? null}
+              meetingDate={meetingEndedMeeting?.date ?? null}
+              meetingTime={meetingEndedMeeting?.time ?? null}
+              locationLabel={meetingEndedMeeting?.locationLabel ?? null}
+              resolveEditorDisplayName={resolveMeetingBriefEditorName}
+            />
+          )}
+
           <MobileBottomSheet
             open={showMeetingIrrelevantModal}
             onClose={handleCancelMeetingIrrelevant}
@@ -15192,8 +15451,10 @@ const Clients: React.FC<ClientsProps> = ({
                 confirmLabel="Confirm"
                 confirmVariant="error"
                 loading={isProcessingMeetingIrrelevant}
-                disabled={!meetingIrrelevantReason.trim()}
+                disabled={!meetingIrrelevantUnactivationReason.trim() || !meetingIrrelevantReason.trim()}
                 cancelDisabled={isProcessingMeetingIrrelevant}
+                confirmClassName="!rounded-full px-6"
+                cancelClassName="!border-0 !outline-none btn-ghost"
               />
             }
           >
@@ -15203,7 +15464,31 @@ const Clients: React.FC<ClientsProps> = ({
                   </p>
 
                   <div>
-                    <EditFieldLabel>Reason for this action</EditFieldLabel>
+                    <EditFieldLabel>Inactive reason</EditFieldLabel>
+                    <select
+                      className="select select-bordered w-full bg-base-100"
+                      value={meetingIrrelevantUnactivationReason}
+                      onChange={(e) => setMeetingIrrelevantUnactivationReason(e.target.value)}
+                      disabled={isProcessingMeetingIrrelevant}
+                    >
+                      <option value="">Select a reason...</option>
+                      <option value="test">test</option>
+                      <option value="spam">spam</option>
+                      <option value="double - same source">double - same source</option>
+                      <option value="double -diff. source">double -diff. source</option>
+                      <option value="no intent">no intent</option>
+                      <option value="non active category">non active category</option>
+                      <option value="IrrelevantBackground">IrrelevantBackground</option>
+                      <option value="incorrect contact">incorrect contact</option>
+                      <option value="no legal eligibility">no legal eligibility</option>
+                      <option value="no profitability">no profitability</option>
+                      <option value="can't be reached">can't be reached</option>
+                      <option value="expired">expired</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <EditFieldLabel>Inactive reason note</EditFieldLabel>
                     <textarea
                       className={`${EDIT_FIELD_TEXTAREA} min-h-[120px]`}
                       placeholder="Provide details about why this lead is irrelevant..."
@@ -15212,7 +15497,7 @@ const Clients: React.FC<ClientsProps> = ({
                       disabled={isProcessingMeetingIrrelevant}
                     />
                     <p className="mt-2 text-xs text-base-content/50">
-                      This reason will be saved to the lead history for future reference.
+                      This note will show as the inactive reason note on the lead.
                     </p>
                   </div>
                 </div>
@@ -15408,18 +15693,45 @@ const Clients: React.FC<ClientsProps> = ({
             mobileFullHeight
             zIndex={320}
             sheetClassName="md:max-w-md"
-            contentClassName="flex flex-col min-h-0"
+            contentClassName="flex flex-col min-h-0 px-5 py-5 md:px-6 md:py-6"
+            footerClassName="flex items-center justify-center gap-3 px-4 pt-3 md:px-6"
             footer={
-              <button type="button" className="btn btn-primary w-full max-md:min-h-12" onClick={handleSaveSignedDrawer}>
-                Save
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn btn-ghost h-10 min-h-0 rounded-full px-8"
+                  onClick={() => setShowSignedDrawer(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary h-10 min-h-0 min-w-[9.5rem] rounded-full px-12"
+                  disabled={!signedContractReady}
+                  onClick={handleSaveSignedDrawer}
+                >
+                  Save
+                </button>
+              </>
             }
           >
-                <div className="flex flex-col gap-4 flex-1">
+                <div className="flex flex-col gap-5 flex-1">
                   <div>
                     <label className="block font-semibold mb-1">Date Signed</label>
-                    <input type="date" className="input input-bordered w-full" value={signedDate} onChange={e => setSignedDate(e.target.value)} />
+                    <input
+                      type="date"
+                      className="input input-bordered w-auto max-w-[12rem]"
+                      value={signedDate}
+                      onChange={e => setSignedDate(e.target.value)}
+                    />
                   </div>
+                  <ClientSignedAgreementContractCheck
+                    open={showSignedDrawer}
+                    leadNumber={signedAgreementLeadNumber}
+                    clientId={(selectedClient as any)?.id ?? null}
+                    onReadyChange={setSignedContractReady}
+                    onMissingChange={setSignedContractMissing}
+                  />
                 </div>
           </MobileBottomSheet>
 
@@ -15432,26 +15744,36 @@ const Clients: React.FC<ClientsProps> = ({
             mobileFullHeight
             zIndex={320}
             sheetClassName="md:max-w-md"
+            contentClassName="flex flex-col min-h-0 px-5 py-5 md:px-6 md:py-6"
+            footerClassName="flex items-center justify-center gap-3 px-4 pt-3 md:px-6"
             footer={
               isSuperuser ? (
-                <div className="flex w-full gap-2">
-                  <button type="button" className="btn btn-ghost flex-1 max-md:min-h-12" onClick={() => setShowDeclinedDrawer(false)}>
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-ghost h-10 min-h-0 rounded-full px-8"
+                    onClick={() => setShowDeclinedDrawer(false)}
+                  >
                     Cancel
                   </button>
                   {isAdmin && (
-                    <button type="button" className="btn btn-error flex-1 max-md:min-h-12" onClick={handleConfirmDeclined}>
+                    <button
+                      type="button"
+                      className="inline-flex h-10 min-h-0 min-w-[11rem] items-center justify-center rounded-full border-0 bg-rose-100 px-10 text-sm font-semibold text-rose-700 hover:bg-rose-200"
+                      onClick={handleConfirmDeclined}
+                    >
                       Yes, decline client
                     </button>
                   )}
-                </div>
+                </>
               ) : undefined
             }
           >
                 <div className="flex flex-col gap-6 flex-1">
                   {isSuperuser ? (
                     <>
-                      <div className="alert alert-warning">
-                        <ExclamationTriangleIcon className="w-6 h-6" />
+                      <div className="flex items-start gap-3 rounded-2xl border-0 bg-amber-100 px-4 py-3 text-amber-800">
+                        <ExclamationTriangleIcon className="mt-0.5 h-6 w-6 shrink-0 text-amber-600" />
                         <div>
                           <h4 className="font-bold">Important Notice</h4>
                           <p>Please contact your supervisor before choosing this option.</p>
@@ -16436,8 +16758,52 @@ const Clients: React.FC<ClientsProps> = ({
                             {isStage21 && rescheduleOption === 'reschedule' ? ' (optional)' : ''}
                           </label>
                           <div className="overflow-hidden rounded-xl border border-base-300 bg-base-100">
-                            {rescheduleMeetings.length > 1 && (
-                              <div className="flex items-center justify-between gap-2 border-b border-base-200 px-3 py-2">
+                            <button
+                              type="button"
+                              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-base-200/50"
+                              onClick={() => setRescheduleMeetingPickerOpen((open) => !open)}
+                              aria-expanded={rescheduleMeetingPickerOpen}
+                            >
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-sm font-medium text-base-content">
+                                  {(() => {
+                                    const selected = rescheduleMeetings.filter((m) =>
+                                      meetingsToCancel.includes(Number(m.id)),
+                                    );
+                                    if (selected.length === 0) return 'Select a meeting';
+                                    if (selected.length > 1) {
+                                      return `${selected.length} meetings selected`;
+                                    }
+                                    const meeting = selected[0];
+                                    const timeLabel = meeting.meeting_time
+                                      ? String(meeting.meeting_time).substring(0, 5)
+                                      : '';
+                                    return `${meeting.meeting_date}${timeLabel ? ` · ${timeLabel}` : ''}`;
+                                  })()}
+                                </span>
+                                {meetingsToCancel.length === 1 ? (
+                                  <span className="block truncate text-xs text-base-content/55">
+                                    {(() => {
+                                      const meeting = rescheduleMeetings.find(
+                                        (m) => Number(m.id) === meetingsToCancel[0],
+                                      );
+                                      if (!meeting) return '';
+                                      return `${meeting.meeting_location || 'Teams'}${
+                                        meeting.meeting_manager ? ` · ${meeting.meeting_manager}` : ''
+                                      }`;
+                                    })()}
+                                  </span>
+                                ) : null}
+                              </span>
+                              <ChevronDownIcon
+                                className={`h-5 w-5 shrink-0 text-base-content/45 transition-transform ${
+                                  rescheduleMeetingPickerOpen ? 'rotate-180' : ''
+                                }`}
+                                aria-hidden
+                              />
+                            </button>
+                            {rescheduleMeetingPickerOpen && rescheduleMeetings.length > 1 && (
+                              <div className="flex items-center justify-between gap-2 border-t border-base-200 px-3 py-2">
                                 <button
                                   type="button"
                                   className="btn btn-ghost btn-xs"
@@ -16460,7 +16826,8 @@ const Clients: React.FC<ClientsProps> = ({
                                 </button>
                               </div>
                             )}
-                            <ul className="max-h-56 divide-y divide-base-200 overflow-y-auto">
+                            {rescheduleMeetingPickerOpen ? (
+                            <ul className="max-h-56 divide-y divide-base-200 overflow-y-auto border-t border-base-200">
                               {rescheduleMeetings.map((meeting) => {
                                 const meetingId = Number(meeting.id);
                                 const checked = meetingsToCancel.includes(meetingId);
@@ -16516,6 +16883,7 @@ const Clients: React.FC<ClientsProps> = ({
                                 );
                               })}
                             </ul>
+                            ) : null}
                           </div>
                           {rescheduleOption === 'cancel' && meetingsToCancel.length === 0 ? (
                             <p className="mt-1 text-xs text-error">Select at least one meeting to cancel.</p>

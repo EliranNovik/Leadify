@@ -89,6 +89,72 @@ ${
 `;
 }
 
+function buildMeetingBriefPrompt(
+  contextLines: string[],
+  caseContext: string,
+  currentDocumentText: string,
+  userMessage: string,
+  chatHistory: ChatTurn[] | undefined,
+): string {
+  return `The user is writing a MEETING BRIEF / MEETING SUMMARY in a citizenship/immigration CRM (not an email or Word document).
+
+A CRM CASE FILE is available as background. Use those facts. The staff member does not need to ask you to use it.
+
+THIS TURN'S ONLY TASK is the latest staff request below. Prior chat and the current brief are context. If they now ask for a different summary, REPLACE the draft — do not repeat the previous changeSummary.
+
+First decide the intent:
+- "question" — asking about the case or for advice WITHOUT asking you to rewrite the brief now.
+- "action" — write, rewrite, or edit the meeting brief/summary. Treat "summarize", "write a brief", "improve this", or "AI summary" as action.
+
+Rules:
+- Honor the latest staff request even if it differs from the current brief.
+- Write a meeting note a staff member would type after the call — 2 to 4 short paragraphs, maybe one short "Next:" line.
+- Use the case file only as background. Pick the few facts that matter (what they said, eligibility, money, unsigned docs, next step). Do not inventory the CRM.
+- Do NOT list Client Name, Lead Number, Category, Language, Stage, Status, Recent Interactions, Contracts, POA, Financials, or Next Steps as labeled sections.
+- Do NOT paste URLs, contract links, or POA links unless the staff explicitly asked for them.
+- Keep staff-written notes that are already in the current brief unless they ask you to replace them. You may tighten wording and add missing context from the case file.
+- Write the meeting brief and any chat answer in the Language listed below. Hebrew means Hebrew only. English means English only. Do not mix languages.
+- Plain text only. No markdown, no **bold**, no headings, no HTML, no [[B]] markers, no bullet symbols.
+- Do not write an email. No Subject: line, no Best regards, no signature.
+- changeSummary must be ONE short sentence for THIS turn only — never paste the brief into changeSummary.
+- When intent is "action", put the entire meeting brief in improvedDocumentText as plain text.
+
+Good example:
+"Markus is not ready to move forward on Portugal Family. He said he will call later and no new facts were added.
+
+The contract is still unsigned. A few POAs are already signed. Proposal is ₪10,000 with unpaid invoices still open.
+
+Next: wait for him to confirm interest, then follow up on the contract and balance."
+
+Return JSON with exactly these keys (put "thinking" first):
+{
+  "thinking": "2-4 short plain lines on your plan",
+  "intent": "question" | "action",
+  "answer": "required when intent is question",
+  "improvedDocumentText": "required when intent is action — full meeting brief as plain text",
+  "changeSummary": "required when intent is action — 3–6 bullet lines (• prefix) for THIS request only"
+}
+
+When intent is "question", set improvedDocumentText and changeSummary to empty strings.
+When intent is "action", set answer to empty string.
+
+${contextLines.length ? `${contextLines.join('\n')}\n\n` : ''}LATEST STAFF REQUEST:
+${userMessage.trim()}
+
+Current meeting brief:
+${currentDocumentText.trim() || '(empty brief — write a meeting summary from the case file)'}
+
+Recent chat (do not copy old summaries):
+${formatChatHistory(chatHistory)}
+
+${
+    caseContext.trim()
+      ? `CASE FILE FROM CRM (use these facts; do not dump the raw file into the brief):\n${caseContext.trim()}`
+      : 'CASE FILE FROM CRM: (not loaded)'
+  }
+`;
+}
+
 function buildCreatePrompt(contextLines: string[], userMessage: string): string {
   return `Write a professional Word document for a citizenship/immigration law office.
 
@@ -227,24 +293,33 @@ serve(async (req) => {
       typeof currentDocumentText === 'string' ? currentDocumentText : '';
     const caseText = typeof caseContext === 'string' ? caseContext : '';
     const isEmailFollowup = purpose === 'email_followup';
+    const isMeetingBrief = purpose === 'meeting_brief';
     const isEmptyDraft = !currentText.trim();
 
-    const prompt = isEmailFollowup
-      ? buildEmailFollowupPrompt(
+    const prompt = isMeetingBrief
+      ? buildMeetingBriefPrompt(
           contextLines,
           caseText,
           currentText,
           remarks,
           Array.isArray(chatHistory) ? chatHistory : undefined,
         )
-      : isEmptyDraft
-        ? buildCreatePrompt(contextLines, remarks)
-        : buildChatPrompt(
+      : isEmailFollowup
+        ? buildEmailFollowupPrompt(
             contextLines,
+            caseText,
             currentText,
             remarks,
             Array.isArray(chatHistory) ? chatHistory : undefined,
-          );
+          )
+        : isEmptyDraft
+          ? buildCreatePrompt(contextLines, remarks)
+          : buildChatPrompt(
+              contextLines,
+              currentText,
+              remarks,
+              Array.isArray(chatHistory) ? chatHistory : undefined,
+            );
 
     const openaiBody = {
       model: 'gpt-4o-mini',
@@ -252,13 +327,15 @@ serve(async (req) => {
       messages: [
         {
           role: 'system',
-          content: isEmailFollowup
-            ? 'You help staff write emails in a citizenship/immigration law CRM. Honor the LATEST staff request; do not repeat a previous email or changeSummary. A CRM case file is background only. Never invent case facts. Put "thinking" first in JSON. For questions, answer only. For actions, return improvedDocumentText as Subject: ... then a blank line then the plain-text body ending at Best regards, — never include a signature. No HTML or [[B]] markers. Respond with valid JSON only.'
-            : 'You help staff write Word documents in a citizenship/immigration law CRM. Put "thinking" first in JSON. For questions, answer only. For actions, return improvedDocumentText with [[B]]/[[I]]/[[U]] markers preserved. Respond with valid JSON only.',
+          content: isMeetingBrief
+            ? 'You help staff write meeting briefs in a citizenship/immigration law CRM. Honor the LATEST staff request. Write 2–4 short plain paragraphs a closer would type after the meeting — not a CRM report. Use the requested Language only (Hebrew or English). No markdown, labels, URLs, or section headings. Never invent case facts. changeSummary is one short sentence in that same language. Put "thinking" first in JSON. For questions, answer only. Respond with valid JSON only.'
+            : isEmailFollowup
+              ? 'You help staff write emails in a citizenship/immigration law CRM. Honor the LATEST staff request; do not repeat a previous email or changeSummary. A CRM case file is background only. Never invent case facts. Put "thinking" first in JSON. For questions, answer only. For actions, return improvedDocumentText as Subject: ... then a blank line then the plain-text body ending at Best regards, — never include a signature. No HTML or [[B]] markers. Respond with valid JSON only.'
+              : 'You help staff write Word documents in a citizenship/immigration law CRM. Put "thinking" first in JSON. For questions, answer only. For actions, return improvedDocumentText with [[B]]/[[I]]/[[U]] markers preserved. Respond with valid JSON only.',
         },
         { role: 'user', content: prompt },
       ],
-      max_tokens: isEmailFollowup ? 3500 : 4500,
+      max_tokens: isEmailFollowup || isMeetingBrief ? 3500 : 4500,
       temperature: 0.35,
     };
 

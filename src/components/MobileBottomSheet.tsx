@@ -96,6 +96,8 @@ export type MobileBottomSheetProps = {
   footerClassName?: string;
   /** Extra classes for the default header row (e.g. omit `border-b`). */
   headerClassName?: string;
+  /** Extra inline style for the sheet (e.g. dock flush to another panel). */
+  sheetStyle?: React.CSSProperties;
   /** Desktop: centered modal (default) or right-edge drawer */
   desktopLayout?: 'center' | 'drawer-right';
   /** Desktop: nearly full viewport (assign staff, large tables) */
@@ -132,6 +134,7 @@ export default function MobileBottomSheet({
   overlayClassName = '',
   footerClassName = '',
   headerClassName = '',
+  sheetStyle,
   desktopLayout = 'center',
   desktopFullScreen = false,
   closeOnOverlayClick = true,
@@ -493,7 +496,7 @@ export default function MobileBottomSheet({
         <div
           ref={sheetRef}
           className={`pointer-events-auto flex w-full flex-col overflow-hidden bg-base-100 shadow-2xl border-base-200 max-md:rounded-t-3xl max-md:border-t max-md:max-h-none transition-[transform,opacity] duration-300 ease-out ${sheetLayoutClass} ${desktopCenterMotion} ${mobileFullPageMotion} ${sheetClassName}`}
-          style={mobileSheetStyle}
+          style={mobileSheetStyle || sheetStyle ? { ...mobileSheetStyle, ...sheetStyle } : undefined}
           onClick={(e) => e.stopPropagation()}
           role="dialog"
           aria-modal="true"

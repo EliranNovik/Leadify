@@ -93,7 +93,11 @@ interface DocumentViewerModalProps {
 }
 
 function isDirectPreviewUrl(url: string): boolean {
-  return /^(https?:|blob:|data:)/i.test(url || '');
+  const u = String(url || '');
+  if (/^(https?:|blob:|data:)/i.test(u)) return true;
+  // Vite-dev relative backend routes, e.g. /api/whatsapp/media/:id
+  if (u.startsWith('/api/')) return true;
+  return false;
 }
 
 function inferFileType(name: string, fileType?: string): string {

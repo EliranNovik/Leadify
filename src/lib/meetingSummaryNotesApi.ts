@@ -90,3 +90,35 @@ export async function saveMeetingSummaryNotes(
     throw new Error(error.message || 'Failed to save meeting summary');
   }
 }
+
+/** Strip markdown / labeled CRM dumps so the brief stays readable in a plain textarea. */
+export function cleanMeetingBriefText(raw: string): string {
+  let text = String(raw ?? '').replace(/\r\n/g, '\n').trim();
+  if (!text) return '';
+
+  text = text.replace(/^#{1,6}\s+/gm, '');
+  text = text.replace(/\*\*(.+?)\*\*/g, '$1');
+  text = text.replace(/__(.+?)__/g, '$1');
+  text = text.replace(/\*([^*\n]+)\*/g, '$1');
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1');
+  text = text.replace(/`([^`]+)`/g, '$1');
+  text = text.replace(/^>\s?/gm, '');
+  text = text.replace(/^[-*•]\s+/gm, '');
+  text = text.replace(/\n{3,}/g, '\n\n');
+  return text.trim();
+}
+
+export function hasHebrewText(raw: string): boolean {
+  return /[\u0590-\u05FF]/.test(raw);
+}
+
+/** Keep the chat reply short — the full brief belongs in the editor, not the bubble. */
+export function cleanMeetingBriefChatReply(raw: string, language: 'en' | 'he' = 'en'): string {
+  const fallback = language === 'he' ? 'עודכן סיכום הפגישה.' : 'Updated the meeting brief.';
+  const cleaned = cleanMeetingBriefText(raw);
+  if (!cleaned) return fallback;
+  if (cleaned.length > 280 || /\n.*\n/.test(cleaned)) {
+    return fallback;
+  }
+  return cleaned;
+}

@@ -32,6 +32,8 @@ export type ModalActionFooterProps = {
     loading?: boolean;
     disabled?: boolean;
     cancelDisabled?: boolean;
+    confirmClassName?: string;
+    cancelClassName?: string;
 };
 
 export function ModalActionFooter({
@@ -43,6 +45,8 @@ export function ModalActionFooter({
     loading = false,
     disabled = false,
     cancelDisabled = false,
+    confirmClassName = '',
+    cancelClassName = '',
 }: ModalActionFooterProps) {
     const confirmBtnClass =
         confirmVariant === 'success'
@@ -55,7 +59,7 @@ export function ModalActionFooter({
         <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
             <button
                 type="button"
-                className="btn btn-outline flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12"
+                className={`btn btn-outline flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12 ${cancelClassName}`}
                 onClick={onCancel}
                 disabled={cancelDisabled || loading}
             >
@@ -63,7 +67,7 @@ export function ModalActionFooter({
             </button>
             <button
                 type="button"
-                className={`btn ${confirmBtnClass} flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12`}
+                className={`btn ${confirmBtnClass} flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12 ${confirmClassName}`}
                 onClick={onConfirm}
                 disabled={disabled || loading}
             >

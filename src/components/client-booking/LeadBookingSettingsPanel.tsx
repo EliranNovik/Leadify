@@ -116,78 +116,39 @@ const LeadBookingSettingsPanel: React.FC<Props> = ({
   const bookingUrl = bookingToken ? buildPublicBookingUrl(bookingToken) : null;
 
   const statusLabel = enabled ? 'Active' : bookingToken ? 'Inactive' : 'Not set up';
-  const statusClass = enabled
-    ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20'
-    : bookingToken
-      ? 'bg-amber-50 text-amber-700 ring-amber-600/20'
-      : 'bg-slate-100 text-slate-600 ring-slate-500/10';
 
-  const collapsedHint = enabled
-    ? 'Public booking page is live'
-    : bookingToken
-      ? 'Link ready — click to manage'
-      : 'Share a public booking page with this client';
+  const triggerButton = (
+    <button
+      type="button"
+      onClick={() => setExpanded((prev) => !prev)}
+      className="inline-flex items-center gap-1.5 rounded-full border-0 bg-white px-3.5 py-1.5 text-sm font-semibold text-gray-700 shadow-sm hover:bg-gray-50"
+    >
+      <LinkIcon className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
+      <span>Client link ({statusLabel})</span>
+      {expanded ? (
+        <ChevronUpIcon className="h-5 w-5 shrink-0 text-gray-400" aria-hidden />
+      ) : (
+        <ChevronDownIcon className="h-5 w-5 shrink-0 text-gray-400" aria-hidden />
+      )}
+    </button>
+  );
 
   if (loading) {
     return (
       <div
-        className={`h-12 w-72 max-w-full animate-pulse rounded-xl border border-slate-200/80 bg-slate-50 ${className}`.trim()}
+        className={`h-8 w-40 max-w-full animate-pulse rounded-full bg-white shadow-sm ${className}`.trim()}
       />
     );
   }
 
   if (!expanded) {
-    return (
-      <div className={`w-fit max-w-lg ${className}`.trim()}>
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="inline-flex max-w-full items-center gap-3 rounded-xl border border-slate-200/90 bg-white px-4 py-3.5 text-left shadow-sm transition-all hover:border-indigo-200 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40"
-        >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
-            <LinkIcon className="h-5 w-5" aria-hidden />
-          </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-slate-900">Client self-scheduling link</span>
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusClass}`}>
-                {statusLabel}
-              </span>
-            </div>
-            <p className="mt-0.5 text-sm text-slate-500">{collapsedHint}</p>
-          </div>
-          <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-400" aria-hidden />
-        </button>
-      </div>
-    );
+    return <div className={`w-fit ${className}`.trim()}>{triggerButton}</div>;
   }
 
   return (
-    <div
-      className={`w-fit max-w-lg overflow-hidden rounded-xl border border-slate-200/90 bg-white shadow-sm ${className}`.trim()}
-    >
-      <button
-        type="button"
-        onClick={() => setExpanded(false)}
-        className="flex w-full items-center gap-3 border-b border-slate-100 bg-gradient-to-r from-slate-50/90 to-white px-4 py-3.5 text-left transition-colors hover:from-indigo-50/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/40"
-      >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
-          <LinkIcon className="h-5 w-5" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-slate-900">Client self-scheduling link</span>
-            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusClass}`}>
-              {statusLabel}
-            </span>
-          </div>
-          <p className="mt-0.5 text-sm text-slate-500">
-            Public booking page for this lead · defaults in Admin → Meeting Booking
-          </p>
-        </div>
-        <ChevronUpIcon className="h-5 w-5 shrink-0 text-slate-400" aria-hidden />
-      </button>
-
+    <div className={`relative w-fit ${className}`.trim()}>
+      {triggerButton}
+      <div className="absolute right-0 top-full z-20 mt-2 w-[min(28rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200/90 bg-white shadow-sm">
       <div className="space-y-5 px-4 py-5 sm:px-5">
         <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-slate-100 bg-slate-50/60 px-4 py-3.5 transition-colors hover:bg-slate-50">
           <div className="min-w-0">
@@ -246,6 +207,7 @@ const LeadBookingSettingsPanel: React.FC<Props> = ({
             </a>
           ) : null}
         </div>
+      </div>
       </div>
     </div>
   );

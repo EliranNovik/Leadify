@@ -2579,3 +2579,70 @@ html.entry-kiosk-active::after {
     padding: 0 !important;
   }
 }
+
+table[data-contract-preview] {
+  max-width: 360px;
+}
+
+table[data-contract-preview] a,
+.contract-link-preview-btn {
+  color: #ffffff !important;
+  text-decoration: none !important;
+}
+
+.contract-link-preview-card {
+  max-width: 360px;
+  margin: 16px 0;
+  padding: 16px 18px;
+  border: none;
+  outline: none;
+  background: #f3f4f6;
+  border-radius: 12px;
+  font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
+}
+
+.contract-link-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.contract-link-preview-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.contract-link-preview-logo {
+  display: block;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.contract-link-preview-btn {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 10px 20px;
+  background-color: #4218cc;
+  border-radius: 9999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ProseMirror .contract-link-preview-card {
+  pointer-events: auto;
+  user-select: none;
+}
+
+.ProseMirror .contract-link-preview-card.ProseMirror-selectednode {
+  outline: none;
+  box-shadow: none;
+}
+
+.ProseMirror a.contract-link-preview-btn {
+  color: #ffffff !important;
+  text-decoration: none !important;
+}

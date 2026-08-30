@@ -1,7 +1,10 @@
 import {
   CASE_DOCUMENTS_SIGNED_URL_SECONDS,
   CASE_DOCUMENTS_STORAGE_BUCKET,
+  buildCaseDocumentStoragePath,
+  resolveCaseDocumentUploadContentType,
 } from './caseDocumentsStorage';
+import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from './leadOneDrivePaths';
 import {
   leadSubEffortSavedUpdatedAt,
   leadSubEffortSavedUpdatedBy,
@@ -799,4 +802,70 @@ export async function fetchContractDocuments(
   clientId?: string | null,
 ): Promise<CaseCategoryDocument[]> {
   return fetchCaseCategoryDocuments('contract', leadNumber, clientId);
+}
+
+/** Canonical Contract tab id used by the case-documents drawer. */
+export async function resolveContractClassificationId(): Promise<string | null> {
+  const { classificationIds, canonicalIdByAlias } = await fetchCategoryClassificationMeta('contract');
+  if (!classificationIds.length) return null;
+  const first = classificationIds[0];
+  return canonicalIdByAlias.get(first) ?? first;
+}
+
+/**
+ * Upload a physical contract into the same Case documents → Contract tab
+ * as Contact Info / Client Header (`ClientHeaderDocuments` + contract classification).
+ */
+export async function uploadContractCaseDocument(params: {
+  leadNumber: string;
+  file: File;
+  uploadedBy: string;
+}): Promise<void> {
+  const lead = params.leadNumber.trim();
+  if (!lead) throw new Error('Add a lead number before uploading the physical contract.');
+
+  const classificationId = await resolveContractClassificationId();
+  if (!classificationId) {
+    throw new Error('The Contract document category is not configured. Please contact an administrator.');
+  }
+
+  const storagePath = buildCaseDocumentStoragePath(
+    lead,
+    CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
+    params.file.name,
+  );
+  const contentType = resolveCaseDocumentUploadContentType(params.file);
+
+  const { error: storageErr } = await supabase.storage
+    .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+    .upload(storagePath, params.file, { contentType, upsert: false });
+  if (storageErr) throw storageErr;
+
+  const { data: inserted, error: insErr } = await supabase
+    .from('lead_case_documents')
+    .insert({
+      lead_number: lead,
+      onedrive_subfolder: CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
+      onedrive_item_id: null,
+      storage_path: storagePath,
+      file_name: params.file.name,
+      file_size: params.file.size,
+      mime_type: contentType,
+      classification_id: classificationId,
+      uploaded_by: params.uploadedBy,
+      ai_summary_status: 'pending',
+    })
+    .select('id')
+    .single();
+
+  if (insErr) {
+    await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([storagePath]).catch(() => undefined);
+    throw insErr;
+  }
+
+  if (inserted?.id) {
+    void supabase.functions
+      .invoke('case-document-summarize', { body: { documentId: inserted.id } })
+      .catch(() => undefined);
+  }
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, DocumentTextIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, DocumentTextIcon, DocumentCheckIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
@@ -24,6 +24,12 @@ import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeA
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
 import { sendWordDocumentAiChatMessage } from '../lib/wordDocumentAiApi';
 import { fetchLeadCaseFileForAi, parseFollowupDocumentLinks, formatRequiredDocumentLinksBlock, applyCrmDocumentLinksToEmailDraft } from '../lib/leadFollowupAiApi';
+import {
+  bodyHasContractLink,
+  buildClickableContractLinkAnchor,
+  fetchLeadContractPublicLink,
+  labelForContractLink,
+} from '../lib/leadContractLink';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -439,6 +445,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
   const [showLinkForm, setShowLinkForm] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
+  const [insertingContractLink, setInsertingContractLink] = useState(false);
   
   // Lead contacts modal state
   const [showContactsModal, setShowContactsModal] = useState(false);
@@ -1864,6 +1871,41 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
 
     handleCancelLink();
   };
+
+  const handleInsertAgreementLink = async () => {
+    if (!client || insertingContractLink) return;
+    if (bodyHasContractLink(composeBody)) {
+      toast('Agreement link is already in the email.');
+      return;
+    }
+    setInsertingContractLink(true);
+    try {
+      const link = await fetchLeadContractPublicLink(
+        String(client.id),
+        client.lead_type === 'legacy' || String(client.id).startsWith('legacy_'),
+      );
+      if (!link) {
+        toast.error('No agreement or contract link is available for this client.');
+        return;
+      }
+      const linkLine = buildClickableContractLinkAnchor(
+        link.url,
+        link.signed,
+        client.lead_number ? String(client.lead_number) : '',
+      );
+      setComposeBody(prev => {
+        const existing = prev || '';
+        const trimmedExisting = existing.replace(/\s*$/, '');
+        return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
+      });
+      toast.success(`${labelForContractLink(link.signed)} added`);
+    } catch (error) {
+      console.error('Failed to insert agreement link:', error);
+      toast.error('Failed to add the agreement link.');
+    } finally {
+      setInsertingContractLink(false);
+    }
+  };
   
   const normaliseUrl = (value: string) => {
     if (!value) return '';
@@ -2620,6 +2662,24 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
                     title={showLinkForm ? 'Hide link form' : 'Add link'}
                   >
                     <LinkIcon className="w-6 h-6" />
+                  </button>
+
+                  {/* Add agreement / contract link */}
+                  <button
+                    type="button"
+                    className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
+                      bodyHasContractLink(composeBody) ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                    }`}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
+                    onClick={() => void handleInsertAgreementLink()}
+                    disabled={sending || insertingContractLink || !client}
+                    title="Contract"
+                  >
+                    {insertingContractLink ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <DocumentCheckIcon className="w-6 h-6" />
+                    )}
                   </button>
                   
                   {/* Add Contacts from Lead Button */}

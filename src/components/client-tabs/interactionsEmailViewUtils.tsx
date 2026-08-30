@@ -2,6 +2,11 @@ import React from 'react';
 import sanitizeHtml from '../../lib/sanitizeHtml';
 import { interactionsDevLog } from '../../lib/interactions/devLog';
 import { isCrmComposeEmailHtml, splitEmailBodyAndSignature, escapeHtml } from '../../lib/emailBodyHtml';
+import {
+  applyContractLinkPreviewHtml,
+  extractContractPreviewTables,
+  restoreContractPreviewTables,
+} from '../../lib/leadContractLink';
 
 const extractHtmlBody = (html: string) => {
   if (!html) return html;
@@ -267,7 +272,12 @@ export function formatEmailBodyForTimeline(htmlOrText: string | null | undefined
   if (isAssembledEmailDisplayHtml(raw)) return flattenAssembledSignature(raw);
 
   const { body, signature } = splitEmailBodyAndSignature(raw);
-  const formattedBody = formatEmailBodyInner(body);
+  const withCards = applyContractLinkPreviewHtml(body);
+  const contractPreviews = extractContractPreviewTables(withCards);
+  const formattedBody = restoreContractPreviewTables(
+    formatEmailBodyInner(contractPreviews.text),
+    contractPreviews.blocks,
+  );
   if (!signature.trim()) return formattedBody;
   return `${formattedBody}${wrapSignatureHtml(signature)}`;
 }
@@ -477,7 +487,8 @@ export function isTimelinePrewrapHtml(html: string | null | undefined): boolean 
 
 /** Extract plain text (+ newlines) from an existing timeline-prewrap body. */
 export function extractTimelinePrewrapText(html: string): string {
-  let content = String(html || '');
+  const contractPreviews = extractContractPreviewTables(String(html || ''));
+  let content = contractPreviews.text;
   content = content
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
@@ -497,7 +508,10 @@ export function extractTimelinePrewrapText(html: string): string {
       .replace(/&quot;/gi, '"')
       .replace(/&#39;/gi, "'");
   }
-  return content.replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return restoreContractPreviewTables(
+    content.replace(/\u00a0/g, ' ').replace(/\n{3,}/g, '\n\n').trim(),
+    contractPreviews.blocks,
+  );
 }
 
 /** Count visual line breaks — used to avoid replacing a well-broken body with a flatter one. */
@@ -522,9 +536,15 @@ export function ensureFormattedEmailHtml(htmlOrText: string | null | undefined):
   if (isAssembledEmailDisplayHtml(raw)) {
     return sanitizeEmailHtml(flattenAssembledSignature(raw));
   }
-  const source = isTimelinePrewrapHtml(raw) ? extractTimelinePrewrapText(raw) : raw;
-  if (!source.trim()) return '';
-  return sanitizeEmailHtml(formatEmailHtmlForReadingPane(source));
+  const prepared = applyContractLinkPreviewHtml(raw);
+  const contractPreviews = extractContractPreviewTables(prepared);
+  const source = isTimelinePrewrapHtml(contractPreviews.text)
+    ? extractTimelinePrewrapText(contractPreviews.text)
+    : contractPreviews.text;
+  if (!source.trim() && contractPreviews.blocks.length === 0) return '';
+  return sanitizeEmailHtml(
+    restoreContractPreviewTables(formatEmailHtmlForReadingPane(source), contractPreviews.blocks),
+  );
 }
 
 /** Visible plain-text length — used to prefer hydrated full bodies over short list previews. */
@@ -800,7 +820,7 @@ export const EmailContentWithErrorHandling: React.FC<{ html: string; emailId: st
     <div
       ref={contentRef}
       dangerouslySetInnerHTML={{ __html: html }}
-      className="email-content max-w-none break-words text-gray-800 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_.timeline-prewrap]:whitespace-normal [&_.email-signature-block]:overflow-x-auto [&_.email-signature-block_table]:w-auto [&_.email-signature-block_img]:max-w-none"
+      className="email-content max-w-none break-words text-gray-800 [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2 hover:[&_a]:text-blue-800 [&_table[data-contract-preview]_a]:text-white [&_table[data-contract-preview]_a]:no-underline hover:[&_table[data-contract-preview]_a]:text-white [&_.timeline-prewrap]:whitespace-normal [&_.email-signature-block]:overflow-x-auto [&_.email-signature-block_table]:w-auto [&_.email-signature-block_img]:max-w-none"
       style={{
         wordBreak: 'break-word',
         overflowWrap: 'anywhere',
@@ -845,9 +865,18 @@ export function sanitizeEmailHtml(html: string): string {
       'h6',
     ],
     allowedAttributes: {
-      a: ['href', 'target', 'rel', 'style'],
+      a: ['href', 'target', 'rel', 'style', 'class'],
       span: ['style', 'dir', 'class', 'data-icon'],
-      div: ['style', 'dir', 'class', 'data-email-signature'],
+      div: [
+        'style',
+        'dir',
+        'class',
+        'data-email-signature',
+        'data-contract-preview',
+        'data-href',
+        'data-signed',
+        'data-lead-number',
+      ],
       p: ['style', 'dir', 'class'],
       body: ['style', 'dir'],
       img: ['src', 'alt', 'style', 'width', 'height', 'border', 'crossorigin', 'class'],
@@ -876,6 +905,10 @@ export function sanitizeEmailHtml(html: string): string {
         'align',
         'bgcolor',
         'data-email-signature',
+        'data-contract-preview',
+        'data-href',
+        'data-signed',
+        'data-lead-number',
       ],
       '*': ['style', 'dir'],
     },

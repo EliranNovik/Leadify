@@ -16,7 +16,7 @@ export type WordDocumentAiInput = {
   chatHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   /** Full CRM case file (same pack as pipeline AI follow-up). */
   caseContext?: string | null;
-  purpose?: 'document' | 'email_followup';
+  purpose?: 'document' | 'email_followup' | 'meeting_brief';
 };
 
 function toWordDocumentAiBody(input: WordDocumentAiInput): Record<string, unknown> {

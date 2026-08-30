@@ -1,3 +1,9 @@
+import {
+  applyContractLinkPreviewHtml,
+  extractContractPreviewTables,
+  restoreContractPreviewTables,
+} from './leadContractLink';
+
 /**
  * Convert compose/template text into Outlook-safe HTML.
  *
@@ -184,12 +190,17 @@ export function convertBodyToHtml(text: string, options?: ConvertBodyToHtmlOptio
 
   let content = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const { body, signature } = peelSignatureHtml(content);
-  content = body;
+  content = applyContractLinkPreviewHtml(body);
   content = unwrapExistingOutlookWrapper(content);
   content = unwrapSingleOuterDivIfNeeded(content);
+  const contractPreviews = extractContractPreviewTables(content);
+  content = contractPreviews.text;
+
+  const finish = (html: string) =>
+    restoreContractPreviewTables(html, contractPreviews.blocks) + signature;
 
   if (isDivPerLineFragment(content)) {
-    return wrapOutlookBody(content) + signature;
+    return finish(wrapOutlookBody(content));
   }
 
   if (options?.markdownLinks) {
@@ -206,11 +217,11 @@ export function convertBodyToHtml(text: string, options?: ConvertBodyToHtmlOptio
     content = withProtectedAnchors(content, escapeAndLinkify);
   } else if (hasStructuredHtml) {
     content = withProtectedAnchors(content, linkifyUrlsOutsideTags);
-    return wrapOutlookBody(content) + signature;
+    return finish(wrapOutlookBody(content));
   } else {
     content = content.replace(/<br\s*\/?>/gi, '\n');
     content = withProtectedAnchors(content, linkifyUrlsOutsideTags);
   }
 
-  return wrapOutlookBody(linesToOutlookDivs(content)) + signature;
+  return finish(wrapOutlookBody(linesToOutlookDivs(content)));
 }

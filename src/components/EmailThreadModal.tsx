@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
-import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, TrashIcon, InboxIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, DocumentCheckIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, TrashIcon, InboxIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
 import { convertBodyToHtml } from '../lib/emailBodyHtml';
@@ -21,6 +21,12 @@ import { searchLeads } from '../lib/legacyLeadsApi';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { generateSearchVariants } from '../lib/transliteration';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
+import {
+  bodyHasContractLink,
+  buildClickableContractLinkAnchor,
+  fetchLeadContractPublicLink,
+  labelForContractLink,
+} from '../lib/leadContractLink';
 import EmailGmailSplitPane from './EmailGmailSplitPane';
 import EmailSentSuccessModal from './EmailSentSuccessModal';
 import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
@@ -577,6 +583,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [showLinkForm, setShowLinkForm] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
+  const [insertingContractLink, setInsertingContractLink] = useState(false);
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [templateSearch, setTemplateSearch] = useState('');
   const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
@@ -1221,6 +1228,46 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     });
 
     handleCancelLink();
+  };
+
+  const handleInsertAgreementLink = async () => {
+    if (!selectedContact || insertingContractLink) return;
+    if (bodyHasContractLink(newMessage)) {
+      toast('Agreement link is already in the email.');
+      return;
+    }
+    setInsertingContractLink(true);
+    try {
+      const isLegacyLead =
+        selectedContact.lead_type === 'legacy' ||
+        selectedContact.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead
+        ? (typeof selectedContact.id === 'string'
+            ? selectedContact.id.replace('legacy_', '')
+            : String(selectedContact.id))
+        : (selectedContact.client_uuid || selectedContact.id);
+      const link = await fetchLeadContractPublicLink(String(leadId), isLegacyLead);
+      if (!link) {
+        toast.error('No agreement or contract link is available for this client.');
+        return;
+      }
+      const linkLine = buildClickableContractLinkAnchor(
+        link.url,
+        link.signed,
+        selectedContact.lead_number ? String(selectedContact.lead_number) : '',
+      );
+      setNewMessage(prev => {
+        const existing = prev || '';
+        const trimmedExisting = existing.replace(/\s*$/, '');
+        return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
+      });
+      toast.success(`${labelForContractLink(link.signed)} added`);
+    } catch (error) {
+      console.error('Failed to insert agreement link:', error);
+      toast.error('Failed to add the agreement link.');
+    } finally {
+      setInsertingContractLink(false);
+    }
   };
 
   // Helper function to check if text contains Hebrew
@@ -4806,6 +4853,24 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     title={showLinkForm ? 'Hide link form' : 'Add link'}
                   >
                     <LinkIcon className="w-6 h-6" />
+                  </button>
+
+                  {/* Add agreement / contract link */}
+                  <button
+                    type="button"
+                    className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
+                      bodyHasContractLink(newMessage) ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                    }`}
+                    style={COMPOSE_ACTION_BUTTON_STYLE}
+                    onClick={() => void handleInsertAgreementLink()}
+                    disabled={isSending || insertingContractLink || !selectedContact}
+                    title="Contract"
+                  >
+                    {insertingContractLink ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <DocumentCheckIcon className="w-6 h-6" />
+                    )}
                   </button>
 
                   {/* Add Contacts from Lead Button */}

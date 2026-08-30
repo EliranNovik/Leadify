@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -50,12 +51,25 @@ interface EmployeeProfile {
 
 const MyProfilePage: React.FC = () => {
     const { user } = useAuthContext();
+    const [searchParams] = useSearchParams();
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [profile, setProfile] = useState<EmployeeProfile | null>(null);
-    const [activeTab, setActiveTab] = useState('About');
     const profileTabs = ['About', 'Personal', 'Working Hours', 'Contribution', 'Documents', 'Email Signature'];
+    const tabFromUrl = (() => {
+      const raw = String(searchParams.get('tab') || '').trim().toLowerCase().replace(/[_]+/g, '-');
+      if (!raw) return 'About';
+      if (raw === 'working-hours' || raw === 'working hours' || raw === 'hours') return 'Working Hours';
+      if (raw === 'email-signature' || raw === 'signature') return 'Email Signature';
+      const match = profileTabs.find((tab) => tab.toLowerCase() === raw || tab.toLowerCase().replace(/\s+/g, '-') === raw);
+      return match || 'About';
+    })();
+    const [activeTab, setActiveTab] = useState(tabFromUrl);
+
+    useEffect(() => {
+      setActiveTab(tabFromUrl);
+    }, [tabFromUrl]);
 
     // Edit form state
     const [formData, setFormData] = useState({
