@@ -1,4 +1,9 @@
 export const WAITING_STAGE_TARGET = 'Waiting for Mtng sum';
+export const WAITING_STAGE_TARGET_ALIASES = [
+  'Waiting for Mtng sum',
+  'waiting_for_mtng_sum',
+  'Waiting for sum & price offer',
+] as const;
 
 export interface WaitingLeadRow {
   id: string;

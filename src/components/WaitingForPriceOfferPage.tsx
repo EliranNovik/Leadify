@@ -71,7 +71,10 @@ const WaitingForPriceOfferPage: React.FC = () => {
       try {
         const stageMap = await fetchStageNames();
         const matchedIds = Object.entries(stageMap)
-          .filter(([, name]) => areStagesEquivalent(name, WAITING_STAGE_TARGET))
+          .filter(([, name]) =>
+            areStagesEquivalent(name, WAITING_STAGE_TARGET) ||
+            areStagesEquivalent(name, 'Waiting for sum & price offer')
+          )
           .map(([id]) => Number(id))
           .filter(id => !Number.isNaN(id));
 

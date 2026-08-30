@@ -6,7 +6,7 @@ let stageColoursCache: { [key: string]: string } = {};
 let isCacheInitialized = false;
 
 // Bump version when stage names are renamed in DB (forces refetch).
-const STAGE_CACHE_STORAGE_KEY = 'leadStagesCache:v2';
+const STAGE_CACHE_STORAGE_KEY = 'leadStagesCache:v3';
 const STAGE_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24; // 24h
 
 // Best-effort restore from localStorage so stage colours survive refresh.
@@ -193,7 +193,15 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
     'clientsignedagreement': ['clientsigned', 'clientsignedagreement', 'client_signed_agreement'],
     'paymentrequestsent': ['paymentrequestsent', 'payment_request_sent', 'paymentrequest'],
     'meetingscheduled': ['meetingscheduled', 'meeting_scheduled', 'scheduled'],
-    'waitingformtngsum': ['waitingformtngsum', 'waiting_for_mtng_sum', 'waitingformeetingsummary'],
+    'waitingformtngsum': [
+      'waitingformtngsum',
+      'waiting_for_mtng_sum',
+      'waitingformeetingsummary',
+      'waitingforsumpriceoffer',
+      'waitingformtngsumpriceoffer',
+      'waitingforsumandpriceoffer',
+      'waitingformtngsumandpriceoffer',
+    ],
     'communicationstarted': ['communicationstarted', 'communication_started', 'communication'],
     'mtngsumagreementsent': ['mtngsumagreementsent', 'mtng_sum_agreement_sent', 'meetingsummaryagreementsent'],
     'handlerassigned': ['handlerassigned', 'handler_assigned', 'handler'],
@@ -230,6 +238,19 @@ export function shouldPreserveLeadStageOnMeeting(stage: unknown): boolean {
     areStagesEquivalent(name, 'payment_request_sent')
   );
 }
+
+/** Stage 40 — Waiting for Mtng sum / Waiting for sum & price offer. */
+export const isWaitingForMtngSumStage = (
+  stageName: string,
+  stageNumeric?: number | null,
+): boolean => {
+  if (stageNumeric === 40) return true;
+  return (
+    areStagesEquivalent(stageName, 'waiting_for_mtng_sum') ||
+    areStagesEquivalent(stageName, 'Waiting for Mtng sum') ||
+    areStagesEquivalent(stageName, 'Waiting for sum & price offer')
+  );
+};
 
 /** Created (0) and Precommunication (11) — assign scheduler replaces stage action buttons. */
 export const isAssignSchedulerStage = (

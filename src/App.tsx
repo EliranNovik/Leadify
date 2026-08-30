@@ -5,8 +5,8 @@ import { queryClient } from './lib/queryClient';
 import ScrollRestoration from './components/ScrollRestoration';
 import PostLoginRedirectRecovery from './components/PostLoginRedirectRecovery';
 import { MsalProvider, useMsal } from '@azure/msal-react';
-import { PublicClientApplication } from '@azure/msal-browser';
-import { msalConfig, loginRequest } from './msalConfig';
+import { InteractionStatus } from '@azure/msal-browser';
+import { loginRequest } from './msalConfig';
 import { Toaster } from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -155,8 +155,17 @@ function RouteSuspense({ children }: { children: React.ReactNode }) {
 }
 
 const AppContentInner: React.FC = () => {
-  const { accounts, instance } = useMsal();
+  const { accounts, instance, inProgress } = useMsal();
   const location = useLocation();
+  const msalReady = inProgress !== InteractionStatus.Startup;
+  const msalAccount = useMemo(() => {
+    if (!msalReady) return accounts[0];
+    try {
+      return instance.getActiveAccount() || accounts[0];
+    } catch {
+      return accounts[0];
+    }
+  }, [accounts, instance, msalReady]);
 
   // Capture pathname at reload time so persisted state is only cleared for the route that was refreshed
   useEffect(() => {
@@ -200,7 +209,6 @@ const AppContentInner: React.FC = () => {
   const isClientsPage = useMemo(() => location.pathname.startsWith('/clients'), [location.pathname]);
   // Pages that should use a grey app background (incl. behind the sidebar) instead of white
   const useGreyAppBackground = isDashboardPage || isClientsPage;
-  const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
   // Get auth state from context

@@ -50,7 +50,7 @@ import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { isNonSelfLinkedMasterLead } from '../lib/masterLeadApi';
 import toast from 'react-hot-toast';
-import { getStageName, getStageColour, areStagesEquivalent, shouldShowAssignSchedulerField } from '../lib/stageUtils';
+import { getStageName, getStageColour, areStagesEquivalent, shouldShowAssignSchedulerField, isWaitingForMtngSumStage } from '../lib/stageUtils';
 import { HEADER_ROLE_ASSIGN_WIDTH_CLASS } from './HeaderRoleAssignField';
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
@@ -3850,7 +3850,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         )}
 
                                                     {/* Waiting for meeting summary Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
+                                                    {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && openSendOfferModal && (
                                                         <button
                                                             onClick={openSendOfferModal}
                                                             className={STAGE_ACTION_BTN_CLASS_COMPACT}
@@ -3946,7 +3946,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         !areStagesEquivalent(currentStageName, 'another_meeting') &&
                                                         !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
                                                         !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                                        !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                                                        !isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) &&
                                                         !areStagesEquivalent(currentStageName, 'Communication started') &&
                                                         !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
                                                         !areStagesEquivalent(currentStageName, 'Success') &&
@@ -5565,7 +5565,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     )}
 
                                 {/* Waiting for meeting summary Stage */}
-                                {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
+                                {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && openSendOfferModal && (
                                     <button
                                         onClick={openSendOfferModal}
                                         className={STAGE_ACTION_BTN_CLASS}
@@ -5659,7 +5659,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     !areStagesEquivalent(currentStageName, 'another_meeting') &&
                                     !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
                                     !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                    !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                                    !isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) &&
                                     !areStagesEquivalent(currentStageName, 'Communication started') &&
                                     !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
                                     !areStagesEquivalent(currentStageName, 'Success') &&

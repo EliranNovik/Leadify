@@ -29,7 +29,7 @@ import {
 import { StarIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
-import { getStageName, getStageColour, initializeStageNames, areStagesEquivalent, normalizeStageName } from '../lib/stageUtils';
+import { getStageName, getStageColour, initializeStageNames, areStagesEquivalent, normalizeStageName, isWaitingForMtngSumStage } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, fetchStageActorInfo } from '../lib/leadStageManager';
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
 
@@ -1513,7 +1513,7 @@ const CaseDetailsPage: React.FC = () => {
                   )}
 
                 {/* Waiting for meeting summary Stage */}
-                {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && (
+                {isWaitingForMtngSumStage(currentStageName) && (
                   <button
                     onClick={() => {
                       // Open send offer modal - would need to implement this
@@ -1608,7 +1608,7 @@ const CaseDetailsPage: React.FC = () => {
                   !areStagesEquivalent(currentStageName, 'another_meeting') &&
                   !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
                   !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                  !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                  !isWaitingForMtngSumStage(currentStageName) &&
                   !areStagesEquivalent(currentStageName, 'Communication started') &&
                   !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
                   !areStagesEquivalent(currentStageName, 'Success') &&

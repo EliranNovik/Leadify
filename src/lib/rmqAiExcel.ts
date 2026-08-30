@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+type XlsxModule = typeof import('xlsx');
 
 export const RMQ_EXCEL_MIME =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -117,7 +117,12 @@ function normalizeSheetRecords(
   };
 }
 
-function autosizeSheet(ws: XLSX.WorkSheet, headers: string[], rowCount: number): void {
+function autosizeSheet(
+  XLSX: XlsxModule,
+  ws: import('xlsx').WorkSheet,
+  headers: string[],
+  rowCount: number,
+): void {
   ws['!cols'] = headers.map((header) => {
     const width = Math.min(42, Math.max(10, header.length + 2));
     return { wch: width };
@@ -132,7 +137,8 @@ function autosizeSheet(ws: XLSX.WorkSheet, headers: string[], rowCount: number):
   }
 }
 
-export function buildExcelWorkbook(sheets: ExcelSheetInput[]): XLSX.WorkBook {
+export async function buildExcelWorkbook(sheets: ExcelSheetInput[]): Promise<import('xlsx').WorkBook> {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
   const usedNames = new Set<string>();
   const input = sheets.slice(0, MAX_SHEETS);
@@ -143,7 +149,7 @@ export function buildExcelWorkbook(sheets: ExcelSheetInput[]): XLSX.WorkBook {
     const ws = records.length
       ? XLSX.utils.json_to_sheet(records, { header: headers })
       : XLSX.utils.aoa_to_sheet([headers]);
-    autosizeSheet(ws, headers, records.length);
+    autosizeSheet(XLSX, ws, headers, records.length);
     let name = safeSheetName(sheet.name || 'Sheet1', index);
     if (usedNames.has(name)) name = safeSheetName(`${name} ${index + 1}`, index);
     usedNames.add(name);
@@ -153,7 +159,8 @@ export function buildExcelWorkbook(sheets: ExcelSheetInput[]): XLSX.WorkBook {
   return wb;
 }
 
-export function workbookToExcelBlob(wb: XLSX.WorkBook): Blob {
+export async function workbookToExcelBlob(wb: import('xlsx').WorkBook): Promise<Blob> {
+  const XLSX = await import('xlsx');
   const bytes = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
   return new Blob([bytes], { type: RMQ_EXCEL_MIME });
 }
@@ -173,8 +180,8 @@ export async function createRmqExcelFile(
   sheets: ExcelSheetInput[],
   filename: string,
 ): Promise<RmqAiChatFile> {
-  const wb = buildExcelWorkbook(sheets);
-  const blob = workbookToExcelBlob(wb);
+  const wb = await buildExcelWorkbook(sheets);
+  const blob = await workbookToExcelBlob(wb);
   const url = await blobToDataUrl(blob);
   const file: RmqAiChatFile = {
     id: crypto.randomUUID(),

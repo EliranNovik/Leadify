@@ -13,7 +13,7 @@ import {
   type LeadSourceOption,
 } from '../lib/leadSourceId';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
-import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting } from '../lib/stageUtils';
+import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import {
@@ -2078,6 +2078,10 @@ const Clients: React.FC<ClientsProps> = ({
       meetingpaid: 'meetingcomplete',
       paidmeeting: 'meetingcomplete',
       clientdeclined: 'clientdeclinedpriceoffer',
+      waitingforsumpriceoffer: 'waitingformtngsum',
+      waitingformtngsumpriceoffer: 'waitingformtngsum',
+      waitingforsumandpriceoffer: 'waitingformtngsum',
+      waitingformtngsumandpriceoffer: 'waitingformtngsum',
     }),
     []
   );
@@ -2093,6 +2097,10 @@ const Clients: React.FC<ClientsProps> = ({
       meetingcomplete: 30,
       meetingirrelevant: 35,
       waitingformtngsum: 40,
+      waitingforsumpriceoffer: 40,
+      waitingformtngsumpriceoffer: 40,
+      waitingforsumandpriceoffer: 40,
+      waitingformtngsumandpriceoffer: 40,
       mtngsumagreementsent: 50,
       clientdeclinedpriceoffer: 51,
       clientdeclined: 51,
@@ -7412,9 +7420,13 @@ const Clients: React.FC<ClientsProps> = ({
 
     // If proposalTotal is changed, update balance as well
     const proposalTotal = parseFloat(meetingEndedData.proposalTotal);
-    const waitingStageId = getStageIdOrWarn('waiting_for_mtng_sum');
+    const waitingStageId =
+      getStageIdOrWarn('waiting_for_mtng_sum') ??
+      getStageIdOrWarn('Waiting for Mtng sum') ??
+      getStageIdOrWarn('Waiting for sum & price offer') ??
+      40;
     if (waitingStageId === null) {
-      toast.error('Unable to resolve the "Waiting for Mtng sum" stage. Please contact an administrator.');
+      toast.error('Unable to resolve the "Waiting for Mtng sum" / "Waiting for sum & price offer" stage. Please contact an administrator.');
       setIsSavingMeetingEnded(false);
       return;
     }
@@ -12723,7 +12735,7 @@ const Clients: React.FC<ClientsProps> = ({
             </li>
           )
         )}
-        {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && (
+        {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && (
           <li>
             <a
               className="flex items-center gap-3 py-3 saira-regular"
@@ -12739,8 +12751,9 @@ const Clients: React.FC<ClientsProps> = ({
           </li>
         )}
         {(() => {
-          const communicationExcludedStages = ['meeting_scheduled', 'another_meeting', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned', 'Meeting rescheduling'];
-          const isCommunicationExcluded = communicationExcludedStages.some(stage => areStagesEquivalent(currentStageName, stage));
+          const communicationExcludedStages = ['meeting_scheduled', 'another_meeting', 'waiting_for_mtng_sum', 'Waiting for sum & price offer', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned', 'Meeting rescheduling'];
+          const isCommunicationExcluded = communicationExcludedStages.some(stage => areStagesEquivalent(currentStageName, stage)) ||
+            isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null);
           // Also exclude if current stage is 21 (Meeting rescheduled)
           const isStage21 = (isStageNumeric && stageNumeric === 21) || areStagesEquivalent(currentStageName, 'Meeting rescheduling');
           return !isCommunicationExcluded && !isStage21;
