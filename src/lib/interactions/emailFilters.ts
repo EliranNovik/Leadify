@@ -631,7 +631,6 @@ export async function fetchLeadEmailsForTimeline(
   }
 ): Promise<{ data: any[]; error: unknown }> {
   const {
-    isLegacyLead,
     legacyId,
     clientId,
     emailFilters,
@@ -654,9 +653,9 @@ export async function fetchLeadEmailsForTimeline(
     .map((f) => f.slice('sender_email.eq.'.length).toLowerCase())
     .filter(Boolean);
 
-  const hasLeadScope =
-    (isLegacyLead && legacyId != null && !Number.isNaN(legacyId)) ||
-    (!isLegacyLead && clientId != null && clientId !== '');
+  const hasClientScope = clientId != null && clientId !== '';
+  const hasLegacyScope = legacyId != null && !Number.isNaN(legacyId);
+  const hasLeadScope = hasClientScope || hasLegacyScope;
 
   if (!hasLeadScope && normalizedContactIds.length === 0 && senderEmails.length === 0) {
     return { data: [], error: null };
@@ -674,16 +673,8 @@ export async function fetchLeadEmailsForTimeline(
           ? Array.from(new Set(senderEmails)).slice(0, 6)
           : null,
     };
-    if (!isLegacyLead && clientId) {
-      rpcArgs.p_client_id = String(clientId);
-    } else {
-      rpcArgs.p_client_id = null;
-    }
-    if (isLegacyLead && legacyId != null && !Number.isNaN(legacyId)) {
-      rpcArgs.p_legacy_id = legacyId;
-    } else {
-      rpcArgs.p_legacy_id = null;
-    }
+    rpcArgs.p_client_id = hasClientScope ? String(clientId) : null;
+    rpcArgs.p_legacy_id = hasLegacyScope ? legacyId : null;
 
     // Function statement_timeout is 20s; keep client wait slightly under that.
     const rpcResult = await withQueryTimeout(
@@ -717,7 +708,9 @@ export async function fetchLeadEmailsForTimeline(
 
   if (hasLeadScope) {
     let fastQuery = buildBase();
-    if (isLegacyLead && legacyId != null && !Number.isNaN(legacyId)) {
+    if (hasClientScope && hasLegacyScope) {
+      fastQuery = fastQuery.or(`client_id.eq.${clientId},legacy_id.eq.${legacyId}`);
+    } else if (hasLegacyScope) {
       fastQuery = fastQuery.eq('legacy_id', legacyId);
     } else {
       fastQuery = fastQuery.eq('client_id', clientId as string);

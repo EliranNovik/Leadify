@@ -5,6 +5,7 @@ import {
   isLegacyLeadRef,
   parseLegacyLeadNumericId,
 } from './paymentLinkLeadRef';
+import { extractPelecardCodeFromText } from './pelecardErrors';
 
 export type PaymentHistoryEntry = {
   id: string | number;
@@ -12,6 +13,9 @@ export type PaymentHistoryEntry = {
   amount: number | null;
   payment_method: string | null;
   status: string | null;
+  error_message?: string | null;
+  status_code?: string | null;
+  currency?: string | null;
 };
 
 export type InsertPaymentLinkInput = {
@@ -290,6 +294,8 @@ type PaymentLinkRow = {
   created_at?: string | null;
   payment_plan_id?: number | null;
   plan_contact_id?: number | null;
+  pelecard_status_code?: string | null;
+  currency?: string | null;
 };
 
 /**
@@ -313,7 +319,7 @@ export async function fetchContactPaymentHistory(options: {
   const linkMap = new Map<string | number, PaymentLinkRow>();
 
   const selectCols =
-    'id, status, paid_at, total_amount, payment_method, created_at, payment_plan_id, plan_contact_id';
+    'id, status, paid_at, total_amount, payment_method, created_at, payment_plan_id, plan_contact_id, pelecard_status_code, currency';
 
   if (planIds.length) {
     const { data, error } = await supabase
@@ -352,7 +358,29 @@ export async function fetchContactPaymentHistory(options: {
     .order('created_at', { ascending: false });
   if (txError) throw txError;
 
-  const txLinkIds = new Set((transactions ?? []).map((t) => t.payment_link_id));
+  const txLinkIds = new Set((transactions ?? []).map((t: { payment_link_id?: string | number }) => t.payment_link_id));
+  const linkById = new Map(links.map((l) => [String(l.id), l]));
+
+  const fromTransactions: PaymentHistoryEntry[] = (transactions ?? []).map((t: Record<string, unknown>) => {
+    const link = linkById.get(String(t.payment_link_id ?? ''));
+    const errorMessage =
+      typeof t.error_message === 'string' && t.error_message.trim() ? t.error_message.trim() : null;
+    const directCode = String(
+      t.status_code || t.pelecard_status_code || t.error_code || '',
+    ).trim();
+    const fromMessage = extractPelecardCodeFromText(errorMessage);
+    return {
+      id: (t.id as string | number) ?? '',
+      created_at: typeof t.created_at === 'string' ? t.created_at : null,
+      amount: t.amount != null ? Number(t.amount) : null,
+      payment_method: typeof t.payment_method === 'string' ? t.payment_method : null,
+      status: typeof t.status === 'string' ? t.status : null,
+      error_message: errorMessage,
+      status_code: directCode || fromMessage || link?.pelecard_status_code || null,
+      currency: link?.currency || '₪',
+    };
+  });
+
   const synthetic: PaymentHistoryEntry[] = links
     .filter((l) => {
       const status = (l.status || '').toLowerCase();
@@ -364,12 +392,12 @@ export async function fetchContactPaymentHistory(options: {
       amount: l.total_amount != null ? Number(l.total_amount) : null,
       payment_method: l.payment_method || 'pelecard',
       status: l.status || 'paid',
+      error_message: null,
+      status_code: l.pelecard_status_code || null,
+      currency: l.currency || '₪',
     }));
 
-  const merged: PaymentHistoryEntry[] = [
-    ...((transactions ?? []) as PaymentHistoryEntry[]),
-    ...synthetic,
-  ];
+  const merged: PaymentHistoryEntry[] = [...fromTransactions, ...synthetic];
 
   merged.sort((a, b) => {
     const aTs = a.created_at ? new Date(a.created_at).getTime() : 0;

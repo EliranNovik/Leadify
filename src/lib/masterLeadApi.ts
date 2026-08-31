@@ -4,6 +4,8 @@ import { getStageName } from './stageUtils';
 export interface SubLead {
   id: string;
   lead_number: string;
+  /** Lead number used for case documents (no display-only /1 or C prefix). */
+  document_lead_number?: string;
   actual_lead_id: string;
   manual_id?: string;
   name: string;
@@ -653,6 +655,7 @@ export const fetchNewMasterLead = async (
       return {
         id: String(lead.id),
         lead_number: leadNumberValue,
+        document_lead_number: String(lead.lead_number || baseLeadNumber || '').trim() || leadNumberValue,
         actual_lead_id: manualValue || leadNumberValue || String(lead.id),
         manual_id: manualValue ?? undefined,
         name: lead.name || 'Unknown',
@@ -692,6 +695,7 @@ export const fetchNewMasterLead = async (
       processedSubLeads.push({
         id: `legacy_${lead.id}`,
         lead_number: String(lead.id),
+        document_lead_number: String(lead.id),
         actual_lead_id: String(lead.id),
         isLinkedOnly: true,
         manual_id: lead.manual_id ?? undefined,
@@ -1171,6 +1175,7 @@ export const fetchLegacyMasterLead = async (
       processedSubLeads.push({
         id: `legacy_${masterLead.id}`,
         lead_number: displayNumber,
+        document_lead_number: String(masterLead.id),
         actual_lead_id: String(masterLead.id),
         manual_id: masterLead.manual_id ?? undefined,
         name: masterLead.name || 'Unknown',
@@ -1233,6 +1238,7 @@ export const fetchLegacyMasterLead = async (
         processedSubLeads.push({
           id: `legacy_${lead.id}`,
           lead_number: displayNumber,
+          document_lead_number: isLinkedOnly ? String(lead.id) : String(lead.id),
           actual_lead_id: String(lead.id),
           isLinkedOnly: isLinkedOnly || undefined,
           manual_id: lead.manual_id ?? undefined,
@@ -1281,6 +1287,7 @@ export const fetchLegacyMasterLead = async (
       processedSubLeads.push({
         id: String(lead.id),
         lead_number: leadNum,
+        document_lead_number: leadNum,
         actual_lead_id: leadNum,
         manual_id: lead.manual_id ?? undefined,
         name: lead.name || 'Unknown',

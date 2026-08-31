@@ -22,6 +22,22 @@ import {
 import { createRmqExcelFile, type ExcelSheetInput } from './rmqAiExcel';
 import { findCrmAppPlaces } from './crmAppMap';
 import { resolveLeadShareClientRoute } from './calendarClientRoute';
+import {
+  fetchFinanceExpenseEntries,
+  formatFinanceExpenseAmount,
+  type FinanceExpenseKind,
+} from './financeExpenseCreate';
+import {
+  EXPENSE_CATEGORY_LABELS,
+  EXPENSE_CATEGORY_ORDER,
+  fetchAllExpensesBreakdown,
+  formatNis,
+  listExpenseMonthsInRange,
+  marketingExpenseTotal,
+  type ExpenseCategoryKey,
+} from './allExpensesReport';
+import { fetchInvoicedTotalDueNisForDateRange } from './fetchInvoicedLast30TotalDueNis';
+import { managementAmountToNis } from './firmManagementCosts';
 
 export const RMQ_AI_ALLOWED_TABLES = {
   leads: [
@@ -136,6 +152,91 @@ export const RMQ_AI_ALLOWED_TABLES = {
     'cdate',
     'creator_id',
   ],
+  office_expenses: [
+    'id',
+    'firm_id',
+    'amount',
+    'currency',
+    'expense_type_id',
+    'description',
+    'paid',
+    'paid_at',
+    'created_at',
+    'created_by',
+  ],
+  firm_management_costs: [
+    'id',
+    'firm_id',
+    'amount',
+    'currency',
+    'notes',
+    'billing_month',
+    'expense_type_id',
+    'created_at',
+  ],
+  employee_salary: [
+    'id',
+    'employee_id',
+    'gross_salary',
+    'net_salary',
+    'salary_month',
+    'salary_year',
+    'uploaded_by',
+  ],
+  source_media_expense: [
+    'id',
+    'amount',
+    'expense_month',
+    'lead_source_id',
+    'created_at',
+    'created_by',
+  ],
+  office_rent_expense: [
+    'id',
+    'amount_nis',
+    'expense_month',
+    'office_id',
+    'created_at',
+    'created_by',
+  ],
+  partner_draw_expense: [
+    'id',
+    'amount_nis',
+    'expense_month',
+    'employee_id',
+    'created_at',
+    'created_by',
+  ],
+  lead_expenses: [
+    'id',
+    'amount',
+    'expense_date',
+    'notes',
+    'lead_number',
+    'created_at',
+    'created_by',
+  ],
+  lead_subcontractor_fees: [
+    'id',
+    'amount',
+    'notes',
+    'lead_number',
+    'firm_id',
+    'created_at',
+    'created_by',
+  ],
+  finance_expense_entries: [
+    'id',
+    'kind',
+    'expense_date',
+    'amount',
+    'currency_code',
+    'category_label',
+    'vendor_label',
+    'notes',
+    'created_at',
+    'created_by',
+  ],
 } as const;
 
 const ALLOWED_OPERATIONS = ['count', 'avg', 'sum', 'min', 'max', 'distinct', 'select'] as const;
@@ -149,7 +250,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'get_lead_case_file',
       description:
-        'Load a full CRM snapshot for one lead (new or legacy): identity, stage, team roles, proposal/balance, facts/notes, meetings, WhatsApp, email, calls, payments, contracts. ALWAYS use this when asked who the handler / case handler is. Handler = case handler role (leads.case_handler_id / leads.handler, or leads_lead.case_handler_id) — not closer, scheduler, or retention handler. Identify the lead by lead number (L226999), name, email, phone, or id.',
+        'Load a full CRM snapshot for one lead (new or legacy): identity, stage, team roles, proposal/balance, facts/notes, meetings, WhatsApp message text, email subject and body, call logs, and manual interaction notes (including logged WhatsApp/call summaries). ALWAYS use this for what was said or a communication summary. ALWAYS use this when asked who the handler / case handler is. Handler = case handler role (leads.case_handler_id / leads.handler, or leads_lead.case_handler_id) — not closer, scheduler, or retention handler. Identify the lead by lead number (L226999), name, email, phone, or id.',
       parameters: {
         type: 'object',
         properties: {
@@ -364,7 +465,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'query_crm',
       description:
-        'Run a safe read-only query against CRM tables for counts, lists, or aggregates. Use for questions like how many leads are in a stage or average proposal. Do not use this for signed-contract stats by date — use list_signed_contracts. Do not use this for who is in the office, clocked in/out, or available employees — use list_employee_presence. Do not use this for where a page is in the app — use find_app_page. Do not use this for a single-lead narrative — use get_lead_case_file instead.',
+        'Run a safe read-only query against CRM tables for counts, lists, or aggregates. Use for questions like how many leads are in a stage or average proposal. Do not use this for signed-contract stats by date — use list_signed_contracts. Do not use this for who is in the office, clocked in/out, or available employees — use list_employee_presence. Do not use this for where a page is in the app — use find_app_page. Do not use this for a single-lead narrative — use get_lead_case_file instead. Do not use this for office expenses, salaries, external firms, rent, marketing, or income/P&L — use list_expenses or get_firm_financials.',
       parameters: {
         type: 'object',
         properties: {
@@ -395,6 +496,88 @@ export const RMQ_AI_TOOLS = [
           limit: { type: 'number' },
         },
         required: ['table', 'operation'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_expenses',
+      description:
+        'List and total office expenses of every type: office, salaries/payroll, external firms (firm management), marketing/source media, rent, partner draws, client/lead expenses, subcontractor fees. ALWAYS use this for spend questions: how much we spent, who added an expense, when, amount, today, this month, this year, or a vendor. Totals match Finance → All expenses (NIS). Line items include who added them, date, amount, type, vendor, and notes. Defaults to this month (Asia/Jerusalem).',
+      parameters: {
+        type: 'object',
+        properties: {
+          date: {
+            type: 'string',
+            description:
+              'Day or period: today, yesterday, this week, last week, this month, last month, this year, last year, last 7 days, last 30 days, or YYYY-MM-DD. Ignored when date_from/date_to are set. Defaults to this month.',
+          },
+          date_from: {
+            type: 'string',
+            description: 'Range start: today, yesterday, or YYYY-MM-DD / DD/MM/YYYY.',
+          },
+          date_to: {
+            type: 'string',
+            description: 'Range end: today, yesterday, or YYYY-MM-DD / DD/MM/YYYY.',
+          },
+          period: {
+            type: 'string',
+            description: 'Same values as date (this month, this year, last 30 days, …).',
+          },
+          kind: {
+            type: 'string',
+            enum: [
+              'all',
+              'office',
+              'salaries',
+              'other_firm',
+              'marketing',
+              'rent',
+              'partner_draws',
+              'lead',
+              'subcontractor',
+            ],
+            description:
+              'all = every expense type. office = office expenses. salaries = payroll. other_firm = external firms / firm management. marketing = ads / source media. rent, partner_draws, lead (client expenses), subcontractor. Default all.',
+          },
+          added_by: {
+            type: 'string',
+            description: 'Filter line items by the person who added them (name, fuzzy).',
+          },
+          search: {
+            type: 'string',
+            description: 'Optional vendor, category, notes, or lead number filter.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max line items to list. Default 30, max 80.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_firm_financials',
+      description:
+        'Firm P&L snapshot: income vs all expenses, so you can say where the firm stands and what to improve. Income is the Sales Contribution total (90% of invoiced due in the date range). Expenses are All Expenses report totals in NIS (office, salaries, external firms, marketing, rent, partner draws). ALWAYS use this for profit, loss, how we are doing, income this month, burn rate, or “are we spending too much”. Defaults to this month (Asia/Jerusalem).',
+      parameters: {
+        type: 'object',
+        properties: {
+          date: {
+            type: 'string',
+            description:
+              'Period: today, this week, this month, last month, this year, last year, last 30 days, or YYYY-MM-DD. Ignored when date_from/date_to are set. Defaults to this month.',
+          },
+          date_from: { type: 'string', description: 'Range start YYYY-MM-DD.' },
+          date_to: { type: 'string', description: 'Range end YYYY-MM-DD.' },
+          period: {
+            type: 'string',
+            description: 'Same values as date (this month, this year, …).',
+          },
+        },
       },
     },
   },
@@ -459,10 +642,16 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'For office availability exports, pass source=employee_presence and office= as typed. Use filter=available when they only want people available now. Do not invent a download URL — paste the exact markdown from the tool result. ' +
   'When they ask where to find a page, how to open a screen, or “take me to…”, ALWAYS call find_app_page. ' +
   'Paste the exact markdown links from that tool so they stay clickable and open the page. Do not invent routes. ' +
+  'When they ask about expenses, spend, who added a cost, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
+  'Pass kind= for a type (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass date/period for today, this month, this year. Pass added_by= if they named who created the expense. ' +
+  'Do not say you cannot see expenses. Totals are NIS from Finance → All expenses; line items include who added them, date, amount, vendor, and notes. ' +
+  'When they ask about income, profit, loss, how the firm is doing, burn, or whether spending is too high, ALWAYS call get_firm_financials. ' +
+  'Income is the Sales Contribution total: 90% of invoiced due in the date range (same large number as Sales Contribution). Compare it to all expenses and give practical advice (which categories are largest, expense ratio vs income). ' +
   'When they ask other counts, lists, or aggregates, use query_crm. ' +
   'Never invent CRM facts. If a tool finds no match, say so and ask for a lead number. ' +
   'Be concise and professional. In lead summaries cover stage, topic, team, proposal/balance, meetings, last communication, next follow-up, and risks. ' +
   'When listing signed leads or meetings, write the lead number as plain text (L228016), never as [L228016](#). Plain lead numbers stay clickable. ' +
+  'When they ask what was said, discussed, talked about, or a summary of communication / emails / WhatsApp / notes, use the EMAIL, WHATSAPP, CALLS, and MANUAL NOTES blocks from get_lead_case_file. Quote or paraphrase that actual text. Manual notes often record WhatsApp or phone conversations. Do not say there were no emails or WhatsApp if those blocks contain text. Do not tell them to look in the CRM for content that is already in the case file. ' +
   'When the user shares images, analyze them when relevant.';
 
 function clip(value: unknown, max = 240): string {
@@ -1293,6 +1482,14 @@ function resolveSignedDateRange(args: {
     const from = `${year}-${String(month).padStart(2, '0')}-01`;
     const to = lastDayOfMonth(year, month);
     return { from, to, label: `${from} to ${to}` };
+  }
+  if (lower === 'this year' || lower === 'ytd' || lower === 'year to date') {
+    const from = `${today.slice(0, 4)}-01-01`;
+    return { from, to: today, label: `${from} to ${today}` };
+  }
+  if (lower === 'last year') {
+    const y = Number(today.slice(0, 4)) - 1;
+    return { from: `${y}-01-01`, to: `${y}-12-31`, label: String(y) };
   }
   if (lower === 'last 7 days' || lower === 'past 7 days') {
     const from = addIsoDays(today, -6);
@@ -2462,6 +2659,319 @@ function executeFindAppPage(args: { query?: string }): string {
   ].join('\n');
 }
 
+const FINANCE_KIND_LABEL: Record<FinanceExpenseKind, string> = {
+  lead: 'Client',
+  subcontractor: 'Subcontractor',
+  other_firm: 'External firm',
+  office: 'Office',
+  marketing: 'Marketing',
+  rent: 'Rent',
+  partner_draws: 'Partner draws',
+};
+
+type ExpenseKindFilter = FinanceExpenseKind | 'salaries' | 'all';
+
+function resolveExpenseDateRange(args: {
+  date?: string;
+  date_from?: string;
+  date_to?: string;
+  period?: string;
+}): { from: string; to: string; label: string } {
+  const hasRange = String(args.date_from || '').trim() || String(args.date_to || '').trim();
+  const hasPeriod = String(args.period || '').trim() || String(args.date || '').trim();
+  return resolveSignedDateRange({
+    date: hasRange || hasPeriod ? args.date : 'this month',
+    date_from: args.date_from,
+    date_to: args.date_to,
+    period: args.period,
+  });
+}
+
+function normalizeExpenseKind(raw: string | undefined): ExpenseKindFilter {
+  const v = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+  if (!v || v === 'all') return 'all';
+  if (v === 'office' || v.includes('office')) return 'office';
+  if (v.includes('salary') || v.includes('payroll') || v.includes('wage')) return 'salaries';
+  if (v === 'other firm' || v.includes('external') || v.includes('firm management')) return 'other_firm';
+  if (v.includes('market') || v.includes('ads') || v.includes('source media')) return 'marketing';
+  if (v.includes('rent')) return 'rent';
+  if (v.includes('partner') || v.includes('draw')) return 'partner_draws';
+  if (v.includes('subcontract')) return 'subcontractor';
+  if (v.includes('lead') || v.includes('client')) return 'lead';
+  if (v === 'other_firm') return 'other_firm';
+  return 'all';
+}
+
+function nameFuzzyMatches(haystack: string, needle: string): boolean {
+  const h = haystack.toLowerCase().trim();
+  const n = needle.toLowerCase().trim();
+  if (!n) return true;
+  if (!h) return false;
+  if (h.includes(n) || n.includes(h)) return true;
+  const tokens = n.split(/\s+/).filter((t) => t.length > 1);
+  return tokens.length > 0 && tokens.every((t) => h.includes(t));
+}
+
+async function fetchSalaryLinesForRange(
+  from: string,
+  to: string,
+): Promise<Array<{ employee: string; month: string; gross: number; net: number | null }>> {
+  const fromY = Number(from.slice(0, 4));
+  const toY = Number(to.slice(0, 4));
+  if (!Number.isFinite(fromY) || !Number.isFinite(toY)) return [];
+
+  const { data, error } = await supabase
+    .from('employee_salary')
+    .select('employee_id, gross_salary, net_salary, salary_month, salary_year')
+    .gte('salary_year', fromY)
+    .lte('salary_year', toY)
+    .limit(500);
+  if (error) throw error;
+
+  const fromKey = from.slice(0, 7);
+  const toKey = to.slice(0, 7);
+  const rows = (data || []).filter((r: { salary_year: number; salary_month: number }) => {
+    const key = `${r.salary_year}-${String(r.salary_month).padStart(2, '0')}`;
+    return key >= fromKey && key <= toKey;
+  });
+  const ids = [...new Set(rows.map((r: { employee_id: number }) => Number(r.employee_id)).filter(Boolean))];
+  const nameById = new Map<number, string>();
+  if (ids.length) {
+    const { data: emps } = await supabase.from('tenants_employee').select('id, display_name').in('id', ids);
+    for (const emp of emps || []) {
+      nameById.set(Number(emp.id), String(emp.display_name || '').trim() || `Employee ${emp.id}`);
+    }
+  }
+
+  return rows
+    .map((r: { employee_id: number; gross_salary: number; net_salary: number | null; salary_year: number; salary_month: number }) => ({
+      employee: nameById.get(Number(r.employee_id)) || `Employee ${r.employee_id}`,
+      month: `${r.salary_year}-${String(r.salary_month).padStart(2, '0')}`,
+      gross: Number(r.gross_salary) || 0,
+      net: r.net_salary != null ? Number(r.net_salary) : null,
+    }))
+    .sort((a, b) => b.month.localeCompare(a.month) || a.employee.localeCompare(b.employee));
+}
+
+async function executeListExpenses(args: {
+  date?: string;
+  date_from?: string;
+  date_to?: string;
+  period?: string;
+  kind?: string;
+  added_by?: string;
+  search?: string;
+  limit?: number;
+}): Promise<string> {
+  const range = resolveExpenseDateRange(args);
+  const kind = normalizeExpenseKind(args.kind);
+  const addedBy = String(args.added_by || '').trim();
+  const search = String(args.search || '').trim();
+  const limit = Math.min(80, Math.max(1, Number(args.limit) || 30));
+
+  const financeKind: FinanceExpenseKind | '' =
+    kind === 'all' || kind === 'salaries' ? '' : kind;
+
+  const monthKeys = listExpenseMonthsInRange(range.from, range.to);
+  const [breakdown, entries, salaries] = await Promise.all([
+    kind === 'lead' || kind === 'subcontractor'
+      ? Promise.resolve([])
+      : fetchAllExpensesBreakdown(monthKeys),
+    kind === 'salaries'
+      ? Promise.resolve([])
+      : fetchFinanceExpenseEntries({
+          kind: financeKind,
+          dateFrom: range.from,
+          dateTo: range.to,
+          search: search || undefined,
+        }),
+    kind === 'all' || kind === 'salaries' ? fetchSalaryLinesForRange(range.from, range.to) : Promise.resolve([]),
+  ]);
+
+  const totals = {
+    source_media: 0,
+    firm_management: 0,
+    rent: 0,
+    partner_draws: 0,
+    salaries: 0,
+    office: 0,
+    firm_management_marketing: 0,
+  };
+  for (const row of breakdown) {
+    for (const key of EXPENSE_CATEGORY_ORDER) totals[key] += row.totals[key];
+    totals.firm_management_marketing += row.totals.firm_management_marketing;
+  }
+
+  const showCategory = (key: ExpenseCategoryKey) => {
+    if (kind === 'all') return true;
+    if (kind === 'office') return key === 'office';
+    if (kind === 'salaries') return key === 'salaries';
+    if (kind === 'other_firm') return key === 'firm_management';
+    if (kind === 'marketing') return key === 'source_media';
+    if (kind === 'rent') return key === 'rent';
+    if (kind === 'partner_draws') return key === 'partner_draws';
+    return false;
+  };
+
+  const lines: string[] = [
+    `EXPENSES ${range.label} (Asia/Jerusalem)`,
+    `Kind: ${kind === 'all' ? 'all types' : kind}`,
+  ];
+
+  const totalLines: string[] = [];
+  let reportedTotal = 0;
+  if (kind !== 'lead' && kind !== 'subcontractor') {
+    for (const key of EXPENSE_CATEGORY_ORDER) {
+      if (!showCategory(key)) continue;
+      const amount = totals[key];
+      reportedTotal += amount;
+      totalLines.push(`- ${EXPENSE_CATEGORY_LABELS[key]}: ${formatNis(amount)}`);
+    }
+    if (kind === 'all' || kind === 'marketing') {
+      const marketing = marketingExpenseTotal(totals);
+      if (kind === 'marketing') {
+        reportedTotal = marketing;
+        totalLines.length = 0;
+        totalLines.push(`- Source media: ${formatNis(totals.source_media)}`);
+        totalLines.push(`- Marketing (firm management type): ${formatNis(totals.firm_management_marketing)}`);
+      } else {
+        reportedTotal += totals.firm_management_marketing;
+        totalLines.push(`- Marketing (in firm management types): ${formatNis(totals.firm_management_marketing)}`);
+      }
+    }
+    lines.push('', 'TOTALS (NIS, same as Finance → All expenses):');
+    lines.push(...totalLines);
+    lines.push(`TOTAL: ${formatNis(reportedTotal)}`);
+    lines.push('(Monthly category totals cover whole calendar months that overlap this range.)');
+  }
+
+  let itemRows = entries;
+  if (addedBy) {
+    itemRows = itemRows.filter((row) => nameFuzzyMatches(row.created_by_name || '', addedBy));
+  }
+
+  if (kind !== 'salaries') {
+    const shown = itemRows.slice(0, limit);
+    lines.push('', `LINE ITEMS (${shown.length} of ${itemRows.length}, newest first):`);
+    if (!shown.length) {
+      lines.push(addedBy ? `No line items added by "${addedBy}" in this range.` : 'No line items in this range.');
+    } else {
+      for (const row of shown) {
+        const nis = managementAmountToNis(row.amount, row.currency_code);
+        const parts = [
+          row.expense_date || row.created_at.slice(0, 10),
+          FINANCE_KIND_LABEL[row.kind] || row.kind,
+          formatFinanceExpenseAmount(row.amount, row.currency_code),
+          nis && row.currency_code && !/^ils|nis$/i.test(row.currency_code) ? `(${formatNis(nis)})` : '',
+          row.category_label || '',
+          row.vendor_label ? `vendor ${row.vendor_label}` : '',
+          row.lead_number ? `lead ${row.lead_number}` : '',
+          row.created_by_name && row.created_by_name !== '—' ? `added by ${row.created_by_name}` : 'added by unknown',
+          row.notes ? clip(row.notes, 80) : '',
+        ].filter(Boolean);
+        lines.push(`- ${parts.join(' · ')}`);
+      }
+    }
+  }
+
+  if (kind === 'all' || kind === 'salaries') {
+    const shownSalaries = salaries.slice(0, limit);
+    const salaryGross = salaries.reduce((sum, row) => sum + row.gross, 0);
+    lines.push('', `SALARIES / PAYROLL (${salaries.length} rows, gross ${formatNis(salaryGross)}):`);
+    if (!shownSalaries.length) {
+      lines.push('No salary rows in this range.');
+    } else {
+      for (const row of shownSalaries) {
+        const net = row.net != null ? ` · net ${formatNis(row.net)}` : '';
+        lines.push(`- ${row.month} · ${row.employee} · gross ${formatNis(row.gross)}${net}`);
+      }
+    }
+  }
+
+  lines.push('', 'Use these figures. Do not invent expenses that are not listed.');
+  return lines.join('\n');
+}
+
+async function executeGetFirmFinancials(args: {
+  date?: string;
+  date_from?: string;
+  date_to?: string;
+  period?: string;
+}): Promise<string> {
+  const range = resolveExpenseDateRange(args);
+  const monthKeys = listExpenseMonthsInRange(range.from, range.to);
+
+  const [invoicedDue, breakdown] = await Promise.all([
+    fetchInvoicedTotalDueNisForDateRange(range.from, range.to),
+    fetchAllExpensesBreakdown(monthKeys),
+  ]);
+
+  const income = Math.round(invoicedDue * 0.9);
+  const totals = {
+    source_media: 0,
+    firm_management: 0,
+    rent: 0,
+    partner_draws: 0,
+    salaries: 0,
+    office: 0,
+    firm_management_marketing: 0,
+  };
+  for (const row of breakdown) {
+    for (const key of EXPENSE_CATEGORY_ORDER) totals[key] += row.totals[key];
+    totals.firm_management_marketing += row.totals.firm_management_marketing;
+  }
+
+  const expenses =
+    EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + totals[key], 0) + totals.firm_management_marketing;
+  const net = income - expenses;
+  const ratio = income > 0 ? expenses / income : null;
+
+  const categoryAmounts: Array<{ label: string; amount: number }> = [
+    ...EXPENSE_CATEGORY_ORDER.map((key) => ({ label: EXPENSE_CATEGORY_LABELS[key], amount: totals[key] })),
+    { label: 'Marketing (firm management type)', amount: totals.firm_management_marketing },
+  ]
+    .filter((row) => row.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+
+  const top = categoryAmounts.slice(0, 3);
+  let advice = 'Income covers expenses in this period.';
+  if (income <= 0 && expenses > 0) {
+    advice = 'No Sales Contribution income in this range while expenses were recorded — check invoiced due dates.';
+  } else if (net < 0) {
+    advice = `Spending exceeds Sales Contribution income by ${formatNis(Math.abs(net))}. Cut or delay the largest categories first.`;
+  } else if (ratio != null && ratio >= 0.85) {
+    advice = 'Expenses are using most of income. Review the top categories and hiring/payroll timing.';
+  } else if (ratio != null && ratio >= 0.7) {
+    advice = 'Cost ratio is high. Watch the top two categories against next month’s invoiced due.';
+  }
+
+  const lines = [
+    `FIRM FINANCIALS ${range.label} (Asia/Jerusalem)`,
+    '',
+    `Income (Sales Contribution): ${formatNis(income)}`,
+    '  = 90% of invoiced total due for payment rows with due_date in this range (same definition as the Sales Contribution page).',
+    `  Invoiced due before 90%: ${formatNis(invoicedDue)}`,
+    '',
+    `Expenses (All expenses report, NIS): ${formatNis(expenses)}`,
+    ...categoryAmounts.map((row) => {
+      const share = expenses > 0 ? Math.round((row.amount / expenses) * 100) : 0;
+      return `- ${row.label}: ${formatNis(row.amount)} (${share}% of expenses)`;
+    }),
+    '',
+    `Net (income − expenses): ${formatNis(net)}`,
+    ratio != null ? `Expense ratio: ${Math.round(ratio * 100)}% of income` : 'Expense ratio: n/a (no income)',
+    top.length ? `Largest: ${top.map((row) => row.label).join(', ')}` : '',
+    '',
+    `Guidance: ${advice}`,
+    'Give practical recommendations from these numbers. Do not invent other income or expense figures.',
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
 export async function executeRmqAiTool(toolCall: {
   function?: { name?: string; arguments?: string };
 }): Promise<string> {
@@ -2518,6 +3028,25 @@ export async function executeRmqAiTool(toolCall: {
           closer?: string;
           query?: string;
         },
+      );
+    }
+    if (name === 'list_expenses') {
+      return await executeListExpenses(
+        args as {
+          date?: string;
+          date_from?: string;
+          date_to?: string;
+          period?: string;
+          kind?: string;
+          added_by?: string;
+          search?: string;
+          limit?: number;
+        },
+      );
+    }
+    if (name === 'get_firm_financials') {
+      return await executeGetFirmFinancials(
+        args as { date?: string; date_from?: string; date_to?: string; period?: string },
       );
     }
     if (name === 'query_crm') {

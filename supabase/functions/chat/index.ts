@@ -152,6 +152,11 @@ serve(async (req) => {
         'For office availability exports, pass source=employee_presence and office= as typed. Use filter=available when they only want people available now. Do not invent a download URL — paste the exact markdown from the tool result. ' +
         'When they ask where to find a page, how to open a screen, or “take me to…”, ALWAYS call find_app_page. ' +
         'Paste the exact markdown links from that tool so they stay clickable and open the page. Do not invent routes. ' +
+        'When they ask about expenses, spend, who added a cost, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
+        'Pass kind= for a type (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass date/period for today, this month, this year. Pass added_by= if they named who created the expense. ' +
+        'Do not say you cannot see expenses. Totals are NIS from Finance → All expenses; line items include who added them, date, amount, vendor, and notes. ' +
+        'When they ask about income, profit, loss, how the firm is doing, burn, or whether spending is too high, ALWAYS call get_firm_financials. ' +
+        'Income is the Sales Contribution total: 90% of invoiced due in the date range (same large number as Sales Contribution). Compare it to all expenses and give practical advice (which categories are largest, expense ratio vs income). ' +
         'When they ask other counts, lists, or aggregates, use query_crm. ' +
         'Never invent CRM facts. If a tool finds no match, say so and ask for a lead number. ' +
         'Be concise and professional. In lead summaries cover stage, topic, team, proposal/balance, meetings, last communication, next follow-up, and risks. ' +

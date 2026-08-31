@@ -12,6 +12,7 @@ import {
 } from '../../lib/paymentLinkQueries';
 import { getOrCreatePaymentLinkToken } from '../../lib/proformaPaymentLink';
 import { retryPayperInvoice } from '../../lib/pelecardPaymentApi';
+import { formatPelecardHistoryStatus } from '../../lib/pelecardErrors';
 import { tryAdvanceHandlerStartedAfterPayment } from '../../lib/advanceHandlerStartedOnPaid';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
@@ -7210,14 +7211,50 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             </tr>
                           </thead>
                           <tbody>
-                            {paymentHistory[contactName].map((tx, idx) => (
+                            {paymentHistory[contactName].map((tx, idx) => {
+                              const statusView = formatPelecardHistoryStatus({
+                                status: tx.status,
+                                statusCode: tx.status_code,
+                                errorMessage: tx.error_message,
+                              });
+                              const isSuccess =
+                                String(tx.status || '').toLowerCase() === 'success' ||
+                                String(tx.status || '').toLowerCase() === 'paid';
+                              return (
                               <tr key={tx.id || idx}>
-                                <td>{tx.created_at ? new Date(tx.created_at).toLocaleString() : ''}</td>
-                                <td>{tx.amount ? `?${tx.amount.toLocaleString()}` : ''}</td>
-                                <td>{tx.payment_method || ''}</td>
-                                <td>{tx.status || ''}</td>
+                                <td className="align-top whitespace-nowrap">
+                                  {tx.created_at ? new Date(tx.created_at).toLocaleString() : ''}
+                                </td>
+                                <td className="align-top whitespace-nowrap">
+                                  {tx.amount != null && Number.isFinite(Number(tx.amount))
+                                    ? `₪${Number(tx.amount).toLocaleString()}`
+                                    : ''}
+                                </td>
+                                <td className="align-top">{tx.payment_method || ''}</td>
+                                <td className="align-top">
+                                  {isSuccess ? (
+                                    <span className="font-medium text-emerald-700">success</span>
+                                  ) : (
+                                    <div className="max-w-xs">
+                                      <div className="font-semibold text-rose-700">
+                                        {statusView.code
+                                          ? `${statusView.label} · ${statusView.code}`
+                                          : statusView.label || 'failed'}
+                                      </div>
+                                      {statusView.title ? (
+                                        <div className="text-xs font-medium text-slate-800">{statusView.title}</div>
+                                      ) : null}
+                                      {statusView.explanation ? (
+                                        <div className="text-xs leading-snug text-slate-600">
+                                          {statusView.explanation}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  )}
+                                </td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       ) : (

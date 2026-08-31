@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon } from '@heroicons/react/24/solid';
-import { ArrowDownTrayIcon, CalendarDaysIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, PhotoIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, ChevronLeftIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon } from '@heroicons/react/24/solid';
+import { ArrowDownTrayIcon, CalendarDaysIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, MoonIcon, PhotoIcon, PlusIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { FaRobot } from 'react-icons/fa';
@@ -78,6 +78,92 @@ const READY_ASKS = [
   },
 ] as const;
 
+const AI_DRAWER_THEME_KEY = 'rmqAiDrawerTheme';
+const AI_DRAWER_POS_KEY = 'rmqAiDrawerPos';
+const AI_DRAWER_SIZE_KEY = 'rmqAiDrawerSize';
+const PANEL_DRAG_THRESHOLD_PX = 6;
+const PANEL_EDGE_MARGIN = 12;
+const MIN_PANEL_WIDTH = 380;
+const MIN_PANEL_HEIGHT = 420;
+
+type PanelPos = { left: number; top: number };
+type PanelSize = { width: number; height: number };
+
+const readSavedPanelPos = (): PanelPos | null => {
+  try {
+    const raw = localStorage.getItem(AI_DRAWER_POS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PanelPos>;
+    if (typeof parsed?.left === 'number' && typeof parsed?.top === 'number') {
+      return { left: parsed.left, top: parsed.top };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+};
+
+const persistPanelPos = (pos: PanelPos) => {
+  try {
+    localStorage.setItem(AI_DRAWER_POS_KEY, JSON.stringify(pos));
+  } catch {
+    /* ignore */
+  }
+};
+
+const readSavedPanelSize = (): PanelSize | null => {
+  try {
+    const raw = localStorage.getItem(AI_DRAWER_SIZE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PanelSize>;
+    if (typeof parsed?.width === 'number' && typeof parsed?.height === 'number') {
+      return { width: parsed.width, height: parsed.height };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+};
+
+const persistPanelSize = (size: PanelSize) => {
+  try {
+    localStorage.setItem(AI_DRAWER_SIZE_KEY, JSON.stringify(size));
+  } catch {
+    /* ignore */
+  }
+};
+
+const clampPanelSize = (size: PanelSize): PanelSize => {
+  const maxWidth = Math.max(MIN_PANEL_WIDTH, window.innerWidth - PANEL_EDGE_MARGIN * 2);
+  const maxHeight = Math.max(MIN_PANEL_HEIGHT, window.innerHeight - PANEL_EDGE_MARGIN * 2);
+  return {
+    width: Math.min(Math.max(MIN_PANEL_WIDTH, size.width), maxWidth),
+    height: Math.min(Math.max(MIN_PANEL_HEIGHT, size.height), maxHeight),
+  };
+};
+
+const clampPanelPos = (pos: PanelPos, width: number, height: number): PanelPos => {
+  const minVisibleX = 80;
+  const minVisibleY = 48;
+  const maxLeft = Math.max(PANEL_EDGE_MARGIN, window.innerWidth - minVisibleX);
+  const maxTop = Math.max(PANEL_EDGE_MARGIN, window.innerHeight - minVisibleY);
+  return {
+    left: Math.min(Math.max(PANEL_EDGE_MARGIN - Math.max(0, width - minVisibleX), pos.left), maxLeft),
+    top: Math.min(Math.max(PANEL_EDGE_MARGIN, pos.top), maxTop),
+  };
+};
+
+const readAiDrawerDark = (): boolean => {
+  try {
+    const stored = localStorage.getItem(AI_DRAWER_THEME_KEY);
+    if (stored === 'light') return false;
+    if (stored === 'dark') return true;
+  } catch {
+    /* ignore */
+  }
+  return true;
+};
+
 const isVisibleChatMessage = (message: Message) => {
   if (message.role === 'tool') return false;
   if (message.role === 'assistant' && message.tool_calls?.length && !message.content) return false;
@@ -143,6 +229,41 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historySelecting, setHistorySelecting] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
+  const [isDarkTheme, setIsDarkTheme] = useState(readAiDrawerDark);
+  const [panelPos, setPanelPos] = useState<PanelPos | null>(readSavedPanelPos);
+  const [panelSize, setPanelSize] = useState<PanelSize | null>(readSavedPanelSize);
+  const [isMovingPanel, setIsMovingPanel] = useState(false);
+  const [isResizingPanel, setIsResizingPanel] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelResizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    origLeft: number;
+    origTop: number;
+    origWidth: number;
+    origHeight: number;
+  } | null>(null);
+  const panelDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    origLeft: number;
+    origTop: number;
+    moved: boolean;
+    held: boolean;
+    fromExpand: boolean;
+  } | null>(null);
+  const skipNextExpandClickRef = useRef(false);
+  const panelHoldTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AI_DRAWER_THEME_KEY, isDarkTheme ? 'dark' : 'light');
+    } catch {
+      /* ignore */
+    }
+  }, [isDarkTheme]);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -276,7 +397,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       
       setMessages([{ 
         role: 'assistant', 
-        content: `${greeting} I can look up any lead, summarize the case, and pull CRM numbers from the database.`
+        content: greeting
       }]);
     }
   }, [isOpen, messages.length, userName]);
@@ -426,7 +547,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   }
                   triggerBrowserDownload(file);
                 }}
-                className="inline-flex items-center gap-1 font-semibold text-blue-600 underline hover:text-blue-800"
+                className="ai-chat-link inline-flex items-center gap-1 font-semibold underline"
               >
                 <ArrowDownTrayIcon className="h-4 w-4" />
                 {match}
@@ -450,7 +571,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   event.stopPropagation();
                   onClose();
                 }}
-                className="font-semibold text-violet-700 underline hover:text-violet-900"
+                className="ai-chat-link font-semibold underline"
                 title={leadNumber ? `Open client ${leadNumber}` : match}
               >
                 {leadNumber || match}
@@ -463,7 +584,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               href={url} 
               target="_blank" 
               rel="noopener noreferrer" 
-              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"
+              className="ai-chat-link underline"
             >
               {match}
             </a>
@@ -848,8 +969,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setMessages([{ 
       role: 'assistant', 
       content: userName
-        ? `Hi ${userName}, how can I help you? I can look up any lead, summarize the case, and pull CRM numbers from the database.`
-        : 'Hello! How can I help you? I can look up any lead, summarize the case, and pull CRM numbers from the database.',
+        ? `Hi ${userName}, how can I help you?`
+        : 'Hello! How can I help you?',
     }]);
     setCurrentChatId(null);
     setShowHistoryPanel(false);
@@ -913,44 +1034,391 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
   }, [messages, isLoading]);
 
+  useEffect(() => {
+    if (!panelPos || isFullPage) return;
+    const el = panelRef.current;
+    const next = clampPanelPos(panelPos, el?.offsetWidth ?? 480, el?.offsetHeight ?? 360);
+    if (next.left !== panelPos.left || next.top !== panelPos.top) {
+      setPanelPos(next);
+      persistPanelPos(next);
+    }
+  }, [showHistoryPanel, isFullPage]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setPanelSize((current) => {
+        if (!current) return current;
+        const next = clampPanelSize(current);
+        persistPanelSize(next);
+        return next;
+      });
+      setPanelPos((current) => {
+        if (!current) return current;
+        const el = panelRef.current;
+        const next = clampPanelPos(current, el?.offsetWidth ?? 480, el?.offsetHeight ?? 360);
+        persistPanelPos(next);
+        return next;
+      });
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const clearPanelHoldTimer = () => {
+    if (panelHoldTimerRef.current != null) {
+      window.clearTimeout(panelHoldTimerRef.current);
+      panelHoldTimerRef.current = null;
+    }
+  };
+
+  const beginPanelMove = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    const fromExpand = event.currentTarget.hasAttribute('data-ai-expand');
+    if (
+      !fromExpand &&
+      event.target instanceof Element &&
+      event.target.closest('button, a, input, textarea, select, [role="button"]')
+    ) {
+      return;
+    }
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    panelDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origLeft: panelPos?.left ?? rect.left,
+      origTop: panelPos?.top ?? rect.top,
+      moved: false,
+      held: false,
+      fromExpand,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    clearPanelHoldTimer();
+    panelHoldTimerRef.current = window.setTimeout(() => {
+      const drag = panelDragRef.current;
+      if (!drag) return;
+      drag.held = true;
+      setIsMovingPanel(true);
+      if (!panelPos && !isFullPage) {
+        setPanelPos(clampPanelPos(
+          { left: drag.origLeft, top: drag.origTop },
+          panelRef.current?.offsetWidth ?? 480,
+          panelRef.current?.offsetHeight ?? 360,
+        ));
+      }
+    }, 160);
+  }, [isFullPage, panelPos]);
+
+  const movePanel = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const drag = panelDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < PANEL_DRAG_THRESHOLD_PX) return;
+
+    if (!drag.moved) {
+      drag.moved = true;
+      clearPanelHoldTimer();
+      setIsMovingPanel(true);
+      if (isFullPage) {
+        const width = Math.min(window.innerWidth - PANEL_EDGE_MARGIN * 2, showHistoryPanel ? 1024 : 672);
+        const next = clampPanelPos(
+          { left: event.clientX - width + 40, top: event.clientY - 24 },
+          width,
+          window.innerHeight - PANEL_EDGE_MARGIN * 2,
+        );
+        drag.origLeft = next.left;
+        drag.origTop = next.top;
+        drag.startX = event.clientX;
+        drag.startY = event.clientY;
+        setPanelPos(next);
+        onToggleFullPage?.();
+        return;
+      }
+    }
+
+    const el = panelRef.current;
+    const next = clampPanelPos(
+      { left: drag.origLeft + (event.clientX - drag.startX), top: drag.origTop + (event.clientY - drag.startY) },
+      el?.offsetWidth ?? 480,
+      el?.offsetHeight ?? 360,
+    );
+    setPanelPos(next);
+  }, [isFullPage, onToggleFullPage, showHistoryPanel]);
+
+  const endPanelMove = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const drag = panelDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearPanelHoldTimer();
+    panelDragRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      /* already released */
+    }
+    if (drag.moved || drag.held) {
+      if (drag.fromExpand) skipNextExpandClickRef.current = true;
+      setPanelPos((current) => {
+        if (current) persistPanelPos(current);
+        return current;
+      });
+    }
+    setIsMovingPanel(false);
+  }, []);
+
+  const handleExpandClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    if (skipNextExpandClickRef.current) {
+      event.preventDefault();
+      skipNextExpandClickRef.current = false;
+      return;
+    }
+    onToggleFullPage?.();
+  }, [onToggleFullPage]);
+
+  const beginPanelResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || isFullPage) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    panelResizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origLeft: panelPos?.left ?? rect.left,
+      origTop: panelPos?.top ?? rect.top,
+      origWidth: panelSize?.width ?? rect.width,
+      origHeight: panelSize?.height ?? rect.height,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsResizingPanel(true);
+    if (!panelPos) {
+      setPanelPos(clampPanelPos(
+        { left: rect.left, top: rect.top },
+        rect.width,
+        rect.height,
+      ));
+    }
+    if (!panelSize) {
+      setPanelSize(clampPanelSize({ width: rect.width, height: rect.height }));
+    }
+  }, [isFullPage, panelPos, panelSize]);
+
+  const movePanelResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const resize = panelResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const right = resize.origLeft + resize.origWidth;
+    const bottom = resize.origTop + resize.origHeight;
+    const nextSize = clampPanelSize({
+      width: right - (resize.origLeft + (event.clientX - resize.startX)),
+      height: bottom - (resize.origTop + (event.clientY - resize.startY)),
+    });
+    const nextPos = clampPanelPos(
+      { left: right - nextSize.width, top: bottom - nextSize.height },
+      nextSize.width,
+      nextSize.height,
+    );
+    setPanelSize(nextSize);
+    setPanelPos(nextPos);
+  }, []);
+
+  const endPanelResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const resize = panelResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    panelResizeRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      /* already released */
+    }
+    setPanelPos((current) => {
+      if (current) persistPanelPos(current);
+      return current;
+    });
+    setPanelSize((current) => {
+      if (current) persistPanelSize(current);
+      return current;
+    });
+    setIsResizingPanel(false);
+  }, []);
+
+  const isPlacedPanel = Boolean(panelPos) && !isFullPage;
+  const hasCustomSize = Boolean(panelSize) && !isFullPage;
+  const isFloatingPanel = (!isFullPage && !isMobile) || isPlacedPanel;
+  const canResizePanel = !isFullPage && (isFloatingPanel || isPlacedPanel);
+
   if (!isOpen) return null;
 
   return (
     <div
-      className={`fixed z-50 flex flex-col transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
+      ref={panelRef}
+      className={`${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-50 flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
           isFullPage 
-          ? 'left-0 top-0 w-full h-full' 
-          : `right-0 top-0 bottom-0 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
-      }`}
+          ? 'left-0 top-0 h-full w-full' 
+          : hasCustomSize
+            ? (isPlacedPanel ? '' : 'right-3 top-3')
+          : isPlacedPanel
+            ? `w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
+          : isFloatingPanel
+            ? `right-3 top-3 bottom-3 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
+            : `right-0 top-0 bottom-0 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
+      } ${isDarkTheme ? 'ai-drawer-dark' : 'ai-drawer-light'} ${isMovingPanel || isResizingPanel ? 'ai-drawer-moving' : ''}`}
       style={{ 
-        height: '100dvh', 
-        minHeight: '100dvh', 
-        maxHeight: '100dvh', 
-        borderTopLeftRadius: isFullPage ? 0 : 0, 
-        borderTopRightRadius: 0,
-        borderBottomLeftRadius: isFullPage ? 0 : '2rem',
-        borderBottomRightRadius: isFullPage ? 0 : '2rem'
+        height: hasCustomSize && panelSize
+          ? panelSize.height
+          : isPlacedPanel ? 'calc(100dvh - 1.5rem)' : isFloatingPanel ? undefined : '100dvh', 
+        minHeight: isFloatingPanel && !hasCustomSize ? undefined : hasCustomSize ? undefined : '100dvh', 
+        maxHeight: hasCustomSize ? undefined : isFloatingPanel ? 'calc(100dvh - 1.5rem)' : '100dvh', 
+        borderRadius: isFullPage ? 0 : isFloatingPanel ? '1.5rem' : 0,
+        ...(hasCustomSize && panelSize ? { width: panelSize.width } : {}),
+        ...(isPlacedPanel && panelPos
+          ? { left: panelPos.left, top: panelPos.top, right: 'auto', bottom: 'auto' }
+          : {}),
       }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       <style>{`
+        .ai-drawer-enter {
+          will-change: transform, opacity;
+          box-shadow: -12px 0 48px rgba(0, 0, 0, 0.22);
+        }
+        .ai-drawer-enter-float {
+          animation: ai-drawer-float-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .ai-drawer-enter-sheet {
+          animation: ai-drawer-sheet-in 400ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+        .ai-drawer-moving {
+          box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+          transition: none;
+          user-select: none;
+        }
+        .ai-expand-drag {
+          touch-action: none;
+          cursor: grab;
+        }
+        .ai-expand-drag:active,
+        .ai-drawer-moving .ai-expand-drag {
+          cursor: grabbing;
+        }
+        .ai-resize-nw {
+          position: absolute;
+          top: 0;
+          left: 0;
+          z-index: 45;
+          width: 32px;
+          height: 32px;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          cursor: nwse-resize;
+          touch-action: none;
+        }
+        .ai-resize-nw::before {
+          content: '';
+          position: absolute;
+          top: 8px;
+          left: 8px;
+          width: 11px;
+          height: 11px;
+          border-top: 2px solid currentColor;
+          border-left: 2px solid currentColor;
+          border-radius: 3px 0 0 0;
+          opacity: 0.62;
+        }
+        .ai-resize-nw:hover::before,
+        .ai-resize-nw:focus-visible::before {
+          opacity: 0.8;
+        }
+        .ai-messages-scroll {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        .ai-messages-scroll::-webkit-scrollbar {
+          display: none;
+        }
+        @keyframes ai-drawer-float-in {
+          from {
+            opacity: 0;
+            transform: translate3d(28px, 0, 0) scale(0.96);
+          }
+          to {
+            opacity: 1;
+            transform: translate3d(0, 0, 0) scale(1);
+          }
+        }
+        @keyframes ai-drawer-sheet-in {
+          from {
+            opacity: 0.88;
+            transform: translate3d(0, 18%, 0);
+          }
+          to {
+            opacity: 1;
+            transform: translate3d(0, 0, 0);
+          }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ai-drawer-enter-float,
+          .ai-drawer-enter-sheet {
+            animation: none;
+          }
+        }
+        .ai-drawer-light {
+          --ai-bg: #f9fafb;
+          --ai-bg-raised: #ffffff;
+          --ai-bg-overlay: #f3f4f6;
+          --ai-bg-input: #ffffff;
+          --ai-border: #e5e7eb;
+          --ai-text: #111827;
+          --ai-text-muted: #6b7280;
+          --ai-bubble-user: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
+          --ai-bubble-user-text: #ffffff;
+          --ai-bubble-ai: #ffffff;
+          --ai-bubble-ai-text: #1f2937;
+          --ai-send: linear-gradient(90deg, #7c3aed 0%, #4f46e5 100%);
+          --ai-header-bg: rgba(255, 255, 255, 0.42);
+          --ai-header-border: rgba(255, 255, 255, 0.45);
+        }
+        .ai-drawer-dark {
+          --ai-bg: #121316;
+          --ai-bg-raised: #1c1e22;
+          --ai-bg-overlay: #26282e;
+          --ai-bg-input: #1a1c20;
+          --ai-border: #3a3d45;
+          --ai-text: #f0f0f2;
+          --ai-text-muted: #9a9da6;
+          --ai-bubble-user: linear-gradient(90deg, #5b21b6 0%, #4f46e5 58%, #1d4ed8 100%);
+          --ai-bubble-user-text: #ffffff;
+          --ai-bubble-ai: #2a2c32;
+          --ai-bubble-ai-text: #e6e7eb;
+          --ai-send: linear-gradient(180deg, #5c5f68 0%, #484b53 100%);
+          --ai-header-bg: rgba(22, 23, 26, 0.92);
+          --ai-header-border: #2e3036;
+          border-left: 1px solid #2a2c32;
+          box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
+        }
         .ai-glass,
         .ai-glass-fullpage {
-          background: #f9fafb;
+          background: var(--ai-bg);
+          color: var(--ai-text);
           box-shadow: none;
-          border-radius: 0;
+          border-radius: inherit;
+          overflow: hidden;
         }
         .ai-bubble-user {
-          background: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
-          color: #fff;
+          background: var(--ai-bubble-user);
+          color: var(--ai-bubble-user-text);
           border-bottom-right-radius: 2rem !important;
           border-top-left-radius: 2rem !important;
         }
         .ai-bubble-assistant {
-          background: #fff;
-          color: #1f2937;
+          background: var(--ai-bubble-ai);
+          color: var(--ai-bubble-ai-text);
           border-bottom-left-radius: 2rem !important;
           border-top-right-radius: 2rem !important;
           border: none;
@@ -959,20 +1427,35 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         
         .ai-bubble-assistant .prose {
-          color: #1f2937;
+          color: var(--ai-bubble-ai-text);
         }
         .ai-bubble-user .prose,
         .ai-bubble-user .prose p,
         .ai-bubble-user .prose li,
         .ai-bubble-user .prose strong {
-          color: #fff;
+          color: var(--ai-bubble-user-text);
         }
         .ai-bubble-user .chat-lead-number-link {
-          color: #fff !important;
+          color: var(--ai-bubble-user-text) !important;
           text-decoration: underline;
         }
-        .ai-bubble-assistant .chat-lead-number-link {
-          color: #3b28c7;
+        .ai-bubble-assistant .chat-lead-number-link,
+        .ai-bubble-assistant .ai-chat-link,
+        .ai-bubble-assistant a {
+          color: #0284c7;
+        }
+        .ai-bubble-assistant .ai-chat-link:hover,
+        .ai-bubble-assistant a:hover {
+          color: #0ea5e9;
+        }
+        .ai-drawer-dark .ai-bubble-assistant .chat-lead-number-link,
+        .ai-drawer-dark .ai-bubble-assistant .ai-chat-link,
+        .ai-drawer-dark .ai-bubble-assistant a {
+          color: #0ea5e9;
+        }
+        .ai-drawer-dark .ai-bubble-assistant .ai-chat-link:hover,
+        .ai-drawer-dark .ai-bubble-assistant a:hover {
+          color: #38bdf8;
         }
         
         .ai-bubble-assistant .prose p {
@@ -994,11 +1477,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         
         .ai-bubble-assistant .prose strong {
           font-weight: 600;
-          color: #111827;
+          color: var(--ai-text);
         }
         
         .ai-bubble-assistant .prose code {
-          background-color: #f3f4f6;
+          background-color: var(--ai-bg-overlay);
           padding: 0.125rem 0.375rem;
           border-radius: 0.25rem;
           font-size: 0.875em;
@@ -1018,9 +1501,21 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         .contract-ai-input-shell {
           border-radius: 9999px;
-          background: #fff;
-          border: none;
+          background: var(--ai-bg-input);
+          border: 1px solid var(--ai-border);
           box-shadow: 0 10px 32px rgba(15, 23, 42, 0.1);
+        }
+        .ai-drawer-dark .contract-ai-input-shell,
+        .ai-drawer-dark .contract-ai-input-shell:focus-within {
+          border: none;
+          outline: none;
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+        }
+        .ai-drawer-dark .contract-ai-input-area textarea,
+        .ai-drawer-dark .contract-ai-input-area textarea:focus {
+          outline: none;
+          box-shadow: none;
+          border: none;
         }
         .contract-ai-input-shell:focus-within {
           outline: none;
@@ -1032,6 +1527,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           -ms-overflow-style: none;
           outline: none;
           box-shadow: none;
+          color: var(--ai-text);
         }
         .contract-ai-input-area textarea:focus {
           outline: none;
@@ -1040,11 +1536,21 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .contract-ai-input-area textarea::-webkit-scrollbar {
           display: none;
         }
+        .ai-history-scroll {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        .ai-history-scroll::-webkit-scrollbar {
+          display: none;
+        }
         @keyframes ai-pulse {
           0% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 0 #fff); }
           30% { transform: scale(1.18) rotate(-10deg); filter: drop-shadow(0 0 8px #a5b4fc); }
           60% { transform: scale(0.95) rotate(8deg); filter: drop-shadow(0 0 12px #38bdf8); }
           100% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 0 #fff); }
+        }
+        .ai-drawer-dark .animate-ai-pulse {
+          animation: ai-pulse 0.6s cubic-bezier(.4,0,.2,1);
         }
         .animate-ai-pulse {
           animation: ai-pulse 0.6s cubic-bezier(.4,0,.2,1);
@@ -1078,52 +1584,288 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           overflow: hidden;
         }
         .ai-chat-header {
-          background: rgba(255, 255, 255, 0.42);
-          border-bottom: 1px solid rgba(255, 255, 255, 0.45);
+          background: var(--ai-header-bg);
+          border-bottom: 1px solid var(--ai-header-border);
           box-shadow: 0 8px 32px rgba(15, 23, 42, 0.04);
           backdrop-filter: blur(22px) saturate(1.6);
           -webkit-backdrop-filter: blur(22px) saturate(1.6);
+          cursor: grab;
+          touch-action: none;
+          user-select: none;
+        }
+        .ai-chat-header button,
+        .ai-chat-header a {
+          cursor: pointer;
+          touch-action: manipulation;
+        }
+        .ai-drawer-moving .ai-chat-header {
+          cursor: grabbing;
+        }
+        .ai-drawer-dark .ai-chat-header {
+          border-bottom: none;
+          box-shadow: none;
         }
         .ai-chat-under-header {
           padding-top: calc(3.35rem + max(1rem, env(safe-area-inset-top, 0px)));
         }
+        .ai-theme-switch {
+          position: relative;
+          display: inline-flex;
+          width: 3.5rem;
+          height: 2rem;
+          flex-shrink: 0;
+          cursor: pointer;
+          align-items: center;
+          border: none;
+          border-radius: 9999px;
+          background: #e6e8ec;
+          padding: 0.1875rem;
+          box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.12);
+          transition: background 0.25s ease, box-shadow 0.25s ease, transform 0.15s ease;
+        }
+        .ai-theme-switch:hover {
+          transform: scale(1.04);
+        }
+        .ai-theme-switch:active {
+          transform: scale(0.98);
+        }
+        .ai-drawer-dark .ai-theme-switch {
+          background: #3a3648;
+          box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.35);
+        }
+        .ai-theme-knob {
+          display: flex;
+          height: 1.625rem;
+          width: 1.625rem;
+          align-items: center;
+          justify-content: center;
+          border-radius: 9999px;
+          background: #fff;
+          box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+          transform: translateX(0);
+          transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), background 0.25s ease, box-shadow 0.25s ease;
+        }
+        .ai-theme-knob.is-dark {
+          background: #6d28d9;
+          box-shadow: 0 2px 8px rgba(91, 33, 182, 0.45);
+          transform: translateX(1.5rem);
+        }
+        .ai-theme-knob svg {
+          height: 0.9rem;
+          width: 0.9rem;
+        }
+        .ai-history-header-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          border-radius: 9999px;
+          padding: 0.25rem 0.7rem;
+          font-size: 0.8125rem;
+          font-weight: 600;
+          line-height: 1;
+          transition: background 0.15s ease, color 0.15s ease;
+        }
+        .ai-drawer-light .ai-history-header-btn {
+          color: #4b5563;
+        }
+        .ai-drawer-light .ai-history-header-btn:hover,
+        .ai-drawer-light .ai-history-header-btn.is-open {
+          background: #f3f4f6;
+          color: #111827;
+        }
+        .ai-drawer-dark .ai-history-header-btn {
+          color: #c4c6cc;
+        }
+        .ai-drawer-dark .ai-history-header-btn:hover,
+        .ai-drawer-dark .ai-history-header-btn.is-open {
+          background: #2a2c32;
+          color: #f0f0f2;
+        }
+        .ai-drawer-dark .bg-white { background-color: var(--ai-bg-raised) !important; }
+        .ai-drawer-dark .bg-gray-50 { background-color: var(--ai-bg) !important; }
+        .ai-drawer-dark .bg-gray-100 { background-color: var(--ai-bg-overlay) !important; }
+        .ai-drawer-dark .text-gray-900,
+        .ai-drawer-dark .text-gray-800 { color: var(--ai-text) !important; }
+        .ai-drawer-dark .text-gray-600,
+        .ai-drawer-dark .text-gray-500 { color: var(--ai-text-muted) !important; }
+        .ai-drawer-dark .text-gray-400 { color: #7c7f87 !important; }
+        .ai-drawer-dark .text-gray-300 { color: #5c5f66 !important; }
+        .ai-drawer-dark .placeholder\\:text-gray-500::placeholder { color: #7c7f87 !important; }
+        .ai-drawer-dark .border-gray-200\\/70,
+        .ai-drawer-dark .border-gray-200,
+        .ai-drawer-dark .border-gray-100 { border-color: var(--ai-border) !important; }
+        .ai-drawer-dark .ring-gray-100 { --tw-ring-color: #2e3036; }
+        .ai-drawer-dark .hover\\:ring-gray-200:hover { --tw-ring-color: #4a4d55; }
+        .ai-drawer-dark .hover\\:bg-gray-50:hover,
+        .ai-drawer-dark .hover\\:bg-gray-100:hover,
+        .ai-drawer-dark .hover\\:bg-gray-200:hover { background-color: var(--ai-bg-overlay) !important; }
+        .ai-drawer-dark .hover\\:bg-red-50:hover { background-color: #3a2e30 !important; }
+        .ai-drawer-dark textarea { color: var(--ai-text); }
+        .ai-drawer-dark .text-violet-600,
+        .ai-drawer-dark .text-violet-700 { color: #c9cbd1 !important; }
+        .ai-bot-icon {
+          color: #6d28d9;
+        }
+        .ai-drawer-dark .ai-bot-icon {
+          color: #7c3aed;
+        }
+        .ai-history-new-btn {
+          background-color: #6d28d9;
+        }
+        .ai-history-new-btn:hover {
+          background-color: #5b21b6;
+        }
+        .ai-drawer-dark .ai-history-new-btn,
+        .ai-drawer-dark .ai-history-new-btn:hover {
+          color: #fff !important;
+        }
+        .ai-drawer-dark .ai-history-new-btn {
+          background-color: #6d28d9 !important;
+        }
+        .ai-drawer-dark .ai-history-new-btn:hover {
+          background-color: #5b21b6 !important;
+        }
+        .ai-drawer-dark .bg-violet-600 { background-color: #4a4d55 !important; color: #f0f0f2 !important; }
+        .ai-drawer-dark .hover\\:bg-violet-700:hover { background-color: #5a5d66 !important; }
+        .ai-drawer-dark .bg-violet-50 { background-color: #2a2c32 !important; }
+        .ai-drawer-dark .bg-violet-100 { background-color: #32343b !important; }
+        .ai-drawer-dark .text-violet-800,
+        .ai-drawer-dark .text-violet-700 { color: #e4e5e9 !important; }
+        .ai-drawer-dark .border-violet-200 { border-color: #3f424a !important; }
+        .ai-drawer-dark .hover\\:bg-violet-100:hover { background-color: #34363d !important; }
+        .ai-drawer-dark .ring-violet-400 { --tw-ring-color: #6b6e76; }
+        .ai-drawer-dark .ai-history-item {
+          background-color: #23262b !important;
+          box-shadow: none !important;
+          outline: none;
+          --tw-ring-inset: ;
+          --tw-ring-offset-width: 0px;
+          --tw-ring-offset-color: transparent;
+          --tw-ring-color: transparent;
+          --tw-ring-offset-shadow: 0 0 #0000;
+          --tw-ring-shadow: 0 0 #0000;
+        }
+        .ai-drawer-dark .ai-history-item:hover {
+          background-color: #2c2f35 !important;
+        }
+        .ai-drawer-dark .ai-history-item-active {
+          background-color: #33363c !important;
+        }
+        .ai-drawer-dark .btn-ghost { color: #b4b7be; }
+        .ai-drawer-dark .btn-ghost:hover { background-color: #2a2c32; color: #f0f0f2; }
+        .ai-drawer-dark .text-slate-500 { color: #9a9da6 !important; }
+        .ai-drawer-dark .bg-rose-100 { background-color: #3a3336 !important; }
+        .ai-drawer-dark .text-rose-600 { color: #d4c4c8 !important; }
+        .ai-drawer-dark .bg-amber-100 { background-color: #3a3730 !important; }
+        .ai-drawer-dark .text-amber-700 { color: #d4cbb8 !important; }
+        .ai-drawer-dark .bg-emerald-100 { background-color: #2e3330 !important; }
+        .ai-drawer-dark .text-emerald-700 { color: #c5cdc8 !important; }
+        .ai-drawer-dark .bg-sky-100 { background-color: #2e3238 !important; }
+        .ai-drawer-dark .text-sky-700 { color: #c5ccd4 !important; }
+        .ai-send-btn {
+          background: var(--ai-send) !important;
+        }
+        .ai-drawer-dark .ai-send-btn:hover {
+          filter: brightness(1.08);
+        }
       `}</style>
+      {canResizePanel ? (
+        <button
+          type="button"
+          className={`ai-resize-nw ${isDarkTheme ? 'text-zinc-300' : 'text-gray-500'}`}
+          onPointerDown={beginPanelResize}
+          onPointerMove={movePanelResize}
+          onPointerUp={endPanelResize}
+          onPointerCancel={endPanelResize}
+          title="Resize chat"
+          aria-label="Resize chat from the top-left corner"
+        />
+      ) : null}
       <div 
         className={`${isFullPage ? 'ai-glass-fullpage' : 'ai-glass'} relative flex h-full w-full flex-col`}
         style={{
-          ...(isMobile && {
+          ...(isMobile && !isPlacedPanel && {
             height: '100dvh',
             minHeight: '100dvh'
           })
         }}
       >
         {/* Header */}
-        <div className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center justify-between px-5 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
-          <div className="flex items-center gap-2.5">
-            <button
-              className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
-              style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
-              onClick={handleAiIconClick}
-              tabIndex={0}
-              aria-label="AI Icon"
-            >
-              <FaRobot className="h-7 w-7 text-violet-600" />
-            </button>
-            <h3 className="text-lg font-semibold text-gray-900">RMQ AI</h3>
+        <div
+          className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center pb-3 pt-[max(1rem,env(safe-area-inset-top))]"
+          onPointerDown={beginPanelMove}
+          onPointerMove={movePanel}
+          onPointerUp={endPanelMove}
+          onPointerCancel={endPanelMove}
+          title="Hold and drag to move"
+        >
+          <div
+            className={`flex items-center ${
+              showHistoryPanel ? 'w-72 shrink-0 justify-between pl-5 pr-2 md:w-96' : 'pl-5'
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              <button
+                className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
+                style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
+                onClick={handleAiIconClick}
+                tabIndex={0}
+                aria-label="AI Icon"
+              >
+                <FaRobot className="ai-bot-icon h-7 w-7" />
+              </button>
+              <h3 className={`text-lg font-semibold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}>RMQ AI</h3>
+              <button
+                type="button"
+                onClick={() => setShowHistoryPanel(!showHistoryPanel)}
+                className={`ai-history-header-btn ${showHistoryPanel ? 'is-open' : ''}`}
+                title="Chat History"
+              >
+                <ChatBubbleLeftRightIcon className="h-4 w-4" />
+                History
+              </button>
+            </div>
+            {showHistoryPanel ? (
+              <button
+                type="button"
+                onClick={() => setShowHistoryPanel(false)}
+                className={`btn btn-ghost btn-sm btn-square ${isDarkTheme ? 'text-zinc-300' : 'text-base-content/60'}`}
+                title="Close chat history"
+                aria-label="Close chat history"
+              >
+                <ChevronLeftIcon className="h-5 w-5" />
+              </button>
+            ) : null}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex min-w-0 flex-1 items-center justify-end px-5">
+          <div className="flex items-center gap-1.5">
             <button
-              onClick={() => setShowHistoryPanel(!showHistoryPanel)}
-              className={`btn btn-ghost btn-sm btn-square ${showHistoryPanel ? 'text-violet-700' : 'text-base-content/60'}`}
-              title="Chat History"
+              type="button"
+              className="ai-theme-switch"
+              onClick={() => setIsDarkTheme((value) => !value)}
+              title={isDarkTheme ? 'Switch to light theme' : 'Switch to dark theme'}
+              aria-label={isDarkTheme ? 'Switch to light theme' : 'Switch to dark theme'}
+              aria-pressed={isDarkTheme}
             >
-              <ChatBubbleLeftRightIcon className="h-5 w-5" />
+              <span className={`ai-theme-knob ${isDarkTheme ? 'is-dark' : ''}`}>
+                {isDarkTheme ? (
+                  <MoonIcon className="text-white" />
+                ) : (
+                  <SunIcon className="text-amber-500" />
+                )}
+              </span>
             </button>
             {onToggleFullPage && (
               <button 
-                className="btn btn-ghost btn-sm btn-square text-base-content/60"
-                onClick={onToggleFullPage}
-                title={isFullPage ? "Exit full page" : "Enter full page"}
+                className={`ai-expand-drag btn btn-ghost btn-sm btn-square ${isDarkTheme ? 'text-zinc-400' : 'text-base-content/60'}`}
+                data-ai-expand=""
+                onPointerDown={beginPanelMove}
+                onPointerMove={movePanel}
+                onPointerUp={endPanelMove}
+                onPointerCancel={endPanelMove}
+                onClick={handleExpandClick}
+                title={isFullPage ? 'Exit full page · hold and drag to move' : 'Enter full page · hold and drag to move'}
+                aria-label={isFullPage ? 'Exit full page. Hold and drag to move the chat.' : 'Enter full page. Hold and drag to move the chat.'}
               >
                 {isFullPage ? (
                   <ArrowsPointingInIcon className="h-5 w-5" />
@@ -1132,17 +1874,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 )}
               </button>
             )}
-            <button className="btn btn-ghost btn-sm btn-square text-base-content/60" onClick={onClose} aria-label="Close">
+            <button className={`btn btn-ghost btn-sm btn-square ${isDarkTheme ? 'text-zinc-400' : 'text-base-content/60'}`} onClick={onClose} aria-label="Close">
               <XMarkIcon className="h-5 w-5" />
             </button>
+          </div>
           </div>
         </div>
 
         {/* Main Content Area */}
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {showHistoryPanel && (
-            <div className="ai-chat-under-header flex w-72 shrink-0 flex-col overflow-hidden rounded-r-3xl border-r border-gray-200/70 bg-white md:w-96">
-              <div className="border-b border-gray-100 bg-white p-4">
+            <div className="ai-chat-under-header flex w-72 shrink-0 flex-col overflow-hidden bg-white md:w-96">
+              <div className="bg-white p-4">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <h3 className="font-semibold text-gray-900">Chat History</h3>
                   <div className="flex items-center gap-2">
@@ -1179,7 +1922,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     <button
                       type="button"
                       onClick={startNewChat}
-                      className="inline-flex h-9 items-center gap-1.5 rounded-full bg-violet-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700"
+                      className="ai-history-new-btn inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-semibold text-white shadow-sm transition"
                       title="Start New Chat"
                     >
                       <PlusIcon className="h-4 w-4" strokeWidth={2.5} />
@@ -1201,7 +1944,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   />
                 </div>
               </div>
-              <div className="flex-1 overflow-y-auto bg-white p-3">
+              <div className="ai-history-scroll flex-1 overflow-y-auto bg-white p-3">
                 {isLoadingHistory ? (
                   <div className="flex h-32 items-center justify-center">
                     <div className="loading loading-spinner loading-md text-violet-600"></div>
@@ -1219,11 +1962,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       return (
                       <div
                         key={chat.id}
-                        className={`cursor-pointer rounded-l-xl rounded-r-3xl bg-white p-4 ring-1 transition-colors ${
+                        className={`ai-history-item cursor-pointer rounded-l-xl rounded-r-3xl bg-white p-4 ring-1 transition-colors ${
                           historySelecting && isSelected
-                            ? 'ring-2 ring-red-400'
+                            ? 'ai-history-item-active ring-2 ring-red-400'
                             : currentChatId === chat.id
-                              ? 'ring-2 ring-violet-400'
+                              ? 'ai-history-item-active ring-2 ring-violet-400'
                               : 'ring-gray-100 hover:ring-gray-200'
                         }`}
                         onClick={() =>
@@ -1288,7 +2031,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
             {/* Messages */}
             <div 
-              className="ai-chat-under-header min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 pb-28 md:px-5 md:pb-32"
+              className="ai-chat-under-header ai-messages-scroll scrollbar-hide min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 pb-28 md:px-5 md:pb-32"
               style={{
                 ...(isMobile && keyboardOpen && {
                   paddingBottom: '120px'
@@ -1483,7 +2226,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     <textarea
                       ref={textareaRef}
                       rows={1}
-                      className="relative min-h-[3rem] min-w-0 w-full resize-none border-0 bg-transparent py-3 pl-1 pr-5 text-base leading-relaxed text-gray-900 placeholder:text-gray-500 focus:outline-none focus:ring-0"
+                      className="relative min-h-[3rem] min-w-0 w-full resize-none border-0 bg-transparent py-3 pl-1 pr-5 text-base leading-relaxed placeholder:text-gray-500 focus:outline-none focus:ring-0"
                       placeholder="Ask anything..."
                       value={input}
                       onChange={(e) => {
@@ -1533,7 +2276,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 />
                 <button
                   type="button"
-                  className="btn btn-circle h-12 w-12 shrink-0 border-0 bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg hover:from-violet-700 hover:to-indigo-700 disabled:opacity-60"
+                  className="ai-send-btn btn btn-circle h-12 w-12 shrink-0 border-0 text-white shadow-lg disabled:opacity-60"
                   onClick={() => handleSend()}
                   disabled={isLoading || (!input.trim() && images.length === 0)}
                   aria-label="Send"

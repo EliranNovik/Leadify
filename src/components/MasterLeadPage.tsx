@@ -31,6 +31,9 @@ import {
 } from '../lib/masterLeadApi';
 import { searchLeads } from '../lib/legacyLeadsApi';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
+import DocumentModal from './DocumentModal';
+import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
+import { expandLeadCaseDocumentLeadNumbers } from '../lib/leadCaseDocumentKeys';
 
 // Helper function to process HTML for editing with consistent styling
 const processHtmlForEditing = (html: string): string => {
@@ -178,6 +181,59 @@ const executeCommand = (command: string, value?: string) => {
     document.execCommand(command, false, value);
   }
 };
+
+function leadDocumentLookupKeys(subLead: SubLead): string[] {
+  return expandLeadCaseDocumentLeadNumbers(
+    subLead.document_lead_number,
+    subLead.lead_number,
+    subLead.actual_lead_id,
+    subLead.manual_id,
+  );
+}
+
+function canonicalDocumentLeadNumber(subLead: SubLead): string {
+  const stored = String(subLead.document_lead_number || '').trim();
+  if (stored) return stored;
+  const displayed = String(subLead.lead_number || '').trim();
+  if (subLead.isMaster) {
+    const withoutSuffix = displayed.replace(/\/1$/, '');
+    if (String(subLead.id || '').startsWith('legacy_')) {
+      return String(subLead.actual_lead_id || '').replace(/^legacy_/, '') || withoutSuffix.replace(/^[LC]/i, '');
+    }
+    return withoutSuffix || displayed;
+  }
+  return displayed;
+}
+
+function DocumentsCountBadge({
+  count,
+  onClick,
+  title,
+}: {
+  count: number;
+  onClick: (event: React.MouseEvent) => void;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title || 'Open documents'}
+      className="inline-flex h-8 min-w-[2.5rem] items-center justify-center gap-1 rounded-full bg-gray-100 px-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-200"
+    >
+      <DocumentTextIcon className="h-4 w-4 shrink-0" />
+      <span className="tabular-nums">{count}</span>
+    </button>
+  );
+}
+
+function resolveMasterLeadClientId(subLead: SubLead): string {
+  const id = String(subLead.id || '').trim();
+  if (id.startsWith('legacy_')) return id;
+  if (id.includes('-')) return id;
+  if (/^\d+$/.test(id)) return `legacy_${id}`;
+  return id || String(subLead.actual_lead_id || '');
+}
 
 // SubLead and ContractData are now imported from masterLeadApi
 
@@ -383,6 +439,9 @@ const MasterLeadPage: React.FC = () => {
   const [breakLinkModalOpen, setBreakLinkModalOpen] = useState(false);
   const [breakLinkSelectedIds, setBreakLinkSelectedIds] = useState<Set<string>>(new Set());
   const [breakLinkConfirming, setBreakLinkConfirming] = useState(false);
+  const [documentCounts, setDocumentCounts] = useState<Record<string, number>>({});
+  const [documentsLead, setDocumentsLead] = useState<SubLead | null>(null);
+  const [documentTabsShowAll, setDocumentTabsShowAll] = useState(false);
 
   // Add compact table styles
   const compactTableStyles = `
@@ -1069,6 +1128,88 @@ const MasterLeadPage: React.FC = () => {
     }
   };
 
+  const totalDocumentCount = useMemo(
+    () => filteredSubLeads.reduce((sum, lead) => sum + (documentCounts[lead.id] ?? 0), 0),
+    [filteredSubLeads, documentCounts],
+  );
+
+  const openLeadDocuments = (subLead: SubLead, event?: React.MouseEvent) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    setDocumentsLead(subLead);
+  };
+
+  const openAllDocuments = () => {
+    const withDocs = filteredSubLeads.find((lead) => (documentCounts[lead.id] ?? 0) > 0);
+    setDocumentsLead(withDocs || filteredSubLeads[0] || null);
+  };
+
+  useEffect(() => {
+    if (!documentsLead) setDocumentTabsShowAll(false);
+  }, [documentsLead]);
+
+  const documentTabLeads = useMemo(() => {
+    if (documentTabsShowAll) return filteredSubLeads;
+    return filteredSubLeads.filter((lead) => {
+      if (lead.id === documentsLead?.id) return true;
+      const count = documentCounts[lead.id];
+      if (count === undefined) return true;
+      return count > 0;
+    });
+  }, [filteredSubLeads, documentCounts, documentTabsShowAll, documentsLead?.id]);
+
+  useEffect(() => {
+    if (!subLeads.length) {
+      setDocumentCounts({});
+      return;
+    }
+
+    let cancelled = false;
+    const leads = subLeads.slice();
+    const keyToLeadIds = new Map<string, string[]>();
+    const queryKeys = new Set<string>();
+
+    for (const lead of leads) {
+      for (const key of leadDocumentLookupKeys(lead)) {
+        queryKeys.add(key);
+        const existing = keyToLeadIds.get(key) || [];
+        existing.push(lead.id);
+        keyToLeadIds.set(key, existing);
+      }
+    }
+
+    const keys = [...queryKeys];
+    void (async () => {
+      const counts: Record<string, number> = {};
+      for (const lead of leads) counts[lead.id] = 0;
+
+      for (let i = 0; i < keys.length; i += 80) {
+        const chunk = keys.slice(i, i + 80);
+        const { data, error: docsError } = await supabase
+          .from('lead_case_documents')
+          .select('lead_number')
+          .in('lead_number', chunk)
+          .not('storage_path', 'is', null);
+        if (docsError) {
+          console.warn('Master lead document counts:', docsError.message);
+          continue;
+        }
+        for (const row of data || []) {
+          const leadNumber = String((row as { lead_number?: string }).lead_number || '').trim();
+          for (const leadId of keyToLeadIds.get(leadNumber) || []) {
+            counts[leadId] = (counts[leadId] || 0) + 1;
+          }
+        }
+      }
+
+      if (!cancelled) setDocumentCounts(counts);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [subLeads]);
+
   // Don't return early - always render the page structure so header/sidebar are visible
   // Show loading/error states within the content area instead
   return (
@@ -1158,6 +1299,19 @@ const MasterLeadPage: React.FC = () => {
                 </p>
               </div>
             </div>
+            {filteredSubLeads.length > 0 && (
+              <button
+                type="button"
+                onClick={openAllDocuments}
+                className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white px-4 py-2.5 text-sm font-semibold text-base-content shadow-sm transition-colors hover:bg-white/90 border-0 outline-none"
+              >
+                <DocumentTextIcon className="h-4 w-4" />
+                All documents
+                <span className="inline-flex min-w-[1.85rem] items-center justify-center rounded-full bg-gray-100 px-2.5 py-1 text-sm font-bold tabular-nums">
+                  {totalDocumentCount}
+                </span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1302,6 +1456,12 @@ const MasterLeadPage: React.FC = () => {
                                 <span>{subLead.applicants} applicant{(subLead.applicants ?? 0) !== 1 ? 's' : ''}</span>
                               </div>
                             )}
+                            <div className="flex items-center" title="Documents">
+                              <DocumentsCountBadge
+                                count={documentCounts[subLead.id] ?? 0}
+                                onClick={(e) => openLeadDocuments(subLead, e)}
+                              />
+                            </div>
                           </div>
 
                           {subLead.agreement && subLead.agreement !== '---' && (
@@ -1356,6 +1516,7 @@ const MasterLeadPage: React.FC = () => {
                         <th className="hidden lg:table-cell px-3 py-3 font-semibold">Scheduler</th>
                         <th className="hidden xl:table-cell px-3 py-3 font-semibold">Closer</th>
                         <th className="hidden xl:table-cell px-3 py-3 font-semibold">Handler</th>
+                        <th className="px-5 py-3 text-right font-semibold">Documents</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1455,11 +1616,17 @@ const MasterLeadPage: React.FC = () => {
                               )}
                             </div>
                           </td>
+                          <td className="px-5 py-3.5 align-middle whitespace-nowrap text-right">
+                            <DocumentsCountBadge
+                              count={documentCounts[subLead.id] ?? 0}
+                              onClick={(e) => openLeadDocuments(subLead, e)}
+                            />
+                          </td>
                         </tr>
                       ))}
                       {subLeadsLoading && (
                         <tr>
-                          <td colSpan={10} className="px-5 py-4 text-center">
+                          <td colSpan={11} className="px-5 py-4 text-center">
                             <div className="flex items-center justify-center">
                               <div className="loading loading-spinner loading-sm mr-2"></div>
                               <span className="text-sm text-base-content/50">Loading sub-leads...</span>
@@ -2194,6 +2361,79 @@ const MasterLeadPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      <DocumentModal
+        isOpen={Boolean(documentsLead)}
+        onClose={() => setDocumentsLead(null)}
+        leadNumber={documentsLead ? canonicalDocumentLeadNumber(documentsLead) : ''}
+        leadNumberLookupKeys={documentsLead ? leadDocumentLookupKeys(documentsLead) : []}
+        clientName={documentsLead?.name || ''}
+        clientId={documentsLead ? resolveMasterLeadClientId(documentsLead) : null}
+        onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
+        includeRootFolderDocuments
+        modalTitle="Case documents"
+        requireCaseDocumentClassification
+        onDocumentCountChange={(count) => {
+          if (!documentsLead) return;
+          setDocumentCounts((prev) => ({ ...prev, [documentsLead.id]: count }));
+        }}
+        headerExtra={
+          filteredSubLeads.length > 1 ? (
+            <div className="flex min-w-0 w-full items-center gap-2">
+              <div className="flex shrink-0 rounded-2xl bg-gray-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => setDocumentTabsShowAll(false)}
+                  className={`rounded-xl px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                    !documentTabsShowAll
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'bg-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  With docs
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDocumentTabsShowAll(true)}
+                  className={`rounded-xl px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                    documentTabsShowAll
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'bg-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  All
+                </button>
+              </div>
+              <div className="flex min-w-0 flex-1 overflow-x-auto rounded-2xl bg-gray-100 p-1">
+                {documentTabLeads.map((lead) => {
+                  const active = documentsLead?.id === lead.id;
+                  return (
+                    <button
+                      key={lead.id}
+                      type="button"
+                      onClick={() => setDocumentsLead(lead)}
+                      className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        active
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'bg-transparent text-gray-600 hover:text-gray-900'
+                      }`}
+                    >
+                      <span>{lead.lead_number}</span>
+                      <span
+                        className={`inline-flex min-w-[1.4rem] items-center justify-center rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                          active ? 'bg-gray-100 text-gray-700' : 'text-gray-500'
+                        }`}
+                      >
+                        {documentCounts[lead.id] ?? 0}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null
+        }
+      />
     </div>
   );
 };

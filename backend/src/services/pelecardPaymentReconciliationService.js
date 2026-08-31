@@ -655,7 +655,9 @@ async function persistPaymentFailure(payment, secureToken, callbackData, verifyR
 
   await recordTransaction(payment.id, 'failed', chargeAmountFromPayment(payment), 'pelecard', {
     transactionReference: transactionId ? String(transactionId) : null,
-    errorMessage: String(failMessage).slice(0, 500),
+    errorMessage: resolvedStatusCode
+      ? `[${String(resolvedStatusCode).trim()}] ${String(failMessage).slice(0, 480)}`
+      : String(failMessage).slice(0, 500),
   });
 
   const txClass = extractTransactionClassification(callbackData, verifyPayload);

@@ -241,6 +241,51 @@ export function getPelecardCancelledCopy(): PelecardFailureCopy {
   };
 }
 
+/** Pull a 3-digit Pelecard status code from stored text such as `[004] declined` or `StatusCode: 113`. */
+export function extractPelecardCodeFromText(text?: string | null): string | null {
+  const value = String(text || '').trim();
+  if (!value) return null;
+  const labeled =
+    value.match(/\[(\d{3})\]/) ||
+    value.match(/status\s*code[:\s]+(\d{3})/i) ||
+    value.match(/^(\d{3})\b/);
+  return labeled ? labeled[1] : null;
+}
+
+export type PelecardHistoryStatusView = {
+  label: string;
+  code: string | null;
+  title: string | null;
+  explanation: string | null;
+};
+
+export function formatPelecardHistoryStatus(input: {
+  status?: string | null;
+  statusCode?: string | null;
+  errorMessage?: string | null;
+}): PelecardHistoryStatusView {
+  const status = String(input.status || '').trim().toLowerCase();
+  const code =
+    String(input.statusCode || '').trim() || extractPelecardCodeFromText(input.errorMessage);
+
+  if (status === 'success' || status === 'paid') {
+    return { label: status || 'success', code: code || '000', title: null, explanation: null };
+  }
+
+  const copy = getPelecardFailureCopy({
+    statusCode: code,
+    statusDescription: input.errorMessage,
+    variant: status === 'cancelled' || status === 'canceled' ? 'cancelled' : 'failed',
+  });
+
+  return {
+    label: status || 'failed',
+    code: code || null,
+    title: copy.title,
+    explanation: copy.explanation,
+  };
+}
+
 /** @deprecated Use getPelecardFailureCopy().explanation */
 export function describePelecardFailure(
   statusCode?: string | null,

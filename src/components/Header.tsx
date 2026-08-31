@@ -4145,7 +4145,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </button>
 
           {/* Profile + dropdown: mobile only */}
-          <div className="relative flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
+          <div className="relative flex items-center gap-1.5 flex-shrink-0 md:hidden" ref={profileDropdownRef}>
             <div className="relative">
               {unreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 z-30 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
@@ -4195,6 +4195,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </span>
               </button>
             </div>
+            {typeof onOpenAIChat === 'function' && (
+              <button
+                type="button"
+                className="btn btn-ghost min-h-0 h-11 w-11 p-0 rounded-full border-0 flex items-center justify-center text-base-content/90 hover:bg-base-200/50 dark:hover:bg-base-300/30"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenAIChat();
+                }}
+                aria-label="Open RMQ AI"
+                title="RMQ AI"
+              >
+                <FaRobot className="h-8 w-8" style={{ color: '#6d28d9' }} />
+              </button>
+            )}
             {showProfileDropdown && isMobile && createPortal(
               <div
                 className="fixed inset-0 z-[100] md:hidden flex items-end justify-center"
@@ -4576,6 +4590,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 </div>
               )}
             </div>
+            {typeof onOpenAIChat === 'function' && (
+              <button
+                type="button"
+                className="btn btn-ghost min-h-0 h-11 w-11 p-0 rounded-full flex items-center justify-center flex-shrink-0 ml-1.5"
+                onClick={() => onOpenAIChat()}
+                title="RMQ AI"
+                aria-label="Open RMQ AI"
+              >
+                <FaRobot className="h-8 w-8" style={{ color: '#6d28d9' }} />
+              </button>
+            )}
           </div>
 
           {/* Desktop: overlay + left-side panel when hamburger menu is open */}

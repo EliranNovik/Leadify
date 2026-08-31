@@ -41,7 +41,6 @@ export function ChatLeadNumberText({ text, onOpen }: { text: string; onOpen?: ()
         key={`lead-${key++}`}
         to={to}
         className="chat-lead-number-link font-semibold hover:opacity-80"
-        style={{ color: '#3b28c7' }}
         onClick={(e) => {
           e.stopPropagation();
           onOpen?.();

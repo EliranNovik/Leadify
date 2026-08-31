@@ -4,6 +4,14 @@ import { getStageName } from './stageUtils';
 import { getFrontendBaseUrl } from './api';
 import { buildPoaUrl } from './poaApi';
 import { applyContractLinkPreviewHtml } from './leadContractLink';
+import { fetchLeadContacts } from './contactHelpers';
+import {
+  buildEmailFilterClauses,
+  collectClientEmails,
+  EMAIL_LIST_SELECT,
+  fetchLeadEmailsForTimeline,
+} from './interactions/emailFilters';
+import { fetchLeadManualInteractionsMerged, type ManualInteractionRecord } from './leadManualInteractions';
 
 export type LeadFollowupVerdict = 'high' | 'medium' | 'low' | 'not_worth';
 
@@ -381,6 +389,32 @@ export function applyCrmDocumentLinksToEmailDraft(
   return next;
 }
 
+const CASE_FILE_NEXT_HEADING =
+  'WHATSAPP \\(newest first\\):|EMAIL \\(newest first\\):|CALLS:|MANUAL NOTES:|CRM fields:|CONTRACTS |POWER OF ATTORNEY|PROFORMA INVOICES|Payments:|Meetings \\(dates|Recent interactions|Computed stats:';
+
+function extractCaseSection(caseFile: string, heading: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`${escaped}\\n([\\s\\S]*?)(?=\\n(?:${CASE_FILE_NEXT_HEADING})|$)`);
+  return caseFile.match(re)?.[1]?.trim() || '';
+}
+
+function sectionHasContent(body: string): boolean {
+  const text = body.trim();
+  return Boolean(text) && text !== '(none)' && text !== '(none on file)' && text !== '(no meeting notes)';
+}
+
+function upsertCaseSection(caseFile: string, heading: string, body: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(${escaped}\\n)([\\s\\S]*?)(?=\\n(?:${CASE_FILE_NEXT_HEADING})|$)`);
+  if (re.test(caseFile)) {
+    return caseFile.replace(re, `$1${body}\n`);
+  }
+  if (/\nCRM fields:/.test(caseFile)) {
+    return caseFile.replace(/\nCRM fields:/, `\n${heading}\n${body}\n\nCRM fields:`);
+  }
+  return `${caseFile.trim()}\n\n${heading}\n${body}`;
+}
+
 function overlayLocalDocumentBlocks(edgeCaseFile: string, localCaseFile: string): string {
   const hasRealLink =
     /signing_link=https:\/\//i.test(edgeCaseFile) ||
@@ -402,6 +436,25 @@ function overlayLocalDocumentBlocks(edgeCaseFile: string, localCaseFile: string)
   return `${edgeCaseFile.trim()}\n\n${blocks.join('\n\n')}`;
 }
 
+/** Prefer local EMAIL / WhatsApp / calls / manuals — same sources as the interactions timeline. */
+function overlayLocalCommunicationBlocks(edgeCaseFile: string, localCaseFile: string): string {
+  let next = edgeCaseFile;
+  for (const heading of ['WHATSAPP (newest first):', 'EMAIL (newest first):', 'CALLS:', 'MANUAL NOTES:']) {
+    const localBody = extractCaseSection(localCaseFile, heading);
+    if (sectionHasContent(localBody)) {
+      next = upsertCaseSection(next, heading, localBody);
+    }
+  }
+  return next;
+}
+
+function mergeEdgeAndLocalCaseFiles(edgeCaseFile: string, localCaseFile: string): string {
+  return overlayLocalCommunicationBlocks(
+    overlayLocalDocumentBlocks(edgeCaseFile, localCaseFile),
+    localCaseFile,
+  );
+}
+
 /** Full CRM case file used by pipeline follow-up AI — no extra OpenAI call. */
 export async function fetchLeadCaseFileForAi(params: {
   leadId: string;
@@ -417,13 +470,8 @@ export async function fetchLeadCaseFileForAi(params: {
     if (!error && !data?.error) {
       const text = typeof data?.caseFile === 'string' ? data.caseFile.trim() : '';
       if (text) {
-        const hasRealLink =
-          /signing_link=https:\/\//i.test(text) ||
-          /poa_link=https:\/\//i.test(text) ||
-          /invoice_link=https:\/\//i.test(text);
-        if (hasRealLink) return text;
         try {
-          return overlayLocalDocumentBlocks(text, await localPromise);
+          return mergeEdgeAndLocalCaseFiles(text, await localPromise);
         } catch {
           return text;
         }
@@ -486,19 +534,167 @@ async function mintTablePublicToken(
   return error ? '' : next;
 }
 
+function linkedLegacyIdFromLead(lead: Record<string, unknown> | null): number | null {
+  if (!lead) return null;
+  const n = Number.parseInt(String(lead.legacy_lead_id ?? ''), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+type CaseWhatsAppRow = {
+  id?: unknown;
+  direction?: unknown;
+  message?: unknown;
+  sent_at?: unknown;
+  sender_name?: unknown;
+};
+
+async function fetchWhatsAppForCaseFile(
+  rawId: string,
+  isLegacy: boolean,
+  linkedLegacyId: number | null,
+): Promise<CaseWhatsAppRow[]> {
+  const select = 'id, direction, message, sent_at, sender_name';
+  const queries: Array<PromiseLike<{ data: CaseWhatsAppRow[] | null }>> = [];
+  if (!isLegacy) {
+    queries.push(
+      supabase
+        .from('whatsapp_messages')
+        .select(select)
+        .eq('lead_id', rawId)
+        .order('sent_at', { ascending: false })
+        .limit(24),
+    );
+  }
+  const legacyKey = isLegacy ? Number.parseInt(rawId, 10) : linkedLegacyId;
+  if (legacyKey != null && Number.isFinite(legacyKey)) {
+    queries.push(
+      supabase
+        .from('whatsapp_messages')
+        .select(select)
+        .eq('legacy_id', legacyKey)
+        .order('sent_at', { ascending: false })
+        .limit(24),
+    );
+  }
+  if (!queries.length) return [];
+  const results = await Promise.all(queries);
+  const byKey = new Map<string, CaseWhatsAppRow>();
+  for (const res of results) {
+    for (const row of res.data || []) {
+      const key = String(row.id ?? `${row.sent_at}:${row.message}`);
+      if (!byKey.has(key)) byKey.set(key, row);
+    }
+  }
+  return [...byKey.values()]
+    .sort((a, b) => String(b.sent_at || '').localeCompare(String(a.sent_at || '')))
+    .slice(0, 24);
+}
+
+async function fetchEmailsForCaseFile(
+  lead: Record<string, unknown>,
+  rawId: string,
+  isLegacy: boolean,
+  linkedLegacyId: number | null,
+): Promise<Record<string, unknown>[]> {
+  let contacts: Awaited<ReturnType<typeof fetchLeadContacts>> = [];
+  try {
+    contacts = await fetchLeadContacts(rawId, isLegacy);
+  } catch (error) {
+    console.warn('[leadFollowup] contacts for case file', error);
+  }
+
+  const clientEmails = [
+    ...collectClientEmails(lead),
+    ...contacts.map((c) => c.email).filter((email): email is string => Boolean(email)),
+  ];
+  const legacyId = isLegacy ? Number.parseInt(rawId, 10) : linkedLegacyId;
+  const emailFilters = buildEmailFilterClauses({
+    clientId: isLegacy ? null : rawId,
+    legacyId: legacyId != null && Number.isFinite(legacyId) ? legacyId : null,
+    emails: clientEmails,
+  });
+
+  const { data } = await fetchLeadEmailsForTimeline(supabase, {
+    isLegacyLead: isLegacy,
+    legacyId: legacyId != null && Number.isFinite(legacyId) ? legacyId : null,
+    clientId: isLegacy ? null : rawId,
+    emailFilters,
+    limit: 12,
+    select: EMAIL_LIST_SELECT,
+    matchByAddress: true,
+    contactIds: contacts.map((c) => c.id),
+  });
+
+  const rows = (data || []) as Record<string, unknown>[];
+  const ids = rows.map((row) => row.id).filter((id) => id != null && id !== '');
+  if (!ids.length) return rows;
+
+  const { data: bodies } = await supabase.from('emails').select('id, body_html').in('id', ids);
+  const htmlById = new Map(
+    (bodies || []).map((row: { id?: unknown; body_html?: unknown }) => [String(row.id), row.body_html]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    body_html: row.body_html || htmlById.get(String(row.id)) || '',
+  }));
+}
+
+async function fetchManualsForCaseFile(
+  rawId: string,
+  isLegacy: boolean,
+  lead: Record<string, unknown>,
+  linkedLegacyId: number | null,
+): Promise<string[]> {
+  const lines: { key: string; line: string; at: string }[] = [];
+  const pushLine = (at: unknown, kind: unknown, direction: unknown, body: unknown) => {
+    const text = clipCaseText(body, 900);
+    if (!text) return;
+    const when = String(at || '');
+    const label = `${direction || kind || 'note'} ${when.slice(0, 16)} [${kind || 'note'}]: ${text}`;
+    const key = `${when}|${text.slice(0, 80)}`;
+    if (lines.some((item) => item.key === key)) return;
+    lines.push({ key, line: label, at: when });
+  };
+
+  if (!isLegacy) {
+    const json = Array.isArray(lead.manual_interactions)
+      ? (lead.manual_interactions as ManualInteractionRecord[])
+      : [];
+    const merged = await fetchLeadManualInteractionsMerged(rawId, json);
+    for (const item of merged.slice(0, 20)) {
+      pushLine(
+        item.raw_date || item.date,
+        item.kind,
+        item.direction,
+        item.content || item.observation || item.kind,
+      );
+    }
+  }
+
+  const legacyKey = isLegacy ? Number.parseInt(rawId, 10) : linkedLegacyId;
+  if (legacyKey != null && Number.isFinite(legacyKey)) {
+    const { data } = await supabase
+      .from('leads_leadinteractions')
+      .select('kind, direction, cdate, content, description')
+      .eq('lead_id', legacyKey)
+      .order('cdate', { ascending: false })
+      .limit(20);
+    for (const row of data || []) {
+      pushLine(row.cdate, row.kind, row.direction, row.content || row.description || row.kind);
+    }
+  }
+
+  return lines
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+    .slice(0, 20)
+    .map((item) => item.line);
+}
+
 async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Promise<string> {
   const rawId = leadId.replace(/^legacy_/i, '');
   const leadQuery = isLegacy
     ? supabase.from('leads_lead').select('*').eq('id', rawId).maybeSingle()
     : supabase.from('leads').select('*').eq('id', rawId).maybeSingle();
-
-  const waQuery = isLegacy
-    ? supabase.from('whatsapp_messages').select('direction, message, sent_at').eq('legacy_id', rawId).order('sent_at', { ascending: false }).limit(16)
-    : supabase.from('whatsapp_messages').select('direction, message, sent_at').eq('lead_id', rawId).order('sent_at', { ascending: false }).limit(16);
-
-  const emailQuery = isLegacy
-    ? supabase.from('emails').select('direction, subject, body_preview, body_html, sent_at').eq('legacy_id', rawId).order('sent_at', { ascending: false }).limit(8)
-    : supabase.from('emails').select('direction, subject, body_preview, body_html, sent_at').eq('client_id', rawId).order('sent_at', { ascending: false }).limit(8);
 
   const callQuery = isLegacy
     ? supabase.from('call_logs').select('cdate, time, direction, duration, source, destination').eq('lead_id', rawId).order('cdate', { ascending: false }).limit(8)
@@ -511,10 +707,6 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
   const paymentQuery = isLegacy
     ? supabase.from('finances_paymentplanrow').select('value, due_date, cancel_date, actual_date').eq('lead_id', rawId).is('cancel_date', null).order('due_date', { ascending: true }).limit(8)
     : supabase.from('payment_plans').select('id, value, due_date, paid, paid_at, cancel_date, public_token, proforma').eq('lead_id', rawId).is('cancel_date', null).order('due_date', { ascending: true }).limit(12);
-
-  const manualQuery = isLegacy
-    ? supabase.from('leads_leadinteractions').select('kind, direction, cdate, content, description').eq('lead_id', rawId).order('cdate', { ascending: false }).limit(12)
-    : supabase.from('lead_manual_interactions').select('kind, direction, raw_date, content, observation').eq('lead_id', rawId).order('raw_date', { ascending: false }).limit(12);
 
   const contractQuery = isLegacy
     ? supabase.from('contracts').select('id, status, signed_at, public_token, total_amount').eq('legacy_id', rawId).order('created_at', { ascending: false }).limit(8)
@@ -552,24 +744,18 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
 
   const [
     leadRes,
-    waRes,
-    emailRes,
     callRes,
     meetingRes,
     paymentRes,
-    manualRes,
     contractRes,
     legacyContactContractRes,
     poaRes,
     legacyProformaRes,
   ] = await Promise.all([
     leadQuery,
-    waQuery,
-    emailQuery,
     callQuery,
     meetingQuery,
     paymentQuery,
-    manualQuery,
     contractQuery,
     legacyContactContractQuery,
     poaQuery,
@@ -600,11 +786,15 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
   if (!lead) throw new Error('Lead not found');
 
   const sourceId = pickCaseField(lead, ['source_id']);
-  const [sourceRes, stageRes] = await Promise.all([
+  const linkedLegacyId = isLegacy ? null : linkedLegacyIdFromLead(lead);
+  const [sourceRes, stageRes, waRows, emailRows, manuals] = await Promise.all([
     sourceId
       ? supabase.from('misc_leadsource').select('id, name').eq('id', sourceId).maybeSingle()
       : Promise.resolve({ data: null }),
     supabase.from('lead_stages').select('id, name'),
+    fetchWhatsAppForCaseFile(rawId, isLegacy, linkedLegacyId),
+    fetchEmailsForCaseFile(lead, rawId, isLegacy, linkedLegacyId),
+    fetchManualsForCaseFile(rawId, isLegacy, lead, linkedLegacyId),
   ]);
 
   const stageId = pickCaseField(lead, ['stage']);
@@ -632,21 +822,22 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     return body ? `${header}\n${body}` : `${header}: (no notes)`;
   });
 
-  const whatsapp = (waRes.data || [])
-    .map((row: Record<string, unknown>) => `${row.direction || '?'} ${String(row.sent_at || '').slice(0, 16)}: ${clipCaseText(row.message, 400)}`)
-    .filter((line: string) => !line.endsWith(': '));
+  const whatsapp = waRows
+    .map(
+      (row) =>
+        `${row.direction || '?'} ${String(row.sent_at || '').slice(0, 16)}${
+          row.sender_name ? ` ${row.sender_name}` : ''
+        }: ${clipCaseText(row.message, 800)}`,
+    )
+    .filter((line) => !line.endsWith(': '));
 
-  const emails = (emailRes.data || []).map((row: Record<string, unknown>) => {
-    const preview = clipCaseText(row.body_html, 700) || clipCaseText(row.body_preview, 700);
-    return `${row.direction || '?'} ${String(row.sent_at || '').slice(0, 16)} ${clipCaseText(row.subject, 120)}: ${preview}`;
+  const emails = emailRows.map((row) => {
+    const preview = clipCaseText(row.body_html, 1400) || clipCaseText(row.body_preview, 1400);
+    return `${row.direction || '?'} ${String(row.sent_at || '').slice(0, 16)} ${clipCaseText(row.subject, 160)}: ${preview}`;
   });
 
   const calls = (callRes.data || []).map((row: Record<string, unknown>) =>
     `${row.direction || '?'} ${row.cdate || ''} ${String(row.time || '').slice(0, 5)} ${clipCaseText(`${row.source || ''} → ${row.destination || ''} ${row.duration || ''}`, 160)}`,
-  );
-
-  const manuals = (manualRes.data || []).map((row: Record<string, unknown>) =>
-    `${row.direction || row.kind || 'note'} ${row.raw_date || row.cdate || ''}: ${clipCaseText(row.content || row.description || row.observation, 400)}`,
   );
 
   const payments = paymentRes.data || [];

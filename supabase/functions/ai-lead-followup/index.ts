@@ -90,8 +90,8 @@ function clipNote(raw: unknown, max = 2500): string {
 }
 
 function emailBody(row: { body_html?: unknown; body_preview?: unknown }): string {
-  const html = clip(row.body_html, 900);
-  const preview = clip(row.body_preview, 900);
+  const html = clip(row.body_html, 1400);
+  const preview = clip(row.body_preview, 1400);
   return html.length >= preview.length ? html : preview;
 }
 
@@ -228,6 +228,20 @@ function assembleCaseFile(args: {
       .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)} ${i.subject || ''}: ${i.preview}`)
       .join('\n') || '(none)';
 
+  const callBlock =
+    args.interactions
+      .filter((i) => i.channel === 'call')
+      .slice(0, 12)
+      .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)}: ${i.preview}`)
+      .join('\n') || '(none)';
+
+  const manualBlock =
+    args.interactions
+      .filter((i) => i.channel === 'manual' && i.preview)
+      .slice(0, 15)
+      .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)}: ${i.preview}`)
+      .join('\n') || '(none)';
+
   return `CASE FILE — facts and notes:
 ${factsBlock}
 
@@ -239,6 +253,12 @@ ${whatsappBlock}
 
 EMAIL (newest first):
 ${emailBlock}
+
+CALLS:
+${callBlock}
+
+MANUAL NOTES:
+${manualBlock}
 
 CRM fields:
 ${JSON.stringify(args.caseBlock)}
@@ -321,34 +341,40 @@ serve(async (req) => {
     const lead = leadRow as Record<string, unknown>;
     const interactions: Interaction[] = [];
     const cacheId = cacheKeyFor(ref);
+    const linkedLegacyId = !ref.isLegacy ? Number.parseInt(String(lead.legacy_lead_id ?? ''), 10) : NaN;
+    const emailLegacyId = ref.isLegacy ? ref.legacyId : Number.isFinite(linkedLegacyId) ? linkedLegacyId : null;
+    const waLegacyId = ref.isLegacy ? ref.legacyId : Number.isFinite(linkedLegacyId) ? linkedLegacyId : null;
+    const leadEmail = String(pick(lead, ['email']) || '')
+      .trim()
+      .toLowerCase();
 
-    const waQuery = ref.isLegacy
+    const waNewQuery = ref.uuid
       ? supabase
           .from('whatsapp_messages')
-          .select('direction, message, sent_at, sender_name')
-          .eq('legacy_id', ref.legacyId)
-          .order('sent_at', { ascending: false })
-          .limit(20)
-      : supabase
-          .from('whatsapp_messages')
-          .select('direction, message, sent_at, sender_name')
+          .select('id, direction, message, sent_at, sender_name')
           .eq('lead_id', ref.uuid)
           .order('sent_at', { ascending: false })
-          .limit(20);
+          .limit(24)
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null });
 
-    const emailQuery = ref.isLegacy
-      ? supabase
-          .from('emails')
-          .select('direction, subject, body_preview, body_html, sent_at')
-          .eq('legacy_id', ref.legacyId)
-          .order('sent_at', { ascending: false })
-          .limit(10)
-      : supabase
-          .from('emails')
-          .select('direction, subject, body_preview, body_html, sent_at')
-          .eq('client_id', ref.uuid)
-          .order('sent_at', { ascending: false })
-          .limit(10);
+    const waLegacyQuery =
+      waLegacyId != null
+        ? supabase
+            .from('whatsapp_messages')
+            .select('id, direction, message, sent_at, sender_name')
+            .eq('legacy_id', waLegacyId)
+            .order('sent_at', { ascending: false })
+            .limit(24)
+        : Promise.resolve({ data: [] as Record<string, unknown>[], error: null });
+
+    const emailQuery = supabase.rpc('email_lead_timeline', {
+      p_client_id: ref.uuid,
+      p_legacy_id: emailLegacyId,
+      p_contact_ids: null,
+      p_sender_emails: leadEmail.includes('@') ? [leadEmail] : null,
+      p_limit: 12,
+      p_lookback_days: 365,
+    });
 
     const callQuery = ref.isLegacy
       ? supabase
@@ -378,7 +404,6 @@ serve(async (req) => {
           .order('meeting_date', { ascending: false })
           .limit(10);
 
-    const linkedLegacyId = !ref.isLegacy ? Number.parseInt(String(lead.legacy_lead_id ?? ''), 10) : NaN;
     const linkedMeetingQuery =
       Number.isFinite(linkedLegacyId)
         ? supabase
@@ -475,7 +500,8 @@ serve(async (req) => {
         : Promise.resolve({ data: null, error: null });
 
     const [
-      waRes,
+      waNewRes,
+      waLegacyRes,
       emailRes,
       callRes,
       meetingRes,
@@ -489,7 +515,8 @@ serve(async (req) => {
       poaRes,
       legacyProformaRes,
     ] = await Promise.all([
-      waQuery,
+      waNewQuery,
+      waLegacyQuery,
       emailQuery,
       callQuery,
       meetingQuery,
@@ -504,19 +531,68 @@ serve(async (req) => {
       legacyProformaQuery,
     ]);
 
-    for (const row of waRes.data || []) {
+    const waByKey = new Map<string, Record<string, unknown>>();
+    for (const row of [...(waNewRes.data || []), ...(waLegacyRes.data || [])] as Record<string, unknown>[]) {
+      const key = String(row.id ?? `${row.sent_at}:${row.message}`);
+      if (!waByKey.has(key)) waByKey.set(key, row);
+    }
+    for (const row of waByKey.values()) {
       interactions.push({
         channel: 'whatsapp',
         direction: normalizeDirection(row.direction),
-        at: row.sent_at || null,
-        preview: clip(row.message, 500),
+        at: String(row.sent_at || '') || null,
+        preview: clip(row.message, 800),
       });
     }
-    for (const row of emailRes.data || []) {
+
+    let emailRows: Record<string, unknown>[] = [];
+    let rpcData: unknown = emailRes.data;
+    if (typeof rpcData === 'string') {
+      try {
+        rpcData = JSON.parse(rpcData);
+      } catch {
+        rpcData = null;
+      }
+    }
+    if (Array.isArray(rpcData)) emailRows = rpcData as Record<string, unknown>[];
+    else if (rpcData && typeof rpcData === 'object' && Array.isArray((rpcData as { emails?: unknown }).emails)) {
+      emailRows = (rpcData as { emails: Record<string, unknown>[] }).emails;
+    }
+
+    if (emailRows.length === 0) {
+      const fallback = ref.isLegacy
+        ? await supabase
+            .from('emails')
+            .select('id, direction, subject, body_preview, body_html, sent_at')
+            .eq('legacy_id', ref.legacyId)
+            .order('sent_at', { ascending: false })
+            .limit(12)
+        : await supabase
+            .from('emails')
+            .select('id, direction, subject, body_preview, body_html, sent_at')
+            .eq('client_id', ref.uuid)
+            .order('sent_at', { ascending: false })
+            .limit(12);
+      emailRows = (fallback.data || []) as Record<string, unknown>[];
+    }
+
+    const emailIds = emailRows.map((row) => row.id).filter((id) => id != null && id !== '');
+    if (emailIds.length) {
+      const { data: bodies } = await supabase.from('emails').select('id, body_html').in('id', emailIds);
+      const htmlById = new Map(
+        (bodies || []).map((row: { id?: unknown; body_html?: unknown }) => [String(row.id), row.body_html]),
+      );
+      emailRows = emailRows.map((row) => ({
+        ...row,
+        body_html: row.body_html || htmlById.get(String(row.id)) || '',
+      }));
+    }
+
+    for (const row of emailRows) {
       interactions.push({
         channel: 'email',
         direction: normalizeDirection(row.direction),
-        at: row.sent_at || null,
+        at: String(row.sent_at || '') || null,
         subject: clip(row.subject, 160),
         preview: emailBody(row),
       });
@@ -537,7 +613,7 @@ serve(async (req) => {
         channel: 'manual',
         direction: normalizeDirection(row.direction),
         at: row.raw_date || row.cdate || null,
-        preview: clip(row.content || row.description || row.observation || row.kind, 500),
+        preview: clip(row.content || row.description || row.observation || row.kind, 900),
       });
     }
 
@@ -547,7 +623,7 @@ serve(async (req) => {
           channel: 'manual',
           direction: normalizeDirection(item.direction),
           at: String(item.raw_date || item.date || '') || null,
-          preview: clip(item.content || item.observation || item.kind, 500),
+          preview: clip(item.content || item.observation || item.description || item.kind, 900),
         });
       }
     }

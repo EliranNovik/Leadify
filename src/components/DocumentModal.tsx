@@ -36,6 +36,7 @@ import { toast } from 'react-hot-toast';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerModal';
 import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
+import { expandLeadCaseDocumentLeadNumbers } from '../lib/leadCaseDocumentKeys';
 
 type CaseDocumentAiSummaryStatus = 'pending' | 'ready' | 'failed' | 'skipped';
 
@@ -66,6 +67,57 @@ interface Document {
   aiSummaryError?: string | null;
 }
 
+const VALID_AI_SUMMARY_STATUS: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
+
+function parseAiSummaryStatus(raw: string | null | undefined): CaseDocumentAiSummaryStatus | null {
+  const aiStRaw = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  const aiSt = (aiStRaw as CaseDocumentAiSummaryStatus) || null;
+  return aiSt && VALID_AI_SUMMARY_STATUS.includes(aiSt) ? aiSt : null;
+}
+
+function mimeFromFileName(fileName: string, mimeType: string | null | undefined): string {
+  return (
+    mimeType?.trim() ||
+    (fileName.match(/\.([^.]+)$/)?.[1]?.toLowerCase() === 'pdf'
+      ? 'application/pdf'
+      : 'application/octet-stream')
+  );
+}
+
+type LeadCaseDocRow = {
+  id: string;
+  storage_path: string;
+  file_name: string;
+  file_size: number | null;
+  mime_type: string | null;
+  classification_id?: string | null;
+  uploaded_by: string | null;
+  created_at: string;
+  ai_summary: string | null;
+  ai_summary_status: string | null;
+  ai_summary_error: string | null;
+};
+
+function mergeCachedCaseDocMeta(
+  cached: Document,
+  r: LeadCaseDocRow,
+  toCanonical: (cid: string | null | undefined) => string | null,
+  idToLabel: Map<string, string>,
+): Document {
+  const cid = toCanonical(r.classification_id);
+  return {
+    ...cached,
+    name: r.file_name,
+    size: typeof r.file_size === 'number' && Number.isFinite(r.file_size) ? Number(r.file_size) : cached.size,
+    lastModified: r.created_at || cached.lastModified,
+    caseClassificationId: cid ?? cached.caseClassificationId ?? null,
+    caseClassificationLabel: cid ? idToLabel.get(cid) ?? cached.caseClassificationLabel ?? null : cached.caseClassificationLabel ?? null,
+    aiSummary: r.ai_summary ?? null,
+    aiSummaryStatus: parseAiSummaryStatus(r.ai_summary_status),
+    aiSummaryError: r.ai_summary_error ?? null,
+  };
+}
+
 interface CaseClassificationRow {
   id: string;
   slug: string;
@@ -83,6 +135,16 @@ interface DocumentModalProps {
   onDocumentCountChange?: (count: number) => void;
   /** Logical folder key stored in `lead_case_documents.onedrive_subfolder` (e.g. ClientHeader bucket); omit for lead-root expert documents. */
   onedriveSubFolder?: string | null;
+  /**
+   * Extra `lead_case_documents.lead_number` values to include (legacy ids, L/C prefixes, `/1` master suffix).
+   * Combined with `leadNumber` and expanded internally.
+   */
+  leadNumberLookupKeys?: string[];
+  /**
+   * When `onedriveSubFolder` is set, also include rows with `onedrive_subfolder` null
+   * (legacy / expert-root uploads that the master-lead count includes).
+   */
+  includeRootFolderDocuments?: boolean;
   modalTitle?: string;
   /** Shown under the lead line (optional UI hint). */
   folderPathHint?: string | null;
@@ -96,6 +158,8 @@ interface DocumentModalProps {
   staffMeetingId?: number | null;
   /** Header subtitle when `staffMeetingId` is set (no lead line). */
   staffMeetingTitle?: string | null;
+  /** Optional content above the title (e.g. lead switcher tabs). */
+  headerExtra?: React.ReactNode;
 }
 
 function copyTextToClipboardFallback(text: string): boolean {
@@ -589,6 +653,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   clientId = null,
   onDocumentCountChange,
   onedriveSubFolder = null,
+  leadNumberLookupKeys = [],
+  includeRootFolderDocuments = false,
   modalTitle,
   folderPathHint = null,
   requireCaseDocumentClassification = false,
@@ -596,9 +662,17 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   restrictToClassificationSlug = null,
   staffMeetingId = null,
   staffMeetingTitle = null,
+  headerExtra = null,
 }) => {
   const fileInputId = useId();
   const isStaffMeetingDocs = staffMeetingId != null && Number.isFinite(staffMeetingId);
+  const caseLeadNumberKeys = useMemo(
+    () => expandLeadCaseDocumentLeadNumbers(leadNumber, ...leadNumberLookupKeys),
+    // leadNumberLookupKeys is compared by joined value so parent array identity doesn't retrigger fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [leadNumber, leadNumberLookupKeys.join('|')],
+  );
+  const caseLeadNumberKeysKey = caseLeadNumberKeys.slice().sort().join('|');
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -652,7 +726,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             }
           : prev,
       );
-      setDocuments((prev) =>
+      patchCurrentDocuments((prev) =>
         prev.map((d) =>
           d.id === summaryModalDoc.id
             ? {
@@ -694,13 +768,62 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const lastClassificationIdsKeyRef = useRef<string>('');
   /** Set when the modal opens; consumed once after classifications resolve to pick a tab (`initialClassificationSlug`). */
   const initialClassificationSlugToApplyRef = useRef<string | null>(null);
+  const documentsCacheRef = useRef<Map<string, Document[]>>(new Map());
+  const fetchGenRef = useRef(0);
+
+  const documentCacheKey = () => {
+    if (isStaffMeetingDocs && staffMeetingId != null) return `staff:${staffMeetingId}`;
+    const num = String(leadNumber || '').trim();
+    if (!num) return '';
+    return `lead:${num}|keys:${caseLeadNumberKeysKey}|folder:${onedriveSubFolder?.trim() || ''}|root:${includeRootFolderDocuments ? '1' : '0'}|client:${String(clientId ?? '')}`;
+  };
+
+  const documentCacheKeyRef = useRef('');
+  const currentCacheKey = documentCacheKey();
+  documentCacheKeyRef.current = currentCacheKey;
+  /** Cache key whose `documents` currently match the list (avoids writing the previous lead's count onto a new tab). */
+  const loadedCacheKeyRef = useRef('');
+  const [displayedCacheKey, setDisplayedCacheKey] = useState('');
+  if (currentCacheKey !== displayedCacheKey) {
+    setDisplayedCacheKey(currentCacheKey);
+    const hit = currentCacheKey ? documentsCacheRef.current.get(currentCacheKey) : undefined;
+    if (hit) {
+      setDocuments(hit);
+      setLoading(false);
+      loadedCacheKeyRef.current = currentCacheKey;
+    } else if (currentCacheKey) {
+      setDocuments([]);
+      setLoading(true);
+      loadedCacheKeyRef.current = '';
+    }
+  }
+
+  const patchCurrentDocuments = (updater: (prev: Document[]) => Document[]) => {
+    setDocuments((prev) => {
+      const next = updater(prev);
+      const key = documentCacheKeyRef.current;
+      if (key) {
+        documentsCacheRef.current.set(key, next);
+        loadedCacheKeyRef.current = key;
+      }
+      return next;
+    });
+  };
+
+  const commitCachedDocuments = (key: string, gen: number, docs: Document[]) => {
+    if (key) {
+      documentsCacheRef.current.set(key, docs);
+      if (gen === fetchGenRef.current) loadedCacheKeyRef.current = key;
+    }
+    if (gen === fetchGenRef.current) setDocuments(docs);
+  };
 
   // Fetch documents when modal opens
   useEffect(() => {
     if (isOpen && (isStaffMeetingDocs || leadNumber)) {
       fetchDocuments();
     }
-  }, [isOpen, leadNumber, onedriveSubFolder, staffMeetingId, isStaffMeetingDocs]);
+  }, [isOpen, leadNumber, caseLeadNumberKeysKey, onedriveSubFolder, includeRootFolderDocuments, staffMeetingId, isStaffMeetingDocs]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -821,7 +944,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         if (error) throw error;
       }
 
-      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, name: trimmed } : d)));
+      patchCurrentDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, name: trimmed } : d)));
       setSummaryModalDoc((prev) => (prev?.id === doc.id ? { ...prev, name: trimmed } : prev));
     },
     [documents, isStaffMeetingDocs],
@@ -874,7 +997,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
       if (updates.size === 0) return;
 
-      setDocuments((prev) =>
+      patchCurrentDocuments((prev) =>
         prev.map((d) => {
           const u = updates.get(d.id);
           return u ? { ...d, ...u } : d;
@@ -946,10 +1069,15 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   useEffect(() => {
     // Only update count when modal is open and documents have been loaded
     // This prevents resetting the count to 0 when modal is closed or during initial state
-    if (onDocumentCountChange && isOpen && !loading) {
+    if (
+      onDocumentCountChange &&
+      isOpen &&
+      !loading &&
+      loadedCacheKeyRef.current === documentCacheKeyRef.current
+    ) {
       onDocumentCountChange(documents.length);
     }
-  }, [documents, onDocumentCountChange, loading, isOpen]);
+  }, [documents, onDocumentCountChange, loading, isOpen, leadNumber, onedriveSubFolder, staffMeetingId]);
 
   const documentsInActiveCategory = useMemo(() => {
     if (!requireCaseDocumentClassification || activeBrowseCategoryId === null) {
@@ -990,8 +1118,23 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   }, [requireCaseDocumentClassification, activeBrowseCategoryId]);
 
   const fetchDocuments = async () => {
-    setLoading(true);
+    const key = documentCacheKey();
+    const gen = ++fetchGenRef.current;
+    const cached = key ? documentsCacheRef.current.get(key) : undefined;
+    if (cached) {
+      loadedCacheKeyRef.current = key;
+      setDocuments(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      setDocuments([]);
+    }
     setError(null);
+
+    const fail = (message: string) => {
+      if (gen === fetchGenRef.current && !cached) setError(message);
+    };
+
     try {
       if (isStaffMeetingDocs && staffMeetingId != null) {
         const { data: rows, error: qErr } = await supabase
@@ -1005,28 +1148,20 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
         if (qErr) {
           console.error('staff_meeting_documents fetch:', qErr);
-          setError(`Failed to fetch documents: ${qErr.message}`);
+          fail(`Failed to fetch documents: ${qErr.message}`);
           return;
         }
 
-        const list = (rows ?? []) as {
-          id: string;
-          storage_path: string;
-          file_name: string;
-          file_size: number | null;
-          mime_type: string | null;
-          uploaded_by: string | null;
-          created_at: string;
-          ai_summary: string | null;
-          ai_summary_status: string | null;
-          ai_summary_error: string | null;
-        }[];
+        const list = (rows ?? []) as LeadCaseDocRow[];
+        const cachedById = new Map((cached || []).map((d) => [d.id, d]));
+        const serverIds = new Set(list.map((r) => r.id));
+        const newRows = cached ? list.filter((r) => !cachedById.has(r.id)) : list;
 
-        const uploaderKeys = [...new Set(list.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
+        const uploaderKeys = [...new Set(newRows.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
         const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
 
-        const mappedDocuments: Document[] = await Promise.all(
-          list.map(async (r) => {
+        const newlyMapped: Document[] = await Promise.all(
+          newRows.map(async (r) => {
             const { data: signed, error: signErr } = await supabase.storage
               .from(CASE_DOCUMENTS_STORAGE_BUCKET)
               .createSignedUrl(r.storage_path, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
@@ -1038,15 +1173,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             const url = signed?.signedUrl?.trim() || '';
             const rawUploader = r.uploaded_by?.trim() || null;
             const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
-            const mime =
-              r.mime_type?.trim() ||
-              (r.file_name.match(/\.([^.]+)$/)?.[1]?.toLowerCase() === 'pdf'
-                ? 'application/pdf'
-                : 'application/octet-stream');
 
-            const validAi: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
-            const aiStRaw = typeof r.ai_summary_status === 'string' ? r.ai_summary_status.trim().toLowerCase() : '';
-            const aiSt = (aiStRaw as CaseDocumentAiSummaryStatus) || null;
             return {
               id: r.id,
               caseDocDbId: r.id,
@@ -1054,61 +1181,100 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               webUrl: url,
               downloadUrl: url,
               storagePath: r.storage_path,
-              fileType: mime,
+              fileType: mimeFromFileName(r.file_name, r.mime_type),
               size: r.file_size ?? 0,
               lastModified: r.created_at,
               uploadedByName: resolved?.name ?? rawUploader ?? null,
               uploadedByPhotoUrl: resolved?.photoUrl ?? null,
               aiSummary: r.ai_summary,
-              aiSummaryStatus: validAi.includes(aiSt as CaseDocumentAiSummaryStatus) ? aiSt : null,
+              aiSummaryStatus: parseAiSummaryStatus(r.ai_summary_status),
               aiSummaryError: r.ai_summary_error,
               source: 'case' as const,
             };
           }),
         );
 
-        setDocuments(mappedDocuments);
+        const identityCanonical = (cid: string | null | undefined) => cid ?? null;
+        const emptyLabels = new Map<string, string>();
+        const kept = (cached || [])
+          .filter((d) => serverIds.has(d.id))
+          .map((d) => {
+            const row = list.find((r) => r.id === d.id);
+            return row ? mergeCachedCaseDocMeta(d, row, identityCanonical, emptyLabels) : d;
+          });
+        const mappedDocuments = [...newlyMapped, ...kept].sort(
+          (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
+        );
+        commitCachedDocuments(key, gen, mappedDocuments);
         return;
       }
 
       const subKey = onedriveSubFolder?.trim() ? onedriveSubFolder.trim() : null;
+      const numberKeys =
+        caseLeadNumberKeys.length > 0 ? caseLeadNumberKeys : expandLeadCaseDocumentLeadNumbers(leadNumber);
+      if (numberKeys.length === 0) {
+        commitCachedDocuments(key, gen, cached || []);
+        return;
+      }
 
       let query = supabase
         .from('lead_case_documents')
         .select(
           'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
         )
-        .eq('lead_number', leadNumber)
+        .in('lead_number', numberKeys)
         .not('storage_path', 'is', null);
 
-      if (subKey) query = query.eq('onedrive_subfolder', subKey);
-      else query = query.is('onedrive_subfolder', null);
+      if (subKey) {
+        query = query.eq('onedrive_subfolder', subKey);
+      } else {
+        query = query.is('onedrive_subfolder', null);
+      }
 
       const { data: rows, error: qErr } = await query.order('created_at', { ascending: false });
 
       if (qErr) {
         console.error('lead_case_documents fetch:', qErr);
-        setError(`Failed to fetch documents: ${qErr.message}`);
+        fail(`Failed to fetch documents: ${qErr.message}`);
         return;
       }
 
-      let list = (rows ?? []) as {
-        id: string;
-        storage_path: string;
-        file_name: string;
-        file_size: number | null;
-        mime_type: string | null;
-        classification_id: string | null;
-        uploaded_by: string | null;
-        created_at: string;
-        ai_summary: string | null;
-        ai_summary_status: string | null;
-        ai_summary_error: string | null;
-      }[];
+      let list = (rows ?? []) as LeadCaseDocRow[];
+
+      const mergeExtraRows = (extra: LeadCaseDocRow[] | null | undefined) => {
+        const existingIds = new Set(list.map((r) => r.id));
+        const existingPaths = new Set(list.map((r) => r.storage_path.trim()).filter(Boolean));
+        for (const r of extra || []) {
+          const path = r.storage_path?.trim() || '';
+          if (existingIds.has(r.id)) continue;
+          if (path && existingPaths.has(path)) continue;
+          list.push(r);
+          existingIds.add(r.id);
+          if (path) existingPaths.add(path);
+        }
+      };
+
+      // Master-lead counts include root-folder (null subfolder) rows; merge them so the drawer matches.
+      if (subKey && includeRootFolderDocuments) {
+        const { data: rootRows, error: rootErr } = await supabase
+          .from('lead_case_documents')
+          .select(
+            'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
+          )
+          .in('lead_number', numberKeys)
+          .is('onedrive_subfolder', null)
+          .not('storage_path', 'is', null)
+          .order('created_at', { ascending: false });
+        if (rootErr) {
+          console.warn('root-folder case docs fetch:', rootErr.message);
+        } else {
+          mergeExtraRows(rootRows as LeadCaseDocRow[]);
+        }
+      }
 
       // Client portal Sequence of Events uploads use onedrive_subfolder = null. When browsing a
       // named folder (e.g. ClientHeader), merge those SOE rows into the Sequence of Events tab.
-      if (subKey && requireCaseDocumentClassification) {
+      if (subKey && requireCaseDocumentClassification && !includeRootFolderDocuments) {
         const soeIds = new Set<string>();
         for (const c of classificationsRef.current) {
           if (!isSequenceOfEventsClassification(c)) continue;
@@ -1134,7 +1300,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             .select(
               'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
             )
-            .eq('lead_number', leadNumber)
+            .in('lead_number', numberKeys)
             .is('onedrive_subfolder', null)
             .in('classification_id', [...soeIds])
             .not('storage_path', 'is', null)
@@ -1143,18 +1309,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           if (portalErr) {
             console.warn('portal sequence-of-events docs fetch:', portalErr.message);
           } else {
-            const existingIds = new Set(list.map((r) => r.id));
-            const existingPaths = new Set(
-              list.map((r) => r.storage_path.trim()).filter(Boolean),
-            );
-            for (const r of (portalRows ?? []) as typeof list) {
-              const path = r.storage_path?.trim() || '';
-              if (existingIds.has(r.id)) continue;
-              if (path && existingPaths.has(path)) continue;
-              list.push(r);
-              existingIds.add(r.id);
-              if (path) existingPaths.add(path);
-            }
+            mergeExtraRows(portalRows as LeadCaseDocRow[]);
           }
         }
       }
@@ -1176,11 +1331,19 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         return classificationCanonicalByAliasRef.current.get(cid) ?? cid;
       };
 
-      const uploaderKeys = [...new Set(list.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
+      const cachedCase = (cached || []).filter((d) => d.source !== 'subeffort');
+      const cachedByCaseId = new Map(
+        cachedCase.map((d) => [d.caseDocDbId || d.id, d] as const),
+      );
+      const serverIds = new Set(list.map((r) => r.id));
+      const newRows = cached ? list.filter((r) => !cachedByCaseId.has(r.id)) : list;
+      const listById = new Map(list.map((r) => [r.id, r]));
+
+      const uploaderKeys = [...new Set(newRows.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
       const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
 
-      const mappedDocuments: Document[] = await Promise.all(
-        list.map(async (r) => {
+      const newlyMapped: Document[] = await Promise.all(
+        newRows.map(async (r) => {
           const { data: signed, error: signErr } = await supabase.storage
             .from(CASE_DOCUMENTS_STORAGE_BUCKET)
             .createSignedUrl(r.storage_path, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
@@ -1193,15 +1356,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           const cid = toCanonicalClassificationId(r.classification_id);
           const rawUploader = r.uploaded_by?.trim() || null;
           const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
-          const mime =
-            r.mime_type?.trim() ||
-            (r.file_name.match(/\.([^.]+)$/)?.[1]?.toLowerCase() === 'pdf'
-              ? 'application/pdf'
-              : 'application/octet-stream');
-
-          const validAi: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
-          const aiStRaw = typeof r.ai_summary_status === 'string' ? r.ai_summary_status.trim().toLowerCase() : '';
-          const aiSt = (aiStRaw as CaseDocumentAiSummaryStatus) || null;
           return {
             id: r.id,
             name: r.file_name,
@@ -1209,8 +1363,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             lastModified: r.created_at || new Date().toISOString(),
             downloadUrl: url,
             webUrl: url,
-            fileType: mime,
-            source: 'case',
+            fileType: mimeFromFileName(r.file_name, r.mime_type),
+            source: 'case' as const,
             storagePath: r.storage_path,
             caseDocDbId: r.id,
             subEffortRowId: null,
@@ -1219,14 +1373,25 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             uploadedByName: resolved?.name ?? rawUploader ?? null,
             uploadedByPhotoUrl: resolved?.photoUrl ?? null,
             aiSummary: r.ai_summary ?? null,
-            aiSummaryStatus: aiSt && validAi.includes(aiSt) ? aiSt : null,
+            aiSummaryStatus: parseAiSummaryStatus(r.ai_summary_status),
             aiSummaryError: r.ai_summary_error ?? null,
           };
         }),
       );
 
+      const keptCase = cachedCase
+        .filter((d) => serverIds.has(d.caseDocDbId || d.id))
+        .map((d) => {
+          const row = listById.get(d.caseDocDbId || d.id);
+          return row ? mergeCachedCaseDocMeta(d, row, toCanonicalClassificationId, idToLabel) : d;
+        });
+      const mappedDocuments = [...newlyMapped, ...keptCase];
+
       // Also include sub-efforts uploaded documents under the mapped category tab (when enabled + configured).
       const subEffortDocuments: Document[] = [];
+      const cachedSubById = new Map(
+        (cached || []).filter((d) => d.source === 'subeffort').map((d) => [d.id, d] as const),
+      );
       if (requireCaseDocumentClassification) {
         const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
           clientId,
@@ -1328,6 +1493,20 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                   (path ? path.split('/').pop() : url ? url.split('/').pop() : '') ||
                   'Document';
                 const mime = inferMime(name, (it as any)?.mimeType as string | null | undefined);
+                const cacheId = `subeffort:${String(r?.id ?? '')}:${path || (typeof url === 'string' ? url.trim() : '')}`;
+                const cachedSub = cachedSubById.get(cacheId);
+                if (cachedSub?.downloadUrl) {
+                  subEffortDocuments.push({
+                    ...cachedSub,
+                    name,
+                    lastModified: createdAt,
+                    caseClassificationId: categoryId,
+                    caseClassificationLabel: idToLabel.get(categoryId) ?? cachedSub.caseClassificationLabel ?? null,
+                    uploadedByName: who ? String(who) : cachedSub.uploadedByName,
+                    uploadedByPhotoUrl: photo ? String(photo) : cachedSub.uploadedByPhotoUrl,
+                  });
+                  continue;
+                }
 
                 let signedUrl = '';
                 if (path && typeof path === 'string') {
@@ -1341,7 +1520,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 if (!signedUrl) continue;
 
                 subEffortDocuments.push({
-                  id: `subeffort:${String(r?.id ?? '')}:${path || signedUrl}`,
+                  id: cacheId || `subeffort:${String(r?.id ?? '')}:${path || signedUrl}`,
                   name,
                   size: 0,
                   lastModified: createdAt,
@@ -1375,12 +1554,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         return !p || !casePaths.has(p);
       });
 
-      setDocuments([...uniqueSubEffortDocuments, ...mappedDocuments]);
+      commitCachedDocuments(key, gen, [...uniqueSubEffortDocuments, ...mappedDocuments]);
     } catch (err) {
       console.error('Error fetching documents:', err);
-      setError(`Failed to fetch documents: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      fail(`Failed to fetch documents: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
-      setLoading(false);
+      if (gen === fetchGenRef.current) setLoading(false);
     }
   };
 
@@ -1525,7 +1704,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         if (rmErr) throw rmErr;
         const { error: delErr } = await supabase.from('staff_meeting_documents').delete().eq('id', dbId);
         if (delErr) throw delErr;
-        setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+        patchCurrentDocuments((prev) => prev.filter((d) => d.id !== doc.id));
         toast.success('Deleted');
         return;
       }
@@ -1538,16 +1717,21 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
       if (rmErr) throw rmErr;
 
-      const { error: delCaseErr } = await supabase
-        .from('lead_case_documents')
-        .delete()
-        .eq('lead_number', leadNumber)
-        .eq('storage_path', path);
+      const { error: delCaseErr } = doc.caseDocDbId
+        ? await supabase.from('lead_case_documents').delete().eq('id', doc.caseDocDbId)
+        : await supabase
+            .from('lead_case_documents')
+            .delete()
+            .in(
+              'lead_number',
+              caseLeadNumberKeys.length > 0 ? caseLeadNumberKeys : expandLeadCaseDocumentLeadNumbers(leadNumber),
+            )
+            .eq('storage_path', path);
       if (delCaseErr) throw delCaseErr;
 
       await stripPathFromLeadSubEfforts(path);
 
-      setDocuments((prev) =>
+      patchCurrentDocuments((prev) =>
         prev.filter((d) => {
           if (d.id === doc.id) return false;
           if (d.storagePath?.trim() === path) return false;
@@ -1569,7 +1753,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     setSummaryModalDoc((d) =>
       d && d.id === id ? { ...d, aiSummaryStatus: 'pending', aiSummaryError: null } : d,
     );
-    setDocuments((prev) =>
+    patchCurrentDocuments((prev) =>
       prev.map((x) => (x.id === id ? { ...x, aiSummaryStatus: 'pending', aiSummaryError: null } : x)),
     );
     await supabase
@@ -1859,6 +2043,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               disabled={uploadDisabled}
             />
           ) : null}
+
+          {headerExtra ? <div className="mb-3 min-w-0 w-full">{headerExtra}</div> : null}
 
           <div className="flex min-w-0 items-start justify-between gap-2 md:gap-6">
             <div className="min-w-0 flex-1 md:pr-2">
