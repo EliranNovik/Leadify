@@ -39,6 +39,8 @@ import { supabase } from '../../lib/supabase';
 import { fetchAiMessageSuggestion } from '../../lib/aiMessageSuggestion';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { toast } from 'react-hot-toast';
+import ContractAiReviewPanel, { type ContractAiReviewMessage } from '../ContractAiReviewPanel';
+import { resolveLeadIdForComposeAi, runEmailComposeAiChat } from '../../lib/emailComposeAiChat';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from './AISummaryPanel';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
@@ -1952,6 +1954,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
   const [aiDraftActive, setAiDraftActive] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [aiChatMessages, setAiChatMessages] = useState<ContractAiReviewMessage[]>([]);
+  const [aiChatRemarks, setAiChatRemarks] = useState('');
+  const [aiChatApplying, setAiChatApplying] = useState(false);
+  const [aiChatThinking, setAiChatThinking] = useState<string | null>(null);
   const formattedLastSync = useMemo(() => {
     if (!mailboxStatus.lastSyncedAt) return null;
     try {
@@ -6312,6 +6319,61 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     setAiSuggestions([]);
   };
 
+  useEffect(() => {
+    if (showCompose) return;
+    setAiChatOpen(false);
+    setAiChatMessages([]);
+    setAiChatRemarks('');
+    setAiChatThinking(null);
+  }, [showCompose]);
+
+  const handleApplyEmailAiChat = async () => {
+    const remarks = aiChatRemarks.trim();
+    if (!remarks) return;
+    const lead = resolveLeadIdForComposeAi(client);
+    setAiChatApplying(true);
+    setAiChatThinking('Reading the case and your request…');
+    setAiChatMessages((prev) => [...prev, { role: 'user', content: remarks }]);
+    setAiChatRemarks('');
+    try {
+      const result = await runEmailComposeAiChat({
+        remarks,
+        subject: composeSubject,
+        body: composeBody,
+        clientName: client?.name,
+        leadNumber: client?.lead_number,
+        language: client?.language,
+        category: client?.category || client?.topic,
+        leadId: lead?.leadId,
+        isLegacy: lead?.isLegacy,
+        chatHistory: aiChatMessages,
+        onThinking: setAiChatThinking,
+      });
+      if (result.intent === 'action') {
+        if (result.subject) setComposeSubject(result.subject);
+        if (typeof result.body === 'string') {
+          setComposeBody(result.body);
+          setComposeBodyIsRTL(containsHebrew(result.body));
+          setAiDraftActive(true);
+        }
+      }
+      setAiChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          kind: result.intent === 'question' ? 'answer' : 'change',
+          content: result.summary,
+        },
+      ]);
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : 'AI request failed');
+    } finally {
+      setAiChatApplying(false);
+      setAiChatThinking(null);
+    }
+  };
+
   const handleSendEmail = async () => {
     if (!userId) {
       toast.error('Please sign in to send emails.');
@@ -9177,7 +9239,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         >
             <>
               {showCompose && createPortal(
-                <div className="fixed inset-0 z-[10002] flex overflow-hidden">
+                <div className={`fixed inset-0 z-[10002] flex overflow-hidden ${aiChatOpen ? 'md:pr-[28rem]' : ''}`}>
                   <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
                   <div className="relative z-[10003] flex h-full w-full overflow-hidden bg-white shadow-2xl">
                     {/* Left: email list sidepanel — match main email modal */}
@@ -9386,7 +9448,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     </aside>
 
                     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-slate-100">
-                    <div className="absolute right-3 top-3 z-10 md:right-4">
+                    <div className="absolute right-3 top-3 z-10 flex items-center gap-2 md:right-4">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-2 bg-transparent text-black hover:opacity-70 disabled:opacity-50"
+                        onClick={() => setAiChatOpen(true)}
+                        disabled={aiChatApplying}
+                        title="AI email assistant"
+                      >
+                        <SparklesIcon className="h-5 w-5" />
+                        <span className="text-sm font-semibold">AI</span>
+                      </button>
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm btn-circle"
@@ -10630,6 +10702,27 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         open={showEmailSentModal}
         onClose={() => setShowEmailSentModal(false)}
         recipient={client?.email}
+      />
+      <ContractAiReviewPanel
+        isOpen={aiChatOpen}
+        onClose={() => setAiChatOpen(false)}
+        initialSummary={null}
+        messages={aiChatMessages}
+        remarks={aiChatRemarks}
+        onRemarksChange={setAiChatRemarks}
+        onApplyRemarks={() => void handleApplyEmailAiChat()}
+        isApplying={aiChatApplying}
+        thinkingText={aiChatThinking}
+        zIndex={10050}
+        title={
+          <span className="flex items-center gap-2.5">
+            <ChatBubbleLeftRightIcon className="h-7 w-7 shrink-0 text-violet-600" />
+            <span>AI email assistant</span>
+          </span>
+        }
+        subtitle=""
+        placeholder="e.g. Make this shorter, or write a follow-up asking if they reviewed the offer…"
+        conversationOnly
       />
     </div>
   );

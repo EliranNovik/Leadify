@@ -1,11 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, ChevronLeftIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon } from '@heroicons/react/24/solid';
-import { ArrowDownTrayIcon, CalendarDaysIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, MoonIcon, PhotoIcon, PlusIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, ChevronLeftIcon } from '@heroicons/react/24/solid';
+import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, EnvelopeIcon, MoonIcon, PhotoIcon, PlusIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { FaRobot } from 'react-icons/fa';
 import { executeRmqAiTool, RMQ_AI_SYSTEM_PROMPT, RMQ_AI_TOOLS } from '../lib/rmqAiChatTools';
+import {
+  describeCurrentLeadForPrompt,
+  setRmqAiCurrentLead,
+  takeRmqAiDraftMeta,
+  type RmqAiCurrentLead,
+  type RmqAiDraftMeta,
+} from '../lib/rmqAiChatContext';
+import { stashRmqAiComposeDraft } from '../lib/rmqAiComposeDraft';
 import { ChatLeadNumberText, parseChatLeadNumber } from './ChatLeadNumberText';
 import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
 import {
@@ -33,6 +41,9 @@ interface AIChatWindowProps {
   userName?: string;
   isFullPage?: boolean;
   onToggleFullPage?: () => void;
+  currentLead?: RmqAiCurrentLead | null;
+  onOpenEmailCompose?: () => void;
+  onOpenWhatsAppCompose?: () => void;
 }
 
 interface Message {
@@ -41,6 +52,7 @@ interface Message {
   tool_calls?: any[];
   tool_call_id?: string;
   attachments?: RmqAiChatFile[];
+  draftAction?: RmqAiDraftMeta;
 }
 
 interface ChatHistory {
@@ -55,18 +67,50 @@ interface ChatHistory {
 
 const READY_ASKS = [
   {
+    label: 'My day',
+    hint: 'Meetings, follow-ups, waiting on you',
+    prompt:
+      'Show my sales day. Call list_my_sales_day. List my meetings today/tomorrow, overdue and today follow-ups, and my leads in stages 21, 40, and 50. Number each item with a lead number and the next action.',
+    Icon: CalendarDaysIcon,
+    badge: 'bg-amber-100 text-amber-800',
+  },
+  {
+    label: 'Prep next meeting',
+    hint: 'Brief, facts, last comms',
+    prompt: 'Prep my next meeting. Call prep_meeting. Give time, who they are, stage, last comms, and 3 questions.',
+    Icon: DocumentCheckIcon,
+    badge: 'bg-sky-100 text-sky-700',
+  },
+  {
+    label: 'Draft follow-up',
+    hint: 'Email or WhatsApp for this client',
+    prompt:
+      'Draft a follow-up for this client. Call draft_client_message with intent follow_up. Reply with only the ready-to-send draft in the client language.',
+    Icon: EnvelopeIcon,
+    badge: 'bg-emerald-100 text-emerald-700',
+  },
+  {
+    label: "Who hasn't answered",
+    hint: 'Stale deals to chase',
+    prompt:
+      'Who has not answered me? Call list_stale_sales_leads. List lead numbers, last touch, and one chase action each.',
+    Icon: ChatOutlineIcon,
+    badge: 'bg-rose-100 text-rose-700',
+  },
+  {
+    label: 'After no-show',
+    hint: 'What to say',
+    prompt:
+      'Draft a no-show follow-up for this client. Call draft_client_message with intent no_show. Reply with only the draft in the client language.',
+    Icon: ClockOutlineIcon,
+    badge: 'bg-violet-100 text-violet-700',
+  },
+  {
     label: 'Signed today',
     hint: 'Closed deals from today',
     prompt: 'List signed contracts today with lead numbers, names, amounts, and closers.',
     Icon: DocumentCheckIcon,
     badge: 'bg-emerald-100 text-emerald-700',
-  },
-  {
-    label: 'Clocked in now',
-    hint: 'Who is at the office',
-    prompt: 'Who is clocked in right now, and where?',
-    Icon: ClockOutlineIcon,
-    badge: 'bg-violet-100 text-violet-700',
   },
   {
     label: 'Meetings today',
@@ -164,6 +208,30 @@ const readAiDrawerDark = (): boolean => {
   return true;
 };
 
+const isThinkingMessage = (content: Message['content']) =>
+  content === 'AI is thinking...' || content === 'Looking up CRM data...';
+
+const isWelcomeMessage = (message: Message) =>
+  /^(Hi .+?, |Hello! )how can I help you\?/i.test(plainTextFromMessage(message));
+
+const textIsMostlyHebrew = (text: string): boolean => {
+  const hebrew = (text.match(/[\u0590-\u05FF]/g) || []).length;
+  if (!hebrew) return false;
+  const latin = (text.match(/[A-Za-z]/g) || []).length;
+  return hebrew >= latin;
+};
+
+const plainTextFromMessage = (message: Message): string => {
+  if (Array.isArray(message.content)) {
+    return message.content
+      .filter((item: { type?: string; text?: string }) => item?.type === 'text' && item.text)
+      .map((item: { text?: string }) => String(item.text || ''))
+      .join('\n')
+      .trim();
+  }
+  return String(message.content || '').trim();
+};
+
 const isVisibleChatMessage = (message: Message) => {
   if (message.role === 'tool') return false;
   if (message.role === 'assistant' && message.tool_calls?.length && !message.content) return false;
@@ -202,7 +270,7 @@ const sanitizeMessages = (messages: Message[]) => {
   return sanitized;
 };
 
-const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate, userName, isFullPage = false, onToggleFullPage }) => {
+const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate, userName, isFullPage = false, onToggleFullPage, currentLead = null, onOpenEmailCompose }) => {
   const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -234,6 +302,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [panelSize, setPanelSize] = useState<PanelSize | null>(readSavedPanelSize);
   const [isMovingPanel, setIsMovingPanel] = useState(false);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
+  const [copiedBubbleKey, setCopiedBubbleKey] = useState<string | null>(null);
+  const copiedBubbleTimerRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const panelResizeRef = useRef<{
     pointerId: number;
@@ -254,7 +324,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     held: boolean;
     fromExpand: boolean;
   } | null>(null);
-  const skipNextExpandClickRef = useRef(false);
   const panelHoldTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -264,6 +333,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       /* ignore */
     }
   }, [isDarkTheme]);
+
+  useEffect(() => {
+    setRmqAiCurrentLead(currentLead || null);
+  }, [currentLead]);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -449,6 +522,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     // Split by double newlines for paragraphs, but preserve single newlines within paragraphs
     const blocks = normalized.split(/\n\n+/).filter(p => p.trim());
     
+    const renderDirectedBlock = (text: string, key: string | number) => {
+      const rtl = textIsMostlyHebrew(text);
+      return (
+        <p
+          key={key}
+          dir={rtl ? 'rtl' : 'ltr'}
+          className={`my-2.5 text-sm leading-relaxed ${rtl ? 'text-right whitespace-pre-line' : 'text-left'}`}
+        >
+          {formatInlineText(text)}
+        </p>
+      );
+    };
+
     return blocks.map((block, bIdx) => {
       const trimmed = block.trim();
       const lines = trimmed.split('\n').filter(l => l.trim());
@@ -457,39 +543,41 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       const allListItems = lines.every(line => /^[-*•]\s/.test(line.trim()) || /^\d+[.)]\s/.test(line.trim()));
       
       if (allListItems && lines.length > 1) {
-        // Check if it's a numbered list
+        const rtl = textIsMostlyHebrew(trimmed);
         const isNumbered = lines[0].trim().match(/^\d+[.)]\s/);
+        const ListTag = isNumbered ? 'ol' : 'ul';
         
-        if (isNumbered) {
-          return (
-            <ol key={bIdx} className="list-decimal list-inside my-3 space-y-1.5 ml-2">
-              {lines.map((line, idx) => {
-                const cleanItem = line.trim().replace(/^\d+[.)]\s/, '').trim();
-                const formatted = formatInlineText(cleanItem);
-                return <li key={idx} className="text-sm leading-relaxed pl-1">{formatted}</li>;
-              })}
-            </ol>
-          );
-        } else {
-          return (
-            <ul key={bIdx} className="list-disc list-inside my-3 space-y-1.5 ml-2">
-              {lines.map((line, idx) => {
-                const cleanItem = line.trim().replace(/^[-*•]\s/, '').trim();
-                const formatted = formatInlineText(cleanItem);
-                return <li key={idx} className="text-sm leading-relaxed pl-1">{formatted}</li>;
-              })}
-            </ul>
-          );
-        }
+        return (
+          <ListTag
+            key={bIdx}
+            dir={rtl ? 'rtl' : 'ltr'}
+            className={`my-3 space-y-1.5 list-inside ${isNumbered ? 'list-decimal' : 'list-disc'} ${
+              rtl ? 'text-right mr-2 ml-0' : 'ml-2 text-left'
+            }`}
+          >
+            {lines.map((line, idx) => {
+              const cleanItem = line.trim().replace(isNumbered ? /^\d+[.)]\s/ : /^[-*•]\s/, '').trim();
+              return (
+                <li key={idx} className="text-sm leading-relaxed pl-1">
+                  {formatInlineText(cleanItem)}
+                </li>
+              );
+            })}
+          </ListTag>
+        );
       }
-      
-      // Regular paragraph - join lines with proper spacing
-      const paragraphText = lines.join(' ').trim();
-      return (
-        <p key={bIdx} className="my-2.5 text-sm leading-relaxed">
-          {formatInlineText(paragraphText)}
-        </p>
-      );
+
+      const mixedLines = lines.length > 1 && lines.some(textIsMostlyHebrew) && lines.some((line) => !textIsMostlyHebrew(line));
+      if (mixedLines) {
+        return (
+          <div key={bIdx}>
+            {lines.map((line, idx) => renderDirectedBlock(line.trim(), `${bIdx}-${idx}`))}
+          </div>
+        );
+      }
+
+      const paragraphText = textIsMostlyHebrew(trimmed) ? trimmed : lines.join(' ').trim();
+      return renderDirectedBlock(paragraphText, bIdx);
     });
   };
 
@@ -664,43 +752,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     return parts.length > 0 ? <>{parts}</> : <ChatLeadNumberText text={text} onOpen={onClose} />;
   };
 
-  const handleSend = async (customInput?: string) => {
-    const messageToSend = customInput || input;
-    if (!messageToSend.trim() && images.length === 0) return;
-    setIsLoading(true);
-    
-    let userMessage: any;
-    if (images.length > 0 && imagePreviews.length > 0) {
-      userMessage = {
-        role: 'user',
-        content: [
-          ...(messageToSend.trim() ? [{ type: 'text', text: messageToSend.trim() }] : []),
-          ...imagePreviews.map(url => ({ type: 'image_url', image_url: { url } }))
-        ]
-      };
-    } else {
-      userMessage = { role: 'user', content: messageToSend.trim() };
-    }
-    const newMessages = [...messages, userMessage];
-    const imagesData = images.map((file, index) => ({
-      name: file.name,
-      data: imagePreviews[index],
-    }));
-
-    setMessages(newMessages);
-    if (!customInput) {
-      setInput('');
-      setCaret(0);
-      setSuggestDismissed(true);
-    }
-    setImages([]);
-    setImagePreviews([]);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-
-    // Add a loading message
-    setMessages(prev => [...prev, { role: 'assistant', content: 'AI is thinking...' }]);
-    
-    const messagesForApi = sanitizeMessages(newMessages).map(({ attachments: _attachments, ...message }) => message);
+  const completeAssistantTurn = async (
+    conversationMessages: Message[],
+    imagesData: Array<{ name: string; data: string }> = [],
+    extraApiMessages: Message[] = [],
+  ) => {
+    const messagesForApi = sanitizeMessages([...conversationMessages, ...extraApiMessages]).map(
+      ({ attachments: _attachments, ...message }) => message,
+    );
 
     const callChat = async (payloadMessages: Message[], includeImages = false) => {
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`, {
@@ -710,7 +769,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
         },
         body: JSON.stringify({
-          messages: [{ role: 'system', content: RMQ_AI_SYSTEM_PROMPT }, ...payloadMessages],
+          messages: [{
+            role: 'system',
+            content: [RMQ_AI_SYSTEM_PROMPT, describeCurrentLeadForPrompt()].filter(Boolean).join(' '),
+          }, ...payloadMessages],
           images: includeImages ? imagesData : [],
           tools: RMQ_AI_TOOLS,
         }),
@@ -781,6 +843,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         ? `${replyContent}${replyContent ? '\n\n' : ''}${extraLinks.join('\n')}`
         : replyContent;
 
+      const draftAction = takeRmqAiDraftMeta() || undefined;
       setMessages((prev) => [
         ...prev.slice(0, -1),
         {
@@ -789,19 +852,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             withLinks ||
             'I looked up the CRM data but could not finish a reply. Please try again.',
           attachments: createdFiles.length ? createdFiles : undefined,
+          draftAction,
         },
       ]);
-
     } catch (error) {
       console.error('Error in handleSend:', error);
-      const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
-      setMessages(prev => {
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred.';
+      setMessages((prev) => {
         const updated = [...prev];
         const lastIndex = updated.length - 1;
         if (lastIndex >= 0 && updated[lastIndex].role === 'assistant') {
-          updated[lastIndex] = { 
-            ...updated[lastIndex], 
-            content: `Sorry, an error occurred: ${errorMessage}`
+          updated[lastIndex] = {
+            ...updated[lastIndex],
+            content: `Sorry, an error occurred: ${errorMessage}`,
           };
         }
         return updated;
@@ -809,6 +872,69 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSend = async (customInput?: string) => {
+    const messageToSend = customInput || input;
+    if (!messageToSend.trim() && images.length === 0) return;
+    setIsLoading(true);
+
+    let userMessage: any;
+    if (images.length > 0 && imagePreviews.length > 0) {
+      userMessage = {
+        role: 'user',
+        content: [
+          ...(messageToSend.trim() ? [{ type: 'text', text: messageToSend.trim() }] : []),
+          ...imagePreviews.map(url => ({ type: 'image_url', image_url: { url } }))
+        ]
+      };
+    } else {
+      userMessage = { role: 'user', content: messageToSend.trim() };
+    }
+    const newMessages = [...messages, userMessage];
+    const imagesData = images.map((file, index) => ({
+      name: file.name,
+      data: imagePreviews[index],
+    }));
+
+    if (!customInput) {
+      setInput('');
+      setCaret(0);
+      setSuggestDismissed(true);
+    }
+    setImages([]);
+    setImagePreviews([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+
+    setMessages([...newMessages, { role: 'assistant', content: 'AI is thinking...' }]);
+    await completeAssistantTurn(newMessages, imagesData);
+  };
+
+  const handleRetryAssistant = async (assistantMessage: Message) => {
+    if (isLoading || assistantMessage.role !== 'assistant' || isWelcomeMessage(assistantMessage)) return;
+    const fullAssistantIndex = messages.findIndex((row) => row === assistantMessage);
+    if (fullAssistantIndex < 0) return;
+    let userIndex = -1;
+    for (let i = fullAssistantIndex - 1; i >= 0; i -= 1) {
+      if (messages[i].role === 'user') {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex < 0) {
+      toast.error('Nothing to retry');
+      return;
+    }
+    const trimmed = messages.slice(0, userIndex + 1);
+    setIsLoading(true);
+    setMessages([...trimmed, { role: 'assistant', content: 'AI is thinking...' }]);
+    await completeAssistantTurn(trimmed, [], [
+      {
+        role: 'user',
+        content:
+          'Try again and rephrase your last answer. Keep the same facts and numbers. Do not greet. Be concise.',
+      },
+    ]);
   };
 
   // Drag and drop handlers
@@ -1159,7 +1285,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       /* already released */
     }
     if (drag.moved || drag.held) {
-      if (drag.fromExpand) skipNextExpandClickRef.current = true;
       setPanelPos((current) => {
         if (current) persistPanelPos(current);
         return current;
@@ -1167,15 +1292,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
     setIsMovingPanel(false);
   }, []);
-
-  const handleExpandClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
-    if (skipNextExpandClickRef.current) {
-      event.preventDefault();
-      skipNextExpandClickRef.current = false;
-      return;
-    }
-    onToggleFullPage?.();
-  }, [onToggleFullPage]);
 
   const beginPanelResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0 || isFullPage) return;
@@ -1250,12 +1366,48 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const isFloatingPanel = (!isFullPage && !isMobile) || isPlacedPanel;
   const canResizePanel = !isFullPage && (isFloatingPanel || isPlacedPanel);
 
+  const copyAssistantMessage = useCallback(async (key: string, message: Message) => {
+    const text = plainTextFromMessage(message);
+    if (!text || isThinkingMessage(message.content)) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (copiedBubbleTimerRef.current != null) window.clearTimeout(copiedBubbleTimerRef.current);
+      setCopiedBubbleKey(key);
+      copiedBubbleTimerRef.current = window.setTimeout(() => {
+        setCopiedBubbleKey((current) => (current === key ? null : current));
+        copiedBubbleTimerRef.current = null;
+      }, 1600);
+    } catch {
+      toast.error('Could not copy to clipboard');
+    }
+  }, []);
+
+  const openDraftInEmail = useCallback((message: Message) => {
+    const text = plainTextFromMessage(message);
+    if (!text) return;
+    stashRmqAiComposeDraft({
+      channel: 'email',
+      text,
+      leadNumber: message.draftAction?.leadNumber,
+      leadId: message.draftAction?.leadId,
+      email: message.draftAction?.email || currentLead?.email || undefined,
+    });
+    onClose();
+    onOpenEmailCompose?.();
+  }, [currentLead?.email, onClose, onOpenEmailCompose]);
+
+  useEffect(() => {
+    return () => {
+      if (copiedBubbleTimerRef.current != null) window.clearTimeout(copiedBubbleTimerRef.current);
+    };
+  }, []);
+
   if (!isOpen) return null;
 
   return (
     <div
       ref={panelRef}
-      className={`${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-50 flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
+      className={`${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-[10050] flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
           isFullPage 
           ? 'left-0 top-0 h-full w-full' 
           : hasCustomSize
@@ -1265,7 +1417,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           : isFloatingPanel
             ? `right-3 top-3 bottom-3 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
             : `right-0 top-0 bottom-0 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
-      } ${isDarkTheme ? 'ai-drawer-dark' : 'ai-drawer-light'} ${isMovingPanel || isResizingPanel ? 'ai-drawer-moving' : ''}`}
+      } ${isDarkTheme ? 'ai-drawer-dark' : 'ai-drawer-light'} ${isFullPage ? 'ai-drawer-fullpage' : ''} ${isMovingPanel || isResizingPanel ? 'ai-drawer-moving' : ''}`}
       style={{ 
         height: hasCustomSize && panelSize
           ? panelSize.height
@@ -1285,7 +1437,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       <style>{`
         .ai-drawer-enter {
           will-change: transform, opacity;
-          box-shadow: -12px 0 48px rgba(0, 0, 0, 0.22);
+          box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
         }
         .ai-drawer-enter-float {
           animation: ai-drawer-float-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -1383,6 +1535,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           --ai-send: linear-gradient(90deg, #7c3aed 0%, #4f46e5 100%);
           --ai-header-bg: rgba(255, 255, 255, 0.42);
           --ai-header-border: rgba(255, 255, 255, 0.45);
+          box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
         }
         .ai-drawer-dark {
           --ai-bg: #121316;
@@ -1400,7 +1553,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           --ai-header-bg: rgba(22, 23, 26, 0.92);
           --ai-header-border: #2e3036;
           border-left: 1px solid #2a2c32;
-          box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
+          box-shadow: 0 28px 80px rgba(0, 0, 0, 0.5);
+        }
+        .ai-drawer-fullpage {
+          box-shadow: none !important;
         }
         .ai-glass,
         .ai-glass-fullpage {
@@ -1424,6 +1580,27 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           border: none;
           box-shadow: none;
           outline: none;
+        }
+        .ai-bubble-copy {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          margin-top: 0.65rem;
+          width: 1.75rem;
+          height: 1.75rem;
+          border: 0;
+          border-radius: 9999px;
+          background: transparent;
+          color: var(--ai-text-muted);
+          cursor: pointer;
+        }
+        .ai-bubble-copy:hover {
+          background: var(--ai-bg-overlay);
+          color: var(--ai-text);
+        }
+        .ai-bubble-copy:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
         }
         
         .ai-bubble-assistant .prose {
@@ -1654,6 +1831,35 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           height: 0.9rem;
           width: 0.9rem;
         }
+        .ai-close-btn {
+          display: inline-flex;
+          height: 2.25rem;
+          width: 2.25rem;
+          flex-shrink: 0;
+          align-items: center;
+          justify-content: center;
+          border: 0;
+          border-radius: 9999px;
+          background: transparent;
+          cursor: pointer;
+          transition: background 0.15s ease, color 0.15s ease;
+        }
+        .ai-drawer-light .ai-close-btn {
+          color: #6b7280;
+        }
+        .ai-drawer-light .ai-close-btn:hover,
+        .ai-drawer-light .ai-close-btn:focus-visible {
+          background: #f3f4f6;
+          color: #111827;
+        }
+        .ai-drawer-dark .ai-close-btn {
+          color: #a1a1aa;
+        }
+        .ai-drawer-dark .ai-close-btn:hover,
+        .ai-drawer-dark .ai-close-btn:focus-visible {
+          background: #2a2c32;
+          color: #f0f0f2;
+        }
         .ai-history-header-btn {
           display: inline-flex;
           align-items: center;
@@ -1663,6 +1869,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           font-size: 0.8125rem;
           font-weight: 600;
           line-height: 1;
+          white-space: nowrap;
           transition: background 0.15s ease, color 0.15s ease;
         }
         .ai-drawer-light .ai-history-header-btn {
@@ -1769,7 +1976,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           filter: brightness(1.08);
         }
       `}</style>
-      {canResizePanel ? (
+      {(canResizePanel || isFullPage) && !isMobile ? (
         <button
           type="button"
           className={`ai-resize-nw ${isDarkTheme ? 'text-zinc-300' : 'text-gray-500'}`}
@@ -1777,8 +1984,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           onPointerMove={movePanelResize}
           onPointerUp={endPanelResize}
           onPointerCancel={endPanelResize}
-          title="Resize chat"
-          aria-label="Resize chat from the top-left corner"
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            panelResizeRef.current = null;
+            setIsResizingPanel(false);
+            onToggleFullPage?.();
+          }}
+          title={isFullPage ? 'Double-click to exit full page' : 'Drag to resize · double-click for full page'}
+          aria-label={isFullPage ? 'Double-click to exit full page' : 'Resize chat from the top-left corner. Double-click for full page.'}
         />
       ) : null}
       <div 
@@ -1855,26 +2069,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 )}
               </span>
             </button>
-            {onToggleFullPage && (
-              <button 
-                className={`ai-expand-drag btn btn-ghost btn-sm btn-square ${isDarkTheme ? 'text-zinc-400' : 'text-base-content/60'}`}
-                data-ai-expand=""
-                onPointerDown={beginPanelMove}
-                onPointerMove={movePanel}
-                onPointerUp={endPanelMove}
-                onPointerCancel={endPanelMove}
-                onClick={handleExpandClick}
-                title={isFullPage ? 'Exit full page · hold and drag to move' : 'Enter full page · hold and drag to move'}
-                aria-label={isFullPage ? 'Exit full page. Hold and drag to move the chat.' : 'Enter full page. Hold and drag to move the chat.'}
-              >
-                {isFullPage ? (
-                  <ArrowsPointingInIcon className="h-5 w-5" />
-                ) : (
-                  <ArrowsPointingOutIcon className="h-5 w-5" />
-                )}
-              </button>
-            )}
-            <button className={`btn btn-ghost btn-sm btn-square ${isDarkTheme ? 'text-zinc-400' : 'text-base-content/60'}`} onClick={onClose} aria-label="Close">
+            <button
+              type="button"
+              className="ai-close-btn"
+              onClick={onClose}
+              aria-label="Close"
+              title="Close"
+            >
               <XMarkIcon className="h-5 w-5" />
             </button>
           </div>
@@ -1887,7 +2088,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             <div className="ai-chat-under-header flex w-72 shrink-0 flex-col overflow-hidden bg-white md:w-96">
               <div className="bg-white p-4">
                 <div className="mb-3 flex items-center justify-between gap-2">
-                  <h3 className="font-semibold text-gray-900">Chat History</h3>
+                  <h3 className="flex items-center gap-2 font-semibold text-gray-900">
+                    <ChatBubbleLeftRightIcon className="h-5 w-5 shrink-0" />
+                    Chat History
+                  </h3>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -2038,11 +2242,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 })
               }}
             >
-              {messages.filter(isVisibleChatMessage).map((msg, idx) => (
+              {messages.filter(isVisibleChatMessage).map((msg, idx) => {
+                const bubbleKey = `${idx}-${msg.role}`;
+                const thinking = isThinkingMessage(msg.content);
+                const canCopy =
+                  msg.role === 'assistant' &&
+                  !thinking &&
+                  !isWelcomeMessage(msg) &&
+                  Boolean(plainTextFromMessage(msg));
+                return (
                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
                     className={`max-w-[85%] rounded-2xl px-5 py-4 ai-bubble-${msg.role} ${
-                      msg.content === 'AI is thinking...' || msg.content === 'Looking up CRM data...' ? 'opacity-80' : ''
+                      thinking ? 'opacity-80' : ''
                     }`}
                     style={{ fontSize: '1rem', lineHeight: 1.7 }}
                   >
@@ -2060,7 +2272,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         }
                         return null;
                       })
-                    ) : msg.content === 'AI is thinking...' || msg.content === 'Looking up CRM data...' ? (
+                    ) : thinking ? (
                       <p className="flex items-center gap-2 text-sm leading-relaxed text-gray-600">
                         <span className="loading loading-spinner loading-sm" />
                         <span>{msg.content === 'Looking up CRM data...' ? 'Looking up CRM data…' : 'Starting…'}</span>
@@ -2092,9 +2304,48 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         ))}
                       </div>
                     ) : null}
+                    {canCopy ? (
+                      <div className="flex justify-end gap-0.5">
+                        <button
+                          type="button"
+                          className="ai-bubble-copy"
+                          onClick={() => copyAssistantMessage(bubbleKey, msg)}
+                          title={copiedBubbleKey === bubbleKey ? 'Copied' : 'Copy message'}
+                          aria-label={copiedBubbleKey === bubbleKey ? 'Copied' : 'Copy message'}
+                        >
+                          {copiedBubbleKey === bubbleKey ? (
+                            <CheckIcon className="h-4 w-4" />
+                          ) : (
+                            <Square2StackIcon className="h-[1.05rem] w-[1.05rem]" strokeWidth={1.75} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className="ai-bubble-copy"
+                          onClick={() => handleRetryAssistant(msg)}
+                          disabled={isLoading}
+                          title="Try again"
+                          aria-label="Try again and rephrase"
+                        >
+                          <ArrowPathIcon className="h-[1.05rem] w-[1.05rem]" strokeWidth={1.75} />
+                        </button>
+                        {msg.draftAction ? (
+                          <button
+                            type="button"
+                            className="ai-bubble-copy"
+                            onClick={() => openDraftInEmail(msg)}
+                            title="Open in Email"
+                            aria-label="Open draft in Email"
+                          >
+                            <EnvelopeIcon className="h-[1.05rem] w-[1.05rem]" strokeWidth={1.75} />
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-              ))}
+                );
+              })}
               <div ref={messagesEndRef} />
             </div>
 

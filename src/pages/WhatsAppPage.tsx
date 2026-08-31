@@ -59,6 +59,7 @@ import {
   WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT,
 } from '../lib/whatsappOutgoingMessageStyle';
 import { generateSearchVariants } from '../lib/transliteration';
+import { RMQ_AI_COMPOSE_DRAFT_EVENT, takeRmqAiComposeDraft } from '../lib/rmqAiComposeDraft';
 import EmojiPicker from 'emoji-picker-react';
 import {
   MagnifyingGlassIcon,
@@ -287,6 +288,27 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     storage: 'sessionStorage',
   });
   const [newMessage, setNewMessage] = useState('');
+
+  useEffect(() => {
+    const applyDraft = () => {
+      const draft = takeRmqAiComposeDraft('whatsapp');
+      if (!draft?.text) return;
+      setNewMessage(draft.text);
+      if (draft.leadId) {
+        const id = String(draft.leadId).trim();
+        const isLegacy = id.startsWith('legacy_') || /^\d+$/.test(id);
+        pendingOpenFromUrlRef.current = {
+          leadId: isLegacy ? null : id,
+          legacyId: isLegacy ? id.replace(/^legacy_/i, '') : null,
+        };
+        urlConversationHandledRef.current = false;
+      }
+    };
+    applyDraft();
+    window.addEventListener(RMQ_AI_COMPOSE_DRAFT_EVENT, applyDraft);
+    return () => window.removeEventListener(RMQ_AI_COMPOSE_DRAFT_EVENT, applyDraft);
+  }, []);
+
   // Initialize loading based on whether we have cached data
   // Check sessionStorage directly to avoid React state initialization timing issues
   const getHasCachedData = () => {

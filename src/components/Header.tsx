@@ -4195,20 +4195,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </span>
               </button>
             </div>
-            {typeof onOpenAIChat === 'function' && (
-              <button
-                type="button"
-                className="btn btn-ghost min-h-0 h-11 w-11 p-0 rounded-full border-0 flex items-center justify-center text-base-content/90 hover:bg-base-200/50 dark:hover:bg-base-300/30"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenAIChat();
-                }}
-                aria-label="Open RMQ AI"
-                title="RMQ AI"
-              >
-                <FaRobot className="h-8 w-8" style={{ color: '#6d28d9' }} />
-              </button>
-            )}
             {showProfileDropdown && isMobile && createPortal(
               <div
                 className="fixed inset-0 z-[100] md:hidden flex items-end justify-center"
@@ -4590,17 +4576,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 </div>
               )}
             </div>
-            {typeof onOpenAIChat === 'function' && (
-              <button
-                type="button"
-                className="btn btn-ghost min-h-0 h-11 w-11 p-0 rounded-full flex items-center justify-center flex-shrink-0 ml-1.5"
-                onClick={() => onOpenAIChat()}
-                title="RMQ AI"
-                aria-label="Open RMQ AI"
-              >
-                <FaRobot className="h-8 w-8" style={{ color: '#6d28d9' }} />
-              </button>
-            )}
           </div>
 
           {/* Desktop: overlay + left-side panel when hamburger menu is open */}
@@ -5401,6 +5376,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </span>
             )}
           </div>
+
+          {typeof onOpenAIChat === 'function' && (
+            <div className="relative">
+              <button
+                type="button"
+                className="btn btn-ghost border-0 min-h-0 h-10 w-10 p-0 rounded-lg flex items-center justify-center text-base-content/90 hover:bg-base-200/70"
+                title="RMQ AI"
+                aria-label="Open RMQ AI"
+                onClick={onOpenAIChat}
+              >
+                <FaRobot className="w-7 h-7" style={{ color: '#6d28d9' }} />
+              </button>
+            </div>
+          )}
 
           <div className="relative hidden md:block">
             <button

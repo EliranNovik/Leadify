@@ -38,6 +38,22 @@ import {
 } from './allExpensesReport';
 import { fetchInvoicedTotalDueNisForDateRange } from './fetchInvoicedLast30TotalDueNis';
 import { managementAmountToNis } from './firmManagementCosts';
+import { currentLeadAsToolArgs } from './rmqAiChatContext';
+import {
+  clickableLeadNumber,
+  leadDisplayName,
+  lookupLeadsByIds,
+  resolveMeetingLead,
+} from './rmqAiLeadDisplay';
+import {
+  executeDraftClientMessage,
+  executeListMySalesDay,
+  executeListStaleSalesLeads,
+  executeLogManualNote,
+  executePrepMeeting,
+  executeSetFollowUp,
+  executeWrapUpMeeting,
+} from './rmqAiSalesTools';
 
 export const RMQ_AI_ALLOWED_TABLES = {
   leads: [
@@ -504,7 +520,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'list_expenses',
       description:
-        'List and total office expenses of every type: office, salaries/payroll, external firms (firm management), marketing/source media, rent, partner draws, client/lead expenses, subcontractor fees. ALWAYS use this for spend questions: how much we spent, who added an expense, when, amount, today, this month, this year, or a vendor. Totals match Finance → All expenses (NIS). Line items include who added them, date, amount, type, vendor, and notes. Defaults to this month (Asia/Jerusalem).',
+        'List and total expenses as numbers (NIS). Covers office, salaries, external firms, marketing, rent, partner draws, client/lead expenses, and subcontractor fees. ALWAYS use for spend questions. Returns TOTAL plus a NIS amount per category. Defaults to this month (Asia/Jerusalem).',
       parameters: {
         type: 'object',
         properties: {
@@ -584,6 +600,130 @@ export const RMQ_AI_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'list_my_sales_day',
+      description:
+        'The logged-in salesperson’s work queue for today (Asia/Jerusalem): my meetings today/tomorrow, overdue and today follow-ups, and my leads waiting in reschedule (21), price offer (40), or unsigned (50). ALWAYS use for “my day”, what should I do now, or my follow-ups.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'draft_client_message',
+      description:
+        'Load case context so you can write a ready-to-send client email or WhatsApp in their language. ALWAYS use when they ask to draft, write, or rephrase outreach. Uses the open client if no lead is named. Intents: first_contact, confirm_meeting, no_show, follow_up, after_meeting, price_offer, signature_chase.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Lead number or name. Omit if a client page is open.' },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+          channel: { type: 'string', enum: ['email', 'whatsapp', 'sms'] },
+          intent: {
+            type: 'string',
+            enum: [
+              'first_contact',
+              'confirm_meeting',
+              'no_show',
+              'follow_up',
+              'after_meeting',
+              'price_offer',
+              'signature_chase',
+            ],
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prep_meeting',
+      description:
+        'Meeting prep pack: time, attendees, case facts, last comms. Use for “prep me”, “prep my next meeting”, or prep a named lead. Uses the open client or the user’s next meeting.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+          date: { type: 'string' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wrap_up_meeting',
+      description:
+        'After-meeting wrap: existing/polished summary, case facts, suggested next follow-up. Use for “wrap up”, “after the meeting”, or meeting summary. Then call set_follow_up to save a date, and draft_client_message intent=price_offer if they need an offer email.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+          notes: { type: 'string', description: 'Optional raw notes to polish into a summary.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_follow_up',
+      description:
+        'Save a follow-up date (YYYY-MM-DD) for the current user on a lead. Use after wrap-up or when they ask to set/move a follow-up. Uses the open client if no lead is named.',
+      parameters: {
+        type: 'object',
+        properties: {
+          date: { type: 'string', description: 'YYYY-MM-DD' },
+          query: { type: 'string' },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+          note: { type: 'string' },
+        },
+        required: ['date'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'log_manual_note',
+      description:
+        'Log a call / WhatsApp / note on a new lead timeline. Use when they say log this call or save this note.',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string' },
+          kind: { type: 'string', enum: ['note', 'call', 'whatsapp', 'email'] },
+          query: { type: 'string' },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_stale_sales_leads',
+      description:
+        'My closer/scheduler leads that went quiet (default 5 days) or sit in stages 21/40/50. ALWAYS use for “who hasn’t answered”, stale deals, or chase list.',
+      parameters: {
+        type: 'object',
+        properties: {
+          days: { type: 'number', description: 'Days without a touch. Default 5.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'create_lead',
       description: 'Create a new lead in the CRM.',
       parameters: {
@@ -611,6 +751,8 @@ export const RMQ_AI_TOOLS = [
           meeting_date: { type: 'string' },
           meeting_time: { type: 'string' },
           meeting_brief: { type: 'string' },
+          manager: { type: 'string' },
+          helper: { type: 'string' },
         },
         required: ['lead_number', 'meeting_date', 'meeting_time'],
       },
@@ -622,7 +764,14 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'You are RMQ AI, the assistant inside Leadify CRM (Rainmaker Queen). ' +
   'You can look up any lead and query CRM tables through tools. ' +
   'When the user asks about a specific client, call get_lead_case_file first, then write a clear summary from that data. ' +
-  'Identify leads by lead number (L226999), name, email, phone, or id. ' +
+  'Identify leads by lead number (L226999), name, email, phone, or id. If they say this client / this lead and a client page is open, omit query — tools use that lead. ' +
+  'When listing leads or meetings, ALWAYS copy the lead number from the tool (L214188 or 209994/9) as a bare token so it stays clickable. Never write Unnamed if the tool gave a number, name, or Internal meeting. Never list a client by name only. ' +
+  'When they ask for my day, what to do now, or my follow-ups, ALWAYS call list_my_sales_day. Reply as a short numbered list with lead numbers and one next action each. ' +
+  'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. ' +
+  'When they ask to prep a meeting or prep my next meeting, ALWAYS call prep_meeting. ' +
+  'When they ask to wrap up a meeting or write the meeting summary, ALWAYS call wrap_up_meeting. Call set_follow_up to save a date. Call draft_client_message with intent=price_offer for an offer email. ' +
+  'When they ask who has not answered or who is stale, ALWAYS call list_stale_sales_leads. ' +
+  'When they ask to set a follow-up date, call set_follow_up. When they ask to log a call or note, call log_manual_note. ' +
   'When they ask who the handler is, they mean the case handler role on the Roles tab (Case Handler). That is leads.case_handler_id / leads.handler on new leads and leads_lead.case_handler_id on legacy leads. It is not the closer, scheduler, expert, or retention handler unless they say retention. ' +
   'Answer with the Case Handler name from the TEAM ROLES block. If that line is empty or —, say no case handler is assigned. ' +
   'When they ask who has meetings today/tomorrow or on a date, or meetings scheduled by an employee, ALWAYS call list_meetings first. ' +
@@ -644,7 +793,10 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'Paste the exact markdown links from that tool so they stay clickable and open the page. Do not invent routes. ' +
   'When they ask about expenses, spend, who added a cost, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
   'Pass kind= for a type (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass date/period for today, this month, this year. Pass added_by= if they named who created the expense. ' +
-  'Do not say you cannot see expenses. Totals are NIS from Finance → All expenses; line items include who added them, date, amount, vendor, and notes. ' +
+  'Answer expenses with numbers only: start with TOTAL: NIS X, then one bullet per category with a NIS amount. Skip categories at 0. ' +
+  'Never write paragraphs about expenses. Never list fee names (government, court, translation) without a NIS amount next to them. ' +
+  'If they ask for the total, full amount, or just the number, reply with one line only: TOTAL: NIS X. ' +
+  'Do not say you cannot see expenses. Use the tool totals; do not invent amounts. ' +
   'When they ask about income, profit, loss, how the firm is doing, burn, or whether spending is too high, ALWAYS call get_firm_financials. ' +
   'Income is the Sales Contribution total: 90% of invoiced due in the date range (same large number as Sales Contribution). Compare it to all expenses and give practical advice (which categories are largest, expense ratio vs income). ' +
   'When they ask other counts, lists, or aggregates, use query_crm. ' +
@@ -742,18 +894,29 @@ async function resolveLeadFromQuery(args: {
   lead_id?: string;
   is_legacy?: boolean;
 }): Promise<{ leadId: string; isLegacy: boolean; label: string }> {
-  const explicitId = String(args.lead_id || '').trim();
-  if (explicitId) {
-    const isLegacy = args.is_legacy === true || explicitId.startsWith('legacy_');
+  const fallback = currentLeadAsToolArgs();
+  const explicitId = String(args.lead_id || fallback.lead_id || '').trim();
+  if (explicitId && !String(args.query || '').trim()) {
+    const isLegacy = (args.is_legacy ?? fallback.is_legacy) === true || explicitId.startsWith('legacy_');
     return {
       leadId: isLegacy && !explicitId.startsWith('legacy_') ? `legacy_${explicitId}` : explicitId,
       isLegacy,
-      label: explicitId,
+      label: fallback.query || explicitId,
     };
   }
 
-  const query = String(args.query || '').trim();
-  if (!query) throw new Error('Provide a lead number, name, email, phone, or id.');
+  const query = String(args.query || fallback.query || '').trim();
+  if (!query && !fallback.lead_id) throw new Error('Provide a lead number, name, email, phone, or id.');
+  if (!query && fallback.lead_id) {
+    return {
+      leadId:
+        fallback.is_legacy && !String(fallback.lead_id).startsWith('legacy_')
+          ? `legacy_${fallback.lead_id}`
+          : String(fallback.lead_id),
+      isLegacy: fallback.is_legacy === true || String(fallback.lead_id).startsWith('legacy_'),
+      label: fallback.query || String(fallback.lead_id),
+    };
+  }
 
   const matches = await searchLeads(query, { limit: 6, timeoutMs: 4000 });
   if (!matches.length) {
@@ -1163,7 +1326,7 @@ async function executeListMeetings(args: {
   }
 
   const meetingsSelect =
-    'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2, lead:leads!client_id(id, name, lead_number, topic, manager, helper), legacy_lead:leads_lead!legacy_lead_id(id, name, lead_number, category, meeting_manager_id, meeting_lawyer_id)';
+    'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2, lead:leads!meetings_client_id_fkey(id, name, lead_number, manual_id, topic, manager, helper), legacy_lead:leads_lead!meetings_legacy_lead_id_fkey(id, name, lead_number, manual_id, category, meeting_manager_id, meeting_lawyer_id)';
   let meetingsRes = await supabase
     .from('meetings')
     .select(meetingsSelect)
@@ -1171,6 +1334,18 @@ async function executeListMeetings(args: {
     .lt('meeting_date', next)
     .order('meeting_time', { ascending: true })
     .limit(120);
+
+  if (meetingsRes.error) {
+    meetingsRes = await supabase
+      .from('meetings')
+      .select(
+        'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2, lead:leads!client_id(id, name, lead_number, manual_id, topic, manager, helper), legacy_lead:leads_lead!legacy_lead_id(id, name, lead_number, manual_id, category, meeting_manager_id, meeting_lawyer_id)',
+      )
+      .gte('meeting_date', dateStr)
+      .lt('meeting_date', next)
+      .order('meeting_time', { ascending: true })
+      .limit(120);
+  }
 
   if (meetingsRes.error) {
     meetingsRes = await supabase
@@ -1188,33 +1363,37 @@ async function executeListMeetings(args: {
     const status = String(meeting.status || '').toLowerCase();
     return status !== 'canceled' && status !== 'cancelled';
   });
+  const meetingLeadMaps = await lookupLeadsByIds(
+    meetings.map((meeting: any) => meeting.client_id),
+    meetings.map((meeting: any) => meeting.legacy_lead_id),
+  );
   const legacyIdsInMeetings = new Set<string>();
 
   for (const meeting of meetings as any[]) {
     if (meeting.legacy_lead_id) legacyIdsInMeetings.add(String(meeting.legacy_lead_id));
-    const lead = Array.isArray(meeting.lead) ? meeting.lead[0] : meeting.lead;
-    const legacy = Array.isArray(meeting.legacy_lead) ? meeting.legacy_lead[0] : meeting.legacy_lead;
-    const name = String(lead?.name || legacy?.name || '').trim();
-    const leadNumber = String(lead?.lead_number || legacy?.lead_number || '').trim();
+    const { lead } = resolveMeetingLead({ ...meeting, maps: meetingLeadMaps });
+    const name =
+      leadDisplayName(lead) ||
+      String(meeting.meeting_brief || '').trim() ||
+      (meeting.client_id || meeting.legacy_lead_id ? 'Lead' : 'Internal meeting');
+    const leadNumber = clickableLeadNumber(lead);
     rows.push({
       key: `meetings:${meeting.id}`,
       time: String(meeting.meeting_time || '').slice(0, 5) || '—',
-      name: name || 'Unnamed lead',
+      name,
       leadNumber,
       source: 'meetings',
       status: meeting.status || '',
-      category: String(legacy?.category || lead?.topic || ''),
+      category: String((lead as { category?: unknown; topic?: unknown } | null)?.category || (lead as { topic?: unknown } | null)?.topic || ''),
       meetingId: Number.isFinite(Number(meeting.id)) ? Number(meeting.id) : undefined,
-      newLeadId: meeting.client_id ? String(meeting.client_id) : lead?.id ? String(lead.id) : undefined,
+      newLeadId: meeting.client_id ? String(meeting.client_id) : lead?.id && !meeting.legacy_lead_id ? String(lead.id) : undefined,
       legacyLeadId: meeting.legacy_lead_id
         ? String(meeting.legacy_lead_id)
-        : legacy?.id
-          ? String(legacy.id)
-          : undefined,
+        : undefined,
       scheduler: '',
       schedulerId: '',
-      managerRaw: meeting.meeting_manager ?? lead?.manager ?? legacy?.meeting_manager_id,
-      helperRaw: meeting.helper ?? lead?.helper ?? legacy?.meeting_lawyer_id,
+      managerRaw: meeting.meeting_manager ?? (lead as { manager?: unknown; meeting_manager_id?: unknown } | null)?.manager ?? (lead as { meeting_manager_id?: unknown } | null)?.meeting_manager_id,
+      helperRaw: meeting.helper ?? (lead as { helper?: unknown; meeting_lawyer_id?: unknown } | null)?.helper ?? (lead as { meeting_lawyer_id?: unknown } | null)?.meeting_lawyer_id,
       extern1: meeting.extern1,
       extern2: meeting.extern2,
       myRoles: [],
@@ -1236,8 +1415,8 @@ async function executeListMeetings(args: {
     rows.push({
       key: `leads_lead:${lead.id}`,
       time: String(lead.meeting_time || '').slice(0, 5) || '—',
-      name: String(lead.name || 'Unnamed lead'),
-      leadNumber: String(lead.lead_number || lead.id || ''),
+      name: leadDisplayName(lead) || 'Lead',
+      leadNumber: clickableLeadNumber(lead),
       source: 'leads_lead',
       category: String(lead.category || ''),
       legacyLeadId: String(lead.id),
@@ -1263,8 +1442,8 @@ async function executeListMeetings(args: {
     rows.push({
       key: `leads:${lead.id}`,
       time: String(lead.meeting_time || '').slice(0, 5) || '—',
-      name: String(lead.name || 'Unnamed lead'),
-      leadNumber: String(lead.lead_number || ''),
+      name: leadDisplayName(lead) || 'Lead',
+      leadNumber: clickableLeadNumber(lead),
       source: 'leads',
       category: String(lead.topic || ''),
       newLeadId: String(lead.id),
@@ -1423,6 +1602,7 @@ async function executeListMeetings(args: {
     schedulerLabel ? `Scheduler: ${schedulerLabel}` : '',
     lines.join('\n'),
     filtered.length > 80 ? `\n…and ${filtered.length - 80} more` : '',
+    'Reply with time, the exact lead number as a bare token, name, and role. Never write Unnamed when a lead number is present. Internal meetings have no client — say Internal meeting.',
   ]
     .filter(Boolean)
     .join('\n');
@@ -2614,14 +2794,19 @@ async function executeCreateMeeting(args: {
   meeting_date: string;
   meeting_time: string;
   meeting_brief?: string;
+  manager?: string;
+  helper?: string;
 }): Promise<string> {
+  const payload: Record<string, unknown> = {
+    meeting_date: args.meeting_date,
+    meeting_time: args.meeting_time,
+    meeting_brief: args.meeting_brief || null,
+  };
+  if (args.manager) payload.manager = args.manager;
+  if (args.helper) payload.helper = args.helper;
   const { data, error } = await supabase
     .from('leads')
-    .update({
-      meeting_date: args.meeting_date,
-      meeting_time: args.meeting_time,
-      meeting_brief: args.meeting_brief || null,
-    })
+    .update(payload)
     .eq('lead_number', args.lead_number)
     .select('name, lead_number')
     .single();
@@ -2816,82 +3001,134 @@ async function executeListExpenses(args: {
     return false;
   };
 
-  const lines: string[] = [
-    `EXPENSES ${range.label} (Asia/Jerusalem)`,
-    `Kind: ${kind === 'all' ? 'all types' : kind}`,
-  ];
-
-  const totalLines: string[] = [];
-  let reportedTotal = 0;
-  if (kind !== 'lead' && kind !== 'subcontractor') {
-    for (const key of EXPENSE_CATEGORY_ORDER) {
-      if (!showCategory(key)) continue;
-      const amount = totals[key];
-      reportedTotal += amount;
-      totalLines.push(`- ${EXPENSE_CATEGORY_LABELS[key]}: ${formatNis(amount)}`);
-    }
-    if (kind === 'all' || kind === 'marketing') {
-      const marketing = marketingExpenseTotal(totals);
-      if (kind === 'marketing') {
-        reportedTotal = marketing;
-        totalLines.length = 0;
-        totalLines.push(`- Source media: ${formatNis(totals.source_media)}`);
-        totalLines.push(`- Marketing (firm management type): ${formatNis(totals.firm_management_marketing)}`);
-      } else {
-        reportedTotal += totals.firm_management_marketing;
-        totalLines.push(`- Marketing (in firm management types): ${formatNis(totals.firm_management_marketing)}`);
-      }
-    }
-    lines.push('', 'TOTALS (NIS, same as Finance → All expenses):');
-    lines.push(...totalLines);
-    lines.push(`TOTAL: ${formatNis(reportedTotal)}`);
-    lines.push('(Monthly category totals cover whole calendar months that overlap this range.)');
-  }
-
   let itemRows = entries;
   if (addedBy) {
     itemRows = itemRows.filter((row) => nameFuzzyMatches(row.created_by_name || '', addedBy));
   }
 
-  if (kind !== 'salaries') {
+  const entryNis = (row: { amount: number | string | null; currency_code: string | null }) =>
+    managementAmountToNis(row.amount, row.currency_code);
+
+  const sumByKind = new Map<string, { label: string; amount: number; count: number }>();
+  const sumByType = new Map<string, { amount: number; count: number }>();
+  for (const row of itemRows) {
+    const nis = entryNis(row);
+    const kindKey = row.kind;
+    const kindLabel = FINANCE_KIND_LABEL[row.kind] || row.kind;
+    const kindAgg = sumByKind.get(kindKey) || { label: kindLabel, amount: 0, count: 0 };
+    kindAgg.amount += nis;
+    kindAgg.count += 1;
+    sumByKind.set(kindKey, kindAgg);
+    const typeLabel = (row.category_label || kindLabel).trim() || 'Unspecified';
+    const typeAgg = sumByType.get(typeLabel) || { amount: 0, count: 0 };
+    typeAgg.amount += nis;
+    typeAgg.count += 1;
+    sumByType.set(typeLabel, typeAgg);
+  }
+
+  const categoryLines: string[] = [];
+  let reportTotal = 0;
+  if (kind !== 'lead' && kind !== 'subcontractor') {
+    for (const key of EXPENSE_CATEGORY_ORDER) {
+      if (!showCategory(key)) continue;
+      const amount = totals[key];
+      if (amount <= 0) continue;
+      reportTotal += amount;
+      categoryLines.push(`- ${EXPENSE_CATEGORY_LABELS[key]}: ${formatNis(amount)}`);
+    }
+    if (kind === 'all' || kind === 'marketing') {
+      const marketing = marketingExpenseTotal(totals);
+      if (kind === 'marketing') {
+        reportTotal = marketing;
+        categoryLines.length = 0;
+        if (totals.source_media > 0) categoryLines.push(`- Source media: ${formatNis(totals.source_media)}`);
+        if (totals.firm_management_marketing > 0) {
+          categoryLines.push(`- Marketing (firm management type): ${formatNis(totals.firm_management_marketing)}`);
+        }
+      } else if (totals.firm_management_marketing > 0) {
+        reportTotal += totals.firm_management_marketing;
+        categoryLines.push(`- Marketing (in firm management types): ${formatNis(totals.firm_management_marketing)}`);
+      }
+    }
+  }
+
+  const clientNis = sumByKind.get('lead')?.amount || 0;
+  const subNis = sumByKind.get('subcontractor')?.amount || 0;
+  if (kind === 'all' || kind === 'lead') {
+    if (clientNis > 0) categoryLines.push(`- Client expenses: ${formatNis(clientNis)} (${sumByKind.get('lead')?.count || 0} items)`);
+  }
+  if (kind === 'all' || kind === 'subcontractor') {
+    if (subNis > 0) categoryLines.push(`- Subcontractor fees: ${formatNis(subNis)} (${sumByKind.get('subcontractor')?.count || 0} items)`);
+  }
+
+  const combinedTotal =
+    kind === 'lead' ? clientNis : kind === 'subcontractor' ? subNis : reportTotal + clientNis + subNis;
+
+  const lines: string[] = [
+    `EXPENSES ${range.label} (Asia/Jerusalem)`,
+    `Kind: ${kind === 'all' ? 'all types' : kind}`,
+    '',
+    `TOTAL: ${formatNis(combinedTotal)}`,
+    'Reply to the user with this TOTAL first. If they asked for only the amount, stop after that number.',
+  ];
+
+  if (categoryLines.length) {
+    lines.push('', 'BY CATEGORY (NIS, skip zeros):');
+    lines.push(...categoryLines);
+  } else {
+    lines.push('', 'BY CATEGORY: none with an amount in this range.');
+  }
+
+  const typeLines = [...sumByType.entries()]
+    .filter(([, agg]) => agg.amount > 0)
+    .sort((a, b) => b[1].amount - a[1].amount)
+    .slice(0, 40)
+    .map(([label, agg]) => `- ${label}: ${formatNis(agg.amount)} (${agg.count})`);
+  if (typeLines.length && (kind === 'lead' || kind === 'office')) {
+    lines.push('', 'BY TYPE (NIS — always show the amount, never the name alone):');
+    lines.push(...typeLines);
+  }
+
+  const wantLineItems = (kind !== 'all' && kind !== 'salaries') || Boolean(addedBy || search);
+  if (wantLineItems && kind !== 'salaries') {
     const shown = itemRows.slice(0, limit);
-    lines.push('', `LINE ITEMS (${shown.length} of ${itemRows.length}, newest first):`);
+    lines.push('', `LINE ITEMS (${shown.length} of ${itemRows.length}, amount first):`);
     if (!shown.length) {
       lines.push(addedBy ? `No line items added by "${addedBy}" in this range.` : 'No line items in this range.');
     } else {
       for (const row of shown) {
-        const nis = managementAmountToNis(row.amount, row.currency_code);
+        const nis = entryNis(row);
+        const extra =
+          nis && row.currency_code && !/^ils|nis$/i.test(row.currency_code)
+            ? ` (${formatFinanceExpenseAmount(row.amount, row.currency_code)})`
+            : '';
         const parts = [
+          formatNis(nis) + extra,
+          row.category_label || FINANCE_KIND_LABEL[row.kind] || row.kind,
           row.expense_date || row.created_at.slice(0, 10),
-          FINANCE_KIND_LABEL[row.kind] || row.kind,
-          formatFinanceExpenseAmount(row.amount, row.currency_code),
-          nis && row.currency_code && !/^ils|nis$/i.test(row.currency_code) ? `(${formatNis(nis)})` : '',
-          row.category_label || '',
-          row.vendor_label ? `vendor ${row.vendor_label}` : '',
-          row.lead_number ? `lead ${row.lead_number}` : '',
-          row.created_by_name && row.created_by_name !== '—' ? `added by ${row.created_by_name}` : 'added by unknown',
-          row.notes ? clip(row.notes, 80) : '',
+          row.lead_number || '',
+          row.vendor_label || '',
         ].filter(Boolean);
         lines.push(`- ${parts.join(' · ')}`);
       }
     }
   }
 
-  if (kind === 'all' || kind === 'salaries') {
+  if (kind === 'salaries') {
     const shownSalaries = salaries.slice(0, limit);
     const salaryGross = salaries.reduce((sum, row) => sum + row.gross, 0);
-    lines.push('', `SALARIES / PAYROLL (${salaries.length} rows, gross ${formatNis(salaryGross)}):`);
+    lines.push('', `SALARIES (${salaries.length} rows, gross ${formatNis(salaryGross)}):`);
     if (!shownSalaries.length) {
       lines.push('No salary rows in this range.');
     } else {
       for (const row of shownSalaries) {
         const net = row.net != null ? ` · net ${formatNis(row.net)}` : '';
-        lines.push(`- ${row.month} · ${row.employee} · gross ${formatNis(row.gross)}${net}`);
+        lines.push(`- ${formatNis(row.gross)} · ${row.employee} · ${row.month}${net}`);
       }
     }
   }
 
-  lines.push('', 'Use these figures. Do not invent expenses that are not listed.');
+  lines.push('', 'Use only these NIS figures. Do not invent amounts. Do not list a type without its NIS amount.');
   return lines.join('\n');
 }
 
@@ -3057,6 +3294,27 @@ export async function executeRmqAiTool(toolCall: {
     }
     if (name === 'create_meeting') {
       return await executeCreateMeeting(args as Parameters<typeof executeCreateMeeting>[0]);
+    }
+    if (name === 'list_my_sales_day') {
+      return await executeListMySalesDay();
+    }
+    if (name === 'draft_client_message') {
+      return await executeDraftClientMessage(args as Parameters<typeof executeDraftClientMessage>[0]);
+    }
+    if (name === 'prep_meeting') {
+      return await executePrepMeeting(args as Parameters<typeof executePrepMeeting>[0]);
+    }
+    if (name === 'wrap_up_meeting') {
+      return await executeWrapUpMeeting(args as Parameters<typeof executeWrapUpMeeting>[0]);
+    }
+    if (name === 'set_follow_up') {
+      return await executeSetFollowUp(args as Parameters<typeof executeSetFollowUp>[0]);
+    }
+    if (name === 'log_manual_note') {
+      return await executeLogManualNote(args as Parameters<typeof executeLogManualNote>[0]);
+    }
+    if (name === 'list_stale_sales_leads') {
+      return await executeListStaleSalesLeads(args as { days?: number });
     }
     return `Unknown function: ${name}`;
   } catch (error: any) {

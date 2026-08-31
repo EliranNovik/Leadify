@@ -2,8 +2,10 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
-import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, DocumentCheckIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, TrashIcon, InboxIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, DocumentCheckIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, TrashIcon, InboxIcon, EnvelopeIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
+import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
+import { resolveLeadIdForComposeAi, runEmailComposeAiChat } from '../lib/emailComposeAiChat';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
 import { convertBodyToHtml } from '../lib/emailBodyHtml';
 import sanitizeHtml from '../lib/sanitizeHtml';
@@ -56,6 +58,7 @@ import {
   resolveEmailDeleteFilter,
   type EmailComposeMode,
 } from '../lib/interactions/emailComposeActions';
+import { RMQ_AI_COMPOSE_DRAFT_EVENT, takeRmqAiComposeDraft } from '../lib/rmqAiComposeDraft';
 
 const EMAIL_THREAD_FETCH_LIMIT = 200;
 
@@ -511,6 +514,69 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [attachments, setAttachments] = useState<File[]>([]);
   const [showCompose, setShowCompose] = useState(false);
   const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
+
+  useEffect(() => {
+    const applyDraft = () => {
+      if (!isOpen) return;
+      const draft = takeRmqAiComposeDraft('email');
+      if (!draft?.text) return;
+      const subjectMatch = draft.text.match(/^Subject:\s*(.+)\r?\n+([\s\S]*)$/i);
+      const body = subjectMatch ? subjectMatch[2].trim() : draft.text;
+      if (subjectMatch) setSubject(subjectMatch[1].trim());
+      setNewMessage(body);
+      setNewMessageIsRTL(/[\u0590-\u05FF]/.test(body));
+      const draftEmails = normaliseAddressList(draft.email);
+      if (draftEmails.length) setToRecipients(draftEmails);
+      setShowCompose(true);
+
+      const query = String(draft.leadNumber || draft.leadId || '').trim();
+      if (!query && !draftEmails.length) return;
+      void (async () => {
+        try {
+          const matches = query ? await searchLeads(query, { limit: 4, timeoutMs: 4000 }) : [];
+          const lead =
+            matches.find((row) => String(row.id) === String(draft.leadId)) ||
+            matches.find((row) => String(row.lead_number || '').toLowerCase() === query.toLowerCase()) ||
+            matches[0];
+          const isLegacy = lead ? lead.lead_type === 'legacy' : String(draft.leadId || '').startsWith('legacy_');
+          const leadId = lead
+            ? isLegacy
+              ? String(lead.id).replace(/^legacy_/i, '')
+              : String(lead.id)
+            : String(draft.leadId || '').replace(/^legacy_/i, '');
+          const contacts = leadId ? await fetchLeadContacts(leadId, isLegacy) : [];
+          const emails = draftEmails.length
+            ? draftEmails
+            : normaliseAddressList(contacts.find((c) => c.isMain && c.email)?.email || contacts.find((c) => c.email)?.email || lead?.email);
+          if (emails.length) setToRecipients(emails);
+          const matchedContact =
+            contacts.find((c) => c.email && emails.includes(c.email)) ||
+            contacts.find((c) => c.isMain) ||
+            contacts[0];
+          if (lead || matchedContact || emails[0]) {
+            setSelectedContact({
+              id: matchedContact?.id ?? lead?.id ?? emails[0],
+              name: matchedContact?.name || lead?.name || emails[0] || 'Client',
+              email: emails[0] || matchedContact?.email || lead?.email || '',
+              lead_number: lead?.lead_number || draft.leadNumber || null,
+              phone: matchedContact?.phone || lead?.phone || undefined,
+              lead_type: lead?.lead_type || (isLegacy ? 'legacy' : 'new'),
+              client_uuid: isLegacy ? null : lead ? String(lead.id) : null,
+              created_at: new Date().toISOString(),
+              topic: lead?.topic || lead?.category || null,
+            });
+            if (typeof matchedContact?.id === 'number') setSelectedContactId(matchedContact.id);
+            if (contacts.length) setLeadContacts(contacts);
+          }
+        } catch {
+          /* draft still opens with whatever To we already set */
+        }
+      })();
+    };
+    applyDraft();
+    window.addEventListener(RMQ_AI_COMPOSE_DRAFT_EVENT, applyDraft);
+    return () => window.removeEventListener(RMQ_AI_COMPOSE_DRAFT_EVENT, applyDraft);
+  }, [isOpen]);
   const [composeSideSearch, setComposeSideSearch] = useState('');
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -601,6 +667,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
   const [aiDraftActive, setAiDraftActive] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [aiChatMessages, setAiChatMessages] = useState<ContractAiReviewMessage[]>([]);
+  const [aiChatRemarks, setAiChatRemarks] = useState('');
+  const [aiChatApplying, setAiChatApplying] = useState(false);
+  const [aiChatThinking, setAiChatThinking] = useState<string | null>(null);
 
   // Lead contacts modal state (for adding contacts to recipients)
   const [showContactsModal, setShowContactsModal] = useState(false);
@@ -3347,6 +3418,60 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setAiSuggestions([]);
   };
 
+  useEffect(() => {
+    if (showCompose) return;
+    setAiChatOpen(false);
+    setAiChatMessages([]);
+    setAiChatRemarks('');
+    setAiChatThinking(null);
+  }, [showCompose]);
+
+  const handleApplyEmailAiChat = async () => {
+    const remarks = aiChatRemarks.trim();
+    if (!remarks) return;
+    const lead = resolveLeadIdForComposeAi(selectedContact);
+    setAiChatApplying(true);
+    setAiChatThinking('Reading the case and your request…');
+    setAiChatMessages((prev) => [...prev, { role: 'user', content: remarks }]);
+    setAiChatRemarks('');
+    try {
+      const result = await runEmailComposeAiChat({
+        remarks,
+        subject,
+        body: newMessage,
+        clientName: selectedContact?.name,
+        leadNumber: selectedContact?.lead_number,
+        category: selectedContact?.topic,
+        leadId: lead?.leadId,
+        isLegacy: lead?.isLegacy,
+        chatHistory: aiChatMessages,
+        onThinking: setAiChatThinking,
+      });
+      if (result.intent === 'action') {
+        if (result.subject) setSubject(result.subject);
+        if (typeof result.body === 'string') {
+          setNewMessage(result.body);
+          setNewMessageIsRTL(containsHebrew(result.body));
+          setAiDraftActive(true);
+        }
+      }
+      setAiChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          kind: result.intent === 'question' ? 'answer' : 'change',
+          content: result.summary,
+        },
+      ]);
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : 'AI request failed');
+    } finally {
+      setAiChatApplying(false);
+      setAiChatThinking(null);
+    }
+  };
+
   // Handle opening contacts modal
   const handleOpenContactsModal = async () => {
     if (!selectedContact) return;
@@ -4418,7 +4543,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       </div>
 
       {showCompose && createPortal(
-        <div className="fixed inset-0 z-[10001] flex overflow-hidden">
+        <div className={`fixed inset-0 z-[10001] flex overflow-hidden ${aiChatOpen ? 'md:pr-[28rem]' : ''}`}>
           <div className="fixed inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
           <div className="relative flex h-full w-full overflow-hidden bg-white shadow-2xl">
             {/* Left: email list sidepanel — match main thread list */}
@@ -4615,7 +4740,17 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             </aside>
 
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-slate-100 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
-            <div className="absolute right-3 top-3 z-10 md:right-4">
+            <div className="absolute right-3 top-3 z-10 flex items-center gap-2 md:right-4">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 bg-transparent text-black hover:opacity-70 disabled:opacity-50"
+                onClick={() => setAiChatOpen(true)}
+                disabled={aiChatApplying}
+                title="AI email assistant"
+              >
+                <SparklesIcon className="h-5 w-5" />
+                <span className="text-sm font-semibold">AI</span>
+              </button>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm btn-circle"
@@ -5364,6 +5499,27 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         open={showEmailSentModal}
         onClose={() => setShowEmailSentModal(false)}
         recipient={selectedContact?.email}
+      />
+      <ContractAiReviewPanel
+        isOpen={aiChatOpen}
+        onClose={() => setAiChatOpen(false)}
+        initialSummary={null}
+        messages={aiChatMessages}
+        remarks={aiChatRemarks}
+        onRemarksChange={setAiChatRemarks}
+        onApplyRemarks={() => void handleApplyEmailAiChat()}
+        isApplying={aiChatApplying}
+        thinkingText={aiChatThinking}
+        zIndex={10050}
+        title={
+          <span className="flex items-center gap-2.5">
+            <ChatBubbleLeftRightIcon className="h-7 w-7 shrink-0 text-violet-600" />
+            <span>AI email assistant</span>
+          </span>
+        }
+        subtitle=""
+        placeholder="e.g. Make this shorter, or write a follow-up asking if they reviewed the offer…"
+        conversationOnly
       />
     </div>
   );

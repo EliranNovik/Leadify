@@ -3,17 +3,27 @@ import { usePersistedState } from '../hooks/usePersistedState';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { UserGroupIcon, DocumentTextIcon, CurrencyDollarIcon, CheckCircleIcon, BriefcaseIcon, XMarkIcon, EyeIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
-import { getStageName, fetchStageNames, getStageColour } from '../lib/stageUtils';
+import { UserGroupIcon, DocumentTextIcon, CurrencyDollarIcon, BriefcaseIcon, XMarkIcon, ArrowPathIcon, MagnifyingGlassIcon, Squares2X2Icon, Bars3Icon } from '@heroicons/react/24/outline';
+import { getStageName, fetchStageNames, getStageColour, getSoftStageBadgeStyle } from '../lib/stageUtils';
 import { convertToNIS } from '../lib/currencyConversion';
+import { isDepartmentManagerBonusesRole, isHandlerBonusesRole } from '../lib/employeeLeadReporting';
 import LeadDetailsModal from '../components/LeadDetailsModal';
 import AssignMultipleLeadsModal from '../components/AssignMultipleLeadsModal';
+import { PIPELINE_SUMMARY_GRADIENTS } from '../components/PipelineSummaryCards';
+import {
+  PIPELINE_CELL_STYLE,
+  PIPELINE_TABLE_CLASS,
+  PIPELINE_TABLE_SHELL,
+  PIPELINE_THEAD_CLASS,
+  pipelineRowClassName,
+} from '../components/pipeline/pipelineUi';
 
 interface Handler {
   id: number;
   display_name: string;
   official_name?: string;
   department?: string;
+  bonuses_role?: string | null;
   newCasesCount: number;
   activeCasesCount: number;
   inProcessCount?: number;
@@ -57,6 +67,8 @@ interface NextPayment {
 
 interface HandlerManagementPageData {
   handlers: Handler[];
+  retentionHandlers: Handler[];
+  handlerPoolCount: number;
   unassignedLeads: UnassignedLead[];
   nextPayments: NextPayment[];
   loadedAt: number | null;
@@ -64,7 +76,7 @@ interface HandlerManagementPageData {
 
 // Module-level cache for table data - persists across SPA navigation, clears on page refresh
 // Bump CACHE_VERSION when data structure changes to invalidate stale cache
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 4;
 let handlerManagementCache: (HandlerManagementPageData & { _v?: number }) | null = null;
 
 const HandlerManagementPage: React.FC = () => {
@@ -78,9 +90,11 @@ const HandlerManagementPage: React.FC = () => {
     if (handlerManagementCache?.loadedAt && handlerManagementCache?._v === CACHE_VERSION) {
       return handlerManagementCache;
     }
-    return { handlers: [], unassignedLeads: [], nextPayments: [], loadedAt: null };
+    return { handlers: [], retentionHandlers: [], handlerPoolCount: 0, unassignedLeads: [], nextPayments: [], loadedAt: null };
   });
   const handlers = pageData.handlers;
+  const retentionHandlers = pageData.retentionHandlers;
+  const handlerPoolCount = pageData.handlerPoolCount;
   const unassignedLeads = pageData.unassignedLeads;
   const nextPayments = pageData.nextPayments;
   const [loading, setLoading] = useState(true);
@@ -95,6 +109,8 @@ const HandlerManagementPage: React.FC = () => {
   const [selectedDepartment, setSelectedDepartment] = usePersistedState('handlerManagement_selectedDepartment', '', { storage: 'sessionStorage' });
   const [sortColumn, setSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases' | null>('handlerManagement_sortColumn', null, { storage: 'sessionStorage' });
   const [sortDirection, setSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_sortDirection', 'asc', { storage: 'sessionStorage' });
+  const [retentionSortColumn, setRetentionSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases' | null>('handlerManagement_retentionSortColumn', null, { storage: 'sessionStorage' });
+  const [retentionSortDirection, setRetentionSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_retentionSortDirection', 'asc', { storage: 'sessionStorage' });
   const [selectedCategories, setSelectedCategories] = usePersistedState<string[]>('handlerManagement_selectedCategories', [], { storage: 'sessionStorage' });
   const [selectedStages, setSelectedStages] = usePersistedState<number[]>('handlerManagement_selectedStages', [], { storage: 'sessionStorage' });
   const [categorySearch, setCategorySearch] = useState<string>('');
@@ -114,6 +130,7 @@ const HandlerManagementPage: React.FC = () => {
   const [unassignedSortDirection, setUnassignedSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_unassignedSortDirection', 'asc', { storage: 'sessionStorage' });
   const unassignedLeadsRef = useRef<HTMLDivElement>(null);
   const handlersRef = useRef<HTMLDivElement>(null);
+  const retentionHandlersRef = useRef<HTMLDivElement>(null);
   const nextPaymentsRef = useRef<HTMLDivElement>(null);
 
   // Initialize stage names cache on mount
@@ -215,13 +232,15 @@ const HandlerManagementPage: React.FC = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [handlersData, unassignedData, paymentsData] = await Promise.all([
+      const [handlersResult, unassignedData, paymentsData] = await Promise.all([
         fetchHandlers(),
         fetchUnassignedLeads(),
         fetchNextPayments()
       ]);
       const newData: HandlerManagementPageData & { _v?: number } = {
-        handlers: handlersData,
+        handlers: handlersResult.handlers,
+        retentionHandlers: handlersResult.retentionHandlers,
+        handlerPoolCount: handlersResult.handlerPoolCount,
         unassignedLeads: unassignedData,
         nextPayments: paymentsData,
         loadedAt: Date.now(),
@@ -243,6 +262,8 @@ const HandlerManagementPage: React.FC = () => {
     const newNextPayments = nextPayments.filter(p => !leadIdSet.has(String(p.lead_id)));
     const newData: HandlerManagementPageData & { _v?: number } = {
       handlers,
+      retentionHandlers,
+      handlerPoolCount,
       unassignedLeads: newUnassignedLeads,
       nextPayments: newNextPayments,
       loadedAt: pageData.loadedAt,
@@ -284,8 +305,16 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
-  const fetchHandlers = async (): Promise<Handler[]> => {
+  const fetchHandlers = async (): Promise<{ handlers: Handler[]; retentionHandlers: Handler[]; handlerPoolCount: number }> => {
     try {
+      const { data: bonusRoleEmployees } = await supabase
+        .from('tenants_employee')
+        .select('id, bonuses_role')
+        .in('bonuses_role', ['h', 'dm']);
+      const handlerPoolCount = (bonusRoleEmployees || []).filter((emp) =>
+        isHandlerBonusesRole(emp.bonuses_role) || isDepartmentManagerBonusesRole(emp.bonuses_role)
+      ).length;
+
       // First, fetch main category IDs for Germany and Austria
       const { data: germanyCategory, error: germanyError } = await supabase
         .from('misc_maincategory')
@@ -317,7 +346,8 @@ const HandlerManagementPage: React.FC = () => {
             id,
             display_name,
             official_name,
-            department_id
+            department_id,
+            bonuses_role
           )
         `)
         .not('employee_id', 'is', null)
@@ -375,16 +405,18 @@ const HandlerManagementPage: React.FC = () => {
             id: Number(employee.id),
             display_name: employee.display_name,
             official_name: employee.official_name || null,
-            department: departmentId ? (departmentsMap.get(departmentId) || 'Unknown') : 'Unknown'
+            department: departmentId ? (departmentsMap.get(departmentId) || 'Unknown') : 'Unknown',
+            bonuses_role: employee.bonuses_role || null,
           };
         })
         .sort((a, b) => a.display_name.localeCompare(b.display_name));
 
       // For each handler, count their assigned cases (separated into new and active)
-      const handlersWithCounts = await Promise.all(
-        handlersData.map(async (handler) => {
+      const buildHandlerRow = async (
+        handler: (typeof handlersData)[number],
+        roleField: 'case_handler_id' | 'retainer_handler_id',
+      ): Promise<Handler> => {
           const handlerId = handler.id;
-          const handlerName = handler.display_name || handler.official_name || '';
 
           // Fetch all new leads assigned to this handler with category join (exclude stage 91 and inactive leads)
           const { data: newLeads } = await supabase
@@ -394,9 +426,10 @@ const HandlerManagementPage: React.FC = () => {
               stage,
               handler_stage,
               category_id,
+              case_handler_id,
               misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
             `)
-            .or(`handler.eq.${handlerName},case_handler_id.eq.${handlerId}`)
+            .eq(roleField, handlerId)
             .gte('stage', 60)
             .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
             .is('unactivated_at', null); // Only active leads (exclude inactive: unactivated_at IS NULL means active)
@@ -412,10 +445,9 @@ const HandlerManagementPage: React.FC = () => {
               currency_id,
               category_id,
               accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code),
-              misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name)),
-              case_handler:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
+              misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))
             `)
-            .eq('case_handler_id', handlerId)
+            .eq(roleField, handlerId)
             .gte('stage', 60)
             .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
             .or('status.eq.0,status.is.null'); // Only active leads (status 0 or null = active, status 10 = inactive)
@@ -786,10 +818,79 @@ const HandlerManagementPage: React.FC = () => {
             finalPaymentDueGermany,
             finalPaymentDueAustria
           };
-        })
+      };
+
+      const handlersWithCounts = await Promise.all(
+        handlersData.map((handler) => buildHandlerRow(handler, 'case_handler_id')),
       );
 
-      return handlersWithCounts;
+      const [{ data: newRetentionRows }, { data: legacyRetentionRows }] = await Promise.all([
+        supabase
+          .from('leads')
+          .select('retainer_handler_id')
+          .not('retainer_handler_id', 'is', null)
+          .gte('stage', 60)
+          .neq('stage', 91)
+          .is('unactivated_at', null),
+        supabase
+          .from('leads_lead')
+          .select('retainer_handler_id')
+          .not('retainer_handler_id', 'is', null)
+          .gte('stage', 60)
+          .neq('stage', 91)
+          .or('status.eq.0,status.is.null'),
+      ]);
+      const retentionIdSet = new Set<number>();
+      [...(newRetentionRows || []), ...(legacyRetentionRows || [])].forEach((row) => {
+        const id = Number((row as { retainer_handler_id?: number | string | null }).retainer_handler_id);
+        if (Number.isFinite(id) && id > 0) retentionIdSet.add(id);
+      });
+
+      const handlersById = new Map(handlersData.map((handler) => [handler.id, handler]));
+      const missingRetentionIds = [...retentionIdSet].filter((id) => !handlersById.has(id));
+      if (missingRetentionIds.length > 0) {
+        const { data: extraEmployees } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, official_name, department_id, bonuses_role')
+          .in('id', missingRetentionIds);
+        const extraDeptIds = new Set<number>();
+        (extraEmployees || []).forEach((emp) => {
+          if (emp.department_id) extraDeptIds.add(Number(emp.department_id));
+        });
+        const unknownDeptIds = [...extraDeptIds].filter((id) => !departmentsMap.has(id));
+        if (unknownDeptIds.length > 0) {
+          const { data: extraDepartments } = await supabase
+            .from('tenant_departement')
+            .select('id, name')
+            .in('id', unknownDeptIds);
+          (extraDepartments || []).forEach((dept) => {
+            departmentsMap.set(Number(dept.id), dept.name);
+          });
+        }
+        (extraEmployees || []).forEach((emp) => {
+          const departmentId = emp.department_id ? Number(emp.department_id) : null;
+          handlersById.set(Number(emp.id), {
+            id: Number(emp.id),
+            display_name: emp.display_name,
+            official_name: emp.official_name || null,
+            department: departmentId ? (departmentsMap.get(departmentId) || 'Unknown') : 'Unknown',
+            bonuses_role: emp.bonuses_role || null,
+          });
+        });
+      }
+
+      const retentionEmployees = [...retentionIdSet]
+        .map((id) => handlersById.get(id))
+        .filter((handler): handler is (typeof handlersData)[number] => Boolean(handler));
+      const retentionHandlersWithCounts = (
+        await Promise.all(
+          retentionEmployees.map((handler) => buildHandlerRow(handler, 'retainer_handler_id')),
+        )
+      )
+        .filter((handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) > 0)
+        .sort((a, b) => a.display_name.localeCompare(b.display_name));
+
+      return { handlers: handlersWithCounts, retentionHandlers: retentionHandlersWithCounts, handlerPoolCount };
     } catch (error) {
       console.error('Error fetching handlers:', error);
       throw error;
@@ -1674,19 +1775,19 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
-  const getContrastingTextColor = (hexColor?: string | null) => {
-    if (!hexColor) return '#111827';
-    let sanitized = hexColor.trim();
-    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
-    if (sanitized.length === 3) {
-      sanitized = sanitized.split('').map(char => char + char).join('');
-    }
-    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) return '#111827';
-    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
-    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
-    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
-    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    return luminance > 0.55 ? '#111827' : '#ffffff';
+  const renderStageBadge = (stage: number | string | null | undefined, stageName?: string) => {
+    const stageStr = String(stage ?? '');
+    const name = stageName || getStageName(stageStr) || stageStr || 'No Stage';
+    const soft = getSoftStageBadgeStyle(getStageColour(stageStr), stageStr);
+    return (
+      <span
+        className="inline-flex max-w-[11rem] truncate rounded-full px-2.5 py-1 text-xs font-semibold"
+        style={{ backgroundColor: soft.backgroundColor, color: soft.color }}
+        title={name}
+      >
+        {name}
+      </span>
+    );
   };
 
   const formatDate = (dateString: string) => {
@@ -1733,30 +1834,25 @@ const HandlerManagementPage: React.FC = () => {
       String(stageId).includes(stageSearch);
   });
 
-  // Get unique departments from handlers
-  const uniqueDepartments = Array.from(new Set(handlers.map(h => h.department).filter(Boolean))).sort();
+  const handlersWithCases = handlers.filter(
+    (handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) > 0
+  );
+  const retentionHandlersWithCases = retentionHandlers.filter(
+    (handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) > 0
+  );
 
-  // Filter handlers based on page search query and department filter
-  let filteredHandlersForPage = handlers.filter(handler => {
-    // Department filter
-    if (selectedDepartment && handler.department !== selectedDepartment) {
-      return false;
-    }
+  type HandlerSortColumn = 'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases';
 
-    // Search query filter
-    if (!pageEmployeeSearchQuery.trim()) return true;
-    const query = pageEmployeeSearchQuery.toLowerCase();
-    return handler.display_name.toLowerCase().includes(query) ||
-      (handler.department && handler.department.toLowerCase().includes(query));
-  });
-
-  // Sort handlers if a sort column is selected
-  if (sortColumn) {
-    filteredHandlersForPage = [...filteredHandlersForPage].sort((a, b) => {
-      let valueA: number;
-      let valueB: number;
-
-      switch (sortColumn) {
+  const sortHandlerList = (
+    list: Handler[],
+    column: HandlerSortColumn | null,
+    direction: 'asc' | 'desc',
+  ) => {
+    if (!column) return list;
+    return [...list].sort((a, b) => {
+      let valueA = 0;
+      let valueB = 0;
+      switch (column) {
         case 'due':
           valueA = a.dueAmount || 0;
           valueB = b.dueAmount || 0;
@@ -1784,21 +1880,51 @@ const HandlerManagementPage: React.FC = () => {
         default:
           return 0;
       }
-
-      if (sortDirection === 'asc') {
-        return valueA - valueB;
-      } else {
-        return valueB - valueA;
-      }
+      return direction === 'asc' ? valueA - valueB : valueB - valueA;
     });
-  }
+  };
 
-  const handleSort = (column: 'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases') => {
+  const matchesPageHandlerFilter = (handler: Handler) => {
+    if (selectedDepartment && handler.department !== selectedDepartment) return false;
+    if (!pageEmployeeSearchQuery.trim()) return true;
+    const query = pageEmployeeSearchQuery.toLowerCase();
+    return handler.display_name.toLowerCase().includes(query) ||
+      Boolean(handler.department && handler.department.toLowerCase().includes(query));
+  };
+
+  // Get unique departments from handlers who have cases
+  const uniqueDepartments = Array.from(new Set([
+    ...handlersWithCases.map(h => h.department),
+    ...retentionHandlersWithCases.map(h => h.department),
+  ].filter(Boolean))).sort();
+
+  const filteredHandlersForPage = sortHandlerList(
+    handlersWithCases.filter(matchesPageHandlerFilter),
+    sortColumn,
+    sortDirection,
+  );
+
+  const filteredRetentionHandlersForPage = sortHandlerList(
+    retentionHandlersWithCases.filter(matchesPageHandlerFilter),
+    retentionSortColumn,
+    retentionSortDirection,
+  );
+
+  const handleSort = (column: HandlerSortColumn) => {
     if (sortColumn === column) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
       setSortColumn(column);
       setSortDirection('asc');
+    }
+  };
+
+  const handleRetentionSort = (column: HandlerSortColumn) => {
+    if (retentionSortColumn === column) {
+      setRetentionSortDirection(retentionSortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setRetentionSortColumn(column);
+      setRetentionSortDirection('asc');
     }
   };
 
@@ -1858,35 +1984,55 @@ const HandlerManagementPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <span className="loading loading-spinner loading-lg"></span>
+      <div className="flex min-h-full w-full items-center justify-center bg-[#f3f4f6]">
+        <span className="loading loading-spinner loading-lg text-primary"></span>
       </div>
     );
   }
 
   return (
-    <div className="w-full max-w-[95vw] xl:max-w-[98vw] mx-auto px-2 sm:px-4 md:px-6 lg:px-8 xl:px-12 py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Handler Management</h1>
-        <p className="text-gray-600">Manage handlers and assign leads</p>
+    <div className="flex min-h-full w-full bg-[#f3f4f6]">
+      <div className="min-w-0 flex-1 px-2 py-6 sm:px-3">
+      <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold flex items-center gap-3">
+            <UserGroupIcon className="w-8 h-8 text-primary" />
+            Handler Management
+          </h1>
+          <p className="mt-1 text-sm text-gray-500">Manage handlers and assign leads</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            handlerManagementCache = null;
+            fetchData();
+          }}
+          disabled={loading}
+          className="btn btn-ghost btn-sm gap-1 self-start md:self-auto"
+          title="Refresh data"
+        >
+          <ArrowPathIcon className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
       </div>
 
       {/* Employee Search Bar and Department Filter */}
       <div
-        className={`mb-6 flex flex-col sm:flex-row gap-4 ${
+        className={`mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between ${
           pageEmployeeSearchQuery.trim()
-            ? 'sticky top-0 z-10 bg-white dark:bg-base-100 py-4 -mx-2 sm:-mx-4 md:-mx-6 lg:-mx-8 xl:-mx-12 px-2 sm:px-4 md:px-6 lg:px-8 xl:px-12 rounded-b-lg shadow-md border-b border-gray-200'
+            ? 'sticky top-0 z-10 bg-[#f3f4f6] py-4 -mx-2 px-2 sm:-mx-3 sm:px-3'
             : ''
         }`}
       >
-        <div className="flex-1">
-          <label className="label pb-2">
-            <span className="label-text font-semibold">Search Employees</span>
+        <div className="relative w-full min-w-0 max-w-md">
+          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            Search employees
           </label>
+          <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-[2.15rem] z-10 h-4 w-4 text-gray-400" />
           <input
             type="text"
             placeholder="Search by name or department..."
-            className="input input-bordered w-full"
+            className="input input-bordered w-full rounded-xl border-gray-200 bg-white !pl-9 text-sm"
             value={pageEmployeeSearchQuery}
             onChange={(e) => {
               setPageEmployeeSearchQuery(e.target.value);
@@ -1894,12 +2040,12 @@ const HandlerManagementPage: React.FC = () => {
             }}
           />
         </div>
-        <div className="sm:w-64">
-          <label className="label pb-2">
-            <span className="label-text font-semibold">Department</span>
+        <div className="w-full md:w-64">
+          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            Department
           </label>
           <select
-            className="select select-bordered w-full"
+            className="select select-bordered w-full rounded-xl border-gray-200 bg-white text-sm"
             value={selectedDepartment}
             onChange={(e) => setSelectedDepartment(e.target.value)}
           >
@@ -1912,117 +2058,91 @@ const HandlerManagementPage: React.FC = () => {
       </div>
 
       {/* Summary Boxes */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        {/* Handlers Summary */}
-        <div className="relative bg-blue-50 rounded-2xl shadow-md border border-blue-100 p-6">
-          <button
-            onClick={scrollToHandlers}
-            className="btn btn-circle btn-sm btn-primary absolute top-2 right-2"
-            title="View Table"
-          >
-            <EyeIcon className="w-5 h-5" />
-          </button>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-3 bg-blue-100 rounded-xl">
-              <UserGroupIcon className="w-6 h-6 text-blue-600" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold text-gray-900">Total Handlers</h3>
-              <p className="text-3xl font-bold text-gray-900">{handlers.length}</p>
-            </div>
+      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <button
+          type="button"
+          onClick={scrollToHandlers}
+          className={`${PIPELINE_SUMMARY_GRADIENTS.missed_interaction} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
+        >
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white/90">Total Handlers</p>
+            <p className="text-3xl font-bold">{handlerPoolCount}</p>
+            <p className="mt-1 truncate text-xs text-white/80">Employees with bonus roles H and DM</p>
           </div>
-        </div>
+          <div className="shrink-0 rounded-full bg-white/20 p-3">
+            <UserGroupIcon className="h-7 w-7" />
+          </div>
+        </button>
 
-        {/* Total Cases Summary */}
-        <div className="bg-purple-50 rounded-2xl shadow-md border border-purple-100 p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-3 bg-purple-100 rounded-xl">
-              <BriefcaseIcon className="w-6 h-6 text-purple-600" />
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Total Cases (New + Active)</h3>
-              <p className="text-3xl font-bold text-gray-900">
-                {handlers.reduce((sum, h) => sum + h.newCasesCount + h.activeCasesCount, 0)}
-              </p>
-            </div>
+        <button
+          type="button"
+          onClick={scrollToHandlers}
+          className={`${PIPELINE_SUMMARY_GRADIENTS.upcoming_meeting} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
+        >
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white/90">Total Cases</p>
+            <p className="text-3xl font-bold">
+              {handlersWithCases.reduce((sum, h) => sum + h.newCasesCount + h.activeCasesCount, 0)}
+            </p>
+            <p className="mt-1 truncate text-xs text-white/80">New + active cases across handlers</p>
           </div>
-        </div>
+          <div className="shrink-0 rounded-full bg-white/20 p-3">
+            <BriefcaseIcon className="h-7 w-7" />
+          </div>
+        </button>
 
-        {/* Unassigned Leads Summary */}
-        <div className="relative bg-yellow-50 rounded-2xl shadow-md border border-yellow-100 p-6">
-          <button
-            onClick={scrollToUnassignedLeads}
-            className="btn btn-circle btn-sm btn-primary absolute top-2 right-2"
-            title="View Table"
-          >
-            <EyeIcon className="w-5 h-5" />
-          </button>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-3 bg-yellow-100 rounded-xl">
-              <DocumentTextIcon className="w-6 h-6 text-yellow-600" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold text-gray-900">Unassigned Leads</h3>
-              <p className="text-3xl font-bold text-gray-900">{unassignedLeads.length}</p>
-            </div>
+        <button
+          type="button"
+          onClick={scrollToUnassignedLeads}
+          className={`${PIPELINE_SUMMARY_GRADIENTS.lost_interaction} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
+        >
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white/90">Unassigned Leads</p>
+            <p className="text-3xl font-bold">{unassignedLeads.length}</p>
+            <p className="mt-1 truncate text-xs text-white/80">Signed leads waiting for a handler</p>
           </div>
-        </div>
+          <div className="shrink-0 rounded-full bg-white/20 p-3">
+            <DocumentTextIcon className="h-7 w-7" />
+          </div>
+        </button>
 
-        {/* Next Payments Summary */}
-        <div className="relative bg-green-50 rounded-2xl shadow-md border border-green-100 p-6">
-          <button
-            onClick={() => {
-              setShowNextPaymentsTable(!showNextPaymentsTable);
-              if (!showNextPaymentsTable) {
-                setTimeout(() => {
-                  nextPaymentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }, 100);
-              }
-            }}
-            className="btn btn-circle btn-sm btn-primary absolute top-2 right-2"
-            title={showNextPaymentsTable ? 'Hide Table' : 'View Table'}
-          >
-            <EyeIcon className="w-5 h-5" />
-          </button>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-3 bg-green-100 rounded-xl">
-              <CurrencyDollarIcon className="w-6 h-6 text-green-600" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold text-gray-900">Upcoming Payments</h3>
-              <p className="text-3xl font-bold text-gray-900">{nextPayments.length}</p>
-            </div>
+        <button
+          type="button"
+          onClick={() => {
+            setShowNextPaymentsTable(!showNextPaymentsTable);
+            if (!showNextPaymentsTable) {
+              setTimeout(() => {
+                nextPaymentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }, 100);
+            }
+          }}
+          className={`${PIPELINE_SUMMARY_GRADIENTS.high_value} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl ${
+            showNextPaymentsTable ? 'ring-4 ring-white/70 scale-[1.02]' : ''
+          }`}
+        >
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white/90">Upcoming Payments</p>
+            <p className="text-3xl font-bold">{nextPayments.length}</p>
+            <p className="mt-1 truncate text-xs text-white/80">Next payments on unassigned leads</p>
           </div>
-        </div>
+          <div className="shrink-0 rounded-full bg-white/20 p-3">
+            <CurrencyDollarIcon className="h-7 w-7" />
+          </div>
+        </button>
       </div>
 
       {/* Unassigned Leads */}
       <div ref={unassignedLeadsRef} className="mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-gray-900">Unassigned Leads</h2>
-          <button
-            type="button"
-            onClick={() => {
-              handlerManagementCache = null;
-              fetchData();
-            }}
-            disabled={loading}
-            className="btn btn-sm btn-ghost gap-1"
-            title="Refresh data"
-          >
-            <ArrowPathIcon className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-        </div>
+        <h2 className="mb-4 text-xl font-bold text-gray-900">Unassigned Leads</h2>
 
         {/* Filters */}
         {unassignedLeads.length > 0 && (
-          <div className="mb-4 flex flex-wrap gap-4">
+          <div className="relative z-20 mb-4 flex flex-wrap gap-4">
             {/* Category Filter */}
-            <div className="relative flex-1 min-w-[200px]">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Main Category (Multi-select)</label>
+            <div className={`relative min-w-[200px] flex-1 ${showCategoryDropdown ? 'z-30' : ''}`}>
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">Main Category</label>
               <div
-                className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+                className="flex min-h-[42px] w-full cursor-text flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 focus-within:outline-none focus-within:ring-2 focus-within:ring-primary/30"
                 onClick={() => setShowCategoryDropdown(true)}
               >
                 {selectedCategories && selectedCategories.length > 0 ? (
@@ -2060,10 +2180,10 @@ const HandlerManagementPage: React.FC = () => {
               {showCategoryDropdown && (
                 <>
                   <div
-                    className="fixed inset-0 z-[5]"
+                    className="fixed inset-0 z-20"
                     onClick={() => setShowCategoryDropdown(false)}
                   />
-                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
                     <div
                       className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                       onClick={(e) => {
@@ -2103,10 +2223,10 @@ const HandlerManagementPage: React.FC = () => {
             </div>
 
             {/* Stage Filter */}
-            <div className="relative flex-1 min-w-[200px]">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Stage (Multi-select)</label>
+            <div className={`relative min-w-[200px] flex-1 ${showStageDropdown ? 'z-30' : ''}`}>
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">Stage</label>
               <div
-                className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+                className="flex min-h-[42px] w-full cursor-text flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 focus-within:outline-none focus-within:ring-2 focus-within:ring-primary/30"
                 onClick={() => setShowStageDropdown(true)}
               >
                 {selectedStages && selectedStages.length > 0 ? (
@@ -2147,10 +2267,10 @@ const HandlerManagementPage: React.FC = () => {
               {showStageDropdown && (
                 <>
                   <div
-                    className="fixed inset-0 z-[5]"
+                    className="fixed inset-0 z-20"
                     onClick={() => setShowStageDropdown(false)}
                   />
-                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
                     <div
                       className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                       onClick={(e) => {
@@ -2269,14 +2389,24 @@ const HandlerManagementPage: React.FC = () => {
         )}
 
         {unassignedLeads.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">No unassigned leads found</p>
+          <div className={PIPELINE_TABLE_SHELL}>
+            <table className={PIPELINE_TABLE_CLASS}>
+              <tbody>
+                <tr>
+                  <td className="bg-white px-4 py-12 text-center text-sm text-gray-500" style={PIPELINE_CELL_STYLE}>
+                    No unassigned leads found
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="table w-full">
-              <thead>
+          <div className={PIPELINE_TABLE_SHELL}>
+            <table className={PIPELINE_TABLE_CLASS}>
+              <thead className={PIPELINE_THEAD_CLASS}>
                 <tr>
                   {isSelectionMode && (
-                    <th>
+                    <th className="px-2 py-3 text-left font-semibold">
                       <input
                         type="checkbox"
                         className="checkbox checkbox-sm"
@@ -2306,41 +2436,31 @@ const HandlerManagementPage: React.FC = () => {
                       />
                     </th>
                   )}
-                  <th>Lead #</th>
-                  <th>Contact</th>
-                  <th>Category</th>
-                  <th>Topic</th>
-                  <th>Stage</th>
-                  <th>
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleUnassignedSort('signedDate');
-                      }}
-                    >
-                      Signed Date
-                      {unassignedSortColumn === 'signedDate' && (
-                        <span>{unassignedSortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th className="px-2 py-3 text-left font-semibold">Lead</th>
+                  <th className="px-2 py-3 text-left font-semibold">Contact</th>
+                  <th className="px-2 py-3 text-left font-semibold">Category</th>
+                  <th className="px-2 py-3 text-left font-semibold">Topic</th>
+                  <th className="px-2 py-3 text-left font-semibold">Stage</th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleUnassignedSort('signedDate');
+                    }}
+                  >
+                    Signed Date {unassignedSortColumn === 'signedDate' && <span className="ml-1">{unassignedSortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
-                  <th>Applicants</th>
-                  <th>
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleUnassignedSort('total');
-                      }}
-                    >
-                      Total
-                      {unassignedSortColumn === 'total' && (
-                        <span>{unassignedSortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th className="px-2 py-3 text-left font-semibold">Applicants</th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleUnassignedSort('total');
+                    }}
+                  >
+                    Total {unassignedSortColumn === 'total' && <span className="ml-1">{unassignedSortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
-                  <th>Assign</th>
+                  <th className="px-2 py-3 text-right font-semibold">Assign</th>
                 </tr>
               </thead>
               <tbody>
@@ -2379,7 +2499,7 @@ const HandlerManagementPage: React.FC = () => {
                   .map(lead => (
                   <tr
                     key={lead.id}
-                    className={`hover cursor-pointer ${selectedLeads.has(lead.id) ? 'bg-primary/10' : ''}`}
+                    className={pipelineRowClassName(selectedLeads.has(lead.id))}
                     onClick={() => {
                       if (isSelectionMode) {
                         setSelectedLeads(prev => {
@@ -2394,7 +2514,7 @@ const HandlerManagementPage: React.FC = () => {
                     }}
                   >
                     {isSelectionMode && (
-                      <td onClick={(e) => e.stopPropagation()}>
+                      <td className="px-2 py-3.5" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           className="checkbox checkbox-sm"
@@ -2410,35 +2530,17 @@ const HandlerManagementPage: React.FC = () => {
                         />
                       </td>
                     )}
-                    <td>{lead.lead_number || lead.id}</td>
-                    <td>{lead.name}</td>
-                    <td>{lead.category || 'No Category'}</td>
-                    <td>{lead.topic || 'N/A'}</td>
-                    <td>
-                      {(() => {
-                        const stageStr = String(lead.stage ?? '');
-                        const stageName = lead.stage_name || getStageName(stageStr) || stageStr || 'No Stage';
-                        const stageColour = getStageColour(stageStr);
-                        const backgroundColor = stageColour || '#3f28cd';
-                        const textColor = (stageName === 'Scheduler assigned' || stageName === 'scheduler assigned' || stageName === 'scheduler_assigned')
-                          ? '#ffffff'
-                          : (stageColour ? getContrastingTextColor(stageColour) : '#ffffff');
-                        return (
-                          <span
-                            className="stage-badge badge text-xs px-2 py-0.5"
-                            style={{ backgroundColor, borderColor: backgroundColor, color: textColor }}
-                          >
-                            {stageName}
-                          </span>
-                        );
-                      })()}
-                    </td>
-                    <td>{lead.signed_date ? formatDate(lead.signed_date) : 'N/A'}</td>
-                    <td>{lead.applicantsCount ?? 0}</td>
-                    <td>{formatCurrency(lead.total || 0, lead.currency)}</td>
-                    <td>
+                    <td className="px-2 py-3.5 font-mono text-sm text-gray-700">{lead.lead_number || lead.id}</td>
+                    <td className="px-2 py-3.5 font-semibold text-gray-900">{lead.name}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-700">{lead.category || '—'}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-700">{lead.topic || '—'}</td>
+                    <td className="px-2 py-3.5">{renderStageBadge(lead.stage, lead.stage_name)}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-700">{lead.signed_date ? formatDate(lead.signed_date) : '—'}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-700">{lead.applicantsCount ?? 0}</td>
+                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">{formatCurrency(lead.total || 0, lead.currency)}</td>
+                    <td className="px-2 py-3.5 text-right">
                       <button
-                        className="btn btn-sm btn-outline"
+                        className="btn btn-ghost btn-sm"
                         disabled={assigningLeadId === lead.id}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -2462,159 +2564,138 @@ const HandlerManagementPage: React.FC = () => {
 
       {/* Handlers and Their Cases */}
       <div ref={handlersRef} className="mb-8">
-        <div className="flex justify-between items-center mb-4">
+        <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-xl font-bold text-gray-900">Handlers & Their Cases</h2>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">View:</span>
-            <div className="btn-group">
-              <button
-                className={`btn btn-sm ${viewMode === 'boxes' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setViewMode('boxes')}
-              >
+          <div className="inline-flex shrink-0 items-center gap-1 rounded-full bg-gray-200/70 p-1">
+            <button
+              type="button"
+              className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
+                viewMode === 'boxes' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
+              }`}
+              onClick={() => setViewMode('boxes')}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Squares2X2Icon className="h-4 w-4" />
                 Boxes
-              </button>
-              <button
-                className={`btn btn-sm ${viewMode === 'table' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setViewMode('table')}
-              >
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
+                viewMode === 'table' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
+              }`}
+              onClick={() => setViewMode('table')}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Bars3Icon className="h-4 w-4" />
                 Table
-              </button>
-            </div>
+              </span>
+            </button>
           </div>
         </div>
 
         {viewMode === 'boxes' ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {filteredHandlersForPage.map(handler => (
               <div
                 key={handler.id}
-                className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
+                className="flex cursor-pointer flex-col justify-between rounded-2xl border border-gray-100 bg-white p-5 shadow-md transition-all duration-200 hover:-translate-y-1 hover:shadow-xl"
                 onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
               >
-                <div className="flex items-center gap-3 mb-2">
+                <div className="mb-3 flex items-center gap-3">
                   <EmployeeAvatar employeeId={handler.id} size="md" />
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-900">{handler.display_name}</h3>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="truncate font-semibold text-gray-900">{handler.display_name}</h3>
                     <p className="text-xs text-gray-500">{handler.department || 'Unknown'}</p>
                   </div>
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-4">
                   <div>
-                    <p className="text-sm text-gray-600">New Cases</p>
-                    <p className="text-xl font-bold text-blue-600">{handler.newCasesCount}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">New Cases</p>
+                    <p className="text-xl font-bold text-gray-900">{handler.newCasesCount}</p>
                   </div>
                   <div>
-                    <p className="text-sm text-gray-600">Active Cases</p>
-                    <p className="text-xl font-bold" style={{ color: 'rgb(25, 49, 31)' }}>{handler.activeCasesCount}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Active Cases</p>
+                    <p className="text-xl font-bold text-gray-900">{handler.activeCasesCount}</p>
                   </div>
                 </div>
-                <div className="mt-3 pt-3 border-t border-gray-200 grid grid-cols-2 gap-4">
+                <div className="mt-3 grid grid-cols-2 gap-4 border-t border-gray-100 pt-3">
                   <div>
-                    <p className="text-sm text-gray-600">In Process</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">In Process</p>
                     <p className="text-lg font-bold text-gray-900">{handler.inProcessCount || 0}</p>
                   </div>
                   <div>
-                    <p className="text-sm text-gray-600">Applications Sent</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Applications Sent</p>
                     <p className="text-lg font-bold text-gray-900">{handler.applicationsSentCount || 0}</p>
                   </div>
                 </div>
-                <div className="mt-3 pt-3 border-t border-gray-200">
-                  <p className="text-sm text-gray-600">Due (Last 30 Days)</p>
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Due (Last 30 Days)</p>
                   <p className="text-lg font-bold text-gray-900">{formatCurrency(handler.dueAmount || 0, 'NIS')}</p>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="table w-full">
-              <thead>
+          <div className={PIPELINE_TABLE_SHELL}>
+            <table className={PIPELINE_TABLE_CLASS}>
+              <thead className={PIPELINE_THEAD_CLASS}>
                 <tr>
-                  <th>Employee</th>
-                  <th>Department</th>
-                  <th>
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSort('due');
-                      }}
-                    >
-                      Due
-                      {sortColumn === 'due' && (
-                        <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th className="px-2 py-3 text-left font-semibold">Employee</th>
+                  <th className="px-2 py-3 text-left font-semibold">Department</th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSort('due');
+                    }}
+                  >
+                    Due {sortColumn === 'due' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
-                  <th>
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSort('newCases');
-                      }}
-                    >
-                      New Cases
-                      {sortColumn === 'newCases' && (
-                        <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSort('newCases');
+                    }}
+                  >
+                    New Cases {sortColumn === 'newCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
-                  <th>
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSort('activeCases');
-                      }}
-                    >
-                      Active Cases
-                      {sortColumn === 'activeCases' && (
-                        <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSort('activeCases');
+                    }}
+                  >
+                    Active Cases {sortColumn === 'activeCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
-                  <th>
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSort('inProcess');
-                      }}
-                    >
-                      In Process
-                      {sortColumn === 'inProcess' && (
-                        <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSort('inProcess');
+                    }}
+                  >
+                    In Process {sortColumn === 'inProcess' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
-                  <th>
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSort('applicationsSent');
-                      }}
-                    >
-                      Applications Sent
-                      {sortColumn === 'applicationsSent' && (
-                        <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSort('applicationsSent');
+                    }}
+                  >
+                    Applications Sent {sortColumn === 'applicationsSent' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
-                  <th className="bg-green-50">
-                    <button
-                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSort('totalCases');
-                      }}
-                    >
-                      Total Cases (New + Active)
-                      {sortColumn === 'totalCases' && (
-                        <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-                      )}
-                    </button>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSort('totalCases');
+                    }}
+                  >
+                    Total Cases {sortColumn === 'totalCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
                 </tr>
               </thead>
@@ -2622,37 +2703,177 @@ const HandlerManagementPage: React.FC = () => {
                 {filteredHandlersForPage.map(handler => (
                   <tr
                     key={handler.id}
-                    className="hover cursor-pointer"
+                    className={pipelineRowClassName()}
                     onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
                   >
-                    <td>
+                    <td className="px-2 py-3.5">
                       <div className="flex items-center gap-3">
                         <EmployeeAvatar employeeId={handler.id} size="md" />
                         <span className="font-semibold text-gray-900">{handler.display_name}</span>
                       </div>
                     </td>
-                    <td>
-                      <span className="text-gray-700">{handler.department || 'Unknown'}</span>
+                    <td className="px-2 py-3.5 text-sm text-gray-700">{handler.department || 'Unknown'}</td>
+                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
+                      {formatCurrency(handler.dueAmount || 0, 'NIS')}
                     </td>
-                    <td>
-                      <span className="text-gray-900 font-semibold">
-                        {formatCurrency(handler.dueAmount || 0, 'NIS')}
-                      </span>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.newCasesCount}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.activeCasesCount}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.inProcessCount || 0}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.applicationsSentCount || 0}</td>
+                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
+                      {handler.newCasesCount + handler.activeCasesCount}
                     </td>
-                    <td>
-                      <span className="text-gray-900">{handler.newCasesCount}</span>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Retention Handlers and Their Cases */}
+      <div ref={retentionHandlersRef} className="mb-8">
+        <h2 className="mb-4 text-xl font-bold text-gray-900">Retention Handler & Their Cases</h2>
+        {filteredRetentionHandlersForPage.length === 0 ? (
+          <div className={PIPELINE_TABLE_SHELL}>
+            <table className={PIPELINE_TABLE_CLASS}>
+              <tbody>
+                <tr>
+                  <td className="bg-white px-4 py-12 text-center text-sm text-gray-500" style={PIPELINE_CELL_STYLE}>
+                    No retention handlers with cases found
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : viewMode === 'boxes' ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {filteredRetentionHandlersForPage.map(handler => (
+              <div
+                key={handler.id}
+                className="flex cursor-pointer flex-col justify-between rounded-2xl border border-gray-100 bg-white p-5 shadow-md transition-all duration-200 hover:-translate-y-1 hover:shadow-xl"
+                onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
+              >
+                <div className="mb-3 flex items-center gap-3">
+                  <EmployeeAvatar employeeId={handler.id} size="md" />
+                  <div className="min-w-0 flex-1">
+                    <h3 className="truncate font-semibold text-gray-900">{handler.display_name}</h3>
+                    <p className="text-xs text-gray-500">{handler.department || 'Unknown'}</p>
+                  </div>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">New Cases</p>
+                    <p className="text-xl font-bold text-gray-900">{handler.newCasesCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Active Cases</p>
+                    <p className="text-xl font-bold text-gray-900">{handler.activeCasesCount}</p>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-4 border-t border-gray-100 pt-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">In Process</p>
+                    <p className="text-lg font-bold text-gray-900">{handler.inProcessCount || 0}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Applications Sent</p>
+                    <p className="text-lg font-bold text-gray-900">{handler.applicationsSentCount || 0}</p>
+                  </div>
+                </div>
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Due (Last 30 Days)</p>
+                  <p className="text-lg font-bold text-gray-900">{formatCurrency(handler.dueAmount || 0, 'NIS')}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className={PIPELINE_TABLE_SHELL}>
+            <table className={PIPELINE_TABLE_CLASS}>
+              <thead className={PIPELINE_THEAD_CLASS}>
+                <tr>
+                  <th className="px-2 py-3 text-left font-semibold">Employee</th>
+                  <th className="px-2 py-3 text-left font-semibold">Department</th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetentionSort('due');
+                    }}
+                  >
+                    Due {retentionSortColumn === 'due' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetentionSort('newCases');
+                    }}
+                  >
+                    New Cases {retentionSortColumn === 'newCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetentionSort('activeCases');
+                    }}
+                  >
+                    Active Cases {retentionSortColumn === 'activeCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetentionSort('inProcess');
+                    }}
+                  >
+                    In Process {retentionSortColumn === 'inProcess' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetentionSort('applicationsSent');
+                    }}
+                  >
+                    Applications Sent {retentionSortColumn === 'applicationsSent' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetentionSort('totalCases');
+                    }}
+                  >
+                    Total Cases {retentionSortColumn === 'totalCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRetentionHandlersForPage.map(handler => (
+                  <tr
+                    key={handler.id}
+                    className={pipelineRowClassName()}
+                    onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
+                  >
+                    <td className="px-2 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <EmployeeAvatar employeeId={handler.id} size="md" />
+                        <span className="font-semibold text-gray-900">{handler.display_name}</span>
+                      </div>
                     </td>
-                    <td>
-                      <span className="text-gray-900">{handler.activeCasesCount}</span>
+                    <td className="px-2 py-3.5 text-sm text-gray-700">{handler.department || 'Unknown'}</td>
+                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
+                      {formatCurrency(handler.dueAmount || 0, 'NIS')}
                     </td>
-                    <td>
-                      <span className="text-gray-900">{handler.inProcessCount || 0}</span>
-                    </td>
-                    <td>
-                      <span className="text-gray-900">{handler.applicationsSentCount || 0}</span>
-                    </td>
-                    <td className="bg-green-50">
-                      <span className="text-gray-900">{handler.newCasesCount + handler.activeCasesCount}</span>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.newCasesCount}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.activeCasesCount}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.inProcessCount || 0}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.applicationsSentCount || 0}</td>
+                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
+                      {handler.newCasesCount + handler.activeCasesCount}
                     </td>
                   </tr>
                 ))}
@@ -2665,33 +2886,34 @@ const HandlerManagementPage: React.FC = () => {
 
       {/* Next Payments */}
       {showNextPaymentsTable && (
-        <div ref={nextPaymentsRef}>
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Next Payments (Unassigned Leads)</h2>
-          {nextPayments.length === 0 ? (
-            <p className="text-gray-500 text-center py-8">No upcoming payments found</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="table w-full">
-                <thead>
+        <div ref={nextPaymentsRef} className="mb-8">
+          <h2 className="mb-4 text-xl font-bold text-gray-900">Next Payments (Unassigned Leads)</h2>
+          <div className={PIPELINE_TABLE_SHELL}>
+            <table className={PIPELINE_TABLE_CLASS}>
+              <thead className={PIPELINE_THEAD_CLASS}>
+                <tr>
+                  <th className="px-2 py-3 text-left font-semibold">Contact</th>
+                  <th className="px-2 py-3 text-left font-semibold">Category</th>
+                  <th className="px-2 py-3 text-left font-semibold">Due Date</th>
+                  <th className="px-2 py-3 text-left font-semibold">Amount</th>
+                  <th className="px-2 py-3 text-right font-semibold">Assign Handler</th>
+                </tr>
+              </thead>
+              <tbody>
+                {nextPayments.length === 0 ? (
                   <tr>
-                    <th>Contact</th>
-                    <th>Category</th>
-                    <th>Due Date</th>
-                    <th>Amount</th>
-                    <th>Assign Handler</th>
+                    <td colSpan={5} className="bg-white px-4 py-12 text-center text-sm text-gray-500" style={PIPELINE_CELL_STYLE}>
+                      No upcoming payments found
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {nextPayments.map((payment, index) => (
-                    <tr key={`${payment.lead_id}-${index}`}>
-                      <td>
+                ) : (
+                  nextPayments.map((payment, index) => (
+                    <tr key={`${payment.lead_id}-${index}`} className={pipelineRowClassName()}>
+                      <td className="px-2 py-3.5">
                         <button
-                          className="text-blue-600 hover:underline"
+                          className="font-semibold text-gray-900 hover:underline"
                           onClick={(e) => {
-                            // Try to find the lead in unassignedLeads to get lead_number
                             const matchingLead = unassignedLeads.find(lead => lead.id === payment.lead_id);
-
-                            // Convert payment to UnassignedLead-like object for buildClientRoute
                             const leadForRoute: UnassignedLead = {
                               id: payment.lead_id,
                               name: payment.contact_name,
@@ -2705,12 +2927,12 @@ const HandlerManagementPage: React.FC = () => {
                           {payment.contact_name}
                         </button>
                       </td>
-                      <td>{payment.category || 'No Category'}</td>
-                      <td>{formatDate(payment.due_date || payment.date || '')}</td>
-                      <td>{formatCurrency(payment.value, payment.currency)}</td>
-                      <td>
+                      <td className="px-2 py-3.5 text-sm text-gray-700">{payment.category || '—'}</td>
+                      <td className="px-2 py-3.5 text-sm text-gray-700">{formatDate(payment.due_date || payment.date || '')}</td>
+                      <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">{formatCurrency(payment.value, payment.currency)}</td>
+                      <td className="px-2 py-3.5 text-right">
                         <button
-                          className="btn btn-sm btn-outline"
+                          className="btn btn-ghost btn-sm"
                           disabled={assigningLeadId === payment.lead_id}
                           onClick={() => handleAssignClick(payment.lead_id)}
                         >
@@ -2722,18 +2944,18 @@ const HandlerManagementPage: React.FC = () => {
                         </button>
                       </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
       {/* Assign Handler Modal */}
       {showAssignModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-[1400px] w-full mx-4 max-h-[80vh] flex flex-col">
+          <div className="mx-4 flex max-h-[80vh] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
             <div className="p-6 border-b border-gray-200">
               <h3 className="text-xl font-bold text-gray-900">Assign Handler</h3>
               <p className="text-sm text-gray-600 mt-1">Search and select an employee to assign</p>
@@ -2874,7 +3096,7 @@ const HandlerManagementPage: React.FC = () => {
             }}
           />
           {/* Modal */}
-          <div className="fixed top-20 right-4 bg-white rounded-lg shadow-2xl border border-gray-200 z-50 w-[1200px] max-h-[80vh] flex flex-col">
+          <div className="fixed top-20 right-4 z-50 flex max-h-[80vh] w-[1200px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl">
           <div className="p-4 border-b border-gray-200 flex items-center justify-between">
             <div>
               <h3 className="text-lg font-bold text-gray-900">Assign Selected Leads</h3>
@@ -3023,6 +3245,7 @@ const HandlerManagementPage: React.FC = () => {
         </div>
         </>
       )}
+      </div>
     </div>
   );
 };

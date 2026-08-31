@@ -949,6 +949,9 @@ const AppContentInner: React.FC = () => {
               userName={userFullName || userName}
               isFullPage={isAiChatFullPage}
               onToggleFullPage={() => setIsAiChatFullPage(!isAiChatFullPage)}
+              currentLead={selectedClient}
+              onOpenEmailCompose={handleOpenEmailThread}
+              onOpenWhatsAppCompose={handleOpenWhatsApp}
             />
             {/* Contact Selector Modal */}
             {selectedClient && (selectedClient as any)._tempLeadId && (
@@ -1220,6 +1223,9 @@ const AppContentInner: React.FC = () => {
                 userName={userFullName || userName}
                 isFullPage={isAiChatFullPage}
                 onToggleFullPage={() => setIsAiChatFullPage(!isAiChatFullPage)}
+                currentLead={selectedClient}
+                onOpenEmailCompose={handleOpenEmailThread}
+                onOpenWhatsAppCompose={handleOpenWhatsApp}
               />
               {/* Contact Selector Modal */}
               {selectedClient && (selectedClient as any)._tempLeadId && (
