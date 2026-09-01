@@ -47,7 +47,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function ChatEmployeeChip({ employee }: { employee: ChatEmployeeHit }) {
+function ChatEmployeeChip({ employee }: { employee: ChatEmployeeHit; compact?: boolean }) {
   const [imgErr, setImgErr] = useState(false);
   const showPhoto = Boolean(employee.photo_url) && !imgErr;
 
@@ -78,10 +78,12 @@ export function ChatEmployeeNameText({
   text,
   employees,
   onOpen,
+  compact,
 }: {
   text: string;
   employees: ChatEmployeeHit[];
   onOpen?: () => void;
+  compact?: boolean;
 }) {
   if (!text) return null;
   if (!employees.length) return <ChatLeadNumberText text={text} onOpen={onOpen} />;
@@ -111,7 +113,7 @@ export function ChatEmployeeNameText({
     }
     const employee = byName.get(name.toLowerCase());
     if (employee) {
-      nodes.push(<ChatEmployeeChip key={`e-${key++}`} employee={employee} />);
+      nodes.push(<ChatEmployeeChip key={`e-${key++}`} employee={employee} compact={compact} />);
     } else {
       nodes.push(<ChatLeadNumberText key={`t-${key++}`} text={name} onOpen={onOpen} />);
     }

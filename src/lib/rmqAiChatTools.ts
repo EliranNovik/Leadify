@@ -46,6 +46,9 @@ import {
 } from './rmqAiChatContext';
 import { requireResolvedLead } from './rmqAiLeadResolver';
 import { logRmqAiToolRouting } from './rmqAiRoutingLog';
+import { getValidTeamsLink } from './meetingJoinLink';
+import { formatMeetingValue } from './meetingValue';
+import { ensureLeadCategories, resolveLeadCategoryName } from './leadMetaDisplay';
 import {
   clickableLeadNumber,
   leadDisplayName,
@@ -312,7 +315,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'list_calendar_day',
       description:
-        'Get the office calendar for ONE date in Asia/Jerusalem (today, tomorrow, or YYYY-MM-DD). Use for “who has meetings today”, “my meetings today”, or meetings scheduled by an employee. Do NOT use this to find meetings for a particular client or the open lead — call list_client_meetings instead.',
+        'Get the office calendar for ONE date in Asia/Jerusalem (today, tomorrow, or YYYY-MM-DD). Use for “who has meetings today”, “my meetings today”, or meetings scheduled by an employee. Returns JSON; the UI renders one card per meeting. Reply with one short sentence only. Do NOT use this to find meetings for a particular client or the open lead — call list_client_meetings instead.',
       parameters: {
         type: 'object',
         properties: {
@@ -865,7 +868,7 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'When they ask who has meetings today/tomorrow or on a date, or meetings scheduled by an employee, ALWAYS call list_calendar_day first. ' +
   'When they ask for my meetings, meetings today (their own), or use the Meetings today shortcut, call list_calendar_day with scope=mine. That list is only meetings where the logged-in user is meeting manager, helper, guest, or a participant. ' +
   'When they ask who has meetings (everyone) or meetings scheduled by a named employee, use scope=all and pass scheduler= if they named someone. ' +
-  'Each meeting is two lines: (1) time, lead number, name (2) Meeting manager, Helper, Guests, Participants. Keep roles under the lead, not on the time line. Copy those names from the tool. ' +
+  'Reply with one short sentence only (e.g. Here are the meetings scheduled for tomorrow). The UI shows each meeting as a card. Do not list times, lead numbers, names, or roles in prose. Do not number the meetings. ' +
   'Scheduled meetings use the lead scheduler employee role. Pass scheduler= the name as typed; the tool fuzzy-matches typos and closest employees. Never put the scheduler name in query — query is the client. ' +
   'Do not say there are no meetings unless list_calendar_day returned none. ' +
   'When they ask about signed contracts, closed deals, who closed, or how many clients signed in a date range, ALWAYS call list_signed_contracts first. ' +
@@ -1467,9 +1470,16 @@ type MeetingListRow = {
   time: string;
   name: string;
   leadNumber: string;
+  location?: string;
+  joinUrl?: string;
   source: 'meetings' | 'leads_lead' | 'leads';
   status?: string;
+  stage?: string;
   category?: string;
+  topic?: string;
+  totalValue?: string;
+  meetingAmount?: number | string | null;
+  meetingCurrency?: string | null;
   key: string;
   meetingId?: number;
   newLeadId?: string;
@@ -1536,6 +1546,84 @@ async function loadSchedulerMaps(
           joinedEmployeeName(lead.scheduler_employee),
         ),
       );
+    }
+  }
+  return { newMap, legacyMap };
+}
+
+type MeetingLeadExtra = {
+  category: string;
+  topic: string;
+  stage?: string | null;
+  balance?: number | string | null;
+  balanceCurrency?: string | null;
+  proposalTotal?: number | string | null;
+  proposalCurrency?: string | null;
+  total?: number | string | null;
+  currencyId?: number | null;
+};
+
+async function loadMeetingLeadExtras(
+  newIds: string[],
+  legacyIds: number[],
+): Promise<{ newMap: Map<string, MeetingLeadExtra>; legacyMap: Map<string, MeetingLeadExtra> }> {
+  const newMap = new Map<string, MeetingLeadExtra>();
+  const legacyMap = new Map<string, MeetingLeadExtra>();
+  const categories = await ensureLeadCategories().catch(() => []);
+  const categoryLabel = (lead: Record<string, unknown>) =>
+    resolveLeadCategoryName(lead, categories) || '';
+
+  if (newIds.length) {
+    const leads = await fetchRowsInChunks(newIds, async (chunk) => {
+      const joined = await supabase
+        .from('leads')
+        .select(
+          'id, category, category_id, topic, stage, balance, balance_currency, proposal_total, proposal_currency, misc_category!fk_leads_category_id ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) )',
+        )
+        .in('id', chunk);
+      if (!joined.error) return joined.data || [];
+      const fallback = await supabase
+        .from('leads')
+        .select('id, category, category_id, topic, stage, balance, balance_currency, proposal_total, proposal_currency')
+        .in('id', chunk);
+      return fallback.data || [];
+    });
+    for (const lead of leads) {
+      newMap.set(String(lead.id), {
+        category: categoryLabel(lead),
+        topic: String(lead.topic || '').trim(),
+        stage: lead.stage != null ? String(lead.stage) : null,
+        balance: lead.balance,
+        balanceCurrency: lead.balance_currency,
+        proposalTotal: lead.proposal_total,
+        proposalCurrency: lead.proposal_currency,
+      });
+    }
+  }
+  if (legacyIds.length) {
+    const leads = await fetchRowsInChunks(legacyIds, async (chunk) => {
+      const joined = await supabase
+        .from('leads_lead')
+        .select(
+          'id, category, category_id, stage, total, currency_id, misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) )',
+        )
+        .in('id', chunk);
+      if (!joined.error) return joined.data || [];
+      const fallback = await supabase
+        .from('leads_lead')
+        .select('id, category, category_id, stage, total, currency_id')
+        .in('id', chunk);
+      return fallback.data || [];
+    });
+    for (const lead of leads) {
+      const category = categoryLabel(lead);
+      legacyMap.set(String(lead.id), {
+        category,
+        topic: String(lead.topic || category).trim(),
+        stage: lead.stage != null ? String(lead.stage) : null,
+        total: lead.total,
+        currencyId: lead.currency_id != null ? Number(lead.currency_id) : null,
+      });
     }
   }
   return { newMap, legacyMap };
@@ -1664,6 +1752,27 @@ function uniqueRoleNames(values: Array<string | undefined | null>): string[] {
   return names;
 }
 
+function splitPersonNames(value: string): string[] {
+  return String(value || '')
+    .split(/,|\band\b/i)
+    .map((part) => part.replace(/\+\d+\s+more/i, '').replace(/[.,;]+$/g, '').trim())
+    .filter((part) => part && part !== '—' && !/^\+\d+/.test(part));
+}
+
+function uniqueParticipantNames(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const value of values) {
+    for (const name of splitPersonNames(roleDisplayName(value || ''))) {
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
 async function loadParticipantNamesByMeeting(
   meetingIds: number[],
   employees: EmployeeHit[],
@@ -1731,7 +1840,7 @@ async function executeListMeetings(args: {
   }
 
   const meetingsSelect =
-    'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2, lead:leads!meetings_client_id_fkey(id, name, lead_number, manual_id, topic, manager, helper), legacy_lead:leads_lead!meetings_legacy_lead_id_fkey(id, name, lead_number, manual_id, category, meeting_manager_id, meeting_lawyer_id)';
+    'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, meeting_amount, meeting_currency, teams_meeting_url, custom_link, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2, lead:leads!meetings_client_id_fkey(id, name, lead_number, manual_id, topic, category, stage, manager, helper), legacy_lead:leads_lead!meetings_legacy_lead_id_fkey(id, name, lead_number, manual_id, category, stage, meeting_manager_id, meeting_lawyer_id)';
   let meetingsRes = await supabase
     .from('meetings')
     .select(meetingsSelect)
@@ -1744,7 +1853,7 @@ async function executeListMeetings(args: {
     meetingsRes = await supabase
       .from('meetings')
       .select(
-        'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2, lead:leads!client_id(id, name, lead_number, manual_id, topic, manager, helper), legacy_lead:leads_lead!legacy_lead_id(id, name, lead_number, manual_id, category, meeting_manager_id, meeting_lawyer_id)',
+        'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, meeting_amount, meeting_currency, teams_meeting_url, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2, lead:leads!client_id(id, name, lead_number, manual_id, topic, category, stage, manager, helper), legacy_lead:leads_lead!legacy_lead_id(id, name, lead_number, manual_id, category, stage, meeting_manager_id, meeting_lawyer_id)',
       )
       .gte('meeting_date', dateStr)
       .lt('meeting_date', next)
@@ -1756,7 +1865,7 @@ async function executeListMeetings(args: {
     meetingsRes = await supabase
       .from('meetings')
       .select(
-        'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2',
+        'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, meeting_amount, meeting_currency, teams_meeting_url, client_id, legacy_lead_id, meeting_manager, helper, extern1, extern2',
       )
       .gte('meeting_date', dateStr)
       .lt('meeting_date', next)
@@ -1787,9 +1896,20 @@ async function executeListMeetings(args: {
       time: String(meeting.meeting_time || '').slice(0, 5) || '—',
       name,
       leadNumber,
+      location: String(meeting.meeting_location || '').trim(),
+      joinUrl:
+        getValidTeamsLink(meeting.teams_meeting_url) ||
+        getValidTeamsLink(meeting.custom_link) ||
+        '',
       source: 'meetings',
       status: meeting.status || '',
-      category: String((lead as { category?: unknown; topic?: unknown } | null)?.category || (lead as { topic?: unknown } | null)?.topic || ''),
+      category: String((lead as { category?: unknown } | null)?.category || ''),
+      stage: (lead as { stage?: unknown } | null)?.stage != null
+        ? String((lead as { stage?: unknown }).stage)
+        : undefined,
+      topic: String((lead as { topic?: unknown; category?: unknown } | null)?.topic || (lead as { category?: unknown } | null)?.category || ''),
+      meetingAmount: meeting.meeting_amount,
+      meetingCurrency: meeting.meeting_currency,
       meetingId: Number.isFinite(Number(meeting.id)) ? Number(meeting.id) : undefined,
       newLeadId: meeting.client_id ? String(meeting.client_id) : lead?.id && !meeting.legacy_lead_id ? String(lead.id) : undefined,
       legacyLeadId: meeting.legacy_lead_id
@@ -1828,6 +1948,7 @@ async function executeListMeetings(args: {
       leadNumber: clickableLeadNumber(lead),
       source: 'leads_lead',
       category: String(lead.category || ''),
+      stage: lead.stage != null ? String(lead.stage) : undefined,
       legacyLeadId: String(lead.id),
       scheduler: '',
       schedulerId: '',
@@ -1859,6 +1980,7 @@ async function executeListMeetings(args: {
       leadNumber: clickableLeadNumber(lead),
       source: 'leads',
       category: String(lead.topic || ''),
+      stage: lead.stage != null ? String(lead.stage) : undefined,
       newLeadId: String(lead.id),
       scheduler: '',
       schedulerId: '',
@@ -1892,8 +2014,11 @@ async function executeListMeetings(args: {
         .filter((id) => Number.isFinite(id)),
     ),
   );
-  const schedulerMaps = await loadSchedulerMaps(newIds, legacyIds, employees);
-  const roleMaps = await loadLeadMeetingRoleMaps(newIds, legacyIds, employees);
+  const [schedulerMaps, roleMaps, extraMaps] = await Promise.all([
+    loadSchedulerMaps(newIds, legacyIds, employees),
+    loadLeadMeetingRoleMaps(newIds, legacyIds, employees),
+    loadMeetingLeadExtras(newIds, legacyIds),
+  ]);
   const meetingIds = Array.from(
     new Set(rows.map((row) => row.meetingId).filter((id): id is number => Number.isFinite(id))),
   );
@@ -2021,34 +2146,60 @@ async function executeListMeetings(args: {
   const schedulerLabel = schedulerFilter
     ? formatMatchedEmployeeLabel(schedulerFilter, schedulerHits)
     : '';
-  const rolePeople = (names: string[]) => (names.length ? names.join(', ') : '—');
-  const lines = filtered.slice(0, 80).map((row, index) => {
-    const headline = [
-      `**${row.time}**`,
-      row.leadNumber ? `${row.leadNumber} ${row.name}` : row.name,
-    ].join(' ');
-    const roles = [
-      `Meeting manager: ${row.managerName && row.managerName !== '—' ? row.managerName : '—'}`,
-      `Helper: ${row.helperName && row.helperName !== '—' ? row.helperName : '—'}`,
-      `Guests: ${rolePeople(row.guestNames)}`,
-      `Participants: ${rolePeople(row.participantNames)}`,
-    ].join(' · ');
-    const yours = mine && row.myRoles.length ? `\nYour role: ${row.myRoles.join(', ')}` : '';
-    return `${index + 1}. ${headline}\n${roles}${yours}`;
-  });
+  const cleanRole = (value?: string) => {
+    const text = String(value || '').trim();
+    return text && text !== '—' ? text : null;
+  };
 
-  return [
-    mine
-      ? `Your meetings on ${dateStr} (Asia/Jerusalem; meeting manager, helper, guest, or participant): ${filtered.length}`
-      : `Meetings on ${dateStr} (Asia/Jerusalem): ${filtered.length}`,
-    mine && me.displayName ? `Logged-in employee: ${me.displayName}` : '',
-    schedulerLabel ? `Scheduler filter: ${schedulerLabel}` : '',
-    lines.join('\n\n'),
-    filtered.length > 80 ? `\n…and ${filtered.length - 80} more` : '',
-    'Copy this layout. First line: time, lead number, name. Second line: Meeting manager, Helper, Guests, Participants. Keep roles on their own line under the lead. Copy employee names exactly. Never write Unnamed when a lead number is present. Internal meetings have no client — say Internal meeting.',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  return JSON.stringify({
+    kind: 'calendar_day',
+    date: dateStr,
+    scope: mine ? 'mine' : 'all',
+    count: filtered.length,
+    scheduler: schedulerLabel || null,
+    meetings: filtered.slice(0, 80).map((row) => {
+      const extra = row.newLeadId
+        ? extraMaps.newMap.get(row.newLeadId)
+        : row.legacyLeadId
+          ? extraMaps.legacyMap.get(row.legacyLeadId)
+          : undefined;
+      const rawCategory = extra?.category || row.category || '';
+      const category = /^\d+$/.test(rawCategory) ? '' : rawCategory;
+      const topic = extra?.topic || row.topic || category;
+      const value = formatMeetingValue({
+        leadBalance: extra?.balance ?? extra?.proposalTotal,
+        leadBalanceCurrency: extra?.balanceCurrency || extra?.proposalCurrency,
+        legacyTotal: extra?.total,
+        legacyCurrencyId: extra?.currencyId,
+        meetingAmount: row.meetingAmount,
+        meetingCurrency: row.meetingCurrency,
+      });
+      const internal = !row.newLeadId && !row.legacyLeadId;
+      return {
+        time: row.time,
+        leadNumber: row.leadNumber || null,
+        name: row.name,
+        location: String(row.location || '').trim() || null,
+        joinUrl: String(row.joinUrl || '').trim() || null,
+        manager: cleanRole(row.managerName),
+        helper: cleanRole(row.helperName),
+        category: category || null,
+        topic: topic || null,
+        totalValue: value.amount ? value.display : null,
+        scheduler: cleanRole(row.scheduler),
+        stage: extra?.stage || row.stage || null,
+        internal,
+        participants: internal
+          ? uniqueParticipantNames([
+              ...row.participantNames,
+              ...row.guestNames,
+              row.managerName,
+              row.helperName,
+            ])
+          : [],
+      };
+    }),
+  });
 }
 
 function lastDayOfMonth(year: number, month1to12: number): string {

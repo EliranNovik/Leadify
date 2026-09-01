@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/solid';
-import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PhotoIcon, PlusIcon, QuestionMarkCircleIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PhotoIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
@@ -24,7 +24,14 @@ import { stripAiEmailSignature } from '../lib/emailComposeAiChat';
 import { parseChatLeadNumber } from './ChatLeadNumberText';
 import { loadChatEmployeeDirectory, type ChatEmployeeHit } from './ChatEmployeeNameText';
 import { ChatStageBadgeText, buildChatStageHits, loadChatStageHits, type ChatStageHit } from './ChatStageBadgeText';
-import { ChatMeetingCards, parseClientMeetingCard, type ChatMeetingCardData } from './ChatMeetingCard';
+import {
+  ChatCalendarMeetingCards,
+  ChatMeetingCards,
+  parseCalendarDayCards,
+  parseClientMeetingCard,
+  type ChatCalendarDayData,
+  type ChatMeetingCardData,
+} from './ChatMeetingCard';
 import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
 import {
   applyAiInputSuggestion,
@@ -71,6 +78,7 @@ interface Message {
   attachments?: RmqAiChatFile[];
   draftAction?: RmqAiDraftMeta;
   meetingCard?: ChatMeetingCardData;
+  calendarMeetings?: ChatCalendarDayData;
 }
 
 interface ChatHistory {
@@ -453,6 +461,14 @@ const isVisibleChatMessage = (message: Message) => {
   if (message.role === 'assistant' && message.tool_calls?.length && !message.content) return false;
   return true;
 };
+
+function calendarDayIntro(text: string): string {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
+  const first = trimmed.split(/\n+/)[0].trim();
+  if (/^\d+\.\s/.test(first) || /^\*\*\d{1,2}:\d{2}/.test(first)) return '';
+  return first;
+}
 
 const sanitizeMessages = (messages: Message[]) => {
   const sanitized: Message[] = [];
@@ -1128,7 +1144,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         : location.pathname.split('/').filter(Boolean)[0] || 'app',
     });
     const messagesForApi = sanitizeMessages([...conversationMessages, ...extraApiMessages]).map(
-      ({ attachments: _attachments, meetingCard: _meetingCard, draftAction: _draftAction, ...message }) => message,
+      ({
+        attachments: _attachments,
+        meetingCard: _meetingCard,
+        calendarMeetings: _calendarMeetings,
+        draftAction: _draftAction,
+        ...message
+      }) => message,
     );
 
     const callChat = async (payloadMessages: Message[], includeImages = false) => {
@@ -1160,6 +1182,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       const createdFiles: RmqAiChatFile[] = [];
       const appMapLinks: string[] = [];
       let meetingCard: ChatMeetingCardData | undefined;
+      let calendarMeetings: ChatCalendarDayData | undefined;
       for (let round = 0; round < 6; round += 1) {
         const reply = await callChat(conversation, round === 0);
         if (reply.tool_calls?.length) {
@@ -1195,6 +1218,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             if (fnName === 'list_client_meetings') {
               meetingCard = parseClientMeetingCard(toolResult) || meetingCard;
             }
+            if (fnName === 'list_calendar_day' || fnName === 'list_meetings') {
+              calendarMeetings = parseCalendarDayCards(toolResult) || calendarMeetings;
+            }
             conversation = [
               ...conversation,
               { role: 'tool', content: toolResult, tool_call_id: toolCall.id },
@@ -1229,6 +1255,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           attachments: createdFiles.length ? createdFiles : undefined,
           draftAction,
           meetingCard,
+          calendarMeetings,
         },
       ]);
     } catch (error) {
@@ -2016,6 +2043,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-messages-scroll {
           scrollbar-width: none;
           -ms-overflow-style: none;
+          container-type: inline-size;
+          container-name: ai-messages;
         }
         .ai-messages-scroll::-webkit-scrollbar {
           display: none;
@@ -2194,6 +2223,222 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           margin: 0;
           font-size: 0.875rem;
           color: var(--ai-text-muted);
+        }
+        .ai-cal-meeting-stack {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          gap: 0.55rem;
+          margin-top: 0.45rem;
+        }
+        .ai-cal-meeting-row {
+          display: flex;
+          flex-direction: row;
+          flex-wrap: nowrap;
+          align-items: stretch;
+          gap: 0.5rem;
+          width: 100%;
+          min-width: 0;
+        }
+        .ai-cal-meeting-row .ai-cal-meeting-card {
+          flex: 1 1 0;
+          min-width: 0;
+          overflow: hidden;
+        }
+        .ai-cal-meeting-card {
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          padding: 0.85rem 0.95rem 0.9rem;
+          overflow: hidden;
+        }
+        .ai-cal-meeting-more {
+          display: none;
+        }
+        .ai-cal-meeting-details {
+          flex: 0 0 10.5rem;
+          width: 10.5rem;
+          min-width: 10.5rem;
+          padding: 0.75rem 0.85rem;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          gap: 0.55rem;
+          overflow: hidden;
+        }
+        .ai-cal-meeting-detail {
+          display: flex;
+          flex-direction: column;
+          gap: 0.08rem;
+          min-width: 0;
+        }
+        .ai-cal-meeting-detail-label {
+          font-size: 0.72rem !important;
+          font-weight: 500;
+          letter-spacing: 0.02em;
+          color: var(--ai-text-muted);
+          opacity: 0.72;
+        }
+        .ai-cal-meeting-detail-value {
+          font-size: 0.9rem !important;
+          font-weight: 600;
+          line-height: 1.3;
+          color: var(--ai-text);
+          word-break: break-word;
+        }
+        .ai-cal-meeting-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.45rem 0.65rem;
+          min-width: 0;
+        }
+        .ai-cal-meeting-when {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+          min-width: 0;
+          flex: 1 1 auto;
+        }
+        .ai-cal-meeting-time {
+          font-size: 1.15rem !important;
+          font-weight: 700;
+          letter-spacing: -0.02em;
+          font-variant-numeric: tabular-nums;
+          color: var(--ai-text);
+          flex-shrink: 0;
+        }
+        .ai-cal-meeting-loc {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.28rem;
+          min-width: 0;
+          font-size: 0.9rem !important;
+          font-weight: 500;
+          color: var(--ai-text-muted);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .ai-cal-meeting-loc-icon {
+          width: 1.25rem;
+          height: 1.25rem;
+          flex-shrink: 0;
+        }
+        .ai-cal-meeting-lead {
+          font-size: 0.9rem !important;
+          font-weight: 600;
+          flex: 0 0 auto;
+          white-space: nowrap;
+        }
+        .ai-cal-meeting-name {
+          margin-top: 0.2rem;
+          font-size: 1.05rem !important;
+          font-weight: 600;
+          line-height: 1.35;
+          color: var(--ai-text);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .ai-cal-meeting-stage {
+          margin-top: 0.28rem;
+          display: flex;
+          align-items: center;
+          min-width: 0;
+        }
+        .ai-cal-meeting-stage-badge {
+          max-width: 100%;
+          font-weight: 600;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .ai-cal-meeting-footer {
+          display: flex;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 0.75rem;
+          width: 100%;
+          margin-top: auto;
+          padding-top: 0.75rem;
+        }
+        .ai-cal-meeting-crew {
+          flex: 0 1 auto;
+          width: fit-content;
+          max-width: 100%;
+          min-width: 0;
+          border: 0;
+          border-radius: 0.8rem;
+          padding: 0.45rem 0.6rem;
+        }
+        .ai-drawer-light .ai-cal-meeting-crew {
+          background: #f7f8f9;
+        }
+        .ai-drawer-dark .ai-cal-meeting-crew {
+          background: #2f3137;
+        }
+        .ai-cal-meeting-people {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: flex-start;
+          gap: 0.7rem 1.15rem;
+          min-width: 0;
+          font-size: 0.9rem !important;
+          color: var(--ai-text-muted);
+        }
+        .ai-cal-meeting-participants {
+          display: grid;
+          grid-template-columns: repeat(2, max-content);
+          gap: 0.4rem 0.85rem;
+          min-width: 0;
+          font-size: 0.9rem !important;
+          color: var(--ai-text-muted);
+        }
+        .ai-cal-meeting-participant {
+          min-width: 0;
+        }
+        .ai-cal-meeting-person {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.18rem;
+          min-width: 0;
+        }
+        .ai-cal-meeting-role {
+          font-size: 0.7rem !important;
+          font-weight: 500;
+          letter-spacing: 0.02em;
+          color: var(--ai-text-muted);
+          opacity: 0.72;
+        }
+        .ai-cal-meeting-join {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.35rem;
+          margin-left: auto;
+          flex-shrink: 0;
+          height: 2.35rem;
+          padding: 0 1.05rem;
+          border: 0;
+          border-radius: 9999px;
+          font-size: 0.875rem;
+          font-weight: 700;
+          color: #fff !important;
+          text-decoration: none !important;
+        }
+        .ai-cal-meeting-join:hover {
+          color: #fff !important;
+          filter: brightness(1.08);
+        }
+        .ai-bubble-assistant .ai-cal-meeting-join,
+        .ai-bubble-assistant .ai-cal-meeting-join:hover,
+        .ai-drawer-dark .ai-bubble-assistant .ai-cal-meeting-join,
+        .ai-drawer-dark .ai-bubble-assistant .ai-cal-meeting-join:hover {
+          color: #fff !important;
+          font-size: 0.875rem !important;
+          line-height: 1 !important;
+          text-decoration: none !important;
         }
         .ai-bubble-thinking {
           padding-top: 0.85rem;
@@ -2892,35 +3137,20 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             }`}
           >
             <div className="flex items-center gap-1">
-              <div className="relative shrink-0">
-                <button
-                  className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
-                  style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
-                  onClick={handleAiIconClick}
-                  tabIndex={0}
-                  aria-label="About RMQ AI"
-                >
-                  <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-9 w-9" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowRmqAiIntroModal(true)}
-                  className={`absolute -right-0.5 -top-0.5 z-10 inline-flex h-4 w-4 items-center justify-center rounded-full ${
-                    isDarkTheme ? 'bg-[#3a3d45] text-[#c4b5fd]' : 'bg-gray-100 text-[#3b28c7]'
-                  }`}
-                  title="About RMQ AI"
-                  aria-label="About RMQ AI"
-                  aria-haspopup="dialog"
-                  aria-expanded={showRmqAiIntroModal}
-                >
-                  <QuestionMarkCircleIcon className="h-3 w-3" />
-                </button>
-              </div>
+              <button
+                className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
+                style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
+                onClick={handleAiIconClick}
+                tabIndex={0}
+                aria-label="About RMQ AI"
+              >
+                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-11 w-11" />
+              </button>
               <div className="flex min-w-0 flex-col justify-center leading-tight">
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    className={`text-sm font-semibold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
+                    className={`text-base font-bold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
                     onClick={() => setShowRmqAiIntroModal(true)}
                     aria-haspopup="dialog"
                     aria-expanded={showRmqAiIntroModal}
@@ -2930,26 +3160,32 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     RMQ AI
                   </button>
                   <span
-                    className={`inline-flex h-4 shrink-0 items-center rounded-full px-1.5 text-[9px] font-bold uppercase leading-none tracking-wide ${
+                    className={`inline-flex h-4 shrink-0 -translate-y-1 items-center rounded-full px-1.5 text-[9px] font-bold uppercase leading-none tracking-wide ${
                       isDarkTheme ? 'bg-[#3a3d45] text-[#c4b5fd]' : 'bg-gray-100 text-[#3b28c7]'
                     }`}
                   >
                     Beta
                   </span>
                 </div>
-                {openClientChip && (openClientChip.lead_number || openClientChip.name) ? (
-                  <span
-                    className={`mt-0.5 max-w-[11rem] truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                      isDarkTheme ? 'bg-violet-500/20 text-violet-200' : 'bg-violet-100 text-violet-800'
-                    }`}
-                    title="Questions about this client use the open lead automatically"
-                  >
-                    {openClientChip.lead_number || openClientChip.name}
-                  </span>
-                ) : null}
               </div>
             </div>
           </div>
+          {openClientChip && (openClientChip.lead_number || openClientChip.name) ? (
+            <div
+              className={`pointer-events-none absolute flex items-center justify-center ${
+                showHistoryPanel ? 'left-72 right-0 md:left-96' : 'inset-x-0'
+              } top-[max(1rem,env(safe-area-inset-top))] bottom-3`}
+            >
+              <span
+                className={`pointer-events-auto max-w-[11rem] truncate rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                  isDarkTheme ? 'bg-violet-500/20 text-violet-200' : 'bg-violet-100 text-violet-800'
+                }`}
+                title="Questions about this client use the open lead automatically"
+              >
+                {openClientChip.lead_number || openClientChip.name}
+              </span>
+            </div>
+          ) : null}
           <div className="flex min-w-0 flex-1 items-center justify-end px-5">
           <div className="flex items-center gap-1.5">
             <button
@@ -2997,8 +3233,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             <div className="ai-chat-under-header flex w-72 shrink-0 flex-col overflow-hidden bg-white md:w-96">
               <div className="bg-white p-4">
                 <div className="mb-3 flex items-center justify-between gap-2">
-                  <h3 className="flex items-center gap-2 font-semibold text-gray-900">
-                    <ClockOutlineIcon className="h-5 w-5 shrink-0" />
+                  <h3 className="font-semibold text-gray-900">
                     Chat History
                   </h3>
                   <div className="flex items-center gap-2">
@@ -3164,6 +3399,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 const thinking = isThinkingMessage(msg.content);
                 const asEmailDraft =
                   Boolean(msg.draftAction) || looksLikeEmailDraft(plainTextFromMessage(msg));
+                const assistantText = asEmailDraft
+                  ? stripAiEmailSignature(String(msg.content || ''))
+                  : msg.calendarMeetings
+                    ? calendarDayIntro(String(msg.content || ''))
+                    : String(msg.content || '');
                 const canCopy =
                   msg.role === 'assistant' &&
                   !thinking &&
@@ -3175,7 +3415,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     className={
                       msg.role === 'user'
                         ? 'ai-bubble-user max-w-[85%] rounded-2xl px-5 py-4'
-                        : `ai-bubble-assistant max-w-[92%] ${thinking ? 'ai-bubble-thinking' : ''}`
+                        : `ai-bubble-assistant ${msg.calendarMeetings ? 'max-w-full' : 'max-w-[92%]'} ${thinking ? 'ai-bubble-thinking' : ''}`
                     }
                     style={{ fontSize: '0.9375rem', lineHeight: 1.6 }}
                   >
@@ -3202,10 +3442,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       })
                     ) : thinking ? (
                       <ChatThinkingIndicator lookingUp={msg.content === 'Looking up CRM data...'} />
-                    ) : (
+                    ) : assistantText ? (
                       <div className={`ai-chat-msg-text max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'} ${asEmailDraft ? '' : 'prose'}`}>
                         {formatMessageContent(
-                          asEmailDraft ? stripAiEmailSignature(msg.content) : msg.content,
+                          assistantText,
                           {
                             employeePhotos: !isWelcomeMessage(msg),
                             asEmailDraft,
@@ -3213,9 +3453,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                           },
                         )}
                       </div>
-                    )}
+                    ) : null}
                     {msg.role === 'assistant' && msg.meetingCard ? (
                       <ChatMeetingCards data={msg.meetingCard} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.calendarMeetings ? (
+                      <ChatCalendarMeetingCards data={msg.calendarMeetings} employees={chatEmployees} />
                     ) : null}
                     {msg.role === 'assistant' && msg.attachments?.length ? (
                       <div className="mt-3 flex flex-col gap-2">

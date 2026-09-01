@@ -4308,7 +4308,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           onOpenAIChat();
                         }}
                       >
-                        <RmqAiLogo className="h-6 w-6 shrink-0" />
+                        <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-6 w-6 shrink-0" />
                         <span className="text-base font-medium">RMQ AI</span>
                       </button>
                     )}
@@ -4509,7 +4509,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         onOpenAIChat();
                       }}
                     >
-                      <RmqAiLogo className="h-5 w-5" />
+                      <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-5 w-5" />
                       RMQ AI
                     </button>
                   )}
@@ -5388,7 +5388,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               >
                 <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-10 w-10" />
               </button>
-              <span className="pointer-events-none absolute -top-1 -right-2 z-10 inline-flex h-[1.125rem] items-center rounded-full bg-gray-200 px-2 text-[9px] font-bold uppercase leading-none tracking-wide text-[#3b28c7]">
+              <span className="pointer-events-none absolute -top-1 -right-4 z-10 inline-flex h-[1.125rem] items-center rounded-full bg-gray-200 px-2 text-[9px] font-bold uppercase leading-none tracking-wide text-[#3b28c7]">
                 New
               </span>
             </div>

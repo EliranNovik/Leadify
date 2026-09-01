@@ -1,6 +1,9 @@
 import React from 'react';
-import { CalendarDaysIcon, MapPinIcon } from '@heroicons/react/24/outline';
+import { BuildingOffice2Icon, CalendarDaysIcon, EnvelopeIcon, MapPinIcon, PhoneIcon, VideoCameraIcon } from '@heroicons/react/24/outline';
+import { getValidTeamsLink } from '../lib/meetingJoinLink';
+import { getSoftStageBadgeStyle, getStageColour, getStageName } from '../lib/stageUtils';
 import { ChatLeadNumberText } from './ChatLeadNumberText';
+import { ChatEmployeeNameText, type ChatEmployeeHit } from './ChatEmployeeNameText';
 
 export type ChatMeetingFact = {
   date?: string | null;
@@ -24,11 +27,125 @@ export type ChatMeetingCardData = {
 
 export function parseClientMeetingCard(raw: string): ChatMeetingCardData | null {
   try {
-    const parsed = JSON.parse(raw) as ChatMeetingCardData;
+    const parsed = JSON.parse(raw) as ChatMeetingCardData & { kind?: string };
     if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.kind === 'calendar_day') return null;
     if (!parsed.leadNumber && !parsed.nextMeeting && !parsed.askedMeeting && !parsed.recentPast) {
       return null;
     }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export type ChatCalendarMeetingItem = {
+  time?: string | null;
+  leadNumber?: string | null;
+  name?: string | null;
+  location?: string | null;
+  joinUrl?: string | null;
+  manager?: string | null;
+  helper?: string | null;
+  category?: string | null;
+  topic?: string | null;
+  totalValue?: string | null;
+  scheduler?: string | null;
+  stage?: string | null;
+  internal?: boolean;
+  participants?: string[] | null;
+};
+
+export type ChatCalendarDayData = {
+  kind: 'calendar_day';
+  date?: string;
+  count?: number;
+  meetings: ChatCalendarMeetingItem[];
+};
+
+function cleanCardText(value?: string | null): string {
+  const text = String(value || '').trim();
+  return !text || text === '—' ? '' : text;
+}
+
+function CalendarStageBadge({ stage }: { stage: string }) {
+  const stageStr = stage.trim();
+  if (!stageStr) return null;
+  const stageName = getStageName(stageStr) || stageStr;
+  const stageColour = getStageColour(stageStr);
+  const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
+
+  return (
+    <span
+      className="badge stage-badge ai-cal-meeting-stage-badge rounded-full shrink-0 border-0 text-xs px-2.5 py-0.5"
+      style={{
+        backgroundColor: softBadgeStyle.backgroundColor,
+        color: softBadgeStyle.color,
+      }}
+      title={stageName}
+    >
+      {stageName}
+    </span>
+  );
+}
+
+function uniqueCardPeople(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const value of values) {
+    for (const part of String(value || '').split(/,|\band\b/i)) {
+      const name = part.replace(/\+\d+\s+more/i, '').replace(/[.,;]+$/g, '').trim();
+      if (!name || name === '—') continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function isOnlineMeetingLocation(location?: string | null): boolean {
+  const value = String(location || '').trim().toLowerCase();
+  return value === 'online' || value === 'teams' || value === 'zoom';
+}
+
+function isPhoneCallLocation(location?: string | null): boolean {
+  const value = String(location || '').trim().toLowerCase();
+  return (
+    value === '11' ||
+    value === 'phone' ||
+    value === 'phonecall' ||
+    value === 'phone call' ||
+    value.includes('phone call')
+  );
+}
+
+function isEmailMeetingLocation(location?: string | null): boolean {
+  const value = String(location || '').trim().toLowerCase();
+  return (
+    value === '18' ||
+    value === 'e-mail' ||
+    value === 'email' ||
+    value === 'e-mail meeting' ||
+    value === 'email meeting' ||
+    value.includes('e-mail meeting') ||
+    value.includes('email meeting')
+  );
+}
+
+function meetingLocationIcon(location?: string | null) {
+  if (isPhoneCallLocation(location)) return PhoneIcon;
+  if (isEmailMeetingLocation(location)) return EnvelopeIcon;
+  if (isOnlineMeetingLocation(location)) return VideoCameraIcon;
+  return BuildingOffice2Icon;
+}
+
+export function parseCalendarDayCards(raw: string): ChatCalendarDayData | null {
+  try {
+    const parsed = JSON.parse(raw) as ChatCalendarDayData;
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'calendar_day') return null;
+    if (!Array.isArray(parsed.meetings) || parsed.meetings.length === 0) return null;
     return parsed;
   } catch {
     return null;
@@ -200,4 +317,143 @@ export function ChatMeetingCards({
   });
 
   return <div className="ai-meeting-stack">{cards}</div>;
+}
+
+function CalendarMeetingCard({
+  meeting,
+  employees,
+}: {
+  meeting: ChatCalendarMeetingItem;
+  employees: ChatEmployeeHit[];
+}) {
+  const time = cleanCardText(meeting.time);
+  const name = cleanCardText(meeting.name);
+  const stage = cleanCardText(meeting.stage);
+  const leadNumber = cleanCardText(meeting.leadNumber);
+  const location = cleanCardText(meeting.location);
+  const manager = cleanCardText(meeting.manager);
+  const helper = cleanCardText(meeting.helper);
+  const joinUrl = getValidTeamsLink(meeting.joinUrl);
+  const online = isOnlineMeetingLocation(location);
+  const internal = Boolean(meeting.internal) || (!leadNumber && /^internal meeting$/i.test(name));
+  const participants = uniqueCardPeople(meeting.participants || []);
+  const people = internal
+    ? []
+    : [
+        manager ? { role: 'Manager', name: manager } : null,
+        helper && helper.toLowerCase() !== manager.toLowerCase()
+          ? { role: 'Helper', name: helper }
+          : null,
+      ].filter((row): row is { role: string; name: string } => Boolean(row));
+  const LocationIcon = meetingLocationIcon(location);
+  const details = [
+    { label: 'Category', value: cleanCardText(meeting.category) },
+    { label: 'Total value', value: cleanCardText(meeting.totalValue) },
+    { label: 'Topic', value: cleanCardText(meeting.topic) },
+    { label: 'Scheduler', value: cleanCardText(meeting.scheduler), employee: true },
+  ];
+
+  const showFooter = Boolean(people.length || participants.length || (online && joinUrl));
+
+  return (
+    <div className="ai-cal-meeting-row">
+      <div className="ai-meeting-card ai-cal-meeting-card">
+        <div className="ai-cal-meeting-top">
+          <div className="ai-cal-meeting-when">
+            <span className="ai-cal-meeting-time">{time || '—'}</span>
+            {location ? (
+              <span className="ai-cal-meeting-loc">
+                <LocationIcon className="ai-cal-meeting-loc-icon" />
+                {location}
+              </span>
+            ) : null}
+          </div>
+          {leadNumber ? (
+            <span className="ai-cal-meeting-lead">
+              <ChatLeadNumberText text={leadNumber} />
+            </span>
+          ) : null}
+        </div>
+        {name ? <div className="ai-cal-meeting-name">{name}</div> : null}
+        {!internal && stage ? (
+          <div className="ai-cal-meeting-stage">
+            <CalendarStageBadge stage={stage} />
+          </div>
+        ) : null}
+        {showFooter ? (
+          <div className="ai-cal-meeting-footer">
+            {internal && participants.length ? (
+              <div className="ai-cal-meeting-crew">
+                <div className="ai-cal-meeting-participants">
+                  {participants.map((person, index) => (
+                    <div key={`${person}-${index}`} className="ai-cal-meeting-participant">
+                      <ChatEmployeeNameText text={person} employees={employees} compact />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : people.length ? (
+              <div className="ai-cal-meeting-crew">
+                <div className="ai-cal-meeting-people">
+                  {people.map((person) => (
+                    <div key={`${person.role}-${person.name}`} className="ai-cal-meeting-person">
+                      <span className="ai-cal-meeting-role">{person.role}</span>
+                      <ChatEmployeeNameText text={person.name} employees={employees} compact />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <span />
+            )}
+            {online && joinUrl ? (
+              <a
+                href={joinUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ai-cal-meeting-join ai-send-btn"
+              >
+                <VideoCameraIcon className="h-5 w-5 shrink-0" />
+                Join
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      <div className="ai-meeting-card ai-cal-meeting-details">
+        {details.map((row) => (
+          <div key={row.label} className="ai-cal-meeting-detail">
+            <span className="ai-cal-meeting-detail-label">{row.label}</span>
+            <span className="ai-cal-meeting-detail-value">
+              {row.employee && row.value ? (
+                <ChatEmployeeNameText text={row.value} employees={employees} compact />
+              ) : (
+                row.value || '—'
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function ChatCalendarMeetingCards({
+  data,
+  employees = [],
+}: {
+  data: ChatCalendarDayData;
+  employees?: ChatEmployeeHit[];
+}) {
+  return (
+    <div className="ai-meeting-stack ai-cal-meeting-stack">
+      {data.meetings.map((meeting, index) => (
+        <CalendarMeetingCard
+          key={`${meeting.leadNumber || meeting.name || 'meeting'}-${meeting.time || index}-${index}`}
+          meeting={meeting}
+          employees={employees}
+        />
+      ))}
+    </div>
+  );
 }
