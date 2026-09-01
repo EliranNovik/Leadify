@@ -19,8 +19,10 @@ import {
   resolvePaymentPlanBoiAsOfInput,
   createBoiDateRateConverter,
   buildCurrencyMetaFromId,
+  toDateOnlyKey,
 } from '../lib/boiCurrencyConversion';
 import {
+  addCalendarDays,
   fetchStage60RecordsInRange,
   getJerusalemScoreboardDates,
   resolveStage60SignTimestamp,
@@ -393,6 +395,27 @@ function maxIsoDate(a: string, b: string): string {
   return a >= b ? a : b;
 }
 
+const SCOREBOARD_PAGE_SIZE = 1000;
+const SCOREBOARD_FETCH_CONCURRENCY = 6;
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
 /** Fetch rows in id-chunks so PostgREST `.in()` never blows past URL/body limits. */
 async function fetchByIdChunks<T>(
   ids: Array<string | number>,
@@ -400,14 +423,48 @@ async function fetchByIdChunks<T>(
   fetchChunk: (chunk: Array<string | number>) => PromiseLike<{ data: T[] | null; error: any }>,
 ): Promise<T[]> {
   if (ids.length === 0) return [];
-  const out: T[] = [];
+  const chunks: Array<Array<string | number>> = [];
   for (let i = 0; i < ids.length; i += chunkSize) {
-    const chunk = ids.slice(i, i + chunkSize);
+    chunks.push(ids.slice(i, i + chunkSize));
+  }
+  const pages = await mapWithConcurrency(chunks, SCOREBOARD_FETCH_CONCURRENCY, async (chunk) => {
     const { data, error } = await fetchChunk(chunk);
     if (error) throw error;
-    if (data?.length) out.push(...data);
+    return data || [];
+  });
+  return pages.flat();
+}
+
+type PagedQueryResult<T> = { data: T[] | null; error: any };
+
+/** Page through PostgREST results; after a full first page, remaining pages load in parallel. */
+async function fetchAllPagedRows<T>(
+  fetchPage: (from: number, to: number) => PromiseLike<PagedQueryResult<T>>,
+  pageSize = SCOREBOARD_PAGE_SIZE,
+): Promise<T[]> {
+  const first = await fetchPage(0, pageSize - 1);
+  if (first.error) throw first.error;
+  const rows = [...(first.data || [])];
+  if (rows.length < pageSize) return rows;
+
+  let offset = pageSize;
+  while (true) {
+    const starts = [0, 1, 2, 3].map((i) => offset + i * pageSize);
+    const pages = await Promise.all(starts.map((from) => fetchPage(from, from + pageSize - 1)));
+    let short = false;
+    for (const page of pages) {
+      if (page.error) throw page.error;
+      const batch = page.data || [];
+      rows.push(...batch);
+      if (batch.length < pageSize) {
+        short = true;
+        break;
+      }
+    }
+    if (short) break;
+    offset += starts.length * pageSize;
   }
-  return out;
+  return rows;
 }
 
 type SharedBoiConverter = Awaited<ReturnType<typeof createBoiDateRateConverter>>;
@@ -3722,32 +3779,15 @@ const Dashboard: React.FC = () => {
       const stageFrom = minIsoDate(startOfMonthStr, last3mStartDate);
       const stageTo = maxIsoDate(endOfMonthStr, effectiveLast30dEnd);
 
+      // Category → department comes from the shared categories cache (already loaded).
+      // Photos are filled after the table paints via enrichScoreboardDealRolePhotos.
       const AGREEMENT_NEW_LEAD_SELECT = `
-              id, lead_number, name, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category, category_id, closer, handler,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement!fk_misc_maincategory_department_id(id, name)
-                )
-              )
+              id, lead_number, name, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category, category_id, closer, handler
             `;
       const AGREEMENT_LEGACY_LEAD_SELECT = `
               id, lead_number, name, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id, closer_id, case_handler_id,
-              accounting_currencies!leads_lead_currency_id_fkey(
-                id,
-                iso_code,
-                name
-              ),
-              misc_category(
-                id, name, parent_id,
-                misc_maincategory(
-                  id, name, department_id,
-                  tenant_departement!fk_misc_maincategory_department_id(id, name)
-                )
-              ),
-              closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name, photo_url, photo),
-              handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name, photo_url, photo)
+              closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+              handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
             `;
 
       let allStage60Union: any[] = [];
@@ -3788,8 +3828,12 @@ const Dashboard: React.FC = () => {
 
       let newLeadsData: any[] = [];
       let leadsData: any[] = [];
+      let agreementFeeMaps = {
+        byNewLeadId: new Map<string, number>(),
+        byLegacyLeadId: new Map<number, number>(),
+      };
       try {
-        const [newRows, legacyRows] = await Promise.all([
+        const [newRows, legacyRows, feeMaps] = await Promise.all([
           fetchByIdChunks(newLeadIds, 500, (chunk) =>
             supabase.from('leads').select(AGREEMENT_NEW_LEAD_SELECT).in('id', chunk as string[]),
           ),
@@ -3799,9 +3843,17 @@ const Dashboard: React.FC = () => {
               .select(AGREEMENT_LEGACY_LEAD_SELECT)
               .in('id', chunk as number[]),
           ),
+          fetchSubcontractorFeeTotalsByLeadIds({
+            newLeadIds,
+            legacyLeadIds,
+          }).catch((feeErr) => {
+            console.warn('[Dashboard] agreement fee-table totals:', feeErr);
+            return { byNewLeadId: new Map<string, number>(), byLegacyLeadId: new Map<number, number>() };
+          }),
         ]);
         newLeadsData = newRows;
         leadsData = legacyRows;
+        agreementFeeMaps = feeMaps;
       } catch (leadErr) {
         console.error('[Dashboard Agreement Signed] lead metadata fetch failed:', leadErr);
       }
@@ -3848,6 +3900,8 @@ const Dashboard: React.FC = () => {
 
       const leadsMap = new Map(leadsData.map((lead) => [lead.id, lead]));
       const newLeadsMap = new Map(newLeadsData.map((lead) => [String(lead.id), lead]));
+      applySubcontractorFeeTotalsToLeads(newLeadsData, agreementFeeMaps, 'new');
+      applySubcontractorFeeTotalsToLeads(leadsData, agreementFeeMaps, 'legacy');
 
       const agreementRecords: any[] = [];
       dedupeStageByLeadId(stageRecords).forEach((stageRecord) => {
@@ -3938,25 +3992,6 @@ const Dashboard: React.FC = () => {
 
       if (agreementRecords && agreementRecords.length > 0) {
         const processedRecordIds = new Set();
-
-        const agreementFeeLeadsNew: any[] = [];
-        const agreementFeeLeadsLegacy: any[] = [];
-        for (const record of agreementRecords) {
-          const lead = record.leads_lead as any;
-          if (!lead) continue;
-          if (record.isNewLead) agreementFeeLeadsNew.push(lead);
-          else agreementFeeLeadsLegacy.push(lead);
-        }
-        try {
-          const agreementFeeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
-            newLeadIds: agreementFeeLeadsNew.map((l) => l.id),
-            legacyLeadIds: agreementFeeLeadsLegacy.map((l) => l.id),
-          });
-          applySubcontractorFeeTotalsToLeads(agreementFeeLeadsNew, agreementFeeMaps, 'new');
-          applySubcontractorFeeTotalsToLeads(agreementFeeLeadsLegacy, agreementFeeMaps, 'legacy');
-        } catch (feeErr) {
-          console.warn('[Dashboard] agreement fee-table totals:', feeErr);
-        }
 
         for (const record of agreementRecords) {
           if (processedRecordIds.has(record.id)) {
@@ -4059,25 +4094,6 @@ const Dashboard: React.FC = () => {
       // Process month data separately
       if (monthAgreementRecords && monthAgreementRecords.length > 0) {
         const processedMonthRecordIds = new Set();
-
-        const monthFeeLeadsNew: any[] = [];
-        const monthFeeLeadsLegacy: any[] = [];
-        for (const record of monthAgreementRecords) {
-          const lead = record.leads_lead as any;
-          if (!lead) continue;
-          if (record.isNewLead) monthFeeLeadsNew.push(lead);
-          else monthFeeLeadsLegacy.push(lead);
-        }
-        try {
-          const monthFeeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
-            newLeadIds: monthFeeLeadsNew.map((l) => l.id),
-            legacyLeadIds: monthFeeLeadsLegacy.map((l) => l.id),
-          });
-          applySubcontractorFeeTotalsToLeads(monthFeeLeadsNew, monthFeeMaps, 'new');
-          applySubcontractorFeeTotalsToLeads(monthFeeLeadsLegacy, monthFeeMaps, 'legacy');
-        } catch (feeErr) {
-          console.warn('[Dashboard] month agreement fee-table totals:', feeErr);
-        }
 
         for (const record of monthAgreementRecords) {
           if (processedMonthRecordIds.has(record.id)) {
@@ -4513,15 +4529,34 @@ const Dashboard: React.FC = () => {
         appendScoreboardDeal(invoicedDealsStore, selectedMonthName, 'Total', { ...row, id: `${row.id}::total` });
       };
 
-      // Fetch new + legacy payment plans in the scoreboard window only (parallel).
-      const fetchLegacyInvoicedPayments = async () => {
-        let allLegacyPayments: any[] = [];
-        const batchSize = 1000;
-        let offset = 0;
-        let hasMore = true;
-
-        while (hasMore) {
-          const { data: batch, error: batchError } = await supabase
+      // Fetch new + legacy payment plans in the scoreboard window only (parallel, paged).
+      const [newPayments, allLegacyPayments] = await Promise.all([
+        fetchAllPagedRows((from, to) =>
+          supabase
+            .from('payment_plans')
+            .select(`
+              id,
+              lead_id,
+              value,
+              value_vat,
+              currency,
+              due_date,
+              due_percent,
+              cancel_date,
+              ready_to_pay,
+              paid,
+              paid_at
+            `)
+            .eq('ready_to_pay', true)
+            .not('due_date', 'is', null)
+            .is('cancel_date', null)
+            .gte('due_date', invoicedDueFrom)
+            .lte('due_date', invoicedDueTo)
+            .order('id', { ascending: true })
+            .range(from, to),
+        ),
+        fetchAllPagedRows((from, to) =>
+          supabase
             .from('finances_paymentplanrow')
             .select(`
               id,
@@ -4544,52 +4579,9 @@ const Dashboard: React.FC = () => {
             .gte('due_date', invoicedDueFrom)
             .lte('due_date', invoicedDueTo)
             .order('id', { ascending: true })
-            .range(offset, offset + batchSize - 1);
-
-          if (batchError) {
-            console.error('❌ Invoiced Data - Error fetching legacy payments batch:', batchError);
-            throw batchError;
-          }
-
-          if (batch && batch.length > 0) {
-            allLegacyPayments = [...allLegacyPayments, ...batch];
-            if (batch.length < batchSize) hasMore = false;
-            else offset += batchSize;
-          } else {
-            hasMore = false;
-          }
-        }
-        return allLegacyPayments;
-      };
-
-      const [{ data: newPayments, error: newError }, allLegacyPayments] = await Promise.all([
-        supabase
-          .from('payment_plans')
-          .select(`
-            id,
-            lead_id,
-            value,
-            value_vat,
-            currency,
-            due_date,
-            due_percent,
-            cancel_date,
-            ready_to_pay,
-            paid,
-            paid_at
-          `)
-          .eq('ready_to_pay', true)
-          .not('due_date', 'is', null)
-          .is('cancel_date', null)
-          .gte('due_date', invoicedDueFrom)
-          .lte('due_date', invoicedDueTo),
-        fetchLegacyInvoicedPayments(),
+            .range(from, to),
+        ),
       ]);
-
-      if (newError) {
-        console.error('❌ Invoiced Data - Error fetching new payments:', newError);
-        throw newError;
-      }
 
       const filteredNewPayments = dedupeRowsById((newPayments || []).filter((p) => !p.cancel_date));
       const filteredLegacyPayments = dedupeRowsById(allLegacyPayments.filter((p) => !p.cancel_date));
@@ -4597,166 +4589,6 @@ const Dashboard: React.FC = () => {
       // Get unique lead IDs
       const newLeadIds = Array.from(new Set(filteredNewPayments.map(p => p.lead_id).filter(Boolean)));
       const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
-
-      // Fetch lead metadata with handler info and category (to get department from category, matching Agreement Signed)
-      let newLeadsMap = new Map();
-      if (newLeadIds.length > 0) {
-        const { data: newLeads, error: newLeadsError } = await supabase
-          .from('leads')
-          .select(`
-            id,
-            lead_number,
-            name,
-            handler,
-            closer,
-            category_id,
-            category,
-            subcontractor_fee,
-            misc_category!category_id(
-              id, name, parent_id,
-              misc_maincategory!parent_id(
-                id, name, department_id,
-                tenant_departement!fk_misc_maincategory_department_id(id, name)
-              )
-            )
-          `)
-          .in('id', newLeadIds);
-
-        if (newLeadsError) {
-          console.error('❌ Invoiced Data - Error fetching new leads:', newLeadsError);
-        } else {
-          if (newLeads) {
-            newLeads.forEach(lead => {
-              newLeadsMap.set(lead.id, lead);
-            });
-          }
-        }
-      }
-
-      let legacyLeadsMap = new Map();
-      if (legacyLeadIds.length > 0) {
-        // Supabase's .in() has a limit of 1000 items, so we need to fetch in batches
-        const leadIdBatchSize = 1000;
-        let allLegacyLeads: any[] = [];
-
-        for (let i = 0; i < legacyLeadIds.length; i += leadIdBatchSize) {
-          const batchLeadIds = legacyLeadIds.slice(i, i + leadIdBatchSize);
-          const { data: legacyLeadsBatch, error: legacyLeadsError } = await supabase
-            .from('leads_lead')
-            .select(`
-              id,
-              lead_number,
-              name,
-              case_handler_id,
-              closer_id,
-              category_id,
-              category,
-              subcontractor_fee,
-              misc_category!category_id(
-                id,
-                name,
-                parent_id,
-                misc_maincategory!parent_id(
-                  id,
-                  name,
-                  department_id,
-                  tenant_departement!fk_misc_maincategory_department_id(id, name)
-                )
-              ),
-              handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name, photo_url, photo)
-            `)
-            .in('id', batchLeadIds);
-
-          if (legacyLeadsError) {
-            console.error('❌ Invoiced Data - Error fetching legacy leads batch:', legacyLeadsError);
-          } else {
-            if (legacyLeadsBatch) {
-              allLegacyLeads = [...allLegacyLeads, ...legacyLeadsBatch];
-            }
-          }
-        }
-
-        if (allLegacyLeads.length > 0) {
-          allLegacyLeads.forEach(lead => {
-            const key = lead.id?.toString() || String(lead.id);
-            legacyLeadsMap.set(key, lead);
-            if (typeof lead.id === 'number') {
-              legacyLeadsMap.set(lead.id, lead);
-            }
-          });
-        }
-      }
-
-      let invoicedFeeMaps = {
-        byNewLeadId: new Map<string, number>(),
-        byLegacyLeadId: new Map<number, number>(),
-      };
-      try {
-        invoicedFeeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
-          newLeadIds,
-          legacyLeadIds,
-        });
-        const uniqueNewLeads = Array.from(
-          new Map(
-            Array.from(newLeadsMap.values()).map((l: any) => [String(l.id), l]),
-          ).values(),
-        );
-        const uniqueLegacyLeads = Array.from(
-          new Map(
-            Array.from(legacyLeadsMap.values()).map((l: any) => [
-              String(l.id).replace(/^legacy_/i, ''),
-              l,
-            ]),
-          ).values(),
-        );
-        applySubcontractorFeeTotalsToLeads(uniqueNewLeads as any[], invoicedFeeMaps, 'new');
-        applySubcontractorFeeTotalsToLeads(uniqueLegacyLeads as any[], invoicedFeeMaps, 'legacy');
-      } catch (feeErr) {
-        console.warn('[Dashboard] invoiced fee-table totals:', feeErr);
-      }
-
-      // Contact names for invoiced deals (match CollectionDueReport drawer)
-      // New: main contact via lead_leadcontact; Legacy: payment.client_id → leads_contact
-      const newLeadContactByLeadId = new Map<string, string>();
-      if (newLeadIds.length > 0) {
-        const { data: leadContacts, error: leadContactsError } = await supabase
-          .from('lead_leadcontact')
-          .select('newlead_id, main, leads_contact:contact_id(name)')
-          .eq('main', 'true')
-          .in('newlead_id', newLeadIds);
-
-        if (!leadContactsError && leadContacts) {
-          leadContacts.forEach((entry: any) => {
-            const leadId = entry.newlead_id != null ? String(entry.newlead_id) : '';
-            const contactRel = Array.isArray(entry.leads_contact) ? entry.leads_contact[0] : entry.leads_contact;
-            const contactName = (contactRel?.name || '').toString().trim();
-            if (leadId && contactName) newLeadContactByLeadId.set(leadId, contactName);
-          });
-        }
-
-        if (newLeadContactByLeadId.size < newLeadIds.length) {
-          const missingLeadIds = newLeadIds.filter((id) => !newLeadContactByLeadId.has(String(id)));
-          if (missingLeadIds.length > 0) {
-            const { data: contacts, error: contactsError } = await supabase
-              .from('contacts')
-              .select('id, name, lead_id')
-              .in('lead_id', missingLeadIds)
-              .eq('is_persecuted', false);
-
-            if (!contactsError && contacts) {
-              contacts.forEach((contact: any) => {
-                const leadId = contact.lead_id != null ? String(contact.lead_id) : '';
-                const contactName = (contact.name || '').toString().trim();
-                if (leadId && contactName && !newLeadContactByLeadId.has(leadId)) {
-                  newLeadContactByLeadId.set(leadId, contactName);
-                }
-              });
-            }
-          }
-        }
-      }
-
-      const legacyContactById = new Map<number, string>();
       const legacyContactIds = Array.from(
         new Set(
           filteredLegacyPayments
@@ -4766,189 +4598,111 @@ const Dashboard: React.FC = () => {
             .filter((id: number) => !Number.isNaN(id)),
         ),
       );
-      for (let i = 0; i < legacyContactIds.length; i += 1000) {
-        const chunk = legacyContactIds.slice(i, i + 1000);
-        const { data: contacts, error: contactsError } = await supabase
-          .from('leads_contact')
-          .select('id, name')
-          .in('id', chunk);
-        if (contactsError) {
-          console.error('❌ Invoiced Data - Error fetching legacy contacts:', contactsError);
-          continue;
-        }
-        (contacts || []).forEach((contact: any) => {
-          if (contact.id != null && contact.name) {
-            legacyContactById.set(Number(contact.id), String(contact.name).trim());
-          }
-        });
-      }
 
-      // Fetch handler information and map to departments (EXACTLY matching CollectionDueReport)
-      // Collect handler names from new leads and handler IDs from legacy leads
-      const allHandlerNames = new Set<string>();
-      const allHandlerIds = new Set<number>();
+      const INVOICED_NEW_LEAD_SELECT = `
+            id, lead_number, name, handler, closer, category_id, category, subcontractor_fee
+          `;
+      const INVOICED_LEGACY_LEAD_SELECT = `
+            id, lead_number, name, case_handler_id, closer_id, category_id, category, subcontractor_fee,
+            handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
+          `;
 
-      // Collect handler names from new leads
-      newLeadsMap.forEach((lead: any) => {
-        if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
-          allHandlerNames.add(lead.handler.trim());
+      // Leads, fees, and deal-modal contact names are independent — load together.
+      const [
+        newLeadsRows,
+        legacyLeadsRows,
+        invoicedFeeMapsRaw,
+        newMainContacts,
+        newFallbackContacts,
+        legacyContactRows,
+      ] = await Promise.all([
+        fetchByIdChunks(newLeadIds, 500, (chunk) =>
+          supabase.from('leads').select(INVOICED_NEW_LEAD_SELECT).in('id', chunk as string[]),
+        ).catch((err) => {
+          console.error('❌ Invoiced Data - Error fetching new leads:', err);
+          return [] as any[];
+        }),
+        fetchByIdChunks(legacyLeadIds, 500, (chunk) =>
+          supabase.from('leads_lead').select(INVOICED_LEGACY_LEAD_SELECT).in('id', chunk as number[]),
+        ).catch((err) => {
+          console.error('❌ Invoiced Data - Error fetching legacy leads:', err);
+          return [] as any[];
+        }),
+        fetchSubcontractorFeeTotalsByLeadIds({ newLeadIds, legacyLeadIds }).catch((feeErr) => {
+          console.warn('[Dashboard] invoiced fee-table totals:', feeErr);
+          return { byNewLeadId: new Map<string, number>(), byLegacyLeadId: new Map<number, number>() };
+        }),
+        fetchByIdChunks(newLeadIds, 500, (chunk) =>
+          supabase
+            .from('lead_leadcontact')
+            .select('newlead_id, main, leads_contact:contact_id(name)')
+            .eq('main', 'true')
+            .in('newlead_id', chunk as string[]),
+        ).catch(() => [] as any[]),
+        fetchByIdChunks(newLeadIds, 500, (chunk) =>
+          supabase
+            .from('contacts')
+            .select('id, name, lead_id')
+            .in('lead_id', chunk as string[])
+            .eq('is_persecuted', false),
+        ).catch(() => [] as any[]),
+        fetchByIdChunks(legacyContactIds, 1000, (chunk) =>
+          supabase.from('leads_contact').select('id, name').in('id', chunk as number[]),
+        ).catch((err) => {
+          console.error('❌ Invoiced Data - Error fetching legacy contacts:', err);
+          return [] as any[];
+        }),
+      ]);
+
+      const newLeadsMap = new Map();
+      newLeadsRows.forEach((lead: any) => {
+        newLeadsMap.set(lead.id, lead);
+      });
+      const legacyLeadsMap = new Map();
+      legacyLeadsRows.forEach((lead: any) => {
+        const key = lead.id?.toString() || String(lead.id);
+        legacyLeadsMap.set(key, lead);
+        if (typeof lead.id === 'number') {
+          legacyLeadsMap.set(lead.id, lead);
         }
       });
 
-      // Collect handler IDs from legacy leads
-      legacyLeadsMap.forEach((lead: any) => {
-        const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
-        if (handlerId !== null && !Number.isNaN(handlerId)) {
-          allHandlerIds.add(handlerId);
+      const invoicedFeeMaps = invoicedFeeMapsRaw;
+      applySubcontractorFeeTotalsToLeads(
+        Array.from(new Map(Array.from(newLeadsMap.values()).map((l: any) => [String(l.id), l])).values()) as any[],
+        invoicedFeeMaps,
+        'new',
+      );
+      applySubcontractorFeeTotalsToLeads(
+        Array.from(
+          new Map(
+            Array.from(legacyLeadsMap.values()).map((l: any) => [String(l.id).replace(/^legacy_/i, ''), l]),
+          ).values(),
+        ) as any[],
+        invoicedFeeMaps,
+        'legacy',
+      );
+
+      const newLeadContactByLeadId = new Map<string, string>();
+      newMainContacts.forEach((entry: any) => {
+        const leadId = entry.newlead_id != null ? String(entry.newlead_id) : '';
+        const contactRel = Array.isArray(entry.leads_contact) ? entry.leads_contact[0] : entry.leads_contact;
+        const contactName = (contactRel?.name || '').toString().trim();
+        if (leadId && contactName) newLeadContactByLeadId.set(leadId, contactName);
+      });
+      newFallbackContacts.forEach((contact: any) => {
+        const leadId = contact.lead_id != null ? String(contact.lead_id) : '';
+        const contactName = (contact.name || '').toString().trim();
+        if (leadId && contactName && !newLeadContactByLeadId.has(leadId)) {
+          newLeadContactByLeadId.set(leadId, contactName);
         }
       });
-
-      // Fetch employees by display_name for new leads
-      const handlerNameToIdMap = new Map<string, number>();
-      const handlerMap = new Map<number, string>(); // handlerId -> display_name
-
-      if (allHandlerNames.size > 0) {
-        const handlerNamesArray = Array.from(allHandlerNames);
-        const { data: handlerDataByName, error: handlerErrorByName } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name')
-          .in('display_name', handlerNamesArray);
-
-        if (!handlerErrorByName && handlerDataByName) {
-          handlerDataByName.forEach(emp => {
-            const empId = Number(emp.id);
-            const displayName = emp.display_name?.trim();
-            if (!Number.isNaN(empId) && displayName) {
-              handlerNameToIdMap.set(displayName, empId);
-              handlerMap.set(empId, displayName);
-            }
-          });
-        }
-      }
-
-      // Fetch employees by ID for legacy leads
-      const uniqueHandlerIds = Array.from(new Set(allHandlerIds));
-      if (uniqueHandlerIds.length > 0) {
-        const { data: handlerDataById, error: handlerErrorById } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name')
-          .in('id', uniqueHandlerIds);
-
-        if (!handlerErrorById && handlerDataById) {
-          handlerDataById.forEach(emp => {
-            const empId = Number(emp.id);
-            if (!Number.isNaN(empId)) {
-              const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
-              handlerMap.set(empId, displayName);
-            }
-          });
-        }
-      }
-
-      // Fetch department information from tenants_employee for all handlers (EXACTLY matching CollectionDueReport)
-      const handlerIdsWithDepartments = Array.from(new Set([
-        ...Array.from(handlerNameToIdMap.values()),
-        ...Array.from(allHandlerIds)
-      ]));
-
-      const handlerIdToDepartmentNameMap = new Map<number, string>(); // handlerId -> departmentName (string)
-
-      if (handlerIdsWithDepartments.length > 0) {
-        const { data: employeeDepartmentData, error: employeeDepartmentError } = await supabase
-          .from('tenants_employee')
-          .select(`
-            id,
-            display_name,
-            department_id,
-            tenant_departement!department_id (
-              id,
-              name
-            )
-          `)
-          .in('id', handlerIdsWithDepartments);
-
-        if (!employeeDepartmentError && employeeDepartmentData) {
-          employeeDepartmentData.forEach(emp => {
-            const empId = Number(emp.id);
-            if (!Number.isNaN(empId)) {
-              const department = emp.tenant_departement;
-              if (department) {
-                const dept = Array.isArray(department) ? department[0] : department;
-                // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
-                let departmentName = dept?.name || '—';
-                if (dept?.id === 20) {
-                  departmentName = 'Commercial & Civil';
-                }
-                handlerIdToDepartmentNameMap.set(empId, departmentName);
-              } else {
-                handlerIdToDepartmentNameMap.set(empId, '—');
-              }
-            }
-          });
-        }
-      }
-
-      // Create a map from department name to department ID (for matching with departmentIds)
-      const departmentNameToIdMap = new Map<string, number>();
-      departmentTargets.forEach(dept => {
-        departmentNameToIdMap.set(dept.name, dept.id);
-      });
-      // CRITICAL: Also map "Commercial - Sales" to department 20's ID (for employees who still have the old name)
-      const dept20 = departmentTargets.find(d => d.id === 20);
-      if (dept20) {
-        departmentNameToIdMap.set('Commercial - Sales', 20);
-        departmentNameToIdMap.set('Commercial & Civil', 20); // Ensure both names map to the same ID
-      }
-
-      // Function to normalize department names by removing " - Sales" suffix for consolidation
-      // This ensures "Austria and Germany" and "Austria and Germany - Sales" map to the same department
-      const normalizeDepartmentName = (deptName: string): string => {
-        if (!deptName || deptName === '—') return deptName;
-        // Remove " - Sales" suffix if present
-        const baseName = deptName.replace(/ - Sales$/, '').trim();
-        return baseName;
-      };
-
-      // Create a map from normalized name to primary department ID (the one WITHOUT " - Sales" suffix)
-      // First pass: identify primary departments (those without " - Sales" suffix)
-      const normalizedNameToPrimaryIdMap = new Map<string, number>();
-      departmentTargets.forEach(dept => {
-        const normalizedName = normalizeDepartmentName(dept.name);
-        // If this is the primary department (no " - Sales" suffix), use it as the primary ID
-        if (dept.name === normalizedName) {
-          // This is a primary department - use it as the target ID
-          if (!normalizedNameToPrimaryIdMap.has(normalizedName)) {
-            normalizedNameToPrimaryIdMap.set(normalizedName, dept.id);
-          }
+      const legacyContactById = new Map<number, string>();
+      legacyContactRows.forEach((contact: any) => {
+        if (contact.id != null && contact.name) {
+          legacyContactById.set(Number(contact.id), String(contact.name).trim());
         }
       });
-      // Second pass: for departments with " - Sales" suffix, map to their primary department
-      departmentTargets.forEach(dept => {
-        const normalizedName = normalizeDepartmentName(dept.name);
-        const primaryId = normalizedNameToPrimaryIdMap.get(normalizedName);
-        if (primaryId && dept.name !== normalizedName) {
-          // This is a " - Sales" variant - it should map to the primary ID
-          // But we still want to keep the original mapping too for exact matches
-        }
-      });
-
-      // Create a map from any department name (including variants) to the consolidated department ID
-      const allDepartmentNamesToIdMap = new Map<string, number>();
-      departmentTargets.forEach(dept => {
-        const normalizedName = normalizeDepartmentName(dept.name);
-        const primaryId = normalizedNameToPrimaryIdMap.get(normalizedName);
-        const targetId = primaryId || dept.id; // Use primary ID if available, otherwise use the department's own ID
-
-        // Map the original name to the target ID
-        allDepartmentNamesToIdMap.set(dept.name, targetId);
-        // Map the normalized name to the target ID (will overwrite with primary ID if it exists)
-        allDepartmentNamesToIdMap.set(normalizedName, targetId);
-      });
-      // Also map "Commercial - Sales" variants
-      if (dept20) {
-        allDepartmentNamesToIdMap.set('Commercial - Sales', 20);
-        allDepartmentNamesToIdMap.set('Commercial & Civil', 20);
-      }
 
       // Process payments and group by department (using employee's department NAME, EXACTLY matching CollectionDueReport)
       // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
@@ -5005,11 +4759,11 @@ const Dashboard: React.FC = () => {
           : null;
         if (!dueDate) continue;
 
-        const rateAsOf = resolvePaymentPlanBoiAsOfInput({
+        const rateAsOf = toDateOnlyKey(resolvePaymentPlanBoiAsOfInput({
           paid: payment.paid,
           paid_at: payment.paid_at,
           due_date: payment.due_date,
-        });
+        }));
         const amountInNIS = await boiConverter.toNis(value, currencyForConversion, rateAsOf);
         const leadNumber = leadDisplayNumber(lead, true);
         const installmentKey = invoicedInstallmentKey(leadNumber, dueDate, amountInNIS);
@@ -5083,10 +4837,10 @@ const Dashboard: React.FC = () => {
           : null;
         if (!dueDate) continue;
 
-        const rateAsOf = resolvePaymentPlanBoiAsOfInput({
+        const rateAsOf = toDateOnlyKey(resolvePaymentPlanBoiAsOfInput({
           actual_date: payment.actual_date,
           due_date: payment.due_date,
-        });
+        }));
         const amountInNIS = await boiConverter.toNis(value, currencyForConversion, rateAsOf);
         const leadNumber = leadDisplayNumber(lead, false);
         const installmentKey = invoicedInstallmentKey(leadNumber, dueDate, amountInNIS);
@@ -5389,7 +5143,7 @@ const Dashboard: React.FC = () => {
      */
     async (opts?: { background?: boolean; force?: boolean }) => {
       const periodKey = `${selectedYear}-${selectedMonth}`;
-      const cacheKey = `dashboard-scoreboard:v22:${periodKey}`;
+      const cacheKey = `dashboard-scoreboard:v23:${periodKey}`;
       const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
       const cachedDeals = getCachedScoreboardDeals(periodKey);
 
@@ -5433,9 +5187,17 @@ const Dashboard: React.FC = () => {
 
       try {
         // Departments + BOI rates are shared by both boxes — load once, then fan out.
+        // Preload the scoreboard date window so FX conversion is in-memory, not one RPC per deal.
+        const selectedMonthIndex = months.indexOf(selectedMonth);
+        const startOfMonthStr = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1)).toISOString().split('T')[0];
+        const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
+        const { todayStr } = getJerusalemScoreboardDates();
+        const last3mStartDate = getLast3MonthsStartDate(todayStr);
+        const windowFrom = addCalendarDays(minIsoDate(startOfMonthStr, last3mStartDate), -14);
+        const windowTo = maxIsoDate(endOfMonthStr, todayStr);
         const [shared, boiConverter] = await Promise.all([
           fetchDepartmentsAndCategories(),
-          createBoiDateRateConverter(),
+          createBoiDateRateConverter({ dateWindow: { from: windowFrom, to: windowTo } }),
         ]);
         const fetchOpts = { ...opts, boiConverter };
         const [agreementResult, invoicedResult] = await Promise.all([
@@ -6306,7 +6068,7 @@ const Dashboard: React.FC = () => {
     return (
       <>
         {/* Mobile: departments as rows, periods as columns */}
-        <div className="md:hidden overflow-x-auto w-full min-w-0 px-2 pb-3">
+        <div className="md:hidden overflow-x-auto scrollbar-hide w-full min-w-0 px-2 pb-3">
           <table className="w-full min-w-[640px] text-sm table-fixed">
             <thead>
               <tr className="border-b border-slate-200">
@@ -6419,7 +6181,7 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Desktop */}
-        <div className="hidden md:block overflow-x-auto w-full min-w-0">
+        <div className="hidden md:block overflow-x-auto scrollbar-hide w-full min-w-0">
           <table className="min-w-full w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200">

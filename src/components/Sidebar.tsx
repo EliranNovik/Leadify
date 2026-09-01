@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, Link } from 'react-router-dom';
-import { FaRobot } from 'react-icons/fa';
+import { RmqAiLogo } from './RmqAiLogo';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import {
@@ -785,8 +785,8 @@ const Sidebar: React.FC<SidebarProps> = ({
             <nav
               className={
                 showDockedDesktop
-                  ? 'hide-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden overscroll-contain px-2 pb-2 pt-2.5'
-                  : 'hide-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-0 pb-4 pt-2'
+                  ? 'scrollbar-hide flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden overscroll-contain px-2 pb-2 pt-2.5'
+                  : 'scrollbar-hide flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-0 pb-4 pt-2'
               }
             >
               {filteredDesktopItems
@@ -951,7 +951,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
             {/* Navigation */}
-            <nav className="hide-scrollbar flex-1 overflow-y-auto py-4">
+            <nav className="scrollbar-hide flex-1 overflow-y-auto py-4">
               <ul className="space-y-2 px-2">
                 {filteredMobileItems
                   .map((item, index) => {
@@ -1035,7 +1035,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       if (onClose) onClose();
                     }}
                   >
-                    <FaRobot className={`w-7 h-7 min-w-[1.75rem] ${isAltTheme ? 'text-green-600' : 'text-primary'}`} />
+                    <RmqAiLogo className="h-7 w-7 min-w-[1.75rem]" />
                     <span className="ml-3 font-medium text-black">AI Assistant</span>
                   </button>
                 </li>

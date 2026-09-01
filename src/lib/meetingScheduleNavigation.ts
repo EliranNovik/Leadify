@@ -39,6 +39,37 @@ export function getRescheduleMeetingPath(leadNumber: string | number | null | un
  * Canonical /clients/... path after schedule/reschedule — same rules as Clients / search.
  * Prefer the loaded client object so legacy sub-leads use ?lead= and new sub-leads encode once.
  */
+const optimisticLeadStageById = new Map<string, { stage: number; until: number }>();
+const OPTIMISTIC_STAGE_TTL_MS = 30_000;
+
+/** Remember a just-written stage so the client page can paint it before refetch finishes. */
+export function rememberOptimisticLeadStage(
+  leadId: string | number | null | undefined,
+  stage: number,
+): void {
+  const id = String(leadId ?? '').trim();
+  if (!id || !Number.isFinite(stage)) return;
+  optimisticLeadStageById.set(id, { stage, until: Date.now() + OPTIMISTIC_STAGE_TTL_MS });
+  const bare = id.replace(/^legacy_/i, '');
+  if (bare && bare !== id) {
+    optimisticLeadStageById.set(bare, { stage, until: Date.now() + OPTIMISTIC_STAGE_TTL_MS });
+  }
+}
+
+export function consumeOptimisticLeadStage(
+  leadId: string | number | null | undefined,
+): number | null {
+  const id = String(leadId ?? '').trim();
+  if (!id) return null;
+  const bare = id.replace(/^legacy_/i, '');
+  const hit = optimisticLeadStageById.get(id) || optimisticLeadStageById.get(bare);
+  if (!hit) return null;
+  optimisticLeadStageById.delete(id);
+  if (bare) optimisticLeadStageById.delete(bare);
+  if (Date.now() > hit.until) return null;
+  return hit.stage;
+}
+
 export function getClientPagePathFromClient(
   client: {
     id?: string | number | null;

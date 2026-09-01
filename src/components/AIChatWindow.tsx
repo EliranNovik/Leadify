@@ -1,20 +1,30 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, ChevronLeftIcon } from '@heroicons/react/24/solid';
-import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, EnvelopeIcon, MoonIcon, PhotoIcon, PlusIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/solid';
+import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PhotoIcon, PlusIcon, QuestionMarkCircleIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
-import { FaRobot } from 'react-icons/fa';
+import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
+import RmqAiIntroModal from './RmqAiIntroModal';
 import { executeRmqAiTool, RMQ_AI_SYSTEM_PROMPT, RMQ_AI_TOOLS } from '../lib/rmqAiChatTools';
+import { beginRmqAiTurn } from '../lib/rmqAiRoutingLog';
 import {
+  hydrateRmqAiRoleNames,
   describeCurrentLeadForPrompt,
+  getRmqAiCurrentLead,
+  leadNumberFromClientsPath,
   setRmqAiCurrentLead,
+  slimRmqAiCurrentLead,
   takeRmqAiDraftMeta,
   type RmqAiCurrentLead,
   type RmqAiDraftMeta,
 } from '../lib/rmqAiChatContext';
 import { stashRmqAiComposeDraft } from '../lib/rmqAiComposeDraft';
-import { ChatLeadNumberText, parseChatLeadNumber } from './ChatLeadNumberText';
+import { stripAiEmailSignature } from '../lib/emailComposeAiChat';
+import { parseChatLeadNumber } from './ChatLeadNumberText';
+import { loadChatEmployeeDirectory, type ChatEmployeeHit } from './ChatEmployeeNameText';
+import { ChatStageBadgeText, buildChatStageHits, loadChatStageHits, type ChatStageHit } from './ChatStageBadgeText';
+import { ChatMeetingCards, parseClientMeetingCard, type ChatMeetingCardData } from './ChatMeetingCard';
 import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
 import {
   applyAiInputSuggestion,
@@ -33,6 +43,13 @@ import {
   triggerBrowserDownload,
   type RmqAiChatFile,
 } from '../lib/rmqAiExcel';
+import { transcribeMeetingSummaryAudio } from '../lib/meetingSummaryNotesApi';
+import { useLiveSpeechRecognition } from '../lib/useLiveSpeechRecognition';
+import {
+  useMeetingSummaryVoiceRecorder,
+  voiceBlobToBase64,
+  type VoiceRecordingResult,
+} from '../lib/useMeetingSummaryVoiceRecorder';
 
 interface AIChatWindowProps {
   isOpen: boolean;
@@ -53,6 +70,7 @@ interface Message {
   tool_call_id?: string;
   attachments?: RmqAiChatFile[];
   draftAction?: RmqAiDraftMeta;
+  meetingCard?: ChatMeetingCardData;
 }
 
 interface ChatHistory {
@@ -75,17 +93,25 @@ const READY_ASKS = [
     badge: 'bg-amber-100 text-amber-800',
   },
   {
+    label: 'Next meeting',
+    hint: 'This client’s upcoming meeting + brief',
+    prompt:
+      'What is the next meeting scheduled for this client? Call list_client_meetings. Give the next upcoming date, time, location, and quote summary, brief, and caseBrief from the tool.',
+    Icon: CalendarDaysIcon,
+    badge: 'bg-sky-100 text-sky-700',
+  },
+  {
     label: 'Prep next meeting',
     hint: 'Brief, facts, last comms',
     prompt: 'Prep my next meeting. Call prep_meeting. Give time, who they are, stage, last comms, and 3 questions.',
     Icon: DocumentCheckIcon,
-    badge: 'bg-sky-100 text-sky-700',
+    badge: 'bg-indigo-100 text-indigo-700',
   },
   {
     label: 'Draft follow-up',
     hint: 'Email or WhatsApp for this client',
     prompt:
-      'Draft a follow-up for this client. Call draft_client_message with intent follow_up. Reply with only the ready-to-send draft in the client language.',
+      'Draft a follow-up for this client. Call draft_client_message with intent follow_up. Reply with only the ready-to-send draft in the client language. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: EnvelopeIcon,
     badge: 'bg-emerald-100 text-emerald-700',
   },
@@ -101,7 +127,7 @@ const READY_ASKS = [
     label: 'After no-show',
     hint: 'What to say',
     prompt:
-      'Draft a no-show follow-up for this client. Call draft_client_message with intent no_show. Reply with only the draft in the client language.',
+      'Draft a no-show follow-up for this client. Call draft_client_message with intent no_show. Reply with only the draft in the client language. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: ClockOutlineIcon,
     badge: 'bg-violet-100 text-violet-700',
   },
@@ -116,11 +142,91 @@ const READY_ASKS = [
     label: 'Meetings today',
     hint: 'Your meetings as manager, helper, guest, or participant',
     prompt:
-      'List my meetings today. Call list_meetings with scope=mine. Only include meetings where I am meeting manager, helper, guest, or a participant. Show time, lead number, and my role.',
+      'List my meetings today. Call list_calendar_day with scope=mine. For each meeting use two lines: first time + lead number + name; second Meeting manager, Helper, Guests, Participants. Only include meetings where I am meeting manager, helper, guest, or a participant.',
     Icon: CalendarDaysIcon,
     badge: 'bg-sky-100 text-sky-700',
   },
 ] as const;
+
+type WelcomeAction = {
+  label: string;
+  hint: string;
+  prompt: string;
+  Icon: typeof CalendarDaysIcon;
+};
+
+const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
+  {
+    label: 'Next meeting',
+    hint: "What's coming up?",
+    prompt:
+      'What is the next meeting scheduled for this client? Call list_client_meetings. Give the next upcoming date, time, location, and quote summary, brief, and caseBrief from the tool.',
+    Icon: CalendarDaysIcon,
+  },
+  {
+    label: 'Lead summary',
+    hint: 'Overview of this lead',
+    prompt:
+      'Give me an overview of this open client. Use CRM tools. Include stage, assigned roles, next meeting, last communication, and the next action. Be concise. Do not greet.',
+    Icon: DocumentTextIcon,
+  },
+  {
+    label: 'Last communication',
+    hint: 'See recent messages',
+    prompt:
+      'Show the last communication with this client. Use CRM tools. Include channel, date, and a short snippet. Be concise. Do not greet.',
+    Icon: ChatOutlineIcon,
+  },
+  {
+    label: 'Draft follow-up',
+    hint: 'Create a message',
+    prompt:
+      'Draft a follow-up for this client. Call draft_client_message with intent follow_up. Reply with only the ready-to-send draft in the client language. Stop after Best regards / בברכה. Do not add a signature.',
+    Icon: PencilSquareIcon,
+  },
+];
+
+const WELCOME_GENERAL_ACTIONS: WelcomeAction[] = [
+  {
+    label: 'My day',
+    hint: 'Meetings, follow-ups, waiting on you',
+    prompt:
+      'Show my sales day. Call list_my_sales_day. List my meetings today/tomorrow, overdue and today follow-ups, and my leads in stages 21, 40, and 50. Number each item with a lead number and the next action.',
+    Icon: CalendarDaysIcon,
+  },
+  {
+    label: 'Meetings today',
+    hint: "What's on my calendar?",
+    prompt:
+      'List my meetings today. Call list_calendar_day with scope=mine. For each meeting use two lines: first time + lead number + name; second Meeting manager, Helper, Guests, Participants. Only include meetings where I am meeting manager, helper, guest, or a participant.',
+    Icon: CalendarDaysIcon,
+  },
+  {
+    label: "Who hasn't answered",
+    hint: 'Stale deals to chase',
+    prompt:
+      'Who has not answered me? Call list_stale_sales_leads. List lead numbers, last touch, and one chase action each.',
+    Icon: ChatOutlineIcon,
+  },
+  {
+    label: 'Signed today',
+    hint: 'Closed deals from today',
+    prompt: 'List signed contracts today with lead numbers, names, amounts, and closers.',
+    Icon: DocumentCheckIcon,
+  },
+];
+
+const WELCOME_LEAD_QUESTIONS = [
+  'When is the next meeting with this lead?',
+  "What's the status of the contract?",
+  'Show me the last email we sent.',
+];
+
+const WELCOME_GENERAL_QUESTIONS = [
+  "What's on my calendar today?",
+  "Who hasn't answered me?",
+  'Which deals signed today?',
+];
 
 const AI_DRAWER_THEME_KEY = 'rmqAiDrawerTheme';
 const AI_DRAWER_POS_KEY = 'rmqAiDrawerPos';
@@ -129,6 +235,18 @@ const PANEL_DRAG_THRESHOLD_PX = 6;
 const PANEL_EDGE_MARGIN = 12;
 const MIN_PANEL_WIDTH = 380;
 const MIN_PANEL_HEIGHT = 420;
+const HISTORY_SIDEBAR_WIDTH_MD = 384;
+const HISTORY_SIDEBAR_WIDTH_SM = 288;
+const VOICE_METER_BAR_COUNT = 42;
+
+const voiceMeterBarHeight = (index: number, level: number): string => {
+  const t = index / Math.max(1, VOICE_METER_BAR_COUNT - 1);
+  const envelope = Math.pow(Math.sin(Math.PI * t), 2.6);
+  const ripple = 0.62 + 0.38 * Math.abs(Math.sin(index * 0.9 + level * 10.5));
+  const idle = 0.05 + 0.07 * envelope;
+  const spoken = idle + (0.1 + level * 0.85) * envelope * ripple;
+  return `${Math.round(Math.min(1, spoken) * 100)}%`;
+};
 
 type PanelPos = { left: number; top: number };
 type PanelSize = { width: number; height: number };
@@ -211,14 +329,112 @@ const readAiDrawerDark = (): boolean => {
 const isThinkingMessage = (content: Message['content']) =>
   content === 'AI is thinking...' || content === 'Looking up CRM data...';
 
+function ChatThinkingIndicator({ lookingUp }: { lookingUp: boolean }) {
+  return (
+    <div className="ai-thinking" role="status" aria-live="polite">
+      <span className="ai-thinking-ring" aria-hidden />
+      <span className="ai-thinking-dots" aria-hidden>
+        <span />
+        <span />
+        <span />
+      </span>
+      <span className="ai-thinking-label">
+        {lookingUp ? 'Looking up CRM' : 'Thinking'}
+      </span>
+    </div>
+  );
+}
+
+function ChatWelcomeHome({
+  hasLead,
+  disabled,
+  onAction,
+}: {
+  hasLead: boolean;
+  disabled?: boolean;
+  onAction: (prompt: string) => void;
+}) {
+  const actions = hasLead ? WELCOME_LEAD_ACTIONS : WELCOME_GENERAL_ACTIONS;
+  const questions = hasLead ? WELCOME_LEAD_QUESTIONS : WELCOME_GENERAL_QUESTIONS;
+  return (
+    <div className="ai-welcome-home mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-1 py-6">
+      <div className="ai-welcome-orb mb-5">
+        <RmqAiLogo className="h-[5.25rem] w-[5.25rem]" />
+      </div>
+      <h2 className="ai-welcome-title text-center text-2xl font-bold tracking-tight">
+        {hasLead ? 'How can I help with this lead?' : 'How can I help you?'}
+      </h2>
+      <p className="ai-welcome-sub mt-2 max-w-md text-center text-sm">
+        {hasLead
+          ? 'Ask about meetings, follow-ups, contracts or communication.'
+          : 'Ask about your day, meetings, follow-ups or signed deals.'}
+      </p>
+      <div className="mt-7 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
+        {actions.map(({ label, hint, prompt, Icon }) => (
+          <button
+            key={label}
+            type="button"
+            className="ai-welcome-card"
+            disabled={disabled}
+            onClick={() => onAction(prompt)}
+          >
+            <span className="ai-welcome-card-icon">
+              <Icon className="h-6 w-6" />
+            </span>
+            <span className="min-w-0 text-left leading-snug">
+              <span className="ai-welcome-card-title block text-sm font-semibold">{label}</span>
+              <span className="ai-welcome-card-hint mt-0.5 block text-xs">{hint}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="ai-welcome-divider mt-8 w-full">
+        <span>Suggested questions</span>
+      </div>
+      <div className="mt-4 flex w-full flex-wrap items-center justify-center gap-2">
+        {questions.map((question) => (
+          <button
+            key={question}
+            type="button"
+            className="ai-welcome-ask"
+            disabled={disabled}
+            onClick={() => onAction(question)}
+          >
+            <SparklesIcon className="h-5 w-5 shrink-0" />
+            {question}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const isWelcomeMessage = (message: Message) =>
   /^(Hi .+?, |Hello! )how can I help you\?/i.test(plainTextFromMessage(message));
+
+const looksLikeEmailDraft = (text: string) =>
+  /^(Subject|נושא)\s*:/im.test(String(text || '').trim());
 
 const textIsMostlyHebrew = (text: string): boolean => {
   const hebrew = (text.match(/[\u0590-\u05FF]/g) || []).length;
   if (!hebrew) return false;
   const latin = (text.match(/[A-Za-z]/g) || []).length;
   return hebrew >= latin;
+};
+
+const combineLiveTranscript = (baseDraft: string, finalText: string, interimText: string): string => {
+  const spoken = [finalText.trim(), interimText.trim()].filter(Boolean).join(' ').trim();
+  if (!spoken) return baseDraft;
+  if (!baseDraft.trim()) return spoken;
+  return `${baseDraft.trim()}\n\n${spoken}`;
+};
+
+const chatSpeechLang = (leadLanguage?: string | null, sampleText = ''): 'he-IL' | 'en-US' => {
+  const blob = `${leadLanguage || ''} ${sampleText}`.toLowerCase();
+  if (textIsMostlyHebrew(sampleText) || /hebrew|עבר|\bhe\b/.test(blob)) return 'he-IL';
+  if (/\benglish\b|\ben\b/.test(blob)) return 'en-US';
+  if (typeof navigator !== 'undefined' && navigator.language?.toLowerCase().startsWith('he')) return 'he-IL';
+  return 'he-IL';
 };
 
 const plainTextFromMessage = (message: Message): string => {
@@ -272,10 +488,13 @@ const sanitizeMessages = (messages: Message[]) => {
 
 const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate, userName, isFullPage = false, onToggleFullPage, currentLead = null, onOpenEmailCompose }) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [caret, setCaret] = useState(0);
   const [employeeNames, setEmployeeNames] = useState<string[]>([]);
+  const [chatEmployees, setChatEmployees] = useState<ChatEmployeeHit[]>([]);
+  const [chatStages, setChatStages] = useState<ChatStageHit[]>(() => buildChatStageHits());
   const [suggestDismissed, setSuggestDismissed] = useState(false);
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
@@ -286,12 +505,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [isLoading, setIsLoading] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
   const [aiIconAnim, setAiIconAnim] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth <= 768 : false
+  );
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   
   // Chat history state
   const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [showRmqAiIntroModal, setShowRmqAiIntroModal] = useState(false);
   const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -300,10 +522,39 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [isDarkTheme, setIsDarkTheme] = useState(readAiDrawerDark);
   const [panelPos, setPanelPos] = useState<PanelPos | null>(readSavedPanelPos);
   const [panelSize, setPanelSize] = useState<PanelSize | null>(readSavedPanelSize);
+  const panelSizeRef = useRef(panelSize);
+  panelSizeRef.current = panelSize;
+  const historyBoostActiveRef = useRef(false);
+  const sizeBeforeHistoryRef = useRef<PanelSize | null>(null);
   const [isMovingPanel, setIsMovingPanel] = useState(false);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
   const [copiedBubbleKey, setCopiedBubbleKey] = useState<string | null>(null);
   const copiedBubbleTimerRef = useRef<number | null>(null);
+  const [isVoiceBusy, setIsVoiceBusy] = useState(false);
+  const voiceBaseInputRef = useRef('');
+  const voiceFinishingRef = useRef(false);
+  const liveSpeech = useLiveSpeechRecognition();
+  const liveSpeechRef = useRef(liveSpeech);
+  liveSpeechRef.current = liveSpeech;
+  const finishVoiceRef = useRef<(payload: { recording?: VoiceRecordingResult | null; liveText: string }) => void>(
+    () => {},
+  );
+  const {
+    isSupported: voiceRecordingSupported,
+    isRecording: isVoiceRecording,
+    audioLevel: voiceAudioLevel,
+    start: startVoiceRecording,
+    stop: stopVoiceRecording,
+    cancel: cancelVoiceRecording,
+  } = useMeetingSummaryVoiceRecorder({
+    onRecordingComplete: (result) => {
+      const live = liveSpeechRef.current;
+      const liveText = live.isListening ? live.stop() : '';
+      finishVoiceRef.current({ recording: result, liveText });
+    },
+  });
+  const { isSupported: liveSpeechSupported, isListening: isVoiceListening, start: startLiveSpeech, stop: stopLiveSpeech, cancel: cancelLiveSpeech } = liveSpeech;
+  const isVoiceActive = isVoiceRecording || isVoiceListening || isVoiceBusy;
   const panelRef = useRef<HTMLDivElement>(null);
   const panelResizeRef = useRef<{
     pointerId: number;
@@ -335,8 +586,40 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   }, [isDarkTheme]);
 
   useEffect(() => {
-    setRmqAiCurrentLead(currentLead || null);
-  }, [currentLead]);
+    if (isOpen) return;
+    cancelLiveSpeech();
+    cancelVoiceRecording();
+    setIsVoiceBusy(false);
+  }, [isOpen, cancelLiveSpeech, cancelVoiceRecording]);
+
+  const syncOpenClient = useCallback(async () => {
+    const slim = slimRmqAiCurrentLead(currentLead);
+    if (slim) {
+      const hydrated = await hydrateRmqAiRoleNames(slim);
+      setRmqAiCurrentLead(hydrated);
+      return hydrated;
+    }
+    const fromPath = leadNumberFromClientsPath(location.pathname, location.search);
+    if (fromPath) {
+      const fromUrl = { lead_number: fromPath };
+      setRmqAiCurrentLead(fromUrl);
+      return fromUrl;
+    }
+    setRmqAiCurrentLead(null);
+    return null;
+  }, [currentLead, location.pathname, location.search]);
+
+  useEffect(() => {
+    void syncOpenClient();
+  }, [syncOpenClient, isOpen]);
+
+  const openClientChip = slimRmqAiCurrentLead(currentLead)
+    || (leadNumberFromClientsPath(location.pathname, location.search)
+      ? { lead_number: leadNumberFromClientsPath(location.pathname, location.search) }
+      : getRmqAiCurrentLead());
+  const onClientPage = Boolean(leadNumberFromClientsPath(location.pathname, location.search));
+  const showWelcomeHome =
+    !isLoading && messages.filter(isVisibleChatMessage).every(isWelcomeMessage);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -367,15 +650,22 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [input]);
+    el.style.height = '0px';
+    const next = Math.min(Math.max(el.scrollHeight, 24), 160);
+    el.style.height = `${next}px`;
+  }, [input, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
     void loadAutocompleteEmployeeNames().then((names) => {
       if (!cancelled) setEmployeeNames(names);
+    });
+    void loadChatEmployeeDirectory().then((employees) => {
+      if (!cancelled) setChatEmployees(employees);
+    });
+    void loadChatStageHits().then((stages) => {
+      if (!cancelled) setChatStages(stages);
     });
     return () => {
       cancelled = true;
@@ -412,6 +702,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const activeSuggestion =
     visibleSuggestions.find((item) => ghostSuffixFor(input, caret, item)) || null;
   const ghostSuffix = ghostSuffixFor(input, caret, activeSuggestion);
+  const inputIsRtl = textIsMostlyHebrew(input);
 
   const applySuggestion = (suggestion: AiInputSuggestion) => {
     const currentCaret = textareaRef.current?.selectionStart ?? caret;
@@ -510,17 +801,80 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   };
 
   // Format text with smart line breaks and lists
-  const formatMessageContent = (content: string): React.ReactNode => {
+  const formatMessageContent = (content: string, opts?: {
+    employeePhotos?: boolean;
+    asEmailDraft?: boolean;
+    stageBadges?: boolean;
+  }): React.ReactNode => {
     if (!content) return null;
+    const employees = opts?.employeePhotos === false ? [] : chatEmployees;
+    const stages = opts?.stageBadges === false ? [] : chatStages;
+
+    if (opts?.asEmailDraft) {
+      const text = content.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      const bodyForDir = text.replace(/^Subject:\s*/i, '');
+      const rtl = textIsMostlyHebrew(bodyForDir);
+      const display = rtl ? text.replace(/^Subject:\s*/i, 'נושא: ') : text;
+      return (
+        <div
+          dir={rtl ? 'rtl' : 'ltr'}
+          className={`ai-chat-msg-text whitespace-pre-line leading-[1.7] ${rtl ? 'text-right' : 'text-left'}`}
+        >
+          {formatInlineText(display, employees, stages)}
+        </div>
+      );
+    }
     
     // First, normalize excessive dashes (replace multiple dashes with proper formatting)
     let normalized = content
       .replace(/^[-]{2,}/gm, '')
       .replace(/[-]{3,}/g, '—')
-      .replace(/\[(?:#)?([LC]\d+(?:\/\d+)?)\]\((?:#|javascript:[^)]*)?\)/gi, '$1');
+      .replace(/\[(?:#)?([LC]\d+(?:\/\d+)?)\]\((?:#|javascript:[^)]*)?\)/gi, '$1')
+      .replace(/\n{2,}(?=\s*\d+[.)]\s)/g, '\n');
     
     // Split by double newlines for paragraphs, but preserve single newlines within paragraphs
     const blocks = normalized.split(/\n\n+/).filter(p => p.trim());
+
+    const stripListMarker = (line: string) =>
+      line.trim().replace(/^\d+[.)]\s+/, '').replace(/^[-*•]\s+/, '').trim();
+    const isNumberedLine = (line: string) => /^\d+[.)]\s/.test(line.trim());
+    const isBulletLine = (line: string) => /^[-*•]\s/.test(line.trim());
+    const isDetailLine = (line: string) => {
+      const t = stripListMarker(line);
+      return /^(added by|lead|meeting manager|helper|guests?|participants?|your role|kind|category|date|related|location|status)\b/i.test(t);
+    };
+    const groupListWithContinuations = (lines: string[]) => {
+      const prefix: string[] = [];
+      let i = 0;
+      while (i < lines.length && !isNumberedLine(lines[i]) && !isBulletLine(lines[i])) {
+        prefix.push(lines[i]);
+        i += 1;
+      }
+      if (i >= lines.length) return null;
+      const numbered = isNumberedLine(lines[i]);
+      const items: Array<{ text: string; extra: string[] }> = [];
+      for (; i < lines.length; i += 1) {
+        const line = lines[i].trim();
+        const numberedMatch = line.match(/^\d+[.)]\s+(.*)$/);
+        const bulletMatch = line.match(/^[-*•]\s+(.*)$/);
+        const asDetail = items.length > 0 && (isDetailLine(line) || (numbered && Boolean(bulletMatch)));
+        if (asDetail) {
+          items[items.length - 1].extra.push(stripListMarker(line));
+          continue;
+        }
+        if (numberedMatch && numbered) {
+          items.push({ text: numberedMatch[1], extra: [] });
+          continue;
+        }
+        if (bulletMatch && !numbered) {
+          items.push({ text: bulletMatch[1], extra: [] });
+          continue;
+        }
+        if (items.length) items[items.length - 1].extra.push(stripListMarker(line));
+        else prefix.push(lines[i]);
+      }
+      return { prefix, numbered, items };
+    };
     
     const renderDirectedBlock = (text: string, key: string | number) => {
       const rtl = textIsMostlyHebrew(text);
@@ -528,9 +882,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         <p
           key={key}
           dir={rtl ? 'rtl' : 'ltr'}
-          className={`my-2.5 text-sm leading-relaxed ${rtl ? 'text-right whitespace-pre-line' : 'text-left'}`}
+          className={`ai-chat-msg-text my-2.5 leading-relaxed whitespace-pre-line last:mb-0 first:mt-0 ${rtl ? 'text-right' : 'text-left'}`}
         >
-          {formatInlineText(text)}
+          {formatInlineText(text, employees, stages)}
         </p>
       );
     };
@@ -538,32 +892,32 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     return blocks.map((block, bIdx) => {
       const trimmed = block.trim();
       const lines = trimmed.split('\n').filter(l => l.trim());
-      
-      // Check if all lines are list items
-      const allListItems = lines.every(line => /^[-*•]\s/.test(line.trim()) || /^\d+[.)]\s/.test(line.trim()));
-      
-      if (allListItems && lines.length > 1) {
+      const grouped = groupListWithContinuations(lines);
+
+      if (grouped && grouped.items.length) {
         const rtl = textIsMostlyHebrew(trimmed);
-        const isNumbered = lines[0].trim().match(/^\d+[.)]\s/);
-        const ListTag = isNumbered ? 'ol' : 'ul';
-        
+        const ListTag = grouped.numbered ? 'ol' : 'ul';
         return (
-          <ListTag
-            key={bIdx}
-            dir={rtl ? 'rtl' : 'ltr'}
-            className={`my-3 space-y-1.5 list-inside ${isNumbered ? 'list-decimal' : 'list-disc'} ${
-              rtl ? 'text-right mr-2 ml-0' : 'ml-2 text-left'
-            }`}
-          >
-            {lines.map((line, idx) => {
-              const cleanItem = line.trim().replace(isNumbered ? /^\d+[.)]\s/ : /^[-*•]\s/, '').trim();
-              return (
-                <li key={idx} className="text-sm leading-relaxed pl-1">
-                  {formatInlineText(cleanItem)}
+          <div key={bIdx}>
+            {grouped.prefix.map((line, idx) => renderDirectedBlock(line.trim(), `${bIdx}-p-${idx}`))}
+            <ListTag
+              dir={rtl ? 'rtl' : 'ltr'}
+              className={`my-3 space-y-3 list-outside pl-5 ${grouped.numbered ? 'list-decimal' : 'list-disc'} ${
+                rtl ? 'text-right mr-2 ml-0' : 'text-left'
+              }`}
+            >
+              {grouped.items.map((item, idx) => (
+                <li key={idx} className="ai-chat-msg-text leading-relaxed pl-1">
+                  <div>{formatInlineText(item.text, employees, stages)}</div>
+                  {item.extra.map((extra, extraIdx) => (
+                    <div key={extraIdx} className="mt-1 text-[13px] leading-snug opacity-80">
+                      {formatInlineText(extra, employees, stages)}
+                    </div>
+                  ))}
                 </li>
-              );
-            })}
-          </ListTag>
+              ))}
+            </ListTag>
+          </div>
         );
       }
 
@@ -576,14 +930,21 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         );
       }
 
-      const paragraphText = textIsMostlyHebrew(trimmed) ? trimmed : lines.join(' ').trim();
-      return renderDirectedBlock(paragraphText, bIdx);
+      return renderDirectedBlock(trimmed, bIdx);
     });
   };
 
   // Format inline text (bold, italic, code, links)
-  const formatInlineText = (text: string): React.ReactNode => {
+  const formatInlineText = (
+    text: string,
+    employees: ChatEmployeeHit[] = chatEmployees,
+    stages: ChatStageHit[] = chatStages,
+  ): React.ReactNode => {
     if (!text) return null;
+
+    const renderRichInline = (value: string) => (
+      <ChatStageBadgeText text={value} stages={stages} employees={employees} onOpen={onClose} />
+    );
     
     const parts: React.ReactNode[] = [];
     let keyCounter = 0;
@@ -594,7 +955,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         regex: /\*\*([^*]+)\*\*/g, 
         render: (match: string) => (
           <strong key={`format-${keyCounter++}`} className="font-semibold">
-            <ChatLeadNumberText text={match} onOpen={onClose} />
+            {renderRichInline(match)}
           </strong>
         )
       },
@@ -602,7 +963,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         regex: /\*([^*]+)\*/g, 
         render: (match: string) => (
           <em key={`format-${keyCounter++}`} className="italic">
-            <ChatLeadNumberText text={match} onOpen={onClose} />
+            {renderRichInline(match)}
           </em>
         )
       },
@@ -719,7 +1080,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         if (plainText) {
           parts.push(
             <span key={`text-${keyCounter++}`}>
-              <ChatLeadNumberText text={plainText} onOpen={onClose} />
+              {renderRichInline(plainText)}
             </span>,
           );
         }
@@ -743,13 +1104,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       if (remaining) {
         parts.push(
           <span key={`text-${keyCounter++}`}>
-            <ChatLeadNumberText text={remaining} onOpen={onClose} />
+            {renderRichInline(remaining)}
           </span>,
         );
       }
     }
     
-    return parts.length > 0 ? <>{parts}</> : <ChatLeadNumberText text={text} onOpen={onClose} />;
+    return parts.length > 0 ? <>{parts}</> : renderRichInline(text);
   };
 
   const completeAssistantTurn = async (
@@ -757,8 +1118,17 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     imagesData: Array<{ name: string; data: string }> = [],
     extraApiMessages: Message[] = [],
   ) => {
+    await syncOpenClient();
+    const lastUser = [...conversationMessages].reverse().find((message) => message.role === 'user');
+    beginRmqAiTurn({
+      userMessage: String(lastUser?.content || '').slice(0, 240),
+      availableTools: RMQ_AI_TOOLS.map((tool) => tool.function.name),
+      pageType: location.pathname.startsWith('/clients')
+        ? 'client'
+        : location.pathname.split('/').filter(Boolean)[0] || 'app',
+    });
     const messagesForApi = sanitizeMessages([...conversationMessages, ...extraApiMessages]).map(
-      ({ attachments: _attachments, ...message }) => message,
+      ({ attachments: _attachments, meetingCard: _meetingCard, draftAction: _draftAction, ...message }) => message,
     );
 
     const callChat = async (payloadMessages: Message[], includeImages = false) => {
@@ -789,6 +1159,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       let aiResponseMessage: Message | null = null;
       const createdFiles: RmqAiChatFile[] = [];
       const appMapLinks: string[] = [];
+      let meetingCard: ChatMeetingCardData | undefined;
       for (let round = 0; round < 6; round += 1) {
         const reply = await callChat(conversation, round === 0);
         if (reply.tool_calls?.length) {
@@ -821,6 +1192,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             if (fnName === 'create_excel_sheet' && !String(toolResult).startsWith('Could not') && !String(toolResult).startsWith('create_excel_sheet')) {
               toast.success('Excel file ready to download');
             }
+            if (fnName === 'list_client_meetings') {
+              meetingCard = parseClientMeetingCard(toolResult) || meetingCard;
+            }
             conversation = [
               ...conversation,
               { role: 'tool', content: toolResult, tool_call_id: toolCall.id },
@@ -844,15 +1218,17 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         : replyContent;
 
       const draftAction = takeRmqAiDraftMeta() || undefined;
+      const storedContent =
+        withLinks ||
+        'I looked up the CRM data but could not finish a reply. Please try again.';
       setMessages((prev) => [
         ...prev.slice(0, -1),
         {
           role: 'assistant',
-          content:
-            withLinks ||
-            'I looked up the CRM data but could not finish a reply. Please try again.',
+          content: draftAction ? stripAiEmailSignature(storedContent) : storedContent,
           attachments: createdFiles.length ? createdFiles : undefined,
           draftAction,
+          meetingCard,
         },
       ]);
     } catch (error) {
@@ -877,6 +1253,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const handleSend = async (customInput?: string) => {
     const messageToSend = customInput || input;
     if (!messageToSend.trim() && images.length === 0) return;
+    await syncOpenClient();
     setIsLoading(true);
 
     let userMessage: any;
@@ -891,7 +1268,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     } else {
       userMessage = { role: 'user', content: messageToSend.trim() };
     }
-    const newMessages = [...messages, userMessage];
+    const priorMessages = messages.filter((message) => !isWelcomeMessage(message));
+    const newMessages = [...priorMessages, userMessage];
     const imagesData = images.map((file, index) => ({
       name: file.name,
       data: imagePreviews[index],
@@ -908,6 +1286,111 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
 
     setMessages([...newMessages, { role: 'assistant', content: 'AI is thinking...' }]);
     await completeAssistantTurn(newMessages, imagesData);
+  };
+
+  const finishVoiceToInput = async (payload: { recording?: VoiceRecordingResult | null; liveText: string }) => {
+    if (voiceFinishingRef.current) return;
+    voiceFinishingRef.current = true;
+    setIsVoiceBusy(true);
+    try {
+      let transcript = '';
+      if (payload.recording) {
+        const audioBase64 = await voiceBlobToBase64(payload.recording.blob);
+        const whisper = await transcribeMeetingSummaryAudio({
+          audioBase64,
+          mimeType: payload.recording.mimeType,
+          language: 'auto',
+          prompt:
+            'Hebrew and English CRM chat. Accurately keep names, lead numbers, meetings, follow-ups, WhatsApp, and email.',
+        });
+        transcript = whisper.transcript.trim();
+      }
+      if (!transcript) {
+        transcript = payload.liveText.trim();
+      }
+      const message = combineLiveTranscript(voiceBaseInputRef.current, transcript, '');
+      voiceBaseInputRef.current = '';
+      if (!message.trim()) {
+        toast.error('No speech detected');
+        setInput('');
+        setCaret(0);
+        return;
+      }
+      setInput(message);
+      setCaret(message.length);
+      setSuggestDismissed(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to transcribe voice');
+    } finally {
+      voiceFinishingRef.current = false;
+      setIsVoiceBusy(false);
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    }
+  };
+  finishVoiceRef.current = (payload) => {
+    void finishVoiceToInput(payload);
+  };
+
+  const startVoiceInput = async () => {
+    if (isLoading || isVoiceActive) return;
+    if (!liveSpeechSupported && !voiceRecordingSupported) {
+      toast.error('Voice input is not supported in this browser');
+      return;
+    }
+    voiceBaseInputRef.current = input;
+    voiceFinishingRef.current = false;
+    try {
+      if (voiceRecordingSupported) {
+        await startVoiceRecording();
+      } else if (liveSpeechSupported) {
+        startLiveSpeech({
+          lang: chatSpeechLang(currentLead?.language, input),
+        });
+      }
+    } catch (err) {
+      cancelLiveSpeech();
+      cancelVoiceRecording();
+      voiceBaseInputRef.current = '';
+      toast.error(err instanceof Error ? err.message : 'Could not start microphone');
+    }
+  };
+
+  const stopVoiceToInput = async () => {
+    if (isVoiceBusy || voiceFinishingRef.current) return;
+    try {
+      const liveText = isVoiceListening ? stopLiveSpeech() : '';
+      let recording: VoiceRecordingResult | null = null;
+      try {
+        recording = await stopVoiceRecording();
+      } catch {
+        cancelVoiceRecording();
+      }
+      await finishVoiceToInput({ recording, liveText });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to stop recording');
+      voiceFinishingRef.current = false;
+      setIsVoiceBusy(false);
+    }
+  };
+
+  const cancelVoiceInput = () => {
+    voiceFinishingRef.current = false;
+    cancelLiveSpeech();
+    cancelVoiceRecording();
+    setInput(voiceBaseInputRef.current);
+    voiceBaseInputRef.current = '';
+    setIsVoiceBusy(false);
+  };
+
+  const toggleVoiceInput = () => {
+    if (isVoiceBusy) return;
+    if (isVoiceRecording || isVoiceListening) {
+      void stopVoiceToInput();
+      return;
+    }
+    void startVoiceInput();
   };
 
   const handleRetryAssistant = async (assistantMessage: Message) => {
@@ -960,6 +1443,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const handleAiIconClick = () => {
     setAiIconAnim(true);
     setTimeout(() => setAiIconAnim(false), 600);
+    setShowRmqAiIntroModal(true);
   };
 
   // Chat history functions
@@ -1171,6 +1655,38 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   }, [showHistoryPanel, isFullPage]);
 
   useEffect(() => {
+    if (isFullPage || isMobile) return;
+    const extra = window.matchMedia('(min-width: 768px)').matches
+      ? HISTORY_SIDEBAR_WIDTH_MD
+      : HISTORY_SIDEBAR_WIDTH_SM;
+    const el = panelRef.current;
+
+    if (showHistoryPanel) {
+      if (historyBoostActiveRef.current) return;
+      historyBoostActiveRef.current = true;
+      const current = panelSizeRef.current;
+      sizeBeforeHistoryRef.current = current;
+      const width = current?.width ?? el?.offsetWidth ?? 672;
+      const height = current?.height ?? el?.offsetHeight ?? 600;
+      const next = clampPanelSize({ width: width + extra, height });
+      setPanelSize(next);
+      setPanelPos((pos) => (pos ? clampPanelPos(pos, next.width, next.height) : pos));
+      return;
+    }
+
+    if (!historyBoostActiveRef.current) return;
+    historyBoostActiveRef.current = false;
+    const previous = sizeBeforeHistoryRef.current;
+    sizeBeforeHistoryRef.current = null;
+    if (previous) {
+      setPanelSize(previous);
+      setPanelPos((pos) => (pos ? clampPanelPos(pos, previous.width, previous.height) : pos));
+    } else {
+      setPanelSize(null);
+    }
+  }, [showHistoryPanel, isFullPage, isMobile]);
+
+  useEffect(() => {
     const onResize = () => {
       setPanelSize((current) => {
         if (!current) return current;
@@ -1198,7 +1714,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   };
 
   const beginPanelMove = useCallback((event: React.PointerEvent<HTMLElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || isMobile) return;
     const fromExpand = event.currentTarget.hasAttribute('data-ai-expand');
     if (
       !fromExpand &&
@@ -1235,7 +1751,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         ));
       }
     }, 160);
-  }, [isFullPage, panelPos]);
+  }, [isFullPage, isMobile, panelPos]);
 
   const movePanel = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const drag = panelDragRef.current;
@@ -1361,13 +1877,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setIsResizingPanel(false);
   }, []);
 
-  const isPlacedPanel = Boolean(panelPos) && !isFullPage;
-  const hasCustomSize = Boolean(panelSize) && !isFullPage;
-  const isFloatingPanel = (!isFullPage && !isMobile) || isPlacedPanel;
+  const isPlacedPanel = Boolean(panelPos) && !isFullPage && !isMobile;
+  const hasCustomSize = Boolean(panelSize) && !isFullPage && !isMobile;
+  const isFloatingPanel = !isFullPage && !isMobile;
   const canResizePanel = !isFullPage && (isFloatingPanel || isPlacedPanel);
 
   const copyAssistantMessage = useCallback(async (key: string, message: Message) => {
-    const text = plainTextFromMessage(message);
+    const raw = plainTextFromMessage(message);
+    const text =
+      message.draftAction || looksLikeEmailDraft(raw) ? stripAiEmailSignature(raw) : raw;
     if (!text || isThinkingMessage(message.content)) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -1383,7 +1901,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   }, []);
 
   const openDraftInEmail = useCallback((message: Message) => {
-    const text = plainTextFromMessage(message);
+    const text = stripAiEmailSignature(plainTextFromMessage(message));
     if (!text) return;
     stashRmqAiComposeDraft({
       channel: 'email',
@@ -1405,11 +1923,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   if (!isOpen) return null;
 
   return (
+    <>
     <div
       ref={panelRef}
       className={`${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-[10050] flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
-          isFullPage 
-          ? 'left-0 top-0 h-full w-full' 
+          isFullPage || isMobile
+          ? 'inset-0 h-[100dvh] w-full max-w-none'
           : hasCustomSize
             ? (isPlacedPanel ? '' : 'right-3 top-3')
           : isPlacedPanel
@@ -1417,15 +1936,22 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           : isFloatingPanel
             ? `right-3 top-3 bottom-3 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
             : `right-0 top-0 bottom-0 w-full ${showHistoryPanel ? 'max-w-5xl' : 'max-w-2xl'}`
-      } ${isDarkTheme ? 'ai-drawer-dark' : 'ai-drawer-light'} ${isFullPage ? 'ai-drawer-fullpage' : ''} ${isMovingPanel || isResizingPanel ? 'ai-drawer-moving' : ''}`}
+      } ${isDarkTheme ? 'ai-drawer-dark' : 'ai-drawer-light'} ${isFullPage || isMobile ? 'ai-drawer-fullpage' : ''} ${isMovingPanel || isResizingPanel ? 'ai-drawer-moving' : ''}`}
       style={{ 
-        height: hasCustomSize && panelSize
+        height: isFullPage || isMobile
+          ? '100dvh'
+          : hasCustomSize && panelSize
           ? panelSize.height
           : isPlacedPanel ? 'calc(100dvh - 1.5rem)' : isFloatingPanel ? undefined : '100dvh', 
-        minHeight: isFloatingPanel && !hasCustomSize ? undefined : hasCustomSize ? undefined : '100dvh', 
-        maxHeight: hasCustomSize ? undefined : isFloatingPanel ? 'calc(100dvh - 1.5rem)' : '100dvh', 
-        borderRadius: isFullPage ? 0 : isFloatingPanel ? '1.5rem' : 0,
-        ...(hasCustomSize && panelSize ? { width: panelSize.width } : {}),
+        minHeight: isFullPage || isMobile
+          ? '100dvh'
+          : isFloatingPanel && !hasCustomSize ? undefined : hasCustomSize ? undefined : '100dvh', 
+        maxHeight: isFullPage || isMobile
+          ? '100dvh'
+          : hasCustomSize ? undefined : isFloatingPanel ? 'calc(100dvh - 1.5rem)' : '100dvh', 
+        borderRadius: isFullPage || isMobile ? 0 : isFloatingPanel ? '1.5rem' : 0,
+        width: isFullPage || isMobile ? '100%' : undefined,
+        ...(hasCustomSize && panelSize && !isMobile ? { width: panelSize.width } : {}),
         ...(isPlacedPanel && panelPos
           ? { left: panelPos.left, top: panelPos.top, right: 'auto', bottom: 'auto' }
           : {}),
@@ -1532,16 +2058,17 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           --ai-bubble-user-text: #ffffff;
           --ai-bubble-ai: #ffffff;
           --ai-bubble-ai-text: #1f2937;
-          --ai-send: linear-gradient(90deg, #7c3aed 0%, #4f46e5 100%);
+          --ai-send: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
           --ai-header-bg: rgba(255, 255, 255, 0.42);
           --ai-header-border: rgba(255, 255, 255, 0.45);
           box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+          transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
         }
         .ai-drawer-dark {
           --ai-bg: #121316;
           --ai-bg-raised: #1c1e22;
           --ai-bg-overlay: #26282e;
-          --ai-bg-input: #1a1c20;
+          --ai-bg-input: #2a2c32;
           --ai-border: #3a3d45;
           --ai-text: #f0f0f2;
           --ai-text-muted: #9a9da6;
@@ -1549,14 +2076,16 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           --ai-bubble-user-text: #ffffff;
           --ai-bubble-ai: #2a2c32;
           --ai-bubble-ai-text: #e6e7eb;
-          --ai-send: linear-gradient(180deg, #5c5f68 0%, #484b53 100%);
-          --ai-header-bg: rgba(22, 23, 26, 0.92);
-          --ai-header-border: #2e3036;
+          --ai-send: linear-gradient(90deg, #7c3aed 0%, #4f46e5 100%);
+          --ai-header-bg: rgba(42, 44, 50, 0.62);
+          --ai-header-border: rgba(42, 44, 50, 0.35);
           border-left: 1px solid #2a2c32;
           box-shadow: 0 28px 80px rgba(0, 0, 0, 0.5);
+          transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
         }
         .ai-drawer-fullpage {
           box-shadow: none !important;
+          border-left: none !important;
         }
         .ai-glass,
         .ai-glass-fullpage {
@@ -1573,26 +2102,119 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           border-top-left-radius: 2rem !important;
         }
         .ai-bubble-assistant {
-          background: var(--ai-bubble-ai);
+          background: transparent;
           color: var(--ai-bubble-ai-text);
-          border-bottom-left-radius: 2rem !important;
-          border-top-right-radius: 2rem !important;
           border: none;
           box-shadow: none;
           outline: none;
+          border-radius: 0;
+          padding: 0.15rem 0.15rem 0.25rem;
+        }
+        .ai-meeting-stack {
+          display: flex;
+          flex-direction: column;
+          gap: 0.7rem;
+          margin-top: 0.15rem;
+        }
+        .ai-meeting-card {
+          border-radius: 1rem;
+          padding: 0.95rem 1.05rem 1rem;
+          text-align: left;
+        }
+        .ai-drawer-light .ai-meeting-card {
+          background: #ffffff;
+          border: 0;
+          box-shadow: none;
+        }
+        .ai-drawer-dark .ai-meeting-card {
+          background: #32343a;
+          border: 0;
+          box-shadow: none;
+        }
+        .ai-meeting-card-head {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 0.75rem;
+          margin-bottom: 0.7rem;
+        }
+        .ai-meeting-card-title {
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--ai-text-muted);
+        }
+        .ai-meeting-card-lead {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          min-width: 0;
+          font-size: 0.8rem;
+        }
+        .ai-meeting-card-name {
+          color: var(--ai-text-muted);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 9rem;
+        }
+        .ai-meeting-body {
+          display: flex;
+          flex-direction: column;
+          gap: 0.55rem;
+        }
+        .ai-meeting-when {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+          font-size: 0.95rem;
+          font-weight: 600;
+          color: var(--ai-text);
+        }
+        .ai-meeting-field-label {
+          font-size: 0.68rem;
+          font-weight: 700;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+          color: var(--ai-text-muted);
+          margin-bottom: 0.15rem;
+        }
+        .ai-meeting-field-value {
+          font-size: 0.875rem;
+          line-height: 1.5;
+          color: var(--ai-text);
+          white-space: pre-wrap;
+        }
+        .ai-meeting-field-rtl .ai-meeting-field-label,
+        .ai-meeting-field-rtl .ai-meeting-field-value {
+          text-align: right;
+        }
+        .ai-meeting-empty {
+          margin: 0;
+          font-size: 0.875rem;
+          color: var(--ai-text-muted);
+        }
+        .ai-bubble-thinking {
+          padding-top: 0.85rem;
+          padding-bottom: 0.85rem;
         }
         .ai-bubble-copy {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          margin-top: 0.65rem;
-          width: 1.75rem;
-          height: 1.75rem;
+          margin-top: 0.45rem;
+          width: 2.35rem;
+          height: 2.35rem;
           border: 0;
           border-radius: 9999px;
           background: transparent;
           color: var(--ai-text-muted);
           cursor: pointer;
+        }
+        .ai-bubble-copy svg {
+          width: 1.35rem;
+          height: 1.35rem;
         }
         .ai-bubble-copy:hover {
           background: var(--ai-bg-overlay);
@@ -1603,6 +2225,39 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           cursor: not-allowed;
         }
         
+        .ai-bubble-user,
+        .ai-bubble-assistant,
+        .ai-chat-msg-text,
+        .ai-bubble-user p,
+        .ai-bubble-assistant p,
+        .ai-bubble-user li,
+        .ai-bubble-assistant li {
+          font-size: 0.9375rem !important;
+          line-height: 1.6 !important;
+        }
+        .ai-bubble-assistant .prose,
+        .ai-bubble-user .prose {
+          font-size: 0.9375rem !important;
+          line-height: 1.6 !important;
+        }
+        @media (max-width: 768px) {
+          .ai-bubble-user,
+          .ai-bubble-assistant,
+          .ai-chat-msg-text,
+          .ai-bubble-user p,
+          .ai-bubble-assistant p,
+          .ai-bubble-user li,
+          .ai-bubble-assistant li,
+          .ai-bubble-assistant .prose,
+          .ai-bubble-user .prose,
+          .ai-bubble-assistant .prose p,
+          .ai-bubble-user .prose p,
+          .ai-bubble-assistant .prose li,
+          .ai-bubble-user .prose li {
+            font-size: 1.125rem !important;
+            line-height: 1.65 !important;
+          }
+        }
         .ai-bubble-assistant .prose {
           color: var(--ai-bubble-ai-text);
         }
@@ -1676,8 +2331,40 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           background: transparent;
           box-shadow: none;
         }
+        .ai-input-backdrop {
+          pointer-events: none;
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          top: 1.15rem;
+          z-index: 0;
+          background: linear-gradient(
+            to top,
+            rgba(249, 250, 251, 0.28) 0%,
+            rgba(249, 250, 251, 0.08) 62%,
+            rgba(249, 250, 251, 0) 100%
+          );
+          -webkit-backdrop-filter: blur(2px);
+          backdrop-filter: blur(2px);
+          -webkit-mask-image: linear-gradient(to top, black 0%, black 62%, transparent 100%);
+          mask-image: linear-gradient(to top, black 0%, black 62%, transparent 100%);
+        }
+        .ai-drawer-dark .ai-input-backdrop {
+          background: linear-gradient(
+            to top,
+            rgba(18, 19, 22, 0.32) 0%,
+            rgba(18, 19, 22, 0.1) 62%,
+            rgba(18, 19, 22, 0) 100%
+          );
+        }
+        .contract-ai-input-area > :not(.ai-input-backdrop) {
+          position: relative;
+          z-index: 1;
+        }
         .contract-ai-input-shell {
           border-radius: 9999px;
+          min-height: 3.25rem;
           background: var(--ai-bg-input);
           border: 1px solid var(--ai-border);
           box-shadow: 0 10px 32px rgba(15, 23, 42, 0.1);
@@ -1686,6 +2373,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-drawer-dark .contract-ai-input-shell:focus-within {
           border: none;
           outline: none;
+          background: var(--ai-bg-input);
           box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
         }
         .ai-drawer-dark .contract-ai-input-area textarea,
@@ -1705,6 +2393,16 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           outline: none;
           box-shadow: none;
           color: var(--ai-text);
+          text-align: start;
+          min-height: 1.5rem;
+          height: 1.5rem;
+          padding-top: 0;
+          padding-bottom: 0;
+          line-height: 1.5rem;
+        }
+        .contract-ai-input-area textarea::placeholder {
+          text-align: start;
+          line-height: 1.5rem;
         }
         .contract-ai-input-area textarea:focus {
           outline: none;
@@ -1731,6 +2429,65 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         .animate-ai-pulse {
           animation: ai-pulse 0.6s cubic-bezier(.4,0,.2,1);
+        }
+        .ai-thinking {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.7rem;
+          min-height: 1.5rem;
+        }
+        .ai-thinking-ring {
+          width: 1.15rem;
+          height: 1.15rem;
+          flex-shrink: 0;
+          border-radius: 9999px;
+          background: conic-gradient(from 90deg, #818cf8, #38bdf8, #c084fc, #818cf8);
+          animation: ai-thinking-spin 0.9s linear infinite;
+          -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 0);
+          mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 0);
+        }
+        .ai-thinking-dots {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.28rem;
+        }
+        .ai-thinking-dots span {
+          width: 0.38rem;
+          height: 0.38rem;
+          border-radius: 9999px;
+          background: linear-gradient(180deg, #818cf8 0%, #6366f1 100%);
+          animation: ai-thinking-bounce 1.05s ease-in-out infinite;
+        }
+        .ai-thinking-dots span:nth-child(2) { animation-delay: 0.14s; }
+        .ai-thinking-dots span:nth-child(3) { animation-delay: 0.28s; }
+        .ai-thinking-label {
+          font-size: 0.875rem;
+          font-weight: 500;
+          letter-spacing: 0.01em;
+          color: var(--ai-text-muted);
+        }
+        .ai-send-thinking {
+          width: 1.05rem;
+          height: 1.05rem;
+          border-radius: 9999px;
+          background: conic-gradient(from 90deg, #fff, rgba(255,255,255,0.15), #fff);
+          animation: ai-thinking-spin 0.85s linear infinite;
+          -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+          mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+        }
+        @keyframes ai-thinking-spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes ai-thinking-bounce {
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+          40% { transform: translateY(-4px); opacity: 1; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ai-thinking-ring,
+          .ai-thinking-dots span,
+          .ai-send-thinking {
+            animation: none;
+          }
         }
         
         /* Mobile keyboard fixes */
@@ -1781,9 +2538,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-drawer-dark .ai-chat-header {
           border-bottom: none;
           box-shadow: none;
+          background: rgba(42, 44, 50, 0.62);
+          backdrop-filter: blur(20px) saturate(1.35);
+          -webkit-backdrop-filter: blur(20px) saturate(1.35);
         }
         .ai-chat-under-header {
-          padding-top: calc(3.35rem + max(1rem, env(safe-area-inset-top, 0px)));
+          padding-top: calc(4.1rem + max(1rem, env(safe-area-inset-top, 0px)));
         }
         .ai-theme-switch {
           position: relative;
@@ -1807,7 +2567,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           transform: scale(0.98);
         }
         .ai-drawer-dark .ai-theme-switch {
-          background: #3a3648;
+          background: #3a3d45;
           box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.35);
         }
         .ai-theme-knob {
@@ -1823,8 +2583,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), background 0.25s ease, box-shadow 0.25s ease;
         }
         .ai-theme-knob.is-dark {
-          background: #6d28d9;
-          box-shadow: 0 2px 8px rgba(91, 33, 182, 0.45);
+          background: #5c5f66;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
           transform: translateX(1.5rem);
         }
         .ai-theme-knob svg {
@@ -1862,29 +2622,33 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         .ai-history-header-btn {
           display: inline-flex;
+          height: 2.25rem;
+          width: 2.25rem;
+          flex-shrink: 0;
           align-items: center;
-          gap: 0.35rem;
+          justify-content: center;
+          border: 0;
           border-radius: 9999px;
-          padding: 0.25rem 0.7rem;
-          font-size: 0.8125rem;
-          font-weight: 600;
-          line-height: 1;
-          white-space: nowrap;
+          background: transparent;
+          padding: 0;
+          cursor: pointer;
           transition: background 0.15s ease, color 0.15s ease;
         }
         .ai-drawer-light .ai-history-header-btn {
-          color: #4b5563;
+          color: #6b7280;
         }
         .ai-drawer-light .ai-history-header-btn:hover,
-        .ai-drawer-light .ai-history-header-btn.is-open {
+        .ai-drawer-light .ai-history-header-btn.is-open,
+        .ai-drawer-light .ai-history-header-btn:focus-visible {
           background: #f3f4f6;
           color: #111827;
         }
         .ai-drawer-dark .ai-history-header-btn {
-          color: #c4c6cc;
+          color: #a1a1aa;
         }
         .ai-drawer-dark .ai-history-header-btn:hover,
-        .ai-drawer-dark .ai-history-header-btn.is-open {
+        .ai-drawer-dark .ai-history-header-btn.is-open,
+        .ai-drawer-dark .ai-history-header-btn:focus-visible {
           background: #2a2c32;
           color: #f0f0f2;
         }
@@ -1910,28 +2674,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-drawer-dark textarea { color: var(--ai-text); }
         .ai-drawer-dark .text-violet-600,
         .ai-drawer-dark .text-violet-700 { color: #c9cbd1 !important; }
-        .ai-bot-icon {
-          color: #6d28d9;
-        }
-        .ai-drawer-dark .ai-bot-icon {
-          color: #7c3aed;
-        }
-        .ai-history-new-btn {
-          background-color: #6d28d9;
-        }
-        .ai-history-new-btn:hover {
-          background-color: #5b21b6;
-        }
-        .ai-drawer-dark .ai-history-new-btn,
-        .ai-drawer-dark .ai-history-new-btn:hover {
-          color: #fff !important;
-        }
-        .ai-drawer-dark .ai-history-new-btn {
-          background-color: #6d28d9 !important;
-        }
-        .ai-drawer-dark .ai-history-new-btn:hover {
-          background-color: #5b21b6 !important;
-        }
         .ai-drawer-dark .bg-violet-600 { background-color: #4a4d55 !important; color: #f0f0f2 !important; }
         .ai-drawer-dark .hover\\:bg-violet-700:hover { background-color: #5a5d66 !important; }
         .ai-drawer-dark .bg-violet-50 { background-color: #2a2c32 !important; }
@@ -1972,8 +2714,139 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-send-btn {
           background: var(--ai-send) !important;
         }
-        .ai-drawer-dark .ai-send-btn:hover {
+        .ai-send-btn:hover {
           filter: brightness(1.08);
+        }
+        .ai-welcome-title {
+          color: var(--ai-text);
+        }
+        .ai-welcome-sub {
+          color: var(--ai-text-muted);
+        }
+        .ai-welcome-orb {
+          line-height: 0;
+        }
+        .ai-welcome-card {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          border-radius: 0.85rem;
+          border: none;
+          background: #fff;
+          padding: 0.85rem 0.9rem;
+          text-align: left;
+          transition: box-shadow 0.15s ease, background 0.15s ease;
+        }
+        .ai-welcome-card:hover {
+          box-shadow: 0 8px 20px rgba(124, 58, 237, 0.08);
+        }
+        .ai-welcome-card:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+        .ai-welcome-card-icon {
+          display: flex;
+          height: 2.85rem;
+          width: 2.85rem;
+          flex-shrink: 0;
+          align-items: center;
+          justify-content: center;
+          border-radius: 0.8rem;
+          background: #ede9fe;
+          color: #7c3aed;
+        }
+        .ai-welcome-card-title {
+          color: var(--ai-text);
+        }
+        .ai-welcome-card-hint {
+          color: var(--ai-text-muted);
+        }
+        .ai-drawer-dark .ai-welcome-card {
+          background: var(--ai-bg-input);
+        }
+        .ai-drawer-dark .ai-welcome-card:hover {
+          background: #32343b;
+        }
+        .ai-drawer-dark .ai-welcome-card-icon {
+          background: rgba(124, 58, 237, 0.22);
+          color: #c4b5fd;
+        }
+        .ai-welcome-divider {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          color: #9ca3af;
+          font-size: 0.68rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .ai-welcome-divider::before,
+        .ai-welcome-divider::after {
+          content: '';
+          flex: 1;
+          height: 1px;
+          background: #e5e7eb;
+        }
+        .ai-drawer-dark .ai-welcome-divider {
+          color: #7c7f87;
+        }
+        .ai-drawer-dark .ai-welcome-divider::before,
+        .ai-drawer-dark .ai-welcome-divider::after {
+          background: #3a3d45;
+        }
+        .ai-welcome-ask {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          border-radius: 9999px;
+          border: none;
+          background: #f3f4f6;
+          padding: 0.45rem 0.85rem;
+          font-size: 0.8125rem;
+          font-weight: 500;
+          color: #7c3aed;
+          transition: background 0.15s ease;
+        }
+        .ai-welcome-ask:hover {
+          background: #ede9fe;
+        }
+        .ai-welcome-ask:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+        .ai-drawer-dark .ai-welcome-ask {
+          background: var(--ai-bg-input);
+          color: #c4b5fd;
+        }
+        .ai-drawer-dark .ai-welcome-ask:hover {
+          background: #32343b;
+        }
+        .ai-voice-meter {
+          display: flex;
+          align-items: center;
+          gap: 2.5px;
+          width: 100%;
+          height: 1.85rem;
+        }
+        .ai-voice-meter span {
+          flex: 1 1 0;
+          min-width: 2px;
+          height: 12%;
+          border-radius: 99px;
+          background: var(--ai-send);
+          transform-origin: center;
+          transition: height 70ms ease-out;
+        }
+        .ai-voice-accept-btn {
+          background: #10b981 !important;
+          color: #fff !important;
+        }
+        .ai-voice-accept-btn:hover {
+          filter: brightness(1.06);
+        }
+        .ai-drawer-dark .ai-voice-accept-btn {
+          background: #059669 !important;
         }
       `}</style>
       {(canResizePanel || isFullPage) && !isMobile ? (
@@ -1996,9 +2869,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         />
       ) : null}
       <div 
-        className={`${isFullPage ? 'ai-glass-fullpage' : 'ai-glass'} relative flex h-full w-full flex-col`}
+        className={`${isFullPage || isMobile ? 'ai-glass-fullpage' : 'ai-glass'} relative flex h-full w-full flex-col`}
         style={{
-          ...(isMobile && !isPlacedPanel && {
+          ...(isMobile && {
             height: '100dvh',
             minHeight: '100dvh'
           })
@@ -2015,44 +2888,80 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         >
           <div
             className={`flex items-center ${
-              showHistoryPanel ? 'w-72 shrink-0 justify-between pl-5 pr-2 md:w-96' : 'pl-5'
+              showHistoryPanel ? 'w-72 shrink-0 pl-5 pr-2 md:w-96' : 'pl-5'
             }`}
           >
-            <div className="flex items-center gap-1.5">
-              <button
-                className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
-                style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
-                onClick={handleAiIconClick}
-                tabIndex={0}
-                aria-label="AI Icon"
-              >
-                <FaRobot className="ai-bot-icon h-7 w-7" />
-              </button>
-              <h3 className={`text-lg font-semibold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}>RMQ AI</h3>
-              <button
-                type="button"
-                onClick={() => setShowHistoryPanel(!showHistoryPanel)}
-                className={`ai-history-header-btn ${showHistoryPanel ? 'is-open' : ''}`}
-                title="Chat History"
-              >
-                <ChatBubbleLeftRightIcon className="h-4 w-4" />
-                History
-              </button>
+            <div className="flex items-center gap-1">
+              <div className="relative shrink-0">
+                <button
+                  className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
+                  style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
+                  onClick={handleAiIconClick}
+                  tabIndex={0}
+                  aria-label="About RMQ AI"
+                >
+                  <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-9 w-9" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRmqAiIntroModal(true)}
+                  className={`absolute -right-0.5 -top-0.5 z-10 inline-flex h-4 w-4 items-center justify-center rounded-full ${
+                    isDarkTheme ? 'bg-[#3a3d45] text-[#c4b5fd]' : 'bg-gray-100 text-[#3b28c7]'
+                  }`}
+                  title="About RMQ AI"
+                  aria-label="About RMQ AI"
+                  aria-haspopup="dialog"
+                  aria-expanded={showRmqAiIntroModal}
+                >
+                  <QuestionMarkCircleIcon className="h-3 w-3" />
+                </button>
+              </div>
+              <div className="flex min-w-0 flex-col justify-center leading-tight">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className={`text-sm font-semibold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
+                    onClick={() => setShowRmqAiIntroModal(true)}
+                    aria-haspopup="dialog"
+                    aria-expanded={showRmqAiIntroModal}
+                    aria-label="About RMQ AI"
+                    title="About RMQ AI"
+                  >
+                    RMQ AI
+                  </button>
+                  <span
+                    className={`inline-flex h-4 shrink-0 items-center rounded-full px-1.5 text-[9px] font-bold uppercase leading-none tracking-wide ${
+                      isDarkTheme ? 'bg-[#3a3d45] text-[#c4b5fd]' : 'bg-gray-100 text-[#3b28c7]'
+                    }`}
+                  >
+                    Beta
+                  </span>
+                </div>
+                {openClientChip && (openClientChip.lead_number || openClientChip.name) ? (
+                  <span
+                    className={`mt-0.5 max-w-[11rem] truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      isDarkTheme ? 'bg-violet-500/20 text-violet-200' : 'bg-violet-100 text-violet-800'
+                    }`}
+                    title="Questions about this client use the open lead automatically"
+                  >
+                    {openClientChip.lead_number || openClientChip.name}
+                  </span>
+                ) : null}
+              </div>
             </div>
-            {showHistoryPanel ? (
-              <button
-                type="button"
-                onClick={() => setShowHistoryPanel(false)}
-                className={`btn btn-ghost btn-sm btn-square ${isDarkTheme ? 'text-zinc-300' : 'text-base-content/60'}`}
-                title="Close chat history"
-                aria-label="Close chat history"
-              >
-                <ChevronLeftIcon className="h-5 w-5" />
-              </button>
-            ) : null}
           </div>
           <div className="flex min-w-0 flex-1 items-center justify-end px-5">
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowHistoryPanel(!showHistoryPanel)}
+              className={`ai-history-header-btn ${showHistoryPanel ? 'is-open' : ''}`}
+              title="Chat History"
+              aria-label="Chat History"
+              aria-pressed={showHistoryPanel}
+            >
+              <ClockOutlineIcon className="h-5 w-5" />
+            </button>
             <button
               type="button"
               className="ai-theme-switch"
@@ -2089,7 +2998,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               <div className="bg-white p-4">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <h3 className="flex items-center gap-2 font-semibold text-gray-900">
-                    <ChatBubbleLeftRightIcon className="h-5 w-5 shrink-0" />
+                    <ClockOutlineIcon className="h-5 w-5 shrink-0" />
                     Chat History
                   </h3>
                   <div className="flex items-center gap-2">
@@ -2126,7 +3035,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     <button
                       type="button"
                       onClick={startNewChat}
-                      className="ai-history-new-btn inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-semibold text-white shadow-sm transition"
+                      className="ai-send-btn inline-flex h-9 items-center gap-1.5 rounded-full border-0 px-4 text-sm font-semibold text-white shadow-sm transition"
                       title="Start New Chat"
                     >
                       <PlusIcon className="h-4 w-4" strokeWidth={2.5} />
@@ -2235,16 +3144,26 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
             {/* Messages */}
             <div 
-              className="ai-chat-under-header ai-messages-scroll scrollbar-hide min-h-0 flex-1 space-y-4 overflow-y-auto bg-gray-50 px-4 pb-28 md:px-5 md:pb-32"
+              className="ai-chat-under-header ai-messages-scroll scrollbar-hide flex min-h-0 flex-1 flex-col overflow-y-auto bg-gray-50 px-4 pb-28 md:px-5 md:pb-32"
               style={{
                 ...(isMobile && keyboardOpen && {
                   paddingBottom: '120px'
                 })
               }}
             >
-              {messages.filter(isVisibleChatMessage).map((msg, idx) => {
+              {showWelcomeHome ? (
+                <ChatWelcomeHome
+                  hasLead={onClientPage}
+                  disabled={isLoading}
+                  onAction={handleQuickAction}
+                />
+              ) : (
+              <div className="space-y-4">
+              {messages.filter((msg) => isVisibleChatMessage(msg) && !isWelcomeMessage(msg)).map((msg, idx) => {
                 const bubbleKey = `${idx}-${msg.role}`;
                 const thinking = isThinkingMessage(msg.content);
+                const asEmailDraft =
+                  Boolean(msg.draftAction) || looksLikeEmailDraft(plainTextFromMessage(msg));
                 const canCopy =
                   msg.role === 'assistant' &&
                   !thinking &&
@@ -2253,17 +3172,26 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 return (
                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
-                    className={`max-w-[85%] rounded-2xl px-5 py-4 ai-bubble-${msg.role} ${
-                      thinking ? 'opacity-80' : ''
-                    }`}
-                    style={{ fontSize: '1rem', lineHeight: 1.7 }}
+                    className={
+                      msg.role === 'user'
+                        ? 'ai-bubble-user max-w-[85%] rounded-2xl px-5 py-4'
+                        : `ai-bubble-assistant max-w-[92%] ${thinking ? 'ai-bubble-thinking' : ''}`
+                    }
+                    style={{ fontSize: '0.9375rem', lineHeight: 1.6 }}
                   >
                     {Array.isArray(msg.content) ? (
                       msg.content.map((item, i) => {
                         if (item.type === 'text') {
                           return (
-                            <div key={i} className={`prose prose-sm max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'}`}>
-                              {formatMessageContent(item.text)}
+                            <div key={i} className={`ai-chat-msg-text max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'} ${asEmailDraft ? '' : 'prose'}`}>
+                              {formatMessageContent(
+                                asEmailDraft ? stripAiEmailSignature(item.text) : item.text,
+                                {
+                                  employeePhotos: !isWelcomeMessage(msg),
+                                  asEmailDraft,
+                                  stageBadges: msg.role === 'assistant' && !asEmailDraft,
+                                },
+                              )}
                             </div>
                           );
                         }
@@ -2273,15 +3201,22 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         return null;
                       })
                     ) : thinking ? (
-                      <p className="flex items-center gap-2 text-sm leading-relaxed text-gray-600">
-                        <span className="loading loading-spinner loading-sm" />
-                        <span>{msg.content === 'Looking up CRM data...' ? 'Looking up CRM data…' : 'Starting…'}</span>
-                      </p>
+                      <ChatThinkingIndicator lookingUp={msg.content === 'Looking up CRM data...'} />
                     ) : (
-                      <div className={`prose prose-sm max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'}`}>
-                        {formatMessageContent(msg.content)}
+                      <div className={`ai-chat-msg-text max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'} ${asEmailDraft ? '' : 'prose'}`}>
+                        {formatMessageContent(
+                          asEmailDraft ? stripAiEmailSignature(msg.content) : msg.content,
+                          {
+                            employeePhotos: !isWelcomeMessage(msg),
+                            asEmailDraft,
+                            stageBadges: msg.role === 'assistant' && !asEmailDraft,
+                          },
+                        )}
                       </div>
                     )}
+                    {msg.role === 'assistant' && msg.meetingCard ? (
+                      <ChatMeetingCards data={msg.meetingCard} />
+                    ) : null}
                     {msg.role === 'assistant' && msg.attachments?.length ? (
                       <div className="mt-3 flex flex-col gap-2">
                         {msg.attachments.map((file) => (
@@ -2305,7 +3240,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       </div>
                     ) : null}
                     {canCopy ? (
-                      <div className="flex justify-end gap-0.5">
+                      <div className="mt-1 flex justify-start gap-1">
                         <button
                           type="button"
                           className="ai-bubble-copy"
@@ -2314,9 +3249,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                           aria-label={copiedBubbleKey === bubbleKey ? 'Copied' : 'Copy message'}
                         >
                           {copiedBubbleKey === bubbleKey ? (
-                            <CheckIcon className="h-4 w-4" />
+                            <CheckIcon className="h-5 w-5" strokeWidth={1.75} />
                           ) : (
-                            <Square2StackIcon className="h-[1.05rem] w-[1.05rem]" strokeWidth={1.75} />
+                            <Square2StackIcon className="h-5 w-5" strokeWidth={1.75} />
                           )}
                         </button>
                         <button
@@ -2327,7 +3262,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                           title="Try again"
                           aria-label="Try again and rephrase"
                         >
-                          <ArrowPathIcon className="h-[1.05rem] w-[1.05rem]" strokeWidth={1.75} />
+                          <ArrowPathIcon className="h-5 w-5" strokeWidth={1.75} />
                         </button>
                         {msg.draftAction ? (
                           <button
@@ -2337,7 +3272,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                             title="Open in Email"
                             aria-label="Open draft in Email"
                           >
-                            <EnvelopeIcon className="h-[1.05rem] w-[1.05rem]" strokeWidth={1.75} />
+                            <EnvelopeIcon className="h-5 w-5" strokeWidth={1.75} />
                           </button>
                         ) : null}
                       </div>
@@ -2346,6 +3281,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 </div>
                 );
               })}
+              </div>
+              )}
               <div ref={messagesEndRef} />
             </div>
 
@@ -2363,6 +3300,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 })
               }}
             >
+              <div className="ai-input-backdrop" aria-hidden="true" />
               {imagePreviews.length > 0 && (
                 <div className="pointer-events-auto mb-2 flex gap-2 overflow-x-auto">
                   {imagePreviews.map((preview, idx) => (
@@ -2380,7 +3318,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 </div>
               )}
               <div className="pointer-events-auto flex items-end gap-2">
-                <div className="contract-ai-input-shell relative flex min-w-0 flex-1 items-end overflow-visible">
+                <div className="contract-ai-input-shell relative flex min-w-0 flex-1 items-center overflow-visible">
                   <div className="relative shrink-0 self-center pl-1.5" ref={attachMenuRef}>
                     <button
                       type="button"
@@ -2464,11 +3402,35 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       </div>
                     ) : null}
                   </div>
-                  <div className="relative min-w-0 flex-1">
+                  <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center">
+                    {isVoiceRecording || isVoiceListening || isVoiceBusy ? (
+                      <div className="flex h-full w-full items-center gap-2.5 pl-1" aria-live="polite">
+                        {isVoiceBusy ? (
+                          <>
+                            <span className="loading loading-spinner loading-xs text-violet-500" />
+                            <span className={`text-sm font-medium ${isDarkTheme ? 'text-zinc-400' : 'text-gray-500'}`}>
+                              Transcribing…
+                            </span>
+                          </>
+                        ) : (
+                          <div className="ai-voice-meter pr-1" aria-hidden={false} aria-label="Recording">
+                            <span className="sr-only">Recording</span>
+                            {Array.from({ length: VOICE_METER_BAR_COUNT }, (_, index) => (
+                              <span
+                                key={index}
+                                style={{ height: voiceMeterBarHeight(index, voiceAudioLevel) }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <>
                     {ghostSuffix ? (
                       <div
                         aria-hidden
-                        className="pointer-events-none absolute inset-0 overflow-hidden py-3 pl-1 pr-5 text-base leading-relaxed text-gray-400"
+                        dir={inputIsRtl ? 'rtl' : 'ltr'}
+                        className="pointer-events-none absolute inset-0 flex items-center overflow-hidden pl-1 pr-2 text-start text-base leading-6 text-gray-400"
                       >
                         <span className="invisible whitespace-pre-wrap break-words">{input}</span>
                         <span className="whitespace-pre-wrap break-words">{ghostSuffix}</span>
@@ -2477,7 +3439,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     <textarea
                       ref={textareaRef}
                       rows={1}
-                      className="relative min-h-[3rem] min-w-0 w-full resize-none border-0 bg-transparent py-3 pl-1 pr-5 text-base leading-relaxed placeholder:text-gray-500 focus:outline-none focus:ring-0"
+                      dir={inputIsRtl ? 'rtl' : 'ltr'}
+                      className="relative min-h-0 min-w-0 w-full resize-none border-0 bg-transparent py-0 pl-1 pr-2 text-start text-base leading-6 placeholder:text-gray-500 focus:outline-none focus:ring-0"
                       placeholder="Ask anything..."
                       value={input}
                       onChange={(e) => {
@@ -2515,6 +3478,63 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         if (!isLoading && (input.trim() || images.length > 0)) handleSend();
                       }}
                     />
+                      </>
+                    )}
+                  </div>
+                  <div className="relative mr-1.5 shrink-0 self-center">
+                    <button
+                      type="button"
+                      className={`btn btn-circle btn-sm h-10 w-10 border-0 ${
+                        isVoiceRecording || isVoiceListening
+                          ? 'ai-voice-accept-btn'
+                          : 'btn-ghost text-slate-500 hover:bg-gray-100'
+                      }`}
+                      onClick={() => toggleVoiceInput()}
+                      disabled={(isLoading && !isVoiceActive) || isVoiceBusy}
+                      aria-pressed={isVoiceRecording || isVoiceListening}
+                      aria-label={
+                        isVoiceBusy
+                          ? 'Transcribing'
+                          : isVoiceRecording || isVoiceListening
+                            ? 'Use recording'
+                            : 'Voice input'
+                      }
+                      title={
+                        isVoiceBusy
+                          ? 'Transcribing'
+                          : isVoiceRecording || isVoiceListening
+                            ? 'Use recording'
+                            : 'Voice input'
+                      }
+                    >
+                      {isVoiceRecording || isVoiceListening ? (
+                        <CheckIcon className="h-5 w-5" strokeWidth={2.5} />
+                      ) : (
+                        <MicrophoneIcon className="h-5 w-5" />
+                      )}
+                    </button>
+                  </div>
+                  <div className="relative shrink-0 self-center pr-1.5">
+                    <button
+                      type="button"
+                      className="ai-send-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 text-white disabled:opacity-60"
+                      onClick={() => handleSend()}
+                      disabled={
+                        isVoiceBusy ||
+                        isVoiceRecording ||
+                        isVoiceListening ||
+                        isLoading ||
+                        (!input.trim() && images.length === 0)
+                      }
+                      aria-label="Send"
+                      title="Send"
+                    >
+                      {isLoading ? (
+                        <span className="ai-send-thinking" aria-hidden />
+                      ) : (
+                        <PaperAirplaneIcon className="h-5 w-5" />
+                      )}
+                    </button>
                   </div>
                 </div>
                 <input
@@ -2525,20 +3545,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   onChange={handleImageChange}
                   multiple
                 />
-                <button
-                  type="button"
-                  className="ai-send-btn btn btn-circle h-12 w-12 shrink-0 border-0 text-white shadow-lg disabled:opacity-60"
-                  onClick={() => handleSend()}
-                  disabled={isLoading || (!input.trim() && images.length === 0)}
-                  aria-label="Send"
-                  title="Send"
-                >
-                  {isLoading ? (
-                    <span className="loading loading-spinner loading-sm" />
-                  ) : (
-                    <PaperAirplaneIcon className="h-5 w-5" />
-                  )}
-                </button>
               </div>
             </div>
           </div>
@@ -2553,6 +3559,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         )}
       </div>
     </div>
+    <RmqAiIntroModal
+      isOpen={showRmqAiIntroModal}
+      onClose={() => setShowRmqAiIntroModal(false)}
+      isDarkTheme={isDarkTheme}
+      isMobile={isMobile}
+    />
+    </>
   );
 };
 

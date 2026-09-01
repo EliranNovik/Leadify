@@ -20,7 +20,7 @@ serve(async (req) => {
   }
 
   try {
-    const { audioBase64, mimeType, language } = await req.json();
+    const { audioBase64, mimeType, language, prompt } = await req.json();
 
     if (!audioBase64 || typeof audioBase64 !== 'string') {
       throw new Error('audioBase64 is required');
@@ -40,19 +40,38 @@ serve(async (req) => {
     }
 
     const ext = extensionForMime(typeof mimeType === 'string' ? mimeType : 'audio/webm');
-    const form = new FormData();
-    form.append('file', new Blob([binary], { type: mimeType || 'audio/webm' }), `recording.${ext}`);
-    form.append('model', 'whisper-1');
-    form.append('response_format', 'json');
-    if (language === 'he' || language === 'en') {
-      form.append('language', language);
-    }
+    const file = new Blob([binary], { type: mimeType || 'audio/webm' });
+    const promptText =
+      typeof prompt === 'string' && prompt.trim() ? prompt.trim().slice(0, 800) : '';
 
-    const whisperRes = await fetch(WHISPER_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-      body: form,
-    });
+    const buildForm = (model: string) => {
+      const form = new FormData();
+      form.append('file', file, `recording.${ext}`);
+      form.append('model', model);
+      form.append('response_format', 'json');
+      if (language === 'he' || language === 'en') {
+        form.append('language', language);
+      }
+      if (promptText) {
+        form.append('prompt', promptText);
+      }
+      return form;
+    };
+
+    const transcribe = async (model: string) =>
+      fetch(WHISPER_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+        body: buildForm(model),
+      });
+
+    let whisperRes = await transcribe('gpt-4o-transcribe');
+    if (!whisperRes.ok) {
+      whisperRes = await transcribe('gpt-4o-mini-transcribe');
+    }
+    if (!whisperRes.ok) {
+      whisperRes = await transcribe('whisper-1');
+    }
 
     if (!whisperRes.ok) {
       const err = await whisperRes.json().catch(() => ({}));

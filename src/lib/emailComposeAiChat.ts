@@ -16,7 +16,7 @@ export function stripAiEmailSignature(text: string): string {
   const normalized = text.replace(/\r\n/g, '\n').trimEnd();
   const lines = normalized.split('\n');
   const closeRe =
-    /^(best regards|kind regards|warm regards|with regards|regards|sincerely|yours sincerely|yours truly|thanks|thank you|בברכה|בכבוד רב)\s*,?\s*$/i;
+    /^(best regards|kind regards|warm regards|with regards|with best regards|regards|sincerely|yours sincerely|yours truly|thanks|thank you|בברכה רבה|בברכה|בכבוד רב)\s*[,.]?\s*$/i;
   let closeIdx = -1;
   for (let i = 0; i < lines.length; i++) {
     if (closeRe.test(lines[i].trim())) closeIdx = i;

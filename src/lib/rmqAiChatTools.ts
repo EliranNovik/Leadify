@@ -1,5 +1,4 @@
 import { supabase } from './supabase';
-import { searchLeads, type CombinedLead } from './legacyLeadsApi';
 import { fetchLeadCaseFileForAi } from './leadFollowupAiApi';
 import { getStageName } from './stageUtils';
 import { fetchStage60RecordsInRange, resolveStage60SignTimestamp, toSignCalendarDateKey } from './stage60SignDate';
@@ -38,7 +37,15 @@ import {
 } from './allExpensesReport';
 import { fetchInvoicedTotalDueNisForDateRange } from './fetchInvoicedLast30TotalDueNis';
 import { managementAmountToNis } from './firmManagementCosts';
-import { currentLeadAsToolArgs } from './rmqAiChatContext';
+import {
+  currentLeadAsToolArgs,
+  getRmqAiCurrentLead,
+  isOpenClientRoleQuestion,
+  isThisClientQuery,
+  queryMatchesOpenLead,
+} from './rmqAiChatContext';
+import { requireResolvedLead } from './rmqAiLeadResolver';
+import { logRmqAiToolRouting } from './rmqAiRoutingLog';
 import {
   clickableLeadNumber,
   leadDisplayName,
@@ -91,6 +98,12 @@ export const RMQ_AI_ALLOWED_TABLES = {
     'facts',
     'special_notes',
     'general_notes',
+    'expert_notes',
+    'handler_notes',
+    'eligibility_status',
+    'section_eligibility',
+    'eligible',
+    'expert_examination',
     'probability',
     'number_of_applicants_meeting',
     'potential_applicants_meeting',
@@ -117,7 +130,15 @@ export const RMQ_AI_ALLOWED_TABLES = {
     'category',
     'meeting_date',
     'meeting_time',
+    'meeting_brief',
     'status',
+    'expert_notes',
+    'expert_opinion',
+    'handler_notes',
+    'eligibility_status',
+    'section_eligibility',
+    'eligibile',
+    'expert_examination',
     'closer_id',
     'meeting_scheduler_id',
     'case_handler_id',
@@ -266,7 +287,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'get_lead_case_file',
       description:
-        'Load a full CRM snapshot for one lead (new or legacy): identity, stage, team roles, proposal/balance, facts/notes, meetings, WhatsApp message text, email subject and body, call logs, and manual interaction notes (including logged WhatsApp/call summaries). ALWAYS use this for what was said or a communication summary. ALWAYS use this when asked who the handler / case handler is. Handler = case handler role (leads.case_handler_id / leads.handler, or leads_lead.case_handler_id) — not closer, scheduler, or retention handler. Identify the lead by lead number (L226999), name, email, phone, or id.',
+        'Load a full CRM snapshot for one lead (new or legacy): ASSIGNED ROLES (Handler, Expert, Manager, Closer, Scheduler), EXPERT ELIGIBILITY, EXPERT OPINION, handler notes, identity, stage, proposal, facts, meetings, WhatsApp, email, calls, and manuals. ALWAYS use this for who the expert / handler / manager / closer / scheduler is — then answer from the matching ASSIGNED ROLES line only. Manager is Roles tab Manager, not the case handler. ALWAYS use this for eligibility, expert opinion, what was said, or a communication summary. Uses the open client page when query is omitted. Identify another lead only when they named a different number.',
       parameters: {
         type: 'object',
         properties: {
@@ -289,9 +310,9 @@ export const RMQ_AI_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'list_meetings',
+      name: 'list_calendar_day',
       description:
-        'List CRM meetings for a calendar day (Asia/Jerusalem). ALWAYS use this for “who has a meeting today”, meetings tomorrow/on a date, “my meetings today”, or meetings scheduled by an employee. Scheduled meetings use the lead scheduler role (leads.scheduler / leads_lead.meeting_scheduler_id), not the client name. Searches meetings plus leads_lead.meeting_date and leads.meeting_date (same sources as the dashboard calendar). Returns lead names, lead numbers, times, scheduler, and status. Use scope=mine for the logged-in user’s meetings (meeting manager, helper, guest, or participant).',
+        'Get the office calendar for ONE date in Asia/Jerusalem (today, tomorrow, or YYYY-MM-DD). Use for “who has meetings today”, “my meetings today”, or meetings scheduled by an employee. Do NOT use this to find meetings for a particular client or the open lead — call list_client_meetings instead.',
       parameters: {
         type: 'object',
         properties: {
@@ -314,6 +335,67 @@ export const RMQ_AI_TOOLS = [
           query: {
             type: 'string',
             description: 'Optional client / lead name or lead number filter. Not the scheduler.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_meetings',
+      description:
+        'Alias of list_calendar_day. Prefer list_calendar_day. Office calendar for ONE date in Asia/Jerusalem. Do NOT use this for one client’s next meeting — call list_client_meetings.',
+      parameters: {
+        type: 'object',
+        properties: {
+          date: {
+            type: 'string',
+            description:
+              'Calendar day: today, tomorrow, yesterday, or YYYY-MM-DD. Defaults to today in Asia/Jerusalem.',
+          },
+          scope: {
+            type: 'string',
+            enum: ['mine', 'all'],
+            description:
+              'mine = only meetings where the logged-in user is meeting manager, helper, guest (extern1/extern2), or a meeting participant. all = every meeting that day.',
+          },
+          scheduler: {
+            type: 'string',
+            description: 'Scheduler employee name. Do not put the scheduler name in query.',
+          },
+          query: {
+            type: 'string',
+            description: 'Optional client / lead name or lead number filter. Not the scheduler.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_client_meetings',
+      description:
+        'Get meetings for one specific CRM lead or the currently open client. Use for next meeting, previous meeting, meeting brief, or meeting summary for this client / this lead. Do not use list_calendar_day for that.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Lead number, name, or id. Omit when the client page is open.',
+          },
+          lead_id: {
+            type: 'string',
+            description: 'Exact lead id when already known (UUID or legacy_123)',
+          },
+          is_legacy: {
+            type: 'boolean',
+            description: 'True when lead_id is a legacy numeric id',
+          },
+          date: {
+            type: 'string',
+            description: 'Optional specific day (today, tomorrow, YYYY-MM-DD, or DD.MM.YYYY) to highlight that meeting.',
           },
         },
       },
@@ -520,7 +602,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'list_expenses',
       description:
-        'List and total expenses as numbers (NIS). Covers office, salaries, external firms, marketing, rent, partner draws, client/lead expenses, and subcontractor fees. ALWAYS use for spend questions. Returns TOTAL plus a NIS amount per category. Defaults to this month (Asia/Jerusalem).',
+        'List expenses as they appear on the Expenses page. KIND is the summary card (Client, Office, Subcontractor, …). CATEGORY is the table CATEGORY column (Courier and delivery, government fee, translation, …). CREATED BY is the employee who added the row. ALWAYS use for spend, who added an expense, or which expense category. Defaults to this month (Asia/Jerusalem). Pass date=today when they say today.',
       parameters: {
         type: 'object',
         properties: {
@@ -611,7 +693,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'draft_client_message',
       description:
-        'Load case context so you can write a ready-to-send client email or WhatsApp in their language. ALWAYS use when they ask to draft, write, or rephrase outreach. Uses the open client if no lead is named. Intents: first_contact, confirm_meeting, no_show, follow_up, after_meeting, price_offer, signature_chase.',
+        'Load case context so you can write a ready-to-send client email or WhatsApp in their language. ALWAYS use when they ask to draft, write, or rephrase outreach. Stop after Best regards / בברכה — no name, title, phone, or email signature. Uses the open client if no lead is named. Intents: first_contact, confirm_meeting, no_show, follow_up, after_meeting, price_offer, signature_chase.',
       parameters: {
         type: 'object',
         properties: {
@@ -763,22 +845,29 @@ export const RMQ_AI_TOOLS = [
 export const RMQ_AI_SYSTEM_PROMPT =
   'You are RMQ AI, the assistant inside Leadify CRM (Rainmaker Queen). ' +
   'You can look up any lead and query CRM tables through tools. ' +
-  'When the user asks about a specific client, call get_lead_case_file first, then write a clear summary from that data. ' +
+  'When the user asks about a specific client, call get_lead_case_file first, then answer the question they asked from that data. Do not turn a specific question into a full lead recap. For next meeting / brief / summary questions, call list_client_meetings instead. ' +
   'Identify leads by lead number (L226999), name, email, phone, or id. If they say this client / this lead and a client page is open, omit query — tools use that lead. ' +
+  'When an OPEN CLIENT block is present, NEVER ask for a lead number. Use that lead immediately. ' +
+  'When they ask for this client’s next meeting, what the meeting is for, or the meeting summary / brief, ALWAYS call list_client_meetings using the open client. If they name a date (e.g. 02.09.2026), pass date=. Reply with one short sentence only. The UI shows date, time, location, brief, and summary in a card. Do not repeat those fields in prose. Do not say there is no brief if the tool JSON has text. list_calendar_day is only for a calendar day across many leads. ' +
   'When listing leads or meetings, ALWAYS copy the lead number from the tool (L214188 or 209994/9) as a bare token so it stays clickable. Never write Unnamed if the tool gave a number, name, or Internal meeting. Never list a client by name only. ' +
   'When they ask for my day, what to do now, or my follow-ups, ALWAYS call list_my_sales_day. Reply as a short numbered list with lead numbers and one next action each. ' +
-  'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. ' +
+  'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. Stop after Best regards / בברכה. Do not add a signature, name, title, phone, or email — the CRM appends that. ' +
   'When they ask to prep a meeting or prep my next meeting, ALWAYS call prep_meeting. ' +
   'When they ask to wrap up a meeting or write the meeting summary, ALWAYS call wrap_up_meeting. Call set_follow_up to save a date. Call draft_client_message with intent=price_offer for an offer email. ' +
   'When they ask who has not answered or who is stale, ALWAYS call list_stale_sales_leads. ' +
   'When they ask to set a follow-up date, call set_follow_up. When they ask to log a call or note, call log_manual_note. ' +
-  'When they ask who the handler is, they mean the case handler role on the Roles tab (Case Handler). That is leads.case_handler_id / leads.handler on new leads and leads_lead.case_handler_id on legacy leads. It is not the closer, scheduler, expert, or retention handler unless they say retention. ' +
-  'Answer with the Case Handler name from the TEAM ROLES block. If that line is empty or —, say no case handler is assigned. ' +
-  'When they ask who has meetings today/tomorrow or on a date, or meetings scheduled by an employee, ALWAYS call list_meetings first. ' +
-  'When they ask for my meetings, meetings today (their own), or use the Meetings today shortcut, call list_meetings with scope=mine. That list is only meetings where the logged-in user is meeting manager, helper, guest, or a participant. ' +
+  'When they ask who a role is (handler, expert, manager, closer, scheduler, helper), ALWAYS call get_lead_case_file and copy only that line from ASSIGNED ROLES. ' +
+  'Handler = Roles tab Handler (case handler). Manager = Roles tab Manager (meeting manager), not the handler. Closer = Roles tab Closer. Expert = Roles tab / Expert tab Expert. Scheduler = Roles tab Scheduler. ' +
+  'Only say a role is unassigned if THAT specific ASSIGNED ROLES line is —. Do not answer a manager/closer/expert question with the handler line. Do not name Yehonatan D unless that role line is that person. ' +
+  'When they ask if the client is eligible, eligibility, eligibility status, or eligibility decided, ALWAYS call get_lead_case_file. Answer ONLY from the EXPERT ELIGIBILITY block. Copy Expert assessment, Eligibility decided, and Citizenship section. At most 4 short lines. Do not recap family history, expert opinion text, stage, or proposal. Do not guess from notes. Do not say the expert has not stated eligibility if Expert assessment is not Not checked. Do not tell them to consult the expert when those fields are set. ' +
+  'When they ask what the expert says, the expert opinion, expert notes, or what the expert thinks/wrote, ALWAYS call get_lead_case_file. Answer ONLY from the EXPERT OPINION block (Expert tab). Quote or paraphrase that text. Do not recap stage, proposal, last communication, team, or other CRM fields. If that block is empty or (none on file), check Meeting expert notes; if those are also empty, say there is no expert opinion on file. ' +
+  'When they ask what the handler wrote or handler notes, use the HANDLER NOTES block the same way — not a general lead recap. ' +
+  'When they ask who has meetings today/tomorrow or on a date, or meetings scheduled by an employee, ALWAYS call list_calendar_day first. ' +
+  'When they ask for my meetings, meetings today (their own), or use the Meetings today shortcut, call list_calendar_day with scope=mine. That list is only meetings where the logged-in user is meeting manager, helper, guest, or a participant. ' +
   'When they ask who has meetings (everyone) or meetings scheduled by a named employee, use scope=all and pass scheduler= if they named someone. ' +
+  'Each meeting is two lines: (1) time, lead number, name (2) Meeting manager, Helper, Guests, Participants. Keep roles under the lead, not on the time line. Copy those names from the tool. ' +
   'Scheduled meetings use the lead scheduler employee role. Pass scheduler= the name as typed; the tool fuzzy-matches typos and closest employees. Never put the scheduler name in query — query is the client. ' +
-  'Do not say there are no meetings unless list_meetings returned none. ' +
+  'Do not say there are no meetings unless list_calendar_day returned none. ' +
   'When they ask about signed contracts, closed deals, who closed, or how many clients signed in a date range, ALWAYS call list_signed_contracts first. ' +
   'Closed deals use the lead closer employee role. Pass closer= the name as typed; the tool fuzzy-matches typos and closest employees (Yehonatan → Yehonatan D.). Never put the closer name in query — query is the client. ' +
   'That tool covers both new leads (leads.closer + contracts.client_id) and legacy leads (leads_lead.closer_id + contracts.legacy_id) using leads_leadstage stage 60 as the sign date. ' +
@@ -791,18 +880,18 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'For office availability exports, pass source=employee_presence and office= as typed. Use filter=available when they only want people available now. Do not invent a download URL — paste the exact markdown from the tool result. ' +
   'When they ask where to find a page, how to open a screen, or “take me to…”, ALWAYS call find_app_page. ' +
   'Paste the exact markdown links from that tool so they stay clickable and open the page. Do not invent routes. ' +
-  'When they ask about expenses, spend, who added a cost, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
-  'Pass kind= for a type (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass date/period for today, this month, this year. Pass added_by= if they named who created the expense. ' +
-  'Answer expenses with numbers only: start with TOTAL: NIS X, then one bullet per category with a NIS amount. Skip categories at 0. ' +
-  'Never write paragraphs about expenses. Never list fee names (government, court, translation) without a NIS amount next to them. ' +
-  'If they ask for the total, full amount, or just the number, reply with one line only: TOTAL: NIS X. ' +
-  'Do not say you cannot see expenses. Use the tool totals; do not invent amounts. ' +
+  'When they ask about expenses, spend, who added a cost, expense category, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
+  'Pass date=today when they say today. Pass kind= only to filter a summary card (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass added_by= only if they named who created the expense. ' +
+  'KIND is the summary card (Client, Office, …). CATEGORY is the table CATEGORY column (Courier and delivery, government fee, translation, …). Never answer a category question with KIND. Quote category= and added_by= from LINE ITEMS. Never invent an employee or a fee name. ' +
+  'When they ask what expenses were recorded, number only each expense category (1. Courier and delivery — NIS 200). Put Added by and Lead on the next lines with no extra numbers or bullets. If they only asked for the total, reply with one line: TOTAL: NIS X. ' +
+  'Do not say you cannot see expenses. Use the tool; do not invent amounts. ' +
   'When they ask about income, profit, loss, how the firm is doing, burn, or whether spending is too high, ALWAYS call get_firm_financials. ' +
   'Income is the Sales Contribution total: 90% of invoiced due in the date range (same large number as Sales Contribution). Compare it to all expenses and give practical advice (which categories are largest, expense ratio vs income). ' +
   'When they ask other counts, lists, or aggregates, use query_crm. ' +
-  'Never invent CRM facts. If a tool finds no match, say so and ask for a lead number. ' +
-  'Be concise and professional. In lead summaries cover stage, topic, team, proposal/balance, meetings, last communication, next follow-up, and risks. ' +
+  'Never invent CRM facts. If a tool finds no match and no OPEN CLIENT is present, say so and ask for a lead number. If OPEN CLIENT is present, retry with that lead_id instead of asking. ' +
+  'Answer only what they asked. When they ask for a lead overview or summary, cover stage, topic, team, proposal/balance, meetings, last communication, next follow-up, and risks. Do not dump that recap for a specific question such as eligibility, expert opinion, handler notes, or what was said. ' +
   'When listing signed leads or meetings, write the lead number as plain text (L228016), never as [L228016](#). Plain lead numbers stay clickable. ' +
+  'Write CRM stage names as the exact stage label from the tool, with no quotation marks. Do not write "Meeting Scheduled" or \'Price offer\' — write Meeting Scheduled. The UI shows stages as badges. ' +
   'When they ask what was said, discussed, talked about, or a summary of communication / emails / WhatsApp / notes, use the EMAIL, WHATSAPP, CALLS, and MANUAL NOTES blocks from get_lead_case_file. Quote or paraphrase that actual text. Manual notes often record WhatsApp or phone conversations. Do not say there were no emails or WhatsApp if those blocks contain text. Do not tell them to look in the CRM for content that is already in the case file. ' +
   'When the user shares images, analyze them when relevant.';
 
@@ -876,71 +965,12 @@ function applyFilters(query: any, filters: Array<{ column: string; operator: str
   return next;
 }
 
-function formatLeadHit(lead: CombinedLead): string {
-  const stage = getStageName(lead.stage) || lead.stage || '';
-  return [
-    `${lead.lead_number || lead.id} — ${lead.name || 'Unnamed'}`,
-    lead.lead_type === 'legacy' ? 'legacy' : 'new',
-    stage ? `stage ${stage}` : '',
-    lead.topic ? `topic ${lead.topic}` : '',
-    lead.email || '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
-}
-
-async function resolveLeadFromQuery(args: {
-  query?: string;
-  lead_id?: string;
-  is_legacy?: boolean;
-}): Promise<{ leadId: string; isLegacy: boolean; label: string }> {
-  const fallback = currentLeadAsToolArgs();
-  const explicitId = String(args.lead_id || fallback.lead_id || '').trim();
-  if (explicitId && !String(args.query || '').trim()) {
-    const isLegacy = (args.is_legacy ?? fallback.is_legacy) === true || explicitId.startsWith('legacy_');
-    return {
-      leadId: isLegacy && !explicitId.startsWith('legacy_') ? `legacy_${explicitId}` : explicitId,
-      isLegacy,
-      label: fallback.query || explicitId,
-    };
-  }
-
-  const query = String(args.query || fallback.query || '').trim();
-  if (!query && !fallback.lead_id) throw new Error('Provide a lead number, name, email, phone, or id.');
-  if (!query && fallback.lead_id) {
-    return {
-      leadId:
-        fallback.is_legacy && !String(fallback.lead_id).startsWith('legacy_')
-          ? `legacy_${fallback.lead_id}`
-          : String(fallback.lead_id),
-      isLegacy: fallback.is_legacy === true || String(fallback.lead_id).startsWith('legacy_'),
-      label: fallback.query || String(fallback.lead_id),
-    };
-  }
-
-  const matches = await searchLeads(query, { limit: 6, timeoutMs: 4000 });
-  if (!matches.length) {
-    throw new Error(`No lead found for "${query}". Ask the user for a lead number (e.g. L226999).`);
-  }
-
-  const exact =
-    matches.find((row) => String(row.lead_number || '').toLowerCase() === query.toLowerCase()) ||
-    matches.find((row) => String(row.id) === query) ||
-    matches[0];
-
-  const extras =
-    matches.length > 1
-      ? `\nOther matches:\n${matches
-          .slice(0, 5)
-          .map((row) => `- ${formatLeadHit(row)}`)
-          .join('\n')}`
-      : '';
-
-  return {
-    leadId: exact.lead_type === 'legacy' ? `legacy_${String(exact.id).replace(/^legacy_/i, '')}` : String(exact.id),
-    isLegacy: exact.lead_type === 'legacy',
-    label: `${formatLeadHit(exact)}${extras}`,
-  };
+function isNamedOtherLead(query: string, fallback: { query?: string; lead_id?: string }): boolean {
+  const raw = String(query || '').trim();
+  if (!raw || isThisClientQuery(raw)) return false;
+  if (queryMatchesOpenLead(raw, fallback)) return false;
+  if (isOpenClientRoleQuestion(raw, fallback)) return false;
+  return true;
 }
 
 function roleDisplayName(name: string): string {
@@ -949,68 +979,203 @@ function roleDisplayName(name: string): string {
   return value;
 }
 
-async function loadLeadTeamRoles(leadId: string, isLegacy: boolean): Promise<string> {
-  const employees = await loadCloserEmployees();
-  const rawId = String(leadId || '').replace(/^legacy_/i, '');
-  let caseHandler = '—';
-  let retentionHandler = '—';
-  let closer = '—';
-  let expert = '—';
-  let scheduler = '—';
-  let manager = '—';
-  let helper = '—';
+function isUnresolvedRoleName(name: string): boolean {
+  const value = String(name || '').trim();
+  return !value || value === '—' || value === '---' || /^\d+$/.test(value);
+}
 
-  if (isLegacy) {
-    const { data, error } = await supabase
-      .from('leads_lead')
-      .select(
-        'case_handler_id, retainer_handler_id, closer_id, expert_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, handler_employee:tenants_employee!case_handler_id(id, display_name), retainer_employee:tenants_employee!retainer_handler_id(id, display_name)',
-      )
-      .eq('id', rawId)
-      .maybeSingle();
-    const row = error ? (await supabase.from('leads_lead').select('case_handler_id, retainer_handler_id, closer_id, expert_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id').eq('id', rawId).maybeSingle()).data : data;
-    if (row) {
-      caseHandler = roleDisplayName(
-        resolveCloserLabel(row.case_handler_id, row.case_handler_id, employees, joinedEmployeeName(row.handler_employee)).name,
-      );
-      retentionHandler = roleDisplayName(
-        resolveCloserLabel(row.retainer_handler_id, row.retainer_handler_id, employees, joinedEmployeeName(row.retainer_employee)).name,
-      );
-      closer = roleDisplayName(resolveCloserLabel(row.closer_id, row.closer_id, employees).name);
-      expert = roleDisplayName(resolveCloserLabel(row.expert_id, row.expert_id, employees).name);
-      scheduler = roleDisplayName(resolveCloserLabel(row.meeting_scheduler_id, row.meeting_scheduler_id, employees).name);
-      manager = roleDisplayName(resolveCloserLabel(row.meeting_manager_id, row.meeting_manager_id, employees).name);
-      helper = roleDisplayName(resolveCloserLabel(row.meeting_lawyer_id, row.meeting_lawyer_id, employees).name);
+/** Same lookup as ExpertTab.getExpertName — tenants_employee by id, then employees.full_name. */
+async function lookupEmployeeNameById(id: unknown): Promise<string> {
+  if (id == null) return '';
+  const raw = String(id).trim();
+  if (!raw || raw === '---' || raw === '--' || /^not[_ ]assigned$/i.test(raw)) return '';
+  const asNum = Number(raw);
+  const idFilter = Number.isFinite(asNum) && String(asNum) === raw ? asNum : raw;
+  const { data: employee } = await supabase
+    .from('tenants_employee')
+    .select('display_name')
+    .eq('id', idFilter)
+    .maybeSingle();
+  const fromEmployee = String(employee?.display_name || '').trim();
+  if (fromEmployee) return fromEmployee;
+  const { data: fallback } = await supabase.from('employees').select('full_name').eq('id', idFilter).maybeSingle();
+  return String(fallback?.full_name || '').trim();
+}
+
+function hasRoleValue(value: unknown): boolean {
+  if (value == null) return false;
+  const raw = String(value).trim();
+  return raw !== '' && raw !== '—' && raw !== '---' && raw !== '--' && !/^not[_ ]assigned$/i.test(raw);
+}
+
+function legacyRoleKey(rawId: string): string | number {
+  return /^\d+$/.test(rawId) ? Number(rawId) : rawId;
+}
+
+type LeadRoleFields = {
+  caseHandler?: unknown;
+  retentionHandler?: unknown;
+  closer?: unknown;
+  expert?: unknown;
+  scheduler?: unknown;
+  manager?: unknown;
+  helper?: unknown;
+  legacyLeadId?: unknown;
+};
+
+async function resolveRoleEmployeeName(raw: unknown, employees: EmployeeHit[]): Promise<string> {
+  if (!hasRoleValue(raw)) return '—';
+  const fromList = roleDisplayName(resolveCloserLabel(raw, raw, employees).name);
+  if (!isUnresolvedRoleName(fromList)) return fromList;
+  const fromDb = await lookupEmployeeNameById(raw);
+  return fromDb ? roleDisplayName(fromDb) : fromList;
+}
+
+async function fetchLegacyRoleFields(rawId: string): Promise<LeadRoleFields | null> {
+  const { data, error } = await supabase
+    .from('leads_lead')
+    .select(
+      'case_handler_id, retainer_handler_id, closer_id, expert_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id',
+    )
+    .eq('id', legacyRoleKey(rawId))
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    caseHandler: data.case_handler_id,
+    retentionHandler: data.retainer_handler_id,
+    closer: data.closer_id,
+    expert: data.expert_id,
+    scheduler: data.meeting_scheduler_id,
+    manager: data.meeting_manager_id,
+    helper: data.meeting_lawyer_id,
+  };
+}
+
+async function fetchNewRoleFields(rawId: string): Promise<LeadRoleFields | null> {
+  const full = await supabase
+    .from('leads')
+    .select(
+      'handler, case_handler_id, retainer_handler_id, closer, expert, scheduler, manager, helper, legacy_lead_id, meeting_manager_id',
+    )
+    .eq('id', rawId)
+    .maybeSingle();
+  const row = full.error
+    ? (
+        await supabase
+          .from('leads')
+          .select('handler, case_handler_id, retainer_handler_id, closer, expert, scheduler, manager, helper, legacy_lead_id')
+          .eq('id', rawId)
+          .maybeSingle()
+      ).data
+    : full.data;
+  if (!row) return null;
+  return {
+    caseHandler: row.case_handler_id || row.handler,
+    retentionHandler: row.retainer_handler_id,
+    closer: row.closer,
+    expert: row.expert,
+    scheduler: row.scheduler,
+    manager: row.manager || row.meeting_manager_id,
+    helper: row.helper,
+    legacyLeadId: row.legacy_lead_id,
+  };
+}
+
+function fillEmptyRoleFields(primary: LeadRoleFields, fallback: LeadRoleFields): LeadRoleFields {
+  return {
+    caseHandler: hasRoleValue(primary.caseHandler) ? primary.caseHandler : fallback.caseHandler,
+    retentionHandler: hasRoleValue(primary.retentionHandler) ? primary.retentionHandler : fallback.retentionHandler,
+    closer: hasRoleValue(primary.closer) ? primary.closer : fallback.closer,
+    expert: hasRoleValue(primary.expert) ? primary.expert : fallback.expert,
+    scheduler: hasRoleValue(primary.scheduler) ? primary.scheduler : fallback.scheduler,
+    manager: hasRoleValue(primary.manager) ? primary.manager : fallback.manager,
+    helper: hasRoleValue(primary.helper) ? primary.helper : fallback.helper,
+    legacyLeadId: primary.legacyLeadId ?? fallback.legacyLeadId,
+  };
+}
+
+async function loadLeadTeamRoles(
+  leadId: string,
+  isLegacy: boolean,
+): Promise<{
+  assignedExpert: string;
+  assignedHandler: string;
+  assignedManager: string;
+  assignedCloser: string;
+  assignedScheduler: string;
+  block: string;
+}> {
+  const empty = {
+    assignedExpert: '—',
+    assignedHandler: '—',
+    assignedManager: '—',
+    assignedCloser: '—',
+    assignedScheduler: '—',
+    block: 'TEAM ROLES: (unavailable)',
+  };
+  try {
+    const employees = await loadCloserEmployees();
+    const rawId = String(leadId || '').replace(/^legacy_/i, '');
+    let fields = isLegacy ? await fetchLegacyRoleFields(rawId) : await fetchNewRoleFields(rawId);
+    if (!fields) {
+      fields = isLegacy ? await fetchNewRoleFields(rawId) : await fetchLegacyRoleFields(rawId);
     }
-  } else {
-    const { data: row } = await supabase
-      .from('leads')
-      .select('handler, case_handler_id, retainer_handler_id, closer, expert, scheduler, manager, helper')
-      .eq('id', rawId)
-      .maybeSingle();
-    if (row) {
-      const handlerRaw = row.case_handler_id || row.handler;
-      caseHandler = roleDisplayName(resolveCloserLabel(handlerRaw, row.case_handler_id || row.handler, employees).name);
-      retentionHandler = roleDisplayName(resolveCloserLabel(row.retainer_handler_id, row.retainer_handler_id, employees).name);
-      closer = roleDisplayName(resolveCloserLabel(row.closer, row.closer, employees).name);
-      expert = roleDisplayName(resolveCloserLabel(row.expert, row.expert, employees).name);
-      scheduler = roleDisplayName(resolveCloserLabel(row.scheduler, row.scheduler, employees).name);
-      manager = roleDisplayName(resolveCloserLabel(row.manager, row.manager, employees).name);
-      helper = roleDisplayName(resolveCloserLabel(row.helper, row.helper, employees).name);
+    if (fields?.legacyLeadId != null && String(fields.legacyLeadId).trim() !== '') {
+      const linked = await fetchLegacyRoleFields(String(fields.legacyLeadId));
+      if (linked) fields = fillEmptyRoleFields(fields, linked);
     }
+    if (!fields) return empty;
+
+    const [dbHandler, dbRetention, dbCloser, dbExpert, dbScheduler, dbManager, dbHelper] = await Promise.all([
+      resolveRoleEmployeeName(fields.caseHandler, employees),
+      resolveRoleEmployeeName(fields.retentionHandler, employees),
+      resolveRoleEmployeeName(fields.closer, employees),
+      resolveRoleEmployeeName(fields.expert, employees),
+      resolveRoleEmployeeName(fields.scheduler, employees),
+      resolveRoleEmployeeName(fields.manager, employees),
+      resolveRoleEmployeeName(fields.helper, employees),
+    ]);
+
+    const open = getRmqAiCurrentLead();
+    const fill = async (fromDb: string, ...openVals: unknown[]) => {
+      if (!isUnresolvedRoleName(fromDb)) return fromDb;
+      for (const value of openVals) {
+        const fromOpen = await resolveRoleEmployeeName(value, employees);
+        if (!isUnresolvedRoleName(fromOpen)) return fromOpen;
+      }
+      return fromDb;
+    };
+
+    const caseHandler = await fill(dbHandler, open?.handler, open?.case_handler_id);
+    const retentionHandler = await fill(dbRetention, open?.retainer_handler_id);
+    const closer = await fill(dbCloser, open?.closer, open?.closer_id);
+    const expert = await fill(dbExpert, open?.expert, open?.expert_id);
+    const scheduler = await fill(dbScheduler, open?.scheduler, open?.meeting_scheduler_id);
+    const manager = await fill(dbManager, open?.manager, open?.meeting_manager_id);
+    const helper = await fill(dbHelper, open?.helper, open?.meeting_lawyer_id);
+
+    return {
+      assignedExpert: expert,
+      assignedHandler: caseHandler,
+      assignedManager: manager,
+      assignedCloser: closer,
+      assignedScheduler: scheduler,
+      block: [
+        'ASSIGNED ROLES (Roles tab — copy the matching line only):',
+        `Handler: ${caseHandler}`,
+        `Retention Handler: ${retentionHandler}`,
+        `Closer: ${closer}`,
+        `Expert: ${expert}`,
+        `Scheduler: ${scheduler}`,
+        `Manager: ${manager}`,
+        `Helper: ${helper}`,
+        'Handler is the Roles tab Handler. Manager is the Roles tab Manager, not the handler. Expert is the Expert tab person, not the closer.',
+      ].join('\n'),
+    };
+  } catch (error) {
+    console.warn('[rmq-ai] loadLeadTeamRoles', error);
+    return empty;
   }
-
-  return [
-    'TEAM ROLES (Roles tab):',
-    `Case Handler (handler role): ${caseHandler}`,
-    `Retention Handler: ${retentionHandler}`,
-    `Closer: ${closer}`,
-    `Expert: ${expert}`,
-    `Scheduler: ${scheduler}`,
-    `Manager: ${manager}`,
-    `Helper: ${helper}`,
-    'If asked who the handler is, use Case Handler only. Retention Handler is a different role.',
-  ].join('\n');
 }
 
 async function executeGetLeadCaseFile(args: {
@@ -1018,15 +1183,188 @@ async function executeGetLeadCaseFile(args: {
   lead_id?: string;
   is_legacy?: boolean;
 }): Promise<string> {
-  const resolved = await resolveLeadFromQuery(args);
-  const [caseFile, teamRoles] = await Promise.all([
+  const lead = await requireResolvedLead(args);
+  const [caseFile, team] = await Promise.all([
     fetchLeadCaseFileForAi({
-      leadId: resolved.leadId,
-      isLegacy: resolved.isLegacy,
+      leadId: lead.leadId,
+      isLegacy: lead.isLegacy,
     }),
-    loadLeadTeamRoles(resolved.leadId, resolved.isLegacy),
+    loadLeadTeamRoles(lead.leadId, lead.isLegacy),
   ]);
-  return `Matched: ${resolved.label}\nlead_id=${resolved.leadId} is_legacy=${resolved.isLegacy}\n\n${teamRoles}\n\n${caseFile}`;
+  return [
+    `Matched: ${lead.leadNumber} ${lead.displayName}`,
+    '',
+    team.block,
+    '',
+    `ASSIGNED EXPERT: ${team.assignedExpert}`,
+    `ASSIGNED HANDLER: ${team.assignedHandler}`,
+    `ASSIGNED MANAGER: ${team.assignedManager}`,
+    `ASSIGNED CLOSER: ${team.assignedCloser}`,
+    `ASSIGNED SCHEDULER: ${team.assignedScheduler}`,
+    '',
+    caseFile,
+  ].join('\n');
+}
+
+function formatMeetingClock(value: unknown): string {
+  const text = String(value ?? '').trim();
+  return text.slice(0, 5) || '—';
+}
+
+function meetingDateIso(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  return normalizeCrmDateValue(raw);
+}
+
+async function fetchMeetingsForResolvedLead(lead: {
+  isLegacy: boolean;
+  legacyLeadId?: string;
+  clientId?: string;
+  leadId: string;
+}) {
+  const rawId = String(lead.legacyLeadId || lead.clientId || lead.leadId || '').replace(/^legacy_/i, '');
+  const meetingSelect =
+    'id, meeting_date, meeting_time, status, meeting_brief, meeting_summary_notes, meeting_location, client_id, legacy_lead_id';
+  const rows: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  const pushRows = (data: unknown) => {
+    for (const row of (Array.isArray(data) ? data : []) as Record<string, unknown>[]) {
+      const key = String(row.id ?? `${row.meeting_date}-${row.meeting_time}`);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(row);
+    }
+  };
+
+  if (lead.isLegacy) {
+    const numericId = /^\d+$/.test(rawId) ? Number(rawId) : rawId;
+    const byLegacy = await supabase
+      .from('meetings')
+      .select(meetingSelect)
+      .eq('legacy_lead_id', numericId)
+      .order('meeting_date', { ascending: true })
+      .limit(40);
+    if (byLegacy.error) throw byLegacy.error;
+    pushRows(byLegacy.data);
+  } else {
+    const byClient = await supabase
+      .from('meetings')
+      .select(meetingSelect)
+      .eq('client_id', rawId)
+      .order('meeting_date', { ascending: true })
+      .limit(40);
+    if (byClient.error) throw byClient.error;
+    pushRows(byClient.data);
+  }
+
+  return rows;
+}
+
+export type ClientMeetingToolUi = {
+  nextMeetingId?: string;
+  askedMeetingId?: string;
+  internalLeadId?: string;
+  leadNumber?: string;
+};
+
+let lastClientMeetingUi: ClientMeetingToolUi | null = null;
+
+export function takeClientMeetingToolUi(): ClientMeetingToolUi | null {
+  const value = lastClientMeetingUi;
+  lastClientMeetingUi = null;
+  return value;
+}
+
+async function executeListClientMeetings(args: {
+  query?: string;
+  lead_id?: string;
+  is_legacy?: boolean;
+  date?: string;
+}): Promise<string> {
+  const lead = await requireResolvedLead(args);
+  const rawId = String(lead.legacyLeadId || lead.clientId || lead.leadId).replace(/^legacy_/i, '');
+  const today = jerusalemTodayIso();
+  const askedDate = args.date ? meetingDateIso(args.date) : '';
+
+  const leadQuery = lead.isLegacy
+    ? supabase.from('leads_lead').select('id, name, lead_number, meeting_brief, meeting_date, meeting_time, meeting_location_old').eq('id', rawId).maybeSingle()
+    : supabase.from('leads').select('id, name, lead_number, meeting_brief, meeting_date, meeting_time, meeting_location').eq('id', rawId).maybeSingle();
+
+  const [meetingRows, { data: leadRow }] = await Promise.all([
+    fetchMeetingsForResolvedLead(lead),
+    leadQuery,
+  ]);
+
+  const leadBrief = String((leadRow as { meeting_brief?: unknown } | null)?.meeting_brief ?? '').trim();
+  const rows = meetingRows.filter((row) => {
+    const status = String(row.status || '').toLowerCase();
+    return status !== 'canceled' && status !== 'cancelled';
+  });
+
+  const leadMeetingDate = meetingDateIso((leadRow as { meeting_date?: unknown } | null)?.meeting_date);
+  const alreadyHasLeadDate = rows.some((row) => meetingDateIso(row.meeting_date) === leadMeetingDate);
+  if (leadMeetingDate && !alreadyHasLeadDate) {
+    rows.push({
+      id: 'lead-row',
+      meeting_date: leadMeetingDate,
+      meeting_time: (leadRow as { meeting_time?: unknown } | null)?.meeting_time,
+      status: 'scheduled',
+      meeting_brief: leadBrief,
+      meeting_summary_notes: null,
+      meeting_location:
+        (leadRow as { meeting_location?: unknown; meeting_location_old?: unknown } | null)?.meeting_location
+        || (leadRow as { meeting_location_old?: unknown } | null)?.meeting_location_old,
+    });
+  }
+
+  rows.sort((a, b) => {
+    const aKey = `${meetingDateIso(a.meeting_date)}T${formatMeetingClock(a.meeting_time)}`;
+    const bKey = `${meetingDateIso(b.meeting_date)}T${formatMeetingClock(b.meeting_time)}`;
+    return aKey.localeCompare(bKey);
+  });
+
+  const upcoming = rows.filter((row) => meetingDateIso(row.meeting_date) >= today);
+  const past = rows.filter((row) => meetingDateIso(row.meeting_date) < today).reverse();
+  const next = upcoming[0] || null;
+  const asked = askedDate
+    ? rows.find((row) => meetingDateIso(row.meeting_date) === askedDate) || null
+    : null;
+
+  const toMeetingFact = (row: Record<string, unknown> | null) => {
+    if (!row) return null;
+    return {
+      date: meetingDateIso(row.meeting_date),
+      time: formatMeetingClock(row.meeting_time),
+      location: String(row.meeting_location || '').trim() || null,
+      status: String(row.status || 'scheduled'),
+      summary: String(row.meeting_summary_notes || '').trim() || null,
+      brief: String(row.meeting_brief || '').trim() || null,
+    };
+  };
+
+  lastClientMeetingUi = {
+    nextMeetingId: next && String(next.id || '') !== 'lead-row' ? String(next.id) : undefined,
+    askedMeetingId: asked && String(asked.id || '') !== 'lead-row' ? String(asked.id) : undefined,
+    internalLeadId: lead.leadId,
+    leadNumber: lead.leadNumber,
+  };
+
+  return JSON.stringify({
+    leadNumber: lead.leadNumber,
+    displayName: lead.displayName,
+    caseBrief: leadBrief || null,
+    nextMeeting: toMeetingFact(next),
+    askedMeeting: asked
+      ? toMeetingFact(asked)
+      : askedDate
+        ? { date: askedDate, missing: true }
+        : null,
+    otherUpcoming: upcoming.slice(1).map((row) => toMeetingFact(row)),
+    recentPast: past.slice(0, 8).map((row) => toMeetingFact(row)),
+  });
 }
 
 async function executeQueryCrm(args: {
@@ -1086,7 +1424,7 @@ async function executeQueryCrm(args: {
   const selectColumns = args.column ? [args.column] : allowed.slice(0, 18);
   const joinedSelect =
     table === 'meetings' && !args.column
-      ? 'id, meeting_date, meeting_time, status, meeting_brief, meeting_location, client_id, legacy_lead_id, lead:leads!client_id(id, name, lead_number, topic), legacy_lead:leads_lead!legacy_lead_id(id, name, lead_number, category)'
+      ? 'id, meeting_date, meeting_time, status, meeting_brief, meeting_summary_notes, meeting_location, client_id, legacy_lead_id, lead:leads!client_id(id, name, lead_number, topic), legacy_lead:leads_lead!legacy_lead_id(id, name, lead_number, category)'
       : table === 'contracts' && !args.column
         ? 'id, client_id, legacy_id, contact_id, status, signed_at, total_amount, created_at, lead:leads!client_id(id, name, lead_number, topic, date_signed), legacy_lead:leads_lead!legacy_id(id, name, lead_number, category)'
         : table === 'leads_leadstage' && !args.column
@@ -1142,6 +1480,10 @@ type MeetingListRow = {
   helperRaw?: unknown;
   extern1?: unknown;
   extern2?: unknown;
+  managerName: string;
+  helperName: string;
+  guestNames: string[];
+  participantNames: string[];
   myRoles: string[];
 };
 
@@ -1308,6 +1650,69 @@ async function loadLeadMeetingRoleMaps(
   return { newMap, legacyMap };
 }
 
+function uniqueRoleNames(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const value of values) {
+    const name = roleDisplayName(value || '');
+    if (!name || name === '—') continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+  }
+  return names;
+}
+
+async function loadParticipantNamesByMeeting(
+  meetingIds: number[],
+  employees: EmployeeHit[],
+): Promise<Map<number, string[]>> {
+  const map = new Map<number, string[]>();
+  if (!meetingIds.length) return map;
+  const rows = await fetchRowsInChunks(meetingIds, async (chunk) => {
+    const { data, error } = await supabase
+      .from('meeting_participants')
+      .select('meeting_id, employee_id, firm_contact_id, free_name')
+      .in('meeting_id', chunk);
+    if (error) return [];
+    return data || [];
+  });
+  const firmIds = Array.from(
+    new Set(rows.map((row: { firm_contact_id?: unknown }) => row.firm_contact_id).filter(Boolean).map(String)),
+  );
+  const firmNames = new Map<string, string>();
+  if (firmIds.length) {
+    const { data } = await supabase.from('firm_contacts').select('id, name').in('id', firmIds);
+    for (const row of data || []) {
+      const name = String((row as { name?: unknown }).name || '').trim();
+      if (name) firmNames.set(String((row as { id?: unknown }).id), name);
+    }
+  }
+  for (const row of rows as Array<{
+    meeting_id?: unknown;
+    employee_id?: unknown;
+    firm_contact_id?: unknown;
+    free_name?: unknown;
+  }>) {
+    const id = Number(row.meeting_id);
+    if (!Number.isFinite(id)) continue;
+    let name = '';
+    if (row.employee_id != null) {
+      name = roleDisplayName(resolveCloserLabel(row.employee_id, row.employee_id, employees).name);
+    } else if (row.firm_contact_id) {
+      name = firmNames.get(String(row.firm_contact_id)) || '';
+    } else {
+      name = String(row.free_name || '').trim();
+    }
+    if (!name || name === '—') continue;
+    const list = map.get(id) || [];
+    if (!list.some((existing) => existing.toLowerCase() === name.toLowerCase())) list.push(name);
+    map.set(id, list);
+  }
+  return map;
+}
+
 async function executeListMeetings(args: {
   date?: string;
   scheduler?: string;
@@ -1396,6 +1801,10 @@ async function executeListMeetings(args: {
       helperRaw: meeting.helper ?? (lead as { helper?: unknown; meeting_lawyer_id?: unknown } | null)?.helper ?? (lead as { meeting_lawyer_id?: unknown } | null)?.meeting_lawyer_id,
       extern1: meeting.extern1,
       extern2: meeting.extern2,
+      managerName: '',
+      helperName: '',
+      guestNames: [],
+      participantNames: [],
       myRoles: [],
     });
   }
@@ -1422,6 +1831,10 @@ async function executeListMeetings(args: {
       legacyLeadId: String(lead.id),
       scheduler: '',
       schedulerId: '',
+      managerName: '',
+      helperName: '',
+      guestNames: [],
+      participantNames: [],
       myRoles: [],
     });
   }
@@ -1449,6 +1862,10 @@ async function executeListMeetings(args: {
       newLeadId: String(lead.id),
       scheduler: '',
       schedulerId: '',
+      managerName: '',
+      helperName: '',
+      guestNames: [],
+      participantNames: [],
       myRoles: [],
     });
   }
@@ -1476,7 +1893,11 @@ async function executeListMeetings(args: {
     ),
   );
   const schedulerMaps = await loadSchedulerMaps(newIds, legacyIds, employees);
-  const roleMaps = mine ? await loadLeadMeetingRoleMaps(newIds, legacyIds, employees) : null;
+  const roleMaps = await loadLeadMeetingRoleMaps(newIds, legacyIds, employees);
+  const meetingIds = Array.from(
+    new Set(rows.map((row) => row.meetingId).filter((id): id is number => Number.isFinite(id))),
+  );
+  const participantNames = await loadParticipantNamesByMeeting(meetingIds, employees);
   for (const row of rows) {
     const resolved = row.newLeadId
       ? schedulerMaps.newMap.get(row.newLeadId)
@@ -1485,6 +1906,25 @@ async function executeListMeetings(args: {
         : undefined;
     row.scheduler = resolved?.name || '';
     row.schedulerId = resolved?.id || '';
+    const leadRoles = row.newLeadId
+      ? roleMaps.newMap.get(row.newLeadId)
+      : row.legacyLeadId
+        ? roleMaps.legacyMap.get(row.legacyLeadId)
+        : undefined;
+    const manager = resolveCloserLabel(row.managerRaw, row.managerRaw, employees, leadRoles?.manager.name);
+    const helper = resolveCloserLabel(row.helperRaw, row.helperRaw, employees, leadRoles?.helper.name);
+    row.managerName = roleDisplayName(manager.name || leadRoles?.manager.name || '');
+    row.helperName = roleDisplayName(helper.name || leadRoles?.helper.name || '');
+    row.guestNames = uniqueRoleNames([
+      resolveCloserLabel(row.extern1, row.extern1, employees).name,
+      resolveCloserLabel(row.extern2, row.extern2, employees).name,
+    ]);
+    const taken = new Set(
+      [row.managerName, row.helperName, ...row.guestNames].map((name) => name.toLowerCase()).filter((name) => name && name !== '—'),
+    );
+    row.participantNames = (row.meetingId != null ? participantNames.get(row.meetingId) || [] : []).filter(
+      (name) => !taken.has(name.toLowerCase()),
+    );
   }
 
   if (mine) {
@@ -1581,28 +2021,31 @@ async function executeListMeetings(args: {
   const schedulerLabel = schedulerFilter
     ? formatMatchedEmployeeLabel(schedulerFilter, schedulerHits)
     : '';
+  const rolePeople = (names: string[]) => (names.length ? names.join(', ') : '—');
   const lines = filtered.slice(0, 80).map((row, index) => {
-    const bits = [
-      row.time,
+    const headline = [
+      `**${row.time}**`,
       row.leadNumber ? `${row.leadNumber} ${row.name}` : row.name,
-      mine && row.myRoles.length ? `your role: ${row.myRoles.join(', ')}` : '',
-      !mine && row.scheduler ? `scheduler ${row.scheduler}` : !mine ? 'scheduler —' : '',
-      row.category,
-      row.status,
-      row.source === 'meetings' ? '' : row.source,
-    ].filter(Boolean);
-    return `${index + 1}. ${bits.join(' · ')}`;
+    ].join(' ');
+    const roles = [
+      `Meeting manager: ${row.managerName && row.managerName !== '—' ? row.managerName : '—'}`,
+      `Helper: ${row.helperName && row.helperName !== '—' ? row.helperName : '—'}`,
+      `Guests: ${rolePeople(row.guestNames)}`,
+      `Participants: ${rolePeople(row.participantNames)}`,
+    ].join(' · ');
+    const yours = mine && row.myRoles.length ? `\nYour role: ${row.myRoles.join(', ')}` : '';
+    return `${index + 1}. ${headline}\n${roles}${yours}`;
   });
 
   return [
     mine
       ? `Your meetings on ${dateStr} (Asia/Jerusalem; meeting manager, helper, guest, or participant): ${filtered.length}`
-      : `Meetings on ${dateStr} (Asia/Jerusalem, scheduler = lead scheduler role): ${filtered.length}`,
+      : `Meetings on ${dateStr} (Asia/Jerusalem): ${filtered.length}`,
     mine && me.displayName ? `Logged-in employee: ${me.displayName}` : '',
-    schedulerLabel ? `Scheduler: ${schedulerLabel}` : '',
-    lines.join('\n'),
+    schedulerLabel ? `Scheduler filter: ${schedulerLabel}` : '',
+    lines.join('\n\n'),
     filtered.length > 80 ? `\n…and ${filtered.length - 80} more` : '',
-    'Reply with time, the exact lead number as a bare token, name, and role. Never write Unnamed when a lead number is present. Internal meetings have no client — say Internal meeting.',
+    'Copy this layout. First line: time, lead number, name. Second line: Meeting manager, Helper, Guests, Participants. Keep roles on their own line under the lead. Copy employee names exactly. Never write Unnamed when a lead number is present. Internal meetings have no client — say Internal meeting.',
   ]
     .filter(Boolean)
     .join('\n');
@@ -3011,6 +3454,7 @@ async function executeListExpenses(args: {
 
   const sumByKind = new Map<string, { label: string; amount: number; count: number }>();
   const sumByType = new Map<string, { amount: number; count: number }>();
+  const sumByPerson = new Map<string, { amount: number; count: number }>();
   for (const row of itemRows) {
     const nis = entryNis(row);
     const kindKey = row.kind;
@@ -3019,11 +3463,16 @@ async function executeListExpenses(args: {
     kindAgg.amount += nis;
     kindAgg.count += 1;
     sumByKind.set(kindKey, kindAgg);
-    const typeLabel = (row.category_label || kindLabel).trim() || 'Unspecified';
+    const typeLabel = (row.category_label || '').trim() || 'Unspecified';
     const typeAgg = sumByType.get(typeLabel) || { amount: 0, count: 0 };
     typeAgg.amount += nis;
     typeAgg.count += 1;
     sumByType.set(typeLabel, typeAgg);
+    const person = String(row.created_by_name || '').trim() || 'Unknown';
+    const personAgg = sumByPerson.get(person) || { amount: 0, count: 0 };
+    personAgg.amount += nis;
+    personAgg.count += 1;
+    sumByPerson.set(person, personAgg);
   }
 
   const categoryLines: string[] = [];
@@ -3066,17 +3515,16 @@ async function executeListExpenses(args: {
 
   const lines: string[] = [
     `EXPENSES ${range.label} (Asia/Jerusalem)`,
-    `Kind: ${kind === 'all' ? 'all types' : kind}`,
+    `Kind filter: ${kind === 'all' ? 'all types' : kind}`,
     '',
     `TOTAL: ${formatNis(combinedTotal)}`,
-    'Reply to the user with this TOTAL first. If they asked for only the amount, stop after that number.',
   ];
 
   if (categoryLines.length) {
-    lines.push('', 'BY CATEGORY (NIS, skip zeros):');
+    lines.push('', 'KIND (summary cards: Client / Office / Subcontractor / … — not the table CATEGORY column):');
     lines.push(...categoryLines);
   } else {
-    lines.push('', 'BY CATEGORY: none with an amount in this range.');
+    lines.push('', 'KIND: none with an amount in this range.');
   }
 
   const typeLines = [...sumByType.entries()]
@@ -3084,33 +3532,42 @@ async function executeListExpenses(args: {
     .sort((a, b) => b[1].amount - a[1].amount)
     .slice(0, 40)
     .map(([label, agg]) => `- ${label}: ${formatNis(agg.amount)} (${agg.count})`);
-  if (typeLines.length && (kind === 'lead' || kind === 'office')) {
-    lines.push('', 'BY TYPE (NIS — always show the amount, never the name alone):');
+  if (typeLines.length) {
+    lines.push('', 'CATEGORY (Expenses table CATEGORY column — Courier and delivery, government fee, translation, …):');
     lines.push(...typeLines);
   }
 
-  const wantLineItems = (kind !== 'all' && kind !== 'salaries') || Boolean(addedBy || search);
-  if (wantLineItems && kind !== 'salaries') {
+  const personLines = [...sumByPerson.entries()]
+    .filter(([, agg]) => agg.amount > 0)
+    .sort((a, b) => b[1].amount - a[1].amount)
+    .slice(0, 40)
+    .map(([label, agg]) => `- ${label}: ${formatNis(agg.amount)} (${agg.count})`);
+  if (personLines.length) {
+    lines.push('', 'CREATED BY (Expenses table CREATED BY column — who added the row):');
+    lines.push(...personLines);
+  }
+
+  if (kind !== 'salaries') {
     const shown = itemRows.slice(0, limit);
-    lines.push('', `LINE ITEMS (${shown.length} of ${itemRows.length}, amount first):`);
+    lines.push('', `LINE ITEMS (${shown.length} of ${itemRows.length}):`);
     if (!shown.length) {
       lines.push(addedBy ? `No line items added by "${addedBy}" in this range.` : 'No line items in this range.');
     } else {
-      for (const row of shown) {
+      shown.forEach((row, index) => {
         const nis = entryNis(row);
         const extra =
           nis && row.currency_code && !/^ils|nis$/i.test(row.currency_code)
             ? ` (${formatFinanceExpenseAmount(row.amount, row.currency_code)})`
             : '';
-        const parts = [
-          formatNis(nis) + extra,
-          row.category_label || FINANCE_KIND_LABEL[row.kind] || row.kind,
-          row.expense_date || row.created_at.slice(0, 10),
-          row.lead_number || '',
-          row.vendor_label || '',
-        ].filter(Boolean);
-        lines.push(`- ${parts.join(' · ')}`);
-      }
+        const addedByName = String(row.created_by_name || '').trim() || 'Unknown';
+        const category = String(row.category_label || '').trim() || 'Unspecified';
+        const date = row.expense_date || row.created_at.slice(0, 10);
+        const leadBit = [row.lead_number, row.vendor_label].filter(Boolean).join(' ');
+        lines.push(`${index + 1}. ${category} — ${formatNis(nis)}${extra}`);
+        lines.push(`Added by: ${addedByName}`);
+        if (leadBit) lines.push(`Lead: ${leadBit}`);
+        lines.push(`Date: ${date}`);
+      });
     }
   }
 
@@ -3128,7 +3585,10 @@ async function executeListExpenses(args: {
     }
   }
 
-  lines.push('', 'Use only these NIS figures. Do not invent amounts. Do not list a type without its NIS amount.');
+  lines.push(
+    '',
+    'Number only each expense category line. Put Added by and Lead under it with no extra numbers or bullets. Quote names from LINE ITEMS. KIND is not the expense category. Do not invent employees or fee names.',
+  );
   return lines.join('\n');
 }
 
@@ -3220,11 +3680,41 @@ export async function executeRmqAiTool(toolCall: {
     return `Invalid arguments for ${name}`;
   }
 
+  const leadScopedTools = new Set([
+    'get_lead_case_file',
+    'list_client_meetings',
+    'draft_client_message',
+    'prep_meeting',
+    'wrap_up_meeting',
+    'set_follow_up',
+    'log_manual_note',
+  ]);
+  if (leadScopedTools.has(name)) {
+    const fallback = currentLeadAsToolArgs();
+    const rawQuery = String(args.query || '').trim();
+    const namedOtherLead = isNamedOtherLead(rawQuery, fallback);
+    if (!namedOtherLead && (fallback.lead_id || fallback.query)) {
+      args = {
+        ...args,
+        query: fallback.query || args.query,
+        lead_id: fallback.lead_id || args.lead_id,
+        is_legacy: args.is_legacy ?? fallback.is_legacy,
+      };
+    }
+  }
+
   try {
+    const started = Date.now();
+    const result = await (async () => {
     if (name === 'get_lead_case_file') {
       return await executeGetLeadCaseFile(args as { query?: string; lead_id?: string; is_legacy?: boolean });
     }
-    if (name === 'list_meetings') {
+    if (name === 'list_client_meetings') {
+      return await executeListClientMeetings(
+        args as { query?: string; lead_id?: string; is_legacy?: boolean; date?: string },
+      );
+    }
+    if (name === 'list_calendar_day' || name === 'list_meetings') {
       return await executeListMeetings(
         args as { date?: string; scheduler?: string; query?: string; scope?: string },
       );
@@ -3317,7 +3807,11 @@ export async function executeRmqAiTool(toolCall: {
       return await executeListStaleSalesLeads(args as { days?: number });
     }
     return `Unknown function: ${name}`;
+    })();
+    logRmqAiToolRouting(name, Date.now() - started);
+    return result;
   } catch (error: any) {
+    logRmqAiToolRouting(name, 0);
     return `Error executing ${name}: ${error?.message || String(error)}`;
   }
 }

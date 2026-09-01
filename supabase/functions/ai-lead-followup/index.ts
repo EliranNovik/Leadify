@@ -85,8 +85,81 @@ function clip(raw: unknown, max = 400): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
+function flattenNotes(raw: unknown): string {
+  if (raw == null || raw === '') return '';
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (
+      (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+      (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    ) {
+      try {
+        return flattenNotes(JSON.parse(trimmed));
+      } catch {
+        /* use as plain text */
+      }
+    }
+    return trimmed
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+  if (Array.isArray(raw)) {
+    return raw.map((item) => flattenNotes(item)).filter(Boolean).join('\n\n');
+  }
+  if (typeof raw === 'object') {
+    const rec = raw as Record<string, unknown>;
+    if (rec.content != null) return flattenNotes(rec.content);
+    if (rec.text != null) return flattenNotes(rec.text);
+    if (rec.note != null) return flattenNotes(rec.note);
+  }
+  return clip(raw, 8000);
+}
+
 function clipNote(raw: unknown, max = 2500): string {
-  return clip(raw, max);
+  const text = flattenNotes(raw);
+  if (!text) return '';
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
+}
+
+const ELIGIBILITY_STATUS_LABELS: Record<string, string> = {
+  feasible_no_check: 'Feasible (no check)',
+  feasible_check: 'Feasible (further check)',
+  not_feasible: 'No feasibility',
+};
+
+const SECTION_ELIGIBILITY_LABELS: Record<string, string> = {
+  '116': 'German Citizenship - § 116',
+  '15': 'German Citizenship - § 15',
+  '5': 'German Citizenship - § 5',
+  '58c': 'Austrian Citizenship - § 58c',
+};
+
+function expertAssessmentLabel(lead: Record<string, unknown>): string {
+  const raw = String(lead.eligibility_status ?? '').trim();
+  if (raw && ELIGIBILITY_STATUS_LABELS[raw]) return ELIGIBILITY_STATUS_LABELS[raw];
+  if (raw) return raw;
+  const exam = Number(lead.expert_examination);
+  if (exam === 8) return ELIGIBILITY_STATUS_LABELS.feasible_no_check;
+  if (exam === 5) return ELIGIBILITY_STATUS_LABELS.feasible_check;
+  if (exam === 1) return ELIGIBILITY_STATUS_LABELS.not_feasible;
+  return 'Not checked';
+}
+
+function eligibilityDecidedLabel(lead: Record<string, unknown>, isLegacy: boolean): string {
+  const raw = isLegacy ? lead.eligibile : (lead.eligible ?? lead.eligibile);
+  const text = String(raw ?? '').trim().toLowerCase();
+  const yes = raw === true || text === 'true' || text === 'yes' || text === '1';
+  return yes ? 'Yes' : 'Not determined';
+}
+
+function citizenshipSectionLabel(lead: Record<string, unknown>): string {
+  const raw = String(lead.section_eligibility ?? '').trim();
+  if (!raw) return '—';
+  return SECTION_ELIGIBILITY_LABELS[raw] || raw;
 }
 
 function emailBody(row: { body_html?: unknown; body_preview?: unknown }): string {
@@ -202,6 +275,19 @@ function assembleCaseFile(args: {
       .filter((item) => item && String(item).trim())
       .join('\n\n') || '(none on file)';
 
+  const expertOpinion =
+    [args.caseBlock.expertNotes, args.caseBlock.expertOpinion]
+      .filter((item) => item && String(item).trim())
+      .join('\n\n') || '(none on file)';
+  const handlerNotes = String(args.caseBlock.handlerNotes || '').trim() || '(none on file)';
+  const assessment = String(args.caseBlock.expertAssessment || 'Not checked');
+  const expertEligibility = [
+    `Expert assessment: ${assessment}`,
+    `Expert review: ${assessment === 'Not checked' ? 'Not completed' : 'Completed'}`,
+    `Eligibility decided: ${args.caseBlock.eligibilityDecided || 'Not determined'}`,
+    `Citizenship section: ${args.caseBlock.citizenshipSection || '—'}`,
+  ].join('\n');
+
   const meetingNarrative =
     args.meetings
       .map((m) => {
@@ -242,7 +328,16 @@ function assembleCaseFile(args: {
       .map((i) => `${i.direction || '?'} ${String(i.at || '').slice(0, 16)}: ${i.preview}`)
       .join('\n') || '(none)';
 
-  return `CASE FILE — facts and notes:
+  return `EXPERT ELIGIBILITY:
+${expertEligibility}
+
+EXPERT OPINION (Expert tab):
+${expertOpinion}
+
+HANDLER NOTES:
+${handlerNotes}
+
+CASE FILE — facts and notes:
 ${factsBlock}
 
 MEETING SUMMARIES (newest first):
@@ -760,6 +855,12 @@ serve(async (req) => {
       generalNotes: clipNote(pick(lead, ['general_notes', 'notes']), 1200),
       schedulingNotes: clipNote(pick(lead, ['meeting_scheduling_notes']), 800),
       proposalText: clipNote(pick(lead, ['proposal_text']), 800),
+      expertNotes: clipNote(pick(lead, ['expert_notes']), 8000),
+      expertOpinion: clipNote(pick(lead, ['expert_opinion']), 4000),
+      handlerNotes: clipNote(pick(lead, ['handler_notes']), 4000),
+      expertAssessment: expertAssessmentLabel(lead as Record<string, unknown>),
+      eligibilityDecided: eligibilityDecidedLabel(lead as Record<string, unknown>, ref.isLegacy),
+      citizenshipSection: citizenshipSectionLabel(lead as Record<string, unknown>),
     };
 
     const stats = {

@@ -389,8 +389,12 @@ export function applyCrmDocumentLinksToEmailDraft(
   return next;
 }
 
+const EXPERT_ELIGIBILITY_HEADING = 'EXPERT ELIGIBILITY:';
+const EXPERT_OPINION_HEADING = 'EXPERT OPINION (Expert tab):';
+const HANDLER_NOTES_HEADING = 'HANDLER NOTES:';
+
 const CASE_FILE_NEXT_HEADING =
-  'WHATSAPP \\(newest first\\):|EMAIL \\(newest first\\):|CALLS:|MANUAL NOTES:|CRM fields:|CONTRACTS |POWER OF ATTORNEY|PROFORMA INVOICES|Payments:|Meetings \\(dates|Recent interactions|Computed stats:';
+  'EXPERT ELIGIBILITY:|EXPERT OPINION|HANDLER NOTES:|CASE FILE —|CASE BRIEF|MEETING SUMMARIES|WHATSAPP \\(newest first\\):|EMAIL \\(newest first\\):|CALLS:|MANUAL NOTES:|CRM fields:|CONTRACTS |POWER OF ATTORNEY|PROFORMA INVOICES|Payments:|Meetings \\(dates|Recent interactions|Computed stats:';
 
 function extractCaseSection(caseFile: string, heading: string): string {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -448,9 +452,27 @@ function overlayLocalCommunicationBlocks(edgeCaseFile: string, localCaseFile: st
   return next;
 }
 
+function overlayLocalOpinionBlocks(edgeCaseFile: string, localCaseFile: string): string {
+  let next = edgeCaseFile;
+  const headings = [EXPERT_ELIGIBILITY_HEADING, EXPERT_OPINION_HEADING, HANDLER_NOTES_HEADING];
+  for (const heading of [...headings].reverse()) {
+    const localBody = extractCaseSection(localCaseFile, heading);
+    if (!sectionHasContent(localBody)) continue;
+    if (next.includes(heading)) {
+      next = upsertCaseSection(next, heading, localBody);
+      continue;
+    }
+    next = `${heading}\n${localBody}\n\n${next.trim()}`;
+  }
+  return next;
+}
+
 function mergeEdgeAndLocalCaseFiles(edgeCaseFile: string, localCaseFile: string): string {
-  return overlayLocalCommunicationBlocks(
-    overlayLocalDocumentBlocks(edgeCaseFile, localCaseFile),
+  return overlayLocalOpinionBlocks(
+    overlayLocalCommunicationBlocks(
+      overlayLocalDocumentBlocks(edgeCaseFile, localCaseFile),
+      localCaseFile,
+    ),
     localCaseFile,
   );
 }
@@ -491,6 +513,102 @@ function clipCaseText(raw: unknown, max = 400): string {
     .trim();
   if (!text) return '';
   return text.length <= max ? text : `${text.slice(0, max)}…`;
+}
+
+function cleanNoteHtml(text: string): string {
+  return text
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/** Flatten expert_notes / handler_notes JSONB (array of {content}, string, or object). */
+function flattenLeadNotesField(raw: unknown): string {
+  if (raw == null || raw === '') return '';
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return '';
+    if (
+      (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+      (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    ) {
+      try {
+        return flattenLeadNotesField(JSON.parse(trimmed));
+      } catch {
+        /* use as plain text */
+      }
+    }
+    return cleanNoteHtml(trimmed);
+  }
+  if (Array.isArray(raw)) {
+    return raw.map((item) => flattenLeadNotesField(item)).filter(Boolean).join('\n\n');
+  }
+  if (typeof raw === 'object') {
+    const rec = raw as Record<string, unknown>;
+    if (rec.content != null) return flattenLeadNotesField(rec.content);
+    if (rec.text != null) return flattenLeadNotesField(rec.text);
+    if (rec.note != null) return flattenLeadNotesField(rec.note);
+  }
+  return cleanNoteHtml(String(raw));
+}
+
+function clipNoteField(raw: unknown, max = 8000): string {
+  const text = flattenLeadNotesField(raw);
+  if (!text) return '';
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
+}
+
+const ELIGIBILITY_STATUS_LABELS: Record<string, string> = {
+  feasible_no_check: 'Feasible (no check)',
+  feasible_check: 'Feasible (further check)',
+  not_feasible: 'No feasibility',
+};
+
+const SECTION_ELIGIBILITY_LABELS: Record<string, string> = {
+  '116': 'German Citizenship - § 116',
+  '15': 'German Citizenship - § 15',
+  '5': 'German Citizenship - § 5',
+  '58c': 'Austrian Citizenship - § 58c',
+};
+
+function expertAssessmentLabel(lead: Record<string, unknown>): string {
+  const raw = String(lead.eligibility_status ?? '').trim();
+  if (raw && ELIGIBILITY_STATUS_LABELS[raw]) return ELIGIBILITY_STATUS_LABELS[raw];
+  if (raw) return raw;
+  const exam = Number(lead.expert_examination);
+  if (exam === 8) return ELIGIBILITY_STATUS_LABELS.feasible_no_check;
+  if (exam === 5) return ELIGIBILITY_STATUS_LABELS.feasible_check;
+  if (exam === 1) return ELIGIBILITY_STATUS_LABELS.not_feasible;
+  return 'Not checked';
+}
+
+function eligibilityDecidedYes(lead: Record<string, unknown>, isLegacy: boolean): boolean {
+  const raw = isLegacy ? lead.eligibile : (lead.eligible ?? lead.eligibile);
+  const text = String(raw ?? '').trim().toLowerCase();
+  return raw === true || text === 'true' || text === 'yes' || text === '1';
+}
+
+function citizenshipSectionLabel(lead: Record<string, unknown>): string {
+  const raw = String(lead.section_eligibility ?? '').trim();
+  if (!raw) return '—';
+  return SECTION_ELIGIBILITY_LABELS[raw] || raw;
+}
+
+function formatExpertEligibilityBlock(lead: Record<string, unknown>, isLegacy: boolean): string {
+  const assessment = expertAssessmentLabel(lead);
+  const decided = eligibilityDecidedYes(lead, isLegacy);
+  return [
+    `Expert assessment: ${assessment}`,
+    `Expert review: ${assessment === 'Not checked' ? 'Not completed' : 'Completed'}`,
+    `Eligibility decided: ${decided ? 'Yes' : 'Not determined'}`,
+    `Citizenship section: ${citizenshipSectionLabel(lead)}`,
+  ].join('\n');
 }
 
 function pickCaseField(row: Record<string, unknown> | null, keys: string[]): string {
@@ -813,13 +931,25 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     .filter(Boolean)
     .join('\n\n') || '(none on file)';
 
+  const expertNotesText = clipNoteField(lead.expert_notes, 8000);
+  const expertOpinionText = clipNoteField(lead.expert_opinion, 4000);
+  const expertOpinion = [expertNotesText, expertOpinionText]
+    .filter(Boolean)
+    .filter((item, index, all) => index === 0 || !all[0].includes(item))
+    .join('\n\n') || '(none on file)';
+  const handlerNotes = clipNoteField(lead.handler_notes, 4000) || '(none on file)';
+
+  const caseMeetingBrief = clipCaseText(pickCaseField(lead, ['meeting_brief']), 1800);
   const meetings = (meetingRes.data || []).map((row: Record<string, unknown>) => {
-    const header = [row.meeting_date, row.status].filter(Boolean).join(' · ');
-    const body = [row.meeting_summary_notes, row.meeting_brief, row.expert_notes]
-      .map((item) => clipCaseText(item, 900))
-      .filter(Boolean)
-      .join('\n');
-    return body ? `${header}\n${body}` : `${header}: (no notes)`;
+    const header = [row.meeting_date, String(row.meeting_time || '').slice(0, 5), row.status].filter(Boolean).join(' · ');
+    const parts = [
+      row.meeting_summary_notes ? `Summary: ${clipCaseText(row.meeting_summary_notes, 900)}` : '',
+      row.meeting_brief ? `Brief: ${clipCaseText(row.meeting_brief, 900)}` : '',
+      flattenLeadNotesField(row.expert_notes)
+        ? `Meeting expert notes: ${clipNoteField(row.expert_notes, 2000)}`
+        : '',
+    ].filter(Boolean);
+    return parts.length ? `${header}\n${parts.join('\n')}` : `${header}: (no notes)`;
   });
 
   const whatsapp = waRows
@@ -926,6 +1056,9 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     language: pickCaseField(lead, ['language']),
     country: pickCaseField(lead, ['client_country', 'country']),
     expertExamination: pickCaseField(lead, ['expert_examination']),
+    expertAssessment: expertAssessmentLabel(lead),
+    eligibilityDecided: eligibilityDecidedYes(lead, isLegacy) ? 'Yes' : 'Not determined',
+    citizenshipSection: citizenshipSectionLabel(lead),
     proposal: pickCaseField(lead, ['proposal_total', 'proposal']),
     balance: pickCaseField(lead, ['balance', 'total_base', 'total']),
     eligible: pickCaseField(lead, ['eligible', 'eligibile']),
@@ -934,10 +1067,24 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     createdAt: pickCaseField(lead, ['created_at', 'cdate']),
   };
 
-  return `CASE FILE — facts and notes:
+  const expertEligibility = formatExpertEligibilityBlock(lead, isLegacy);
+
+  return `${EXPERT_ELIGIBILITY_HEADING}
+${expertEligibility}
+
+${EXPERT_OPINION_HEADING}
+${expertOpinion}
+
+${HANDLER_NOTES_HEADING}
+${handlerNotes}
+
+CASE FILE — facts and notes:
 ${facts}
 
-MEETING SUMMARIES (newest first):
+CASE BRIEF (leads.meeting_brief / leads_lead.meeting_brief):
+${caseMeetingBrief || '(none)'}
+
+MEETING SUMMARIES (newest first; includes meeting_summary_notes and meeting_brief):
 ${meetings.join('\n---\n') || '(no meeting notes)'}
 
 WHATSAPP (newest first):

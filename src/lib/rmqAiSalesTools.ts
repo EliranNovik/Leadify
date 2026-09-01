@@ -8,11 +8,10 @@ import {
 } from './leadManualInteractions';
 import { fetchMeetingSummaryNotes, polishMeetingSummaryNotes } from './meetingSummaryNotesApi';
 import {
-  currentLeadAsToolArgs,
   getRmqAiCurrentLead,
   rememberRmqAiDraftMeta,
 } from './rmqAiChatContext';
-import { searchLeads } from './legacyLeadsApi';
+import { requireResolvedLead } from './rmqAiLeadResolver';
 import { fetchLeadContacts } from './contactHelpers';
 import { leadChatLabel, lookupLeadsByIds, resolveMeetingLead } from './rmqAiLeadDisplay';
 
@@ -44,28 +43,11 @@ function formatLeadHit(row: { lead_number?: unknown; name?: unknown; id?: unknow
 }
 
 async function resolveLead(args: LeadArgs): Promise<{ leadId: string; isLegacy: boolean; label: string }> {
-  const merged = { ...currentLeadAsToolArgs(), ...args };
-  const explicitId = String(merged.lead_id || '').trim();
-  if (explicitId) {
-    const isLegacy = merged.is_legacy === true || explicitId.startsWith('legacy_');
-    return {
-      leadId: isLegacy && !explicitId.startsWith('legacy_') ? `legacy_${explicitId}` : explicitId,
-      isLegacy,
-      label: explicitId,
-    };
-  }
-  const query = String(merged.query || '').trim();
-  if (!query) throw new Error('Provide a lead number or open a client page.');
-  const matches = await searchLeads(query, { limit: 6, timeoutMs: 4000 });
-  if (!matches.length) throw new Error(`No lead found for "${query}".`);
-  const exact =
-    matches.find((row) => String(row.lead_number || '').toLowerCase() === query.toLowerCase()) ||
-    matches.find((row) => String(row.id) === query) ||
-    matches[0];
+  const lead = await requireResolvedLead(args);
   return {
-    leadId: exact.lead_type === 'legacy' ? `legacy_${String(exact.id).replace(/^legacy_/i, '')}` : String(exact.id),
-    isLegacy: exact.lead_type === 'legacy',
-    label: formatLeadHit(exact),
+    leadId: lead.leadId,
+    isLegacy: lead.isLegacy,
+    label: `${lead.leadNumber} ${lead.displayName}`.trim(),
   };
 }
 
@@ -328,7 +310,7 @@ export async function executeDraftClientMessage(args: {
     '',
     caseFile.slice(0, 6000),
     '',
-    'Write ONLY the ready-to-send message in the client language. No English preamble, no “here is a draft”. If email, you may start with Subject: on the first line. Keep facts from the case file. Do not invent portal URLs, amounts, or dates.',
+    'Write ONLY the ready-to-send message in the client language. No English preamble, no “here is a draft”. If email, you may start with Subject: on the first line. Keep facts from the case file. Do not invent portal URLs, amounts, or dates. Stop after Best regards / בברכה. Do not add a name, title, phone, or email signature — the CRM adds that when sending.',
   ].join('\n');
 }
 
@@ -400,14 +382,14 @@ export async function executePrepMeeting(args: LeadArgs & { date?: string }): Pr
   const meetingQuery = resolved.isLegacy
     ? supabase
         .from('meetings')
-        .select('id, meeting_date, meeting_time, meeting_location, meeting_brief, meeting_manager, helper')
+        .select('id, meeting_date, meeting_time, meeting_location, meeting_brief, meeting_summary_notes, meeting_manager, helper')
         .eq('legacy_lead_id', rawId)
         .gte('meeting_date', today)
         .order('meeting_date', { ascending: true })
         .limit(1)
     : supabase
         .from('meetings')
-        .select('id, meeting_date, meeting_time, meeting_location, meeting_brief, meeting_manager, helper')
+        .select('id, meeting_date, meeting_time, meeting_location, meeting_brief, meeting_summary_notes, meeting_manager, helper')
         .eq('client_id', resolved.leadId)
         .gte('meeting_date', today)
         .order('meeting_date', { ascending: true })
@@ -422,6 +404,7 @@ export async function executePrepMeeting(args: LeadArgs & { date?: string }): Pr
     meeting
       ? `${String(meeting.meeting_date || '').slice(0, 10)} ${String(meeting.meeting_time || '').slice(0, 5)} · ${meeting.meeting_location || '—'}`
       : 'No upcoming meetings row; use the case file meeting fields.',
+    meeting ? `Summary: ${clip(meeting.meeting_summary_notes, 800) || '—'}` : '',
     meeting ? `Brief: ${clip(meeting.meeting_brief, 400) || '—'}` : '',
     meeting ? `Attendees: manager ${meeting.meeting_manager || '—'} · helper ${meeting.helper || '—'}` : '',
     '',

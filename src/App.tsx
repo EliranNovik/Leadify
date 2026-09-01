@@ -1075,7 +1075,7 @@ const AppContentInner: React.FC = () => {
                   } ${
                     isClientDetailPage
                       ? 'clients-detail-scroll scrollbar-hide'
-                      : `pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${isClientsPage ? 'scrollbar-hide' : ''}`
+                      : `pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${isClientsPage || isDashboardPage ? 'scrollbar-hide' : ''}`
                   } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   {pipelinePageMounted ? (

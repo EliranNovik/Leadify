@@ -3850,14 +3850,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         )}
 
                                                     {/* Waiting for meeting summary Stage */}
-                                                    {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && openSendOfferModal && (
-                                                        <button
-                                                            onClick={openSendOfferModal}
-                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                        >
-                                                            <DocumentCheckIcon className="w-5 h-5" />
-                                                            Send Price Offer
-                                                        </button>
+                                                    {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && (
+                                                        <>
+                                                            {openSendOfferModal && (
+                                                                <button
+                                                                    onClick={openSendOfferModal}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <DocumentCheckIcon className="w-5 h-5" />
+                                                                    Send Price Offer
+                                                                </button>
+                                                            )}
+                                                            {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                                <button
+                                                                    onClick={handleScheduleMenuClick}
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                >
+                                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                                    {scheduleMenuLabel}
+                                                                </button>
+                                                            )}
+                                                        </>
                                                     )}
 
                                                     {/* Communication Started Stage */}
@@ -5565,14 +5578,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     )}
 
                                 {/* Waiting for meeting summary Stage */}
-                                {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && openSendOfferModal && (
-                                    <button
-                                        onClick={openSendOfferModal}
-                                        className={STAGE_ACTION_BTN_CLASS}
-                                    >
-                                        <DocumentCheckIcon className="w-5 h-5" />
-                                        Send Price Offer
-                                    </button>
+                                {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && (
+                                    <>
+                                        {openSendOfferModal && (
+                                            <button
+                                                onClick={openSendOfferModal}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <DocumentCheckIcon className="w-5 h-5" />
+                                                Send Price Offer
+                                            </button>
+                                        )}
+                                        {handleScheduleMenuClick && scheduleMenuLabel && (
+                                            <button
+                                                onClick={handleScheduleMenuClick}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <CalendarDaysIcon className="w-5 h-5" />
+                                                {scheduleMenuLabel}
+                                            </button>
+                                        )}
+                                    </>
                                 )}
 
                                 {/* Communication Started Stage */}

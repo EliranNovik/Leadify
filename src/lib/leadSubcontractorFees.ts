@@ -71,14 +71,22 @@ async function sumFeesGrouped(
   const totals = new Map<string, number>();
   if (ids.length === 0) return totals;
 
+  const chunks: Array<Array<string | number>> = [];
   for (let i = 0; i < ids.length; i += FEE_TOTALS_CHUNK) {
-    const chunk = ids.slice(i, i + FEE_TOTALS_CHUNK);
-    const { data, error } = await supabase
-      .from('lead_subcontractor_fees')
-      .select(`${column}, amount`)
-      .in(column, chunk);
-    if (error) throw error;
-    for (const row of data || []) {
+    chunks.push(ids.slice(i, i + FEE_TOTALS_CHUNK));
+  }
+  const pages = await Promise.all(
+    chunks.map(async (chunk) => {
+      const { data, error } = await supabase
+        .from('lead_subcontractor_fees')
+        .select(`${column}, amount`)
+        .in(column, chunk);
+      if (error) throw error;
+      return data || [];
+    }),
+  );
+  for (const rows of pages) {
+    for (const row of rows) {
       const key = String((row as any)[column] ?? '');
       if (!key) continue;
       const amount = Number((row as any).amount ?? 0);

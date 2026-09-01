@@ -699,10 +699,56 @@ export function toDateOnlyKey(date: string | null | undefined): string | null {
 export type BoiDateRateConverter = {
   /**
    * Convert using BOI rows with created_at <= as-of moment.
+   * When a dateWindow was preloaded, calendar rate_date snapshots are used (daily BOI rates).
    * @param asOfInput - full ISO timestamp, or YYYY-MM-DD (Jerusalem noon on that day)
    */
   toNis: (amount: number, currency: CurrencyInput, asOfInput: string | null) => Promise<number>;
 };
+
+/** Load every published BOI rate_date in [fromDate, toDate] in one (paged) query. */
+async function loadBoiRateDateSnapshotsInRange(
+  fromDate: string,
+  toDate: string,
+): Promise<Map<string, BoiRatesSnapshot>> {
+  await loadAccountingCurrenciesMap();
+  const byDate = new Map<string, Array<{
+    rate_date: string;
+    base_currency: string;
+    target_currency: string;
+    rate: number | string;
+  }>>();
+
+  const pageSize = 1000;
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('boi_exchange_rates')
+      .select('rate_date, base_currency, target_currency, rate')
+      .gte('rate_date', fromDate)
+      .lte('rate_date', toDate)
+      .order('rate_date', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const row of rows) {
+      const d = String(row.rate_date).slice(0, 10);
+      if (!d) continue;
+      const list = byDate.get(d);
+      if (list) list.push(row);
+      else byDate.set(d, [row]);
+    }
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  const snaps = new Map<string, BoiRatesSnapshot>();
+  for (const [d, rows] of byDate) {
+    const snap = snapshotFromRows(rows);
+    snaps.set(d, snap);
+    ratesByDateCache.set(d, snap);
+  }
+  return snaps;
+}
 
 /** Rate lookup instant for payment-plan rows (paid → payment time; else due date). */
 export function resolvePaymentPlanBoiAsOfInput(payment: {
@@ -716,14 +762,57 @@ export function resolvePaymentPlanBoiAsOfInput(payment: {
   return toDateOnlyKey(payment.due_date);
 }
 
+export type CreateBoiDateRateConverterOptions = {
+  /**
+   * Preload every published BOI rate_date in this inclusive window (one query).
+   * Dashboard / batch reports should pass Last-3m through month-end so each deal
+   * converts in memory instead of one RPC per sign/payment date.
+   */
+  dateWindow?: { from: string; to: string };
+};
+
 /**
- * Cached as-of BOI snapshots for batch reports (sign date, due date, payment date, etc.).
- * Uses created_at <= as-of — not calendar rate_date lookup (avoids post-sync drift).
+ * Cached BOI snapshots for batch reports (sign date, due date, payment date, etc.).
+ * With `dateWindow`, uses published calendar rate_date (daily BOI). Outside the window,
+ * falls back to created_at as-of lookup.
  */
-export async function createBoiDateRateConverter(): Promise<BoiDateRateConverter> {
+export async function createBoiDateRateConverter(
+  opts?: CreateBoiDateRateConverterOptions,
+): Promise<BoiDateRateConverter> {
   const boiStart = await getBoiCoverageStartDate();
   const latestBoiSnap = await loadBoiExchangeRates();
   const snapByKey = new Map<string, Promise<BoiRatesSnapshot>>();
+  const snapsByDate = new Map<string, BoiRatesSnapshot>();
+  let sortedDates: string[] = [];
+
+  if (opts?.dateWindow?.from && opts.dateWindow.to) {
+    try {
+      const loaded = await loadBoiRateDateSnapshotsInRange(opts.dateWindow.from, opts.dateWindow.to);
+      for (const [d, snap] of loaded) snapsByDate.set(d, snap);
+      sortedDates = Array.from(snapsByDate.keys()).sort();
+    } catch (err) {
+      console.warn('[boiCurrencyConversion] date-window preload failed, using as-of RPCs:', err);
+    }
+  }
+
+  const snapForDateOnly = (dateOnly: string): BoiRatesSnapshot | null => {
+    const exact = snapsByDate.get(dateOnly);
+    if (exact) return exact;
+    if (sortedDates.length === 0) return null;
+    let lo = 0;
+    let hi = sortedDates.length - 1;
+    let found: string | null = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (sortedDates[mid] <= dateOnly) {
+        found = sortedDates[mid];
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return found ? snapsByDate.get(found) ?? null : null;
+  };
 
   const getSnap = (asOfInput: string | null): Promise<BoiRatesSnapshot> => {
     if (!asOfInput) {
@@ -735,8 +824,12 @@ export async function createBoiDateRateConverter(): Promise<BoiDateRateConverter
     }
 
     const dateOnly = toDateOnlyKey(asOfInput);
-    if (dateOnly && boiStart && dateOnly < boiStart) {
-      return Promise.resolve(latestBoiSnap);
+    if (dateOnly) {
+      const warmed = snapForDateOnly(dateOnly);
+      if (warmed) return Promise.resolve(warmed);
+      if (boiStart && dateOnly < boiStart) {
+        return Promise.resolve(latestBoiSnap);
+      }
     }
 
     const asOfIso = resolveBoiAsOfTimestamp(asOfInput);
@@ -749,6 +842,9 @@ export async function createBoiDateRateConverter(): Promise<BoiDateRateConverter
 
   return {
     toNis: async (amount, currency, asOfInput) => {
+      if (!amount || amount <= 0) return 0;
+      const iso = resolveCurrencyIsoCode(currency);
+      if (isLocalCurrency(iso)) return amount;
       const snap = await getSnap(asOfInput);
       return convertToNISWithMeta(amount, currency, snap).amountNIS;
     },

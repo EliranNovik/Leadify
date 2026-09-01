@@ -142,11 +142,12 @@ serve(async (req) => {
         'When they ask to set a follow-up date, call set_follow_up. When they ask to log a call or note, call log_manual_note. ' +
         'When they ask who the handler is, they mean the case handler role on the Roles tab (Case Handler). That is leads.case_handler_id / leads.handler on new leads and leads_lead.case_handler_id on legacy leads. It is not the closer, scheduler, expert, or retention handler unless they say retention. ' +
         'Answer with the Case Handler name from the TEAM ROLES block. If that line is empty or —, say no case handler is assigned. ' +
-        'When they ask who has meetings today/tomorrow or on a date, or meetings scheduled by an employee, ALWAYS call list_meetings first. ' +
-        'When they ask for my meetings, meetings today (their own), or use the Meetings today shortcut, call list_meetings with scope=mine. That list is only meetings where the logged-in user is meeting manager, helper, guest, or a participant. ' +
+        'When they ask who the expert is, they mean the assigned expert on the Expert tab. ALWAYS call get_lead_case_file. Answer with only the name from ASSIGNED EXPERT. That is not the closer, handler, or scheduler. Do not name Yehonatan D unless ASSIGNED EXPERT is that person. ' +
+        'When they ask who has meetings today/tomorrow or on a date, or meetings scheduled by an employee, ALWAYS call list_calendar_day first. ' +
+        'When they ask for my meetings, meetings today (their own), or use the Meetings today shortcut, call list_calendar_day with scope=mine. That list is only meetings where the logged-in user is meeting manager, helper, guest, or a participant. ' +
         'When they ask who has meetings (everyone) or meetings scheduled by a named employee, use scope=all and pass scheduler= if they named someone. ' +
         'Scheduled meetings use the lead scheduler employee role. Pass scheduler= the name as typed; the tool fuzzy-matches typos and closest employees. Never put the scheduler name in query — query is the client. ' +
-        'Do not say there are no meetings unless list_meetings returned none. ' +
+        'Do not say there are no meetings unless list_calendar_day returned none. ' +
         'When they ask about signed contracts, closed deals, who closed, or how many clients signed in a date range, ALWAYS call list_signed_contracts first. ' +
         'Closed deals use the lead closer employee role. Pass closer= the name as typed; the tool fuzzy-matches typos and closest employees (Yehonatan → Yehonatan D.). Never put the closer name in query — query is the client. ' +
         'That tool covers both new leads (leads.closer + contracts.client_id) and legacy leads (leads_lead.closer_id + contracts.legacy_id) using leads_leadstage stage 60 as the sign date. ' +
@@ -159,12 +160,11 @@ serve(async (req) => {
         'For office availability exports, pass source=employee_presence and office= as typed. Use filter=available when they only want people available now. Do not invent a download URL — paste the exact markdown from the tool result. ' +
         'When they ask where to find a page, how to open a screen, or “take me to…”, ALWAYS call find_app_page. ' +
         'Paste the exact markdown links from that tool so they stay clickable and open the page. Do not invent routes. ' +
-        'When they ask about expenses, spend, who added a cost, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
-        'Pass kind= for a type (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass date/period for today, this month, this year. Pass added_by= if they named who created the expense. ' +
-        'Answer expenses with numbers only: start with TOTAL: NIS X, then one bullet per category with a NIS amount. Skip categories at 0. ' +
-        'Never write paragraphs about expenses. Never list fee names (government, court, translation) without a NIS amount next to them. ' +
-        'If they ask for the total, full amount, or just the number, reply with one line only: TOTAL: NIS X. ' +
-        'Do not say you cannot see expenses. Use the tool totals; do not invent amounts. ' +
+        'When they ask about expenses, spend, who added a cost, expense category, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
+        'Pass date=today when they say today. Pass kind= only to filter a summary card (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass added_by= only if they named who created the expense. ' +
+        'KIND is the summary card (Client, Office, …). CATEGORY is the table CATEGORY column (Courier and delivery, government fee, translation, …). Never answer a category question with KIND. Quote category= and added_by= from LINE ITEMS. Never invent an employee or a fee name. ' +
+        'When they ask what expenses were recorded, list the LINE ITEMS (amount, category, added_by, lead). If they only asked for the total, reply with one line: TOTAL: NIS X. ' +
+        'Do not say you cannot see expenses. Use the tool; do not invent amounts. ' +
         'When they ask about income, profit, loss, how the firm is doing, burn, or whether spending is too high, ALWAYS call get_firm_financials. ' +
         'Income is the Sales Contribution total: 90% of invoiced due in the date range (same large number as Sales Contribution). Compare it to all expenses and give practical advice (which categories are largest, expense ratio vs income). ' +
         'When they ask other counts, lists, or aggregates, use query_crm. ' +

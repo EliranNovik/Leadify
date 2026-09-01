@@ -48,8 +48,8 @@ import {
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
-import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
+import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
 import WhatsAppDoubleCheckIcon from './whatsapp/WhatsAppDoubleCheckIcon';
 import AdminChangeUserModal from './AdminChangeUserModal';
 import EmployeeModal from './EmployeeModal';
@@ -852,7 +852,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         label: 'RMQ AI',
         description: 'Open AI chat',
         keywords: ['ai', 'assistant', 'chat', 'rmq ai', 'bot'],
-        icon: FaRobot,
+        icon: RmqAiLogo,
         onSelect: () => {
           setShowQuickActionsDropdown(false);
           onOpenAIChat();
@@ -4308,7 +4308,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           onOpenAIChat();
                         }}
                       >
-                        <FaRobot className="h-6 w-6 shrink-0 text-base-content/60" />
+                        <RmqAiLogo className="h-6 w-6 shrink-0" />
                         <span className="text-base font-medium">RMQ AI</span>
                       </button>
                     )}
@@ -4509,7 +4509,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         onOpenAIChat();
                       }}
                     >
-                      <FaRobot className="w-5 h-5 text-base-content/70" />
+                      <RmqAiLogo className="h-5 w-5" />
                       RMQ AI
                     </button>
                   )}
@@ -5381,13 +5381,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             <div className="relative">
               <button
                 type="button"
-                className="btn btn-ghost border-0 min-h-0 h-10 w-10 p-0 rounded-lg flex items-center justify-center text-base-content/90 hover:bg-base-200/70"
+                className="btn btn-ghost border-0 min-h-0 h-11 w-11 p-0 rounded-xl flex items-center justify-center text-base-content/90 hover:bg-base-200/70"
                 title="RMQ AI"
                 aria-label="Open RMQ AI"
                 onClick={onOpenAIChat}
               >
-                <FaRobot className="w-7 h-7" style={{ color: '#6d28d9' }} />
+                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-10 w-10" />
               </button>
+              <span className="pointer-events-none absolute -top-1 -right-2 z-10 inline-flex h-[1.125rem] items-center rounded-full bg-gray-200 px-2 text-[9px] font-bold uppercase leading-none tracking-wide text-[#3b28c7]">
+                New
+              </span>
             </div>
           )}
 

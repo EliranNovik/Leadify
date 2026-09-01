@@ -1,5 +1,6 @@
 import React, { useState, forwardRef, useImperativeHandle, useEffect } from 'react';
-import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, ArrowPathIcon, MegaphoneIcon } from '@heroicons/react/24/outline';
+import { SparklesIcon } from '@heroicons/react/24/outline';
+import { RmqAiLogo } from './RmqAiLogo';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../hooks/useTheme';
@@ -528,7 +529,7 @@ const AISuggestions = forwardRef<unknown, AISuggestionsProps>((props, ref) => {
       <div ref={containerRef}>
         <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <SparklesIcon className="w-6 h-6" style={{ color: '#3b28c7' }} />
+          <RmqAiLogo className="h-7 w-7" />
           <div className="text-2xl font-bold">RMQ AI</div>
         </div>
         <div className="flex items-center gap-2">

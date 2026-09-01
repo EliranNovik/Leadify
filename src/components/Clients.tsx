@@ -170,9 +170,11 @@ import MeetingDurationField, {
   normalizeMeetingDurationMinutes,
 } from './meeting/MeetingDurationField';
 import {
+  consumeOptimisticLeadStage,
   getRescheduleMeetingPath,
   getScheduleMeetingPath,
   isMobileMeetingScheduleUi,
+  rememberOptimisticLeadStage,
 } from '../lib/meetingScheduleNavigation';
 import {
   ACTIVE_MEETING_STATUS_FILTER,
@@ -3043,6 +3045,7 @@ const Clients: React.FC<ClientsProps> = ({
             retention_handler_started,
             active_handler_type,
             vat,
+            meeting_brief,
             meeting_scheduler_id,
             meeting_manager_id,
             meeting_lawyer_id,
@@ -3201,6 +3204,7 @@ const Clients: React.FC<ClientsProps> = ({
             linked_master_lead: (data as any).linked_master_lead ?? null,
             eligibile: data.eligibile || null,
             no_of_applicants: data.no_of_applicants || null,
+            meeting_brief: data.meeting_brief || null,
             meeting_scheduler_id: data.meeting_scheduler_id || null,
             meeting_manager_id: data.meeting_manager_id || null,
             meeting_lawyer_id: data.meeting_lawyer_id || null,
@@ -6464,7 +6468,7 @@ const Clients: React.FC<ClientsProps> = ({
         }
 
         if (!preserveStageOnMeeting) {
-          await recordLeadStageChange({
+          void recordLeadStageChange({
             lead: selectedClient,
             stage: mainLeadStageId,
             actor: stageActor,
@@ -6522,13 +6526,18 @@ const Clients: React.FC<ClientsProps> = ({
         }
 
         if (!preserveStageOnMeeting) {
-          await recordLeadStageChange({
+          void recordLeadStageChange({
             lead: selectedClient,
             stage: mainLeadStageId,
             actor: stageActor,
             timestamp: stageTimestamp,
           });
         }
+      }
+
+      if (!preserveStageOnMeeting) {
+        rememberOptimisticLeadStage(selectedClient.id, mainLeadStageId);
+        setSelectedClient((prev: any) => (prev ? { ...prev, stage: mainLeadStageId } : prev));
       }
 
       // For paid meetings, create a linked sublead (combine-chain) with stage 20 + meeting
@@ -7151,10 +7160,8 @@ const Clients: React.FC<ClientsProps> = ({
         icon: '✅',
       });
 
-      // Refresh client data
-      console.log('Calling onClientUpdate after meeting creation');
-      await onClientUpdate();
-      console.log('onClientUpdate completed');
+      // Refresh in the background — stage is already on the client so the header can switch now.
+      void onClientUpdate();
     } catch (error) {
       console.error('Error scheduling meeting:', error);
       toast.error('Failed to schedule meeting. Please try again.', {
@@ -11944,6 +11951,13 @@ const Clients: React.FC<ClientsProps> = ({
   const scheduleMenuLabel =
     isStageNumeric && stageNumeric >= 40 && stageNumeric !== 60 && stageNumeric !== 70 ? 'Another meeting' : 'Schedule Meeting';
 
+  useEffect(() => {
+    if (!selectedClient?.id) return;
+    const stage = consumeOptimisticLeadStage(selectedClient.id);
+    if (stage == null || Number(selectedClient.stage) === stage) return;
+    setSelectedClient((prev: any) => (prev ? { ...prev, stage } : prev));
+  }, [selectedClient?.id, setSelectedClient]);
+
   // Stage 60 ("Client signed agreement") should never be visible once a handler is set:
   // If handler exists, auto-advance to stage 105 ("Handler Set") and skip stage 60 UI.
   useEffect(() => {
@@ -12726,7 +12740,8 @@ const Clients: React.FC<ClientsProps> = ({
             ) : null}
           </>
         ) : (
-          !['Success', 'handler_assigned'].some(stage => areStagesEquivalent(currentStageName, stage)) && (
+          !['Success', 'handler_assigned'].some(stage => areStagesEquivalent(currentStageName, stage)) &&
+          !isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && (
             <li>
               <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
                 <CalendarDaysIcon className="w-5 h-5 text-black" />
@@ -12736,19 +12751,27 @@ const Clients: React.FC<ClientsProps> = ({
           )
         )}
         {isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) && (
-          <li>
-            <a
-              className="flex items-center gap-3 py-3 saira-regular"
-              onClick={(e) => {
-                e.preventDefault();
-                openSendOfferModal();
-                (document.activeElement as HTMLElement | null)?.blur();
-              }}
-            >
-              <DocumentCheckIcon className="w-5 h-5 text-black" />
-              Send Price Offer
-            </a>
-          </li>
+          <>
+            <li>
+              <a
+                className="flex items-center gap-3 py-3 saira-regular"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openSendOfferModal();
+                  (document.activeElement as HTMLElement | null)?.blur();
+                }}
+              >
+                <DocumentCheckIcon className="w-5 h-5 text-black" />
+                Send Price Offer
+              </a>
+            </li>
+            <li>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
+                <CalendarDaysIcon className="w-5 h-5 text-black" />
+                {scheduleMenuLabel}
+              </a>
+            </li>
+          </>
         )}
         {(() => {
           const communicationExcludedStages = ['meeting_scheduled', 'another_meeting', 'waiting_for_mtng_sum', 'Waiting for sum & price offer', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned', 'Meeting rescheduling'];

@@ -124,7 +124,14 @@ export function useMeetingSummaryVoiceRecorder(options?: {
       throw new Error('No supported audio recording format found');
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+    });
     streamRef.current = stream;
     startAudioLevelMonitor(stream);
     chunksRef.current = [];

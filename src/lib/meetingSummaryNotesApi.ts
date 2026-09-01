@@ -4,6 +4,7 @@ export type TranscribeMeetingSummaryAudioInput = {
   audioBase64: string;
   mimeType: string;
   language?: 'he' | 'en' | 'auto';
+  prompt?: string;
 };
 
 export async function transcribeMeetingSummaryAudio(

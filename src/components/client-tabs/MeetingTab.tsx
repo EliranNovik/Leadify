@@ -21,6 +21,7 @@ import {
   getRescheduleMeetingPath,
   getScheduleMeetingPath,
   isMobileMeetingScheduleUi,
+  rememberOptimisticLeadStage,
 } from '../../lib/meetingScheduleNavigation';
 import {
   ACTIVE_MEETING_STATUS_FILTER,
@@ -225,6 +226,33 @@ interface Meeting {
     timestamp: string;
     user: string;
   };
+}
+
+function normalizeBriefDisplayText(value: unknown): string {
+  return String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
+function briefDisplayTextsMatch(a: string, b: string): boolean {
+  return a.replace(/\s+/g, ' ').toLowerCase() === b.replace(/\s+/g, ' ').toLowerCase();
+}
+
+type MeetingBriefBoxSection = { key: string; label: string; text: string };
+
+function getMeetingBriefBoxSections(
+  meeting: Pick<Meeting, 'brief' | 'meeting_summary_notes'>,
+  leadBrief: string,
+): MeetingBriefBoxSection[] {
+  const sections: MeetingBriefBoxSection[] = [];
+  const pushUnique = (key: string, label: string, text: string) => {
+    const trimmed = normalizeBriefDisplayText(text);
+    if (!trimmed) return;
+    if (sections.some((section) => briefDisplayTextsMatch(section.text, trimmed))) return;
+    sections.push({ key, label, text: trimmed });
+  };
+  pushUnique('summary', 'Summary', meeting.meeting_summary_notes ?? '');
+  pushUnique('meeting', 'Brief', meeting.brief ?? '');
+  pushUnique('lead', 'Case brief', leadBrief);
+  return sections;
 }
 
 /** Cached bundle for the 'meetings' slice — everything the tab's main effect reloads. */
@@ -603,6 +631,40 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   const [sendingEmailMeetingId, setSendingEmailMeetingId] = useState<number | null>(null);
   const [editingBriefId, setEditingBriefId] = useState<number | null>(null);
   const [editedBrief, setEditedBrief] = useState<string>('');
+  const [leadTableBrief, setLeadTableBrief] = useState(() =>
+    normalizeBriefDisplayText((client as { meeting_brief?: string | null })?.meeting_brief),
+  );
+
+  useEffect(() => {
+    if (!client?.id) {
+      setLeadTableBrief('');
+      return;
+    }
+    const fromClient = normalizeBriefDisplayText(
+      (client as { meeting_brief?: string | null }).meeting_brief,
+    );
+    setLeadTableBrief(fromClient);
+
+    const isLegacyLead = client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+    let cancelled = false;
+    void (async () => {
+      const query = isLegacyLead
+        ? supabase
+            .from('leads_lead')
+            .select('meeting_brief')
+            .eq('id', String(client.id).replace(/^legacy_/i, ''))
+            .maybeSingle()
+        : supabase.from('leads').select('meeting_brief').eq('id', client.id).maybeSingle();
+      const { data } = await query;
+      if (cancelled) return;
+      const fetched = normalizeBriefDisplayText((data as { meeting_brief?: string | null } | null)?.meeting_brief);
+      if (fetched || !fromClient) setLeadTableBrief(fetched);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client?.id, client?.lead_type, (client as { meeting_brief?: string | null })?.meeting_brief]);
   const [summaryNotesMeeting, setSummaryNotesMeeting] = useState<Meeting | null>(null);
   const [summaryNotesDraft, setSummaryNotesDraft] = useState('');
   const [showMeetingSummariesDrawer, setShowMeetingSummariesDrawer] = useState(false);
@@ -4425,24 +4487,24 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       const expertEmployeeId = getEmployeeIdFromDisplayName(client.expert);
 
       // Update lead stage + roles (same rules as Clients.tsx schedule drawer)
-      // - First schedule → Meeting scheduled
-      // - Stage >= 40 (before Client signed) → Another meeting
+      // - First schedule → Meeting scheduled (20)
+      // - Stage >= 40 (before Client signed) → Another meeting (55)
       // - Stage >= 60 (Client signed and later) → never change stage
       // - External IM meetings do not change lead stage
       if (scheduleMeetingFormData.calendar !== 'external') {
         try {
-          const stageActor = await fetchStageActorInfo();
+          const stageActor = { fullName: actor.displayName, employeeId: actor.employeeId };
           const stageTimestamp = new Date().toISOString();
           const stageNumeric = clientStageId;
           const preserveStage = shouldPreserveLeadStageOnMeeting(client.stage);
-          const targetStageKey =
+          const targetStageId =
             preserveStage
               ? null
               : stageNumeric != null &&
                   stageNumeric >= 40 &&
                   stageNumeric < 60
-                ? 'another_meeting'
-                : 'meeting_scheduled';
+                ? 55
+                : 20;
 
           const roleFields: Record<string, unknown> = {};
 
@@ -4473,14 +4535,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             }
           }
 
-          if (targetStageKey) {
+          if (targetStageId != null) {
             await updateLeadStageWithHistory({
               lead: client as any,
-              stage: targetStageKey,
+              stage: targetStageId,
               additionalFields: roleFields,
               actor: stageActor,
               timestamp: stageTimestamp,
             });
+            rememberOptimisticLeadStage(client.id, targetStageId);
           } else if (Object.keys(roleFields).length > 0) {
             const legacyIdNumeric =
               legacyId != null && /^\d+$/.test(String(legacyId))
@@ -4501,103 +4564,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         // External meetings: roles only are not applied to the client lead here
       }
 
-      // Send meeting invitation email only when notify toggle is on
-      console.log('📧 Checking if we can send automatic invitation:', {
-        notifyClientOnSchedule,
-        hasInsertedData: !!insertedData,
-        insertedDataLength: insertedData?.length,
-        hasClient: !!client,
-        clientEmail: client?.email,
-        clientName: client?.name,
-        meetingData: insertedData?.[0]
-      });
-
-      let clientNotified = false;
-      if (notifyClientOnSchedule && insertedData && insertedData.length > 0 && client.email) {
-        const newMeeting: Meeting = {
-          id: insertedData[0].id,
-          client_id: insertedData[0].client_id,
-          date: insertedData[0].meeting_date,
-          time: insertedData[0].meeting_time,
-          duration: insertedData[0].duration ?? meetingDurationMinutes,
-          location: insertedData[0].meeting_location,
-          manager: insertedData[0].meeting_manager,
-          currency: insertedData[0].meeting_currency,
-          amount: insertedData[0].meeting_amount,
-          brief: insertedData[0].meeting_brief,
-          scheduler: insertedData[0].scheduler || meetingSchedulerDisplayName,
-          helper: insertedData[0].helper,
-          expert: insertedData[0].expert,
-          link: insertedData[0].teams_meeting_url || '',
-          lastEdited: {
-            timestamp: insertedData[0].last_edited_timestamp,
-            user: insertedData[0].last_edited_by,
-          },
-        };
-
-        const invitationType = inferInvitationEmailTypeFromLocationName(scheduleMeetingFormData.location);
-
-        if (
-          isTeamsMeetingLocationName(scheduleMeetingFormData.location) &&
-          !getValidTeamsLink(newMeeting.link)
-        ) {
-          toast.error(
-            'Meeting scheduled, but invitation was not sent because a Teams join link was not available.',
-            { duration: 8000 },
-          );
-        } else {
-          try {
-            // Prefill automation templates before auto-notify (normally loaded by Notify modal).
-            const cache = emailAutomationCache ?? (await fetchEmailTemplatesAutomationCache());
-            if (!emailAutomationCache) setEmailAutomationCache(cache);
-            const templateIds = resolveMeetingEmailTemplateIdsForNotify(
-              cache,
-              newMeeting,
-              allMeetingLocations,
-              invitationType,
-            );
-            const idsToLoad = [templateIds.en, templateIds.he].filter(
-              (id): id is number => id != null && Number.isFinite(id),
-            );
-            if (idsToLoad.length > 0) {
-              const templatesById = await fetchMiscEmailTemplatesByIds(idsToLoad);
-              const nextTemplates: { en: { content: string; name: string | null } | null; he: { content: string; name: string | null } | null } = {
-                en: null,
-                he: null,
-              };
-              (['en', 'he'] as const).forEach((lang) => {
-                const templateId = templateIds[lang];
-                if (!templateId) return;
-                const row = templatesById.get(templateId);
-                if (!row?.content) return;
-                nextTemplates[lang] = {
-                  content: parseTemplateContent(row.content),
-                  name: row.name || null,
-                };
-              });
-              setEmailTemplates(nextTemplates);
-              // Mutate current state object so handleSendEmail (same tick) sees templates.
-              emailTemplates.en = nextTemplates.en;
-              emailTemplates.he = nextTemplates.he;
-            }
-
-            await handleSendEmail(newMeeting, client.email, client.name, invitationType);
-            clientNotified = true;
-          } catch (emailError) {
-            console.error('❌ Error sending meeting invitation:', emailError);
-            toast('Meeting scheduled, but failed to send invitation email.', { icon: '⚠️' });
-          }
-        }
-      } else if (notifyClientOnSchedule) {
-        toast('Meeting scheduled, but no client email was available to notify.', { icon: '⚠️' });
-      }
-
-      toast.success(clientNotified ? 'Meeting scheduled and client notified.' : 'Meeting scheduled.');
+      const shouldNotifyClient =
+        notifyClientOnSchedule && insertedData && insertedData.length > 0 && !!client.email;
+      toast.success(shouldNotifyClient ? 'Meeting scheduled. Notifying client…' : 'Meeting scheduled.');
       setShowScheduleDrawer(false);
       setIsSchedulingMeeting(false);
       setNotifyClientOnSchedule(false);
-
-      // Reset form
       setScheduleMeetingFormData({
         date: '',
         time: '09:00',
@@ -4614,9 +4586,92 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         custom_address: '',
       });
 
-      if (onClientUpdate) await onClientUpdate();
-      await fetchMeetings();
+      // Show the new stage immediately — email / refetch must not hold the page.
       if (isSchedulePage) onScheduleComplete?.();
+
+      void (async () => {
+        if (notifyClientOnSchedule && insertedData && insertedData.length > 0 && client.email) {
+          const newMeeting: Meeting = {
+            id: insertedData[0].id,
+            client_id: insertedData[0].client_id,
+            date: insertedData[0].meeting_date,
+            time: insertedData[0].meeting_time,
+            duration: insertedData[0].duration ?? meetingDurationMinutes,
+            location: insertedData[0].meeting_location,
+            manager: insertedData[0].meeting_manager,
+            currency: insertedData[0].meeting_currency,
+            amount: insertedData[0].meeting_amount,
+            brief: insertedData[0].meeting_brief,
+            scheduler: insertedData[0].scheduler || meetingSchedulerDisplayName,
+            helper: insertedData[0].helper,
+            expert: insertedData[0].expert,
+            link: insertedData[0].teams_meeting_url || '',
+            lastEdited: {
+              timestamp: insertedData[0].last_edited_timestamp,
+              user: insertedData[0].last_edited_by,
+            },
+          };
+
+          const invitationType = inferInvitationEmailTypeFromLocationName(scheduleMeetingFormData.location);
+
+          if (
+            isTeamsMeetingLocationName(scheduleMeetingFormData.location) &&
+            !getValidTeamsLink(newMeeting.link)
+          ) {
+            toast.error(
+              'Meeting scheduled, but invitation was not sent because a Teams join link was not available.',
+              { duration: 8000 },
+            );
+          } else {
+            try {
+              const cache = emailAutomationCache ?? (await fetchEmailTemplatesAutomationCache());
+              if (!emailAutomationCache) setEmailAutomationCache(cache);
+              const templateIds = resolveMeetingEmailTemplateIdsForNotify(
+                cache,
+                newMeeting,
+                allMeetingLocations,
+                invitationType,
+              );
+              const idsToLoad = [templateIds.en, templateIds.he].filter(
+                (id): id is number => id != null && Number.isFinite(id),
+              );
+              if (idsToLoad.length > 0) {
+                const templatesById = await fetchMiscEmailTemplatesByIds(idsToLoad);
+                const nextTemplates: { en: { content: string; name: string | null } | null; he: { content: string; name: string | null } | null } = {
+                  en: null,
+                  he: null,
+                };
+                (['en', 'he'] as const).forEach((lang) => {
+                  const templateId = templateIds[lang];
+                  if (!templateId) return;
+                  const row = templatesById.get(templateId);
+                  if (!row?.content) return;
+                  nextTemplates[lang] = {
+                    content: parseTemplateContent(row.content),
+                    name: row.name || null,
+                  };
+                });
+                setEmailTemplates(nextTemplates);
+                emailTemplates.en = nextTemplates.en;
+                emailTemplates.he = nextTemplates.he;
+              }
+
+              await handleSendEmail(newMeeting, client.email, client.name, invitationType);
+              toast.success('Client notified.');
+            } catch (emailError) {
+              console.error('❌ Error sending meeting invitation:', emailError);
+              toast('Meeting scheduled, but failed to send invitation email.', { icon: '⚠️' });
+            }
+          }
+        } else if (notifyClientOnSchedule) {
+          toast('Meeting scheduled, but no client email was available to notify.', { icon: '⚠️' });
+        }
+
+        if (!isSchedulePage) {
+          if (onClientUpdate) await onClientUpdate();
+          await fetchMeetings();
+        }
+      })();
     } catch (error) {
       console.error('Error scheduling meeting:', error);
       toast.error('Failed to schedule meeting. Please try again.');
@@ -5733,18 +5788,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
   const renderMeetingCard = (meeting: Meeting) => {
     const formattedDate = new Date(meeting.date).toLocaleDateString('en-GB');
+    const briefBoxSections = getMeetingBriefBoxSections(meeting, leadTableBrief);
 
     const handleEditBrief = () => {
       const canUseAiSummary = typeof meeting.id === 'number' && !meeting.isLegacy;
       if (canUseAiSummary) {
         const existingSummary = meeting.meeting_summary_notes?.trim() || '';
         const existingBrief = meeting.brief?.trim() || '';
-        setSummaryNotesDraft(existingSummary || existingBrief);
+        setSummaryNotesDraft(existingSummary || existingBrief || leadTableBrief);
         setSummaryNotesMeeting(meeting);
         return;
       }
       setEditingBriefId(meeting.id);
-      setEditedBrief(meeting.brief || '');
+      setEditedBrief(meeting.brief || leadTableBrief || '');
       if (past) setShowPastMeetingsPanel(true);
     };
 
@@ -7479,8 +7535,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   tabIndex={0}
                   title="Click to edit brief"
                 >
-                  {meeting.brief ? (
-                    <p className="text-sm sm:text-base text-gray-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{meeting.brief}</p>
+                  {briefBoxSections.length > 0 ? (
+                    <div className="space-y-3">
+                      {briefBoxSections.map((section) => (
+                        <div key={section.key}>
+                          {briefBoxSections.length > 1 && (
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                              {section.label}
+                            </p>
+                          )}
+                          <p className="text-sm sm:text-base text-gray-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                            {section.text}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
                   ) : (
                     <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
                   )}

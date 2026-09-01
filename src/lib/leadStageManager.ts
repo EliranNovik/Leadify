@@ -587,34 +587,27 @@ export const updateLeadStageWithHistory = async ({
       proposal_text: data[0].proposal_text ? (typeof data[0].proposal_text === 'string' ? data[0].proposal_text.substring(0, 100) + '...' : data[0].proposal_text) : undefined,
     } : null,
   });
-  console.log('📝 Now recording stage change history...');
-  
-  try {
-    const recordSuccess = await recordLeadStageChange({ 
-      lead, 
-      stage, 
-      actor: stageActor, 
-      timestamp: effectiveTimestamp,
-      stageDate: stageDate,
-    });
+  // History + celebration must not delay the lead.stage write (Another meeting, etc.).
+  void recordLeadStageChange({
+    lead,
+    stage,
+    actor: stageActor,
+    timestamp: effectiveTimestamp,
+    stageDate: stageDate,
+  }).then((recordSuccess) => {
     if (recordSuccess) {
       console.log('✅ Stage change history recorded successfully');
     } else {
       console.warn('⚠️ Stage change history recording was skipped (likely duplicate)');
     }
-  } catch (recordError) {
+  }).catch((recordError) => {
     console.error('❌ Error recording stage change history:', recordError);
-    // Don't throw - we want the stage update to succeed even if history recording fails
-    // But log it prominently so we can debug
-  }
-  
-  // Trigger celebration if stage is 60 (Client signed agreement)
-  // Pass the actor so celebration shows the currently signed-in user
-  try {
-    await triggerCelebrationIfNeeded(lead, resolvedStageId, stageActor);
-  } catch (celebrationError) {
-    console.error('❌ Error triggering celebration:', celebrationError);
-    // Don't throw - celebration is non-critical
+  });
+
+  if (resolvedStageId === 60) {
+    void triggerCelebrationIfNeeded(lead, resolvedStageId, stageActor).catch((celebrationError) => {
+      console.error('❌ Error triggering celebration:', celebrationError);
+    });
   }
 };
 
