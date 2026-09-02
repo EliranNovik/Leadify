@@ -73,6 +73,7 @@ function extractBalancedTag(
   tagName: string,
   prefix: string,
   startIndex: number,
+  requireAttr?: RegExp,
 ): { text: string; blocks: string[] } {
   const openNeedle = `<${tagName}`;
   const closeNeedle = `</${tagName}>`;
@@ -92,7 +93,7 @@ function extractBalancedTag(
       break;
     }
     const openTag = source.slice(start, tagEnd + 1);
-    if (!/\bdata-contract-preview\b/i.test(openTag)) {
+    if (requireAttr && !requireAttr.test(openTag)) {
       result += source.slice(i, tagEnd + 1);
       i = tagEnd + 1;
       continue;
@@ -123,12 +124,21 @@ function extractBalancedContractPreviewTables(
   html: string,
   prefix: string,
 ): { text: string; blocks: string[] } {
-  const tables = extractBalancedTag(html, 'table', prefix, 0);
-  const divs = extractBalancedTag(tables.text, 'div', prefix, tables.blocks.length);
+  const previewAttr = /\bdata-contract-preview\b/i;
+  const tables = extractBalancedTag(html, 'table', prefix, 0, previewAttr);
+  const divs = extractBalancedTag(tables.text, 'div', prefix, tables.blocks.length, previewAttr);
   return {
     text: divs.text,
     blocks: [...tables.blocks, ...divs.blocks],
   };
+}
+
+/** Nested-safe: keeps inner tables inside the outer table instead of cutting at the first `</table>`. */
+export function extractAllBalancedTables(
+  html: string,
+  prefix = 'TABLE',
+): { text: string; blocks: string[] } {
+  return extractBalancedTag(html, 'table', prefix, 0);
 }
 
 export function extractContractPreviewTables(
@@ -146,6 +156,17 @@ function normalizeContractPreviewBlock(html: string): string {
   const signed = /data-signed=["']1["']/i.test(html);
   const leadNumber = html.match(/data-lead-number=["']([^"']*)["']/i)?.[1] || '';
   return buildContractLinkPreviewHtml(href, signed, leadNumber);
+}
+
+export function toContractLinkPreviewEditorHtml(html: string): string {
+  if (/<div\b[^>]*\bdata-contract-preview\b/i.test(html)) return html;
+  const href =
+    html.match(/data-href=["']([^"']+)["']/i)?.[1] ||
+    html.match(/href=["'](https?:\/\/[^"']+\/(?:public-(?:legacy-)?contract)\/[^"']+)["']/i)?.[1];
+  if (!href) return html;
+  const signed = /data-signed=["']1["']/i.test(html);
+  const leadNumber = html.match(/data-lead-number=["']([^"']*)["']/i)?.[1] || '';
+  return buildContractLinkPreviewEditorHtml(href, signed, leadNumber);
 }
 
 export function restoreContractPreviewTables(

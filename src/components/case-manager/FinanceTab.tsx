@@ -48,6 +48,7 @@ import { PencilLine, Trash2 } from 'lucide-react';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
 import EditPaymentModal from '../modals/EditPaymentModal';
 import AddPaymentModal from '../modals/AddPaymentModal';
+import VatIncludeToggle from '../modals/VatIncludeToggle';
 import NotesModal from '../modals/NotesModal';
 
 // Portal dropdown component for admin actions
@@ -94,6 +95,10 @@ const AdminDropdownPortal: React.FC<{
 };
 
 import { generateProformaName } from '../../lib/proforma';
+import {
+  ensureProformasForAutomationPayments,
+  type EnsureProformaPaymentInput,
+} from '../../lib/proformaAutomationCreate';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
 
@@ -3587,6 +3592,36 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
     setAddingPaymentModalContact(null);
   };
 
+  const createProformasForCreatedPayments = async (
+    payments: EnsureProformaPaymentInput[],
+  ): Promise<number> => {
+    if (!client || payments.length === 0) return 0;
+    const isLegacyLead =
+      client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+    const leadNumber = client.lead_number
+      ? String(client.lead_number).replace(/^#/, '').trim()
+      : String(client.id ?? '');
+    try {
+      const result = await ensureProformasForAutomationPayments(payments, {
+        leadId: client.id,
+        leadNumber,
+        isLegacyLead,
+        createdBy: await getCurrentUserName(),
+        employeeId: await getCurrentUserEmployeeId(),
+        legacyProformas,
+      });
+      if (result.addedLegacyProformas.length > 0) {
+        setLegacyProformas((prev) => [...prev, ...result.addedLegacyProformas]);
+        await fetchLegacyProformas();
+      }
+      return result.createdCount;
+    } catch (err) {
+      console.error('createProformasForCreatedPayments:', err);
+      toast.error(err instanceof Error ? err.message : 'Payment created, but proforma failed');
+      return 0;
+    }
+  };
+
   // Handler to save new payment (original, now accepts data parameter)
   const handleSaveNewPaymentWithData = async (dataToSave: any, contactForPayment: string) => {
     if (!dataToSave.value || !contactForPayment || !dataToSave.duePercent) {
@@ -3668,6 +3703,32 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           .select();
 
         if (error) throw error;
+
+        const insertedId = data?.[0]?.id ?? paymentData.id;
+        const proformaCount = await createProformasForCreatedPayments([
+          {
+            id: insertedId,
+            isLegacy: true,
+            client_id: paymentData.client_id,
+            client: contactForPayment,
+            dueDate: paymentData.date || '',
+            order: dataToSave.paymentOrder || 'Intermediate Payment',
+            value: paymentData.value,
+            valueVat: paymentData.vat_value,
+            currency,
+            currency_id: currencyId,
+            addVat: currency === '₪' && dataToSave.includeVat !== false,
+            proforma: null,
+            paid: false,
+          },
+        ]);
+        toast.success(
+          proformaCount > 0
+            ? 'Payment plan and proforma created'
+            : 'Payment plan created successfully',
+        );
+        refreshPaymentPlans();
+        return;
       } else {
         // For new leads, save to payment_plans table
         // Get client_id for the contact
@@ -3711,6 +3772,33 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           .select();
 
         if (error) throw error;
+
+        const insertedId = data?.[0]?.id;
+        if (insertedId) {
+          const proformaCount = await createProformasForCreatedPayments([
+            {
+              id: insertedId,
+              isLegacy: false,
+              client_id: paymentData.client_id ?? null,
+              client: contactForPayment,
+              dueDate: paymentData.due_date || '',
+              order: paymentData.payment_order,
+              value: paymentData.value,
+              valueVat: paymentData.value_vat,
+              currency: paymentData.currency,
+              addVat: dataToSave.includeVat !== false,
+              proforma: null,
+              paid: false,
+            },
+          ]);
+          toast.success(
+            proformaCount > 0
+              ? 'Payment plan and proforma created'
+              : 'Payment plan created successfully',
+          );
+          refreshPaymentPlans();
+          return;
+        }
       }
 
       // Payment created successfully
@@ -3912,7 +4000,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
         const { data: insertedLegacyPayments, error: legacyPaymentInsertError } = await supabase
           .from('finances_paymentplanrow')
           .insert(legacyPayments)
-          .select('id, client_id');
+          .select('id, client_id, value, vat_value, date, order, currency_id');
 
         if (legacyPaymentInsertError) {
           console.error('❌ handleCreateAutoPlan: Error inserting payments', legacyPaymentInsertError);
@@ -3923,6 +4011,47 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           inserted: insertedLegacyPayments,
           insertedClientIds: insertedLegacyPayments?.map(p => p.client_id)
         });
+
+        const autoProformaCount = await createProformasForCreatedPayments(
+          (insertedLegacyPayments || []).map((row, index) => {
+            const defaultOrder = index === 0 ? 'First Payment' : index === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+            return {
+              id: row.id,
+              isLegacy: true,
+              client_id: row.client_id != null ? Number(row.client_id) : clientIdForContact,
+              client: selectedContactName,
+              dueDate: row.date || legacyPayments[index]?.date || '',
+              order: paymentOrders[index] || getOrderText(row.order) || defaultOrder,
+              value: Number(row.value ?? legacyPayments[index]?.value ?? 0),
+              valueVat: Number(row.vat_value ?? legacyPayments[index]?.vat_value ?? 0),
+              currency,
+              currency_id: row.currency_id ?? currencyId,
+              addVat: Boolean(autoPlanData.includeVat),
+              proforma: null,
+              paid: false,
+            };
+          }),
+        );
+        toast.success(
+          autoProformaCount > 0
+            ? `Auto finance plan created with ${autoProformaCount} proforma${autoProformaCount === 1 ? '' : 's'}`
+            : 'Auto finance plan created successfully',
+        );
+        setShowStagesDrawer(false);
+        setAutoPlanData({
+          totalAmount: '',
+          currency: '₪',
+          numberOfPayments: 3,
+          paymentPercents: [50, 25, 25],
+          paymentAmounts: [],
+          paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
+          includeVat: true,
+          contact: '',
+        });
+        setIsCustomPaymentCount(false);
+        setCustomPaymentCount(6);
+        refreshPaymentPlans();
+        return;
       } else {
         // For new leads, save to payment_plans table
         const payments = [];
@@ -4055,6 +4184,43 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
             .insert(updatedChanges);
 
           if (historyError) console.error('Error logging auto plan creation:', historyError);
+
+          const autoProformaCount = await createProformasForCreatedPayments(
+            insertedPayments.map((row, index) => ({
+              id: row.id,
+              isLegacy: false,
+              client_id: clientIdForContact,
+              client: selectedContactName,
+              dueDate: payments[index]?.due_date || '',
+              order: payments[index]?.payment_order || 'First Payment',
+              value: Number(payments[index]?.value ?? 0),
+              valueVat: Number(payments[index]?.value_vat ?? 0),
+              currency: autoPlanData.currency,
+              addVat: Boolean(autoPlanData.includeVat),
+              proforma: null,
+              paid: false,
+            })),
+          );
+          toast.success(
+            autoProformaCount > 0
+              ? `Auto finance plan created with ${autoProformaCount} proforma${autoProformaCount === 1 ? '' : 's'}`
+              : 'Auto finance plan created successfully',
+          );
+          setShowStagesDrawer(false);
+          setAutoPlanData({
+            totalAmount: '',
+            currency: '₪',
+            numberOfPayments: 3,
+            paymentPercents: [50, 25, 25],
+            paymentAmounts: [],
+            paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
+            includeVat: true,
+            contact: '',
+          });
+          setIsCustomPaymentCount(false);
+          setCustomPaymentCount(6);
+          refreshPaymentPlans();
+          return;
         }
       }
 
@@ -4278,10 +4444,17 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
               <div className="flex-1 p-6 overflow-y-auto">
                 {/* Auto Plan Section */}
                 <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border border-purple-200">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <ChartPieIcon className="w-5 h-5 text-purple-600" />
-                    Create Auto Finance Plan
-                  </h3>
+                  <div className="mb-4 flex flex-wrap items-center gap-3">
+                    <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                      <ChartPieIcon className="w-5 h-5 text-purple-600" />
+                      Create Auto Finance Plan
+                    </h3>
+                    <VatIncludeToggle
+                      includeVat={!!autoPlanData.includeVat}
+                      onChange={(includeVat) => setAutoPlanData((prev) => ({ ...prev, includeVat }))}
+                      disabled={isSavingPaymentRow}
+                    />
+                  </div>
                   <div className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="form-control">
@@ -4626,29 +4799,29 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                         </div>
                       </div>
                     </div>
-                    <div className="form-control">
-                      <label className="label cursor-pointer justify-start gap-3">
-                        <input
-                          type="checkbox"
-                          className="checkbox checkbox-primary"
-                          checked={autoPlanData.includeVat}
-                          onChange={(e) => setAutoPlanData(prev => ({ ...prev, includeVat: e.target.checked }))}
-                        />
-                        <span className="label-text font-medium">Include VAT (18%)</span>
-                      </label>
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={handleCloseStagesDrawer}
+                        disabled={isSavingPaymentRow}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary rounded-full px-6"
+                        onClick={handleCreateAutoPlan}
+                        disabled={isSavingPaymentRow || !autoPlanData.totalAmount || !autoPlanData.contact}
+                      >
+                        {isSavingPaymentRow ? (
+                          <span className="loading loading-spinner loading-sm"></span>
+                        ) : (
+                          <PlusIcon className="w-4 h-4" />
+                        )}
+                        Create Auto Finance Plan
+                      </button>
                     </div>
-                    <button
-                      className="btn btn-primary w-full"
-                      onClick={handleCreateAutoPlan}
-                      disabled={isSavingPaymentRow || !autoPlanData.totalAmount || !autoPlanData.contact}
-                    >
-                      {isSavingPaymentRow ? (
-                        <span className="loading loading-spinner loading-sm"></span>
-                      ) : (
-                        <PlusIcon className="w-4 h-4 mr-2" />
-                      )}
-                      Create Auto Finance Plan
-                    </button>
                   </div>
                 </div>
               </div>
@@ -6525,10 +6698,17 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
             <div className="flex-1 p-6 overflow-y-auto">
               {/* Auto Plan Section */}
               <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border border-purple-200">
-                <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                  <ChartPieIcon className="w-5 h-5 text-purple-600" />
-                  Create Auto Finance Plan
-                </h3>
+                <div className="mb-4 flex flex-wrap items-center gap-3">
+                  <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <ChartPieIcon className="w-5 h-5 text-purple-600" />
+                    Create Auto Finance Plan
+                  </h3>
+                  <VatIncludeToggle
+                    includeVat={!!autoPlanData.includeVat}
+                    onChange={(includeVat) => setAutoPlanData((prev) => ({ ...prev, includeVat }))}
+                    disabled={isSavingPaymentRow}
+                  />
+                </div>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="form-control">
@@ -6788,29 +6968,29 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                       </div>
                     </div>
                   </div>
-                  <div className="form-control">
-                    <label className="label cursor-pointer justify-start gap-3">
-                      <input
-                        type="checkbox"
-                        className="checkbox checkbox-primary"
-                        checked={autoPlanData.includeVat}
-                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, includeVat: e.target.checked }))}
-                      />
-                      <span className="label-text font-medium">Include VAT (18%)</span>
-                    </label>
+                  <div className="flex justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={handleCloseStagesDrawer}
+                      disabled={isSavingPaymentRow}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary rounded-full px-6"
+                      onClick={handleCreateAutoPlan}
+                      disabled={isSavingPaymentRow || !autoPlanData.totalAmount || !autoPlanData.contact}
+                    >
+                      {isSavingPaymentRow ? (
+                        <span className="loading loading-spinner loading-sm"></span>
+                      ) : (
+                        <PlusIcon className="w-4 h-4" />
+                      )}
+                      Create Auto Finance Plan
+                    </button>
                   </div>
-                  <button
-                    className="btn btn-primary w-full"
-                    onClick={handleCreateAutoPlan}
-                    disabled={isSavingPaymentRow || !autoPlanData.totalAmount || !autoPlanData.contact}
-                  >
-                    {isSavingPaymentRow ? (
-                      <span className="loading loading-spinner loading-sm"></span>
-                    ) : (
-                      <PlusIcon className="w-4 h-4 mr-2" />
-                    )}
-                    Create Auto Finance Plan
-                  </button>
                 </div>
               </div>
             </div>

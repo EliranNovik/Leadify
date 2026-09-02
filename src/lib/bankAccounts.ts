@@ -40,6 +40,34 @@ export async function fetchBankAccountById(id: string): Promise<BankAccountSnaps
   return data as BankAccountSnapshot;
 }
 
+/** Legacy `proformainvoice.bank_account_id` for Hapoalim. */
+export const HAPOALIM_LEGACY_BANK_ID = 1;
+
+/** Active Hapoalim row used for auto-created invoices (order 1 / name match). */
+export async function fetchHapoalimBankAccount(): Promise<BankAccountSnapshot | null> {
+  const { data: byName } = await supabase
+    .from('bank_accounts')
+    .select(BANK_SELECT)
+    .eq('is_active', true)
+    .or('name.ilike.%hapoalim%,name.ilike.%hopoalim%')
+    .order('order_value', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (byName) return byName as BankAccountSnapshot;
+
+  const { data: byOrder } = await supabase
+    .from('bank_accounts')
+    .select(BANK_SELECT)
+    .eq('is_active', true)
+    .eq('order_value', HAPOALIM_LEGACY_BANK_ID)
+    .order('name', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (byOrder) return byOrder as BankAccountSnapshot;
+
+  return fetchBankAccountById('27cf7983-ffc4-4a3f-b61b-900815f95c7e');
+}
+
 export function toBankAccountSnapshot(account: BankAccountRecord): BankAccountSnapshot {
   return { ...account };
 }

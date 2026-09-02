@@ -26,6 +26,7 @@ import {
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
 import { supabase } from '../../lib/supabase';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../../lib/openaiModels';
 import { useAuthContext } from '../../contexts/AuthContext';
 import {
   fetchPublicUserId,
@@ -960,24 +961,23 @@ STRUCTURE:
 Lead Information:
 ${combinedText}`;
 
-        const requestBody = {
-          model: 'gpt-3.5-turbo',
+        const requestBody = buildChatCompletionBody({
           messages: [
             { role: 'system', content: 'You are an expert legal CRM assistant. Create clear, concise summaries. Always write in clean, plain text paragraphs without any markdown formatting, bullet points, or special characters.' },
             { role: 'user', content: prompt }
           ],
-          max_tokens: 500,
+          maxTokens: 500,
           temperature: 0.4,
-        };
+        });
 
         console.log('🔍 [AI Summary Debug] Calling OpenAI directly:', {
           promptLength: prompt.length,
           estimatedPromptTokens: Math.ceil(prompt.length / 4),
-          maxTokens: requestBody.max_tokens,
+          maxTokens: requestBody.max_completion_tokens,
           model: requestBody.model
         });
 
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        const response = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${OPENAI_API_KEY}`,

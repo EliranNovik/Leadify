@@ -342,6 +342,11 @@ export function formatRequiredDocumentLinksBlock(links: FollowupDocumentLinks): 
   return `REQUIRED LINKS — copy the exact https URL onto its own line when the staff asks for that document. Never invent a URL. Never use example.com.\n${lines.join('\n')}`;
 }
 
+export function withRequiredDocumentLinks(caseFile: string): string {
+  const required = formatRequiredDocumentLinksBlock(parseFollowupDocumentLinks(caseFile));
+  return required ? `${required}\n\n${caseFile}` : caseFile;
+}
+
 const REAL_CONTRACT_URL_RE = /https?:\/\/[^\s]*\/(?:public-contract|public-legacy-contract)\/[^\s<>)"']+/i;
 const REAL_POA_URL_RE = /https?:\/\/[^\s]*\/poa\/[^\s<>)"']+/i;
 const REAL_INVOICE_URL_RE = /https?:\/\/[^\s]*\/public-proforma(?:-legacy)?\/[^\s<>)"']+/i;
@@ -360,6 +365,7 @@ export function applyCrmDocumentLinksToEmailDraft(
   draft: string,
   links: FollowupDocumentLinks,
   userRequest: string,
+  options?: { previewHtml?: boolean },
 ): string {
   if (!draft.trim()) return draft;
   const request = userRequest.toLowerCase();
@@ -382,7 +388,7 @@ export function applyCrmDocumentLinksToEmailDraft(
     }
   }
 
-  if (links.contractSigningUrl && wantsContract) {
+  if (options?.previewHtml !== false && links.contractSigningUrl && wantsContract) {
     next = applyContractLinkPreviewHtml(next);
   }
 

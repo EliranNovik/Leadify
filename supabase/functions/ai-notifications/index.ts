@@ -1,9 +1,9 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 import { supabase } from '../_shared/supabase-client.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 /** Format an ISO date string to dd-mm-yy and hh:mm for display. */
 function formatDateAndTime(isoDate: string | null | undefined): { date: string; time: string } {
@@ -286,21 +286,20 @@ ${index + 1}. ${notification.message} (${notification.priority} priority)
 Generate a structured list grouped by category with key details only.`;
 
   try {
-    const response = await fetch(OPENAI_API_URL, {
+    const response = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-4o',
+      body: JSON.stringify(buildChatCompletionBody({
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 150,
-        temperature: 0.7
-      }),
+        maxTokens: 150,
+        temperature: 0.7,
+      })),
     });
 
     if (!response.ok) {

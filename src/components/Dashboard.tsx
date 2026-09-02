@@ -9,7 +9,7 @@ import ClockInBox from './ClockInBox';
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
 const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
 const NewHandlerCasesWidget = lazy(() => import('./NewHandlerCasesWidget'));
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, DocumentCheckIcon, BanknotesIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, DocumentCheckIcon, BanknotesIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon, SparklesIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
@@ -76,6 +76,8 @@ import DashboardScoreboardDealsModal, {
   type DashboardScoreboardDeal,
 } from './DashboardScoreboardDealsModal';
 import { getRoleDisplayName } from '../lib/employeeRoles';
+import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
+import { openRmqAiChat, RMQ_AI_DASHBOARD_ASKS } from '../lib/rmqAiPendingPrompt';
 import {
   applySubcontractorFeeTotalsToLeads,
   fetchSubcontractorFeeTotalsByLeadIds,
@@ -8262,7 +8264,7 @@ const Dashboard: React.FC = () => {
       {/* Performance scoreboard (full width; archived AI column: `dashboard/DashboardAiSuggestionsArchive.tsx`) */}
       <div className="mb-6 md:mb-10 w-full min-w-0">
             {/* Header - simple on background */}
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
+            <div className="mb-6 grid grid-cols-1 items-center gap-4 xl:grid-cols-[auto_minmax(0,1fr)_auto]">
               <div className="flex items-center gap-3">
                 <div className="flex items-center justify-center w-12 h-12 rounded-full shadow bg-white">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -8280,7 +8282,29 @@ const Dashboard: React.FC = () => {
                   <p className="text-gray-600 dark:text-base-content/70 text-sm mt-0.5">Real-time sales metrics and analytics</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center bg-transparent p-0"
+                  onClick={() => openRmqAiChat()}
+                  title="Open RMQ AI"
+                  aria-label="Open RMQ AI"
+                >
+                  <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-16 w-16 md:h-[4.5rem] md:w-[4.5rem]" />
+                </button>
+                {RMQ_AI_DASHBOARD_ASKS.map((question) => (
+                  <button
+                    key={question}
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white px-3.5 py-2 text-[13px] font-medium text-[#7c3aed] shadow-sm ring-1 ring-black/5 transition hover:bg-[#ede9fe] dark:bg-base-100 dark:text-[#c4b5fd] dark:ring-white/10 dark:hover:bg-base-200"
+                    onClick={() => openRmqAiChat(question)}
+                  >
+                    <SparklesIcon className="h-5 w-5 shrink-0" />
+                    {question}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center justify-center gap-2 xl:justify-end">
                 <div className="tabs tabs-boxed bg-gray-100 shadow-inner rounded-xl p-1 border-0">
                   {scoreboardTabs.map(tab => (
                     <a

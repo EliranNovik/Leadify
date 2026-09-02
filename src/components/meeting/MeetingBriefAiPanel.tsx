@@ -21,6 +21,7 @@ import {
 } from '../../lib/meetingSummaryNotesApi';
 import { fetchLeadCaseFileForAi } from '../../lib/leadFollowupAiApi';
 import { sendWordDocumentAiChatMessage } from '../../lib/wordDocumentAiApi';
+import { DETAILED_MEETING_SUMMARY_INSTRUCTION } from '../../lib/aiProfessionalWriting';
 import ContractAiReviewPanel, {
   type ContractAiReviewMessage,
 } from '../ContractAiReviewPanel';
@@ -166,7 +167,7 @@ const MeetingBriefAiPanel: React.FC<MeetingBriefAiPanelProps> = ({
         languageLock,
         remarks,
         caseContext
-          ? `[BACKGROUND CASE FILE — use only the facts that matter. Write a short meeting note, not a CRM report. No labels, markdown, or links. Never invent facts.]\n${caseContext}`
+          ? `[BACKGROUND CASE FILE — ${DETAILED_MEETING_SUMMARY_INSTRUCTION} Never invent facts.]\n${caseContext}`
           : '',
       ]
         .filter(Boolean)
@@ -217,7 +218,7 @@ const MeetingBriefAiPanel: React.FC<MeetingBriefAiPanelProps> = ({
           setPolishing(true);
           try {
             const summary = await runCaseAwareBriefAi(
-              `Turn this voice transcript into a clear meeting brief in ${aiLanguageLabel} using the CRM case file. Keep the staff notes, add missing case context, and do not invent facts.`,
+              `Turn this voice transcript into a detailed professional meeting summary in ${aiLanguageLabel} using the CRM case file. ${DETAILED_MEETING_SUMMARY_INSTRUCTION}`,
               combinedText,
             );
             onChangeRef.current(summary);
@@ -365,8 +366,8 @@ const MeetingBriefAiPanel: React.FC<MeetingBriefAiPanelProps> = ({
     setPolishing(true);
     try {
       const remarks = value.trim()
-        ? `Rewrite this as a short meeting note in ${aiLanguageLabel}: 2–4 plain paragraphs, no labels, no markdown, no links. Keep the staff notes and add only the case facts that matter.`
-        : `Write a short meeting note in ${aiLanguageLabel} from the case file: 2–4 plain paragraphs on what matters now (interest, facts, money, docs, next step). No labels, no markdown, no links.`;
+        ? `Rewrite this as a detailed professional meeting summary in ${aiLanguageLabel}. ${DETAILED_MEETING_SUMMARY_INSTRUCTION}`
+        : `Write a detailed professional meeting summary in ${aiLanguageLabel} from the case file. ${DETAILED_MEETING_SUMMARY_INSTRUCTION}`;
       const summary = await runCaseAwareBriefAi(remarks, value);
       onChange(summary);
       setChatMessages((prev) => [
@@ -396,7 +397,7 @@ const MeetingBriefAiPanel: React.FC<MeetingBriefAiPanelProps> = ({
         languageLock,
         remarks,
         caseContext
-          ? `[BACKGROUND CASE FILE — use only the facts that matter. Write a short meeting note, not a CRM report. No labels, markdown, or links. Never invent facts.]\n${caseContext}`
+          ? `[BACKGROUND CASE FILE — ${DETAILED_MEETING_SUMMARY_INSTRUCTION} Never invent facts.]\n${caseContext}`
           : '',
       ]
         .filter(Boolean)

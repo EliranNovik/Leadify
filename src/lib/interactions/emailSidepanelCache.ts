@@ -9,7 +9,7 @@ const memoryCache = new Map<string, CacheEntry<unknown>>();
 const DEFAULT_TTL_MS = 2 * 60 * 1000;
 
 function storageKey(key: string) {
-  return `email-sidepanel-cache:v2:${key}`;
+  return `email-sidepanel-cache:v3:${key}`;
 }
 
 export function readEmailSidepanelCache<T>(key: string, ttlMs = DEFAULT_TTL_MS): T | null {

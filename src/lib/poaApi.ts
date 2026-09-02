@@ -88,6 +88,41 @@ export function buildPoaUrl(secureToken: string): string {
   return `${getFrontendBaseUrl()}/poa/${encodeURIComponent(secureToken)}`;
 }
 
+export async function fetchLeadPoaPublicLink(
+  leadId: string,
+  isLegacy: boolean,
+): Promise<string | null> {
+  const rawId = String(leadId || '').replace(/^legacy_/i, '').trim();
+  if (!rawId) return null;
+
+  const query = isLegacy
+    ? supabase
+        .from('poa_documents')
+        .select('secure_token, status, signed_at, created_at')
+        .eq('legacy_lead_id', rawId)
+        .neq('status', 'cancelled')
+        .order('created_at', { ascending: false })
+        .limit(8)
+    : supabase
+        .from('poa_documents')
+        .select('secure_token, status, signed_at, created_at')
+        .eq('new_lead_id', rawId)
+        .neq('status', 'cancelled')
+        .order('created_at', { ascending: false })
+        .limit(8);
+
+  const { data, error } = await query;
+  if (error || !data?.length) return null;
+
+  const unsigned = data.find((row) => {
+    const signed = Boolean(row.signed_at) || String(row.status || '').toLowerCase() === 'signed';
+    return !signed && String(row.secure_token || '').trim();
+  });
+  const row = unsigned || data.find((item) => String(item.secure_token || '').trim());
+  const token = String(row?.secure_token || '').trim();
+  return token ? buildPoaUrl(token) : null;
+}
+
 // -----------------------------------------------------------------------------
 // Public (anon) — used by the /poa/:token page
 // -----------------------------------------------------------------------------

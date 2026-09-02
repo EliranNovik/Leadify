@@ -1,7 +1,9 @@
 import {
   applyContractLinkPreviewHtml,
+  extractAllBalancedTables,
   extractContractPreviewTables,
   restoreContractPreviewTables,
+  toContractLinkPreviewEditorHtml,
 } from './leadContractLink';
 
 /**
@@ -15,6 +17,8 @@ import {
 export type ConvertBodyToHtmlOptions = {
   /** Convert markdown `[label](url)` to anchors (price-offer compose). */
   markdownLinks?: boolean;
+  /** Force outgoing direction instead of inferring from Hebrew/Arabic. */
+  direction?: 'ltr' | 'rtl';
 };
 
 const FONT_STYLE = "font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;";
@@ -47,11 +51,142 @@ function containsRtl(text: string): boolean {
   return RTL_RE.test(text.replace(/<[^>]*>/g, ''));
 }
 
-function wrapOutlookBody(innerHtml: string): string {
-  if (containsRtl(innerHtml)) {
+function wrapOutlookBody(innerHtml: string, direction?: 'ltr' | 'rtl'): string {
+  const rtl = direction === 'rtl' ? true : direction === 'ltr' ? false : containsRtl(innerHtml);
+  if (rtl) {
     return `<div ${CRM_COMPOSE_ATTR} dir="rtl" style="text-align: right; direction: rtl; ${FONT_STYLE}">${innerHtml}</div>`;
   }
   return `<div ${CRM_COMPOSE_ATTR} dir="ltr" style="text-align: left; direction: ltr; ${FONT_STYLE}">${innerHtml}</div>`;
+}
+
+/** TipTap / Outlook HTML → plain email text with real newlines. */
+export function htmlToPlainEmail(html: string): string {
+  return String(html || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/h[1-6]>/gi, '\n\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export function isComposeBodyEmpty(html: string): boolean {
+  return !htmlToPlainEmail(html);
+}
+
+const EMAIL_GREETING_RE =
+  /^(Dear\b[^,\n]{0,80},|Hi\b[^,\n]{0,80},|Hello\b[^,\n]{0,80},|שלום(?:\s+[^,\n]{1,80})?,)/iu;
+const EMAIL_SIGNOFF_RE =
+  /[ \t\n]+((?:Best regards|Kind regards|Warm regards|With regards|With best regards|Regards|Sincerely|Yours sincerely|Yours truly|Thanks|Thank you|בברכה רבה|בברכה|בכבוד רב)\s*,?)\s*$/iu;
+
+const ORPHAN_TABLE_CLOSE_RE = /(?:^|\n)\s*<\/(?:td|tr|th|table)>\s*(?=\n|$)/gi;
+
+function stashHtmlBlocks(text: string): { text: string; blocks: string[] } {
+  const tables = extractAllBalancedTables(String(text || ''), 'EMAILBLOCK');
+  const blocks = [...tables.blocks];
+  const stash = (html: string) => {
+    const token = `@@EMAILBLOCK${blocks.length}@@`;
+    blocks.push(html);
+    return token;
+  };
+  const next = tables.text
+    .replace(/@@EMAILBLOCK(\d+)@@/g, '\n\n@@EMAILBLOCK$1@@\n\n')
+    .replace(/<a\s+[^>]*>[\s\S]*?<\/a>/gi, (m) => stash(m));
+  return { text: next, blocks };
+}
+
+function restoreHtmlBlocks(text: string, blocks: string[]): string {
+  let next = text;
+  blocks.forEach((html, index) => {
+    next = next.replace(`@@EMAILBLOCK${index}@@`, html);
+  });
+  return next;
+}
+
+/**
+ * Turn a flattened AI / compose draft into a readable email:
+ * greeting, blank line, short paragraphs, blank line, sign-off.
+ */
+export function formatPlainEmailParagraphs(text: string): string {
+  let source = String(text || '').replace(/\r\n/g, '\n');
+  if (!source.trim()) return '';
+  if (!source.includes('\n') && /\\n/.test(source)) {
+    source = source.replace(/\\n/g, '\n');
+  }
+
+  const stashed = stashHtmlBlocks(source);
+  let next = stashed.text.replace(ORPHAN_TABLE_CLOSE_RE, '\n');
+  if (/<[a-z][\s\S]*>/i.test(next)) {
+    next = htmlToPlainEmail(next);
+  }
+  next = next.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').trim();
+
+  const greeting = next.match(EMAIL_GREETING_RE);
+  if (greeting) {
+    next = `${greeting[1]}\n\n${next.slice(greeting[0].length).replace(/^[ \t\n]+/, '')}`;
+  }
+
+  next = next.replace(EMAIL_SIGNOFF_RE, '\n\n$1');
+  next = next.replace(/[ \t]+(https?:\/\/[^\s<]+)/g, '\n\n$1');
+  next = next.replace(/(https?:\/\/[^\s<]+)[ \t]+(?=\S)/g, '$1\n\n');
+
+  next = next
+    .split(/\n{2,}/)
+    .map((para) => {
+      if (para.startsWith('@@EMAILBLOCK') || para.length < 110 || para.includes('\n')) return para;
+      return para.replace(/([.!?])["']?[ \t]+(?=[A-Z\u0590-\u05FF])/g, (match, punct: string, offset: number, whole: string) => {
+        const prev = whole.slice(Math.max(0, offset - 10), offset);
+        if (/\b(?:Mr|Mrs|Ms|Dr|Prof|Jr|Sr|vs)\.?$/i.test(prev)) return match;
+        return `${punct}\n\n`;
+      });
+    })
+    .join('\n\n');
+
+  return restoreHtmlBlocks(next.replace(/\n{3,}/g, '\n\n').trim(), stashed.blocks);
+}
+
+/** Plain email text (and mixed anchors/tables) → TipTap paragraph HTML. */
+export function plainTextToEditorHtml(text: string): string {
+  const source = String(text || '').replace(/\r\n/g, '\n');
+  if (!source.trim()) return '';
+  if (/<(p|div|ul|ol|h[1-6])\b/i.test(source)) return source;
+
+  const stashed = stashHtmlBlocks(source);
+  return stashed.text
+    .split(/\n{2,}/)
+    .map((para) => para.trim())
+    .filter(Boolean)
+    .map((para) => {
+      const tokenOnly = para.match(/^@@EMAILBLOCK(\d+)@@$/);
+      if (tokenOnly) {
+        const block = stashed.blocks[Number(tokenOnly[1])] || '';
+        return /data-contract-preview/i.test(block) ? toContractLinkPreviewEditorHtml(block) : block;
+      }
+      const withBreaks = para
+        .replace(/@@EMAILBLOCK(\d+)@@/g, (_m, n) => `@@KEEP${n}@@`)
+        .split('\n')
+        .filter((line) => !/^\s*<\/(?:td|tr|th|table)>\s*$/i.test(line))
+        .map((line) => escapeHtml(line))
+        .join('<br>')
+        .replace(/@@KEEP(\d+)@@/g, (_m, n) => {
+          const block = stashed.blocks[Number(n)] || '';
+          return /data-contract-preview/i.test(block) ? toContractLinkPreviewEditorHtml(block) : block;
+        });
+      return `<p>${withBreaks}</p>`;
+    })
+    .join('');
 }
 
 export function splitEmailBodyAndSignature(html: string): { body: string; signature: string } {
@@ -196,11 +331,12 @@ export function convertBodyToHtml(text: string, options?: ConvertBodyToHtmlOptio
   const contractPreviews = extractContractPreviewTables(content);
   content = contractPreviews.text;
 
+  const wrap = (inner: string) => wrapOutlookBody(inner, options?.direction);
   const finish = (html: string) =>
     restoreContractPreviewTables(html, contractPreviews.blocks) + signature;
 
   if (isDivPerLineFragment(content)) {
-    return finish(wrapOutlookBody(content));
+    return finish(wrap(content));
   }
 
   if (options?.markdownLinks) {
@@ -209,19 +345,26 @@ export function convertBodyToHtml(text: string, options?: ConvertBodyToHtmlOptio
 
   const withoutAnchors = content.replace(ANCHOR_RE, '');
   const hasOtherHtml = /<[a-z][\s\S]*>/i.test(withoutAnchors);
-  const hasStructuredHtml = /<(table|thead|tbody|tr|td|th|ul|ol|li|p|h[1-6]|blockquote|section|article|img|hr)\b/i.test(
+  const hasHeavyHtml = /<(table|thead|tbody|tr|td|th|ul|ol|li|h[1-6]|blockquote|section|article|img|hr)\b/i.test(
     withoutAnchors,
   );
+  const hasParagraphHtml = /<p\b/i.test(withoutAnchors);
 
   if (!hasOtherHtml) {
     content = withProtectedAnchors(content, escapeAndLinkify);
-  } else if (hasStructuredHtml) {
+  } else if (hasParagraphHtml && !hasHeavyHtml) {
+    content = content
+      .replace(/<\/p>\s*<p\b[^>]*>/gi, '\n\n')
+      .replace(/<\/?p\b[^>]*>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n');
     content = withProtectedAnchors(content, linkifyUrlsOutsideTags);
-    return finish(wrapOutlookBody(content));
+  } else if (hasHeavyHtml) {
+    content = withProtectedAnchors(content, linkifyUrlsOutsideTags);
+    return finish(wrap(content));
   } else {
     content = content.replace(/<br\s*\/?>/gi, '\n');
     content = withProtectedAnchors(content, linkifyUrlsOutsideTags);
   }
 
-  return finish(wrapOutlookBody(linesToOutlookDivs(content)));
+  return finish(wrap(linesToOutlookDivs(content)));
 }

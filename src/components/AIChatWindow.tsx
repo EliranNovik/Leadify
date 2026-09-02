@@ -20,7 +20,15 @@ import {
   type RmqAiDraftMeta,
 } from '../lib/rmqAiChatContext';
 import { stashRmqAiComposeDraft } from '../lib/rmqAiComposeDraft';
+import { RMQ_AI_DASHBOARD_ASKS, RMQ_AI_OPEN_EVENT, takeRmqAiPendingPrompt } from '../lib/rmqAiPendingPrompt';
 import { stripAiEmailSignature } from '../lib/emailComposeAiChat';
+import {
+  applyCrmDocumentLinksToEmailDraft,
+  parseFollowupDocumentLinks,
+  type FollowupDocumentLinks,
+} from '../lib/leadFollowupAiApi';
+import { fetchLeadContractPublicLink } from '../lib/leadContractLink';
+import { fetchLeadPoaPublicLink } from '../lib/poaApi';
 import { parseChatLeadNumber } from './ChatLeadNumberText';
 import { loadChatEmployeeDirectory, type ChatEmployeeHit } from './ChatEmployeeNameText';
 import { ChatStageBadgeText, buildChatStageHits, loadChatStageHits, type ChatStageHit } from './ChatStageBadgeText';
@@ -117,9 +125,9 @@ const READY_ASKS = [
   },
   {
     label: 'Draft follow-up',
-    hint: 'Email or WhatsApp for this client',
+    hint: 'Detailed email or WhatsApp from the case file',
     prompt:
-      'Draft a follow-up for this client. Call draft_client_message with intent follow_up. Reply with only the ready-to-send draft in the client language. Stop after Best regards / בברכה. Do not add a signature.',
+      'Draft a detailed professional follow-up for this client. Call draft_client_message with intent follow_up. Read the full case file (meetings, last messages, contracts, payments, next steps) and write 4–7 short paragraphs in the client language — not a short check-in. Reply with only the ready-to-send draft. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: EnvelopeIcon,
     badge: 'bg-emerald-100 text-emerald-700',
   },
@@ -135,7 +143,7 @@ const READY_ASKS = [
     label: 'After no-show',
     hint: 'What to say',
     prompt:
-      'Draft a no-show follow-up for this client. Call draft_client_message with intent no_show. Reply with only the draft in the client language. Stop after Best regards / בברכה. Do not add a signature.',
+      'Draft a detailed professional no-show follow-up for this client. Call draft_client_message with intent no_show. Use the case file and write 4–7 short paragraphs in the client language. Reply with only the draft. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: ClockOutlineIcon,
     badge: 'bg-violet-100 text-violet-700',
   },
@@ -187,9 +195,9 @@ const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
   },
   {
     label: 'Draft follow-up',
-    hint: 'Create a message',
+    hint: 'Create a detailed message',
     prompt:
-      'Draft a follow-up for this client. Call draft_client_message with intent follow_up. Reply with only the ready-to-send draft in the client language. Stop after Best regards / בברכה. Do not add a signature.',
+      'Draft a detailed professional follow-up for this client. Call draft_client_message with intent follow_up. Read the full case file (meetings, last messages, contracts, payments, next steps) and write 4–7 short paragraphs in the client language — not a short check-in. Reply with only the ready-to-send draft. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: PencilSquareIcon,
   },
 ];
@@ -230,11 +238,7 @@ const WELCOME_LEAD_QUESTIONS = [
   'Show me the last email we sent.',
 ];
 
-const WELCOME_GENERAL_QUESTIONS = [
-  "What's on my calendar today?",
-  "Who hasn't answered me?",
-  'Which deals signed today?',
-];
+const WELCOME_GENERAL_QUESTIONS = [...RMQ_AI_DASHBOARD_ASKS];
 
 const AI_DRAWER_THEME_KEY = 'rmqAiDrawerTheme';
 const AI_DRAWER_POS_KEY = 'rmqAiDrawerPos';
@@ -787,6 +791,40 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     handleSend(action);
   };
 
+  const insertCrmDocumentLink = async (kind: 'contract' | 'poa') => {
+    const lead = currentLead || getRmqAiCurrentLead();
+    const leadId = lead?.id != null ? String(lead.id) : '';
+    if (!leadId) {
+      toast.error('Open a client first to insert this link.');
+      return;
+    }
+    const isLegacy = lead?.lead_type === 'legacy' || leadId.toLowerCase().startsWith('legacy_');
+    setAttachMenuOpen(false);
+    try {
+      const url =
+        kind === 'contract'
+          ? (await fetchLeadContractPublicLink(leadId, isLegacy))?.url || null
+          : await fetchLeadPoaPublicLink(leadId, isLegacy);
+      if (!url) {
+        toast.error(
+          kind === 'contract'
+            ? 'No agreement or contract link is available for this client.'
+            : 'No POA link is available for this client.',
+        );
+        return;
+      }
+      setInput((prev) => {
+        const trimmed = prev.trimEnd();
+        return trimmed ? `${trimmed}\n${url}` : url;
+      });
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      toast.success(kind === 'contract' ? 'Contract link added' : 'POA link added');
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to add the link.');
+    }
+  };
+
   const addImageFiles = (files: File[]) => {
     const imageFiles = files.filter((file) => file.type.startsWith('image/'));
     if (!imageFiles.length) return 0;
@@ -1183,6 +1221,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       const appMapLinks: string[] = [];
       let meetingCard: ChatMeetingCardData | undefined;
       let calendarMeetings: ChatCalendarDayData | undefined;
+      let documentLinks: FollowupDocumentLinks = {
+        contractSigningUrl: null,
+        poaUrl: null,
+        invoiceUrl: null,
+      };
       for (let round = 0; round < 6; round += 1) {
         const reply = await callChat(conversation, round === 0);
         if (reply.tool_calls?.length) {
@@ -1198,6 +1241,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             const toolResult = await executeRmqAiTool(toolCall);
             const fnName = toolCall?.function?.name;
             createdFiles.push(...takeRmqAiToolFiles());
+            if (fnName === 'get_lead_case_file' || fnName === 'draft_client_message') {
+              const parsed = parseFollowupDocumentLinks(String(toolResult));
+              documentLinks = {
+                contractSigningUrl: parsed.contractSigningUrl || documentLinks.contractSigningUrl,
+                poaUrl: parsed.poaUrl || documentLinks.poaUrl,
+                invoiceUrl: parsed.invoiceUrl || documentLinks.invoiceUrl,
+              };
+            }
             if (fnName === 'find_app_page') {
               for (const line of String(toolResult).split('\n')) {
                 const match = line.match(/\[([^\]]+)\]\((\/[^)]+)\)/);
@@ -1244,14 +1295,22 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         : replyContent;
 
       const draftAction = takeRmqAiDraftMeta() || undefined;
+      const linkedContent = draftAction
+        ? applyCrmDocumentLinksToEmailDraft(
+            withLinks,
+            documentLinks,
+            String(lastUser?.content || ''),
+            { previewHtml: false },
+          )
+        : withLinks;
       const storedContent =
-        withLinks ||
+        (draftAction ? stripAiEmailSignature(linkedContent) : linkedContent) ||
         'I looked up the CRM data but could not finish a reply. Please try again.';
       setMessages((prev) => [
         ...prev.slice(0, -1),
         {
           role: 'assistant',
-          content: draftAction ? stripAiEmailSignature(storedContent) : storedContent,
+          content: storedContent,
           attachments: createdFiles.length ? createdFiles : undefined,
           draftAction,
           meetingCard,
@@ -1314,6 +1373,27 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setMessages([...newMessages, { role: 'assistant', content: 'AI is thinking...' }]);
     await completeAssistantTurn(newMessages, imagesData);
   };
+
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const prompt = takeRmqAiPendingPrompt();
+    if (!prompt) return;
+    void handleSendRef.current(prompt);
+  }, [isOpen]);
+
+  useEffect(() => {
+    const onOpen = () => {
+      if (!isOpen) return;
+      const prompt = takeRmqAiPendingPrompt();
+      if (!prompt) return;
+      void handleSendRef.current(prompt);
+    };
+    window.addEventListener(RMQ_AI_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(RMQ_AI_OPEN_EVENT, onOpen);
+  }, [isOpen]);
 
   const finishVoiceToInput = async (payload: { recording?: VoiceRecordingResult | null; liveText: string }) => {
     if (voiceFinishingRef.current) return;
@@ -3615,6 +3695,40 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                             <span className="text-sm font-medium text-gray-900">Documents</span>
                             {' '}
                             <span className="text-xs text-gray-500">Open the documents folder</span>
+                          </span>
+                        </button>
+                        <div className="my-1 border-t border-gray-100" />
+                        <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                          Client links
+                        </p>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                          onClick={() => void insertCrmDocumentLink('contract')}
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
+                            <DocumentCheckIcon className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 leading-snug">
+                            <span className="text-sm font-medium text-gray-900">Contract</span>
+                            {' '}
+                            <span className="text-xs text-gray-500">Insert this client’s signing link</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                          onClick={() => void insertCrmDocumentLink('poa')}
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-700">
+                            <DocumentTextIcon className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 leading-snug">
+                            <span className="text-sm font-medium text-gray-900">POA</span>
+                            {' '}
+                            <span className="text-xs text-gray-500">Insert this client’s POA link</span>
                           </span>
                         </button>
                         <div className="my-1 border-t border-gray-100" />

@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
-import { fetchLeadCaseFileForAi } from './leadFollowupAiApi';
+import { fetchLeadCaseFileForAi, withRequiredDocumentLinks } from './leadFollowupAiApi';
+import { DETAILED_CLIENT_OUTREACH_INSTRUCTION, DETAILED_MEETING_SUMMARY_INSTRUCTION } from './aiProfessionalWriting';
 import { getStageName } from './stageUtils';
 import { upsertUserFollowUp } from './upsertUserFollowUp';
 import {
@@ -308,9 +309,10 @@ export async function executeDraftClientMessage(args: {
     `Intent: ${intent}`,
     `Language: prefer the client language from the case file (Hebrew if the case is Hebrew).`,
     '',
-    caseFile.slice(0, 6000),
+    withRequiredDocumentLinks(caseFile).slice(0, 12000),
     '',
-    'Write ONLY the ready-to-send message in the client language. No English preamble, no “here is a draft”. If email, you may start with Subject: on the first line. Keep facts from the case file. Do not invent portal URLs, amounts, or dates. Stop after Best regards / בברכה. Do not add a name, title, phone, or email signature — the CRM adds that when sending.',
+    DETAILED_CLIENT_OUTREACH_INSTRUCTION,
+    'Write ONLY the ready-to-send message in the client language. No English preamble, no “here is a draft”. If email, you may start with Subject: on the first line. When they asked for a contract, agreement, POA, or invoice, copy the exact REQUIRED LINKS https URL onto its own line. Do not invent portal URLs, amounts, or dates. Stop after Best regards / בברכה. Do not add a name, title, phone, or email signature — the CRM adds that when sending.',
   ].join('\n');
 }
 
@@ -473,10 +475,12 @@ export async function executeWrapUpMeeting(args: LeadArgs & { notes?: string }):
     existing ? `Existing summary:\n${clip(existing, 800)}` : 'No existing summary notes.',
     polished ? `Polished summary:\n${polished}` : '',
     '',
-    caseFile.slice(0, 4500),
+    caseFile.slice(0, 9000),
     '',
     polished && meeting?.id ? 'Polished summary was saved on the meeting row.' : '',
-    'Write: 1) a short meeting summary, 2) suggested follow-up date YYYY-MM-DD and why, 3) if they likely need an offer, say so. To save the follow-up you MUST call set_follow_up after (or ask to confirm). For an offer email call draft_client_message intent=price_offer.',
+    'Write: 1) a detailed professional meeting summary using the case file and notes (not a 2-line recap), 2) suggested follow-up date YYYY-MM-DD and why, 3) if they likely need an offer, say so. ' +
+    DETAILED_MEETING_SUMMARY_INSTRUCTION +
+    ' To save the follow-up you MUST call set_follow_up after (or ask to confirm). For an offer email call draft_client_message intent=price_offer.',
   ]
     .filter(Boolean)
     .join('\n');

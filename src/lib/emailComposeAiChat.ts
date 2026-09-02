@@ -5,6 +5,8 @@ import {
   parseFollowupDocumentLinks,
 } from './leadFollowupAiApi';
 import { sendWordDocumentAiChatMessage } from './wordDocumentAiApi';
+import { formatPlainEmailParagraphs, htmlToPlainEmail } from './emailBodyHtml';
+import { DETAILED_CLIENT_OUTREACH_INSTRUCTION } from './aiProfessionalWriting';
 
 export type EmailComposeAiChatMessage = {
   role: 'user' | 'assistant';
@@ -35,10 +37,10 @@ export function splitAiEmailDraft(text: string): { subject?: string; body: strin
   if (subjectMatch) {
     return {
       subject: subjectMatch[1].trim() || undefined,
-      body: stripAiEmailSignature(subjectMatch[2]),
+      body: formatPlainEmailParagraphs(stripAiEmailSignature(subjectMatch[2])),
     };
   }
-  return { body: trimmed };
+  return { body: formatPlainEmailParagraphs(trimmed) };
 }
 
 export function resolveLeadIdForComposeAi(contact: {
@@ -94,9 +96,10 @@ export async function runEmailComposeAiChat(params: {
   const requiredLinks = formatRequiredDocumentLinksBlock(links);
   params.onThinking?.('Reading the case and your request…');
   const currentDocumentText = `Subject: ${params.subject || `(email for ${params.clientName || 'the client'})`}\n\n${
-    params.body.trim() || '(empty email — draft one for this client)'
+    htmlToPlainEmail(params.body) || '(empty email — draft one for this client)'
   }`;
   const userRemarks = [
+    DETAILED_CLIENT_OUTREACH_INSTRUCTION,
     remarks,
     requiredLinks,
     caseContext
@@ -129,7 +132,7 @@ export async function runEmailComposeAiChat(params: {
     return {
       intent: 'action',
       subject: parsed.subject,
-      body: parsed.body,
+      body: formatPlainEmailParagraphs(parsed.body),
       summary: result.changeSummary || 'Done — I updated the email.',
     };
   }

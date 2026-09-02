@@ -1,8 +1,8 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -57,8 +57,7 @@ ${contextInfo ? `\n${contextInfo}\n` : ''}
 Lead Information:
 ${content}`;
 
-    const body = {
-      model: 'gpt-3.5-turbo',
+    const body = buildChatCompletionBody({
       messages: [
         { 
           role: 'system', 
@@ -66,18 +65,18 @@ ${content}`;
         },
         { role: 'user', content: prompt },
       ],
-      max_tokens: 800,
+      maxTokens: 800,
       temperature: 0.4,
-    };
+    });
 
     console.log('🔍 [AI Lead Summary] Calling OpenAI API:', {
       promptLength: prompt.length,
       estimatedTokens: Math.ceil(prompt.length / 4),
       model: body.model,
-      maxTokens: body.max_tokens
+      maxTokens: body.max_completion_tokens
     });
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENAI_API_KEY}`,

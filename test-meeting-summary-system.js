@@ -178,7 +178,7 @@ const testMeetingSummaryAPI = async (meetingId) => {
         meeting_id: meetingId,
         summary_he: 'זהו סיכום בדיקה של הפגישה. הלקוח דן בבקשת האזרחות שלו וסיפק מידע על ההיסטוריה המשפחתית שלו.',
         summary_en: 'This is a test summary of the meeting. The client discussed their citizenship application and provided information about their family history.',
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.6-sol',
         tokens_used: 150,
         language_detected: 'en',
         action_items: [

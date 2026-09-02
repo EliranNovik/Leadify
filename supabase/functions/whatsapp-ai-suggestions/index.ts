@@ -1,8 +1,8 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 interface WhatsAppMessage {
   id: number;
@@ -55,8 +55,8 @@ Guidelines:
 - Keep the message professional but friendly
 - Maintain the original meaning and intent
 - Use proper grammar and spelling
-- Make it clear and concise
-- Keep it appropriate for WhatsApp communication
+- Make it detailed, professional, and complete — not a short check-in
+- Keep it appropriate for WhatsApp (plain text, several short paragraphs)
 - Don't change the core message, just improve the delivery
 - Return ONLY the improved message text, no explanations or extra text`;
 
@@ -74,11 +74,10 @@ Return ONLY the improved message text. Do not include any explanations, numberin
 
 Guidelines:
 - Keep messages professional but friendly
-- Be contextually appropriate
-- Consider the conversation flow
+- Be contextually appropriate and use the conversation history
 - Use proper grammar and spelling
-- Make suggestions actionable and helpful
-- Keep messages concise and clear
+- Write a detailed, professional follow-up — several short paragraphs, not one short line
+- Make suggestions actionable and specific
 - Return ONLY one message suggestion, no explanations or extra text`;
 
       userPrompt = `Based on this WhatsApp conversation with a legal firm client, suggest ONE appropriate follow-up message:
@@ -95,21 +94,20 @@ Return ONLY one message suggestion that would be appropriate as the next message
       throw new Error('Invalid request type or missing current message for improve request');
     }
 
-    const response = await fetch(OPENAI_API_URL, {
+    const response = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
+      body: JSON.stringify(buildChatCompletionBody({
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 500,
-        temperature: 0.7
-      }),
+        maxTokens: 1400,
+        temperature: 0.7,
+      })),
     });
 
     if (!response.ok) {

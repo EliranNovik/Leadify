@@ -5,7 +5,7 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
-import { convertBodyToHtml } from '../lib/emailBodyHtml';
+import { convertBodyToHtml, formatPlainEmailParagraphs } from '../lib/emailBodyHtml';
 import { ensureFormattedEmailHtml } from './client-tabs/interactionsEmailViewUtils';
 import sanitizeHtml from '../lib/sanitizeHtml';
 import {
@@ -22,6 +22,8 @@ import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_B
 import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
 import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
+import { EMAIL_AI_QUICK_ACTIONS } from '../lib/aiProfessionalWriting';
+import { resolveLeadIdForComposeAi } from '../lib/emailComposeAiChat';
 import { sendWordDocumentAiChatMessage } from '../lib/wordDocumentAiApi';
 import { fetchLeadCaseFileForAi, parseFollowupDocumentLinks, formatRequiredDocumentLinksBlock, applyCrmDocumentLinksToEmailDraft } from '../lib/leadFollowupAiApi';
 import {
@@ -543,7 +545,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
       });
       
       if (result.success) {
-        const suggestion = result.suggestion.trim();
+        const suggestion = formatPlainEmailParagraphs(result.suggestion.trim());
         if (createNew && isUsableAiDraft(suggestion)) {
           setShowAISuggestions(false);
           setAiSuggestions([]);
@@ -571,7 +573,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
 
   // Apply AI suggestion
   const applyAISuggestion = (suggestion: string) => {
-    setComposeBody(stripAiEmailSignature(suggestion));
+    setComposeBody(stripAiEmailSignature(formatPlainEmailParagraphs(suggestion)));
     setShowAISuggestions(false);
     setAiSuggestions([]);
   };
@@ -584,10 +586,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
     if (subjectMatch) {
       const nextSubject = subjectMatch[1].trim();
       if (nextSubject) setComposeSubject(nextSubject);
-      setComposeBody(stripAiEmailSignature(subjectMatch[2]));
+      setComposeBody(formatPlainEmailParagraphs(stripAiEmailSignature(subjectMatch[2])));
       return;
     }
-    setComposeBody(trimmed);
+    setComposeBody(formatPlainEmailParagraphs(trimmed));
   };
 
   const openCompose = useCallback(() => {
@@ -642,9 +644,9 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
     caseFilePromiseRef.current = promise;
   }, [enableDocumentAiChat, isOpen, client?.id, client?.lead_type]);
 
-  const handleApplyEmailAiChat = async () => {
-    const remarks = aiChatRemarks.trim();
-    if (!remarks || !client) return;
+  const handleApplyEmailAiChat = async (remarksOverride?: string) => {
+    const remarks = (remarksOverride ?? aiChatRemarks).trim();
+    if (!remarks || !client || aiChatApplying) return;
     setAiChatApplying(true);
     setAiChatThinking('Opening the case file…');
     setAiChatMessages((prev) => [...prev, { role: 'user', content: remarks }]);
@@ -2952,6 +2954,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
           subtitle=""
           placeholder="e.g. Write a short follow-up asking if they reviewed the offer…"
           conversationOnly
+          leadId={resolveLeadIdForComposeAi(client)?.leadId ?? null}
+          isLegacy={resolveLeadIdForComposeAi(client)?.isLegacy}
+          quickActions={EMAIL_AI_QUICK_ACTIONS}
+          onQuickAction={(prompt) => void handleApplyEmailAiChat(prompt)}
         />
       ) : null}
     </>

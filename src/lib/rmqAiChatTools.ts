@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { fetchLeadCaseFileForAi } from './leadFollowupAiApi';
+import { fetchLeadCaseFileForAi, withRequiredDocumentLinks } from './leadFollowupAiApi';
 import { getStageName } from './stageUtils';
 import { fetchStage60RecordsInRange, resolveStage60SignTimestamp, toSignCalendarDateKey } from './stage60SignDate';
 import {
@@ -696,7 +696,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'draft_client_message',
       description:
-        'Load case context so you can write a ready-to-send client email or WhatsApp in their language. ALWAYS use when they ask to draft, write, or rephrase outreach. Stop after Best regards / בברכה — no name, title, phone, or email signature. Uses the open client if no lead is named. Intents: first_contact, confirm_meeting, no_show, follow_up, after_meeting, price_offer, signature_chase.',
+        'Load the full case file so you can write a detailed, professional client email or WhatsApp — never a short check-in. ALWAYS use when they ask to draft, write, or rephrase outreach. Analyze meetings, last messages, contracts/POA, payments, and next steps. Stop after Best regards / בברכה — no name, title, phone, or email signature. Uses the open client if no lead is named. Intents: first_contact, confirm_meeting, no_show, follow_up, after_meeting, price_offer, signature_chase.',
       parameters: {
         type: 'object',
         properties: {
@@ -854,7 +854,8 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'When they ask for this client’s next meeting, what the meeting is for, or the meeting summary / brief, ALWAYS call list_client_meetings using the open client. If they name a date (e.g. 02.09.2026), pass date=. Reply with one short sentence only. The UI shows date, time, location, brief, and summary in a card. Do not repeat those fields in prose. Do not say there is no brief if the tool JSON has text. list_calendar_day is only for a calendar day across many leads. ' +
   'When listing leads or meetings, ALWAYS copy the lead number from the tool (L214188 or 209994/9) as a bare token so it stays clickable. Never write Unnamed if the tool gave a number, name, or Internal meeting. Never list a client by name only. ' +
   'When they ask for my day, what to do now, or my follow-ups, ALWAYS call list_my_sales_day. Reply as a short numbered list with lead numbers and one next action each. ' +
-  'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. Stop after Best regards / בברכה. Do not add a signature, name, title, phone, or email — the CRM appends that. ' +
+  'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. The draft must be detailed and professional: read the case file, use real facts, and write 4–7 short paragraphs — never a one-line follow-up. Stop after Best regards / בברכה. Do not add a signature, name, title, phone, or email — the CRM appends that. ' +
+  'When they ask for a contract, agreement, signing link, POA, or power of attorney link, ALWAYS call get_lead_case_file or draft_client_message and copy the exact https URL from REQUIRED LINKS / signing_link / poa_link onto its own line. Never invent a URL. Never use example.com. ' +
   'When they ask to prep a meeting or prep my next meeting, ALWAYS call prep_meeting. ' +
   'When they ask to wrap up a meeting or write the meeting summary, ALWAYS call wrap_up_meeting. Call set_follow_up to save a date. Call draft_client_message with intent=price_offer for an offer email. ' +
   'When they ask who has not answered or who is stale, ALWAYS call list_stale_sales_leads. ' +
@@ -1205,7 +1206,7 @@ async function executeGetLeadCaseFile(args: {
     `ASSIGNED CLOSER: ${team.assignedCloser}`,
     `ASSIGNED SCHEDULER: ${team.assignedScheduler}`,
     '',
-    caseFile,
+    withRequiredDocumentLinks(caseFile),
   ].join('\n');
 }
 

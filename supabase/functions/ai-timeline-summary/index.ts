@@ -1,9 +1,9 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 import { supabase } from '../_shared/supabase-client.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 function formatTimeline(interactions: any[]): string {
   return interactions
@@ -38,17 +38,16 @@ serve(async (req) => {
       .join('\n');
     const prompt = `You are a professional legal CRM assistant. Based ONLY on the latest messages below, write a short, precise summary of the current situation and the most important next actions. Focus on what the user should do next. Be concise and actionable.\n\nTimeline:\n${timelineText}`;
 
-    const body = {
-      model: 'gpt-3.5-turbo',
+    const body = buildChatCompletionBody({
       messages: [
         { role: 'system', content: 'You are an expert CRM assistant.' },
         { role: 'user', content: prompt },
       ],
-      max_tokens: 512,
+      maxTokens: 512,
       temperature: 0.4,
-    };
+    });
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENAI_API_KEY}`,

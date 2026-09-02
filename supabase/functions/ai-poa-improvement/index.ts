@@ -4,9 +4,9 @@ import {
   createThinkingSseResponse,
   streamOpenAiJsonCompletion,
 } from '../_shared/aiStreamJson.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 const MAX_SUMMARY_CHARS = 2800;
 const MAX_POA_FULL_FOR_PLACEMENT = 12000;
@@ -360,16 +360,15 @@ serve(async (req) => {
           ? 3800
           : 3200;
 
-    const openaiBody = {
-      model: 'gpt-4o-mini',
+    const openaiBody = buildChatCompletionBody({
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemContent },
         { role: 'user', content: prompt },
       ],
-      max_tokens: maxTokens,
+      maxTokens: maxTokens,
       temperature: fastEdit ? 0.2 : isChat ? 0.3 : 0.35,
-    };
+    });
 
     const parseAndBuild = (raw: string) => {
       let parsed: PoaParsed;
@@ -398,7 +397,7 @@ serve(async (req) => {
       });
     }
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,

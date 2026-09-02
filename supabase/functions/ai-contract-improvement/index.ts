@@ -4,9 +4,9 @@ import {
   createThinkingSseResponse,
   streamOpenAiJsonCompletion,
 } from '../_shared/aiStreamJson.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 const FORMATTING_RULES = `FORMATTING RULES (strict):
 - The contract uses special inline markers for styling. You MUST preserve them exactly:
@@ -202,16 +202,15 @@ serve(async (req) => {
       ? 'You assist lawyers reviewing contract drafts in a citizenship/immigration law CRM. Put "thinking" first in JSON. Classify each message as question or action. For questions, answer only. For actions, return improvedContractText with all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers preserved. Respond with valid JSON only.'
       : 'You improve legal service contracts for a citizenship/immigration law CRM. Put "thinking" first in JSON. Preserve all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers in improvedContractText. Respond with valid JSON only.';
 
-    const openaiBody = {
-      model: 'gpt-4o-mini',
+    const openaiBody = buildChatCompletionBody({
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemContent },
         { role: 'user', content: prompt },
       ],
-      max_tokens: isChat ? 3500 : 4500,
+      maxTokens: isChat ? 3500 : 4500,
       temperature: isChat ? 0.3 : 0.35,
-    };
+    });
 
     const parseAndBuild = (raw: string) => {
       let parsed: ContractParsed;
@@ -237,7 +236,7 @@ serve(async (req) => {
       });
     }
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,

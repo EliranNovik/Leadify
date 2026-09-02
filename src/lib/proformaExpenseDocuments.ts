@@ -8,8 +8,8 @@ import {
 import { supabase } from './supabase';
 
 export type ProformaExpenseDocSource =
-  | { type: 'new'; leadId: string | null | undefined }
-  | { type: 'legacy'; leadId: number | string | null | undefined }
+  | { type: 'new'; paymentPlanId: string | number }
+  | { type: 'legacy'; pprId: string | number | null | undefined }
   | { type: 'public-new'; paymentPlanId: string | number; token: string }
   | { type: 'public-legacy'; proformaId: string | number; token: string };
 
@@ -43,17 +43,31 @@ function parseDocRows(raw: unknown): FinanceExpenseDocumentRow[] {
     .filter((row): row is FinanceExpenseDocumentRow => Boolean(row));
 }
 
-async function fetchAuthenticatedLeadExpenseDocuments(
-  column: 'new_lead_id' | 'legacy_lead_id',
-  leadId: string | number,
+async function fetchAuthenticatedPaymentRowExpenseDocuments(
+  paymentPlanColumn: 'payment_plan_id' | 'legacy_payment_plan_row_id',
+  paymentRowId: string | number | null | undefined,
 ): Promise<FinanceExpenseDocumentRow[]> {
-  const { data, error } = await supabase
+  const paymentId = Number(paymentRowId);
+  if (!Number.isFinite(paymentId) || paymentId <= 0) return [];
+
+  const { data: expenses, error } = await supabase
+    .from('lead_expenses')
+    .select('id')
+    .eq(paymentPlanColumn, paymentId);
+  if (error || !expenses?.length) return [];
+
+  const destIds = expenses.map((row: { id: number }) => String(row.id)).filter(Boolean);
+  const { data: entries } = await supabase
     .from('finance_expense_entries')
     .select('id')
-    .eq(column, leadId)
-    .in('kind', ['lead', 'subcontractor']);
-  if (error || !data?.length) return [];
-  const entryIds = data.map((row: { id: number }) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+    .eq('destination_table', 'lead_expenses')
+    .in('destination_id', destIds)
+    .eq('kind', 'lead');
+  if (!entries?.length) return [];
+
+  const entryIds = entries
+    .map((row: { id: number }) => Number(row.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
   const byEntry = await fetchFinanceExpenseDocumentsForEntries(entryIds);
   return [...byEntry.values()].flat();
 }
@@ -77,13 +91,15 @@ export async function fetchSignedProformaExpenseDocuments(
   let rows: FinanceExpenseDocumentRow[] = [];
 
   if (source.type === 'new') {
-    const leadId = String(source.leadId || '').trim();
-    if (!leadId) return [];
-    rows = await fetchAuthenticatedLeadExpenseDocuments('new_lead_id', leadId);
+    rows = await fetchAuthenticatedPaymentRowExpenseDocuments(
+      'payment_plan_id',
+      source.paymentPlanId,
+    );
   } else if (source.type === 'legacy') {
-    const leadId = Number(source.leadId);
-    if (!Number.isFinite(leadId) || leadId <= 0) return [];
-    rows = await fetchAuthenticatedLeadExpenseDocuments('legacy_lead_id', leadId);
+    rows = await fetchAuthenticatedPaymentRowExpenseDocuments(
+      'legacy_payment_plan_row_id',
+      source.pprId,
+    );
   } else if (source.type === 'public-new') {
     const { data, error } = await supabase.rpc('get_public_new_proforma_expense_documents', {
       p_payment_plan_id: Number(source.paymentPlanId),

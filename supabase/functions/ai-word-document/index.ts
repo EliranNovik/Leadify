@@ -4,9 +4,9 @@ import {
   createThinkingSseResponse,
   streamOpenAiJsonCompletion,
 } from '../_shared/aiStreamJson.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 const FORMATTING_RULES = `FORMATTING RULES (strict):
 - The document uses special inline markers for styling. You MUST preserve them exactly:
@@ -46,7 +46,8 @@ First decide the intent:
 
 Rules:
 - Honor the latest staff request even if it differs from the current draft.
-- Ground the email in THIS client's case file (name, topic, facts, last messages, meetings, contracts, POA, invoices). Do not write a generic template and do not invent facts.
+- Ground the email in THIS client's case file (name, topic, facts, last messages, meetings, contracts, POA, invoices, eligibility, payments). Analyze those facts first. Do not write a generic template and do not invent facts.
+- Follow-up / draft emails must be detailed and professional — 4–7 short paragraphs — never a one-line “just following up”. Include why you are writing, what was last discussed, relevant unsigned docs or payments if on file, and a clear next step.
 - CONTRACTS: the case file lists whether each contract is SIGNED or NOT SIGNED, plus signing_link. If the staff asks to send/follow up on the contract, agreement, or signature, paste the exact signing_link https URL on its own line. Never invent a link. Never use example.com or any placeholder URL. If SIGNED, do not ask them to sign again.
 - POA: the case file lists whether each power of attorney is SIGNED or NOT SIGNED, plus poa_link. If the staff asks to send a POA, power of attorney, Vollmacht, or digital signing form, paste the exact poa_link https URL on its own line. Never invent a link. If SIGNED, do not ask them to sign again.
 - PROFORMAS: the case file lists invoice_link for new (payment_plans) and legacy (proformainvoice) proformas. If the staff asks to send a proforma, invoice, payment request, or reminder, paste the exact invoice_link https URL on its own line. Never invent a link.
@@ -54,6 +55,17 @@ Rules:
 - Preserve the client's language when known (Hebrew stays Hebrew, English stays English).
 - Do NOT use [[B]] markers, markdown, or HTML.
 - End the email at the sign-off only (e.g. "Best regards,"). Do NOT add a name, title, firm, email, phone, or any signature block.
+- Body layout is required: greeting on its own line, a blank line, several short paragraphs separated by blank lines, a blank line, then the sign-off on its own line. Never write the whole email as one paragraph.
+- Example body:
+Dear Anna,
+
+Thank you for taking the time to speak with us about your German citizenship case. I wanted to follow up on the points we covered and make sure the next steps are clear.
+
+During the meeting we discussed the documents still needed on your side and the signing process for the agreement. The case file shows the agreement is not signed yet, so please complete it when you can so we can move forward.
+
+If anything from the meeting is still unclear, or if you would like us to send the next set of forms, reply to this email and we will take care of it.
+
+Best regards,
 - changeSummary must describe THIS turn only — never copy a previous summary.
 - When intent is "action", put the entire email in improvedDocumentText using this exact format:
 Subject: <one-line subject>
@@ -108,8 +120,8 @@ First decide the intent:
 
 Rules:
 - Honor the latest staff request even if it differs from the current brief.
-- Write a meeting note a staff member would type after the call — 2 to 4 short paragraphs, maybe one short "Next:" line.
-- Use the case file only as background. Pick the few facts that matter (what they said, eligibility, money, unsigned docs, next step). Do not inventory the CRM.
+- Write a detailed professional meeting note a staff member would keep after the call — 4 to 8 short paragraphs, then a “Next:” line.
+- Analyze the case file: who they are, what they want, what was said, eligibility/documents/money that was discussed or is on file, and the next step. Do not write a 2-line recap. Do not inventory every CRM field.
 - Do NOT list Client Name, Lead Number, Category, Language, Stage, Status, Recent Interactions, Contracts, POA, Financials, or Next Steps as labeled sections.
 - Do NOT paste URLs, contract links, or POA links unless the staff explicitly asked for them.
 - Keep staff-written notes that are already in the current brief unless they ask you to replace them. You may tighten wording and add missing context from the case file.
@@ -120,9 +132,11 @@ Rules:
 - When intent is "action", put the entire meeting brief in improvedDocumentText as plain text.
 
 Good example:
-"Markus is not ready to move forward on Portugal Family. He said he will call later and no new facts were added.
+"Markus is not ready to move forward on Portugal Family. He said he will call later. No new family facts were added beyond what we already have on file.
 
-The contract is still unsigned. A few POAs are already signed. Proposal is ₪10,000 with unpaid invoices still open.
+He understands the process at a high level but is still comparing options and did not commit to a timeline. The meeting stayed on interest and next contact, not document collection.
+
+The contract is still unsigned. A few POAs are already signed. Proposal is ₪10,000 with unpaid invoices still open, which we mentioned only as context.
 
 Next: wait for him to confirm interest, then follow up on the contract and balance."
 
@@ -321,23 +335,22 @@ serve(async (req) => {
               Array.isArray(chatHistory) ? chatHistory : undefined,
             );
 
-    const openaiBody = {
-      model: 'gpt-4o-mini',
+    const openaiBody = buildChatCompletionBody({
       response_format: { type: 'json_object' },
       messages: [
         {
           role: 'system',
           content: isMeetingBrief
-            ? 'You help staff write meeting briefs in a citizenship/immigration law CRM. Honor the LATEST staff request. Write 2–4 short plain paragraphs a closer would type after the meeting — not a CRM report. Use the requested Language only (Hebrew or English). No markdown, labels, URLs, or section headings. Never invent case facts. changeSummary is one short sentence in that same language. Put "thinking" first in JSON. For questions, answer only. Respond with valid JSON only.'
+            ? 'You help staff write meeting briefs in a citizenship/immigration law CRM. Honor the LATEST staff request. Write a detailed professional meeting summary (4–8 short paragraphs) from the case file and staff notes — not a 2-line recap. Use the requested Language only (Hebrew or English). No markdown, labels, URLs, or section headings. Never invent case facts. changeSummary is one short sentence in that same language. Put "thinking" first in JSON. For questions, answer only. Respond with valid JSON only.'
             : isEmailFollowup
-              ? 'You help staff write emails in a citizenship/immigration law CRM. Honor the LATEST staff request; do not repeat a previous email or changeSummary. A CRM case file is background only. Never invent case facts. Put "thinking" first in JSON. For questions, answer only. For actions, return improvedDocumentText as Subject: ... then a blank line then the plain-text body ending at Best regards, — never include a signature. No HTML or [[B]] markers. Respond with valid JSON only.'
+              ? 'You help staff write emails in a citizenship/immigration law CRM. Honor the LATEST staff request; do not repeat a previous email or changeSummary. Analyze the CRM case file and write a detailed professional email (4–7 short paragraphs), never a short check-in. Never invent case facts. Put "thinking" first in JSON. For questions, answer only. For actions, return improvedDocumentText as Subject: ... then a blank line then the plain-text body ending at Best regards, — never include a signature. No HTML or [[B]] markers. Respond with valid JSON only.'
               : 'You help staff write Word documents in a citizenship/immigration law CRM. Put "thinking" first in JSON. For questions, answer only. For actions, return improvedDocumentText with [[B]]/[[I]]/[[U]] markers preserved. Respond with valid JSON only.',
         },
         { role: 'user', content: prompt },
       ],
-      max_tokens: isEmailFollowup || isMeetingBrief ? 3500 : 4500,
+      maxTokens: isEmailFollowup || isMeetingBrief ? 3500 : 4500,
       temperature: 0.35,
-    };
+    });
 
     const parseAndBuild = (raw: string) => {
       let parsed: Parsed;
@@ -362,7 +375,7 @@ serve(async (req) => {
       });
     }
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,

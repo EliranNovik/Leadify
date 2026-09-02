@@ -829,8 +829,8 @@ const ProformaLegacyViewPage: React.FC = () => {
       <ProformaExpenseDocumentsCarousel
         className="mx-auto mt-6 w-full max-w-[1100px]"
         source={
-          proforma.lead_id
-            ? { type: 'legacy', leadId: proforma.lead_id }
+          proforma.ppr_id != null
+            ? { type: 'legacy', pprId: proforma.ppr_id }
             : null
         }
       />

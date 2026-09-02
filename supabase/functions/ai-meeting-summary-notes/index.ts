@@ -1,8 +1,8 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -33,22 +33,22 @@ Requirements:
 - Keep the same language as the draft (Hebrew stays Hebrew, English stays English)
 - Preserve every factual detail from the draft; do not invent new facts
 - Make the text clearer, better organized, and professional
+- Expand into a detailed meeting summary with several short paragraphs (what was discussed, case status, next step)
 - Use plain text with short paragraphs
 - No markdown, no bullet symbols unless the draft already used a list style
-- End with concise next steps only if the draft mentions follow-ups
+- End with next steps when the draft mentions follow-ups or a next action is implied
 
 ${contextLines.length ? `${contextLines.join('\n')}\n` : ''}
 Draft:
 ${draft.trim()}`;
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-3.5-turbo',
+      body: JSON.stringify(buildChatCompletionBody({
         messages: [
           {
             role: 'system',
@@ -57,9 +57,9 @@ ${draft.trim()}`;
           },
           { role: 'user', content: prompt },
         ],
-        max_tokens: 900,
+        maxTokens: 1600,
         temperature: 0.35,
-      }),
+      })),
     });
 
     if (!openaiRes.ok) {

@@ -178,6 +178,7 @@ const ASSIGNMENT_ROLE_FIELDS = [
 ] as const;
 
 const ASSIGNMENT_SEEN_STORAGE_KEY = 'rmq_assignment_seen_v1';
+const RMQ_AI_PROMO_NOTIFICATION_KEY = 'rmqai:promo';
 const NOTIFICATION_DROPDOWN_WIDTH_MOBILE = 288;
 const NOTIFICATION_DROPDOWN_WIDTH_DESKTOP = 500;
 const NOTIFICATION_ROW_ICON_CLASS = 'w-5 h-5';
@@ -2980,6 +2981,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, [showNotifications, isMobile]);
 
+  const handleRmqAiPromoOpen = () => {
+    setShowNotifications(false);
+    if (typeof onOpenAIChat === 'function') onOpenAIChat();
+  };
+
   const markAllAsRead = async () => {
     if (!currentUser) {
       if (assignmentNotifications.length > 0) {
@@ -3142,6 +3148,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (key.startsWith('share:')) {
         const notification = leadShareNotifications.find((item) => `share:${item.id}` === key);
         if (notification) void dismissLeadShareNotification(notification);
+        continue;
+      }
+      if (key === RMQ_AI_PROMO_NOTIFICATION_KEY) {
+        continue;
       }
     }
 
@@ -3870,6 +3880,32 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     isAltTheme,
   ]);
 
+  const showRmqAiPromoNotification =
+    typeof onOpenAIChat === 'function' &&
+    notificationThemeFilter === 'all';
+  const rmqAiPromoUserName = (
+    currentUserEmployee?.official_name ||
+    currentUserEmployee?.display_name ||
+    userFullName ||
+    authUserFullName ||
+    ''
+  ).trim();
+  const rmqAiPromoGreeting = (() => {
+    const hour = Number(
+      new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Jerusalem',
+        hour: 'numeric',
+        hour12: false,
+      }).format(new Date()),
+    );
+    if (hour >= 5 && hour < 12) return 'Good morning';
+    if (hour >= 12 && hour < 17) return 'Good afternoon';
+    if (hour >= 17 && hour < 21) return 'Good evening';
+    return 'Good night';
+  })();
+  const rmqAiPromoWelcome = rmqAiPromoUserName
+    ? `${rmqAiPromoGreeting}, ${rmqAiPromoUserName}`
+    : rmqAiPromoGreeting;
   const showShareNotifications =
     notificationThemeFilter === 'shared' ||
     (notificationThemeFilter === 'all' && leadShareNotifications.length > 0);
@@ -5552,9 +5588,43 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   </div>
                 </div>
                 <div className={`overflow-y-auto divide-y divide-dotted divide-gray-200 ${isMobile ? 'max-h-96' : 'max-h-[min(36rem,72vh)]'}`}>
+                  {showRmqAiPromoNotification && (
+                    <div>
+                      <div className="cursor-pointer">
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={notificationSelectMode ? selectedNotificationKeys.has(RMQ_AI_PROMO_NOTIFICATION_KEY) : undefined}
+                          onClick={() => runOrSelectNotification(RMQ_AI_PROMO_NOTIFICATION_KEY, handleRmqAiPromoOpen)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              runOrSelectNotification(RMQ_AI_PROMO_NOTIFICATION_KEY, handleRmqAiPromoOpen);
+                            }
+                          }}
+                          className={`w-full p-4 text-left transition-colors duration-200 hover:bg-purple-50 ${
+                            selectedNotificationKeys.has(RMQ_AI_PROMO_NOTIFICATION_KEY) ? 'bg-gray-100 dark:bg-base-300' : 'bg-purple-50/60'
+                          }`}
+                        >
+                          <div className="flex gap-3">
+                            {renderNotificationSelectControl(RMQ_AI_PROMO_NOTIFICATION_KEY)}
+                            <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-11 w-11 shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold text-gray-900">
+                                {rmqAiPromoWelcome}
+                              </p>
+                              <p className="mt-0.5 text-xs leading-relaxed text-gray-600">
+                                Need help with a lead, meeting, or follow-up?
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {showShareNotifications && (
                     <div>
-                      <div className="px-3 py-2.5 bg-yellow-50">
+                      <div className="px-3 py-2.5">
                         <span className="text-sm font-semibold text-yellow-800">Shared</span>
                       </div>
                       {leadShareNotifications.length > 0 ? (
@@ -5640,7 +5710,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   )}
                   {showUploadNotifications && (
                     <div>
-                      <div className="px-3 py-2.5 bg-gray-100">
+                      <div className="px-3 py-2.5">
                         <span className="text-sm font-semibold text-gray-800">
                           Client uploads
                         </span>
@@ -5752,7 +5822,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {/* WhatsApp Leads Messages Section - Only for superusers */}
                   {showWhatsappNotifications && (
                     <div>
-                      <div className="px-3 py-2.5 bg-green-50">
+                      <div className="px-3 py-2.5">
                         <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
                       </div>
                       {whatsappLeadsMessages.length > 0 ? (
@@ -5825,7 +5895,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {/* Email Leads Messages Section - Only for superusers */}
                   {showEmailNotifications && (
                     <div>
-                      <div className={`px-3 py-2.5 ${isAltTheme ? 'bg-green-50' : 'bg-blue-50'}`}>
+                      <div className="px-3 py-2.5">
                         <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-blue-800'}`}>Email Leads</span>
                       </div>
                       {emailLeadMessages.length > 0 ? (
@@ -5896,7 +5966,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {/* RMQ Messages Section */}
                   {showRmqNotifications && (
                     <div>
-                      <div className={`px-3 py-2.5 ${isAltTheme ? 'bg-green-50' : 'bg-purple-50'}`}>
+                      <div className="px-3 py-2.5">
                         <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-purple-800'}`}>RMQ Messages</span>
                       </div>
                       {rmqConversationNotifications.length > 0 ? (
@@ -6005,7 +6075,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {/* Lead Assignment Notifications */}
                   {showAssignmentNotifications && (
                     <div>
-                      <div className="px-3 py-2.5 bg-orange-50">
+                      <div className="px-3 py-2.5">
                         <span className="text-sm font-semibold text-orange-800">Lead Assignments</span>
                       </div>
                       {assignmentNotifications.length > 0 ? (
@@ -6069,6 +6139,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     assignmentNotifications.length === 0 &&
                     clientUploadNotifications.length === 0 &&
                     leadShareNotifications.length === 0 &&
+                    !showRmqAiPromoNotification &&
                     !currentUser && (
                       <div className="p-8 text-center text-gray-500">
                         <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />

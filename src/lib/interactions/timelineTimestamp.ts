@@ -99,6 +99,12 @@ export function interactionTimestampMs(row: {
     if (Number.isFinite(fromRaw)) return fromRaw;
   }
 
+  // Email modal rows store Graph sent_at on `date` without a separate time field.
+  if (row.date && /^\d{4}-\d{2}-\d{2}T/.test(String(row.date).trim())) {
+    const fromDate = Date.parse(row.date);
+    if (Number.isFinite(fromDate)) return fromDate;
+  }
+
   return parseLocalDateAndTime(row.date, row.time) ?? 0;
 }
 

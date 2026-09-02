@@ -34,9 +34,9 @@ const ProformaExpenseDocumentsCarousel: React.FC<Props> = ({ source, className =
   const sourceKey = !source
     ? ''
     : source.type === 'new'
-      ? `new:${source.leadId || ''}`
+      ? `new:${source.paymentPlanId}`
       : source.type === 'legacy'
-        ? `legacy:${source.leadId || ''}`
+        ? `legacy:${source.pprId || ''}`
         : source.type === 'public-new'
           ? `public-new:${source.paymentPlanId}:${source.token}`
           : `public-legacy:${source.proformaId}:${source.token}`;

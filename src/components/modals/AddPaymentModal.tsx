@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { XMarkIcon, CheckIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, CheckIcon, PencilIcon, PlusIcon } from '@heroicons/react/24/outline';
+import VatIncludeToggle from './VatIncludeToggle';
 import {
   findAccountingCurrency,
   isNisCurrency,
@@ -181,8 +182,15 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
       {/* Modal */}
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="sticky top-0 bg-white border-b border-gray-200 p-6 rounded-t-2xl flex items-center justify-between">
-          <h2 className="text-2xl font-bold text-gray-900">Add New Payment</h2>
+        <div className="sticky top-0 bg-white p-6 rounded-t-2xl flex items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+            <h2 className="text-2xl font-bold text-gray-900">Add New Payment</h2>
+            <VatIncludeToggle
+              includeVat={newPaymentData.includeVat !== false}
+              onChange={handleVatCheckboxChange}
+              disabled={isSaving}
+            />
+          </div>
           <button
             onClick={onClose}
             className="btn btn-sm btn-circle btn-ghost text-gray-600 hover:bg-gray-100"
@@ -194,16 +202,36 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
 
         {/* Content */}
         <div className="p-6 space-y-6">
-          {/* Value and VAT */}
+          {/* Value, currency, and VAT */}
           <div className="form-control">
             <label className="label">
               <span className="label-text font-semibold">Value</span>
             </label>
-            <div className="flex items-center gap-2">
-              <span className="text-lg font-bold text-gray-500">{getCurrencySymbol(newPaymentData.currency || defaultCurrency)}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className="select select-bordered w-32 shrink-0"
+                value={newPaymentData.currency || defaultCurrency}
+                onChange={e => handleCurrencyChange(e.target.value)}
+                aria-label="Currency"
+              >
+                {availableCurrencies.length === 0 ? (
+                  <>
+                    <option value="₪">₪ (ILS)</option>
+                    <option value="€">€ (EUR)</option>
+                    <option value="$">$ (USD)</option>
+                    <option value="£">£ (GBP)</option>
+                  </>
+                ) : (
+                  availableCurrencies.map((curr) => (
+                    <option key={curr.id} value={curr.name}>
+                      {curr.name} ({curr.iso_code})
+                    </option>
+                  ))
+                )}
+              </select>
               <input
                 type="number"
-                className="input input-bordered flex-1 text-right font-bold no-arrows"
+                className="input input-bordered min-w-0 flex-1 text-right font-bold no-arrows"
                 value={newPaymentData.value || ''}
                 onChange={(e) => handleValueChange(Number(e.target.value) || 0)}
                 placeholder="0.00"
@@ -238,15 +266,6 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
                   </button>
                 )}
               </div>
-              <label className="label cursor-pointer gap-2">
-                <input
-                  type="checkbox"
-                  className="checkbox checkbox-primary"
-                  checked={newPaymentData.includeVat !== false}
-                  onChange={(e) => handleVatCheckboxChange(e.target.checked)}
-                />
-                <span className="label-text">Include VAT (18%)</span>
-              </label>
             </div>
             <div className="mt-2 text-sm text-gray-600">
               <span className="font-semibold">Total: </span>
@@ -256,69 +275,42 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
             </div>
           </div>
 
-          {/* Due Date */}
-          <div className="form-control">
-            <label className="label">
-              <span className="label-text font-semibold">Due Date</span>
-            </label>
-            <input
-              type="date"
-              className="input input-bordered w-full"
-              value={newPaymentData.dueDate || ''}
-              onChange={e => setNewPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
-            />
-          </div>
-
-          {/* Currency */}
-          <div className="form-control">
-            <label className="label">
-              <span className="label-text font-semibold">Currency</span>
-            </label>
-            <select
-              className="select select-bordered w-full"
-              value={newPaymentData.currency || defaultCurrency}
-              onChange={e => handleCurrencyChange(e.target.value)}
-            >
-              {availableCurrencies.length === 0 ? (
-                <>
-                  <option value="₪">₪ (ILS)</option>
-                  <option value="€">€ (EUR)</option>
-                  <option value="$">$ (USD)</option>
-                  <option value="£">£ (GBP)</option>
-                </>
-              ) : (
-                availableCurrencies.map((curr) => (
-                  <option key={curr.id} value={curr.name}>
-                    {curr.name} ({curr.iso_code})
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
-
-          {/* Order */}
-          <div className="form-control">
-            <label className="label">
-              <span className="label-text font-semibold">Order</span>
-            </label>
-            <select
-              className="select select-bordered w-full"
-              value={newPaymentData.paymentOrder || 'Intermediate Payment'}
-              onChange={e => {
-                const next = e.target.value;
-                if ((next === 'Expense' || next === 'Expense (no VAT)') && onSelectExpenseNoVat) {
-                  onSelectExpenseNoVat();
-                  return;
-                }
-                setNewPaymentData((d: any) => ({ ...d, paymentOrder: next }));
-              }}
-            >
-              <option value="First Payment">First Payment</option>
-              <option value="Intermediate Payment">Intermediate Payment</option>
-              <option value="Final Payment">Final Payment</option>
-              <option value="Single Payment">Single Payment</option>
-              <option value="Expense">Expense</option>
-            </select>
+          {/* Order and due date */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="form-control">
+              <label className="label">
+                <span className="label-text font-semibold">Order</span>
+              </label>
+              <select
+                className="select select-bordered w-full"
+                value={newPaymentData.paymentOrder || 'Intermediate Payment'}
+                onChange={e => {
+                  const next = e.target.value;
+                  if ((next === 'Expense' || next === 'Expense (no VAT)') && onSelectExpenseNoVat) {
+                    onSelectExpenseNoVat();
+                    return;
+                  }
+                  setNewPaymentData((d: any) => ({ ...d, paymentOrder: next }));
+                }}
+              >
+                <option value="First Payment">First Payment</option>
+                <option value="Intermediate Payment">Intermediate Payment</option>
+                <option value="Final Payment">Final Payment</option>
+                <option value="Single Payment">Single Payment</option>
+                <option value="Expense">Expense</option>
+              </select>
+            </div>
+            <div className="form-control">
+              <label className="label">
+                <span className="label-text font-semibold">Due Date</span>
+              </label>
+              <input
+                type="date"
+                className="input input-bordered w-full"
+                value={newPaymentData.dueDate || ''}
+                onChange={e => setNewPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
+              />
+            </div>
           </div>
 
           {/* Notes */}
@@ -338,7 +330,7 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="sticky bottom-0 bg-gray-50 p-6 rounded-b-2xl flex justify-end gap-3 border-t">
+        <div className="sticky bottom-0 bg-white p-6 rounded-b-2xl flex justify-end gap-3">
           <button
             onClick={onClose}
             className="btn btn-ghost"
@@ -348,7 +340,7 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
           </button>
           <button
             onClick={handleSave}
-            className="btn btn-primary"
+            className="btn btn-primary rounded-full px-6"
             disabled={isSaving || !newPaymentData.value}
           >
             {isSaving ? (
@@ -358,8 +350,8 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
               </>
             ) : (
               <>
-                <CheckIcon className="w-5 h-5" />
-                Save Changes
+                <PlusIcon className="w-5 h-5" />
+                Add Payment
               </>
             )}
           </button>

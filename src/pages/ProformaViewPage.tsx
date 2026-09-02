@@ -545,11 +545,7 @@ const ProformaViewPage: React.FC = () => {
       </div>
       <ProformaExpenseDocumentsCarousel
         className="mx-auto mt-6 w-full max-w-[1100px]"
-        source={
-          paymentPlanMeta?.lead_id || proforma.clientId
-            ? { type: 'new', leadId: String(paymentPlanMeta?.lead_id || proforma.clientId) }
-            : null
-        }
+        source={id ? { type: 'new', paymentPlanId: id } : null}
       />
       {pdfLoading && (
         <div className="print-hide fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50">

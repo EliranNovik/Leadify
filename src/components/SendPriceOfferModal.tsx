@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { InteractionRequiredAuthError, IPublicClientApplication } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
 import { sendEmailViaBackend } from '../lib/mailboxApi';
-import { convertBodyToHtml, escapeHtml } from '../lib/emailBodyHtml';
+import { convertBodyToHtml, escapeHtml, formatPlainEmailParagraphs, htmlToPlainEmail, isComposeBodyEmpty, plainTextToEditorHtml } from '../lib/emailBodyHtml';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
 import { supabase } from '../lib/supabase';
 import { saveOutgoingEmailRecord } from '../lib/saveOutgoingEmailRecord';
@@ -54,6 +54,7 @@ const PRICE_OFFER_LABELED_BUTTON_STYLE: React.CSSProperties = {
 import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
 import { ComposeAiEmptyPrompt, ComposeAiRedoButton, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
+import { EMAIL_AI_QUICK_ACTIONS } from '../lib/aiProfessionalWriting';
 import { cleanMeetingBriefText, hasHebrewText } from '../lib/meetingSummaryNotesApi';
 
 interface SendPriceOfferModalProps {
@@ -104,7 +105,7 @@ const stripAiEmailSignature = (text: string): string => {
 };
 
 const PRICE_OFFER_AI_DRAFT_PROMPT =
-  'Write a professional price offer email for this client. State the offer amount clearly. Use the CRM case file, meeting brief, and language. Do not invent facts.';
+  'Write a detailed professional price offer email for this client. Analyze the CRM case file and meeting brief. State the offer amount clearly, recap what was discussed, and explain the next step. Use 4–7 short paragraphs. Do not invent facts. Never write a short check-in.';
 
 const MEETING_SUMMARY_RULE = '────────';
 const MEETING_SUMMARY_TITLE_EN = 'Meeting Summary';
@@ -165,31 +166,6 @@ const applyMeetingSummaryHtml = (text: string, summary = '') => {
 
 const COMPOSE_FONT_SIZES = ['12px', '14px', '16px', '18px', '22px'] as const;
 const HIGHLIGHT_YELLOW = '#fef08a';
-
-const htmlToPlain = (html: string) =>
-  String(html || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-const isComposeBodyEmpty = (html: string) => !htmlToPlain(html);
-
-const textToEditorHtml = (text: string) => {
-  const source = String(text || '').replace(/\r\n/g, '\n');
-  if (!source.trim()) return '';
-  if (/<[a-z][\s\S]*>/i.test(source)) return source;
-  return source
-    .split(/\n{2,}/)
-    .map(para => `<p>${escapeHtml(para).replace(/\n/g, '<br>')}</p>`)
-    .join('');
-};
 
 const FORMAT_BTN_CLASS =
   'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-gray-600 transition hover:bg-white disabled:opacity-40';
@@ -826,7 +802,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
   const setComposeBody = useCallback((next: string | ((prev: string) => string)) => {
     setBody(prev => {
       const raw = typeof next === 'function' ? next(prev) : next;
-      const html = textToEditorHtml(raw);
+      const html = plainTextToEditorHtml(raw);
       const ed = composeEditorRef.current;
       if (ed) {
         syncingEditorRef.current = true;
@@ -961,7 +937,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
   };
 
   const applyAISuggestion = (suggestion: string) => {
-    setComposeBody(suggestion);
+    setComposeBody(formatPlainEmailParagraphs(suggestion));
     setShowAISuggestions(false);
     setAiSuggestions([]);
   };
@@ -974,11 +950,13 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
     if (subjectMatch) {
       const nextSubject = subjectMatch[1].trim();
       if (nextSubject) setSubject(nextSubject);
-      setComposeBody(applyContractLinkPreviewHtml(stripAiEmailSignature(subjectMatch[2])));
+      setComposeBody(
+        applyContractLinkPreviewHtml(formatPlainEmailParagraphs(stripAiEmailSignature(subjectMatch[2]))),
+      );
       setAiDraftActive(true);
       return;
     }
-    setComposeBody(applyContractLinkPreviewHtml(trimmed));
+    setComposeBody(applyContractLinkPreviewHtml(formatPlainEmailParagraphs(trimmed)));
     setAiDraftActive(true);
   };
 
@@ -1024,9 +1002,10 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
         .filter(Boolean)
         .join('\n');
       const currentDocumentText = `Subject: ${subject || `(price offer for ${client.name || 'client'})`}\n\n${
-        htmlToPlain(body) || '(empty price-offer email — draft one for this client)'
+        htmlToPlainEmail(body) || '(empty price-offer email — draft one for this client)'
       }`;
       const userRemarks = [
+        'Write a detailed professional price offer email: 4–7 short paragraphs. Analyze the case file and meeting brief. Never a short check-in.',
         remarks,
         offerContext,
         requiredLinks,
@@ -1348,7 +1327,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       const now = new Date();
       const recipientListForLog = [...finalToRecipients, ...finalCcRecipients].join(', ');
       const messageId = `offer_${isLegacyLead ? `legacy_${legacyId}` : client?.id}_${now.getTime()}`;
-      const plainBody = htmlToPlain(body);
+      const plainBody = htmlToPlainEmail(body);
       const bodyPreview = plainBody;
       let parsedTotal: number | null = null;
       if (total !== null && total !== undefined && String(total).trim() !== '') {
@@ -1801,7 +1780,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
             <div className="relative" onKeyDown={() => cancelComposeAiTypewrite()}>
             <EditorContent
               editor={editor}
-              className="min-h-[240px] [&_.ProseMirror]:min-h-[240px] [&_.ProseMirror]:outline-none [&_.ProseMirror_a:not(.contract-link-preview-btn)]:text-[#4218CC] [&_.ProseMirror_a:not(.contract-link-preview-btn)]:underline [&_.ProseMirror_p.is-editor-empty:first-child]:before:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child]:before:float-left [&_.ProseMirror_p.is-editor-empty:first-child]:before:h-0 [&_.ProseMirror_p.is-editor-empty:first-child]:before:text-gray-400 [&_.ProseMirror_p.is-editor-empty:first-child]:before:content-[attr(data-placeholder)]"
+              className="min-h-[240px] [&_.ProseMirror]:min-h-[240px] [&_.ProseMirror]:outline-none [&_.ProseMirror_p]:mb-3 [&_.ProseMirror_p:last-child]:mb-0 [&_.ProseMirror_a:not(.contract-link-preview-btn)]:text-[#4218CC] [&_.ProseMirror_a:not(.contract-link-preview-btn)]:underline [&_.ProseMirror_p.is-editor-empty:first-child]:before:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child]:before:float-left [&_.ProseMirror_p.is-editor-empty:first-child]:before:h-0 [&_.ProseMirror_p.is-editor-empty:first-child]:before:text-gray-400 [&_.ProseMirror_p.is-editor-empty:first-child]:before:content-[attr(data-placeholder)]"
             />
             <ComposeAiEmptyPrompt
               visible={isComposeBodyEmpty(body) && !aiChatApplying}
@@ -2276,6 +2255,10 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
         placeholder="e.g. Write a price offer email stating the meeting total…"
         conversationOnly
         sheetClassName="!shadow-none"
+        leadId={client?.id != null ? String(client.id) : null}
+        isLegacy={client?.lead_type === 'legacy' || String(client?.id || '').startsWith('legacy_')}
+        quickActions={EMAIL_AI_QUICK_ACTIONS}
+        onQuickAction={(prompt) => void handleApplyPriceOfferAiChat(prompt)}
       />
     </div>
   );

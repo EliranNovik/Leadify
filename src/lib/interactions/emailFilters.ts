@@ -321,6 +321,14 @@ export function applyEmailSidepanelListMode<T extends Record<string, any>>(
   });
 }
 
+function parseIsoTimestampMs(value?: string | null): number {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  if (!/^\d{4}-\d{2}-\d{2}/.test(raw)) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function emailMinuteBucket(row: {
   sent_at?: string | null;
   date?: string | null;
@@ -330,6 +338,12 @@ function emailMinuteBucket(row: {
   id?: unknown;
   editable?: boolean;
 }): number {
+  const isoMs =
+    parseIsoTimestampMs(row.sent_at) ||
+    parseIsoTimestampMs(row.raw_date) ||
+    parseIsoTimestampMs(row.date);
+  if (isoMs) return Math.floor(isoMs / 60_000);
+
   const ms = interactionTimestampMs({
     kind: row.kind,
     id: row.id,
@@ -451,13 +465,15 @@ export function dedupeEmailsForSidepanel<T extends Record<string, any>>(rows: T[
 
   // Soft pass: subject + minute only (handles missing/mismatched from across sync copies).
   // Empty subjects stay unique — collapsing them would merge unrelated emails in the same minute.
+  // Unknown timestamps (minute 0) must not merge — that used to wipe inbox replies that share a subject.
   const bySoft = new Map<string, T>();
   for (const row of byFingerprint.values()) {
     const minute = emailMinuteBucket(row);
     const subject = normalizeEmailSubjectForDedupe(row.subject);
-    const softKey = subject
-      ? `${minute}|${subject}`
-      : `${minute}|id:${stableEmailRowId(row) || String(row.id ?? '')}`;
+    const softKey =
+      subject && minute
+        ? `${minute}|${subject}`
+        : `${minute || 0}|${subject || ''}|id:${stableEmailRowId(row) || String(row.id ?? '')}`;
     const existing = bySoft.get(softKey);
     if (!existing || emailRowRichness(row) > emailRowRichness(existing)) {
       bySoft.set(softKey, row);
@@ -653,7 +669,15 @@ export async function fetchLeadEmailsForTimeline(
     .map((f) => f.slice('sender_email.eq.'.length).toLowerCase())
     .filter(Boolean);
 
-  const hasClientScope = clientId != null && clientId !== '';
+  const uuidClientId =
+    clientId != null &&
+    clientId !== '' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      String(clientId),
+    )
+      ? String(clientId)
+      : null;
+  const hasClientScope = Boolean(uuidClientId);
   const hasLegacyScope = legacyId != null && !Number.isNaN(legacyId);
   const hasLeadScope = hasClientScope || hasLegacyScope;
 
@@ -670,10 +694,10 @@ export async function fetchLeadEmailsForTimeline(
       // Always pass senders when available — RPC merges them with lead-scoped rows.
       p_sender_emails:
         matchByAddress && senderEmails.length > 0
-          ? Array.from(new Set(senderEmails)).slice(0, 6)
+          ? Array.from(new Set(senderEmails)).slice(0, 20)
           : null,
     };
-    rpcArgs.p_client_id = hasClientScope ? String(clientId) : null;
+    rpcArgs.p_client_id = uuidClientId;
     rpcArgs.p_legacy_id = hasLegacyScope ? legacyId : null;
 
     // Function statement_timeout is 20s; keep client wait slightly under that.
@@ -709,11 +733,11 @@ export async function fetchLeadEmailsForTimeline(
   if (hasLeadScope) {
     let fastQuery = buildBase();
     if (hasClientScope && hasLegacyScope) {
-      fastQuery = fastQuery.or(`client_id.eq.${clientId},legacy_id.eq.${legacyId}`);
+      fastQuery = fastQuery.or(`client_id.eq.${uuidClientId},legacy_id.eq.${legacyId}`);
     } else if (hasLegacyScope) {
       fastQuery = fastQuery.eq('legacy_id', legacyId);
     } else {
-      fastQuery = fastQuery.eq('client_id', clientId as string);
+      fastQuery = fastQuery.eq('client_id', uuidClientId);
     }
     try {
       const fastResult = await withQueryTimeout(fastQuery, EMAIL_ADDRESS_MATCH_TIMEOUT_MS);

@@ -1,4 +1,4 @@
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+import { OPENAI_CHAT_COMPLETIONS_URL } from './openaiModels.ts';
 
 export function extractPartialThinking(buffer: string): string {
   const match = buffer.match(/"thinking"\s*:\s*"((?:[^"\\]|\\.)*)/);
@@ -15,7 +15,7 @@ export async function streamOpenAiJsonCompletion(
   body: Record<string, unknown>,
   onThinking: (text: string) => void,
 ): Promise<string> {
-  const openaiRes = await fetch(OPENAI_API_URL, {
+  const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

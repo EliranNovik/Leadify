@@ -2,9 +2,9 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
 import { supabase } from '../_shared/supabase-client.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MEETING_SELECT =
   'id, meeting_date, meeting_time, status, meeting_amount, meeting_currency, meeting_brief, expert_notes, meeting_summary_notes, meeting_location, scheduler, expert';
@@ -1111,22 +1111,21 @@ REQUIRED one-sentence addendum at the end of the summary for this NEW lead (not 
         : ''
     }`;
 
-    const openaiRes = await fetch(OPENAI_API_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
+      body: JSON.stringify(buildChatCompletionBody({
         temperature: 0.35,
-        max_tokens: 1400,
+        maxTokens: 1400,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-      }),
+      })),
     });
 
     if (!openaiRes.ok) {

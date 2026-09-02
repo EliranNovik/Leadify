@@ -32,6 +32,12 @@ import {
   FlagIcon,
   TrashIcon,
   InboxIcon,
+  BuildingOffice2Icon,
+  DevicePhoneMobileIcon,
+  Bars3BottomLeftIcon,
+  Bars3BottomRightIcon,
+  BoldIcon,
+  UnderlineIcon,
 } from '@heroicons/react/24/outline';
 import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
@@ -41,6 +47,7 @@ import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useR
 import { toast } from 'react-hot-toast';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from '../ContractAiReviewPanel';
 import { resolveLeadIdForComposeAi, runEmailComposeAiChat } from '../../lib/emailComposeAiChat';
+import { EMAIL_AI_QUICK_ACTIONS } from '../../lib/aiProfessionalWriting';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from './AISummaryPanel';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
@@ -51,12 +58,22 @@ import { buildApiUrl } from '../../lib/api';
 // Legacy interactions use employee join (creator_employee / employee_employee) in legacyInteractionsApi for display names
 import { fetchLegacyInteractions } from '../../lib/legacyInteractionsApi';
 import { buildOutgoingHtmlWithSignature } from '../../lib/emailSignature';
-import { convertBodyToHtml } from '../../lib/emailBodyHtml';
+import { convertBodyToHtml, escapeHtml, formatPlainEmailParagraphs, htmlToPlainEmail, isComposeBodyEmpty, plainTextToEditorHtml } from '../../lib/emailBodyHtml';
 import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
 import ContactSelectorModal from '../ContactSelectorModal';
 import EmailThreadModal from '../EmailThreadModal';
 import EmailSentSuccessModal from '../EmailSentSuccessModal';
 import { ComposeBodyWithSignature } from '../signature/ComposeSignaturePreview';
+import { EditorContent, useEditor } from '@tiptap/react';
+import { StarterKit } from '@tiptap/starter-kit';
+import { Placeholder } from '@tiptap/extension-placeholder';
+import { TextAlign } from '@tiptap/extension-text-align';
+import { Highlight } from '@tiptap/extension-highlight';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { FontSize } from '@tiptap/extension-font-size';
+import { Underline } from '@tiptap/extension-underline';
+import { Link as TiptapLink } from '@tiptap/extension-link';
+import { ContractLinkPreview } from '../signature/ContractLinkPreviewExtension';
 import { ComposeAttachmentPreviews } from '../signature/ComposeAttachmentPreviews';
 import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from '../signature/ComposeAiEmptyPrompt';
 import { stripSignatureAndQuotedTextPreserveHtml } from '../../lib/graphEmailSync';
@@ -139,10 +156,12 @@ import { processWhatsAppTemplateMessage } from '../../lib/interactions/whatsappT
 import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
 import {
   bodyHasContractLink,
-  buildClickableContractLinkAnchor,
+  buildClickableContractLinkHtml,
   fetchLeadContractPublicLink,
   labelForContractLink,
+  stripLooseContractPreviewText,
 } from '../../lib/leadContractLink';
+import { cleanMeetingBriefText, hasHebrewText } from '../../lib/meetingSummaryNotesApi';
 import {
   interactionRowToConversationFlag,
   conversationFlagKey,
@@ -1080,6 +1099,7 @@ function timelineRowsToModalEmails(rows: Interaction[]): any[] {
         from: senderEmail,
         to: row.recipient_list || '',
         date: row.raw_date,
+        sent_at: row.raw_date,
         body_html: formatted || null,
         bodyPreview: formatted,
         body_preview: formatted || null,
@@ -1254,6 +1274,77 @@ function sortInteractionsByDate(items: Interaction[]): Interaction[] {
   return [...items].sort((a, b) => interactionTimestampMs(b) - interactionTimestampMs(a));
 }
 
+type TimelineDirectionFilter = 'all' | 'incoming' | 'outgoing';
+type TimelineSortMode = 'newest' | 'oldest' | 'email' | 'whatsapp' | 'call' | 'sms' | 'office';
+
+function interactionMatchesChannel(kind: string, channel: TimelineSortMode): boolean {
+  switch (channel) {
+    case 'email':
+      return kind === 'email' || kind === 'email_manual';
+    case 'whatsapp':
+      return kind === 'whatsapp' || kind === 'whatsapp_manual';
+    case 'call':
+      return kind === 'call' || kind === 'call_log';
+    case 'sms':
+      return kind === 'sms';
+    case 'office':
+      return kind === 'office';
+    default:
+      return true;
+  }
+}
+
+const TIMELINE_SORT_OPTIONS: Array<{ value: TimelineSortMode; label: string }> = [
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
+  { value: 'email', label: 'Emails' },
+  { value: 'whatsapp', label: 'WhatsApp' },
+  { value: 'call', label: 'Calls' },
+  { value: 'sms', label: 'SMS' },
+  { value: 'office', label: 'Office' },
+];
+
+function interactionSearchHaystack(row: Interaction): string {
+  const stripHtml = (value?: string | null) =>
+    String(value || '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  return [
+    row.subject,
+    stripHtml(row.content),
+    stripHtml(row.body_html),
+    stripHtml(row.body_preview),
+    stripHtml(row.renderedContent),
+    row.observation,
+    row.employee,
+    row.contact_name,
+    row.recipient_name,
+    row.sender_email,
+    row.recipient_list,
+    row.phone_number,
+    row.caption,
+    row.kind,
+    row.status,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function interactionMatchesSearch(row: Interaction, query: string): boolean {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (terms.length === 0) return true;
+  const haystack = interactionSearchHaystack(row);
+  return terms.every((term) => haystack.includes(term));
+}
+
 /** Lightweight map for instant paint from client.manual_interactions before network fetch completes. */
 function mapManualInteractionsQuick(
   rows: any[],
@@ -1300,6 +1391,32 @@ function getClientInitialsAvatarBg(stableKey: string): string {
   const idx = hashStringForAvatar(stableKey.trim() || '?') % CLIENT_INITIALS_AVATAR_BACKGROUNDS.length;
   return CLIENT_INITIALS_AVATAR_BACKGROUNDS[idx];
 }
+
+const COMPOSE_LABELED_BUTTON_CLASS =
+  'inline-flex h-11 items-center gap-1.5 rounded-full border-0 bg-white px-3 text-sm font-medium text-gray-600 shadow-sm transition-all hover:scale-105 hover:bg-white hover:shadow disabled:opacity-40';
+
+const COMPOSE_LABELED_BUTTON_STYLE: React.CSSProperties = {
+  backgroundColor: '#ffffff',
+  color: '#4B5563',
+  height: 44,
+};
+
+const COMPOSE_FONT_SIZES = ['12px', '14px', '16px', '18px', '22px'] as const;
+const HIGHLIGHT_YELLOW = '#fef08a';
+
+const COMPOSE_FORMAT_BTN_CLASS =
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-gray-600 transition hover:bg-white disabled:opacity-40';
+const COMPOSE_FORMAT_BTN_ACTIVE_CLASS =
+  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#4218CC] text-white transition disabled:opacity-40';
+
+const MEETING_SUMMARY_TITLE_EN = 'Meeting Summary';
+const MEETING_SUMMARY_TITLE_HE = 'סיכום פגישה';
+const meetingSummaryTitle = (summary: string) =>
+  hasHebrewText(summary) ? MEETING_SUMMARY_TITLE_HE : MEETING_SUMMARY_TITLE_EN;
+const bodyHasMeetingSummaryBlock = (text: string) => {
+  const plain = String(text || '').replace(/\u0332/g, '');
+  return plain.includes(MEETING_SUMMARY_TITLE_EN) || plain.includes(MEETING_SUMMARY_TITLE_HE);
+};
 
 // Helper component to handle employee avatar with image error fallback
 const EmployeeAvatar: React.FC<{ photo: string | null; name: string; initials: string; avatarBg: string }> = ({ photo, name, initials, avatarBg }) => {
@@ -1837,8 +1954,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
   const [composeSideSearch, setComposeSideSearch] = useState('');
   const [composeSubject, setComposeSubject] = useState('');
-  const [composeBody, setComposeBody] = useState('');
+  const [composeBody, setComposeBodyState] = useState('');
   const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
+  const composeEditorRef = useRef<ReturnType<typeof useEditor>>(null);
+  const syncingComposeEditorRef = useRef(false);
+  const composeDirUserOverrideRef = useRef(false);
+  const [, setComposeEditorUiTick] = useState(0);
+  const bumpComposeEditorUi = useCallback(() => setComposeEditorUiTick(n => n + 1), []);
   const [composeToRecipients, setComposeToRecipients] = useState<string[]>([]);
   const [composeCcRecipients, setComposeCcRecipients] = useState<string[]>([]);
   const [showComposeCcField, setShowComposeCcField] = useState(false);
@@ -1858,6 +1980,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   useEffect(() => {
     if (!showCompose) setShowComposeCcField(false);
   }, [showCompose]);
+
+  useEffect(() => {
+    if (!showCompose || !client?.id) {
+      setComposeMeetingSummary('');
+      return;
+    }
+    let cancelled = false;
+    const loadMeetingSummary = async () => {
+      const isLegacy = client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+      const query = supabase
+        .from('meetings')
+        .select('meeting_summary_notes, meeting_brief')
+        .order('meeting_date', { ascending: false })
+        .limit(1);
+      const { data, error } = isLegacy
+        ? await query.eq('legacy_lead_id', String(client.id).replace(/^legacy_/i, ''))
+        : await query.eq('client_id', client.id);
+      if (cancelled) return;
+      if (error || !data?.[0]) {
+        setComposeMeetingSummary('');
+        return;
+      }
+      const text =
+        String(data[0].meeting_summary_notes ?? '').trim() ||
+        String(data[0].meeting_brief ?? '').trim();
+      setComposeMeetingSummary(cleanMeetingBriefText(text));
+    };
+    void loadMeetingSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [showCompose, client?.id, client?.lead_type]);
   
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
@@ -1870,6 +2024,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [composeLinkLabel, setComposeLinkLabel] = useState('');
   const [composeLinkUrl, setComposeLinkUrl] = useState('');
   const [insertingComposeContractLink, setInsertingComposeContractLink] = useState(false);
+  const [composeMeetingSummary, setComposeMeetingSummary] = useState('');
   
   // Lead contacts modal state
   const [showComposeContactsModal, setShowComposeContactsModal] = useState(false);
@@ -1889,6 +2044,66 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [availableLanguages, setAvailableLanguages] = useState<Array<{ id: string; name: string }>>([]);
   const [availablePlacements, setAvailablePlacements] = useState<Array<{ id: number; name: string }>>([]);
   const [sending, setSending] = useState(false);
+  const composeEditor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({ heading: false }),
+      Underline,
+      TextStyle,
+      FontSize,
+      Highlight.configure({ multicolor: true }),
+      TextAlign.configure({ types: ['paragraph'] }),
+      TiptapLink.configure({
+        openOnClick: false,
+        autolink: true,
+        HTMLAttributes: {
+          class: 'text-[#4218CC] underline',
+          target: '_blank',
+          rel: 'noopener noreferrer',
+        },
+      }),
+      ContractLinkPreview,
+      Placeholder.configure({ placeholder: 'Type your message...' }),
+    ],
+    content: '',
+    editorProps: {
+      attributes: {
+        class:
+          'interactions-compose-editor min-h-[240px] outline-none text-[15px] leading-relaxed text-gray-900',
+      },
+    },
+    onUpdate: ({ editor: next }) => {
+      if (syncingComposeEditorRef.current) return;
+      const html = next.getHTML();
+      setComposeBodyState(html);
+      if (!composeDirUserOverrideRef.current) {
+        setComposeBodyIsRTL(/[\u0590-\u05FF]/.test(htmlToPlainEmail(html)));
+      }
+      bumpComposeEditorUi();
+    },
+    onSelectionUpdate: () => bumpComposeEditorUi(),
+  });
+  composeEditorRef.current = composeEditor;
+
+  const setComposeBody = useCallback((next: string | ((prev: string) => string)) => {
+    setComposeBodyState(prev => {
+      const raw = typeof next === 'function' ? next(prev) : next;
+      const html = plainTextToEditorHtml(raw);
+      const ed = composeEditorRef.current;
+      if (ed) {
+        syncingComposeEditorRef.current = true;
+        ed.commands.setContent(html || '');
+        syncingComposeEditorRef.current = false;
+      }
+      return html;
+    });
+  }, []);
+
+  useEffect(() => {
+    composeEditor?.setEditable(!sending);
+  }, [composeEditor, sending]);
+
+  const composeBodyEmpty = isComposeBodyEmpty(composeBody);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const isEmailModalOpenRef = useRef(false);
   isEmailModalOpenRef.current = isEmailModalOpen;
@@ -2355,18 +2570,45 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
 
     const label = composeLinkLabel.trim();
-    setComposeBody(prev => {
-      const existing = prev || '';
-      const trimmedExisting = existing.replace(/\s*$/, '');
-      // If label is provided, create HTML anchor tag with label as clickable text
-      // If no label, just use the URL (convertBodyToHtml will make it clickable)
-      const linkLine = label 
-        ? `<a href="${formattedUrl.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">${label}</a>`
-        : formattedUrl;
-      return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
-    });
+    const linkLine = label
+      ? `<a href="${formattedUrl.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      : formattedUrl;
+    const editor = composeEditorRef.current;
+    if (editor) {
+      editor.chain().focus().insertContent(`<p>${linkLine}</p>`).run();
+    } else {
+      setComposeBody(prev => {
+        const existing = prev || '';
+        const trimmedExisting = existing.replace(/\s*$/, '');
+        return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
+      });
+    }
 
     handleCancelComposeLink();
+  };
+
+  const handleInsertComposeMeetingSummary = () => {
+    const text = composeMeetingSummary.trim();
+    if (!text) {
+      toast.error('No meeting summary is saved for this client.');
+      return;
+    }
+    if (bodyHasMeetingSummaryBlock(composeBody)) {
+      toast('Meeting summary is already in the email.');
+      return;
+    }
+    const title = meetingSummaryTitle(text);
+    const summaryHtml = `<p><strong>${escapeHtml(title)}</strong></p>${text
+      .split(/\n{2,}/)
+      .map(para => `<p>${escapeHtml(para).replace(/\n/g, '<br>')}</p>`)
+      .join('')}`;
+    cancelComposeAiTypewrite();
+    const editor = composeEditorRef.current;
+    if (editor) {
+      editor.chain().focus().insertContent(summaryHtml).run();
+    } else {
+      setComposeBody(prev => `${prev || ''}${summaryHtml}`);
+    }
   };
 
   const handleInsertComposeAgreementLink = async () => {
@@ -2385,16 +2627,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         toast.error('No agreement or contract link is available for this client.');
         return;
       }
-      const linkLine = buildClickableContractLinkAnchor(
+      const linkLine = buildClickableContractLinkHtml(
         link.url,
         link.signed,
         client.lead_number ? String(client.lead_number) : '',
       );
-      setComposeBody(prev => {
-        const existing = prev || '';
-        const trimmedExisting = existing.replace(/\s*$/, '');
-        return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
-      });
+      const editor = composeEditorRef.current;
+      if (editor) {
+        const cleaned = stripLooseContractPreviewText(editor.getHTML());
+        if (cleaned !== editor.getHTML()) {
+          editor.commands.setContent(cleaned || '');
+        }
+        const inserted = editor
+          .chain()
+          .focus()
+          .insertContractLinkPreview({
+            href: link.url,
+            signed: link.signed,
+            leadNumber: client.lead_number ? String(client.lead_number) : '',
+          })
+          .run();
+        if (!inserted || !bodyHasContractLink(editor.getHTML())) {
+          editor.commands.setContent(
+            `${stripLooseContractPreviewText(editor.getHTML())}${linkLine}`,
+          );
+        }
+      } else {
+        setComposeBody(prev => {
+          const existing = prev || '';
+          const trimmedExisting = existing.replace(/\s*$/, '');
+          return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
+        });
+      }
       toast.success(`${labelForContractLink(link.signed)} added`);
     } catch (error) {
       console.error('Failed to insert agreement link:', error);
@@ -2489,6 +2753,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     
     // Check if template is Hebrew based on language or content
     const isHebrew = isHebrewLanguage(template.languageId, template.languageName) || containsHebrew(finalBody);
+    composeDirUserOverrideRef.current = false;
     setComposeBodyIsRTL(isHebrew);
     
     setComposeTemplateSearch(template.name);
@@ -2664,17 +2929,63 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Find the index of the last email in the sorted interactions - memoized to prevent recalculation
   const INITIAL_VISIBLE_INTERACTIONS = 5;
   const [visibleInteractionsCount, setVisibleInteractionsCount] = useState(INITIAL_VISIBLE_INTERACTIONS);
+  const [timelineDirectionFilter, setTimelineDirectionFilter] = useState<TimelineDirectionFilter>('all');
+  const [timelineSortMode, setTimelineSortMode] = useState<TimelineSortMode>('newest');
+  const [timelineSearchQuery, setTimelineSearchQuery] = useState('');
+  const [timelineSortMenuOpen, setTimelineSortMenuOpen] = useState(false);
+  const timelineSortMenuRef = useRef<HTMLDivElement>(null);
 
   const sortedInteractions = useMemo(() => {
     const filtered = interactions.filter((interaction: any) =>
       emailInteractionVisibleOnTimeline(interaction),
     );
-    return sortInteractionsByDate(dedupeTimelineEmailLikeRows(filtered));
-  }, [interactions]);
+    let next = dedupeTimelineEmailLikeRows(filtered);
+
+    if (timelineDirectionFilter === 'incoming') {
+      next = next.filter((row) => row.direction === 'in');
+    } else if (timelineDirectionFilter === 'outgoing') {
+      next = next.filter((row) => row.direction === 'out');
+    }
+
+    if (
+      timelineSortMode === 'email' ||
+      timelineSortMode === 'whatsapp' ||
+      timelineSortMode === 'call' ||
+      timelineSortMode === 'sms' ||
+      timelineSortMode === 'office'
+    ) {
+      next = next.filter((row) => interactionMatchesChannel(row.kind, timelineSortMode));
+    }
+
+    if (timelineSearchQuery.trim()) {
+      next = next.filter((row) => interactionMatchesSearch(row, timelineSearchQuery));
+    }
+
+    const byDate = sortInteractionsByDate(next);
+    return timelineSortMode === 'oldest' ? [...byDate].reverse() : byDate;
+  }, [interactions, timelineDirectionFilter, timelineSortMode, timelineSearchQuery]);
 
   useEffect(() => {
     setVisibleInteractionsCount(INITIAL_VISIBLE_INTERACTIONS);
-  }, [client.id]);
+  }, [client.id, timelineDirectionFilter, timelineSortMode, timelineSearchQuery]);
+
+  useEffect(() => {
+    if (!timelineSortMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!timelineSortMenuRef.current?.contains(event.target as Node)) {
+        setTimelineSortMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setTimelineSortMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [timelineSortMenuOpen]);
 
   const visibleInteractions = useMemo(
     () => sortedInteractions.slice(0, visibleInteractionsCount),
@@ -5186,6 +5497,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             from: senderEmail,
             to: e.recipient_list,
             date: e.sent_at,
+            sent_at: e.sent_at,
             bodyPreview: sanitizedPreview,
             body_html: e.body_html
               ? ensureFormattedEmailHtml(e.body_html)
@@ -6114,6 +6426,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           from: senderEmail,
           to: e.recipient_list,
           date: e.sent_at,
+          sent_at: e.sent_at,
           body_html: cleanedHtml || null,
           bodyPreview: finalBody,
           body_preview: sanitizedPreview || null,
@@ -6253,7 +6566,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const handleAISuggestions = async (options?: { redo?: boolean }) => {
     if (!client || isLoadingAI) return;
 
-    const previousDraft = composeBody.trim();
+    const previousDraft = htmlToPlainEmail(composeBody);
     const createNew = Boolean(options?.redo) || !previousDraft;
     if (options?.redo) {
       cancelComposeAiTypewrite();
@@ -6286,7 +6599,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       
       if (result.success) {
         // Get the single suggestion and clean it
-        const suggestion = result.suggestion.trim();
+        const suggestion = formatPlainEmailParagraphs(result.suggestion.trim());
         if (createNew && isUsableAiDraft(suggestion)) {
           setShowAISuggestions(false);
           setAiSuggestions([]);
@@ -6314,7 +6627,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   // Apply AI suggestion
   const applyAISuggestion = (suggestion: string) => {
-    setComposeBody(suggestion);
+    setComposeBody(formatPlainEmailParagraphs(suggestion));
     setShowAISuggestions(false);
     setAiSuggestions([]);
   };
@@ -6327,9 +6640,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     setAiChatThinking(null);
   }, [showCompose]);
 
-  const handleApplyEmailAiChat = async () => {
-    const remarks = aiChatRemarks.trim();
-    if (!remarks) return;
+  const handleApplyEmailAiChat = async (remarksOverride?: string) => {
+    const remarks = (remarksOverride ?? aiChatRemarks).trim();
+    if (!remarks || aiChatApplying) return;
     const lead = resolveLeadIdForComposeAi(client);
     setAiChatApplying(true);
     setAiChatThinking('Reading the case and your request…');
@@ -6352,6 +6665,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       if (result.intent === 'action') {
         if (result.subject) setComposeSubject(result.subject);
         if (typeof result.body === 'string') {
+          composeDirUserOverrideRef.current = false;
           setComposeBody(result.body);
           setComposeBodyIsRTL(containsHebrew(result.body));
           setAiDraftActive(true);
@@ -6420,12 +6734,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       return;
     }
 
+    if (composeBodyEmpty) {
+      toast.error('Please write a message before sending.');
+      return;
+    }
+
     setComposeRecipientError(null);
     setSending(true);
     let optimisticId: string | null = null;
 
     try {
-      const bodyHtml = convertBodyToHtml(composeBody);
+      const bodyHtml = convertBodyToHtml(composeBody, {
+        direction: composeBodyIsRTL ? 'rtl' : 'ltr',
+      });
       const { html: emailContentWithSignature, inlineAttachments } =
         await buildOutgoingHtmlWithSignature(bodyHtml);
       const subject = composeSubject && composeSubject.trim()
@@ -6907,6 +7228,39 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       userEmail,
     ],
   );
+
+  const openNewEmailCompose = useCallback(() => {
+    const emailToUse = selectedContactForEmail?.contact.email || client.email;
+    cancelComposeAiTypewrite();
+    setComposeToRecipients(normaliseAddressList(emailToUse));
+    setComposeCcRecipients([]);
+    setComposeToInput('');
+    setComposeCcInput('');
+    setComposeRecipientError(null);
+    setShowComposeLinkForm(false);
+    setComposeLinkLabel('');
+    setComposeLinkUrl('');
+    setSelectedComposeTemplateId(null);
+    setComposeTemplateSearch('');
+    setComposeTemplateLanguageFilter(null);
+    setComposeTemplatePlacementFilter(null);
+    setComposeSubject(
+      `[${client.lead_number}] - ${
+        selectedContactForEmail?.contact.name || client.name
+      } - ${client.topic || ''}`,
+    );
+    setComposeBody('');
+    setAiDraftActive(false);
+    setComposeAttachments([]);
+    setShowCompose(true);
+  }, [
+    cancelComposeAiTypewrite,
+    client.email,
+    client.lead_number,
+    client.name,
+    client.topic,
+    selectedContactForEmail,
+  ]);
 
   const deleteEmailMessage = useCallback(async (message: any) => {
     if (!message) {
@@ -8245,9 +8599,127 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               subtitle="Emails, calls, WhatsApp, and manual contact history"
               actions={
                 <div className="flex flex-wrap items-center justify-end gap-2">
+                  <div className="relative min-w-[10rem] w-44 sm:w-56">
+                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
+                      <MagnifyingGlassIcon className="h-4 w-4 text-slate-400" />
+                    </div>
+                    <input
+                      type="search"
+                      value={timelineSearchQuery}
+                      onChange={(event) => setTimelineSearchQuery(event.target.value)}
+                      placeholder="Search…"
+                      aria-label="Search interactions"
+                      className="h-9 w-full rounded-xl border-0 bg-slate-100 py-1.5 pl-8 pr-8 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#4218CC]/30 dark:bg-base-200 dark:text-base-content"
+                    />
+                    {timelineSearchQuery ? (
+                      <button
+                        type="button"
+                        onClick={() => setTimelineSearchQuery('')}
+                        className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600"
+                        aria-label="Clear search"
+                      >
+                        <XMarkIcon className="h-4 w-4" />
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-0.5 rounded-xl bg-slate-100 p-1 dark:bg-base-200">
+                    {(
+                      [
+                        ['all', 'All', EnvelopeIcon],
+                        ['incoming', 'Inbox', InboxIcon],
+                        ['outgoing', 'Sent', PaperAirplaneIcon],
+                      ] as const
+                    ).map(([key, label, Icon]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setTimelineDirectionFilter(key)}
+                        className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                          timelineDirectionFilter === key
+                            ? 'bg-white text-slate-900 shadow-sm dark:bg-base-100 dark:text-base-content'
+                            : 'bg-transparent text-slate-600 hover:text-slate-800 dark:text-base-content/60 dark:hover:text-base-content'
+                        }`}
+                        title={
+                          key === 'incoming'
+                            ? 'Show incoming interactions'
+                            : key === 'outgoing'
+                              ? 'Show sent interactions'
+                              : 'Show all interactions'
+                        }
+                      >
+                        <Icon className="h-5 w-5 shrink-0" />
+                        <span className="hidden sm:inline">{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="relative" ref={timelineSortMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setTimelineSortMenuOpen((open) => !open)}
+                      className={`inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:bg-base-200 dark:text-base-content/70 dark:hover:bg-base-300 dark:hover:text-base-content ${
+                        timelineSortMode !== 'newest' ? 'text-[#4218CC] hover:text-[#4218CC]' : ''
+                      }`}
+                      aria-haspopup="menu"
+                      aria-expanded={timelineSortMenuOpen}
+                      title="Sort interactions"
+                    >
+                      {timelineSortMode === 'email' ? (
+                        <EnvelopeIcon className="h-5 w-5" />
+                      ) : timelineSortMode === 'whatsapp' ? (
+                        <FaWhatsapp className="h-5 w-5" />
+                      ) : timelineSortMode === 'call' ? (
+                        <PhoneIcon className="h-5 w-5" />
+                      ) : timelineSortMode === 'sms' ? (
+                        <DevicePhoneMobileIcon className="h-5 w-5" />
+                      ) : timelineSortMode === 'office' ? (
+                        <BuildingOffice2Icon className="h-5 w-5" />
+                      ) : timelineSortMode === 'oldest' ? (
+                        <ArrowUpIcon className="h-5 w-5" />
+                      ) : (
+                        <ArrowDownIcon className="h-5 w-5" />
+                      )}
+                      <span className="hidden sm:inline">
+                        {TIMELINE_SORT_OPTIONS.find((option) => option.value === timelineSortMode)?.label ||
+                          'Newest'}
+                      </span>
+                      <ChevronDownIcon className="h-4 w-4" />
+                    </button>
+                    {timelineSortMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute right-0 top-full z-40 mt-1.5 w-48 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg dark:border-base-300 dark:bg-base-100"
+                      >
+                        {TIMELINE_SORT_OPTIONS.map((option) => {
+                          const selected = timelineSortMode === option.value;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              onClick={() => {
+                                setTimelineSortMode(option.value);
+                                setTimelineSortMenuOpen(false);
+                              }}
+                              className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition ${
+                                selected
+                                  ? 'bg-[#4218CC]/10 font-semibold text-[#4218CC]'
+                                  : 'text-slate-700 hover:bg-slate-50 dark:text-base-content dark:hover:bg-base-200'
+                              }`}
+                            >
+                              <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                                {selected ? <CheckIcon className="h-4 w-4 text-[#4218CC]" /> : null}
+                              </span>
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                   <button
                     type="button"
-                    className="btn btn-outline gap-2 border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-base-300 dark:text-base-content dark:hover:bg-base-200 relative"
+                    className="relative inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 disabled:opacity-40 dark:bg-base-200 dark:text-base-content/70 dark:hover:bg-base-300 dark:hover:text-base-content"
                     onClick={() => setAttachmentsModalOpen(true)}
                     disabled={interactionsLoading}
                     title="View email attachments on this lead"
@@ -8262,7 +8734,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </button>
                   <button
                     type="button"
-                    className="btn btn-outline gap-2 border-amber-200 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:border-amber-700 dark:hover:bg-amber-900/30 relative"
+                    className="relative inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-amber-800 transition hover:bg-slate-200 disabled:opacity-40 dark:bg-base-200 dark:text-amber-200 dark:hover:bg-base-300"
                     onClick={() => setFlaggedItemsModalOpen(true)}
                     disabled={!publicUserId || interactionsLoading}
                     title={publicUserId ? 'View flagged items on this lead (all users)' : 'Sign in to use flags'}
@@ -8390,7 +8862,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               <div className="hidden sm:block absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-0.5 bg-base-300" style={{ zIndex: 0 }} />
               
               <div className="space-y-8 md:space-y-10 lg:space-y-12">
-              {renderedInteractions
+              {sortedInteractions.length === 0 ? (
+                <div className="rounded-2xl bg-white px-6 py-12 text-center shadow-sm">
+                  <p className="text-sm font-medium text-slate-700">No interactions match this filter</p>
+                  <p className="mt-1 text-xs text-slate-400">Try a different search, All, or another channel.</p>
+                  <button
+                    type="button"
+                    className="mt-3 text-xs font-semibold text-[#4218CC] underline"
+                    onClick={() => {
+                      setTimelineSearchQuery('');
+                      setTimelineDirectionFilter('all');
+                      setTimelineSortMode('newest');
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              ) : (
+              renderedInteractions
                 .map((row, idx) => {
                 // Debug: Log first few WhatsApp messages being rendered
                 if (row.kind === 'whatsapp' && idx < 3) {
@@ -8990,7 +9479,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </div>
               );
             })
-            .filter(Boolean)}
+            .filter(Boolean)
+              )}
 
             {hasMoreInteractions && (
               <div className="flex justify-center pt-4">
@@ -9056,6 +9546,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           floatingActions={
             !showCompose ? (
               <div className="flex w-full flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={openNewEmailCompose}
+                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
+                    title="Start a new conversation"
+                  >
+                    <PlusIcon className="h-4 w-4" />
+                    New email
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -9535,7 +10034,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
                             <div className="flex items-center justify-between mb-2">
                               <div className="text-sm font-semibold text-gray-900">
-                                {composeBody.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                                {composeBodyEmpty ? 'AI Suggestions' : 'AI Message Improvement'}
                               </div>
                               <button
                                 type="button"
@@ -9577,32 +10076,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       />
                     }
                   >
-                  <div className="relative">
-                  <textarea
-                    placeholder={composeBody.trim() || isLoadingAI ? '' : 'Type your message...'}
-                    value={composeBody}
-                    onChange={(e) => {
-                      cancelComposeAiTypewrite();
-                      setComposeBody(e.target.value);
-                      // Dynamically detect Hebrew as user types
-                      setComposeBodyIsRTL(containsHebrew(e.target.value));
-                    }}
+                  <div className="relative" onKeyDown={() => cancelComposeAiTypewrite()}>
+                  <EditorContent
+                    editor={composeEditor}
                     dir={composeBodyIsRTL ? 'rtl' : 'ltr'}
+                    className="min-h-[240px] px-4 py-3 [&_.ProseMirror]:min-h-[240px] [&_.ProseMirror]:outline-none [&_.ProseMirror]:text-[15px] [&_.ProseMirror]:leading-relaxed [&_.ProseMirror_p]:mb-3 [&_.ProseMirror_p:last-child]:mb-0 [&_.ProseMirror_a:not(.contract-link-preview-btn)]:text-[#4218CC] [&_.ProseMirror_a:not(.contract-link-preview-btn)]:underline [&_.ProseMirror_p.is-editor-empty:first-child]:before:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child]:before:float-left [&_.ProseMirror_p.is-editor-empty:first-child]:before:h-0 [&_.ProseMirror_p.is-editor-empty:first-child]:before:text-gray-400 [&_.ProseMirror_p.is-editor-empty:first-child]:before:content-[attr(data-placeholder)]"
                     style={{
                       textAlign: composeBodyIsRTL ? 'right' : 'left',
-                      direction: composeBodyIsRTL ? 'rtl' : 'ltr'
+                      direction: composeBodyIsRTL ? 'rtl' : 'ltr',
                     }}
-                    className="w-full px-4 py-3 resize-y min-h-[240px]"
-                    rows={10}
                   />
                   <ComposeAiEmptyPrompt
-                    visible={!composeBody.trim() && !isLoadingAI}
-                    loading={isLoadingAI && !composeBody.trim()}
+                    visible={composeBodyEmpty && !isLoadingAI}
+                    loading={isLoadingAI && composeBodyEmpty}
                     disabled={isLoadingAI || !client}
                     onClick={handleAISuggestions}
                   />
                   </div>
-                  {aiDraftActive && composeBody.trim() && !isLoadingAI ? (
+                  {aiDraftActive && !composeBodyEmpty && !isLoadingAI ? (
                     <ComposeAiRedoButton
                       disabled={isLoadingAI || !client}
                       onClick={() => void handleAISuggestions({ redo: true })}
@@ -9611,7 +10102,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </ComposeBodyWithSignature>
                   
                   </div>
-                    <div className="flex items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-4 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
+                    <div className="flex flex-wrap items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-4 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
                       {/* Left side - Buttons and Template Filters */}
                       <div className="flex items-center gap-4 flex-wrap">
                         {/* Circle action buttons */}
@@ -9619,7 +10110,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           <button
                             type="button"
                             onClick={handleSendEmail}
-                            disabled={sending || !composeBody.trim()}
+                            disabled={sending || composeBodyEmpty}
                             className={COMPOSE_SEND_BUTTON_CLASS}
                           >
                             {sending ? (
@@ -9657,7 +10148,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             disabled={isLoadingAI || !client}
                             className={COMPOSE_ACTION_BUTTON_CLASS}
                             style={COMPOSE_ACTION_BUTTON_STYLE}
-                            title={composeBody.trim() ? "Improve message with AI" : "Get AI suggestions"}
+                            title={composeBodyEmpty ? "Get AI suggestions" : "Improve message with AI"}
                           >
                             {isLoadingAI ? (
                               <span className="loading loading-spinner loading-sm" />
@@ -9680,13 +10171,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             <LinkIcon className="w-6 h-6" />
                           </button>
 
+                          {/* Add meeting summary */}
+                          <button
+                            type="button"
+                            className={`${COMPOSE_LABELED_BUTTON_CLASS} ${
+                              bodyHasMeetingSummaryBlock(composeBody) ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                            }`}
+                            style={COMPOSE_LABELED_BUTTON_STYLE}
+                            onClick={handleInsertComposeMeetingSummary}
+                            disabled={sending || !composeMeetingSummary.trim()}
+                            title="Summary"
+                          >
+                            <DocumentTextIcon className="w-5 h-5" />
+                            Summary
+                          </button>
+
                           {/* Add agreement / contract link */}
                           <button
                             type="button"
-                            className={`${COMPOSE_ACTION_BUTTON_CLASS} ${
+                            className={`${COMPOSE_LABELED_BUTTON_CLASS} ${
                               bodyHasContractLink(composeBody) ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
                             }`}
-                            style={COMPOSE_ACTION_BUTTON_STYLE}
+                            style={COMPOSE_LABELED_BUTTON_STYLE}
                             onClick={() => void handleInsertComposeAgreementLink()}
                             disabled={sending || insertingComposeContractLink || !client}
                             title="Contract"
@@ -9694,8 +10200,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             {insertingComposeContractLink ? (
                               <span className="loading loading-spinner loading-sm" />
                             ) : (
-                              <DocumentCheckIcon className="w-6 h-6" />
+                              <DocumentCheckIcon className="w-5 h-5" />
                             )}
+                            Contract
                           </button>
                           
                           {/* Add Contacts from Lead Button */}
@@ -9712,86 +10219,165 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             <UserPlusIcon className="w-6 h-6" />
                           </button>
                         </div>
-                        
-                        {/* Divider */}
-                        <div className="w-px h-8 bg-base-300 hidden sm:block" />
-                        
-                        {/* Template filters */}
-                        <div className="flex items-center gap-2 flex-wrap" ref={composeTemplateDropdownRef}>
-                          {/* Language Filter */}
-                          <select
-                            className="select select-bordered select-sm w-28 text-sm"
-                            value={composeTemplateLanguageFilter || ''}
-                            onChange={(e) => {
-                              setComposeTemplateLanguageFilter(e.target.value || null);
+                      </div>
+                      <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+                      <div
+                        className="flex items-center gap-1.5"
+                        onMouseDown={event => {
+                          if ((event.target as HTMLElement).closest('select')) return;
+                          event.preventDefault();
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className={!composeBodyIsRTL ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                          title="Left to right"
+                          disabled={sending || !composeEditor}
+                          onClick={() => {
+                            composeDirUserOverrideRef.current = true;
+                            setComposeBodyIsRTL(false);
+                            composeEditor?.chain().focus().setTextAlign('left').run();
+                          }}
+                        >
+                          <Bars3BottomLeftIcon className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          className={composeBodyIsRTL ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                          title="Right to left"
+                          disabled={sending || !composeEditor}
+                          onClick={() => {
+                            composeDirUserOverrideRef.current = true;
+                            setComposeBodyIsRTL(true);
+                            composeEditor?.chain().focus().setTextAlign('right').run();
+                          }}
+                        >
+                          <Bars3BottomRightIcon className="h-4 w-4" />
+                        </button>
+                        <select
+                          className="h-9 shrink-0 rounded-full border-0 bg-white px-2.5 text-xs font-medium text-gray-600"
+                          title="Text size"
+                          disabled={sending || !composeEditor}
+                          value={
+                            COMPOSE_FONT_SIZES.includes(
+                              String(composeEditor?.getAttributes('textStyle').fontSize || '') as (typeof COMPOSE_FONT_SIZES)[number],
+                            )
+                              ? String(composeEditor?.getAttributes('textStyle').fontSize)
+                              : ''
+                          }
+                          onChange={event => {
+                            if (!composeEditor) return;
+                            const next = event.target.value;
+                            if (!next) {
+                              composeEditor.chain().focus().unsetFontSize().run();
+                              return;
+                            }
+                            composeEditor.chain().focus().setFontSize(next).run();
+                          }}
+                        >
+                          <option value="">Size</option>
+                          {COMPOSE_FONT_SIZES.map(size => (
+                            <option key={size} value={size}>
+                              {size.replace('px', '')}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className={composeEditor?.isActive('bold') ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                          title="Bold"
+                          disabled={sending || !composeEditor}
+                          onClick={() => composeEditor?.chain().focus().toggleBold().run()}
+                        >
+                          <BoldIcon className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          className={composeEditor?.isActive('underline') ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                          title="Underline"
+                          disabled={sending || !composeEditor}
+                          onClick={() => composeEditor?.chain().focus().toggleUnderline().run()}
+                        >
+                          <UnderlineIcon className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          className={composeEditor?.isActive('highlight') ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                          title="Highlight"
+                          disabled={sending || !composeEditor}
+                          onClick={() => {
+                            if (!composeEditor) return;
+                            composeEditor.chain().focus().toggleHighlight({ color: HIGHLIGHT_YELLOW }).run();
+                          }}
+                        >
+                          <span className="rounded-sm bg-[#fef08a] px-1 text-[11px] font-bold leading-none text-gray-800">A</span>
+                        </button>
+                      </div>
+                      <div className="w-px h-8 bg-base-300" />
+                      <div className="flex items-center gap-2">
+                        <div className="relative w-64" ref={composeTemplateDropdownRef}>
+                          <input
+                            type="text"
+                            className="input input-bordered input-sm w-full bg-white pr-8"
+                            placeholder="Templates..."
+                            value={composeTemplateSearch}
+                            onChange={event => {
+                              setComposeTemplateSearch(event.target.value);
                               if (!composeTemplateDropdownOpen) {
                                 setComposeTemplateDropdownOpen(true);
                               }
                             }}
-                          >
-                            <option value="">Language</option>
-                            {availableLanguages.map(lang => (
-                              <option key={lang.id} value={lang.id}>
-                                {lang.name}
-                              </option>
-                            ))}
-                          </select>
-                          
-                          {/* Placement Filter */}
-                          <select
-                            className="select select-bordered select-sm w-36 text-sm"
-                            value={composeTemplatePlacementFilter ?? ''}
-                            onChange={(e) => {
-                              setComposeTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
-                              if (!composeTemplateDropdownOpen) {
-                                setComposeTemplateDropdownOpen(true);
-                              }
-                            }}
-                          >
-                            <option value="">Placement</option>
-                            {availablePlacements.map(placement => (
-                              <option key={placement.id} value={placement.id}>
-                                {placement.name}
-                              </option>
-                            ))}
-                          </select>
-                          
-                          {/* Template Search */}
-                          <div className="relative w-40">
-                            <input
-                              type="text"
-                              className="input input-bordered input-sm w-full pr-8"
-                              placeholder="Templates..."
-                              value={composeTemplateSearch}
-                              onChange={event => {
-                                setComposeTemplateSearch(event.target.value);
-                                if (!composeTemplateDropdownOpen) {
-                                  setComposeTemplateDropdownOpen(true);
-                                }
-                              }}
-                              onFocus={() => {
-                                if (!composeTemplateDropdownOpen) {
-                                  setComposeTemplateDropdownOpen(true);
-                                }
-                              }}
-                              onBlur={() => setTimeout(() => setComposeTemplateDropdownOpen(false), 150)}
-                            />
-                            <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            {composeTemplateDropdownOpen && (
-                              <div className="absolute bottom-full mb-1 z-20 w-72 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
+                            onFocus={() => setComposeTemplateDropdownOpen(true)}
+                            disabled={sending}
+                          />
+                          <ChevronDownIcon className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                          {composeTemplateDropdownOpen && (
+                            <div className="absolute bottom-full right-0 z-20 mb-2 w-[28rem] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
+                              <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2.5">
+                                <select
+                                  className="select select-bordered select-sm min-w-0 flex-1 text-sm"
+                                  value={composeTemplateLanguageFilter || ''}
+                                  onChange={e => setComposeTemplateLanguageFilter(e.target.value || null)}
+                                >
+                                  <option value="">Language</option>
+                                  {availableLanguages.map(lang => (
+                                    <option key={lang.id} value={lang.id}>
+                                      {lang.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  className="select select-bordered select-sm min-w-0 flex-1 text-sm"
+                                  value={composeTemplatePlacementFilter ?? ''}
+                                  onChange={e =>
+                                    setComposeTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null)
+                                  }
+                                >
+                                  <option value="">Placement</option>
+                                  {availablePlacements.map(placement => (
+                                    <option key={placement.id} value={placement.id}>
+                                      {placement.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="max-h-56 overflow-y-auto">
                                 {filteredComposeTemplates.length === 0 ? (
-                                  <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
+                                  <div className="px-3 py-3 text-sm text-gray-500">No templates found</div>
                                 ) : (
                                   filteredComposeTemplates.map(template => (
                                     <div
                                       key={template.id}
-                                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                                      className="cursor-pointer px-3 py-2 text-sm hover:bg-gray-100"
                                       onMouseDown={e => e.preventDefault()}
-                                      onClick={() => handleComposeTemplateSelect(template)}
+                                      onClick={() => {
+                                        void handleComposeTemplateSelect(template);
+                                        setComposeTemplateDropdownOpen(false);
+                                      }}
                                     >
-                                      <div className="font-medium">{template.name}</div>
+                                      <div>{template.name}</div>
                                       {(template.placementName || template.languageName) && (
-                                        <div className="text-xs text-gray-500 mt-1">
+                                        <div className="text-xs text-gray-500">
                                           {template.placementName && <span>{template.placementName}</span>}
                                           {template.placementName && template.languageName && <span> • </span>}
                                           {template.languageName && <span>{template.languageName}</span>}
@@ -9801,29 +10387,33 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   ))
                                 )}
                               </div>
-                            )}
-                          </div>
-                          
-                          {/* Clear Filters Button */}
-                          {(selectedComposeTemplateId !== null || composeTemplateLanguageFilter || composeTemplatePlacementFilter !== null) && (
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm btn-circle"
-                              onClick={() => {
-                                setSelectedComposeTemplateId(null);
-                                setComposeTemplateSearch('');
-                                setComposeBody('');
-                                setComposeBodyIsRTL(false);
-                                const nameToUse = selectedContactForEmail?.contact.name || client.name;
-                                const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
-                                setComposeSubject(defaultSubjectValue);
-                              }}
-                              title="Clear filters"
-                            >
-                              <XMarkIcon className="w-4 h-4" />
-                            </button>
+                            </div>
                           )}
                         </div>
+                        {(selectedComposeTemplateId !== null || composeTemplateLanguageFilter || composeTemplatePlacementFilter !== null) && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm btn-circle"
+                            onClick={() => {
+                              setSelectedComposeTemplateId(null);
+                              setComposeTemplateSearch('');
+                              setComposeTemplateDropdownOpen(false);
+                              setComposeTemplateLanguageFilter(null);
+                              setComposeTemplatePlacementFilter(null);
+                              setComposeBody('');
+                              composeDirUserOverrideRef.current = false;
+                              setComposeBodyIsRTL(false);
+                              const nameToUse = selectedContactForEmail?.contact.name || client.name;
+                              const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
+                              setComposeSubject(defaultSubjectValue);
+                            }}
+                            disabled={sending}
+                            title="Clear filters"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                       </div>
                     </div>
                     </div>
@@ -10723,6 +11313,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         subtitle=""
         placeholder="e.g. Make this shorter, or write a follow-up asking if they reviewed the offer…"
         conversationOnly
+        leadId={resolveLeadIdForComposeAi(client)?.leadId ?? null}
+        isLegacy={resolveLeadIdForComposeAi(client)?.isLegacy}
+        quickActions={EMAIL_AI_QUICK_ACTIONS}
+        onQuickAction={(prompt) => void handleApplyEmailAiChat(prompt)}
       />
     </div>
   );

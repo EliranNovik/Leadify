@@ -1,5 +1,10 @@
 import { supabase } from './supabase';
-import { embedLegacyBankInNotes, fetchBankAccountById, type BankAccountSnapshot } from './bankAccounts';
+import {
+  embedLegacyBankInNotes,
+  fetchHapoalimBankAccount,
+  HAPOALIM_LEGACY_BANK_ID,
+  type BankAccountSnapshot,
+} from './bankAccounts';
 import { generateProformaName } from './proforma';
 import { ensureProformaPaymentLink } from './proformaPaymentLink';
 import { computeProformaVatFromPayment } from './proformaVat';
@@ -7,7 +12,7 @@ import { displaySymbolForPaymentSave, resolveCurrencyIdForSave } from './payment
 import { resolvePaymentPlanContact } from './resolvePaymentPlanContact';
 import { paymentPlanHasProforma } from './paymentPlanInvoiceAutomation';
 
-export const DEFAULT_INVOICE_AUTOMATION_BANK_ACCOUNT_ID = '27cf7983-ffc4-4a3f-b61b-900815f95c7e';
+export const DEFAULT_INVOICE_AUTOMATION_BANK_ACCOUNT_ID = HAPOALIM_LEGACY_BANK_ID;
 
 export type EnsureProformaPaymentInput = {
   id: string | number;
@@ -20,6 +25,8 @@ export type EnsureProformaPaymentInput = {
   valueVat: number;
   currency?: string;
   currency_id?: number | null;
+  /** When false, never add VAT even for NIS. */
+  addVat?: boolean;
   proforma?: string | null;
   paid?: boolean;
 };
@@ -38,6 +45,25 @@ export type EnsureProformasBatchResult = {
   newProformaByPaymentId: Map<string, string>;
   addedLegacyProformas: Array<{ id: number; ppr_id: number }>;
 };
+
+function vatForAutomationPayment(
+  payment: EnsureProformaPaymentInput,
+  currency: string,
+  currencyId: number | null,
+) {
+  const computed = computeProformaVatFromPayment({
+    currency,
+    currency_id: currencyId,
+    valueVat: payment.valueVat,
+    paymentOrder: payment.order,
+    dueDate: payment.dueDate,
+    subtotal: payment.value,
+  });
+  if (payment.addVat === false) {
+    return { addVat: false, vat: 0, totalWithVat: payment.value };
+  }
+  return computed;
+}
 
 async function resolveContactForPayment(
   payment: EnsureProformaPaymentInput,
@@ -66,14 +92,7 @@ async function createNewLeadAutomationProforma(
     currency: payment.currency,
     currency_id: currencyId,
   });
-  const { addVat, vat, totalWithVat } = computeProformaVatFromPayment({
-    currency,
-    currency_id: currencyId,
-    valueVat: payment.valueVat,
-    paymentOrder: payment.order,
-    dueDate: payment.dueDate,
-    subtotal,
-  });
+  const { addVat, vat, totalWithVat } = vatForAutomationPayment(payment, currency, currencyId);
 
   const proformaContent = JSON.stringify({
     client: contact.name,
@@ -91,7 +110,7 @@ async function createNewLeadAutomationProforma(
     currency,
     currency_id: currencyId,
     bankAccount: bankDetails.name,
-    bankAccountId: DEFAULT_INVOICE_AUTOMATION_BANK_ACCOUNT_ID,
+    bankAccountId: bankDetails.id,
     bankAccountDetails: bankDetails,
     notes: '',
     email: contact.email,
@@ -143,14 +162,7 @@ async function createLegacyAutomationProforma(
     currency: payment.currency,
     currency_id: currencyId,
   });
-  const { addVat, vat, totalWithVat } = computeProformaVatFromPayment({
-    currency: currencySymbol,
-    currency_id: currencyId,
-    valueVat: payment.valueVat,
-    paymentOrder: payment.order,
-    dueDate: payment.dueDate,
-    subtotal,
-  });
+  const { addVat, vat, totalWithVat } = vatForAutomationPayment(payment, currencySymbol, currencyId);
 
   const proformaName = await generateProformaName();
   const rowsData = [
@@ -174,7 +186,7 @@ async function createLegacyAutomationProforma(
     p_add_vat: addVat ? 't' : 'f',
     p_currency_id: currencyId,
     p_client_id: contact.contactId,
-    p_bank_account_id: null,
+    p_bank_account_id: HAPOALIM_LEGACY_BANK_ID,
     p_ppr_id: Number(payment.id),
     p_creator_id: ctx.employeeId,
     p_rows: rowsData,
@@ -192,9 +204,9 @@ export async function ensureProformasForAutomationPayments(
   payments: EnsureProformaPaymentInput[],
   ctx: EnsureProformaContext,
 ): Promise<EnsureProformasBatchResult> {
-  const bankDetails = await fetchBankAccountById(DEFAULT_INVOICE_AUTOMATION_BANK_ACCOUNT_ID);
+  const bankDetails = await fetchHapoalimBankAccount();
   if (!bankDetails) {
-    throw new Error('Default bank account is not configured.');
+    throw new Error('Hapoalim bank account is not configured.');
   }
 
   const newProformaByPaymentId = new Map<string, string>();

@@ -3,9 +3,9 @@ import { encode as base64Encode } from 'https://deno.land/std@0.177.0/encoding/b
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.8';
 import { corsHeaders } from '../_shared/cors.ts';
 import { supabase as supabaseService } from '../_shared/supabase-client.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, OPENAI_CHAT_MODEL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
 const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const CASE_DOCS_BUCKET = 'lead-sub-efforts-documents';
 const CASE_DOC_SUMMARY_SECRET = Deno.env.get('CASE_DOC_SUMMARY_SECRET') || '';
@@ -108,16 +108,15 @@ const SUMMARY_USER_PREFIX =
 async function summarizeImage(bytes: Uint8Array, mime: string, fileName: string): Promise<string> {
   const b64 = base64Encode(bytes);
   const dataUrl = `data:${mime};base64,${b64}`;
-  const res = await fetch(CHAT_URL, {
+  const res = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: 'gpt-4o',
+    body: JSON.stringify(buildChatCompletionBody({
       temperature: 0.25,
-      max_tokens: 1200,
+      maxTokens: 1200,
       messages: [
         { role: 'system', content: SUMMARY_SYSTEM },
         {
@@ -128,7 +127,7 @@ async function summarizeImage(bytes: Uint8Array, mime: string, fileName: string)
           ],
         },
       ],
-    }),
+    })),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -153,7 +152,8 @@ async function summarizeWithResponses(bytes: Uint8Array, mime: string, fileName:
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'gpt-4o',
+      model: OPENAI_CHAT_MODEL,
+      reasoning: { effort: 'low' },
       input: [
         {
           role: 'user',

@@ -6,8 +6,9 @@ import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, Chevr
 import { toast } from 'react-hot-toast';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
 import { resolveLeadIdForComposeAi, runEmailComposeAiChat } from '../lib/emailComposeAiChat';
+import { EMAIL_AI_QUICK_ACTIONS } from '../lib/aiProfessionalWriting';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
-import { convertBodyToHtml } from '../lib/emailBodyHtml';
+import { convertBodyToHtml, formatPlainEmailParagraphs } from '../lib/emailBodyHtml';
 import sanitizeHtml from '../lib/sanitizeHtml';
 import { createPortal } from 'react-dom';
 import {
@@ -3385,7 +3386,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
       if (result.success) {
         // Get the single suggestion and clean it
-        const suggestion = result.suggestion.trim();
+        const suggestion = formatPlainEmailParagraphs(result.suggestion.trim());
         if (createNew && isUsableAiDraft(suggestion)) {
           setShowAISuggestions(false);
           setAiSuggestions([]);
@@ -3413,7 +3414,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   // Apply AI suggestion
   const applyAISuggestion = (suggestion: string) => {
-    setNewMessage(suggestion);
+    setNewMessage(formatPlainEmailParagraphs(suggestion));
     setShowAISuggestions(false);
     setAiSuggestions([]);
   };
@@ -3426,9 +3427,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setAiChatThinking(null);
   }, [showCompose]);
 
-  const handleApplyEmailAiChat = async () => {
-    const remarks = aiChatRemarks.trim();
-    if (!remarks) return;
+  const handleApplyEmailAiChat = async (remarksOverride?: string) => {
+    const remarks = (remarksOverride ?? aiChatRemarks).trim();
+    if (!remarks || aiChatApplying) return;
     const lead = resolveLeadIdForComposeAi(selectedContact);
     setAiChatApplying(true);
     setAiChatThinking('Reading the case and your request…');
@@ -5520,6 +5521,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         subtitle=""
         placeholder="e.g. Make this shorter, or write a follow-up asking if they reviewed the offer…"
         conversationOnly
+        leadId={resolveLeadIdForComposeAi(selectedContact)?.leadId ?? null}
+        isLegacy={resolveLeadIdForComposeAi(selectedContact)?.isLegacy}
+        quickActions={EMAIL_AI_QUICK_ACTIONS}
+        onQuickAction={(prompt) => void handleApplyEmailAiChat(prompt)}
       />
     </div>
   );

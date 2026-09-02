@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import OpenAI from 'https://esm.sh/openai@4.20.1'
+import { OPENAI_CHAT_MODEL, buildChatCompletionBody } from '../_shared/openaiModels.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -208,7 +209,7 @@ Rules:
 - If transcript is Hebrew, do internal translation for the English summary (do NOT output the raw translation).
 - Keep names, dates, and amounts exact.
 - No hallucinations. If unsure, use null.
-- Be concise but comprehensive in summaries.
+- Be detailed and comprehensive in summaries — not a short recap.
 - Focus on legal implications, deadlines, and action items.
 - Pay special attention to genealogical data and persecution history.
 - Extract ALL available information about family members (parents, grandparents, great-grandparents).
@@ -439,15 +440,16 @@ serve(async (req) => {
     };
 
     // Generate AI summary
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: USER_PROMPT_TEMPLATE(cleanText, questionnaire) }
-      ],
-    });
+    const completion = await openai.chat.completions.create(
+      buildChatCompletionBody({
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: USER_PROMPT_TEMPLATE(cleanText, questionnaire) }
+        ],
+      }) as Parameters<typeof openai.chat.completions.create>[0],
+    );
 
     const aiResponse = JSON.parse(completion.choices[0].message.content);
 
@@ -494,7 +496,7 @@ serve(async (req) => {
         meeting_id: meetingData.id,
         summary_he: aiResponse.summary_he,
         summary_en: aiResponse.summary_en,
-        model: 'gpt-4o-mini',
+        model: OPENAI_CHAT_MODEL,
         tokens_used: completion.usage?.total_tokens || 0,
         language_detected: aiResponse.language_detected,
         action_items: aiResponse.action_items,

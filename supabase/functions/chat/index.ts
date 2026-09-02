@@ -1,8 +1,8 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
+import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
 type ChatPart = { type: string; text?: string; image_url?: { url: string } };
 
@@ -91,7 +91,7 @@ serve(async (req) => {
       });
     }
 
-    // If client sent images separately and last user message has no images yet, append (gpt-4o vision)
+    // If client sent images separately and last user message has no images yet, append (vision)
     if (images.length > 0) {
       let lastUserIdx = -1;
       for (let i = normalized.length - 1; i >= 0; i--) {
@@ -135,9 +135,9 @@ serve(async (req) => {
         'Identify leads by lead number (L226999), name, email, phone, or id. If they say this client / this lead and a client page is open, omit query — tools use that lead. ' +
         'When listing leads or meetings, ALWAYS copy the lead number from the tool as a bare token so it stays clickable. Never write Unnamed if the tool gave a number or Internal meeting. Never list a client by name only. ' +
         'When they ask for my day, what to do now, or my follow-ups, ALWAYS call list_my_sales_day. Reply as a short numbered list with lead numbers and one next action each. ' +
-        'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. ' +
+        'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. The draft must be detailed and professional: use the case file, write 4–7 short paragraphs, never a short check-in. Stop after Best regards / בברכה. Do not add a signature. ' +
+        'When they ask to wrap up a meeting or write the meeting summary, ALWAYS call wrap_up_meeting. Write a detailed professional summary from the case file, not a 2-line recap. Call set_follow_up to save a date. Call draft_client_message with intent=price_offer for an offer email. ' +
         'When they ask to prep a meeting or prep my next meeting, ALWAYS call prep_meeting. ' +
-        'When they ask to wrap up a meeting or write the meeting summary, ALWAYS call wrap_up_meeting. Call set_follow_up to save a date. Call draft_client_message with intent=price_offer for an offer email. ' +
         'When they ask who has not answered or who is stale, ALWAYS call list_stale_sales_leads. ' +
         'When they ask to set a follow-up date, call set_follow_up. When they ask to log a call or note, call log_manual_note. ' +
         'When they ask who the handler is, they mean the case handler role on the Roles tab (Case Handler). That is leads.case_handler_id / leads.handler on new leads and leads_lead.case_handler_id on legacy leads. It is not the closer, scheduler, expert, or retention handler unless they say retention. ' +
@@ -176,19 +176,18 @@ serve(async (req) => {
     const openaiMessages = hasSystem ? normalized : [systemMessage, ...normalized];
     const tools = Array.isArray(body.tools) ? body.tools : [];
 
-    const openaiRes = await fetch(OPENAI_URL, {
+    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-4o',
+      body: JSON.stringify(buildChatCompletionBody({
         messages: openaiMessages,
-        max_tokens: 4096,
+        maxTokens: 4096,
         temperature: 0.4,
         ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
-      }),
+      })),
     });
 
     const data = await openaiRes.json();

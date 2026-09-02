@@ -146,6 +146,7 @@ import {
   LazyRMQMessagesPage,
 } from './routes/lazyPages';
 import HomeEntryPage from './pages/HomeEntryPage';
+import { RMQ_AI_OPEN_EVENT } from './lib/rmqAiPendingPrompt';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 import { captureRefreshPathnameOnce } from './hooks/usePersistedState';
 import { useExternalUser } from './hooks/useExternalUser';
@@ -680,6 +681,12 @@ const AppContentInner: React.FC = () => {
     };
     window.addEventListener('rmq:open-conversation-message', onOpenRmqMessage as EventListener);
     return () => window.removeEventListener('rmq:open-conversation-message', onOpenRmqMessage as EventListener);
+  }, []);
+
+  useEffect(() => {
+    const onOpenAi = () => setIsAiChatOpen(true);
+    window.addEventListener(RMQ_AI_OPEN_EVENT, onOpenAi);
+    return () => window.removeEventListener(RMQ_AI_OPEN_EVENT, onOpenAi);
   }, []);
 
   const navItems = [

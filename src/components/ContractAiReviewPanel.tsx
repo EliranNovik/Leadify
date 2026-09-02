@@ -1,7 +1,11 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useState } from 'react';
 import { PaperAirplaneIcon, SparklesIcon, XMarkIcon } from '@heroicons/react/24/solid';
+import { DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, UserIcon } from '@heroicons/react/24/outline';
+import toast from 'react-hot-toast';
 import MobileBottomSheet from './MobileBottomSheet';
 import { formatAiThinkingDisplay } from '../lib/aiReviewStreaming';
+import { fetchLeadContractPublicLink } from '../lib/leadContractLink';
+import { fetchLeadPoaPublicLink } from '../lib/poaApi';
 
 export type ContractAiReviewMessage = {
   role: 'user' | 'assistant';
@@ -35,6 +39,12 @@ type ContractAiReviewPanelProps = {
   closeIcon?: React.ReactNode;
   headerExtra?: React.ReactNode;
   inputDir?: 'ltr' | 'rtl';
+  /** When set, shows Contract / POA chips that insert this client’s real URLs into remarks. */
+  leadId?: string | null;
+  isLegacy?: boolean;
+  /** Suggestion buttons shown in the empty chat instead of the default hint. */
+  quickActions?: Array<{ id?: string; label: string; hint?: string; prompt: string }>;
+  onQuickAction?: (prompt: string) => void;
 };
 
 const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
@@ -64,10 +74,44 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
   closeIcon,
   headerExtra,
   inputDir,
+  leadId = null,
+  isLegacy = false,
+  quickActions,
+  onQuickAction,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [dockRightPx, setDockRightPx] = useState<number | null>(null);
+  const [insertingLinkKind, setInsertingLinkKind] = useState<'contract' | 'poa' | null>(null);
+
+  const insertClientLink = async (kind: 'contract' | 'poa') => {
+    const id = String(leadId || '').trim();
+    if (!id || insertingLinkKind) return;
+    setInsertingLinkKind(kind);
+    try {
+      const url =
+        kind === 'contract'
+          ? (await fetchLeadContractPublicLink(id, isLegacy))?.url || null
+          : await fetchLeadPoaPublicLink(id, isLegacy);
+      if (!url) {
+        toast.error(
+          kind === 'contract'
+            ? 'No agreement or contract link is available for this client.'
+            : 'No POA link is available for this client.',
+        );
+        return;
+      }
+      const trimmed = remarks.trimEnd();
+      onRemarksChange(trimmed ? `${trimmed}\n${url}` : url);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      toast.success(kind === 'contract' ? 'Contract link added' : 'POA link added');
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to add the link.');
+    } finally {
+      setInsertingLinkKind(null);
+    }
+  };
 
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
@@ -128,6 +172,19 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
   }, [isOpen, dockToSelector]);
 
   const panelDir = inputDir ?? 'ltr';
+
+  const quickActionIcon = (id?: string) => {
+    switch (id) {
+      case 'follow_up':
+        return EnvelopeIcon;
+      case 'meeting_summary':
+        return DocumentTextIcon;
+      case 'summarize_lead':
+        return UserIcon;
+      default:
+        return SparklesIcon;
+    }
+  };
 
   const dirForText = (text: string): 'ltr' | 'rtl' => {
     if (/[\u0590-\u05FF]/.test(text)) return 'rtl';
@@ -246,6 +303,42 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
         .contract-ai-input-area textarea::-webkit-scrollbar {
           display: none;
         }
+        .contract-ai-welcome-card {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          width: 100%;
+          border-radius: 0.85rem;
+          border: none;
+          background: #fff;
+          padding: 0.85rem 0.9rem;
+          text-align: left;
+          transition: box-shadow 0.15s ease, background 0.15s ease;
+        }
+        .contract-ai-welcome-card:hover {
+          box-shadow: 0 8px 20px rgba(124, 58, 237, 0.08);
+        }
+        .contract-ai-welcome-card:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+        .contract-ai-welcome-card-icon {
+          display: flex;
+          height: 2.85rem;
+          width: 2.85rem;
+          flex-shrink: 0;
+          align-items: center;
+          justify-content: center;
+          border-radius: 0.8rem;
+          background: #ede9fe;
+          color: #7c3aed;
+        }
+        .contract-ai-welcome-card-title {
+          color: #111827;
+        }
+        .contract-ai-welcome-card-hint {
+          color: #6b7280;
+        }
       `}</style>
 
       <MobileBottomSheet
@@ -282,6 +375,38 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
         footerClassName="border-t-0 !bg-gray-50"
         footer={
           <div className="contract-ai-input-area p-4 pt-3" data-sheet-no-drag>
+            {leadId ? (
+              <div className="mb-2 flex flex-wrap items-center gap-2 px-0.5">
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border-0 bg-white px-2.5 text-xs font-medium text-gray-600 shadow-sm transition hover:shadow disabled:opacity-40"
+                  onClick={() => void insertClientLink('contract')}
+                  disabled={isApplying || insertingLinkKind !== null}
+                  title="Insert this client’s signing link"
+                >
+                  {insertingLinkKind === 'contract' ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <DocumentCheckIcon className="h-3.5 w-3.5" />
+                  )}
+                  Contract
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border-0 bg-white px-2.5 text-xs font-medium text-gray-600 shadow-sm transition hover:shadow disabled:opacity-40"
+                  onClick={() => void insertClientLink('poa')}
+                  disabled={isApplying || insertingLinkKind !== null}
+                  title="Insert this client’s POA link"
+                >
+                  {insertingLinkKind === 'poa' ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <DocumentTextIcon className="h-3.5 w-3.5" />
+                  )}
+                  POA
+                </button>
+              </div>
+            ) : null}
             <div className="flex items-end gap-2">
               <div className="contract-ai-input-shell min-w-0 flex-1 overflow-hidden">
                 <textarea
@@ -339,18 +464,49 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
           ) : null}
 
           {!initialSummary && messages.length === 0 && !isApplying ? (
-            <div className="flex justify-start">
-              <div
-                className={`contract-ai-bubble-assistant max-w-[85%] rounded-2xl px-5 py-4 text-sm text-gray-600 ${alignFor(panelDir)}`}
-                dir={panelDir}
-              >
-                {conversationOnly
-                  ? panelDir === 'rtl'
-                    ? 'שאלו כל דבר על הפגישה, או תארו מה לכתוב בסיכום.'
-                    : 'Ask anything about this document, or describe what you want written.'
-                  : 'Add a question or change request below.'}
+            quickActions && quickActions.length > 0 ? (
+              <div className="grid w-full grid-cols-1 gap-2.5">
+                {quickActions.map((action) => {
+                  const Icon = quickActionIcon(action.id);
+                  return (
+                    <button
+                      key={action.id || action.label}
+                      type="button"
+                      className="contract-ai-welcome-card"
+                      disabled={isApplying}
+                      onClick={() => onQuickAction?.(action.prompt)}
+                    >
+                      <span className="contract-ai-welcome-card-icon">
+                        <Icon className="h-6 w-6" />
+                      </span>
+                      <span className="min-w-0 text-left leading-snug">
+                        <span className="contract-ai-welcome-card-title block text-sm font-semibold">
+                          {action.label}
+                        </span>
+                        {action.hint ? (
+                          <span className="contract-ai-welcome-card-hint mt-0.5 block text-xs">
+                            {action.hint}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-            </div>
+            ) : (
+              <div className="flex justify-start">
+                <div
+                  className={`contract-ai-bubble-assistant max-w-[85%] rounded-2xl px-5 py-4 text-sm text-gray-600 ${alignFor(panelDir)}`}
+                  dir={panelDir}
+                >
+                  {conversationOnly
+                    ? panelDir === 'rtl'
+                      ? 'שאלו כל דבר על הפגישה, או תארו מה לכתוב בסיכום.'
+                      : 'Ask anything about this document, or describe what you want written.'
+                    : 'Add a question or change request below.'}
+                </div>
+              </div>
+            )
           ) : null}
 
           {messages.map(renderBubble)}
