@@ -47,13 +47,97 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function ChatEmployeeChip({ employee }: { employee: ChatEmployeeHit; compact?: boolean }) {
+export function findChatEmployee(text: string, employees: ChatEmployeeHit[]): ChatEmployeeHit | null {
+  const value = String(text || '').trim();
+  if (!value || !employees.length) return null;
+  const usable = employees.filter((row) => row.display_name.length >= 3);
+  if (!usable.length) return null;
+
+  const lower = value.toLowerCase();
+  const exact = usable.find((row) => row.display_name.toLowerCase() === lower);
+  if (exact) return exact;
+
+  const pattern = usable.map((row) => escapeRegExp(row.display_name)).join('|');
+  const re = new RegExp(`(^|[^A-Za-z0-9\\u0590-\\u05FF])(${pattern})(?=[^A-Za-z0-9\\u0590-\\u05FF]|$)`, 'g');
+  const byName = new Map(usable.map((row) => [row.display_name.toLowerCase(), row]));
+  const match = re.exec(value);
+  if (match?.[2]) {
+    const hit = byName.get(match[2].toLowerCase());
+    if (hit) return hit;
+  }
+
+  return (
+    usable.find((row) => lower.includes(row.display_name.toLowerCase())) ||
+    usable.find((row) => row.display_name.toLowerCase().includes(lower)) ||
+    null
+  );
+}
+
+export function ChatEmployeeAvatar({
+  name,
+  employees,
+  className = 'ai-lead-role-photo',
+  size = '2.85rem',
+}: {
+  name: string;
+  employees: ChatEmployeeHit[];
+  className?: string;
+  size?: string;
+}) {
   const [imgErr, setImgErr] = useState(false);
-  const showPhoto = Boolean(employee.photo_url) && !imgErr;
+  const employee = findChatEmployee(name, employees);
+  const displayName = employee?.display_name || String(name || '').trim();
+  if (!displayName) return null;
+  const photoUrl = employee?.photo_url || '';
+  const showPhoto = Boolean(photoUrl) && !imgErr;
+  const sizeStyle = { height: size, width: size, flexShrink: 0 } as const;
+
+  return showPhoto ? (
+    <img
+      src={photoUrl}
+      alt={displayName}
+      className={className}
+      style={{ ...sizeStyle, borderRadius: '9999px', objectFit: 'cover' }}
+      onError={() => setImgErr(true)}
+    />
+  ) : (
+    <span
+      className={`${className} ai-lead-role-photo-fallback`}
+      style={{
+        ...sizeStyle,
+        ...salaryAvatarGradientStyle(employee?.id ?? 0, displayName),
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: '9999px',
+        fontSize: '0.72rem',
+        fontWeight: 700,
+        color: '#fff',
+      }}
+      aria-hidden
+    >
+      {getSalaryEmployeeInitials(displayName).slice(0, 2)}
+    </span>
+  );
+}
+
+function ChatEmployeeChip({
+  employee,
+  showPhoto = false,
+}: {
+  employee: ChatEmployeeHit;
+  showPhoto?: boolean;
+}) {
+  const [imgErr, setImgErr] = useState(false);
+  const photo = showPhoto && Boolean(employee.photo_url) && !imgErr;
+
+  if (!showPhoto) {
+    return <span>{employee.display_name}</span>;
+  }
 
   return (
     <span className="inline-flex items-center gap-1.5 align-middle mx-0.5">
-      {showPhoto ? (
+      {photo ? (
         <img
           src={employee.photo_url || ''}
           alt=""
@@ -79,12 +163,15 @@ export function ChatEmployeeNameText({
   employees,
   onOpen,
   compact,
+  showPhoto,
 }: {
   text: string;
   employees: ChatEmployeeHit[];
   onOpen?: () => void;
   compact?: boolean;
+  showPhoto?: boolean;
 }) {
+  const withPhoto = showPhoto ?? Boolean(compact);
   if (!text) return null;
   if (!employees.length) return <ChatLeadNumberText text={text} onOpen={onOpen} />;
 
@@ -113,7 +200,7 @@ export function ChatEmployeeNameText({
     }
     const employee = byName.get(name.toLowerCase());
     if (employee) {
-      nodes.push(<ChatEmployeeChip key={`e-${key++}`} employee={employee} compact={compact} />);
+      nodes.push(<ChatEmployeeChip key={`e-${key++}`} employee={employee} showPhoto={withPhoto} />);
     } else {
       nodes.push(<ChatLeadNumberText key={`t-${key++}`} text={name} onOpen={onOpen} />);
     }

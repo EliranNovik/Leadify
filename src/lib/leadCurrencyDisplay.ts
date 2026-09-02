@@ -48,3 +48,45 @@ export function resolveLeadCurrencyName(
 
   return FALLBACK_SYMBOL_BY_ID[id] || '';
 }
+
+const CODE_TO_ICON: Record<string, string> = {
+  USD: '$',
+  US$: '$',
+  EUR: '€',
+  GBP: '£',
+  NIS: '₪',
+  ILS: '₪',
+};
+
+/** Same icons as the Clients header total-value badge (₪ $ € £). */
+export function toLeadCurrencyIcon(currency?: string | number | null, currencyId?: number | null): string {
+  const id = parseLeadCurrencyId(currencyId ?? (typeof currency === 'number' ? currency : null));
+  if (id && FALLBACK_SYMBOL_BY_ID[id]) return FALLBACK_SYMBOL_BY_ID[id];
+  const raw = String(currency ?? '').trim();
+  if (!raw) return '₪';
+  if (['₪', '$', '€', '£'].includes(raw)) return raw;
+  return CODE_TO_ICON[raw.toUpperCase()] || FALLBACK_SYMBOL_BY_ID[parseLeadCurrencyId(raw) || 0] || '₪';
+}
+
+export function formatLeadMoneyAmount(amount: number, currency?: string | number | null, currencyId?: number | null): string {
+  const symbol = toLeadCurrencyIcon(currency, currencyId);
+  return `${symbol}${Math.round(amount).toLocaleString('en-US')}`;
+}
+
+/** Clients header: total value minus subcontractor fee (never below 0). */
+export function netLeadTotalAfterSubcontractorFee(gross: number, subcontractorFee?: number | null): number {
+  const fee = Number(subcontractorFee);
+  const reduction = Number.isFinite(fee) && fee > 0 ? fee : 0;
+  return Math.max(0, (Number(gross) || 0) - reduction);
+}
+
+/** Turn USD / EUR / NIS / ILS / GBP next to amounts into the Clients badge icons. */
+export function formatChatCurrencyText(text: string): string {
+  return String(text || '').replace(
+    /\b(USD|US\$|EUR|GBP|NIS|ILS)\s*(?=[\d])|(?<=[\d.,])\s*(USD|EUR|GBP|NIS|ILS)\b/gi,
+    (match) => {
+      const code = match.replace(/[^A-Za-z$]/g, '').toUpperCase();
+      return CODE_TO_ICON[code] || match;
+    },
+  );
+}

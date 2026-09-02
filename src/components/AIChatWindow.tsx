@@ -1,16 +1,55 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/solid';
-import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentArrowUpIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PhotoIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, HandThumbDownIcon as HandThumbDownSolid, HandThumbUpIcon as HandThumbUpSolid } from '@heroicons/react/24/solid';
+import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, HandThumbDownIcon, HandThumbUpIcon, LinkIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
 import RmqAiIntroModal from './RmqAiIntroModal';
 import { executeRmqAiTool, RMQ_AI_SYSTEM_PROMPT, RMQ_AI_TOOLS } from '../lib/rmqAiChatTools';
+import { executeGetClientPortalAccess, parsePortalLinkFromToolResult } from '../lib/rmqAiPortalTools';
+import {
+  isThinkingContent,
+  labelForTool,
+  thinkingContent,
+  thinkingLabelFromContent,
+  thinkingPlanForAsk,
+} from '../lib/rmqAiThinking';
 import { beginRmqAiTurn } from '../lib/rmqAiRoutingLog';
 import {
+  beginAiTrace,
+  buildLeadSignals,
+  buildRmqAiSystemPrompt,
+  classifyAnswerability,
+  detectPossibleUserCorrection,
+  detectQualityEvents,
+  evidenceFromTools,
+  filterToolsForRole,
+  finishAiTrace,
+  forgetUserMemory,
+  inferFailureOrigin,
+  ingestKnowledgeText,
+  backfillMissingChatSummaries,
+  isFirmWideLesson,
+  isForgetMemoryRequest,
+  isPreferenceCorrection,
+  persistAnswerEvidence,
+  persistFeedback,
+  persistIncident,
+  persistQualityEvents,
+  persistRecommendation,
+  persistStructuredChatSummary,
+  formatChatHistoryPreview,
+  proposeFirmLesson,
+  recordRecommendationOutcome,
+  resolveRmqAiRolePack,
+  shouldRefreshChatSummary,
+  subjectChanged,
+  upsertUserMemory,
+  type ChatSummary,
+} from '../lib/rmqAiV1';
+import {
   hydrateRmqAiRoleNames,
-  describeCurrentLeadForPrompt,
   getRmqAiCurrentLead,
   leadNumberFromClientsPath,
   setRmqAiCurrentLead,
@@ -34,13 +73,35 @@ import { loadChatEmployeeDirectory, type ChatEmployeeHit } from './ChatEmployeeN
 import { ChatStageBadgeText, buildChatStageHits, loadChatStageHits, type ChatStageHit } from './ChatStageBadgeText';
 import {
   ChatCalendarMeetingCards,
+  ChatEmployeePresenceTable,
+  ChatExpensesTable,
+  ChatLeadSummaryCards,
   ChatMeetingCards,
+  ChatMissedCommsTable,
+  ChatPaidPaymentsTable,
+  ChatRisksBox,
+  ChatSignedContractsTable,
   parseCalendarDayCards,
   parseClientMeetingCard,
+  parseEmployeePresenceCard,
+  parseExpensesCard,
+  parseLeadSummaryCard,
+  parseMissedCommsCard,
+  parsePaidPaymentsCard,
+  parseSignedContractsCard,
+  splitLeadSummaryParts,
   type ChatCalendarDayData,
+  type ChatEmployeePresenceData,
+  type ChatExpensesData,
+  type ChatLeadSummaryData,
   type ChatMeetingCardData,
+  type ChatMissedCommsData,
+  type ChatPaidPaymentsData,
+  type ChatSignedContractsData,
+  LEAD_SUMMARY_ROLES,
 } from './ChatMeetingCard';
 import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
+import { formatChatCurrencyText } from '../lib/leadCurrencyDisplay';
 import {
   applyAiInputSuggestion,
   extractConversationHints,
@@ -79,6 +140,7 @@ interface AIChatWindowProps {
 }
 
 interface Message {
+  id?: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
   tool_calls?: any[];
@@ -87,6 +149,14 @@ interface Message {
   draftAction?: RmqAiDraftMeta;
   meetingCard?: ChatMeetingCardData;
   calendarMeetings?: ChatCalendarDayData;
+  signedContracts?: ChatSignedContractsData;
+  paidPayments?: ChatPaidPaymentsData;
+  missedComms?: ChatMissedCommsData;
+  expenses?: ChatExpensesData;
+  employeePresence?: ChatEmployeePresenceData;
+  leadSummary?: ChatLeadSummaryData;
+  aiTraceId?: string;
+  feedback?: 'up' | 'down';
 }
 
 interface ChatHistory {
@@ -99,6 +169,35 @@ interface ChatHistory {
   tags: string[];
 }
 
+function PlusMenuImagesIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <rect x="7" y="3.25" width="13.25" height="10.5" rx="2.4" fill="#7dd3fc" />
+      <rect x="3.5" y="6.75" width="14.25" height="13.5" rx="2.6" fill="#38bdf8" />
+      <path
+        d="M3.5 16.6 7.9 12.8a1.45 1.45 0 011.95.05l2.85 2.5 1.85-1.65a1.35 1.35 0 011.8.1L17.75 16.7v1A2.6 2.6 0 0115.15 20.25H6.1A2.6 2.6 0 013.5 17.65v-1.05z"
+        fill="#0284c7"
+      />
+      <circle cx="7.35" cy="11.05" r="1.45" fill="#fde047" />
+    </svg>
+  );
+}
+
+function PlusMenuDocumentsIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M4 8.4c0-1.05.85-1.9 1.9-1.9h4.05c.42 0 .82.17 1.1.47l.85.9h6.2c1.05 0 1.9.85 1.9 1.9v1.35H4V8.4z"
+        fill="#93c5fd"
+      />
+      <path
+        d="M4 10.85h16v6.85c0 1.16-.94 2.1-2.1 2.1H6.1A2.1 2.1 0 014 17.7v-6.85z"
+        fill="#3b82f6"
+      />
+    </svg>
+  );
+}
+
 const READY_ASKS = [
   {
     label: 'My day',
@@ -106,7 +205,6 @@ const READY_ASKS = [
     prompt:
       'Show my sales day. Call list_my_sales_day. List my meetings today/tomorrow, overdue and today follow-ups, and my leads in stages 21, 40, and 50. Number each item with a lead number and the next action.',
     Icon: CalendarDaysIcon,
-    badge: 'bg-amber-100 text-amber-800',
   },
   {
     label: 'Next meeting',
@@ -114,14 +212,12 @@ const READY_ASKS = [
     prompt:
       'What is the next meeting scheduled for this client? Call list_client_meetings. Give the next upcoming date, time, location, and quote summary, brief, and caseBrief from the tool.',
     Icon: CalendarDaysIcon,
-    badge: 'bg-sky-100 text-sky-700',
   },
   {
     label: 'Prep next meeting',
     hint: 'Brief, facts, last comms',
     prompt: 'Prep my next meeting. Call prep_meeting. Give time, who they are, stage, last comms, and 3 questions.',
     Icon: DocumentCheckIcon,
-    badge: 'bg-indigo-100 text-indigo-700',
   },
   {
     label: 'Draft follow-up',
@@ -129,7 +225,6 @@ const READY_ASKS = [
     prompt:
       'Draft a detailed professional follow-up for this client. Call draft_client_message with intent follow_up. Read the full case file (meetings, last messages, contracts, payments, next steps) and write 4–7 short paragraphs in the client language — not a short check-in. Reply with only the ready-to-send draft. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: EnvelopeIcon,
-    badge: 'bg-emerald-100 text-emerald-700',
   },
   {
     label: "Who hasn't answered",
@@ -137,7 +232,6 @@ const READY_ASKS = [
     prompt:
       'Who has not answered me? Call list_stale_sales_leads. List lead numbers, last touch, and one chase action each.',
     Icon: ChatOutlineIcon,
-    badge: 'bg-rose-100 text-rose-700',
   },
   {
     label: 'After no-show',
@@ -145,14 +239,12 @@ const READY_ASKS = [
     prompt:
       'Draft a detailed professional no-show follow-up for this client. Call draft_client_message with intent no_show. Use the case file and write 4–7 short paragraphs in the client language. Reply with only the draft. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: ClockOutlineIcon,
-    badge: 'bg-violet-100 text-violet-700',
   },
   {
     label: 'Signed today',
     hint: 'Closed deals from today',
-    prompt: 'List signed contracts today with lead numbers, names, amounts, and closers.',
+    prompt: 'Show signed contracts today. Call list_signed_contracts. Reply with one short sentence only — the UI shows the table.',
     Icon: DocumentCheckIcon,
-    badge: 'bg-emerald-100 text-emerald-700',
   },
   {
     label: 'Meetings today',
@@ -160,7 +252,6 @@ const READY_ASKS = [
     prompt:
       'List my meetings today. Call list_calendar_day with scope=mine. For each meeting use two lines: first time + lead number + name; second Meeting manager, Helper, Guests, Participants. Only include meetings where I am meeting manager, helper, guest, or a participant.',
     Icon: CalendarDaysIcon,
-    badge: 'bg-sky-100 text-sky-700',
   },
 ] as const;
 
@@ -183,7 +274,7 @@ const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
     label: 'Lead summary',
     hint: 'Overview of this lead',
     prompt:
-      'Give me an overview of this open client. Use CRM tools. Include stage, assigned roles, next meeting, last communication, and the next action. Be concise. Do not greet.',
+      'Create a summary of this lead. Call get_lead_case_file. First a short status summary as bullet points (- ) covering eligibility, value, meetings, last communication, follow-up. Then a line Risks: … with no bullet. Then end with CASE ABOUT: two or three sentences on what the case is, what the client wants, and the citizenship/path from the case file. Do not list lead number, name, category, topic, stage, or team. Do not mention unsigned contract. Do not greet.',
     Icon: DocumentTextIcon,
   },
   {
@@ -227,7 +318,7 @@ const WELCOME_GENERAL_ACTIONS: WelcomeAction[] = [
   {
     label: 'Signed today',
     hint: 'Closed deals from today',
-    prompt: 'List signed contracts today with lead numbers, names, amounts, and closers.',
+    prompt: 'Show signed contracts today. Call list_signed_contracts. Reply with one short sentence only — the UI shows the table.',
     Icon: DocumentCheckIcon,
   },
 ];
@@ -338,10 +429,9 @@ const readAiDrawerDark = (): boolean => {
   return true;
 };
 
-const isThinkingMessage = (content: Message['content']) =>
-  content === 'AI is thinking...' || content === 'Looking up CRM data...';
+const isThinkingMessage = (content: Message['content']) => isThinkingContent(content);
 
-function ChatThinkingIndicator({ lookingUp }: { lookingUp: boolean }) {
+function ChatThinkingIndicator({ label }: { label: string }) {
   return (
     <div className="ai-thinking" role="status" aria-live="polite">
       <span className="ai-thinking-ring" aria-hidden />
@@ -350,8 +440,8 @@ function ChatThinkingIndicator({ lookingUp }: { lookingUp: boolean }) {
         <span />
         <span />
       </span>
-      <span className="ai-thinking-label">
-        {lookingUp ? 'Looking up CRM' : 'Thinking'}
+      <span className="ai-thinking-label" key={label}>
+        {label}
       </span>
     </div>
   );
@@ -361,10 +451,12 @@ function ChatWelcomeHome({
   hasLead,
   disabled,
   onAction,
+  signals = [],
 }: {
   hasLead: boolean;
   disabled?: boolean;
   onAction: (prompt: string) => void;
+  signals?: Array<{ id: string; title: string; reason: string; actions: Array<{ label: string; prompt: string }> }>;
 }) {
   const actions = hasLead ? WELCOME_LEAD_ACTIONS : WELCOME_GENERAL_ACTIONS;
   const questions = hasLead ? WELCOME_LEAD_QUESTIONS : WELCOME_GENERAL_QUESTIONS;
@@ -381,6 +473,29 @@ function ChatWelcomeHome({
           ? 'Ask about meetings, follow-ups, contracts or communication.'
           : 'Ask about your day, meetings, follow-ups or signed deals.'}
       </p>
+      {signals.length > 0 ? (
+        <div className="mt-4 w-full space-y-2">
+          {signals.map((signal) => (
+            <div key={signal.id} className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-left">
+              <p className="text-sm font-semibold text-amber-900">{signal.title}</p>
+              <p className="mt-0.5 text-xs text-amber-800">{signal.reason}</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {signal.actions.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-amber-900 ring-1 ring-amber-200"
+                    disabled={disabled}
+                    onClick={() => onAction(action.prompt)}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-7 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
         {actions.map(({ label, hint, prompt, Icon }) => (
           <button
@@ -466,6 +581,18 @@ const isVisibleChatMessage = (message: Message) => {
   return true;
 };
 
+function isLeadSummaryAsk(text: string): boolean {
+  const t = String(text || '').toLowerCase();
+  if (/meeting summary|communication summary|last communication/.test(t)) return false;
+  return (
+    /\boverview\b/.test(t) ||
+    /\blead summary\b/.test(t) ||
+    /create a summary/.test(t) ||
+    /summar(?:y|ise|ize).{0,40}\b(lead|client)\b/.test(t) ||
+    /\b(lead|client).{0,40}summar(?:y|ise|ize)\b/.test(t)
+  );
+}
+
 function calendarDayIntro(text: string): string {
   const trimmed = String(text || '').trim();
   if (!trimmed) return '';
@@ -479,10 +606,7 @@ const sanitizeMessages = (messages: Message[]) => {
   if (!messages || messages.length === 0) return [];
 
   for (const message of messages) {
-    if (
-      message.content === 'AI is thinking...' ||
-      message.content === 'Looking up CRM data...'
-    ) {
+    if (isThinkingContent(message.content)) {
       continue;
     }
     if (message.role === 'assistant' && !message.content && !message.tool_calls?.length) {
@@ -520,6 +644,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -536,6 +661,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [showRmqAiIntroModal, setShowRmqAiIntroModal] = useState(false);
   const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [messageFeedback, setMessageFeedback] = useState<Record<string, 'up' | 'down'>>({});
+  const [thumbBurstAt, setThumbBurstAt] = useState<Record<string, number>>({});
+  const lastSummarizedCountRef = useRef(0);
+  const lastSummaryRef = useRef<ChatSummary | null>(null);
+  const lastActivityAtRef = useRef(Date.now());
+  const currentChatIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<Message[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historySelecting, setHistorySelecting] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
@@ -642,18 +774,25 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     !isLoading && messages.filter(isVisibleChatMessage).every(isWelcomeMessage);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
+  const latestAnswerRef = useRef<HTMLDivElement | null>(null);
+  const pinnedVisibleCountRef = useRef(0);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(scrollToBottom, [messages]);
+  useEffect(() => {
+    const visible = messages.filter((msg) => isVisibleChatMessage(msg) && !isWelcomeMessage(msg));
+    if (visible.length <= pinnedVisibleCountRef.current) return;
+    pinnedVisibleCountRef.current = visible.length;
+    const last = visible[visible.length - 1];
+    if (last?.role !== 'assistant') return;
+    requestAnimationFrame(() => {
+      latestAnswerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+    });
+  }, [messages]);
 
   useEffect(() => {
     if (!attachMenuOpen) return;
     const close = (event: MouseEvent) => {
       const target = event.target as Node | null;
-      if (attachMenuRef.current?.contains(target)) return;
+      if (attachMenuRef.current?.contains(target) || plusMenuRef.current?.contains(target)) return;
       setAttachMenuOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
@@ -697,7 +836,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const message = messages[i];
       if (message.role !== 'assistant' || !message.content) continue;
-      if (message.content === 'AI is thinking...' || message.content === 'Looking up CRM data...') continue;
+      if (isThinkingContent(message.content)) continue;
       return typeof message.content === 'string' ? message.content : '';
     }
     return '';
@@ -791,6 +930,42 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     handleSend(action);
   };
 
+  const insertClientPortalLink = async () => {
+    const lead = currentLead || getRmqAiCurrentLead();
+    const leadId = lead?.id != null ? String(lead.id) : '';
+    if (!leadId) {
+      toast.error('Open a client first to insert this link.');
+      return;
+    }
+    const isLegacy = lead?.lead_type === 'legacy' || leadId.toLowerCase().startsWith('legacy_');
+    setAttachMenuOpen(false);
+    try {
+      const result = await executeGetClientPortalAccess({
+        lead_id: leadId,
+        is_legacy: isLegacy,
+        query: lead?.lead_number != null ? String(lead.lead_number) : undefined,
+      });
+      const url = parsePortalLinkFromToolResult(result);
+      if (!url) {
+        toast.error('Portal link is not available yet. Ask the AI to enable the client portal.');
+        return;
+      }
+      setInput((prev) => {
+        const trimmed = prev.trimEnd();
+        return trimmed ? `${trimmed}\n${url}` : url;
+      });
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      if (/password_generated:\s*no/i.test(result) || /portal_enabled:\s*no/i.test(result)) {
+        toast.success('Portal link added — password is not ready yet');
+      } else {
+        toast.success('Portal link added');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to add the portal link.');
+    }
+  };
+
   const insertCrmDocumentLink = async (kind: 'contract' | 'poa') => {
     const lead = currentLead || getRmqAiCurrentLead();
     const leadId = lead?.id != null ? String(lead.id) : '';
@@ -880,11 +1055,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
     
     // First, normalize excessive dashes (replace multiple dashes with proper formatting)
-    let normalized = content
-      .replace(/^[-]{2,}/gm, '')
-      .replace(/[-]{3,}/g, '—')
-      .replace(/\[(?:#)?([LC]\d+(?:\/\d+)?)\]\((?:#|javascript:[^)]*)?\)/gi, '$1')
-      .replace(/\n{2,}(?=\s*\d+[.)]\s)/g, '\n');
+    let normalized = formatChatCurrencyText(
+      content
+        .replace(/^[-]{2,}/gm, '')
+        .replace(/[-]{3,}/g, '—')
+        .replace(/\[(?:#)?([LC]\d+(?:\/\d+)?)\]\((?:#|javascript:[^)]*)?\)/gi, '$1')
+        .replace(/\n{2,}(?=\s*\d+[.)]\s)/g, '\n'),
+    );
     
     // Split by double newlines for paragraphs, but preserve single newlines within paragraphs
     const blocks = normalized.split(/\n\n+/).filter(p => p.trim());
@@ -997,7 +1174,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (!text) return null;
 
     const renderRichInline = (value: string) => (
-      <ChatStageBadgeText text={value} stages={stages} employees={employees} onOpen={onClose} />
+      <ChatStageBadgeText text={value} stages={stages} employees={employees} onOpen={onClose} dark={isDarkTheme} />
     );
     
     const parts: React.ReactNode[] = [];
@@ -1167,6 +1344,43 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     return parts.length > 0 ? <>{parts}</> : renderRichInline(text);
   };
 
+  const renderChatProse = (
+    text: string,
+    opts: { role: Message['role']; asEmailDraft?: boolean; welcome?: boolean },
+  ) => {
+    if (!text) return null;
+    return (
+      <div
+        className={`ai-chat-msg-text max-w-none ${opts.role === 'user' ? 'text-white' : 'text-gray-800'} ${
+          opts.asEmailDraft ? '' : 'prose'
+        }`}
+      >
+        {formatMessageContent(text, {
+          employeePhotos: !opts.welcome,
+          asEmailDraft: opts.asEmailDraft,
+          stageBadges: opts.role === 'assistant' && !opts.asEmailDraft,
+        })}
+      </div>
+    );
+  };
+
+  const renderAssistantWithRisks = (
+    text: string,
+    opts: { role: Message['role']; asEmailDraft?: boolean; welcome?: boolean },
+  ) => {
+    if (!text) return null;
+    if (opts.role !== 'assistant' || opts.asEmailDraft) return renderChatProse(text, opts);
+    const parts = splitLeadSummaryParts(text);
+    if (!parts.risks) return renderChatProse(text, opts);
+    return (
+      <div className="ai-meeting-stack">
+        {parts.body ? renderChatProse(parts.body, opts) : null}
+        <ChatRisksBox text={parts.risks} renderText={(risks) => renderChatProse(risks, opts)} />
+        {parts.caseAbout ? renderChatProse(parts.caseAbout, opts) : null}
+      </div>
+    );
+  };
+
   const completeAssistantTurn = async (
     conversationMessages: Message[],
     imagesData: Array<{ name: string; data: string }> = [],
@@ -1174,18 +1388,37 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   ) => {
     await syncOpenClient();
     const lastUser = [...conversationMessages].reverse().find((message) => message.role === 'user');
+    const userText = String(lastUser?.content || '');
+    const pageType = location.pathname.startsWith('/clients')
+      ? 'client'
+      : location.pathname.split('/').filter(Boolean)[0] || 'app';
+    const rolePack = await resolveRmqAiRolePack();
+    const toolsForTurn = filterToolsForRole(RMQ_AI_TOOLS, rolePack);
+    const systemPrompt = await buildRmqAiSystemPrompt(RMQ_AI_SYSTEM_PROMPT);
+    const trace = beginAiTrace({
+      conversationId: currentChatIdRef.current,
+      userMessage: userText.slice(0, 240),
+      pageType,
+      activeLeadNumber: getRmqAiCurrentLead()?.lead_number
+        ? String(getRmqAiCurrentLead()?.lead_number)
+        : undefined,
+    });
     beginRmqAiTurn({
-      userMessage: String(lastUser?.content || '').slice(0, 240),
-      availableTools: RMQ_AI_TOOLS.map((tool) => tool.function.name),
-      pageType: location.pathname.startsWith('/clients')
-        ? 'client'
-        : location.pathname.split('/').filter(Boolean)[0] || 'app',
+      userMessage: userText.slice(0, 240),
+      availableTools: toolsForTurn.map((tool) => tool.function.name),
+      pageType,
     });
     const messagesForApi = sanitizeMessages([...conversationMessages, ...extraApiMessages]).map(
       ({
         attachments: _attachments,
         meetingCard: _meetingCard,
         calendarMeetings: _calendarMeetings,
+        signedContracts: _signedContracts,
+        paidPayments: _paidPayments,
+        missedComms: _missedComms,
+        expenses: _expenses,
+        employeePresence: _employeePresence,
+        leadSummary: _leadSummary,
         draftAction: _draftAction,
         ...message
       }) => message,
@@ -1201,10 +1434,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         body: JSON.stringify({
           messages: [{
             role: 'system',
-            content: [RMQ_AI_SYSTEM_PROMPT, describeCurrentLeadForPrompt()].filter(Boolean).join(' '),
+            content: systemPrompt,
           }, ...payloadMessages],
           images: includeImages ? imagesData : [],
-          tools: RMQ_AI_TOOLS,
+          tools: toolsForTurn,
+          aiTraceId: trace.aiTraceId,
         }),
       });
       const data = await response.json();
@@ -1214,6 +1448,27 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       return data as Message;
     };
 
+    const thinkingPlan = thinkingPlanForAsk(userText);
+    let thinkingStep = 0;
+    let thinkingLocked = false;
+    const applyThinking = (label: string) => {
+      setMessages((prev) => {
+        const next = [...prev];
+        const lastIndex = next.length - 1;
+        if (lastIndex < 0 || next[lastIndex].role !== 'assistant' || !isThinkingContent(next[lastIndex].content)) {
+          return prev;
+        }
+        next[lastIndex] = { ...next[lastIndex], content: thinkingContent(label) };
+        return next;
+      });
+    };
+    const thinkingTimer = window.setInterval(() => {
+      if (thinkingLocked) return;
+      if (thinkingStep >= thinkingPlan.length - 1) return;
+      thinkingStep += 1;
+      applyThinking(thinkingPlan[thinkingStep]);
+    }, 1500);
+
     try {
       let conversation = messagesForApi;
       let aiResponseMessage: Message | null = null;
@@ -1221,10 +1476,20 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       const appMapLinks: string[] = [];
       let meetingCard: ChatMeetingCardData | undefined;
       let calendarMeetings: ChatCalendarDayData | undefined;
+      let signedContracts: ChatSignedContractsData | undefined;
+      let paidPayments: ChatPaidPaymentsData | undefined;
+      let missedComms: ChatMissedCommsData | undefined;
+      let expenses: ChatExpensesData | undefined;
+      let employeePresence: ChatEmployeePresenceData | undefined;
+      let leadSummary: ChatLeadSummaryData | undefined;
+      const toolResults: Array<{ name: string; content: string }> = [];
+      let toolExecutionMs = 0;
+      const modelStarted = Date.now();
       let documentLinks: FollowupDocumentLinks = {
         contractSigningUrl: null,
         poaUrl: null,
         invoiceUrl: null,
+        portalUrl: null,
       };
       for (let round = 0; round < 6; round += 1) {
         const reply = await callChat(conversation, round === 0);
@@ -1233,20 +1498,29 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             ...conversation,
             { role: 'assistant', content: reply.content || '', tool_calls: reply.tool_calls },
           ];
-          setMessages((prev) => [
-            ...prev.slice(0, -1),
-            { role: 'assistant', content: 'Looking up CRM data...' },
-          ]);
+          thinkingLocked = true;
+          const firstTool = reply.tool_calls[0];
+          applyThinking(labelForTool(firstTool?.function?.name, firstTool?.function?.arguments));
           for (const toolCall of reply.tool_calls) {
-            const toolResult = await executeRmqAiTool(toolCall);
             const fnName = toolCall?.function?.name;
+            if (fnName) applyThinking(labelForTool(fnName, toolCall?.function?.arguments));
+            const toolStarted = Date.now();
+            const toolResult = await executeRmqAiTool(toolCall);
+            toolExecutionMs += Date.now() - toolStarted;
+            if (fnName) toolResults.push({ name: fnName, content: String(toolResult) });
             createdFiles.push(...takeRmqAiToolFiles());
-            if (fnName === 'get_lead_case_file' || fnName === 'draft_client_message') {
+            if (
+              fnName === 'get_lead_case_file' ||
+              fnName === 'draft_client_message' ||
+              fnName === 'get_client_portal_access' ||
+              fnName === 'setup_client_portal'
+            ) {
               const parsed = parseFollowupDocumentLinks(String(toolResult));
               documentLinks = {
                 contractSigningUrl: parsed.contractSigningUrl || documentLinks.contractSigningUrl,
                 poaUrl: parsed.poaUrl || documentLinks.poaUrl,
                 invoiceUrl: parsed.invoiceUrl || documentLinks.invoiceUrl,
+                portalUrl: parsed.portalUrl || documentLinks.portalUrl,
               };
             }
             if (fnName === 'find_app_page') {
@@ -1263,6 +1537,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 toast.error(toolResult);
               }
             }
+            if (fnName === 'setup_client_portal') {
+              if (!String(toolResult).startsWith('Error')) {
+                toast.success('Client portal saved');
+                onClientUpdate?.();
+              } else {
+                toast.error(toolResult);
+              }
+            }
             if (fnName === 'create_excel_sheet' && !String(toolResult).startsWith('Could not') && !String(toolResult).startsWith('create_excel_sheet')) {
               toast.success('Excel file ready to download');
             }
@@ -1272,11 +1554,54 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             if (fnName === 'list_calendar_day' || fnName === 'list_meetings') {
               calendarMeetings = parseCalendarDayCards(toolResult) || calendarMeetings;
             }
+            if (fnName === 'list_signed_contracts') {
+              signedContracts = parseSignedContractsCard(toolResult) || signedContracts;
+            }
+            if (fnName === 'list_paid_payments') {
+              paidPayments = parsePaidPaymentsCard(toolResult) || paidPayments;
+            }
+            if (fnName === 'list_missed_client_comms') {
+              missedComms = parseMissedCommsCard(toolResult) || missedComms;
+            }
+            if (fnName === 'list_expenses') {
+              expenses = parseExpensesCard(toolResult) || expenses;
+            }
+            if (fnName === 'list_employee_presence') {
+              employeePresence = parseEmployeePresenceCard(toolResult) || employeePresence;
+            }
+            if (fnName === 'get_lead_case_file' && isLeadSummaryAsk(userText)) {
+              const parsed = parseLeadSummaryCard(toolResult);
+              if (parsed) {
+                const open = getRmqAiCurrentLead();
+                const openTeam = [
+                  { role: 'Handler', name: String(open?.handler || '') },
+                  { role: 'Expert', name: String(open?.expert || '') },
+                  { role: 'Manager', name: String(open?.manager || '') },
+                  { role: 'Closer', name: String(open?.closer || '') },
+                  { role: 'Scheduler', name: String(open?.scheduler || '') },
+                ];
+                const pickName = (...values: Array<string | null | undefined>) =>
+                  values
+                    .map((value) => String(value || '').trim())
+                    .find((value) => value && value !== '—') || '';
+                leadSummary = {
+                  ...parsed,
+                  team: LEAD_SUMMARY_ROLES.map((role) => ({
+                    role,
+                    name: pickName(
+                      parsed.team?.find((row) => row.role === role)?.name,
+                      openTeam.find((row) => row.role === role)?.name,
+                    ),
+                  })),
+                };
+              }
+            }
             conversation = [
               ...conversation,
               { role: 'tool', content: toolResult, tool_call_id: toolCall.id },
             ];
           }
+          applyThinking('Putting it together');
           continue;
         }
         aiResponseMessage = reply;
@@ -1306,15 +1631,68 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       const storedContent =
         (draftAction ? stripAiEmailSignature(linkedContent) : linkedContent) ||
         'I looked up the CRM data but could not finish a reply. Please try again.';
+      const answerId = `msg-${Date.now()}`;
+      const selectedTools = toolResults.map((row) => row.name);
+      const toolErrors = toolResults
+        .filter((row) => String(row.content).startsWith('Error executing'))
+        .map((row) => row.content);
+      const answerability = classifyAnswerability({
+        toolErrors,
+        selectedTools,
+        userMessage: userText,
+      });
+      const events = detectQualityEvents({
+        userMessage: userText,
+        selectedTools,
+        toolErrors,
+        toolResults,
+        finalContent: storedContent,
+        totalMs: Date.now() - modelStarted,
+      });
+      const finished = finishAiTrace({
+        selectedTools,
+        toolErrors,
+        toolExecutionMs,
+        finalModelMs: Date.now() - modelStarted,
+        answerability,
+      });
+      void persistQualityEvents(events, { conversationId: currentChatIdRef.current, messageId: answerId });
+      void persistAnswerEvidence(evidenceFromTools(answerId, toolResults, storedContent));
+      if (draftAction) {
+        void persistRecommendation({
+          recommendationId: `draft-${answerId}`,
+          actionType: `draft_${draftAction.channel}`,
+          reason: draftAction.leadNumber
+            ? `Draft ${draftAction.channel} for ${draftAction.leadNumber}`
+            : `Draft ${draftAction.channel}`,
+          executable: true,
+          conversationId: currentChatIdRef.current,
+        });
+      }
+      if (events.includes('resolver_mismatch')) {
+        void persistIncident({
+          title: 'Cross-client resolver mismatch',
+          severity: 'critical',
+          details: { events, tools: selectedTools, trace: finished },
+        });
+      }
       setMessages((prev) => [
         ...prev.slice(0, -1),
         {
+          id: answerId,
           role: 'assistant',
           content: storedContent,
           attachments: createdFiles.length ? createdFiles : undefined,
           draftAction,
           meetingCard,
           calendarMeetings,
+          signedContracts,
+          paidPayments,
+          missedComms,
+          expenses,
+          employeePresence,
+          leadSummary,
+          aiTraceId: trace.aiTraceId,
         },
       ]);
     } catch (error) {
@@ -1332,6 +1710,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         return updated;
       });
     } finally {
+      window.clearInterval(thinkingTimer);
       setIsLoading(false);
     }
   };
@@ -1361,6 +1740,33 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       data: imagePreviews[index],
     }));
 
+    if (isForgetMemoryRequest(messageToSend)) {
+      void forgetUserMemory(messageToSend).then((count) => {
+        if (count > 0) toast.success('I will not keep that preference.');
+      });
+    }
+    const preference = isPreferenceCorrection(messageToSend);
+    if (preference) {
+      void upsertUserMemory({
+        fact: preference.fact,
+        category: preference.category,
+        sourceType: 'feedback',
+        sourceConversationId: currentChatId || undefined,
+        explicit: true,
+      }).then((row) => {
+        if (row) toast.success(row.reinforced ? 'Updated that preference.' : 'I’ll remember that.');
+      });
+    }
+    const firmLesson = isFirmWideLesson(messageToSend);
+    if (firmLesson) {
+      void proposeFirmLesson(firmLesson);
+    }
+    if (detectPossibleUserCorrection(messageToSend)) {
+      void persistQualityEvents(['possible_user_correction'], {
+        conversationId: currentChatId,
+      });
+    }
+
     if (!customInput) {
       setInput('');
       setCaret(0);
@@ -1370,7 +1776,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setImagePreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
 
-    setMessages([...newMessages, { role: 'assistant', content: 'AI is thinking...' }]);
+    setMessages([
+      ...newMessages,
+      { role: 'assistant', content: thinkingContent(thinkingPlanForAsk(messageToSend)[0] || 'Thinking') },
+    ]);
     await completeAssistantTurn(newMessages, imagesData);
   };
 
@@ -1517,7 +1926,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
     const trimmed = messages.slice(0, userIndex + 1);
     setIsLoading(true);
-    setMessages([...trimmed, { role: 'assistant', content: 'AI is thinking...' }]);
+    setMessages([...trimmed, { role: 'assistant', content: thinkingContent('Trying again') }]);
     await completeAssistantTurn(trimmed, [], [
       {
         role: 'user',
@@ -1586,6 +1995,51 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
   };
 
+  const persistLeavingChat = async (chatId: string | null, snapshot: Message[]) => {
+    const rows = snapshot.filter(
+      (msg) =>
+        isVisibleChatMessage(msg) &&
+        msg.content !== '...' &&
+        !isThinkingContent(msg.content),
+    );
+    if (rows.length < 2) return;
+    try {
+      const user = (await supabase.auth.getUser()).data.user;
+      if (!user) return;
+      const openLead = getRmqAiCurrentLead();
+      const openLeadId =
+        openLead?.id && !String(openLead.id).startsWith('legacy_') && String(openLead.id).includes('-')
+          ? String(openLead.id)
+          : null;
+      let savedId = chatId;
+      if (savedId) {
+        const { error } = await supabase.rpc('update_ai_chat_history', {
+          p_chat_id: savedId,
+          p_messages: rows,
+        });
+        if (error) {
+          await supabase
+            .from('ai_chat_history')
+            .update({ messages: rows, message_count: rows.length, last_message_at: new Date().toISOString() })
+            .eq('id', savedId)
+            .eq('user_id', user.id);
+        }
+      } else {
+        const { data, error } = await supabase.rpc('save_ai_chat_history', {
+          p_title: null,
+          p_messages: rows,
+          p_lead_id: openLeadId,
+        });
+        if (!error && data) savedId = data;
+      }
+      if (savedId) {
+        await persistStructuredChatSummary(savedId, rows);
+      }
+    } catch (error) {
+      console.error('Error flushing chat memory:', error);
+    }
+  };
+
   const saveCurrentChat = async () => {
     if (messages.length <= 1) return; // Don't save if only greeting message
     
@@ -1594,12 +2048,17 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         (msg) =>
           isVisibleChatMessage(msg) &&
           msg.content !== '...' &&
-          msg.content !== 'AI is thinking...' &&
-          msg.content !== 'Looking up CRM data...',
+          !isThinkingContent(msg.content),
       );
       const user = (await supabase.auth.getUser()).data.user;
       if (!user) throw new Error('User not authenticated');
+      const openLead = getRmqAiCurrentLead();
+      const openLeadId =
+        openLead?.id && !String(openLead.id).startsWith('legacy_') && String(openLead.id).includes('-')
+          ? String(openLead.id)
+          : null;
       
+      let savedChatId = currentChatId;
       if (currentChatId) {
         // Update existing chat
         try {
@@ -1626,10 +2085,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         try {
           const { data, error } = await supabase.rpc('save_ai_chat_history', {
             p_title: null, // Will be auto-generated
-            p_messages: messagesToSave
+            p_messages: messagesToSave,
+            p_lead_id: openLeadId,
           });
           if (error) throw error;
+          savedChatId = data;
           setCurrentChatId(data);
+          currentChatIdRef.current = data;
         } catch (rpcError) {
           // Fallback to direct insert
           const title = messagesToSave.find(msg => msg.role === 'user')?.content?.substring(0, 50) || 'New Conversation';
@@ -1639,12 +2101,23 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               user_id: user.id,
               title: title,
               messages: messagesToSave,
-              message_count: messagesToSave.length
+              message_count: messagesToSave.length,
+              ...(openLeadId ? { lead_id: openLeadId } : {}),
             })
             .select('id')
             .single();
           if (error) throw error;
+          savedChatId = data.id;
           setCurrentChatId(data.id);
+          currentChatIdRef.current = data.id;
+        }
+      }
+
+      if (savedChatId) {
+        const summary = await persistStructuredChatSummary(savedChatId, messagesToSave);
+        if (summary) {
+          lastSummaryRef.current = summary;
+          lastSummarizedCountRef.current = messagesToSave.length;
         }
       }
       
@@ -1657,6 +2130,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   };
 
   const loadChat = async (chatId: string) => {
+    void persistLeavingChat(currentChatIdRef.current, messagesRef.current);
+    lastSummaryRef.current = null;
+    lastSummarizedCountRef.current = 0;
     try {
       const { data, error } = await supabase
         .from('ai_chat_history')
@@ -1673,6 +2149,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
       }
       setMessages(loaded);
+      pinnedVisibleCountRef.current = loaded.filter(
+        (msg) => isVisibleChatMessage(msg) && !isWelcomeMessage(msg),
+      ).length;
       setCurrentChatId(chatId);
       setShowHistoryPanel(false);
       toast.success(`Loaded: ${data.title}`);
@@ -1683,6 +2162,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   };
 
   const startNewChat = () => {
+    void persistLeavingChat(currentChatIdRef.current, messagesRef.current);
+    lastSummaryRef.current = null;
+    lastSummarizedCountRef.current = 0;
+    pinnedVisibleCountRef.current = 0;
     setMessages([{ 
       role: 'assistant', 
       content: userName
@@ -1736,6 +2219,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
   };
 
+  currentChatIdRef.current = currentChatId;
+  messagesRef.current = messages;
+
   // Load chat history when component opens
   useEffect(() => {
     if (isOpen) {
@@ -1746,10 +2232,61 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   // Auto-save chat when messages change
   useEffect(() => {
     if (messages.length > 1 && !isLoading) {
-      const saveTimeout = setTimeout(saveCurrentChat, 2000); // Save after 2 seconds of inactivity
+      lastActivityAtRef.current = Date.now();
+      const saveTimeout = setTimeout(saveCurrentChat, 2000);
       return () => clearTimeout(saveTimeout);
     }
   }, [messages, isLoading]);
+
+  const maybeRefreshSummary = useCallback(async (opts?: { closed?: boolean; force?: boolean }) => {
+    const chatId = currentChatIdRef.current;
+    const rows = messagesRef.current.filter(
+      (msg) =>
+        (msg.role === 'user' || msg.role === 'assistant') &&
+        msg.content &&
+        !isThinkingContent(msg.content),
+    );
+    if (!chatId || rows.length < 2) return;
+    const idleMs = Date.now() - lastActivityAtRef.current;
+    const changed = subjectChanged(lastSummaryRef.current, rows);
+    if (
+      !shouldRefreshChatSummary({
+        visibleMessageCount: rows.length,
+        lastSummarizedCount: lastSummarizedCountRef.current,
+        idleMs,
+        closed: opts?.closed,
+        force: opts?.force,
+        subjectChanged: changed,
+      })
+    ) {
+      return;
+    }
+    const summary = await persistStructuredChatSummary(chatId, rows);
+    if (summary) {
+      lastSummaryRef.current = summary;
+      lastSummarizedCountRef.current = rows.length;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isLoading || messages.length <= 1) return;
+    const timer = window.setTimeout(() => {
+      void maybeRefreshSummary({ force: true });
+    }, 4_000);
+    return () => window.clearTimeout(timer);
+  }, [messages, isLoading, maybeRefreshSummary]);
+
+  useEffect(() => {
+    if (isOpen) return;
+    void persistLeavingChat(currentChatIdRef.current, messagesRef.current);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void backfillMissingChatSummaries(40).then((written) => {
+      if (written > 0) loadChatHistory();
+    });
+  }, [isOpen]);
 
   useEffect(() => {
     if (!panelPos || isFullPage) return;
@@ -2155,6 +2692,21 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             animation: none;
           }
         }
+        .ai-plus-menu {
+          top: calc(4.1rem + max(1rem, env(safe-area-inset-top, 0px)) + 0.35rem);
+          max-height: calc(100% - 4.1rem - max(1rem, env(safe-area-inset-top, 0px)) - 6.4rem);
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          border: 0;
+          outline: 0;
+          box-shadow: none;
+          scrollbar-width: thin;
+        }
+        .ai-plus-menu:focus,
+        .ai-plus-menu:focus-visible {
+          outline: 0;
+          box-shadow: none;
+        }
         .ai-drawer-light {
           --ai-bg: #f9fafb;
           --ai-bg-raised: #ffffff;
@@ -2303,6 +2855,181 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           margin: 0;
           font-size: 0.875rem;
           color: var(--ai-text-muted);
+        }
+        .ai-signed-card {
+          overflow: hidden;
+        }
+        .ai-fullwidth-card-stack {
+          width: 100%;
+          max-width: none;
+        }
+        .ai-fullwidth-card-stack .ai-meeting-card {
+          width: 100%;
+        }
+        .ai-signed-table td.ai-signed-paid,
+        .ai-signed-table th.ai-signed-paid {
+          padding-left: 1rem;
+          white-space: nowrap;
+          color: var(--ai-text-muted);
+          font-variant-numeric: tabular-nums;
+        }
+        .ai-signed-table-wrap {
+          overflow-x: auto;
+          margin: 0 -0.15rem;
+        }
+        .ai-signed-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.875rem;
+        }
+        .ai-presence-employee {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.55rem;
+          min-width: 0;
+        }
+        .ai-presence-photo {
+          border-radius: 9999px;
+          object-fit: cover;
+        }
+        .ai-signed-table th {
+          font-size: 0.68rem;
+          font-weight: 700;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+          color: var(--ai-text-muted);
+          text-align: left;
+          padding: 0 0.65rem 0.5rem 0;
+          white-space: nowrap;
+        }
+        .ai-signed-table td {
+          padding: 0.5rem 0.65rem 0.5rem 0;
+          color: var(--ai-text);
+          vertical-align: middle;
+          border-top: 1px solid rgba(148, 163, 184, 0.18);
+        }
+        .ai-drawer-dark .ai-signed-table td {
+          border-top-color: rgba(255, 255, 255, 0.08);
+        }
+        .ai-signed-table th.ai-signed-value,
+        .ai-signed-table td.ai-signed-value {
+          text-align: right;
+          padding-right: 0;
+          white-space: nowrap;
+          font-variant-numeric: tabular-nums;
+        }
+        .ai-signed-footer {
+          display: flex;
+          justify-content: space-between;
+          gap: 0.75rem;
+          margin-top: 0.7rem;
+          font-size: 0.78rem;
+          font-weight: 600;
+          color: var(--ai-text-muted);
+        }
+        .ai-lead-roles-grid {
+          display: grid !important;
+          grid-template-columns: 1fr 1fr 1fr !important;
+          gap: 0.7rem;
+          width: 100%;
+        }
+        .ai-lead-role-cell.ai-meeting-card {
+          display: flex;
+          flex-direction: row;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.65rem;
+          min-width: 0;
+          padding: 0.75rem 0.8rem 0.8rem;
+        }
+        .ai-lead-role-main {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.35rem;
+          min-width: 0;
+          flex: 1;
+        }
+        .ai-lead-role-photo,
+        .ai-lead-role-photo-fallback {
+          height: 2.85rem;
+          width: 2.85rem;
+          flex-shrink: 0;
+          margin-left: auto;
+          border-radius: 9999px;
+          object-fit: cover;
+        }
+        .ai-lead-role-photo-fallback {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.72rem;
+          font-weight: 700;
+          color: #fff;
+        }
+        .ai-lead-role-title {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.45rem;
+          width: auto;
+          flex-shrink: 0;
+          font-size: 0.68rem;
+          font-weight: 700;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+          color: var(--ai-text-muted);
+        }
+        .ai-lead-role-icon {
+          height: 1.65rem;
+          width: 1.65rem;
+          flex-shrink: 0;
+        }
+        .ai-lead-role-name {
+          min-width: 0;
+          max-width: 100%;
+          color: var(--ai-text);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .ai-lead-summary-text,
+        .ai-lead-case-about {
+          font-size: 0.9375rem;
+          line-height: 1.6;
+        }
+        .ai-lead-summary-text .ai-chat-msg-text,
+        .ai-lead-risks .ai-chat-msg-text,
+        .ai-lead-case-about .ai-chat-msg-text {
+          margin: 0;
+        }
+        .ai-lead-summary-text .ai-chat-msg-text > :first-child,
+        .ai-lead-risks .ai-chat-msg-text > :first-child,
+        .ai-lead-case-about .ai-chat-msg-text > :first-child {
+          margin-top: 0;
+        }
+        .ai-lead-summary-text .ai-chat-msg-text > :last-child,
+        .ai-lead-risks .ai-chat-msg-text > :last-child,
+        .ai-lead-case-about .ai-chat-msg-text > :last-child {
+          margin-bottom: 0;
+        }
+        .ai-lead-risks {
+          border: 0;
+          outline: 0;
+          box-shadow: none;
+          border-radius: 0.85rem;
+          padding: 0.75rem 0.95rem;
+          background: rgba(248, 113, 113, 0.16);
+          color: var(--ai-text);
+        }
+        .ai-lead-risks .ai-meeting-card-title,
+        .ai-lead-case-about .ai-meeting-card-title {
+          margin-bottom: 0.45rem;
+        }
+        .ai-drawer-light .ai-lead-risks {
+          background: rgba(248, 113, 113, 0.14);
+        }
+        .ai-drawer-dark .ai-lead-risks {
+          background: rgba(248, 113, 113, 0.18);
         }
         .ai-cal-meeting-stack {
           display: grid;
@@ -2525,6 +3252,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           padding-bottom: 0.85rem;
         }
         .ai-bubble-copy {
+          position: relative;
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -2544,6 +3272,37 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-bubble-copy:hover {
           background: var(--ai-bg-overlay);
           color: var(--ai-text);
+        }
+        .ai-bubble-copy.is-liked {
+          color: #059669;
+        }
+        .ai-bubble-copy.is-disliked {
+          color: #e11d48;
+        }
+        .ai-bubble-copy.is-liked svg.thumb-main,
+        .ai-bubble-copy.is-disliked svg.thumb-main {
+          animation: ai-thumb-pop 0.38s cubic-bezier(0.22, 1.4, 0.36, 1);
+        }
+        @keyframes ai-thumb-pop {
+          0% { transform: scale(0.55); }
+          55% { transform: scale(1.28); }
+          100% { transform: scale(1); }
+        }
+        .ai-thumb-burst {
+          position: absolute;
+          left: 50%;
+          bottom: calc(100% - 0.15rem);
+          margin: 0;
+          pointer-events: none;
+          animation: ai-thumb-float 0.7s ease-out forwards;
+        }
+        .ai-thumb-burst svg {
+          width: 0.95rem;
+          height: 0.95rem;
+        }
+        @keyframes ai-thumb-float {
+          0% { opacity: 1; transform: translateX(-50%) translateY(6px) scale(0.55); }
+          100% { opacity: 0; transform: translateX(-50%) translateY(-16px) scale(1.2); }
         }
         .ai-bubble-copy:disabled {
           opacity: 0.4;
@@ -2790,6 +3549,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           font-weight: 500;
           letter-spacing: 0.01em;
           color: var(--ai-text-muted);
+          animation: ai-thinking-label-in 0.28s ease;
+        }
+        @keyframes ai-thinking-label-in {
+          from { opacity: 0; transform: translateY(3px); }
+          to { opacity: 1; transform: none; }
         }
         .ai-send-thinking {
           width: 1.05rem;
@@ -2810,6 +3574,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         @media (prefers-reduced-motion: reduce) {
           .ai-thinking-ring,
           .ai-thinking-dots span,
+          .ai-thinking-label,
           .ai-send-thinking {
             animation: none;
           }
@@ -2978,6 +3743,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           color: #f0f0f2;
         }
         .ai-drawer-dark .bg-white { background-color: var(--ai-bg-raised) !important; }
+        .ai-drawer-dark .ai-plus-menu {
+          background: #32343a !important;
+        }
+        .ai-drawer-dark .ai-plus-menu .hover\\:bg-gray-50:hover {
+          background: #3a3d45 !important;
+        }
         .ai-drawer-dark .bg-gray-50 { background-color: var(--ai-bg) !important; }
         .ai-drawer-dark .bg-gray-100 { background-color: var(--ai-bg-overlay) !important; }
         .ai-drawer-dark .text-gray-900,
@@ -3297,7 +4068,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             <button
               type="button"
               className="ai-close-btn"
-              onClick={onClose}
+              onClick={() => {
+                void persistLeavingChat(currentChatIdRef.current, messagesRef.current);
+                onClose();
+              }}
               aria-label="Close"
               title="Close"
             >
@@ -3371,6 +4145,24 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     className="w-full rounded-xl border-0 bg-gray-100 py-2 pl-10 pr-4 text-sm text-gray-900 placeholder:text-gray-500 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0"
                   />
                 </div>
+                <label className="mt-3 flex cursor-pointer items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
+                  <span>Teach RMQ (txt playbook)</span>
+                  <input
+                    type="file"
+                    accept=".txt,.md,.text"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = '';
+                      if (!file) return;
+                      void file.text().then(async (text) => {
+                        const result = await ingestKnowledgeText({ title: file.name, text, scope: 'user' });
+                        if (result?.chunks) toast.success(`Saved ${result.chunks} knowledge chunks`);
+                        else toast.error('Could not save knowledge file. Run the RMQ AI v1 SQL first.');
+                      });
+                    }}
+                  />
+                </label>
               </div>
               <div className="ai-history-scroll flex-1 overflow-y-auto bg-white p-3">
                 {isLoadingHistory ? (
@@ -3387,6 +4179,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   <div className="space-y-2">
                     {chatHistory.map((chat) => {
                       const isSelected = selectedHistoryIds.includes(chat.id);
+                      const historyPreview = formatChatHistoryPreview(chat.summary);
                       return (
                       <div
                         key={chat.id}
@@ -3416,7 +4209,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                           ) : null}
                           <div className="min-w-0 flex-1">
                             <h4 className="truncate text-sm font-medium text-gray-900">
-                              {chat.title}
+                              {formatChatHistoryPreview(chat.title) || chat.title}
                             </h4>
                             <div className="mt-1 flex items-center gap-2 text-xs text-gray-500">
                               <ClockIcon className="h-3 w-3" />
@@ -3424,11 +4217,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                               <span>•</span>
                               <span>{chat.message_count} messages</span>
                             </div>
-                            {chat.summary && (
+                            {historyPreview ? (
                               <p className="mt-1 line-clamp-2 text-xs text-gray-600">
-                                {chat.summary}
+                                {historyPreview}
                               </p>
-                            )}
+                            ) : null}
                             {chat.tags && chat.tags.length > 0 && (
                               <div className="mt-2 flex flex-wrap gap-1">
                                 {chat.tags.slice(0, 3).map((tag, idx) => (
@@ -3457,7 +4250,113 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             </div>
           )}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
-            {/* Messages */}
+            {attachMenuOpen ? (
+              <div
+                ref={plusMenuRef}
+                role="menu"
+                className="ai-plus-menu absolute left-4 z-20 w-80 rounded-2xl bg-white py-1.5 md:left-5"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  <PlusMenuImagesIcon className="h-5 w-5 shrink-0" />
+                  <span className="min-w-0 leading-snug">
+                    <span className="text-sm font-medium text-gray-900">Images</span>
+                    {' '}
+                    <span className="text-xs text-gray-500">Attach photos to this chat</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    onClose();
+                    navigate('/documents');
+                  }}
+                >
+                  <PlusMenuDocumentsIcon className="h-5 w-5 shrink-0" />
+                  <span className="min-w-0 leading-snug">
+                    <span className="text-sm font-medium text-gray-900">Documents</span>
+                    {' '}
+                    <span className="text-xs text-gray-500">Open the documents folder</span>
+                  </span>
+                </button>
+                <div className="my-1 border-t border-gray-100" />
+                <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                  Client links
+                </p>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                  onClick={() => void insertCrmDocumentLink('contract')}
+                >
+                  <DocumentCheckIcon className="h-5 w-5 shrink-0 text-gray-500" />
+                  <span className="min-w-0 leading-snug">
+                    <span className="text-sm font-medium text-gray-900">Contract</span>
+                    {' '}
+                    <span className="text-xs text-gray-500">Insert this client’s signing link</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                  onClick={() => void insertCrmDocumentLink('poa')}
+                >
+                  <DocumentTextIcon className="h-5 w-5 shrink-0 text-gray-500" />
+                  <span className="min-w-0 leading-snug">
+                    <span className="text-sm font-medium text-gray-900">POA</span>
+                    {' '}
+                    <span className="text-xs text-gray-500">Insert this client’s POA link</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                  onClick={() => void insertClientPortalLink()}
+                >
+                  <LinkIcon className="h-5 w-5 shrink-0 text-gray-500" />
+                  <span className="min-w-0 leading-snug">
+                    <span className="text-sm font-medium text-gray-900">Portal</span>
+                    {' '}
+                    <span className="text-xs text-gray-500">Insert this client’s portal link</span>
+                  </span>
+                </button>
+                <div className="my-1 border-t border-gray-100" />
+                <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                  Quick asks
+                </p>
+                {READY_ASKS.map(({ label, hint, prompt, Icon }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
+                    onClick={() => {
+                      setAttachMenuOpen(false);
+                      handleQuickAction(prompt);
+                    }}
+                  >
+                    <Icon className="h-5 w-5 shrink-0 text-gray-500" />
+                    <span className="min-w-0 leading-snug">
+                      <span className="text-sm font-medium text-gray-900">{label}</span>
+                      {' '}
+                      <span className="text-xs text-gray-500">{hint}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div 
               className="ai-chat-under-header ai-messages-scroll scrollbar-hide flex min-h-0 flex-1 flex-col overflow-y-auto bg-gray-50 px-4 pb-28 md:px-5 md:pb-32"
               style={{
@@ -3471,31 +4370,59 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   hasLead={onClientPage}
                   disabled={isLoading}
                   onAction={handleQuickAction}
+                  signals={
+                    onClientPage && openClientChip?.id
+                      ? buildLeadSignals({
+                          noHandler: !openClientChip?.handler,
+                        })
+                      : []
+                  }
                 />
               ) : (
               <div className="space-y-4">
-              {messages.filter((msg) => isVisibleChatMessage(msg) && !isWelcomeMessage(msg)).map((msg, idx) => {
+              {messages.filter((msg) => isVisibleChatMessage(msg) && !isWelcomeMessage(msg)).map((msg, idx, visibleMsgs) => {
+                let lastAssistantIdx = -1;
+                for (let i = visibleMsgs.length - 1; i >= 0; i -= 1) {
+                  if (visibleMsgs[i].role === 'assistant') {
+                    lastAssistantIdx = i;
+                    break;
+                  }
+                }
+                const isLatestAnswer = msg.role === 'assistant' && idx === lastAssistantIdx;
                 const bubbleKey = `${idx}-${msg.role}`;
                 const thinking = isThinkingMessage(msg.content);
                 const asEmailDraft =
                   Boolean(msg.draftAction) || looksLikeEmailDraft(plainTextFromMessage(msg));
                 const assistantText = asEmailDraft
                   ? stripAiEmailSignature(String(msg.content || ''))
-                  : msg.calendarMeetings
+                  : msg.calendarMeetings || msg.signedContracts || msg.paidPayments || msg.missedComms || msg.expenses || msg.employeePresence
                     ? calendarDayIntro(String(msg.content || ''))
                     : String(msg.content || '');
+                const summaryText = msg.leadSummary ? String(msg.content || '') : '';
                 const canCopy =
                   msg.role === 'assistant' &&
                   !thinking &&
                   !isWelcomeMessage(msg) &&
                   Boolean(plainTextFromMessage(msg));
                 return (
-                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  key={idx}
+                  ref={isLatestAnswer ? latestAnswerRef : undefined}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} ${
+                    msg.paidPayments || msg.signedContracts || msg.missedComms ? 'w-full' : ''
+                  } ${isLatestAnswer ? 'scroll-mt-3' : ''}`}
+                >
                   <div
                     className={
                       msg.role === 'user'
                         ? 'ai-bubble-user max-w-[85%] rounded-2xl px-5 py-4'
-                        : `ai-bubble-assistant ${msg.calendarMeetings ? 'max-w-full' : 'max-w-[92%]'} ${thinking ? 'ai-bubble-thinking' : ''}`
+                        : `ai-bubble-assistant ${
+                            msg.paidPayments || msg.signedContracts || msg.missedComms
+                              ? 'w-full max-w-full'
+                              : msg.calendarMeetings || msg.expenses || msg.employeePresence || msg.leadSummary
+                                ? 'max-w-full'
+                                : 'max-w-[92%]'
+                          } ${thinking ? 'ai-bubble-thinking' : ''}`
                     }
                     style={{ fontSize: '0.9375rem', lineHeight: 1.6 }}
                   >
@@ -3503,16 +4430,16 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       msg.content.map((item, i) => {
                         if (item.type === 'text') {
                           return (
-                            <div key={i} className={`ai-chat-msg-text max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'} ${asEmailDraft ? '' : 'prose'}`}>
-                              {formatMessageContent(
+                            <React.Fragment key={i}>
+                              {renderAssistantWithRisks(
                                 asEmailDraft ? stripAiEmailSignature(item.text) : item.text,
                                 {
-                                  employeePhotos: !isWelcomeMessage(msg),
+                                  role: msg.role,
                                   asEmailDraft,
-                                  stageBadges: msg.role === 'assistant' && !asEmailDraft,
+                                  welcome: isWelcomeMessage(msg),
                                 },
                               )}
-                            </div>
+                            </React.Fragment>
                           );
                         }
                         if (item.type === 'image_url') {
@@ -3521,24 +4448,50 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         return null;
                       })
                     ) : thinking ? (
-                      <ChatThinkingIndicator lookingUp={msg.content === 'Looking up CRM data...'} />
-                    ) : assistantText ? (
-                      <div className={`ai-chat-msg-text max-w-none ${msg.role === 'user' ? 'text-white' : 'text-gray-800'} ${asEmailDraft ? '' : 'prose'}`}>
-                        {formatMessageContent(
-                          assistantText,
-                          {
-                            employeePhotos: !isWelcomeMessage(msg),
-                            asEmailDraft,
-                            stageBadges: msg.role === 'assistant' && !asEmailDraft,
-                          },
-                        )}
-                      </div>
+                      <ChatThinkingIndicator label={thinkingLabelFromContent(msg.content)} />
+                    ) : assistantText && !msg.leadSummary ? (
+                      renderAssistantWithRisks(assistantText, {
+                        role: msg.role,
+                        asEmailDraft,
+                        welcome: isWelcomeMessage(msg),
+                      })
                     ) : null}
                     {msg.role === 'assistant' && msg.meetingCard ? (
                       <ChatMeetingCards data={msg.meetingCard} />
                     ) : null}
                     {msg.role === 'assistant' && msg.calendarMeetings ? (
-                      <ChatCalendarMeetingCards data={msg.calendarMeetings} employees={chatEmployees} />
+                      <ChatCalendarMeetingCards data={msg.calendarMeetings} employees={chatEmployees} dark={isDarkTheme} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.signedContracts ? (
+                      <ChatSignedContractsTable data={msg.signedContracts} employees={chatEmployees} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.paidPayments ? (
+                      <ChatPaidPaymentsTable data={msg.paidPayments} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.missedComms ? (
+                      <ChatMissedCommsTable data={msg.missedComms} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.expenses ? (
+                      <ChatExpensesTable data={msg.expenses} employees={chatEmployees} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.employeePresence ? (
+                      <ChatEmployeePresenceTable data={msg.employeePresence} employees={chatEmployees} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.leadSummary ? (
+                      <ChatLeadSummaryCards
+                        data={msg.leadSummary}
+                        employees={chatEmployees}
+                        dark={isDarkTheme}
+                        summaryText={summaryText}
+                        renderText={(text) => (
+                          <div className="ai-chat-msg-text max-w-none text-gray-800 prose">
+                            {formatMessageContent(text, {
+                              employeePhotos: !isWelcomeMessage(msg),
+                              stageBadges: true,
+                            })}
+                          </div>
+                        )}
+                      />
                     ) : null}
                     {msg.role === 'assistant' && msg.attachments?.length ? (
                       <div className="mt-3 flex flex-col gap-2">
@@ -3591,13 +4544,75 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                           <button
                             type="button"
                             className="ai-bubble-copy"
-                            onClick={() => openDraftInEmail(msg)}
+                            onClick={() => {
+                              openDraftInEmail(msg);
+                              void recordRecommendationOutcome(`draft-${msg.id || bubbleKey}`, 'accepted');
+                            }}
                             title="Open in Email"
                             aria-label="Open draft in Email"
                           >
                             <EnvelopeIcon className="h-5 w-5" strokeWidth={1.75} />
                           </button>
                         ) : null}
+                        <button
+                          type="button"
+                          className={`ai-bubble-copy ${messageFeedback[msg.id || bubbleKey] === 'up' ? 'is-liked' : ''}`}
+                          title="Good answer"
+                          aria-label="Thumbs up"
+                          onClick={() => {
+                            const id = msg.id || bubbleKey;
+                            setMessageFeedback((prev) => ({ ...prev, [id]: 'up' }));
+                            setThumbBurstAt((prev) => ({ ...prev, [id]: Date.now() }));
+                            void persistFeedback({
+                              conversationId: currentChatId,
+                              messageId: id,
+                              rating: 'up',
+                            });
+                            if (msg.draftAction) {
+                              void recordRecommendationOutcome(`draft-${id}`, 'accepted');
+                            }
+                          }}
+                        >
+                          {messageFeedback[msg.id || bubbleKey] === 'up' && thumbBurstAt[msg.id || bubbleKey] ? (
+                            <span key={thumbBurstAt[msg.id || bubbleKey]} className="ai-thumb-burst" aria-hidden>
+                              <HandThumbUpSolid />
+                            </span>
+                          ) : null}
+                          {messageFeedback[msg.id || bubbleKey] === 'up' ? (
+                            <HandThumbUpSolid className="thumb-main h-5 w-5" />
+                          ) : (
+                            <HandThumbUpIcon className="thumb-main h-5 w-5" strokeWidth={1.75} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className={`ai-bubble-copy ${messageFeedback[msg.id || bubbleKey] === 'down' ? 'is-disliked' : ''}`}
+                          title="Needs improvement"
+                          aria-label="Thumbs down"
+                          onClick={() => {
+                            const id = msg.id || bubbleKey;
+                            setMessageFeedback((prev) => ({ ...prev, [id]: 'down' }));
+                            setThumbBurstAt((prev) => ({ ...prev, [id]: Date.now() }));
+                            void persistFeedback({
+                              conversationId: currentChatId,
+                              messageId: id,
+                              rating: 'down',
+                              reason: 'other',
+                              failureOrigin: inferFailureOrigin('other'),
+                            });
+                          }}
+                        >
+                          {messageFeedback[msg.id || bubbleKey] === 'down' && thumbBurstAt[msg.id || bubbleKey] ? (
+                            <span key={thumbBurstAt[msg.id || bubbleKey]} className="ai-thumb-burst" aria-hidden>
+                              <HandThumbDownSolid />
+                            </span>
+                          ) : null}
+                          {messageFeedback[msg.id || bubbleKey] === 'down' ? (
+                            <HandThumbDownSolid className="thumb-main h-5 w-5" />
+                          ) : (
+                            <HandThumbDownIcon className="thumb-main h-5 w-5" strokeWidth={1.75} />
+                          )}
+                        </button>
                       </div>
                     ) : null}
                   </div>
@@ -3655,109 +4670,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     >
                       <PlusIcon className="h-5 w-5" />
                     </button>
-                    {attachMenuOpen ? (
-                      <div
-                        role="menu"
-                        className="absolute bottom-full left-0 z-50 mb-2 w-80 rounded-2xl border border-gray-100 bg-white py-1.5 shadow-lg"
-                      >
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                          onClick={() => {
-                            setAttachMenuOpen(false);
-                            fileInputRef.current?.click();
-                          }}
-                        >
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600">
-                            <PhotoIcon className="h-4 w-4" />
-                          </span>
-                          <span className="min-w-0 leading-snug">
-                            <span className="text-sm font-medium text-gray-900">Images</span>
-                            {' '}
-                            <span className="text-xs text-gray-500">Attach photos to this chat</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                          onClick={() => {
-                            setAttachMenuOpen(false);
-                            onClose();
-                            navigate('/documents');
-                          }}
-                        >
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
-                            <DocumentArrowUpIcon className="h-4 w-4" />
-                          </span>
-                          <span className="min-w-0 leading-snug">
-                            <span className="text-sm font-medium text-gray-900">Documents</span>
-                            {' '}
-                            <span className="text-xs text-gray-500">Open the documents folder</span>
-                          </span>
-                        </button>
-                        <div className="my-1 border-t border-gray-100" />
-                        <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                          Client links
-                        </p>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                          onClick={() => void insertCrmDocumentLink('contract')}
-                        >
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
-                            <DocumentCheckIcon className="h-4 w-4" />
-                          </span>
-                          <span className="min-w-0 leading-snug">
-                            <span className="text-sm font-medium text-gray-900">Contract</span>
-                            {' '}
-                            <span className="text-xs text-gray-500">Insert this client’s signing link</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                          onClick={() => void insertCrmDocumentLink('poa')}
-                        >
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-700">
-                            <DocumentTextIcon className="h-4 w-4" />
-                          </span>
-                          <span className="min-w-0 leading-snug">
-                            <span className="text-sm font-medium text-gray-900">POA</span>
-                            {' '}
-                            <span className="text-xs text-gray-500">Insert this client’s POA link</span>
-                          </span>
-                        </button>
-                        <div className="my-1 border-t border-gray-100" />
-                        <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                          Quick asks
-                        </p>
-                        {READY_ASKS.map(({ label, hint, prompt, Icon, badge }) => (
-                          <button
-                            key={label}
-                            type="button"
-                            role="menuitem"
-                            className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                            onClick={() => {
-                              setAttachMenuOpen(false);
-                              handleQuickAction(prompt);
-                            }}
-                          >
-                            <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${badge}`}>
-                              <Icon className="h-4 w-4" />
-                            </span>
-                            <span className="min-w-0 leading-snug">
-                              <span className="text-sm font-medium text-gray-900">{label}</span>
-                              {' '}
-                              <span className="text-xs text-gray-500">{hint}</span>
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
                   </div>
                   <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center">
                     {isVoiceRecording || isVoiceListening || isVoiceBusy ? (

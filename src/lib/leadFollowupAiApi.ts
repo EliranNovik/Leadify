@@ -306,6 +306,7 @@ export type FollowupDocumentLinks = {
   contractSigningUrl: string | null;
   poaUrl: string | null;
   invoiceUrl: string | null;
+  portalUrl?: string | null;
 };
 
 function firstHttpsAfterLabel(caseFile: string, label: string, preferUnsigned: boolean): string | null {
@@ -326,10 +327,13 @@ function firstHttpsAfterLabel(caseFile: string, label: string, preferUnsigned: b
 }
 
 export function parseFollowupDocumentLinks(caseFile: string): FollowupDocumentLinks {
+  const portalLine = String(caseFile || '').match(/portal_link:\s*(https:\/\/\S+)/i);
+  const portalUrl = (portalLine?.[1] || '').replace(/[.,;]+$/, '') || null;
   return {
     contractSigningUrl: firstHttpsAfterLabel(caseFile, 'signing_link', true),
     poaUrl: firstHttpsAfterLabel(caseFile, 'poa_link', true),
     invoiceUrl: firstHttpsAfterLabel(caseFile, 'invoice_link', true),
+    portalUrl: portalUrl && portalUrl.startsWith('https://') ? portalUrl : null,
   };
 }
 
@@ -338,6 +342,7 @@ export function formatRequiredDocumentLinksBlock(links: FollowupDocumentLinks): 
   if (links.contractSigningUrl) lines.push(`- contract_signing: ${links.contractSigningUrl}`);
   if (links.poaUrl) lines.push(`- poa: ${links.poaUrl}`);
   if (links.invoiceUrl) lines.push(`- invoice: ${links.invoiceUrl}`);
+  if (links.portalUrl) lines.push(`- portal: ${links.portalUrl}`);
   if (!lines.length) return '';
   return `REQUIRED LINKS — copy the exact https URL onto its own line when the staff asks for that document. Never invent a URL. Never use example.com.\n${lines.join('\n')}`;
 }
@@ -372,8 +377,17 @@ export function applyCrmDocumentLinksToEmailDraft(
   const wantsContract = /contract|agreement|sign(?:ing)?|digital\s+link|signing\s+link|חוזה|הסכם/.test(request);
   const wantsPoa = /\bpoa\b|power of attorney|vollmacht|ייפוי\s*כוח/.test(request);
   const wantsInvoice = /proforma|invoice|payment\s+(?:link|request|reminder)|חשבונית/.test(request);
+  const wantsPortal = /portal|פורטל|access code|access_code/.test(request);
+  const portalPlaceholderRe =
+    /\[(?:insert\s+)?(?:the\s+)?client\s+portal\s+link\]|\{+\s*portal_link\s*\}+|portal_link\s*=\s*\(none\)/gi;
 
   let next = draft;
+  if (links.portalUrl) {
+    next = next.replace(portalPlaceholderRe, links.portalUrl);
+    if (wantsPortal && !next.includes(links.portalUrl)) {
+      next = insertUrlBeforeSignoff(next, links.portalUrl);
+    }
+  }
   for (const item of [
     { url: links.contractSigningUrl, wants: wantsContract, hasReal: REAL_CONTRACT_URL_RE },
     { url: links.poaUrl, wants: wantsPoa, hasReal: REAL_POA_URL_RE },

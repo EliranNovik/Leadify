@@ -3,6 +3,7 @@ import { corsHeaders } from '../_shared/cors.ts';
 import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
+const OPENAI_FALLBACK_MODEL = Deno.env.get('OPENAI_FALLBACK_MODEL') || 'gpt-4o-mini';
 
 type ChatPart = { type: string; text?: string; image_url?: { url: string } };
 
@@ -136,6 +137,8 @@ serve(async (req) => {
         'When listing leads or meetings, ALWAYS copy the lead number from the tool as a bare token so it stays clickable. Never write Unnamed if the tool gave a number or Internal meeting. Never list a client by name only. ' +
         'When they ask for my day, what to do now, or my follow-ups, ALWAYS call list_my_sales_day. Reply as a short numbered list with lead numbers and one next action each. ' +
         'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. The draft must be detailed and professional: use the case file, write 4–7 short paragraphs, never a short check-in. Stop after Best regards / בברכה. Do not add a signature. ' +
+        'When they ask for the client portal, portal link, portal password, or how the client signs in, ALWAYS call get_client_portal_access. Login needs the portal_link, the client email, and the password. Never invent a URL or write [Insert client portal link]. ' +
+        'If the password is missing or the portal is not enabled, say so. When they ask to generate a password or enable the portal, ALWAYS call setup_client_portal, then share the real link, email, and password. ' +
         'When they ask to wrap up a meeting or write the meeting summary, ALWAYS call wrap_up_meeting. Write a detailed professional summary from the case file, not a 2-line recap. Call set_follow_up to save a date. Call draft_client_message with intent=price_offer for an offer email. ' +
         'When they ask to prep a meeting or prep my next meeting, ALWAYS call prep_meeting. ' +
         'When they ask who has not answered or who is stale, ALWAYS call list_stale_sales_leads. ' +
@@ -151,10 +154,17 @@ serve(async (req) => {
         'When they ask about signed contracts, closed deals, who closed, or how many clients signed in a date range, ALWAYS call list_signed_contracts first. ' +
         'Closed deals use the lead closer employee role. Pass closer= the name as typed; the tool fuzzy-matches typos and closest employees (Yehonatan → Yehonatan D.). Never put the closer name in query — query is the client. ' +
         'That tool covers both new leads (leads.closer + contracts.client_id) and legacy leads (leads_lead.closer_id + contracts.legacy_id) using leads_leadstage stage 60 as the sign date. ' +
+        'Reply with one short sentence only. The UI shows lead, client name, closer, and total value in a table. Do not list those rows in prose. ' +
         'Do not say there are no signed/closed contracts unless list_signed_contracts returned none. Do not query only the contracts table for those stats. ' +
+        'When they ask how many payments went through, done payments, paid payments, money collected, or who paid today, ALWAYS call list_paid_payments first. Pass date=today when they say today. ' +
+        'When they ask about missed WhatsApp, missed calls, unread emails, or missed interactions from their clients, ALWAYS call list_missed_client_comms. Do not say you cannot verify those. ' +
+        'When they ask where the office is, the address, or what type of office we are, ALWAYS call search_firm_knowledge with short keywords such as office address or Ramat Gan. Quote the address from the chunks. ' +
+        'Reply with one short sentence only. The UI shows lead, client, amount, and paid time in a table. Do not list those rows in prose. Do not say the CRM query failed. ' +
         'When they ask who is available now, who is in an office (Ramat Gan, Jerusalem, Home), who clocked in or out, or where an employee clocked in, ALWAYS call list_employee_presence first. ' +
+        'When they ask who is not clocked in or who is not available, call list_employee_presence with filter=not_available. That table is everyone not clocked in, plus people on sick or vacation only — not general absence. ' +
         'Pass office= the workplace as typed (e.g. Ramat Gan). Pass employee= only when asking about a specific person. Do not guess presence — use the tool. ' +
         'Available at an office means clocked in at that workplace right now and not on approved leave or a current unavailability window. ' +
+        'Reply with one short sentence only. The UI shows employee, place, clocked in, out, and absent category in a table. Do not list those names in prose. ' +
         'Do not say you cannot access employee availability or clock-in data. Do not say nobody is available unless list_employee_presence returned none. ' +
         'When they ask for Excel, a spreadsheet, a downloadable table, or to export a list, ALWAYS call create_excel_sheet. ' +
         'For office availability exports, pass source=employee_presence and office= as typed. Use filter=available when they only want people available now. Do not invent a download URL — paste the exact markdown from the tool result. ' +
@@ -163,7 +173,7 @@ serve(async (req) => {
         'When they ask about expenses, spend, who added a cost, expense category, office expenses, salaries, payroll, external firms, marketing, rent, or partner draws, ALWAYS call list_expenses first. ' +
         'Pass date=today when they say today. Pass kind= only to filter a summary card (office, salaries, other_firm, marketing, rent, lead, subcontractor) or kind=all. Pass added_by= only if they named who created the expense. ' +
         'KIND is the summary card (Client, Office, …). CATEGORY is the table CATEGORY column (Courier and delivery, government fee, translation, …). Never answer a category question with KIND. Quote category= and added_by= from LINE ITEMS. Never invent an employee or a fee name. ' +
-        'When they ask what expenses were recorded, list the LINE ITEMS (amount, category, added_by, lead). If they only asked for the total, reply with one line: TOTAL: NIS X. ' +
+        'When they ask what expenses were recorded, ALWAYS call list_expenses. Reply with one short sentence only. The UI shows lead, category, amount, and by in a table. Do not list those rows in prose. If they only asked for the total, reply with one line using a currency icon (₪ $ € £). ' +
         'Do not say you cannot see expenses. Use the tool; do not invent amounts. ' +
         'When they ask about income, profit, loss, how the firm is doing, burn, or whether spending is too high, ALWAYS call get_firm_financials. ' +
         'Income is the Sales Contribution total: 90% of invoiced due in the date range (same large number as Sales Contribution). Compare it to all expenses and give practical advice (which categories are largest, expense ratio vs income). ' +
@@ -176,24 +186,39 @@ serve(async (req) => {
     const openaiMessages = hasSystem ? normalized : [systemMessage, ...normalized];
     const tools = Array.isArray(body.tools) ? body.tools : [];
 
-    const openaiRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(buildChatCompletionBody({
-        messages: openaiMessages,
-        maxTokens: 4096,
-        temperature: 0.4,
-        ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
-      })),
-    });
+    const completionPayload = {
+      messages: openaiMessages,
+      maxTokens: 4096,
+      temperature: 0.4,
+      ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+    };
 
-    const data = await openaiRes.json();
+    const callModel = async (overrideModel?: string) => {
+      const body = buildChatCompletionBody(completionPayload);
+      if (overrideModel) body.model = overrideModel;
+      return fetch(OPENAI_CHAT_COMPLETIONS_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    };
+
+    let openaiRes = await callModel();
+    let data = await openaiRes.json();
+    if (!openaiRes.ok) {
+      console.warn('Primary chat model failed, trying fallback', data?.error?.message);
+      openaiRes = await callModel(OPENAI_FALLBACK_MODEL);
+      data = await openaiRes.json();
+    }
     if (!openaiRes.ok) {
       const errMsg = data?.error?.message || `OpenAI request failed (${openaiRes.status})`;
-      return new Response(JSON.stringify({ error: errMsg }), {
+      return new Response(JSON.stringify({
+        error: errMsg,
+        fallback: 'Use CRM search and existing UI while the assistant is unavailable.',
+      }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });

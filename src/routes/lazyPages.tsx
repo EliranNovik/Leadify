@@ -131,3 +131,4 @@ export const LazyPublicBookingPage = lazy(() => import('../pages/PublicBookingPa
 export const LazyEntryKioskPage = lazy(() => import('../pages/EntryKioskPage'));
 export const LazyClockInEntryPage = lazy(() => import('../pages/ClockInEntryPage'));
 export const LazyInternalMeetingDocumentsPage = lazy(() => import('../pages/InternalMeetingDocumentsPage'));
+export const LazyRmqAiControlPage = lazy(() => import('../pages/RmqAiControlPage'));

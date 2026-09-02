@@ -67,7 +67,14 @@ import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { getValidTeamsLink as getValidMeetingJoinLink } from '../lib/meetingJoinLink';
 
-import { resolveCategoryAndDepartment, shouldUseScoreboardOtherColumn } from '../lib/resolveCategoryDepartment';
+import {
+  buildCategoryNameToDataMap,
+  canonicalizeScoreboardDepartment,
+  fetchCategoriesWithDepartments,
+  formatScoreboardCategoryLabel,
+  resolveCategoryAndDepartment,
+  shouldUseScoreboardOtherColumn,
+} from '../lib/resolveCategoryDepartment';
 import { hasDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
 import { useReportDashboardWelcomeReady } from '../contexts/DashboardWelcomeReadyContext';
 import DashboardScoreboardDealsModal, {
@@ -210,15 +217,8 @@ function leadDisplayNumber(lead: any, isNewLead?: boolean): string {
   return isNewLead ? `L${lead.id}` : String(lead.id ?? '');
 }
 
-function leadCategoryLabel(lead: any): string {
-  const misc = Array.isArray(lead?.misc_category) ? lead.misc_category[0] : lead?.misc_category;
-  const subName = (misc?.name || lead?.category || '').toString().trim();
-  const main = Array.isArray(misc?.misc_maincategory)
-    ? misc.misc_maincategory[0]
-    : misc?.misc_maincategory;
-  const mainName = (main?.name || '').toString().trim();
-  if (mainName && subName) return `${mainName} > ${subName}`;
-  return mainName || subName || '—';
+function leadCategoryLabel(lead: any, categories?: any[] | null): string {
+  return formatScoreboardCategoryLabel(lead, categories);
 }
 
 function unwrapEmployeeRel(rel: any): { id?: number | string; display_name?: string; photo_url?: string | null; photo?: string | null } | null {
@@ -3464,7 +3464,7 @@ const Dashboard: React.FC = () => {
     costBreakdownByDeptName: Record<string, DashboardDeptCostBreakdown>;
     selectedMonthName: string;
   }> => {
-    const periodKey = `${selectedYear}-${selectedMonth}-cost-hs-mfp-v2`;
+    const periodKey = `${selectedYear}-${selectedMonth}-cost-hs-mfp-v3-cat-canon`;
     if (
       departmentsCategoriesCache &&
       departmentsCategoriesCache.periodKey === periodKey &&
@@ -3479,21 +3479,21 @@ const Dashboard: React.FC = () => {
     const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
     const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
 
-    const [{ data: importantDepartments, error: importantError }, { data: mergedTargetDepts, error: mergedError }, { data: allCategoriesData, error: categoriesError }] = await Promise.all([
+    const [
+      { data: importantDepartments, error: importantError },
+      { data: mergedTargetDepts, error: mergedError },
+      allCategoriesData,
+    ] = await Promise.all([
       supabase.from('tenant_departement').select('id, name, min_income, important').eq('important', 't').order('id'),
       supabase.from('tenant_departement').select('id, name, min_income, important').in('id', mergedTargetDeptIds).order('id'),
-      supabase.from('misc_category').select(`
-        id, name, parent_id,
-        misc_maincategory!parent_id(
-          id, name, department_id,
-          tenant_departement!fk_misc_maincategory_department_id(id, name)
-        )
-      `).order('name', { ascending: true })
+      fetchCategoriesWithDepartments(supabase).catch((err) => {
+        console.error('Error fetching categories for department mapping:', err);
+        return [] as any[];
+      }),
     ]);
 
     if (importantError) throw importantError;
     if (mergedError) console.error('Error fetching merged target departments:', mergedError);
-    if (categoriesError) console.error('Error fetching categories for department mapping:', categoriesError);
 
     const departmentMap = new Map<number, any>();
     (importantDepartments || []).forEach((dept: any) => {
@@ -3537,10 +3537,7 @@ const Dashboard: React.FC = () => {
       }));
     }
 
-    const categoryNameToDataMap = new Map<string, any>();
-    (allCategoriesData || []).forEach((category: any) => {
-      if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
-    });
+    const categoryNameToDataMap = buildCategoryNameToDataMap(allCategoriesData);
 
     const targetMap: { [key: number]: number } = {};
     const costByDeptName: Record<string, number> = {};
@@ -3643,22 +3640,13 @@ const Dashboard: React.FC = () => {
         departmentTargets.sort((a, b) => a.id - b.id);
         departmentIds = departmentTargets.map(dept => dept.id);
 
-        const { data: categoriesData, error: categoriesError } = await supabase
-          .from('misc_category')
-          .select(`
-            id, name, parent_id,
-            misc_maincategory!parent_id(
-              id, name, department_id,
-              tenant_departement!fk_misc_maincategory_department_id(id, name)
-            )
-          `)
-          .order('name', { ascending: true });
-        if (categoriesError) console.error('Error fetching categories for department mapping:', categoriesError);
-        allCategoriesData = categoriesData || null;
-        categoryNameToDataMap = new Map<string, any>();
-        (allCategoriesData || []).forEach((category: any) => {
-          if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
-        });
+        try {
+          allCategoriesData = await fetchCategoriesWithDepartments(supabase);
+        } catch (categoriesError) {
+          console.error('Error fetching categories for department mapping:', categoriesError);
+          allCategoriesData = null;
+        }
+        categoryNameToDataMap = buildCategoryNameToDataMap(allCategoriesData);
 
         try {
           const scoreboardRefs = departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') }));
@@ -3788,6 +3776,7 @@ const Dashboard: React.FC = () => {
             `;
       const AGREEMENT_LEGACY_LEAD_SELECT = `
               id, lead_number, name, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id, closer_id, case_handler_id,
+              category, category_id,
               closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
               handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
             `;
@@ -3958,12 +3947,15 @@ const Dashboard: React.FC = () => {
       });
 
       const resolveLeadDepartment = (lead: any) =>
-        resolveCategoryAndDepartment(
-          lead?.category,
-          lead?.category_id,
-          lead?.misc_category,
-          allCategoriesData,
-          categoryNameToDataMap,
+        canonicalizeScoreboardDepartment(
+          resolveCategoryAndDepartment(
+            lead?.category,
+            lead?.category_id,
+            lead?.misc_category,
+            allCategoriesData,
+            categoryNameToDataMap,
+          ),
+          departmentTargets,
         );
 
       // BOI as-of conversion for Agreement Signed (rate available on sign date)
@@ -4046,7 +4038,7 @@ const Dashboard: React.FC = () => {
             date: recordDateOnly,
             amountNis: amountAfterFee,
             subcontractorFeeNis: subcontractorFeeNIS,
-            categoryLabel: leadCategoryLabel(lead),
+            categoryLabel: leadCategoryLabel(lead, allCategoriesData),
             ...leadRoleFields(lead, 'closer'),
             isNewLead: !!record.isNewLead,
           };
@@ -4150,7 +4142,7 @@ const Dashboard: React.FC = () => {
               date: recordDateOnly,
               amountNis: amountAfterFee,
               subcontractorFeeNis: subcontractorFeeNIS,
-              categoryLabel: leadCategoryLabel(lead),
+              categoryLabel: leadCategoryLabel(lead, allCategoriesData),
               ...leadRoleFields(lead, 'closer'),
               isNewLead: !!record.isNewLead,
             });
@@ -4416,18 +4408,12 @@ const Dashboard: React.FC = () => {
         departmentTargets = deptTargets.map((dept: any) => (dept.id === 20 ? { ...dept, name: 'Commercial & Civil' } : dept));
         departmentIds = departmentTargets.map((d: any) => d.id);
 
-        const { data: categoriesData, error: categoriesError } = await supabase
-          .from('misc_category')
-          .select(`
-            id, name, parent_id,
-            misc_maincategory!parent_id(
-              id, name, department_id,
-              tenant_departement!fk_misc_maincategory_department_id(id, name)
-            )
-          `)
-          .order('name', { ascending: true });
-        if (categoriesError) console.error('Error fetching categories for invoiced department mapping:', categoriesError);
-        allCategoriesData = categoriesData || null;
+        try {
+          allCategoriesData = await fetchCategoriesWithDepartments(supabase);
+        } catch (categoriesError) {
+          console.error('Error fetching categories for invoiced department mapping:', categoriesError);
+          allCategoriesData = null;
+        }
 
         try {
           const scoreboardRefs = departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') }));
@@ -4447,12 +4433,7 @@ const Dashboard: React.FC = () => {
         }
       }
 
-      const categoryNameToDataMap = shared?.categoryNameToDataMap ?? new Map<string, any>();
-      if (!shared && allCategoriesData) {
-        (allCategoriesData || []).forEach((category: any) => {
-          if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
-        });
-      }
+      const categoryNameToDataMap = shared?.categoryNameToDataMap ?? buildCategoryNameToDataMap(allCategoriesData);
 
       // BOI as-of conversion for invoiced totals (paid → payment time; unpaid → due date).
       // Start loading rates in parallel with the payment queries below.
@@ -4746,12 +4727,15 @@ const Dashboard: React.FC = () => {
         const lead = newLeadsMap.get(payment.lead_id);
         if (!lead) continue;
 
-        const { departmentId, mainCategoryId, mainCategoryName } = resolveCategoryAndDepartment(
-          lead.category,
-          lead.category_id,
-          lead.misc_category,
-          allCategoriesData,
-          categoryNameToDataMap,
+        const { departmentId, mainCategoryId, mainCategoryName } = canonicalizeScoreboardDepartment(
+          resolveCategoryAndDepartment(
+            lead.category,
+            lead.category_id,
+            lead.misc_category,
+            allCategoriesData,
+            categoryNameToDataMap,
+          ),
+          departmentTargets,
         );
 
         const value = Number(payment.value || 0);
@@ -4807,12 +4791,15 @@ const Dashboard: React.FC = () => {
         const lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
         if (!lead) continue;
 
-        const { departmentId, mainCategoryId, mainCategoryName } = resolveCategoryAndDepartment(
-          lead.category,
-          lead.category_id,
-          lead.misc_category,
-          allCategoriesData,
-          categoryNameToDataMap,
+        const { departmentId, mainCategoryId, mainCategoryName } = canonicalizeScoreboardDepartment(
+          resolveCategoryAndDepartment(
+            lead.category,
+            lead.category_id,
+            lead.misc_category,
+            allCategoriesData,
+            categoryNameToDataMap,
+          ),
+          departmentTargets,
         );
 
         const value = Number(payment.value || payment.value_base || 0);
@@ -4910,7 +4897,7 @@ const Dashboard: React.FC = () => {
           date: dueDate,
           amountNis: amountAfterFee,
           subcontractorFeeNis,
-          categoryLabel: leadCategoryLabel(row.lead),
+          categoryLabel: leadCategoryLabel(row.lead, allCategoriesData),
           ...leadRoleFields(row.lead, 'handler'),
           isNewLead: row.kind === 'new',
         };

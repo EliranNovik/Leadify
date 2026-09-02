@@ -154,11 +154,11 @@ function resolveStage(
   ) || null;
 }
 
-function ChatStageBadge({ stage }: { stage: ChatStageHit }) {
+function ChatStageBadge({ stage, dark = false }: { stage: ChatStageHit; dark?: boolean }) {
   const stageStr = stage.id;
   const stageName = getStageName(stageStr) || stage.name;
   const stageColour = getStageColour(stageStr);
-  const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
+  const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr, { dark });
 
   return (
     <span
@@ -253,11 +253,13 @@ export function ChatStageBadgeText({
   stages,
   employees,
   onOpen,
+  dark = false,
 }: {
   text: string;
   stages: ChatStageHit[];
   employees: ChatEmployeeHit[];
   onOpen?: () => void;
+  dark?: boolean;
 }) {
   if (!text) return null;
   if (!stages.length) {
@@ -284,7 +286,7 @@ export function ChatStageBadgeText({
         />,
       );
     }
-    nodes.push(<ChatStageBadge key={`s-${key++}`} stage={hit.stage} />);
+    nodes.push(<ChatStageBadge key={`s-${key++}`} stage={hit.stage} dark={dark} />);
     lastIndex = hit.end;
   }
 

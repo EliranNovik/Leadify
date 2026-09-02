@@ -223,6 +223,7 @@ import {
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { saveOutgoingEmailRecord } from '../lib/saveOutgoingEmailRecord';
 import { fetchLeadPriceOffers, saveLeadPriceOffer, PRICE_OFFERS_CHANGED_EVENT } from '../lib/leadPriceOfferVersions';
+import { hasHebrewText } from '../lib/meetingSummaryNotesApi';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import { addRecentLead } from '../lib/recentSearchStorage';
@@ -15943,7 +15944,10 @@ const Clients: React.FC<ClientsProps> = ({
             }
           >
                 <textarea
-                  className={`${EDIT_FIELD_TEXTAREA} min-h-[300px] flex-1`}
+                  dir={hasHebrewText(manualPriceOfferText) ? 'rtl' : 'ltr'}
+                  className={`${EDIT_FIELD_TEXTAREA} min-h-[300px] flex-1 ${
+                    hasHebrewText(manualPriceOfferText) ? 'text-right' : 'text-left'
+                  }`}
                   placeholder="Enter price offer text..."
                   value={manualPriceOfferText}
                   onChange={(e) => setManualPriceOfferText(e.target.value)}

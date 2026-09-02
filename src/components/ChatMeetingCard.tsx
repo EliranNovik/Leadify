@@ -1,9 +1,19 @@
 import React from 'react';
-import { BuildingOffice2Icon, CalendarDaysIcon, EnvelopeIcon, MapPinIcon, PhoneIcon, VideoCameraIcon } from '@heroicons/react/24/outline';
+import {
+  BuildingOffice2Icon,
+  CalendarDaysIcon,
+  EnvelopeIcon,
+  MapPinIcon,
+  PhoneIcon,
+  VideoCameraIcon,
+} from '@heroicons/react/24/outline';
 import { getValidTeamsLink } from '../lib/meetingJoinLink';
+import { getLeadRoleIcon } from '../lib/leadEmployeeRoles';
 import { getSoftStageBadgeStyle, getStageColour, getStageName } from '../lib/stageUtils';
+import { formatChatCurrencyText } from '../lib/leadCurrencyDisplay';
 import { ChatLeadNumberText } from './ChatLeadNumberText';
-import { ChatEmployeeNameText, type ChatEmployeeHit } from './ChatEmployeeNameText';
+import { ChatEmployeeAvatar, ChatEmployeeNameText, type ChatEmployeeHit } from './ChatEmployeeNameText';
+import UnavailabilityTypeBadge from './UnavailabilityTypeBadge';
 
 export type ChatMeetingFact = {
   date?: string | null;
@@ -29,7 +39,16 @@ export function parseClientMeetingCard(raw: string): ChatMeetingCardData | null 
   try {
     const parsed = JSON.parse(raw) as ChatMeetingCardData & { kind?: string };
     if (!parsed || typeof parsed !== 'object') return null;
-    if (parsed.kind === 'calendar_day') return null;
+    if (
+      parsed.kind === 'calendar_day' ||
+      parsed.kind === 'signed_contracts' ||
+      parsed.kind === 'paid_payments' ||
+      parsed.kind === 'missed_comms' ||
+      parsed.kind === 'expenses' ||
+      parsed.kind === 'lead_summary'
+    ) {
+      return null;
+    }
     if (!parsed.leadNumber && !parsed.nextMeeting && !parsed.askedMeeting && !parsed.recentPast) {
       return null;
     }
@@ -68,12 +87,12 @@ function cleanCardText(value?: string | null): string {
   return !text || text === '—' ? '' : text;
 }
 
-function CalendarStageBadge({ stage }: { stage: string }) {
+function CalendarStageBadge({ stage, dark = false }: { stage: string; dark?: boolean }) {
   const stageStr = stage.trim();
   if (!stageStr) return null;
   const stageName = getStageName(stageStr) || stageStr;
   const stageColour = getStageColour(stageStr);
-  const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
+  const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr, { dark });
 
   return (
     <span
@@ -152,6 +171,229 @@ export function parseCalendarDayCards(raw: string): ChatCalendarDayData | null {
   }
 }
 
+export type ChatSignedContractRow = {
+  leadNumber?: string | null;
+  name?: string | null;
+  closer?: string | null;
+  value?: string | null;
+};
+
+export type ChatSignedContractsData = {
+  kind: 'signed_contracts';
+  period?: string;
+  count?: number;
+  closer?: string | null;
+  totals?: string | null;
+  more?: number;
+  rows: ChatSignedContractRow[];
+};
+
+export type ChatPaidPaymentRow = {
+  leadNumber?: string | null;
+  name?: string | null;
+  value?: string | null;
+  paidAt?: string | null;
+};
+
+export type ChatPaidPaymentsData = {
+  kind: 'paid_payments';
+  period?: string;
+  count?: number;
+  totals?: string | null;
+  more?: number;
+  rows: ChatPaidPaymentRow[];
+};
+
+export type ChatMissedCommsRow = {
+  leadNumber?: string | null;
+  name?: string | null;
+  channel?: string | null;
+  detail?: string | null;
+  when?: string | null;
+};
+
+export type ChatMissedCommsData = {
+  kind: 'missed_comms';
+  period?: string;
+  count?: number;
+  whatsapp?: number;
+  email?: number;
+  calls?: number;
+  more?: number;
+  rows: ChatMissedCommsRow[];
+};
+
+export function parseMissedCommsCard(raw: string): ChatMissedCommsData | null {
+  try {
+    const parsed = JSON.parse(raw) as ChatMissedCommsData;
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'missed_comms') return null;
+    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function parsePaidPaymentsCard(raw: string): ChatPaidPaymentsData | null {
+  try {
+    const parsed = JSON.parse(raw) as ChatPaidPaymentsData;
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'paid_payments') return null;
+    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function parseSignedContractsCard(raw: string): ChatSignedContractsData | null {
+  try {
+    const parsed = JSON.parse(raw) as ChatSignedContractsData;
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'signed_contracts') return null;
+    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export type ChatExpenseRow = {
+  leadNumber?: string | null;
+  name?: string | null;
+  category?: string | null;
+  amount?: string | null;
+  by?: string | null;
+};
+
+export type ChatExpensesData = {
+  kind: 'expenses';
+  period?: string;
+  count?: number;
+  totals?: string | null;
+  more?: number;
+  rows: ChatExpenseRow[];
+};
+
+export type ChatEmployeePresenceRow = {
+  employeeId?: number | null;
+  name?: string | null;
+  photoUrl?: string | null;
+  place?: string | null;
+  clockIn?: string | null;
+  clockOut?: string | null;
+  absent?: string | null;
+};
+
+export type ChatEmployeePresenceData = {
+  kind: 'employee_presence';
+  period?: string | null;
+  office?: string | null;
+  employee?: string | null;
+  count?: number;
+  more?: number;
+  rows: ChatEmployeePresenceRow[];
+};
+
+export function parseEmployeePresenceCard(raw: string): ChatEmployeePresenceData | null {
+  try {
+    const parsed = JSON.parse(raw) as ChatEmployeePresenceData;
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'employee_presence') return null;
+    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function parseExpensesCard(raw: string): ChatExpensesData | null {
+  try {
+    const parsed = JSON.parse(raw) as ChatExpensesData;
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'expenses') return null;
+    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export type ChatLeadSummaryRole = {
+  role?: string | null;
+  name?: string | null;
+};
+
+export type ChatLeadSummaryData = {
+  kind: 'lead_summary';
+  leadNumber?: string | null;
+  name?: string | null;
+  category?: string | null;
+  topic?: string | null;
+  stage?: string | null;
+  team?: ChatLeadSummaryRole[];
+};
+
+export const LEAD_SUMMARY_ROLES = ['Handler', 'Expert', 'Manager', 'Closer', 'Scheduler'] as const;
+
+function teamFromAssignedLines(text: string): ChatLeadSummaryRole[] {
+  return LEAD_SUMMARY_ROLES.map((role) => {
+    const re = new RegExp(`(?:^|\\n)(?:ASSIGNED\\s+)?${role}\\s*:\\s*([^\\n]+)`, 'i');
+    const name = String(text.match(re)?.[1] || '').trim();
+    return { role, name: !name || name === '—' ? '' : name };
+  });
+}
+
+function mergeLeadSummaryTeam(
+  ...lists: Array<ChatLeadSummaryRole[] | null | undefined>
+): ChatLeadSummaryRole[] {
+  const names = new Map<string, string>();
+  for (const list of lists) {
+    for (const row of list || []) {
+      const role = String(row.role || '').trim();
+      const name = String(row.name || '').trim();
+      if (!role || !name || name === '—') continue;
+      names.set(role, name);
+    }
+  }
+  return LEAD_SUMMARY_ROLES.map((role) => ({ role, name: names.get(role) || '' }));
+}
+
+export function parseLeadSummaryCard(raw: string): ChatLeadSummaryData | null {
+  const text = String(raw || '');
+  const marker = text.indexOf('LEAD_SUMMARY_UI_JSON');
+  const slice = marker >= 0 ? text.slice(marker) : text;
+  const start = slice.lastIndexOf('{"kind":"lead_summary"') >= 0
+    ? slice.lastIndexOf('{"kind":"lead_summary"')
+    : slice.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let parsed: ChatLeadSummaryData | null = null;
+  for (let i = start; i < slice.length; i += 1) {
+    if (slice[i] === '{') depth += 1;
+    else if (slice[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const value = JSON.parse(slice.slice(start, i + 1)) as ChatLeadSummaryData;
+          if (value?.kind === 'lead_summary') parsed = value;
+        } catch {
+          parsed = null;
+        }
+        break;
+      }
+    }
+  }
+  const fromLines = teamFromAssignedLines(text);
+  const team = mergeLeadSummaryTeam(fromLines, parsed?.team);
+  if (!parsed && !team.some((row) => row.name)) return null;
+  return {
+    kind: 'lead_summary',
+    leadNumber: parsed?.leadNumber || null,
+    name: parsed?.name || null,
+    category: parsed?.category || null,
+    topic: parsed?.topic || null,
+    stage: parsed?.stage || null,
+    team,
+  };
+}
+
 function formatMeetingDate(raw?: string | null): string {
   const value = String(raw || '').trim();
   if (!value) return '—';
@@ -166,12 +408,6 @@ function formatMeetingDate(raw?: string | null): string {
     year: 'numeric',
     timeZone: 'Asia/Jerusalem',
   });
-}
-
-function formatStatus(raw?: string | null): string {
-  const value = String(raw || '').trim();
-  if (!value) return '—';
-  return value.replace(/_/g, ' ');
 }
 
 function textIsMostlyHebrew(text: string): boolean {
@@ -248,7 +484,6 @@ function MeetingCardBlock({
               <span>{meeting.location}</span>
             </div>
           ) : null}
-          <Field label="Status" value={formatStatus(meeting?.status)} rtl={false} />
           <Field label="Brief" value={meeting?.brief} />
           <Field label="Summary" value={meeting?.summary} />
           <Field label="Case brief" value={caseBrief} />
@@ -322,9 +557,11 @@ export function ChatMeetingCards({
 function CalendarMeetingCard({
   meeting,
   employees,
+  dark = false,
 }: {
   meeting: ChatCalendarMeetingItem;
   employees: ChatEmployeeHit[];
+  dark?: boolean;
 }) {
   const time = cleanCardText(meeting.time);
   const name = cleanCardText(meeting.name);
@@ -348,7 +585,7 @@ function CalendarMeetingCard({
   const LocationIcon = meetingLocationIcon(location);
   const details = [
     { label: 'Category', value: cleanCardText(meeting.category) },
-    { label: 'Total value', value: cleanCardText(meeting.totalValue) },
+    { label: 'Total value', value: formatChatCurrencyText(cleanCardText(meeting.totalValue)) },
     { label: 'Topic', value: cleanCardText(meeting.topic) },
     { label: 'Scheduler', value: cleanCardText(meeting.scheduler), employee: true },
   ];
@@ -377,7 +614,7 @@ function CalendarMeetingCard({
         {name ? <div className="ai-cal-meeting-name">{name}</div> : null}
         {!internal && stage ? (
           <div className="ai-cal-meeting-stage">
-            <CalendarStageBadge stage={stage} />
+            <CalendarStageBadge stage={stage} dark={dark} />
           </div>
         ) : null}
         {showFooter ? (
@@ -441,9 +678,11 @@ function CalendarMeetingCard({
 export function ChatCalendarMeetingCards({
   data,
   employees = [],
+  dark = false,
 }: {
   data: ChatCalendarDayData;
   employees?: ChatEmployeeHit[];
+  dark?: boolean;
 }) {
   return (
     <div className="ai-meeting-stack ai-cal-meeting-stack">
@@ -452,8 +691,501 @@ export function ChatCalendarMeetingCards({
           key={`${meeting.leadNumber || meeting.name || 'meeting'}-${meeting.time || index}-${index}`}
           meeting={meeting}
           employees={employees}
+          dark={dark}
         />
       ))}
+    </div>
+  );
+}
+
+function paidDateOnly(paidAt: string): string {
+  const raw = String(paidAt || '').trim();
+  if (!raw) return '—';
+  return raw.split(',')[0]?.trim() || raw;
+}
+
+export function ChatPaidPaymentsTable({ data }: { data: ChatPaidPaymentsData }) {
+  return (
+    <div className="ai-meeting-stack ai-fullwidth-card-stack">
+      <div className="ai-meeting-card ai-signed-card">
+        {data.period ? (
+          <div className="ai-meeting-card-head">
+            <span />
+            <span className="ai-meeting-card-lead">{data.period}</span>
+          </div>
+        ) : null}
+        <div className="ai-signed-table-wrap">
+          <table className="ai-signed-table">
+            <thead>
+              <tr>
+                <th>Lead</th>
+                <th>Client</th>
+                <th className="ai-signed-value">Amount</th>
+                <th className="ai-signed-paid">Paid</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row, index) => {
+                const leadNumber = cleanCardText(row.leadNumber);
+                const name = cleanCardText(row.name);
+                const value = formatChatCurrencyText(cleanCardText(row.value));
+                const paidAt = paidDateOnly(cleanCardText(row.paidAt));
+                return (
+                  <tr key={`${leadNumber || name || 'row'}-${index}`}>
+                    <td>{leadNumber ? <ChatLeadNumberText text={leadNumber} /> : '—'}</td>
+                    <td>{name || '—'}</td>
+                    <td className="ai-signed-value">{value || '—'}</td>
+                    <td className="ai-signed-paid">{paidAt}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {data.totals || data.more || data.count ? (
+          <div className="ai-signed-footer">
+            {data.count ? <span>{data.count} paid</span> : null}
+            {data.totals ? <span>Total {formatChatCurrencyText(data.totals)}</span> : null}
+            {data.more ? <span>…and {data.more} more</span> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function ChatMissedCommsTable({ data }: { data: ChatMissedCommsData }) {
+  const parts = [
+    data.whatsapp ? `${data.whatsapp} WhatsApp` : '',
+    data.email ? `${data.email} email` : '',
+    data.calls ? `${data.calls} call${Number(data.calls) === 1 ? '' : 's'}` : '',
+  ].filter(Boolean);
+
+  return (
+    <div className="ai-meeting-stack ai-fullwidth-card-stack">
+      <div className="ai-meeting-card ai-signed-card">
+        {data.period ? (
+          <div className="ai-meeting-card-head">
+            <span />
+            <span className="ai-meeting-card-lead">{data.period}</span>
+          </div>
+        ) : null}
+        <div className="ai-signed-table-wrap">
+          <table className="ai-signed-table">
+            <thead>
+              <tr>
+                <th>Lead</th>
+                <th>Client</th>
+                <th>Channel</th>
+                <th>Detail</th>
+                <th className="ai-signed-paid">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row, index) => {
+                const leadNumber = cleanCardText(row.leadNumber);
+                const name = cleanCardText(row.name);
+                const channel = cleanCardText(row.channel);
+                const detail = cleanCardText(row.detail);
+                const when = paidDateOnly(cleanCardText(row.when));
+                return (
+                  <tr key={`${leadNumber || name || channel || 'row'}-${index}`}>
+                    <td>{leadNumber ? <ChatLeadNumberText text={leadNumber} /> : '—'}</td>
+                    <td>{name || '—'}</td>
+                    <td>{channel || '—'}</td>
+                    <td>{detail || '—'}</td>
+                    <td className="ai-signed-paid">{when}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {data.count || parts.length || data.more ? (
+          <div className="ai-signed-footer">
+            {data.count ? <span>{data.count} missed</span> : null}
+            {parts.length ? <span>{parts.join(' · ')}</span> : null}
+            {data.more ? <span>…and {data.more} more</span> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function ChatSignedContractsTable({
+  data,
+  employees = [],
+}: {
+  data: ChatSignedContractsData;
+  employees?: ChatEmployeeHit[];
+}) {
+  return (
+    <div className="ai-meeting-stack ai-fullwidth-card-stack">
+      <div className="ai-meeting-card ai-signed-card">
+        {data.period ? (
+          <div className="ai-meeting-card-head">
+            <span />
+            <span className="ai-meeting-card-lead">{data.period}</span>
+          </div>
+        ) : null}
+        <div className="ai-signed-table-wrap">
+          <table className="ai-signed-table">
+            <thead>
+              <tr>
+                <th>Lead</th>
+                <th>Client name</th>
+                <th>Closer</th>
+                <th className="ai-signed-value">Total value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row, index) => {
+                const leadNumber = cleanCardText(row.leadNumber);
+                const name = cleanCardText(row.name);
+                const closer = cleanCardText(row.closer);
+                const value = formatChatCurrencyText(cleanCardText(row.value));
+                return (
+                  <tr key={`${leadNumber || name || 'row'}-${index}`}>
+                    <td>{leadNumber ? <ChatLeadNumberText text={leadNumber} /> : '—'}</td>
+                    <td>{name || '—'}</td>
+                    <td>
+                      {closer ? (
+                        <ChatEmployeeNameText text={closer} employees={employees} compact />
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="ai-signed-value">{value || '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {data.totals || data.more ? (
+          <div className="ai-signed-footer">
+            {data.totals ? <span>Total {formatChatCurrencyText(data.totals)}</span> : null}
+            {data.more ? <span>…and {data.more} more</span> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function ChatEmployeePresenceTable({
+  data,
+  employees = [],
+}: {
+  data: ChatEmployeePresenceData;
+  employees?: ChatEmployeeHit[];
+}) {
+  const peopleByName = new Map<string, ChatEmployeeHit>();
+  for (const employee of employees) {
+    peopleByName.set(employee.display_name.toLowerCase(), employee);
+  }
+  data.rows.forEach((row, index) => {
+    const name = String(row.name || '').trim();
+    if (name.length < 2) return;
+    const key = name.toLowerCase();
+    const existing = peopleByName.get(key);
+    peopleByName.set(key, {
+      id: Number(row.employeeId) || existing?.id || -(index + 1),
+      display_name: existing?.display_name || name,
+      photo_url: row.photoUrl ? String(row.photoUrl) : existing?.photo_url || null,
+    });
+  });
+  const people = [...peopleByName.values()];
+  const subtitle = [cleanCardText(data.office), cleanCardText(data.period)].filter(Boolean).join(' · ');
+
+  return (
+    <div className="ai-meeting-stack">
+      <div className="ai-meeting-card ai-signed-card">
+        {subtitle ? (
+          <div className="ai-meeting-card-head">
+            <span />
+            <span className="ai-meeting-card-lead">{subtitle}</span>
+          </div>
+        ) : null}
+        <div className="ai-signed-table-wrap">
+          <table className="ai-signed-table">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>Place</th>
+                <th>Clocked in</th>
+                <th>Out</th>
+                <th>Absent</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row, index) => {
+                const name = cleanCardText(row.name);
+                const place = cleanCardText(row.place);
+                const clockIn = cleanCardText(row.clockIn);
+                const clockOut = cleanCardText(row.clockOut);
+                const absent = cleanCardText(row.absent);
+                return (
+                  <tr key={`${row.employeeId || name || 'row'}-${index}`}>
+                    <td>
+                      {name ? (
+                        <span className="ai-presence-employee">
+                          <ChatEmployeeAvatar name={name} employees={people} className="ai-presence-photo" size="2.15rem" />
+                          <ChatEmployeeNameText text={name} employees={people} showPhoto={false} />
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td>{place || '—'}</td>
+                    <td>{clockIn || '—'}</td>
+                    <td>{clockOut || '—'}</td>
+                    <td>
+                      {absent ? <UnavailabilityTypeBadge type={absent} size="xs" borderless /> : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {data.more ? (
+          <div className="ai-signed-footer">
+            <span>…and {data.more} more</span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function ChatExpensesTable({
+  data,
+  employees = [],
+}: {
+  data: ChatExpensesData;
+  employees?: ChatEmployeeHit[];
+}) {
+  return (
+    <div className="ai-meeting-stack">
+      <div className="ai-meeting-card ai-signed-card">
+        {data.period ? (
+          <div className="ai-meeting-card-head">
+            <span />
+            <span className="ai-meeting-card-lead">{data.period}</span>
+          </div>
+        ) : null}
+        <div className="ai-signed-table-wrap">
+          <table className="ai-signed-table">
+            <thead>
+              <tr>
+                <th>Lead</th>
+                <th>Category</th>
+                <th className="ai-signed-value">Amount</th>
+                <th>By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row, index) => {
+                const leadNumber = cleanCardText(row.leadNumber);
+                const name = cleanCardText(row.name);
+                const category = cleanCardText(row.category);
+                const amount = formatChatCurrencyText(cleanCardText(row.amount));
+                const by = cleanCardText(row.by);
+                return (
+                  <tr key={`${leadNumber || name || category || 'row'}-${index}`}>
+                    <td>
+                      {leadNumber ? <ChatLeadNumberText text={leadNumber} /> : null}
+                      {leadNumber && name ? ' ' : null}
+                      {name || (!leadNumber ? '—' : null)}
+                    </td>
+                    <td>{category || '—'}</td>
+                    <td className="ai-signed-value">{amount || '—'}</td>
+                    <td>
+                      {by ? (
+                        <ChatEmployeeNameText text={by} employees={employees} compact />
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {data.totals || data.more ? (
+          <div className="ai-signed-footer">
+            {data.totals ? <span>Total {formatChatCurrencyText(data.totals)}</span> : null}
+            {data.more ? <span>…and {data.more} more</span> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function lastMarkerSplit(text: string, pattern: RegExp): { before: string; after: string } | null {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const re = new RegExp(pattern.source, flags);
+  let found: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) found = match;
+  if (!found || found.index == null) return null;
+  return {
+    before: text.slice(0, found.index).trim(),
+    after: text.slice(found.index + found[0].length).replace(/^[-*•]\s*/, '').trim(),
+  };
+}
+
+export function splitLeadSummaryParts(text: string): { body: string; risks: string; caseAbout: string } {
+  let raw = String(text || '').trim();
+  if (!raw) return { body: '', risks: '', caseAbout: '' };
+
+  const about = lastMarkerSplit(
+    raw,
+    /(?:\n+|\s+)(?:[-*•]\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case)(?:\*\*)?\s*[:—-]\s*/i,
+  );
+  let caseAbout = '';
+  if (about) {
+    raw = about.before;
+    caseAbout = about.after;
+  }
+
+  const risk = lastMarkerSplit(
+    raw,
+    /(?:\n+|\s+)(?:[-*•]\s*)?(?:\*\*)?risks?(?:\*\*)?\s*[:—-]\s*/i,
+  );
+  if (risk) {
+    return { body: risk.before, risks: risk.after, caseAbout };
+  }
+  const inline = raw.match(/^(?:[-*•]\s*)?(?:\*\*)?risks?(?:\*\*)?\s*[:—-]\s*([\s\S]+)$/i);
+  if (inline) {
+    return { body: '', risks: String(inline[1] || '').replace(/^[-*•]\s*/, '').trim(), caseAbout };
+  }
+  return { body: raw, risks: '', caseAbout };
+}
+
+export function ChatRisksBox({
+  text,
+  renderText,
+}: {
+  text?: string | null;
+  renderText?: (text: string) => React.ReactNode;
+}) {
+  const risks = String(text || '').trim();
+  if (!risks) return null;
+  return (
+    <div className="ai-lead-risks">
+      <div className="ai-meeting-card-title">Risks</div>
+      {renderText ? renderText(risks) : risks}
+    </div>
+  );
+}
+
+function asBulletPoints(text: string): string {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  if (/(^|\n)\s*(?:[-*•]|\d+[.)])\s/.test(raw)) return raw;
+  const parts = raw
+    .split(/(?<=[.!?])\s+(?=[A-Z\u0590-\u05FF])|\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) return `- ${raw}`;
+  return parts.map((part) => `- ${part.replace(/^[-*•]\s*/, '')}`).join('\n');
+}
+
+export function ChatLeadSummaryCards({
+  data,
+  employees = [],
+  summaryText = '',
+  renderText,
+  dark = false,
+}: {
+  data: ChatLeadSummaryData;
+  employees?: ChatEmployeeHit[];
+  summaryText?: string;
+  renderText?: (text: string) => React.ReactNode;
+  dark?: boolean;
+}) {
+  const leadNumber = cleanCardText(data.leadNumber);
+  const name = cleanCardText(data.name);
+  const category = cleanCardText(data.category);
+  const topic = cleanCardText(data.topic);
+  const stage = cleanCardText(data.stage);
+  const teamByRole = new Map(
+    (data.team || []).map((row) => [String(row.role || '').trim(), cleanCardText(row.name)]),
+  );
+  const { body, risks, caseAbout } = splitLeadSummaryParts(summaryText);
+
+  return (
+    <div className="ai-meeting-stack">
+      {caseAbout ? (
+        <div className="ai-lead-case-about">
+          <div className="ai-meeting-card-title">General summary</div>
+          {renderText ? renderText(caseAbout) : caseAbout}
+        </div>
+      ) : null}
+      <div className="ai-meeting-card ai-signed-card">
+        <div className="ai-signed-table-wrap">
+          <table className="ai-signed-table">
+            <thead>
+              <tr>
+                <th>Lead</th>
+                <th>Stage</th>
+                <th>Category</th>
+                <th>Topic</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  {leadNumber ? <ChatLeadNumberText text={leadNumber} /> : null}
+                  {leadNumber && name ? ' ' : null}
+                  {name || (!leadNumber ? '—' : null)}
+                </td>
+                <td>{stage ? <CalendarStageBadge stage={stage} dark={dark} /> : '—'}</td>
+                <td>{category || '—'}</td>
+                <td>{topic || '—'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {body ? (
+        <div className="ai-lead-summary-text">
+          {renderText ? renderText(asBulletPoints(body)) : asBulletPoints(body)}
+        </div>
+      ) : null}
+      <div
+        className="ai-lead-roles-grid"
+        style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.7rem', width: '100%' }}
+      >
+        {LEAD_SUMMARY_ROLES.map((role) => {
+          const person = teamByRole.get(role) || '';
+          const Icon = getLeadRoleIcon(role.toLowerCase());
+          return (
+            <div key={role} className="ai-meeting-card ai-lead-role-cell">
+              <div className="ai-lead-role-main">
+                <span className="ai-lead-role-title">
+                  <Icon className="ai-lead-role-icon" />
+                  {role}
+                </span>
+                <span className="ai-lead-role-name">
+                  {person ? (
+                    <ChatEmployeeNameText text={person} employees={employees} showPhoto={false} />
+                  ) : (
+                    '—'
+                  )}
+                </span>
+              </div>
+              {person ? <ChatEmployeeAvatar name={person} employees={employees} /> : null}
+            </div>
+          );
+        })}
+      </div>
+      <ChatRisksBox text={risks} renderText={renderText} />
     </div>
   );
 }

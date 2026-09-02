@@ -356,11 +356,44 @@ export type SoftStageBadgeStyle = {
   color: string;
 };
 
+function mixToward(channel: number, target: number, amount: number): number {
+  return Math.round(channel + (target - channel) * amount);
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function parseHexRgb(hexColor?: string | null): { r: number; g: number; b: number } | null {
+  let sanitized = String(hexColor || '').trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map((char) => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) return null;
+  return {
+    r: parseInt(sanitized.slice(0, 2), 16),
+    g: parseInt(sanitized.slice(2, 4), 16),
+    b: parseInt(sanitized.slice(4, 6), 16),
+  };
+}
+
+function darkSoftFromRgb(r: number, g: number, b: number): SoftStageBadgeStyle {
+  const text = rgbToHex(mixToward(r, 255, 0.58), mixToward(g, 255, 0.58), mixToward(b, 255, 0.58));
+  return {
+    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.38)`,
+    borderColor: `rgba(${r}, ${g}, ${b}, 0.55)`,
+    color: text,
+  };
+}
+
 /** Pastel/washed stage badge — light tinted background with saturated stage colour text. */
 export const getSoftStageBadgeStyle = (
   hexColor?: string | null,
   stageId?: string | number | null,
+  options?: { dark?: boolean },
 ): SoftStageBadgeStyle => {
+  const dark = Boolean(options?.dark);
   const stageStr = stageId != null ? String(stageId) : '';
   const stageName = getStageName(stageStr);
   const isMtngSumAgreement =
@@ -368,11 +401,17 @@ export const getSoftStageBadgeStyle = (
     areStagesEquivalent(stageName, 'Mtng sum+Agreement sent');
 
   if (isMtngSumAgreement) {
-    return {
-      backgroundColor: 'rgba(22, 163, 74, 0.3)',
-      borderColor: 'rgba(22, 163, 74, 0.45)',
-      color: '#15803d',
-    };
+    return dark
+      ? {
+          backgroundColor: 'rgba(34, 197, 94, 0.32)',
+          borderColor: 'rgba(74, 222, 128, 0.5)',
+          color: '#86efac',
+        }
+      : {
+          backgroundColor: 'rgba(22, 163, 74, 0.3)',
+          borderColor: 'rgba(22, 163, 74, 0.45)',
+          color: '#15803d',
+        };
   }
 
   // Application submitted — muted grey (neon yellow is too loud for soft badges)
@@ -382,11 +421,17 @@ export const getSoftStageBadgeStyle = (
     areStagesEquivalent(stageName, 'Applications submitted');
 
   if (isApplicationSubmitted) {
-    return {
-      backgroundColor: 'rgba(156, 163, 175, 0.22)',
-      borderColor: 'rgba(156, 163, 175, 0.4)',
-      color: '#6b7280',
-    };
+    return dark
+      ? {
+          backgroundColor: 'rgba(156, 163, 175, 0.28)',
+          borderColor: 'rgba(209, 213, 219, 0.4)',
+          color: '#e5e7eb',
+        }
+      : {
+          backgroundColor: 'rgba(156, 163, 175, 0.22)',
+          borderColor: 'rgba(156, 163, 175, 0.4)',
+          color: '#6b7280',
+        };
   }
 
   // Case finalized / Case Closed — orange soft badge
@@ -398,34 +443,33 @@ export const getSoftStageBadgeStyle = (
     areStagesEquivalent(stageName, 'Finalized');
 
   if (isCaseFinalized) {
-    return {
-      backgroundColor: 'rgba(249, 115, 22, 0.2)',
-      borderColor: 'rgba(249, 115, 22, 0.45)',
-      color: '#c2410c',
-    };
+    return dark
+      ? {
+          backgroundColor: 'rgba(249, 115, 22, 0.32)',
+          borderColor: 'rgba(253, 186, 116, 0.5)',
+          color: '#fdba74',
+        }
+      : {
+          backgroundColor: 'rgba(249, 115, 22, 0.2)',
+          borderColor: 'rgba(249, 115, 22, 0.45)',
+          color: '#c2410c',
+        };
   }
 
   const fallback = '#3f28cd';
-  const color = hexColor || fallback;
-  let sanitized = color.trim();
-  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
-  if (sanitized.length === 3) {
-    sanitized = sanitized.split('').map((char) => char + char).join('');
-  }
-  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+  const parsed = parseHexRgb(hexColor) || parseHexRgb(fallback) || { r: 63, g: 40, b: 205 };
+  if (dark) return darkSoftFromRgb(parsed.r, parsed.g, parsed.b);
+  if (!parseHexRgb(hexColor)) {
     return {
       backgroundColor: 'rgba(63, 40, 205, 0.12)',
       borderColor: 'rgba(63, 40, 205, 0.28)',
       color: fallback,
     };
   }
-  const r = parseInt(sanitized.slice(0, 2), 16);
-  const g = parseInt(sanitized.slice(2, 4), 16);
-  const b = parseInt(sanitized.slice(4, 6), 16);
   return {
-    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.14)`,
-    borderColor: `rgba(${r}, ${g}, ${b}, 0.32)`,
-    color: `#${sanitized}`,
+    backgroundColor: `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, 0.14)`,
+    borderColor: `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, 0.32)`,
+    color: rgbToHex(parsed.r, parsed.g, parsed.b),
   };
 };
 

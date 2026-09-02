@@ -369,8 +369,22 @@ const supabaseGlobalFetch: typeof fetch = async (input, init) => {
   }
 };
 
-// Configure Supabase client with proper session management for multi-tab support
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+// Reuse the same client across Vite HMR so two GoTrue instances do not fight
+// for Navigator LockManager key lock:sb-…-auth-token.
+const supabaseGlobal = globalThis as typeof globalThis & { __leadifySupabase?: SupabaseClient };
+
+/** GoTrue's default lock uses ifAvailable and throws if another tab/HMR client holds it. */
+async function supabaseAuthLock<T>(
+  _name: string,
+  _acquireTimeout: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return fn();
+}
+
+export const supabase =
+  supabaseGlobal.__leadifySupabase ??
+  createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     // Enable auto refresh tokens - Supabase handles this automatically
     autoRefreshToken: true,
@@ -384,6 +398,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     storage: typeof window !== 'undefined' ? window.localStorage : undefined,
     // Disable debug mode to reduce console noise
     debug: false,
+    lock: supabaseAuthLock,
   },
   // Global headers + fetch: 401 recovery for all PostgREST/Storage/Functions calls
   global: {
@@ -393,6 +408,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     },
   },
 });
+supabaseGlobal.__leadifySupabase = supabase;
 
 // For reads that can run before the tab has a hydrated JWT, pair queries with AuthContext:
 // `useRefetchOnSupabaseSession` (hooks/useRefetchOnSupabaseSession.ts) or depend on

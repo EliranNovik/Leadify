@@ -1,7 +1,7 @@
 const currencyIdToCode: Record<number, string> = {
   1: 'NIS',
-  2: 'USD',
-  3: 'EUR',
+  2: 'EUR',
+  3: 'USD',
   4: 'GBP',
 };
 
@@ -51,6 +51,7 @@ export interface MeetingValueInput {
   legacyCurrencyCode?: string | null;
   meetingAmount?: number | string | null;
   meetingCurrency?: string | null;
+  subcontractorFee?: number | string | null;
 }
 
 export interface MeetingValueResult {
@@ -96,6 +97,11 @@ export const formatMeetingValue = (input: MeetingValueInput): MeetingValueResult
 
   if (amount === null || !Number.isFinite(amount)) {
     amount = 0;
+  }
+
+  const fee = asNumber(input.subcontractorFee);
+  if (fee && fee > 0) {
+    amount = Math.max(0, amount - fee);
   }
 
   if (!currencyCode) {

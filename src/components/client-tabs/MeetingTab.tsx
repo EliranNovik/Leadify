@@ -106,6 +106,7 @@ import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
 import MeetingBriefAiPanel from '../meeting/MeetingBriefAiPanel';
 import MeetingSummariesDrawer from './MeetingSummariesDrawer';
+import { hasHebrewText } from '../../lib/meetingSummaryNotesApi';
 import { replaceEmailTemplateParams, replaceEmailTemplateParamsSync } from '../../lib/emailTemplateParams';
 import { saveOutgoingEmailRecord } from '../../lib/saveOutgoingEmailRecord';
 import { convertBodyToHtml } from '../../lib/emailBodyHtml';
@@ -237,6 +238,14 @@ function briefDisplayTextsMatch(a: string, b: string): boolean {
 }
 
 type MeetingBriefBoxSection = { key: string; label: string; text: string };
+
+function briefHebrewDir(text: string): { dir: 'rtl' | 'ltr'; className: string } {
+  const rtl = hasHebrewText(text);
+  return {
+    dir: rtl ? 'rtl' : 'ltr',
+    className: rtl ? 'text-right' : 'text-left',
+  };
+}
 
 function getMeetingBriefBoxSections(
   meeting: Pick<Meeting, 'brief' | 'meeting_summary_notes'>,
@@ -5789,6 +5798,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   const renderMeetingCard = (meeting: Meeting) => {
     const formattedDate = new Date(meeting.date).toLocaleDateString('en-GB');
     const briefBoxSections = getMeetingBriefBoxSections(meeting, leadTableBrief);
+    const briefBoxHebrew = briefHebrewDir(briefBoxSections.map((section) => section.text).join('\n'));
 
     const handleEditBrief = () => {
       const canUseAiSummary = typeof meeting.id === 'number' && !meeting.isLegacy;
@@ -7523,7 +7533,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   </button>
                 </div>
                 <div
-                  className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px] max-h-48 overflow-y-auto cursor-pointer hover:bg-gray-100/90 transition-colors"
+                  dir={briefBoxHebrew.dir}
+                  className={`bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px] max-h-48 overflow-y-auto cursor-pointer hover:bg-gray-100/90 transition-colors ${briefBoxHebrew.className}`}
                   onClick={handleEditBrief}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -7537,8 +7548,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                 >
                   {briefBoxSections.length > 0 ? (
                     <div className="space-y-3">
-                      {briefBoxSections.map((section) => (
-                        <div key={section.key}>
+                      {briefBoxSections.map((section) => {
+                        const hebrew = briefHebrewDir(section.text);
+                        return (
+                        <div key={section.key} dir={hebrew.dir} className={hebrew.className}>
                           {briefBoxSections.length > 1 && (
                             <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                               {section.label}
@@ -7548,7 +7561,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                             {section.text}
                           </p>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
@@ -7562,7 +7576,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               <div className="pt-3">
                 <label className={`${meetingFieldLabelClass} mt-2 block`}>Brief</label>
                 <textarea
-                  className="textarea textarea-bordered w-full h-20 text-base mt-2"
+                  dir={briefHebrewDir(editedMeeting.brief || '').dir}
+                  className={`textarea textarea-bordered w-full h-20 text-base mt-2 ${briefHebrewDir(editedMeeting.brief || '').className}`}
                   value={editedMeeting.brief || ''}
                   onChange={(e) => setEditedMeeting(prev => ({ ...prev, brief: e.target.value }))}
                   placeholder="Add a meeting brief..."
@@ -7985,7 +8000,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                 <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-4 md:px-6">
                   <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white">
                     <textarea
-                      className="h-full w-full flex-1 resize-none border-0 bg-transparent px-4 py-3 text-base leading-relaxed text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-0"
+                      dir={briefHebrewDir(editedBrief).dir}
+                      className={`h-full w-full flex-1 resize-none border-0 bg-transparent px-4 py-3 text-base leading-relaxed text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-0 ${briefHebrewDir(editedBrief).className}`}
                       value={editedBrief}
                       onChange={(e) => setEditedBrief(e.target.value)}
                       placeholder="Add a meeting brief…"
@@ -8114,7 +8130,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               </label>
               <textarea
                 id="meeting-brief-modal-text"
-                className="textarea textarea-bordered w-full min-h-[12rem] flex-1 basis-0 resize-y text-base leading-relaxed sm:min-h-[320px] sm:h-[min(50vh,400px)] sm:flex-none sm:basis-auto"
+                dir={briefHebrewDir(editedBrief).dir}
+                className={`textarea textarea-bordered w-full min-h-[12rem] flex-1 basis-0 resize-y text-base leading-relaxed sm:min-h-[320px] sm:h-[min(50vh,400px)] sm:flex-none sm:basis-auto ${briefHebrewDir(editedBrief).className}`}
                 value={editedBrief}
                 onChange={(e) => setEditedBrief(e.target.value)}
                 placeholder="Add a meeting brief…"

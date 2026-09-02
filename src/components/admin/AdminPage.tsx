@@ -55,6 +55,7 @@ import EmailSignatureManager from './EmailSignatureManager';
 import EmailTemplatesPlacementManager from './EmailTemplatesPlacementManager';
 import EmailTemplatesAutomationManager from './EmailTemplatesAutomationManager';
 import PublicMessagesManager from './PublicMessagesManager';
+import RmqAiControlPage from '../../pages/RmqAiControlPage';
 import WebhookSettingsManager from './WebhookSettingsManager';
 import SourceMediaExpensesManager from './SourceMediaExpensesManager';
 import EmployeeSalariesManager from './EmployeeSalariesManager';
@@ -139,6 +140,7 @@ const ADMIN_TABS: AdminTab[] = [
       'Main Categories',
       'POA Templates',
       'Public messages',
+      'RMQ AI',
       'Sub efforts',
       'sub categories',
       'whatsapp template olds',
@@ -943,6 +945,8 @@ const AdminPage: React.FC<AdminPageProps> = ({
                   return <div className="w-full"><EmailTemplatesAutomationManager /></div>;
                 } else if (selectedSub === 'Public messages') {
                   return <div className="w-full"><PublicMessagesManager /></div>;
+                } else if (selectedSub === 'RMQ AI') {
+                  return <div className="w-full"><RmqAiControlPage /></div>;
                 }
                 return null;
               })()}
@@ -1790,6 +1794,9 @@ const AdminPage: React.FC<AdminPageProps> = ({
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Public messages' ? (
                   <div className="w-full"><PublicMessagesManager /></div>
+                ) : selectedTab?.label === 'Misc' &&
+                  selectedTab?.subcategories[selected.sub] === 'RMQ AI' ? (
+                  <div className="w-full"><RmqAiControlPage /></div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Main Categories' ? (
                   <div className="w-full"><MainCategoriesManager /></div>

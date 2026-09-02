@@ -144,6 +144,7 @@ import {
   LazyWhatsAppLeadsPage,
   LazyWhatsAppPage,
   LazyRMQMessagesPage,
+  LazyRmqAiControlPage,
 } from './routes/lazyPages';
 import HomeEntryPage from './pages/HomeEntryPage';
 import { RMQ_AI_OPEN_EVENT } from './lib/rmqAiPendingPrompt';
@@ -1211,6 +1212,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/sales/signed" element={<RouteSuspense><LazySignedSalesReportPage /></RouteSuspense>} />
                     <Route path="/organization" element={<RouteSuspense><LazyOrganizationPage /></RouteSuspense>} />
                     <Route path="/settings" element={<RouteSuspense><LazySettingsPage /></RouteSuspense>} />
+                    <Route path="/rmq-ai" element={<RouteSuspense><LazyRmqAiControlPage /></RouteSuspense>} />
                     <Route path="/tools/boi-exchange-rates" element={<RouteSuspense><LazyBoiExchangeRatesTestPage /></RouteSuspense>} />
                     <Route path="/test-meeting-summary" element={<RouteSuspense><LazyMeetingSummaryTestPage /></RouteSuspense>} />
                     <Route path="/simple-test" element={<RouteSuspense><LazySimpleTestPage /></RouteSuspense>} />

@@ -15,6 +15,7 @@ import {
 import { requireResolvedLead } from './rmqAiLeadResolver';
 import { fetchLeadContacts } from './contactHelpers';
 import { leadChatLabel, lookupLeadsByIds, resolveMeetingLead } from './rmqAiLeadDisplay';
+import { formatClientPortalAccessBlock, loadClientPortalAccess } from './rmqAiPortalTools';
 
 type LeadArgs = { query?: string; lead_id?: string; is_legacy?: boolean };
 
@@ -293,9 +294,13 @@ export async function executeDraftClientMessage(args: {
     channelRaw.includes('whats') ? 'whatsapp' : channelRaw.includes('sms') ? 'sms' : 'email';
   const intent = String(args.intent || 'follow_up').trim() || 'follow_up';
   const open = getRmqAiCurrentLead();
-  const [caseFile, email] = await Promise.all([
+  const [caseFile, email, portalAccess] = await Promise.all([
     fetchLeadCaseFileForAi({ leadId: resolved.leadId, isLegacy: resolved.isLegacy }),
     resolveLeadEmail(resolved.leadId, resolved.isLegacy, open?.email),
+    loadClientPortalAccess({
+      lead_id: resolved.leadId,
+      is_legacy: resolved.isLegacy,
+    }).catch(() => null),
   ]);
   rememberRmqAiDraftMeta({
     channel,
@@ -303,6 +308,13 @@ export async function executeDraftClientMessage(args: {
     leadId: resolved.leadId,
     email,
   });
+  const portalBlock = portalAccess
+    ? formatClientPortalAccessBlock(portalAccess)
+    : 'CLIENT PORTAL\n- (could not load — call get_client_portal_access)';
+  const portalDraftRule =
+    intent === 'portal_access'
+      ? 'This is a portal-access message. Paste the exact portal_link, login_email, and password. Explain that the client signs in with their email + that password on that link. Never write [Insert client portal link]. If the portal is not ready, say so instead of inventing access.'
+      : 'If they asked for portal access, copy portal_link, login_email, and password from CLIENT PORTAL. Never invent a portal URL.';
   return [
     `DRAFT CONTEXT for ${resolved.label}`,
     `Channel: ${channel}`,
@@ -311,8 +323,10 @@ export async function executeDraftClientMessage(args: {
     '',
     withRequiredDocumentLinks(caseFile).slice(0, 12000),
     '',
+    portalBlock,
+    '',
     DETAILED_CLIENT_OUTREACH_INSTRUCTION,
-    'Write ONLY the ready-to-send message in the client language. No English preamble, no “here is a draft”. If email, you may start with Subject: on the first line. When they asked for a contract, agreement, POA, or invoice, copy the exact REQUIRED LINKS https URL onto its own line. Do not invent portal URLs, amounts, or dates. Stop after Best regards / בברכה. Do not add a name, title, phone, or email signature — the CRM adds that when sending.',
+    `Write ONLY the ready-to-send message in the client language. No English preamble, no “here is a draft”. If email, you may start with Subject: on the first line. When they asked for a contract, agreement, POA, or invoice, copy the exact REQUIRED LINKS https URL onto its own line. ${portalDraftRule} Do not invent portal URLs, amounts, or dates. Stop after Best regards / בברכה. Do not add a name, title, phone, or email signature — the CRM adds that when sending.`,
   ].join('\n');
 }
 
