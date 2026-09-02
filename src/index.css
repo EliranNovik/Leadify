@@ -1287,6 +1287,69 @@ html.dark .z-40 .bg-gray-50.text-gray-500 {
   color: rgba(255, 255, 255, 0.7) !important;
 }
 
+.rmq-bubble-sent,
+.rmq-bubble-recv {
+  border-radius: 1rem;
+  border-top-left-radius: 2rem !important;
+  border-bottom-right-radius: 2rem !important;
+}
+
+.rmq-bubble-sent {
+  background: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%) !important;
+  color: #ffffff !important;
+}
+
+.rmq-send-btn {
+  background: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%) !important;
+  color: #ffffff !important;
+}
+
+.rmq-send-btn:hover {
+  filter: brightness(1.08);
+}
+
+.rmq-reply-quote {
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.rmq-bubble-sent .rmq-reply-quote {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(20px) saturate(1.55);
+  -webkit-backdrop-filter: blur(20px) saturate(1.55);
+  border: 1px solid rgba(255, 255, 255, 0.78) !important;
+  border-left: 4px solid #3E28CD !important;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
+}
+
+/* Desktop RMQ chat pane — larger thread / composer type (sidebar + mobile unchanged). */
+@media (min-width: 1024px) {
+  .rmq-desktop-chat .text-sm {
+    font-size: 1.0625rem !important;
+    line-height: 1.5 !important;
+  }
+  .rmq-desktop-chat .text-xs {
+    font-size: 0.9375rem !important;
+    line-height: 1.35 !important;
+  }
+  .rmq-desktop-chat [class*="text-[11px]"],
+  .rmq-desktop-chat [class*="text-[12px]"] {
+    font-size: 0.875rem !important;
+    line-height: 1.35 !important;
+  }
+  .rmq-desktop-chat [class*="text-[10px]"],
+  .rmq-desktop-chat [class*="text-[9px]"] {
+    font-size: 0.75rem !important;
+  }
+  .rmq-desktop-chat textarea {
+    font-size: 1.0625rem !important;
+    line-height: 1.45 !important;
+  }
+}
+
 /* === RMQ — Dark 2 (zinc; message bubbles + chrome; targets classes from RMQMessagesPage.tsx) === */
 html.dark.theme-dark2 .z-50.fixed.inset-0.bg-gradient-to-br {
   background: #000000 !important;
@@ -1327,8 +1390,7 @@ html.dark.theme-dark2 .z-40 textarea:focus {
 
 /* Sent / received bubbles (override inline purple / light grey) */
 html.dark.theme-dark2 .rmq-bubble-sent {
-  background: #3f3f46 !important;
-  background-color: #3f3f46 !important;
+  background: linear-gradient(90deg, #5b21b6 0%, #4f46e5 58%, #1d4ed8 100%) !important;
   color: #f4f4f5 !important;
 }
 

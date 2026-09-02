@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, HandThumbDownIcon as HandThumbDownSolid, HandThumbUpIcon as HandThumbUpSolid } from '@heroicons/react/24/solid';
-import { ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, HandThumbDownIcon, HandThumbUpIcon, LinkIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, HandThumbDownIcon, HandThumbUpIcon, LinkIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
@@ -643,6 +643,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const teachFileInputRef = useRef<HTMLInputElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const plusMenuRef = useRef<HTMLDivElement>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
@@ -3633,7 +3634,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           -webkit-backdrop-filter: blur(20px) saturate(1.35);
         }
         .ai-chat-under-header {
-          padding-top: calc(4.1rem + max(1rem, env(safe-area-inset-top, 0px)));
+          padding-top: calc(3.15rem + max(0.5rem, env(safe-area-inset-top, 0px)));
         }
         .ai-theme-switch {
           position: relative;
@@ -3975,7 +3976,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       >
         {/* Header */}
         <div
-          className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center pb-3 pt-[max(1rem,env(safe-area-inset-top))]"
+          className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center pb-1.5 pt-[max(0.5rem,env(safe-area-inset-top))]"
           onPointerDown={beginPanelMove}
           onPointerMove={movePanel}
           onPointerUp={endPanelMove}
@@ -3995,13 +3996,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 tabIndex={0}
                 aria-label="About RMQ AI"
               >
-                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-11 w-11" />
+                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-9 w-9" />
               </button>
               <div className="flex min-w-0 flex-col justify-center leading-tight">
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    className={`text-base font-bold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
+                    className={`text-sm font-bold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
                     onClick={() => setShowRmqAiIntroModal(true)}
                     aria-haspopup="dialog"
                     aria-expanded={showRmqAiIntroModal}
@@ -4025,7 +4026,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             <div
               className={`pointer-events-none absolute flex items-center justify-center ${
                 showHistoryPanel ? 'left-72 right-0 md:left-96' : 'inset-x-0'
-              } top-[max(1rem,env(safe-area-inset-top))] bottom-3`}
+              } top-[max(0.5rem,env(safe-area-inset-top))] bottom-1.5`}
             >
               <span
                 className={`pointer-events-auto max-w-[11rem] truncate rounded-full px-2.5 py-1 text-[11px] font-medium ${
@@ -4123,6 +4124,31 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     </button>
                     <button
                       type="button"
+                      onClick={() => teachFileInputRef.current?.click()}
+                      className="inline-flex h-9 items-center justify-center rounded-full bg-gray-100 px-3 text-sm font-semibold text-gray-600 shadow-sm transition hover:bg-gray-200"
+                      title="Teach RMQ (txt playbook)"
+                      aria-label="Teach RMQ"
+                    >
+                      <AcademicCapIcon className="h-5 w-5" />
+                    </button>
+                    <input
+                      ref={teachFileInputRef}
+                      type="file"
+                      accept=".txt,.md,.text"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = '';
+                        if (!file) return;
+                        void file.text().then(async (text) => {
+                          const result = await ingestKnowledgeText({ title: file.name, text, scope: 'user' });
+                          if (result?.chunks) toast.success(`Saved ${result.chunks} knowledge chunks`);
+                          else toast.error('Could not save knowledge file. Run the RMQ AI v1 SQL first.');
+                        });
+                      }}
+                    />
+                    <button
+                      type="button"
                       onClick={startNewChat}
                       className="ai-send-btn inline-flex h-9 items-center gap-1.5 rounded-full border-0 px-4 text-sm font-semibold text-white shadow-sm transition"
                       title="Start New Chat"
@@ -4145,24 +4171,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     className="w-full rounded-xl border-0 bg-gray-100 py-2 pl-10 pr-4 text-sm text-gray-900 placeholder:text-gray-500 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0"
                   />
                 </div>
-                <label className="mt-3 flex cursor-pointer items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
-                  <span>Teach RMQ (txt playbook)</span>
-                  <input
-                    type="file"
-                    accept=".txt,.md,.text"
-                    className="hidden"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      event.target.value = '';
-                      if (!file) return;
-                      void file.text().then(async (text) => {
-                        const result = await ingestKnowledgeText({ title: file.name, text, scope: 'user' });
-                        if (result?.chunks) toast.success(`Saved ${result.chunks} knowledge chunks`);
-                        else toast.error('Could not save knowledge file. Run the RMQ AI v1 SQL first.');
-                      });
-                    }}
-                  />
-                </label>
               </div>
               <div className="ai-history-scroll flex-1 overflow-y-auto bg-white p-3">
                 {isLoadingHistory ? (

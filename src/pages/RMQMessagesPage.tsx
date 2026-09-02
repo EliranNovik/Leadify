@@ -42,7 +42,6 @@ import {
   PencilIcon,
   SparklesIcon,
   BookmarkIcon,
-  ChevronRightIcon,
   ArrowUturnLeftIcon,
   FlagIcon,
   Cog6ToothIcon,
@@ -222,10 +221,10 @@ interface MessagingModalProps {
 
 /** RMQ chat UI tokens — restrained radius; bubble column capped for readability, aligned to thread edges (not centered). */
 const RMQ_CHAT = {
-  bubbleR: 'rounded-[10px]',
-  bubblePad: 'px-3 py-2',
-  /** Sent bubble fill — purple aligned with RMQ header/chat icon (#4829CC). */
-  sentBg: '#4829CC',
+  bubbleR: 'rounded-2xl',
+  bubblePad: 'px-5 py-4',
+  /** Sent bubble fill — same indigo → sky gradient as RMQ AI user bubbles. */
+  sentBg: 'linear-gradient(90deg, #6366f1 0%, #38bdf8 100%)',
   /** Links in received message text (olive; not tied to sent bubble color). */
   recvLinkColor: '#4F5C47',
   /** Links inside own (sent) bubbles — same sky as “Leave a Comment” on group messages (`text-sky-200`). */
@@ -245,14 +244,14 @@ const RMQ_CHAT = {
     'min-w-0 max-lg:w-[min(88%,24rem)] max-lg:max-w-[min(88%,24rem)] max-lg:shrink-0',
   /** Media bubble: use full column width (bubbleMax), not a fixed ~220px strip. */
   image: 'w-full min-w-0 max-w-full',
-  imageR: 'rounded-[10px]',
+  imageR: 'rounded-2xl',
   /**
    * Single image/video in thread — width follows bubble; height is natural (no max-h box /
    * object-contain letterboxing that left empty white under media).
    */
   mediaImg: 'block h-auto w-auto max-w-full object-contain object-center bg-transparent',
   mediaVideo:
-    'relative z-10 block h-auto w-auto max-w-full min-h-[100px] object-contain bg-transparent pointer-events-none',
+    'relative z-10 block h-auto w-auto max-w-full min-h-[100px] min-w-[10rem] object-contain bg-neutral-800 pointer-events-none',
   /** Frosted glass chrome over the message thread (header + composer). */
   chromeGlassTop:
     'bg-white/50 backdrop-blur-xl supports-[backdrop-filter]:bg-white/35 border-b border-white/40 shadow-[0_8px_24px_rgba(15,23,42,0.06)]',
@@ -263,17 +262,34 @@ const RMQ_CHAT = {
    * (`text-sky-200` / `text-sky-600` in group footers).
    */
   replyPreviewInBubble:
-    'mb-1.5 w-full rounded-md border border-sky-300/50 bg-sky-50 px-2.5 py-2 text-left border-l-4 border-l-sky-500 shadow-none transition-opacity hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/35 dark:border-sky-500/45 dark:bg-sky-950/55',
-  replyPreviewInBubbleName: 'text-[12px] font-semibold leading-tight text-sky-800 dark:text-sky-200',
+    'rmq-reply-quote mb-1.5 w-full rounded-2xl px-2.5 py-2 pl-2.5 text-left border-0 border-l-4 border-l-[#3E28CD] shadow-none transition-opacity hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/35',
+  replyPreviewInBubbleName: 'text-[12px] lg:text-sm font-semibold leading-tight text-[#3E28CD]',
   replyPreviewInBubbleText:
-    'text-[12px] leading-snug text-sky-700 dark:text-sky-300/95 line-clamp-2 mt-0.5',
-  replyPreviewInBubbleMeta: 'text-[12px] italic mt-0.5 text-sky-600 dark:text-sky-400',
+    'text-[12px] lg:text-sm leading-snug text-[#3E28CD]/85 line-clamp-2 mt-0.5',
+  replyPreviewInBubbleMeta: 'text-[12px] lg:text-sm italic mt-0.5 text-[#3E28CD]/70',
   /** Composer “Replying to…” strip above the input — same sky treatment. */
   replyPreviewComposer:
     'rmq-reply-preview flex items-start gap-2 rounded-lg border border-sky-300/50 bg-sky-50 p-2.5 border-l-4 border-l-sky-500 dark:border-sky-500/45 dark:bg-sky-950/55',
   replyPreviewComposerTitle: 'text-sm font-semibold text-sky-800 dark:text-sky-200 mb-1',
   replyPreviewComposerBody: 'text-base text-sky-800/90 dark:text-sky-200/90 truncate',
 } as const;
+
+/** `#t=0.1` asks the browser for a frame so the preview is not an empty grey box. */
+const videoPreviewSrc = (url: string | null | undefined): string => {
+  if (!url) return '';
+  return url.includes('#t=') ? url : `${url}#t=0.1`;
+};
+
+/** Safari / Chrome often won't paint until currentTime is set after metadata. */
+const primeVideoPreviewFrame = (video: HTMLVideoElement) => {
+  try {
+    if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+    if (video.currentTime > 0.05) return;
+    video.currentTime = Math.min(0.1, Math.max(0.001, video.duration * 0.02));
+  } catch {
+    /* some streams reject seek */
+  }
+};
 
 /** Group consecutive messages from the same sender (Slack-style) if within this gap. */
 const RMQ_GROUP_GAP_MS = 5 * 60 * 1000;
@@ -2011,6 +2027,90 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     return format(date, 'HH:mm');
   };
 
+  const renderCommentIconButton = (
+    message: Message,
+    isOwn: boolean,
+    opts?: { onMedia?: boolean }
+  ) => {
+    if (selectedConversation?.type !== 'group') return null;
+    const count = rmqMessageCommentCounts[message.id] ?? 0;
+    const onMedia = opts?.onMedia;
+    return (
+      <button
+        type="button"
+        className={`relative inline-flex items-center justify-center rounded-full p-1 ${
+          onMedia
+            ? 'text-white hover:bg-white/15'
+            : isOwn
+              ? 'text-sky-200 hover:bg-white/10'
+              : 'text-sky-600 hover:bg-black/[0.04] dark:text-sky-400 dark:hover:bg-white/10'
+        }`}
+        onClick={e => {
+          e.stopPropagation();
+          openRmqMessageCommentsModal(message);
+        }}
+        title={count > 0 ? `${count} comment${count === 1 ? '' : 's'}` : 'Comment'}
+        aria-label={count > 0 ? `${count} comments` : 'Leave a comment'}
+      >
+        <ChatBubbleLeftRightIcon className="h-5 w-5 shrink-0" strokeWidth={2} />
+        {count > 0 ? (
+          <span
+            className={`absolute -right-1.5 -top-1.5 min-w-[1.05rem] rounded-full px-1 text-[10px] font-semibold leading-4 tabular-nums ${
+              onMedia || isOwn
+                ? 'bg-white text-sky-700'
+                : 'bg-sky-600 text-white dark:bg-sky-500'
+            }`}
+          >
+            {count}
+          </span>
+        ) : null}
+      </button>
+    );
+  };
+
+  /** Timestamp lives on its own LTR row so mixed Hebrew/English never pulls it into the sentence. */
+  const renderBubbleTimestamp = (message: Message, isOwn: boolean) => {
+    const commentBtn = renderCommentIconButton(message, isOwn);
+    return (
+      <div
+        className={`mt-2 flex w-full items-center gap-2 ${commentBtn ? 'justify-between' : 'justify-end'}`}
+        dir="ltr"
+      >
+        {commentBtn}
+        <div className="flex items-center gap-1">
+          <span
+            className={`text-[11px] font-medium tabular-nums select-none whitespace-nowrap ${isOwn ? '' : 'text-gray-500'}`}
+            style={
+              isOwn
+                ? { color: 'rgba(255, 255, 255, 0.62)' }
+                : chatBackgroundImageUrl
+                  ? { textShadow: '0 1px 1px rgba(0,0,0,0.2)' }
+                  : undefined
+            }
+          >
+            {formatMessageTime(message.sent_at)}
+          </span>
+          {isOwn ? renderReadReceipts(message, { inline: true }) : null}
+        </div>
+      </div>
+    );
+  };
+
+  const renderMediaTimeOverlay = (message: Message, isOwn: boolean) => {
+    const commentBtn = renderCommentIconButton(message, isOwn, { onMedia: true });
+    return (
+      <div
+        className="absolute inset-x-2 bottom-2 z-10 flex items-center justify-between gap-2 pointer-events-none"
+        dir="ltr"
+      >
+        {commentBtn ? <div className="pointer-events-auto">{commentBtn}</div> : <span />}
+        <span className="text-xs font-medium text-white drop-shadow-md">
+          {formatMessageTime(message.sent_at)}
+        </span>
+      </div>
+    );
+  };
+
   /** Sidebar list: today = clock; same calendar week (not today) = weekday; older = date. */
   const formatSidebarConversationTime = (timestamp: string | null | undefined): string => {
     if (!timestamp) return '';
@@ -2128,7 +2228,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         >
           {isVid ? (
             <video
-              src={item.url}
+              src={videoPreviewSrc(item.url)}
               className={
                 cover
                   ? 'absolute inset-0 w-full h-full object-cover pointer-events-none'
@@ -2137,6 +2237,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               muted
               playsInline
               preload="metadata"
+              onLoadedMetadata={e => primeVideoPreviewFrame(e.currentTarget)}
+              onLoadedData={e => primeVideoPreviewFrame(e.currentTarget)}
             />
           ) : (
             <img
@@ -2259,9 +2361,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             {nameHeaderInMediaCard}
             <div className={`relative ${message.media_attachments?.length === 1 ? 'w-fit max-w-full' : 'w-full'}`}>
               {renderAlbumMessageContent(message, 0)}
-              <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md pointer-events-none z-10">
-                {formatMessageTime(message.sent_at)}
-              </span>
+              {renderMediaTimeOverlay(message, isOwn)}
             </div>
             {getAlbumUserCaption(message) && (
               <div
@@ -2304,9 +2404,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 loading="lazy"
                 decoding="async"
               />
-              <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md pointer-events-none">
-                {formatMessageTime(message.sent_at)}
-              </span>
+              {renderMediaTimeOverlay(message, isOwn)}
             </div>
           </div>
         </div>
@@ -2335,15 +2433,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               }}
             >
               <video
-                src={message.attachment_url}
+                src={videoPreviewSrc(message.attachment_url)}
                 className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaVideo}`}
                 muted
                 playsInline
                 preload="metadata"
+                onLoadedMetadata={e => primeVideoPreviewFrame(e.currentTarget)}
+                onLoadedData={e => primeVideoPreviewFrame(e.currentTarget)}
               />
-              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
-                {formatMessageTime(message.sent_at)}
-              </span>
+              {renderMediaTimeOverlay(message, isOwn)}
             </div>
           </div>
         </div>
@@ -6488,32 +6586,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       .sort((a, b) => new Date(b.message.sent_at).getTime() - new Date(a.message.sent_at).getTime());
   }, [messages, rmqMessageCommentCounts, currentUser?.id]);
 
-  /** Attached to the message bubble: optional thread-reply strip + (group chats only) “Leave a Comment”. */
+  /** Attached to the message bubble: optional thread-reply strip + (group chats only) comment icon. */
   const renderMessageCommentFooter = useCallback(
     (message: Message, tone: 'media' | 'textOwn' | 'textOther') => {
-      const isGroupChat = selectedConversation?.type === 'group';
-      const count = rmqMessageCommentCounts[message.id] ?? 0;
       const replyCount = replyThreadStats.countByParent[message.id] ?? 0;
       const firstReplyId = replyThreadStats.firstReplyIdByParent[message.id];
-      const toneClass =
-        tone === 'textOwn'
-          ? 'border-t border-white/20 bg-black/10 hover:bg-black/20'
-          : tone === 'textOther'
-            ? 'border-t border-base-300/70 bg-base-200/55 dark:bg-base-300/35 hover:bg-base-200/80 dark:hover:bg-base-300/50'
-            : 'border-t border-base-300/70 bg-base-200/55 dark:bg-base-300/35 hover:bg-base-200/80 dark:hover:bg-base-300/50';
-      /** Thread reply strip — same lavender / brand purple as tabs & sidebar selection (not mint). */
+      /** Thread reply count — text/icon only, no filled purple box. */
       const replyStripClass =
+        tone === 'textOwn'
+          ? 'bg-transparent hover:bg-white/5'
+          : 'bg-transparent hover:bg-black/[0.03] dark:hover:bg-white/5';
+      const flagStripClass =
         tone === 'textOwn'
           ? 'border-t border-white/20 bg-white/10 hover:bg-white/16'
           : tone === 'textOther'
             ? 'rmq-thread-reply-strip border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28'
             : 'rmq-thread-reply-strip border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28';
-      const labelClass =
-        tone === 'textOwn'
-          ? 'text-sky-200'
-          : 'text-sky-600 dark:text-sky-400';
-      const iconClass = tone === 'textOwn' ? 'text-sky-200' : 'text-sky-600 dark:text-sky-400';
-      const chevronClass = tone === 'textOwn' ? 'text-sky-300/90' : 'text-sky-500/90 dark:text-sky-400/90';
       const replyLabelClass =
         tone === 'textOwn'
           ? 'text-sky-200'
@@ -6544,61 +6632,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       const flagStrip = showLeadFlag ? (
         <div
           role="status"
-          className={`flex w-full items-center gap-2.5 px-3 py-2.5 ${replyStripClass}`}
+          className={`flex w-full items-center gap-2.5 px-3 py-2.5 ${flagStripClass}`}
         >
           <FlagIcon className={`h-6 w-6 shrink-0 ${replyIconClass}`} strokeWidth={2} />
           <span className={`text-sm font-semibold ${replyLabelClass}`}>Flagged to lead</span>
         </div>
       ) : null;
 
-      if (!isGroupChat) {
-        if (!replyStrip && !flagStrip) return null;
-        return (
-          <div className="flex w-full flex-col">
-            {replyStrip}
-            {flagStrip}
-          </div>
-        );
-      }
-
+      if (!replyStrip && !flagStrip) return null;
       return (
         <div className="flex w-full flex-col">
           {replyStrip}
-          <button
-            type="button"
-            className={`flex w-full items-center justify-between gap-3 px-3 py-3 text-left ${toneClass}`}
-            onClick={e => {
-              e.stopPropagation();
-              openRmqMessageCommentsModal(message);
-            }}
-          >
-            <div className="flex min-w-0 flex-1 items-center gap-2.5">
-              <ChatBubbleLeftRightIcon className={`h-5 w-5 shrink-0 ${iconClass}`} strokeWidth={2} />
-              <span className={`text-sm font-medium ${labelClass}`}>Leave a Comment</span>
-              {count > 0 ? (
-                <span
-                  className={`rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${
-                    tone === 'textOwn'
-                      ? 'border-white/25 bg-white/10 text-white/90'
-                      : 'border-base-300/60 bg-base-100/90 text-base-content/80 dark:bg-base-100/30'
-                  }`}
-                >
-                  {count}
-                </span>
-              ) : null}
-            </div>
-            <ChevronRightIcon className={`h-5 w-5 shrink-0 ${chevronClass}`} />
-          </button>
           {flagStrip}
         </div>
       );
     },
     [
-      rmqMessageCommentCounts,
-      openRmqMessageCommentsModal,
       replyThreadStats,
       scrollToMessage,
-      selectedConversation?.type,
       rmqFlaggedMessageIds,
     ]
   );
@@ -9098,7 +9149,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
       {/* Chat Area - Desktop Only - min-h-0 so messages area can shrink and scroll above input */}
       {isDesktopLayout ? (
-      <div className="flex flex-1 flex-col relative min-h-0">
+      <div className="rmq-desktop-chat flex flex-1 flex-col relative min-h-0">
         {selectedConversation ? (
           <>
             {/* Chat Header + pinned — frosted glass overlay so the thread shows through */}
@@ -9512,9 +9563,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                         data-message-id={message.id}
                       >
                         {showDateSeparator && (
-                          <div className="flex justify-center my-4 px-2">
+                          <div className="w-full flex justify-center my-4 px-2">
                             <span
-                              className={`text-[11px] font-medium tracking-wide text-base-content/45 ${chatBackgroundImageUrl ? 'bg-white/15 text-white/90' : 'bg-base-200/70 dark:bg-base-300/50'} rounded-full px-3 py-1`}
+                              className={`text-[11px] font-medium tracking-wide text-center ${
+                                chatBackgroundImageUrl
+                                  ? 'text-white/50'
+                                  : 'text-gray-400/80 dark:text-gray-500'
+                              }`}
                             >
                               {formatDateSeparator(message.sent_at)}
                             </span>
@@ -9558,9 +9613,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                   )}
                                   <div className={`relative ${message.media_attachments?.length === 1 ? 'w-fit max-w-full' : 'w-full'}`}>
                                     {renderAlbumMessageContent(message, index)}
-                                    <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
-                                      {formatMessageTime(message.sent_at)}
-                                    </span>
+                                    {renderMediaTimeOverlay(message, isOwn)}
                                   </div>
                                   {getAlbumUserCaption(message) && (
                                     <div
@@ -9632,9 +9685,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     }}
                                     style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out' }}
                                   />
-                                  <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
-                                    {formatMessageTime(message.sent_at)}
-                                  </span>
+                                  {renderMediaTimeOverlay(message, isOwn)}
                                 </div>
                                 {getAttachmentCaption(message) && (
                                   <div
@@ -9697,13 +9748,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                             >
                               <video
                                 data-message-id={message.id}
-                                src={message.attachment_url}
+                                src={videoPreviewSrc(message.attachment_url)}
                                 className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaVideo}`}
-                                preload="none"
+                                preload="metadata"
                                 muted
                                 playsInline
                                 onLoadedMetadata={(e) => {
-                                  const video = e.target as HTMLVideoElement;
+                                  const video = e.currentTarget;
+                                  primeVideoPreviewFrame(video);
                                   addLoadedVideo(message.id);
                                   video.setAttribute('data-ready', 'true');
                                   setLoadingVideos((prev) => {
@@ -9713,6 +9765,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     return next;
                                   });
                                 }}
+                                onLoadedData={(e) => primeVideoPreviewFrame(e.currentTarget)}
                                 onError={() => {
                                   setLoadingVideos((prev) => {
                                     if (!prev.has(message.id)) return prev;
@@ -9722,14 +9775,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                   });
                                 }}
                               />
-                              {loadingVideos.has(message.id) && (
-                                <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center pointer-events-none z-0">
-                                  <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
-                                </div>
-                              )}
-                              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
-                                {formatMessageTime(message.sent_at)}
+                              <span className="absolute inset-0 z-[11] flex items-center justify-center pointer-events-none">
+                                <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/50 text-white text-lg leading-none">
+                                  ▶
+                                </span>
                               </span>
+                              {renderMediaTimeOverlay(message, isOwn)}
                             </div>
                             {getAttachmentCaption(message) && (
                               <div
@@ -9758,25 +9809,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                             <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} min-w-0`}>
                             <div className="text-6xl leading-none inline-block text-left">
                               {renderMessageContent(message.content || '', isOwn)}
-                              {isOwn ? (
-                                <span className="inline-flex items-center gap-1 ml-2 align-middle">
-                                  <span className="text-xs sm:text-[11px] font-medium tabular-nums" style={{ color: 'rgba(255, 255, 255, 0.65)' }}>
-                                    {formatMessageTime(message.sent_at)}
-                                  </span>
-                                  {renderReadReceipts(message, { inline: true })}
-                                </span>
-                              ) : (
-                                <span
-                                  className="inline text-xs sm:text-[11px] font-medium tabular-nums ml-2 align-baseline text-gray-500"
-                                  style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}
-                                >
-                                  {formatMessageTime(message.sent_at)}
-                                </span>
-                              )}
                             </div>
-                            <div className="mt-2 w-full min-w-0 overflow-hidden rounded-lg border border-base-300/70">
-                              {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
-                            </div>
+                            {renderBubbleTimestamp(message, isOwn)}
+                            {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                             </div>
                           </div>
                         ) : (
@@ -9903,45 +9938,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     ) : null;
                                   })()}
 
-                                  {/* Message text + time on last line (Telegram-style inline meta) */}
+                                  {/* Message text; time is a separate LTR row so Hebrew/English mix cannot reorder it */}
                                   {message.content && (
-                                    <div
-                                      className="break-words text-sm whitespace-pre-wrap"
-                                      dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
-                                      style={{
-                                        textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
-                                          getTextDirection(message.content) === 'auto' ? 'start' : 'left',
-                                        ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                        lineHeight: '1.45',
-                                        wordBreak: 'break-word',
-                                        overflowWrap: 'break-word',
-                                        whiteSpace: 'pre-wrap',
-                                        unicodeBidi: 'plaintext',
-                                      }}
-                                    >
-                                      {renderMessageContent(message.content, isOwn)}
-                                      {isOwn ? (
-                                        <span className="inline-flex items-center gap-1 ml-1.5 align-middle">
-                                          <span
-                                            className="text-[11px] sm:text-[11px] font-medium tabular-nums select-none whitespace-nowrap"
-                                            style={{ color: 'rgba(255, 255, 255, 0.62)' }}
-                                          >
-                                            {formatMessageTime(message.sent_at)}
-                                          </span>
-                                          {renderReadReceipts(message, { inline: true })}
-                                        </span>
-                                      ) : (
-                                        <span
-                                          className={`inline text-[11px] sm:text-[11px] font-medium tabular-nums select-none whitespace-nowrap align-baseline ml-1.5 text-gray-500`}
-                                          style={
-                                            chatBackgroundImageUrl
-                                              ? { textShadow: '0 1px 1px rgba(0,0,0,0.2)' }
-                                              : undefined
-                                          }
-                                        >
-                                          {formatMessageTime(message.sent_at)}
-                                        </span>
-                                      )}
+                                    <div>
+                                      <div
+                                        className="break-words text-base whitespace-pre-wrap"
+                                        dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                        style={{
+                                          textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
+                                            getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                          ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                          lineHeight: '1.45',
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          whiteSpace: 'pre-wrap',
+                                          unicodeBidi: 'plaintext',
+                                        }}
+                                      >
+                                        {renderMessageContent(message.content, isOwn)}
+                                      </div>
+                                      {renderBubbleTimestamp(message, isOwn)}
                                     </div>
                                   )}
 
@@ -10090,18 +10106,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     </div>
                                   )}
 
-                                  {/* Time + receipts: separate row only when there is no text (media-only / empty body) */}
-                                  {!(message.content && String(message.content).trim()) && (
-                                    <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                      <span
-                                        className={`text-sm sm:text-xs ${isOwn ? '' : 'text-gray-500'}`}
-                                        style={isOwn ? { color: 'rgba(255, 255, 255, 0.7)' } : {}}
-                                      >
-                                        {formatMessageTime(message.sent_at)}
-                                      </span>
-                                      {isOwn && renderReadReceipts(message, { inline: true })}
-                                    </div>
-                                  )}
+                                  {/* Time + comment icon: separate row only when there is no text (media-only / empty body) */}
+                                  {!(message.content && String(message.content).trim()) &&
+                                    renderBubbleTimestamp(message, isOwn)}
 
                                   {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                                 </div>
@@ -10381,7 +10388,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                             {item.file.type.startsWith('image/') ? (
                               <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
                             ) : item.file.type.startsWith('video/') ? (
-                              <video src={item.previewUrl} className="w-full h-full object-cover" muted playsInline />
+                              <video
+                                src={videoPreviewSrc(item.previewUrl)}
+                                className="w-full h-full object-cover"
+                                muted
+                                playsInline
+                                preload="metadata"
+                                onLoadedMetadata={e => primeVideoPreviewFrame(e.currentTarget)}
+                              />
                             ) : (
                               <div className="w-full h-full flex flex-col items-center justify-center p-1 text-[9px] text-center text-base-content/80 leading-tight">
                                 <PaperClipIcon className="w-6 h-6 opacity-60 mx-auto shrink-0" />
@@ -10455,13 +10469,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           : 'Type a message...'
                     }
                     dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
-                    className="textarea scrollbar-hide w-full resize-none max-h-28 rounded-2xl border border-[#E5E7EB] bg-white text-sm text-[#111827] outline-none ring-0 transition-colors placeholder:text-gray-500 focus:border-gray-300 focus:outline-none focus:ring-0"
+                    className="textarea scrollbar-hide w-full resize-none max-h-28 rounded-2xl border border-[#E5E7EB] bg-white text-base text-[#111827] outline-none ring-0 transition-colors placeholder:text-gray-500 focus:border-gray-300 focus:outline-none focus:ring-0"
                     rows={1}
                     disabled={isSending}
                     style={{
                       height: '44px',
                       minHeight: '44px',
-                      fontSize: '0.9375rem',
+                      fontSize: '1.0625rem',
                       padding: '12px 14px',
                       boxSizing: 'border-box',
                       backgroundColor: '#ffffff'
@@ -10511,7 +10525,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     else void sendMessage();
                   }}
                   disabled={isSending}
-                  className="btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content disabled:opacity-50 flex-shrink-0 hover:bg-base-200"
+                  className={
+                    messageToEdit || pendingMediaDraft?.length || newMessage.trim()
+                      ? 'rmq-send-btn btn btn-circle w-10 h-10 min-h-0 border-0 text-white disabled:opacity-50 flex-shrink-0'
+                      : 'btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content disabled:opacity-50 flex-shrink-0 hover:bg-base-200'
+                  }
                   title={
                     messageToEdit
                       ? 'Save edit'
@@ -10525,13 +10543,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   {isSending ? (
                     <div className="loading loading-spinner loading-sm"></div>
                   ) : messageToEdit ? (
-                    <CheckIcon className="w-6 h-6 text-green-600" />
+                    <CheckIcon className="w-6 h-6 text-white" />
                   ) : pendingMediaDraft?.length ? (
-                    <PaperAirplaneIcon className="w-6 h-6 text-green-600" />
+                    <PaperAirplaneIcon className="w-6 h-6 text-white" />
                   ) : !newMessage.trim() ? (
                     <MicrophoneIcon className="w-6 h-6" />
                   ) : (
-                    <PaperAirplaneIcon className="w-6 h-6 text-green-600" />
+                    <PaperAirplaneIcon className="w-6 h-6 text-white" />
                   )}
                 </button>
               </div>
@@ -11035,9 +11053,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                         data-message-id={message.id}
                       >
                         {showDateSeparator && (
-                          <div className="flex justify-center my-4 px-2">
+                          <div className="w-full flex justify-center my-4 px-2">
                             <span
-                              className={`text-[11px] font-medium tracking-wide text-base-content/45 ${chatBackgroundImageUrl ? 'bg-white/15 text-white/90' : 'bg-base-200/70 dark:bg-base-300/50'} rounded-full px-3 py-1`}
+                              className={`text-[11px] font-medium tracking-wide text-center ${
+                                chatBackgroundImageUrl
+                                  ? 'text-white/50'
+                                  : 'text-gray-400/80 dark:text-gray-500'
+                              }`}
                             >
                               {formatDateSeparator(message.sent_at)}
                             </span>
@@ -11094,9 +11116,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 )}
                                 <div className={`relative ${message.media_attachments?.length === 1 ? 'w-fit max-w-full' : 'w-full'}`}>
                                   {renderAlbumMessageContent(message, index)}
-                                  <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
-                                    {formatMessageTime(message.sent_at)}
-                                  </span>
+                                  {renderMediaTimeOverlay(message, isOwn)}
                                 </div>
                                 {getAlbumUserCaption(message) && (
                                   <div
@@ -11177,9 +11197,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 }}
                                 style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out' }}
                               />
-                              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
-                                {formatMessageTime(message.sent_at)}
-                              </span>
+                              {renderMediaTimeOverlay(message, isOwn)}
                             </div>
                             {getAttachmentCaption(message) && (
                               <div
@@ -11247,13 +11265,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 >
                               <video
                                 data-message-id={message.id}
-                                src={message.attachment_url}
+                                src={videoPreviewSrc(message.attachment_url)}
                                 className={`${RMQ_CHAT.imageR} ${RMQ_CHAT.mediaVideo}`}
-                                preload="none"
+                                preload="metadata"
                                 muted
                                 playsInline
                                 onLoadedMetadata={(e) => {
-                                  const video = e.target as HTMLVideoElement;
+                                  const video = e.currentTarget;
+                                  primeVideoPreviewFrame(video);
                                   addLoadedVideo(message.id);
                                   video.setAttribute('data-ready', 'true');
                                   setLoadingVideos((prev) => {
@@ -11263,6 +11282,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     return next;
                                   });
                                 }}
+                                onLoadedData={(e) => primeVideoPreviewFrame(e.currentTarget)}
                                 onError={() => {
                                   setLoadingVideos((prev) => {
                                     if (!prev.has(message.id)) return prev;
@@ -11272,14 +11292,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                   });
                                 }}
                               />
-                              {loadingVideos.has(message.id) && (
-                                <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center pointer-events-none z-0">
-                                  <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
-                                </div>
-                              )}
-                              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
-                                {formatMessageTime(message.sent_at)}
+                              <span className="absolute inset-0 z-[11] flex items-center justify-center pointer-events-none">
+                                <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/50 text-white text-lg leading-none">
+                                  ▶
+                                </span>
                               </span>
+                              {renderMediaTimeOverlay(message, isOwn)}
                             </div>
                             {getAttachmentCaption(message) && (
                               <div
@@ -11306,25 +11324,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           >
                             <div className="text-6xl leading-none inline-block text-left">
                               {renderMessageContent(message.content || '', isOwn)}
-                              {isOwn ? (
-                                <span className="inline-flex items-center gap-1 ml-2 align-middle">
-                                  <span className="text-xs font-medium tabular-nums" style={{ color: 'rgba(255, 255, 255, 0.65)' }}>
-                                    {formatMessageTime(message.sent_at)}
-                                  </span>
-                                  {renderReadReceipts(message, { inline: true })}
-                                </span>
-                              ) : (
-                                <span
-                                  className="inline text-xs font-medium tabular-nums ml-2 align-baseline text-gray-500"
-                                  style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}
-                                >
-                                  {formatMessageTime(message.sent_at)}
-                                </span>
-                              )}
                             </div>
-                            <div className="mt-2 w-full overflow-hidden rounded-lg border border-base-300/70">
-                              {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
-                            </div>
+                            {renderBubbleTimestamp(message, isOwn)}
+                            {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                           </div>
                         ) : (
                           <div
@@ -11442,39 +11444,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     ) : null;
                                   })()}
 
-                                  {/* Message text + time on last line — Mobile */}
+                                  {/* Message text; time is a separate LTR row so Hebrew/English mix cannot reorder it */}
                                   {message.content && (
-                                    <div
-                                      className="break-words text-sm whitespace-pre-wrap"
-                                      dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
-                                      style={{
-                                        textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
-                                          getTextDirection(message.content) === 'auto' ? 'start' : 'left',
-                                        ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                        fontSize: '1.125rem',
-                                        lineHeight: '1.45',
-                                        wordBreak: 'break-word',
-                                        overflowWrap: 'break-word',
-                                        whiteSpace: 'pre-wrap',
-                                        unicodeBidi: 'plaintext',
-                                      }}
-                                    >
-                                      {renderMessageContent(message.content, isOwn)}
-                                      {isOwn ? (
-                                        <span className="inline-flex items-center gap-1 ml-1.5 align-middle">
-                                          <span
-                                            className="text-[11px] font-medium tabular-nums"
-                                            style={{ color: 'rgba(255, 255, 255, 0.62)' }}
-                                          >
-                                            {formatMessageTime(message.sent_at)}
-                                          </span>
-                                          {renderReadReceipts(message, { inline: true })}
-                                        </span>
-                                      ) : (
-                                        <span className="inline text-[11px] font-medium tabular-nums ml-1.5 align-baseline text-gray-500">
-                                          {formatMessageTime(message.sent_at)}
-                                        </span>
-                                      )}
+                                    <div>
+                                      <div
+                                        className="break-words text-sm whitespace-pre-wrap"
+                                        dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                        style={{
+                                          textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
+                                            getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                          ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                          fontSize: '1.125rem',
+                                          lineHeight: '1.45',
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          whiteSpace: 'pre-wrap',
+                                          unicodeBidi: 'plaintext',
+                                        }}
+                                      >
+                                        {renderMessageContent(message.content, isOwn)}
+                                      </div>
+                                      {renderBubbleTimestamp(message, isOwn)}
                                     </div>
                                   )}
 
@@ -11623,20 +11613,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     </div>
                                   )}
 
-                                  {/* Time + receipts: separate row only when no text — Mobile */}
-                                  {!(message.content && String(message.content).trim()) && (
-                                    <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                      <span
-                                        className="text-xs"
-                                        style={{
-                                          color: isOwn ? 'rgba(255, 255, 255, 0.7)' : '#6b7280',
-                                        }}
-                                      >
-                                        {formatMessageTime(message.sent_at)}
-                                      </span>
-                                      {isOwn && renderReadReceipts(message, { inline: true })}
-                                    </div>
-                                  )}
+                                  {/* Time + comment icon: separate row only when no text — Mobile */}
+                                  {!(message.content && String(message.content).trim()) &&
+                                    renderBubbleTimestamp(message, isOwn)}
 
                                   {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                                 </div>
@@ -11793,7 +11772,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               {item.file.type.startsWith('image/') ? (
                                 <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
                               ) : item.file.type.startsWith('video/') ? (
-                                <video src={item.previewUrl} className="w-full h-full object-cover" muted playsInline />
+                                <video
+                                src={videoPreviewSrc(item.previewUrl)}
+                                className="w-full h-full object-cover"
+                                muted
+                                playsInline
+                                preload="metadata"
+                                onLoadedMetadata={e => primeVideoPreviewFrame(e.currentTarget)}
+                              />
                               ) : (
                                 <div className="w-full h-full flex flex-col items-center justify-center p-1 text-[9px] text-center text-gray-700 leading-tight">
                                   <PaperClipIcon className="w-6 h-6 opacity-80 mx-auto shrink-0" />
@@ -11935,7 +11921,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                       else void sendMessage();
                     }}
                     disabled={isSending}
-                    className="btn btn-ghost btn-circle w-11 h-11 min-h-0 disabled:opacity-50 flex-shrink-0 text-gray-700 hover:bg-gray-100 border-0"
+                    className={
+                      messageToEdit || pendingMediaDraft?.length || newMessage.trim()
+                        ? 'rmq-send-btn btn btn-circle w-11 h-11 min-h-0 border-0 text-white disabled:opacity-50 flex-shrink-0'
+                        : 'btn btn-ghost btn-circle w-11 h-11 min-h-0 disabled:opacity-50 flex-shrink-0 text-gray-700 hover:bg-gray-100 border-0'
+                    }
                     title={
                       messageToEdit
                         ? 'Save edit'
@@ -11949,13 +11939,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     {isSending ? (
                       <div className="loading loading-spinner loading-sm"></div>
                     ) : messageToEdit ? (
-                      <CheckIcon className="w-6 h-6 text-emerald-600" />
+                      <CheckIcon className="w-6 h-6 text-white" />
                     ) : pendingMediaDraft?.length ? (
-                      <PaperAirplaneIcon className="w-6 h-6 text-emerald-600" />
+                      <PaperAirplaneIcon className="w-6 h-6 text-white" />
                     ) : !newMessage.trim() ? (
                       <MicrophoneIcon className="w-6 h-6 text-gray-600" />
                     ) : (
-                      <PaperAirplaneIcon className="w-6 h-6 text-emerald-600" />
+                      <PaperAirplaneIcon className="w-6 h-6 text-white" />
                     )}
                   </button>
                 </div>
@@ -13325,14 +13315,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             <div className="p-4 border-b border-base-300">
               <p className="text-xs font-medium text-base-content/60 mb-2">Message</p>
               <div
-                className={`inline-block max-w-full rounded-2xl px-3 py-2 shadow-sm ${
+                className={`inline-block max-w-full rounded-2xl px-5 py-4 shadow-sm ${
                   mobileMessageActionMessage.sender_id === currentUser?.id
-                    ? 'text-white rounded-br-md'
-                    : 'border rounded-bl-md bg-base-200 border-base-300 text-base-content'
+                    ? 'text-white rmq-bubble-sent'
+                    : 'rmq-bubble-recv bg-white text-[#111827] dark:bg-base-200/80 dark:text-base-content'
                 }`}
                 style={
                   mobileMessageActionMessage.sender_id === currentUser?.id
-                    ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
+                    ? { background: RMQ_CHAT.sentBg }
                     : {}
                 }
               >
@@ -13343,7 +13333,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     {mobileMessageActionMessage.media_attachments.slice(0, 9).map((a, i) =>
                       a.type.startsWith('video/') ? (
                         <div key={i} className="relative aspect-square rounded overflow-hidden bg-base-300">
-                          <video src={a.url} className="w-full h-full object-cover" muted playsInline preload="metadata" />
+                          <video
+                            src={videoPreviewSrc(a.url)}
+                            className="w-full h-full object-cover"
+                            muted
+                            playsInline
+                            preload="metadata"
+                            onLoadedMetadata={e => primeVideoPreviewFrame(e.currentTarget)}
+                          />
                         </div>
                       ) : (
                         <img key={i} src={a.url} alt="" className="w-full aspect-square object-cover rounded" />
