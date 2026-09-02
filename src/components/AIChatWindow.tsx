@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, HandThumbDownIcon as HandThumbDownSolid, HandThumbUpIcon as HandThumbUpSolid } from '@heroicons/react/24/solid';
-import { AcademicCapIcon, ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentCheckIcon, DocumentTextIcon, EnvelopeIcon, HandThumbDownIcon, HandThumbUpIcon, LinkIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentCheckIcon, DocumentTextIcon, EllipsisHorizontalIcon, EnvelopeIcon, HandThumbDownIcon, HandThumbUpIcon, LinkIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
@@ -462,13 +462,13 @@ function ChatWelcomeHome({
   const questions = hasLead ? WELCOME_LEAD_QUESTIONS : WELCOME_GENERAL_QUESTIONS;
   return (
     <div className="ai-welcome-home mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-1 py-6">
-      <div className="ai-welcome-orb mb-5">
-        <RmqAiLogo className="h-[5.25rem] w-[5.25rem]" />
+      <div className="ai-welcome-orb mb-5 max-md:mb-6">
+        <RmqAiLogo className="h-[5.25rem] w-[5.25rem] max-md:h-[6.25rem] max-md:w-[6.25rem]" />
       </div>
-      <h2 className="ai-welcome-title text-center text-2xl font-bold tracking-tight">
+      <h2 className="ai-welcome-title text-center text-2xl font-bold tracking-tight max-md:text-[1.85rem]">
         {hasLead ? 'How can I help with this lead?' : 'How can I help you?'}
       </h2>
-      <p className="ai-welcome-sub mt-2 max-w-md text-center text-sm">
+      <p className="ai-welcome-sub mt-2 max-w-md text-center text-sm max-md:mt-2.5 max-md:text-base">
         {hasLead
           ? 'Ask about meetings, follow-ups, contracts or communication.'
           : 'Ask about your day, meetings, follow-ups or signed deals.'}
@@ -506,11 +506,11 @@ function ChatWelcomeHome({
             onClick={() => onAction(prompt)}
           >
             <span className="ai-welcome-card-icon">
-              <Icon className="h-6 w-6" />
+              <Icon className="h-6 w-6 max-md:h-7 max-md:w-7" />
             </span>
             <span className="min-w-0 text-left leading-snug">
-              <span className="ai-welcome-card-title block text-sm font-semibold">{label}</span>
-              <span className="ai-welcome-card-hint mt-0.5 block text-xs">{hint}</span>
+              <span className="ai-welcome-card-title block text-sm font-semibold max-md:text-base">{label}</span>
+              <span className="ai-welcome-card-hint mt-0.5 block text-xs max-md:text-sm">{hint}</span>
             </span>
           </button>
         ))}
@@ -527,7 +527,7 @@ function ChatWelcomeHome({
             disabled={disabled}
             onClick={() => onAction(question)}
           >
-            <SparklesIcon className="h-5 w-5 shrink-0" />
+            <SparklesIcon className="h-5 w-5 shrink-0 max-md:h-6 max-md:w-6" />
             {question}
           </button>
         ))}
@@ -672,6 +672,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historySelecting, setHistorySelecting] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
+  const [historyToolsOpen, setHistoryToolsOpen] = useState(false);
   const [isDarkTheme, setIsDarkTheme] = useState(readAiDrawerDark);
   const [panelPos, setPanelPos] = useState<PanelPos | null>(readSavedPanelPos);
   const [panelSize, setPanelSize] = useState<PanelSize | null>(readSavedPanelSize);
@@ -2230,6 +2231,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isMobile || !showHistoryPanel) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowHistoryPanel(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isMobile, showHistoryPanel]);
+
+  useEffect(() => {
+    if (!showHistoryPanel) setHistoryToolsOpen(false);
+  }, [showHistoryPanel]);
+
   // Auto-save chat when messages change
   useEffect(() => {
     if (messages.length > 1 && !isLoading) {
@@ -2564,6 +2578,264 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       if (copiedBubbleTimerRef.current != null) window.clearTimeout(copiedBubbleTimerRef.current);
     };
   }, []);
+
+  const historyFileInput = (
+    <input
+      ref={teachFileInputRef}
+      type="file"
+      accept=".txt,.md,.text"
+      className="hidden"
+      onChange={(event) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file) return;
+        void file.text().then(async (text) => {
+          const result = await ingestKnowledgeText({ title: file.name, text, scope: 'user' });
+          if (result?.chunks) toast.success(`Saved ${result.chunks} knowledge chunks`);
+          else toast.error('Could not save knowledge file. Run the RMQ AI v1 SQL first.');
+        });
+      }}
+    />
+  );
+
+  const renderChatHistoryPanel = (mobileDrawer: boolean) => (
+    <>
+      {mobileDrawer ? (
+        <>
+        <div className="ai-history-veil ai-history-veil-top" aria-hidden />
+        <div className="ai-history-float-top">
+          <div className="flex h-14 items-center gap-2.5">
+            <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-12 w-12 shrink-0" />
+            <span className="text-lg font-bold tracking-tight text-gray-900">RMQ AI</span>
+          </div>
+          <button
+            type="button"
+            className="ai-history-float-chip h-12 w-12 text-gray-600"
+            onClick={() => setShowHistoryPanel(false)}
+            aria-label="Close history"
+            title="Close history"
+          >
+            <XMarkIcon className="h-6 w-6" />
+          </button>
+        </div>
+        </>
+      ) : (
+      <div className="bg-white p-4">
+        <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="font-semibold text-gray-900">Chat History</h3>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleHistoryDeleteClick}
+              className={`inline-flex h-9 items-center justify-center rounded-full px-3 text-sm font-semibold shadow-sm transition ${
+                historySelecting
+                  ? selectedHistoryIds.length > 0
+                    ? 'bg-red-600 text-white hover:bg-red-700'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  : 'bg-gray-100 text-red-500 hover:bg-red-50'
+              }`}
+              title={
+                historySelecting
+                  ? selectedHistoryIds.length > 0
+                    ? `Delete ${selectedHistoryIds.length} selected`
+                    : 'Cancel selection'
+                  : 'Select chats to delete'
+              }
+              aria-label={
+                historySelecting
+                  ? selectedHistoryIds.length > 0
+                    ? 'Confirm delete'
+                    : 'Cancel selection'
+                  : 'Delete chats'
+              }
+            >
+              <TrashIcon className="h-5 w-5" />
+              {historySelecting && selectedHistoryIds.length > 0 ? (
+                <span className="ml-1">{selectedHistoryIds.length}</span>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              onClick={() => teachFileInputRef.current?.click()}
+              className="inline-flex h-9 items-center justify-center rounded-full bg-gray-100 px-3 text-sm font-semibold text-gray-600 shadow-sm transition hover:bg-gray-200"
+              title="Teach RMQ (txt playbook)"
+              aria-label="Teach RMQ"
+            >
+              <AcademicCapIcon className="h-5 w-5" />
+            </button>
+            {historyFileInput}
+            <button
+              type="button"
+              onClick={startNewChat}
+              className="ai-send-btn inline-flex h-9 items-center gap-1.5 rounded-full border-0 px-4 text-sm font-semibold text-white shadow-sm transition"
+              title="Start New Chat"
+            >
+              <PlusIcon className="h-4 w-4" strokeWidth={2.5} />
+              New
+            </button>
+          </div>
+        </div>
+      </div>
+      )}
+      <div className={`ai-history-scroll flex-1 overflow-y-auto px-3 pb-3 ${mobileDrawer ? 'px-4 pt-[calc(4.4rem+env(safe-area-inset-top))] pb-24' : 'bg-white'}`}>
+        <div className={`relative ${mobileDrawer ? 'mb-3' : 'mb-3 px-1'}`}>
+          <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search conversations..."
+            value={historySearchTerm}
+            onChange={(e) => {
+              setHistorySearchTerm(e.target.value);
+              loadChatHistory(e.target.value);
+            }}
+            className="w-full rounded-xl border-0 bg-gray-100 py-2.5 pl-10 pr-4 text-sm text-gray-900 placeholder:text-gray-500 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 max-md:py-3 max-md:text-base"
+          />
+        </div>
+        {isLoadingHistory ? (
+          <div className="flex h-32 items-center justify-center">
+            <div className="loading loading-spinner loading-md text-violet-600"></div>
+          </div>
+        ) : chatHistory.length === 0 ? (
+          <div className="rounded-2xl bg-white/70 p-8 text-center text-gray-500">
+            <ChatBubbleLeftRightIcon className="mx-auto mb-4 h-12 w-12 text-gray-300" />
+            <p className="text-lg font-medium">No conversations yet</p>
+            <p className="text-sm">Start chatting to see your history here</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {chatHistory.map((chat) => {
+              const isSelected = selectedHistoryIds.includes(chat.id);
+              const historyPreview = formatChatHistoryPreview(chat.summary);
+              return (
+                <div
+                  key={chat.id}
+                  className={`ai-history-item cursor-pointer rounded-l-xl rounded-r-3xl bg-white p-4 ring-1 transition-colors ${
+                    historySelecting && isSelected
+                      ? 'ai-history-item-active ring-2 ring-red-400'
+                      : currentChatId === chat.id
+                        ? 'ai-history-item-active ring-2 ring-violet-400'
+                        : 'ring-gray-100 hover:ring-gray-200'
+                  }`}
+                  onClick={() =>
+                    historySelecting ? toggleHistorySelection(chat.id) : loadChat(chat.id)
+                  }
+                >
+                  <div className="flex items-start gap-3">
+                    {historySelecting ? (
+                      <span
+                        className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                          isSelected
+                            ? 'border-red-500 bg-red-500 text-white'
+                            : 'border-gray-300 bg-white'
+                        }`}
+                        aria-hidden
+                      >
+                        {isSelected ? <CheckIcon className="h-3.5 w-3.5" strokeWidth={3} /> : null}
+                      </span>
+                    ) : null}
+                    <div className="min-w-0 flex-1">
+                      <h4 className="truncate text-sm font-medium text-gray-900 max-md:text-base">
+                        {formatChatHistoryPreview(chat.title) || chat.title}
+                      </h4>
+                      <div className="mt-1 flex items-center gap-2 text-xs text-gray-500 max-md:text-sm">
+                        <ClockIcon className="h-3 w-3" />
+                        <span>{new Date(chat.updated_at).toLocaleDateString()}</span>
+                        <span>•</span>
+                        <span>{chat.message_count} messages</span>
+                      </div>
+                      {historyPreview ? (
+                        <p className="mt-1 line-clamp-2 text-xs text-gray-600 max-md:text-sm">
+                          {historyPreview}
+                        </p>
+                      ) : null}
+                      {chat.tags && chat.tags.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {chat.tags.slice(0, 3).map((tag, idx) => (
+                            <span
+                              key={idx}
+                              className="rounded-full bg-violet-100 px-2 py-1 text-xs text-violet-700"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {chat.tags.length > 3 && (
+                            <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
+                              +{chat.tags.length - 3}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {mobileDrawer ? (
+        <div className="ai-history-float-dock">
+          <button
+            type="button"
+            onClick={startNewChat}
+            className="ai-send-btn inline-flex h-12 items-center gap-1.5 rounded-full border-0 px-5 text-base font-semibold text-white shadow-lg"
+            title="Start New Chat"
+          >
+            <PlusIcon className="h-5 w-5" strokeWidth={2.5} />
+            New
+          </button>
+          <div className="ai-history-tools">
+            {historyToolsOpen ? (
+              <div className="ai-history-tools-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-3 px-3.5 py-3 text-left text-sm font-semibold text-red-600 hover:bg-red-50"
+                  onClick={() => {
+                    setHistoryToolsOpen(false);
+                    handleHistoryDeleteClick();
+                  }}
+                >
+                  <TrashIcon className="h-5 w-5" />
+                  {historySelecting && selectedHistoryIds.length > 0
+                    ? `Delete ${selectedHistoryIds.length}`
+                    : historySelecting
+                      ? 'Cancel delete'
+                      : 'Delete chats'}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-3 px-3.5 py-3 text-left text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                  onClick={() => {
+                    setHistoryToolsOpen(false);
+                    teachFileInputRef.current?.click();
+                  }}
+                >
+                  <AcademicCapIcon className="h-5 w-5" />
+                  Teach RMQ
+                </button>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              className={`ai-history-float-chip h-12 w-12 ${
+                historySelecting ? 'text-red-600' : 'text-gray-700'
+              }`}
+              onClick={() => setHistoryToolsOpen((open) => !open)}
+              aria-expanded={historyToolsOpen}
+              aria-haspopup="menu"
+              aria-label="History actions"
+              title="More actions"
+            >
+              <EllipsisHorizontalIcon className="h-6 w-6" />
+            </button>
+            {historyFileInput}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
 
   if (!isOpen) return null;
 
@@ -3339,7 +3611,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           .ai-bubble-user .prose p,
           .ai-bubble-assistant .prose li,
           .ai-bubble-user .prose li {
-            font-size: 1.125rem !important;
+            font-size: 1.25rem !important;
             line-height: 1.65 !important;
           }
         }
@@ -3594,10 +3866,97 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           padding-bottom: env(safe-area-inset-bottom, 1rem);
         }
         
-        /* Mobile input focus styles */
+        /* Mobile: larger header, welcome, composer (desktop unchanged). */
         @media (max-width: 768px) {
+          .ai-chat-header {
+            padding-bottom: 0.65rem;
+          }
+          .ai-chat-under-header {
+            padding-top: calc(3.85rem + max(0.5rem, env(safe-area-inset-top, 0px)));
+          }
+          .ai-theme-switch {
+            width: 4rem;
+            height: 2.35rem;
+          }
+          .ai-theme-knob {
+            height: 1.9rem;
+            width: 1.9rem;
+          }
+          .ai-theme-knob.is-dark {
+            transform: translateX(1.65rem);
+          }
+          .ai-theme-knob svg {
+            height: 1.1rem;
+            width: 1.1rem;
+          }
+          .ai-close-btn,
+          .ai-history-header-btn {
+            height: 2.75rem;
+            width: 2.75rem;
+          }
+          .ai-close-btn svg,
+          .ai-history-header-btn svg {
+            height: 1.45rem;
+            width: 1.45rem;
+          }
+          .ai-welcome-home {
+            padding-top: 1.25rem;
+            padding-bottom: 1.5rem;
+          }
+          .ai-welcome-title {
+            font-size: 1.85rem !important;
+            line-height: 1.2 !important;
+          }
+          .ai-welcome-sub {
+            font-size: 1.0625rem !important;
+            line-height: 1.5 !important;
+          }
+          .ai-welcome-card {
+            gap: 0.95rem;
+            padding: 1.05rem 1.1rem;
+            border-radius: 1.1rem;
+          }
+          .ai-welcome-card-icon {
+            height: 3.25rem;
+            width: 3.25rem;
+            border-radius: 0.95rem;
+          }
+          .ai-welcome-card-icon svg {
+            height: 1.7rem;
+            width: 1.7rem;
+          }
+          .ai-welcome-card-title {
+            font-size: 1.0625rem !important;
+          }
+          .ai-welcome-card-hint {
+            font-size: 0.9375rem !important;
+            margin-top: 0.2rem;
+          }
+          .ai-welcome-divider {
+            font-size: 0.8rem;
+          }
+          .ai-welcome-ask {
+            gap: 0.5rem;
+            padding: 0.65rem 1rem;
+            font-size: 1rem;
+          }
+          .ai-welcome-ask svg {
+            height: 1.25rem;
+            width: 1.25rem;
+          }
+          .contract-ai-input-shell {
+            min-height: 3.85rem;
+          }
+          .contract-ai-input-area textarea,
           .contract-ai-input-area textarea:focus {
-            font-size: 16px;
+            font-size: 1.125rem !important;
+            line-height: 1.55rem !important;
+            min-height: 1.55rem;
+            height: auto;
+          }
+          .contract-ai-input-area textarea::placeholder {
+            font-size: 1.125rem !important;
+            line-height: 1.55rem;
           }
         }
         
@@ -3814,6 +4173,147 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-send-btn:hover {
           filter: brightness(1.08);
         }
+        .ai-history-overlay {
+          position: absolute;
+          inset: 0;
+          z-index: 45;
+        }
+        .ai-history-backdrop {
+          position: absolute;
+          inset: 0;
+          border: 0;
+          padding: 0;
+          cursor: pointer;
+          background: rgba(15, 23, 42, 0.4);
+          backdrop-filter: blur(10px) saturate(1.2);
+          -webkit-backdrop-filter: blur(10px) saturate(1.2);
+          animation: ai-history-fade 0.22s ease;
+        }
+        .ai-history-drawer {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 0;
+          display: flex;
+          width: min(86vw, 22.5rem);
+          height: 100%;
+          flex-direction: column;
+          overflow: hidden;
+          background: rgba(255, 255, 255, 0.86);
+          backdrop-filter: blur(26px) saturate(1.6);
+          -webkit-backdrop-filter: blur(26px) saturate(1.6);
+          border: 0;
+          outline: none;
+          border-top-right-radius: 1.85rem;
+          border-bottom-right-radius: 1.85rem;
+          box-shadow: 16px 0 48px rgba(15, 23, 42, 0.2);
+          animation: ai-history-slide 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .ai-drawer-dark .ai-history-backdrop {
+          background: rgba(0, 0, 0, 0.52);
+        }
+        .ai-drawer-dark .ai-history-drawer {
+          background: rgba(24, 26, 30, 0.9);
+          border: 0;
+          outline: none;
+          box-shadow: 16px 0 56px rgba(0, 0, 0, 0.5);
+        }
+        .ai-history-veil {
+          position: absolute;
+          left: 0;
+          right: 0;
+          z-index: 2;
+          pointer-events: none;
+        }
+        .ai-history-veil-top {
+          top: 0;
+          height: calc(3.1rem + env(safe-area-inset-top));
+          background: linear-gradient(
+            to bottom,
+            rgba(255, 255, 255, 0.28) 0%,
+            rgba(255, 255, 255, 0.08) 70%,
+            rgba(255, 255, 255, 0) 100%
+          );
+          backdrop-filter: blur(3px);
+          -webkit-backdrop-filter: blur(3px);
+          -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 100%);
+          mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 100%);
+        }
+        .ai-drawer-dark .ai-history-veil-top {
+          background: linear-gradient(
+            to bottom,
+            rgba(24, 26, 30, 0.32) 0%,
+            rgba(24, 26, 30, 0.1) 70%,
+            rgba(24, 26, 30, 0) 100%
+          );
+        }
+        .ai-history-float-top,
+        .ai-history-float-dock {
+          position: absolute;
+          z-index: 3;
+          display: flex;
+          pointer-events: none;
+        }
+        .ai-history-float-top {
+          top: 0;
+          left: 0;
+          right: 0;
+          align-items: center;
+          justify-content: space-between;
+          padding: max(0.7rem, env(safe-area-inset-top)) 0.85rem 0;
+        }
+        .ai-history-float-dock {
+          right: 0.85rem;
+          bottom: max(0.85rem, env(safe-area-inset-bottom));
+          left: 0.85rem;
+          align-items: flex-end;
+          justify-content: space-between;
+        }
+        .ai-history-float-top > *,
+        .ai-history-float-dock > * {
+          pointer-events: auto;
+        }
+        .ai-history-float-chip {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border: 0;
+          border-radius: 9999px;
+          background: rgba(255, 255, 255, 0.78);
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+          backdrop-filter: blur(16px) saturate(1.4);
+          -webkit-backdrop-filter: blur(16px) saturate(1.4);
+        }
+        .ai-drawer-dark .ai-history-float-chip {
+          background: rgba(39, 41, 46, 0.82);
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        }
+        .ai-history-tools {
+          position: relative;
+        }
+        .ai-history-tools-menu {
+          position: absolute;
+          right: 0;
+          bottom: calc(100% + 0.55rem);
+          min-width: 11.5rem;
+          overflow: hidden;
+          border-radius: 1.1rem;
+          background: rgba(255, 255, 255, 0.94);
+          box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16);
+          backdrop-filter: blur(18px);
+          -webkit-backdrop-filter: blur(18px);
+        }
+        .ai-drawer-dark .ai-history-tools-menu {
+          background: rgba(36, 38, 43, 0.94);
+        }
+        @keyframes ai-history-slide {
+          from { transform: translateX(-104%); opacity: 0.55; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes ai-history-fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
         .ai-welcome-title {
           color: var(--ai-text);
         }
@@ -3976,7 +4476,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       >
         {/* Header */}
         <div
-          className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center pb-1.5 pt-[max(0.5rem,env(safe-area-inset-top))]"
+              className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center pb-1.5 pt-[max(0.5rem,env(safe-area-inset-top))] max-md:pb-2.5"
           onPointerDown={beginPanelMove}
           onPointerMove={movePanel}
           onPointerUp={endPanelMove}
@@ -3985,7 +4485,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         >
           <div
             className={`flex items-center ${
-              showHistoryPanel ? 'w-72 shrink-0 pl-5 pr-2 md:w-96' : 'pl-5'
+              showHistoryPanel && !isMobile ? 'w-72 shrink-0 pl-5 pr-2 md:w-96' : 'pl-5'
             }`}
           >
             <div className="flex items-center gap-1">
@@ -3996,13 +4496,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 tabIndex={0}
                 aria-label="About RMQ AI"
               >
-                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-9 w-9" />
+                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-9 w-9 max-md:h-11 max-md:w-11" />
               </button>
               <div className="flex min-w-0 flex-col justify-center leading-tight">
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    className={`text-sm font-bold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
+                    className={`text-sm font-bold max-md:text-lg ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
                     onClick={() => setShowRmqAiIntroModal(true)}
                     aria-haspopup="dialog"
                     aria-expanded={showRmqAiIntroModal}
@@ -4012,7 +4512,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     RMQ AI
                   </button>
                   <span
-                    className={`inline-flex h-4 shrink-0 -translate-y-1 items-center rounded-full px-1.5 text-[9px] font-bold uppercase leading-none tracking-wide ${
+                    className={`inline-flex h-4 shrink-0 -translate-y-1 items-center rounded-full px-1.5 text-[9px] font-bold uppercase leading-none tracking-wide max-md:h-5 max-md:px-2 max-md:text-[11px] ${
                       isDarkTheme ? 'bg-[#3a3d45] text-[#c4b5fd]' : 'bg-gray-100 text-[#3b28c7]'
                     }`}
                   >
@@ -4025,11 +4525,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           {openClientChip && (openClientChip.lead_number || openClientChip.name) ? (
             <div
               className={`pointer-events-none absolute flex items-center justify-center ${
-                showHistoryPanel ? 'left-72 right-0 md:left-96' : 'inset-x-0'
+                showHistoryPanel && !isMobile ? 'left-72 right-0 md:left-96' : 'inset-x-0'
               } top-[max(0.5rem,env(safe-area-inset-top))] bottom-1.5`}
             >
               <span
-                className={`pointer-events-auto max-w-[11rem] truncate rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                className={`pointer-events-auto max-w-[11rem] truncate rounded-full px-2.5 py-1 text-[11px] font-medium max-md:max-w-[13rem] max-md:px-3 max-md:py-1.5 max-md:text-sm ${
                   isDarkTheme ? 'bg-violet-500/20 text-violet-200' : 'bg-violet-100 text-violet-800'
                 }`}
                 title="Questions about this client use the open lead automatically"
@@ -4084,177 +4584,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
 
         {/* Main Content Area */}
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          {showHistoryPanel && (
+          {showHistoryPanel && !isMobile && (
             <div className="ai-chat-under-header flex w-72 shrink-0 flex-col overflow-hidden bg-white md:w-96">
-              <div className="bg-white p-4">
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <h3 className="font-semibold text-gray-900">
-                    Chat History
-                  </h3>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleHistoryDeleteClick}
-                      className={`inline-flex h-9 items-center justify-center rounded-full px-3 text-sm font-semibold shadow-sm transition ${
-                        historySelecting
-                          ? selectedHistoryIds.length > 0
-                            ? 'bg-red-600 text-white hover:bg-red-700'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                          : 'bg-gray-100 text-red-500 hover:bg-red-50'
-                      }`}
-                      title={
-                        historySelecting
-                          ? selectedHistoryIds.length > 0
-                            ? `Delete ${selectedHistoryIds.length} selected`
-                            : 'Cancel selection'
-                          : 'Select chats to delete'
-                      }
-                      aria-label={
-                        historySelecting
-                          ? selectedHistoryIds.length > 0
-                            ? 'Confirm delete'
-                            : 'Cancel selection'
-                          : 'Delete chats'
-                      }
-                    >
-                      <TrashIcon className="h-5 w-5" />
-                      {historySelecting && selectedHistoryIds.length > 0 ? (
-                        <span className="ml-1">{selectedHistoryIds.length}</span>
-                      ) : null}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => teachFileInputRef.current?.click()}
-                      className="inline-flex h-9 items-center justify-center rounded-full bg-gray-100 px-3 text-sm font-semibold text-gray-600 shadow-sm transition hover:bg-gray-200"
-                      title="Teach RMQ (txt playbook)"
-                      aria-label="Teach RMQ"
-                    >
-                      <AcademicCapIcon className="h-5 w-5" />
-                    </button>
-                    <input
-                      ref={teachFileInputRef}
-                      type="file"
-                      accept=".txt,.md,.text"
-                      className="hidden"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        event.target.value = '';
-                        if (!file) return;
-                        void file.text().then(async (text) => {
-                          const result = await ingestKnowledgeText({ title: file.name, text, scope: 'user' });
-                          if (result?.chunks) toast.success(`Saved ${result.chunks} knowledge chunks`);
-                          else toast.error('Could not save knowledge file. Run the RMQ AI v1 SQL first.');
-                        });
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={startNewChat}
-                      className="ai-send-btn inline-flex h-9 items-center gap-1.5 rounded-full border-0 px-4 text-sm font-semibold text-white shadow-sm transition"
-                      title="Start New Chat"
-                    >
-                      <PlusIcon className="h-4 w-4" strokeWidth={2.5} />
-                      New
-                    </button>
-                  </div>
-                </div>
-                <div className="relative">
-                  <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder="Search conversations..."
-                    value={historySearchTerm}
-                    onChange={(e) => {
-                      setHistorySearchTerm(e.target.value);
-                      loadChatHistory(e.target.value);
-                    }}
-                    className="w-full rounded-xl border-0 bg-gray-100 py-2 pl-10 pr-4 text-sm text-gray-900 placeholder:text-gray-500 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0"
-                  />
-                </div>
-              </div>
-              <div className="ai-history-scroll flex-1 overflow-y-auto bg-white p-3">
-                {isLoadingHistory ? (
-                  <div className="flex h-32 items-center justify-center">
-                    <div className="loading loading-spinner loading-md text-violet-600"></div>
-                  </div>
-                ) : chatHistory.length === 0 ? (
-                  <div className="rounded-2xl bg-white p-8 text-center text-gray-500">
-                    <ChatBubbleLeftRightIcon className="mx-auto mb-4 h-12 w-12 text-gray-300" />
-                    <p className="text-lg font-medium">No conversations yet</p>
-                    <p className="text-sm">Start chatting to see your history here</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {chatHistory.map((chat) => {
-                      const isSelected = selectedHistoryIds.includes(chat.id);
-                      const historyPreview = formatChatHistoryPreview(chat.summary);
-                      return (
-                      <div
-                        key={chat.id}
-                        className={`ai-history-item cursor-pointer rounded-l-xl rounded-r-3xl bg-white p-4 ring-1 transition-colors ${
-                          historySelecting && isSelected
-                            ? 'ai-history-item-active ring-2 ring-red-400'
-                            : currentChatId === chat.id
-                              ? 'ai-history-item-active ring-2 ring-violet-400'
-                              : 'ring-gray-100 hover:ring-gray-200'
-                        }`}
-                        onClick={() =>
-                          historySelecting ? toggleHistorySelection(chat.id) : loadChat(chat.id)
-                        }
-                      >
-                        <div className="flex items-start gap-3">
-                          {historySelecting ? (
-                            <span
-                              className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
-                                isSelected
-                                  ? 'border-red-500 bg-red-500 text-white'
-                                  : 'border-gray-300 bg-white'
-                              }`}
-                              aria-hidden
-                            >
-                              {isSelected ? <CheckIcon className="h-3.5 w-3.5" strokeWidth={3} /> : null}
-                            </span>
-                          ) : null}
-                          <div className="min-w-0 flex-1">
-                            <h4 className="truncate text-sm font-medium text-gray-900">
-                              {formatChatHistoryPreview(chat.title) || chat.title}
-                            </h4>
-                            <div className="mt-1 flex items-center gap-2 text-xs text-gray-500">
-                              <ClockIcon className="h-3 w-3" />
-                              <span>{new Date(chat.updated_at).toLocaleDateString()}</span>
-                              <span>•</span>
-                              <span>{chat.message_count} messages</span>
-                            </div>
-                            {historyPreview ? (
-                              <p className="mt-1 line-clamp-2 text-xs text-gray-600">
-                                {historyPreview}
-                              </p>
-                            ) : null}
-                            {chat.tags && chat.tags.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-1">
-                                {chat.tags.slice(0, 3).map((tag, idx) => (
-                                  <span
-                                    key={idx}
-                                    className="rounded-full bg-violet-100 px-2 py-1 text-xs text-violet-700"
-                                  >
-                                    {tag}
-                                  </span>
-                                ))}
-                                {chat.tags.length > 3 && (
-                                  <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
-                                    +{chat.tags.length - 3}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              {renderChatHistoryPanel(false)}
             </div>
           )}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
@@ -4366,7 +4698,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               </div>
             ) : null}
             <div 
-              className="ai-chat-under-header ai-messages-scroll scrollbar-hide flex min-h-0 flex-1 flex-col overflow-y-auto bg-gray-50 px-4 pb-28 md:px-5 md:pb-32"
+              className="ai-chat-under-header ai-messages-scroll scrollbar-hide flex min-h-0 flex-1 flex-col overflow-y-auto bg-gray-50 px-4 pb-32 md:px-5 md:pb-32"
               style={{
                 ...(isMobile && keyboardOpen && {
                   paddingBottom: '120px'
@@ -4668,7 +5000,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   <div className="relative shrink-0 self-center pl-1.5" ref={attachMenuRef}>
                     <button
                       type="button"
-                      className="btn btn-ghost btn-circle btn-sm h-10 w-10 text-slate-500 hover:bg-gray-100"
+                      className="btn btn-ghost btn-circle btn-sm h-10 w-10 max-md:h-12 max-md:w-12 text-slate-500 hover:bg-gray-100"
                       onClick={() => setAttachMenuOpen((open) => !open)}
                       disabled={isLoading}
                       aria-expanded={attachMenuOpen}
@@ -4676,10 +5008,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       title="Add"
                       aria-label="Add"
                     >
-                      <PlusIcon className="h-5 w-5" />
+                      <PlusIcon className="h-5 w-5 max-md:h-6 max-md:w-6" />
                     </button>
                   </div>
-                  <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center">
+                  <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center max-md:min-h-[3.85rem]">
                     {isVoiceRecording || isVoiceListening || isVoiceBusy ? (
                       <div className="flex h-full w-full items-center gap-2.5 pl-1" aria-live="polite">
                         {isVoiceBusy ? (
@@ -4707,7 +5039,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       <div
                         aria-hidden
                         dir={inputIsRtl ? 'rtl' : 'ltr'}
-                        className="pointer-events-none absolute inset-0 flex items-center overflow-hidden pl-1 pr-2 text-start text-base leading-6 text-gray-400"
+                        className="pointer-events-none absolute inset-0 flex items-center overflow-hidden pl-1 pr-2 text-start text-base leading-6 text-gray-400 max-md:text-lg max-md:leading-7"
                       >
                         <span className="invisible whitespace-pre-wrap break-words">{input}</span>
                         <span className="whitespace-pre-wrap break-words">{ghostSuffix}</span>
@@ -4717,7 +5049,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       ref={textareaRef}
                       rows={1}
                       dir={inputIsRtl ? 'rtl' : 'ltr'}
-                      className="relative min-h-0 min-w-0 w-full resize-none border-0 bg-transparent py-0 pl-1 pr-2 text-start text-base leading-6 placeholder:text-gray-500 focus:outline-none focus:ring-0"
+                      className="relative min-h-0 min-w-0 w-full resize-none border-0 bg-transparent py-0 pl-1 pr-2 text-start text-base leading-6 placeholder:text-gray-500 focus:outline-none focus:ring-0 max-md:text-lg max-md:leading-7"
                       placeholder="Ask anything..."
                       value={input}
                       onChange={(e) => {
@@ -4761,7 +5093,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   <div className="relative mr-1.5 shrink-0 self-center">
                     <button
                       type="button"
-                      className={`btn btn-circle btn-sm h-10 w-10 border-0 ${
+                      className={`btn btn-circle btn-sm h-10 w-10 max-md:h-12 max-md:w-12 border-0 ${
                         isVoiceRecording || isVoiceListening
                           ? 'ai-voice-accept-btn'
                           : 'btn-ghost text-slate-500 hover:bg-gray-100'
@@ -4785,16 +5117,16 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       }
                     >
                       {isVoiceRecording || isVoiceListening ? (
-                        <CheckIcon className="h-5 w-5" strokeWidth={2.5} />
+                        <CheckIcon className="h-5 w-5 max-md:h-6 max-md:w-6" strokeWidth={2.5} />
                       ) : (
-                        <MicrophoneIcon className="h-5 w-5" />
+                        <MicrophoneIcon className="h-5 w-5 max-md:h-6 max-md:w-6" />
                       )}
                     </button>
                   </div>
                   <div className="relative shrink-0 self-center pr-1.5">
                     <button
                       type="button"
-                      className="ai-send-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 text-white disabled:opacity-60"
+                      className="ai-send-btn btn btn-circle btn-sm h-10 w-10 max-md:h-12 max-md:w-12 shrink-0 border-0 text-white disabled:opacity-60"
                       onClick={() => handleSend()}
                       disabled={
                         isVoiceBusy ||
@@ -4809,7 +5141,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       {isLoading ? (
                         <span className="ai-send-thinking" aria-hidden />
                       ) : (
-                        <PaperAirplaneIcon className="h-5 w-5" />
+                        <PaperAirplaneIcon className="h-5 w-5 max-md:h-6 max-md:w-6" />
                       )}
                     </button>
                   </div>
@@ -4826,6 +5158,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             </div>
           </div>
         </div>
+
+        {showHistoryPanel && isMobile ? (
+          <div className="ai-history-overlay" role="dialog" aria-modal="true" aria-label="Chat history">
+            <button
+              type="button"
+              className="ai-history-backdrop"
+              onClick={() => setShowHistoryPanel(false)}
+              aria-label="Close history"
+            />
+            <aside className="ai-history-drawer">{renderChatHistoryPanel(true)}</aside>
+          </div>
+        ) : null}
 
         {isDragActive && (
           <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
