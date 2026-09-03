@@ -95,6 +95,14 @@ import {
   normalizeLeadIdForCompare,
   peekInteractionsCommunicationPreset,
 } from '../../lib/interactionsCommunicationPreset';
+import {
+  consumeOpenEmailCompose,
+  consumeScrollToFlaggedEmail,
+  findInteractionIndexForEmailFlag,
+  peekOpenEmailCompose,
+  FLAG_TYPE_HANDLER_EMAIL,
+  type HandlerEmailFlagTarget,
+} from '../../lib/handlerEmailFlag';
 import { fetchWhatsAppTemplates, type WhatsAppTemplate } from '../../lib/whatsappTemplates';
 import { interactionsDevLog, interactionsDevWarn } from '../../lib/interactions/devLog';
 import {
@@ -7262,6 +7270,106 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     selectedContactForEmail,
   ]);
 
+  const pipelineEmailActionKeyRef = useRef<string | null>(null);
+  const pendingFlaggedEmailRef = useRef<HandlerEmailFlagTarget | null>(null);
+  useEffect(() => {
+    pipelineEmailActionKeyRef.current = null;
+    pendingFlaggedEmailRef.current = null;
+  }, [client.id]);
+
+  // Handler pipeline: open compose, or scroll to the type-5 flagged email/manual box.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const wantCompose = params.get('compose') === 'email' || peekOpenEmailCompose();
+    const flagChannel = params.get('flagChannel');
+    const flagId = params.get('flagId');
+    if (flagChannel && flagId) {
+      pendingFlaggedEmailRef.current = {
+        conversation_channel: flagChannel as ConversationFlagTarget['conversation_channel'],
+        external_id: flagId,
+      };
+    } else if (!pendingFlaggedEmailRef.current) {
+      pendingFlaggedEmailRef.current = consumeScrollToFlaggedEmail();
+    }
+    const pendingFlag = pendingFlaggedEmailRef.current;
+    const actionKey = `${client.id}:${wantCompose ? 'compose' : ''}:${pendingFlag?.conversation_channel || ''}:${pendingFlag?.external_id || ''}`;
+    if (!wantCompose && !pendingFlag) return;
+    if (pipelineEmailActionKeyRef.current === actionKey) return;
+
+    const stripPipelineParams = () => {
+      const next = new URLSearchParams(location.search);
+      next.delete('compose');
+      next.delete('flagChannel');
+      next.delete('flagId');
+      const search = next.toString();
+      navigate(
+        { pathname: location.pathname, search: search ? `?${search}` : '' },
+        { replace: true },
+      );
+    };
+
+    if (wantCompose) {
+      const t = window.setTimeout(() => {
+        pipelineEmailActionKeyRef.current = actionKey;
+        consumeOpenEmailCompose();
+        pendingFlaggedEmailRef.current = null;
+        openNewEmailCompose();
+        stripPipelineParams();
+      }, 350);
+      return () => window.clearTimeout(t);
+    }
+
+    if (interactionsLoading || emailsLoading) return;
+
+    if (
+      timelineDirectionFilter !== 'all' ||
+      (timelineSortMode !== 'newest' && timelineSortMode !== 'oldest') ||
+      timelineSearchQuery.trim()
+    ) {
+      setTimelineDirectionFilter('all');
+      setTimelineSortMode('newest');
+      setTimelineSearchQuery('');
+      return;
+    }
+
+    let idx = findInteractionIndexForEmailFlag(sortedInteractions, pendingFlag, isLegacyLead);
+    if (idx < 0) {
+      idx = sortedInteractions.findIndex((row) => {
+        const target = interactionRowToConversationFlag(row, isLegacyLead);
+        if (!target) return false;
+        const meta = conversationFlagMeta.get(conversationFlagKey(target));
+        if (!meta || Number(meta.flagTypeId) !== FLAG_TYPE_HANDLER_EMAIL) return false;
+        return (
+          target.conversation_channel === 'email' ||
+          target.conversation_channel === 'manual' ||
+          target.conversation_channel === 'legacy_interaction'
+        );
+      });
+    }
+    if (idx < 0) return;
+
+    pipelineEmailActionKeyRef.current = actionKey;
+    pendingFlaggedEmailRef.current = null;
+    const row = sortedInteractions[idx];
+    scrollToFlaggedRow(row);
+    stripPipelineParams();
+  }, [
+    client.id,
+    conversationFlagMeta,
+    emailsLoading,
+    interactionsLoading,
+    isLegacyLead,
+    location.pathname,
+    location.search,
+    navigate,
+    openNewEmailCompose,
+    scrollToFlaggedRow,
+    sortedInteractions,
+    timelineDirectionFilter,
+    timelineSearchQuery,
+    timelineSortMode,
+  ]);
+
   const deleteEmailMessage = useCallback(async (message: any) => {
     if (!message) {
       toast.error('Select an email to delete');
@@ -8609,7 +8717,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       onChange={(event) => setTimelineSearchQuery(event.target.value)}
                       placeholder="Search…"
                       aria-label="Search interactions"
-                      className="h-9 w-full rounded-xl border-0 bg-slate-100 py-1.5 pl-8 pr-8 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#4218CC]/30 dark:bg-base-200 dark:text-base-content"
+                      className="h-9 w-full rounded-xl border-0 bg-slate-50 py-1.5 pl-8 pr-8 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#4218CC]/30 dark:bg-base-200 dark:text-base-content"
                     />
                     {timelineSearchQuery ? (
                       <button
@@ -8622,7 +8730,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       </button>
                     ) : null}
                   </div>
-                  <div className="flex items-center gap-0.5 rounded-xl bg-slate-100 p-1 dark:bg-base-200">
+                  <div className="flex items-center gap-0.5 rounded-xl bg-slate-50 p-1 dark:bg-base-200">
                     {(
                       [
                         ['all', 'All', EnvelopeIcon],

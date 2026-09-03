@@ -275,6 +275,42 @@ html,
     background-color: #ffffff !important;
   }
 
+  /* RMQ AI chat: match notch + home-indicator chrome to the open chat theme */
+  html.rmq-ai-chat-dark,
+  html.rmq-ai-chat-dark body,
+  html.rmq-ai-chat-dark #root {
+    background-color: #121316 !important;
+  }
+  html.rmq-ai-chat-dark body::before {
+    background-color: #121316 !important;
+  }
+  html.rmq-ai-chat-light,
+  html.rmq-ai-chat-light body,
+  html.rmq-ai-chat-light #root {
+    background-color: #f9fafb !important;
+  }
+  html.rmq-ai-chat-light body::before {
+    background-color: #f9fafb !important;
+  }
+  html.rmq-ai-chat-dark body::after,
+  html.rmq-ai-chat-light body::after {
+    content: '';
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    height: constant(safe-area-inset-bottom, 0px);
+    height: env(safe-area-inset-bottom, 0px);
+    pointer-events: none;
+  }
+  html.rmq-ai-chat-dark body::after {
+    background-color: #121316 !important;
+  }
+  html.rmq-ai-chat-light body::after {
+    background-color: #f9fafb !important;
+  }
+
   .dashboard-welcome-overlay {
     left: 0;
     right: 0;

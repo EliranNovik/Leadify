@@ -43,9 +43,13 @@ export function thinkingPlanForAsk(text: string): string[] {
   }
   if (
     /\blead summary\b/.test(t) ||
+    /\bgeneral summary\b/.test(t) ||
+    /\bcase summary\b/.test(t) ||
     /create a summary/.test(t) ||
     (/\boverview\b/.test(t) && /\b(lead|client|case)\b/.test(t)) ||
-    /summar(?:y|ise|ize).{0,40}\b(lead|client|case)\b/.test(t)
+    /summar(?:y|ise|ize).{0,40}\b(lead|client|case)\b/.test(t) ||
+    /\bwhat (?:is|'s|was) (?:this|the) (?:lead|case) about\b/.test(t) ||
+    /\bwhat (?:is|'s) this about\b/.test(t)
   ) {
     return ['Opening the case file', 'Reviewing meetings', 'Writing the summary'];
   }
@@ -114,6 +118,13 @@ export function thinkingPlanForAsk(text: string): string[] {
   }
   if (/portal|access code|פורטל/.test(t)) {
     return ['Checking portal access'];
+  }
+  if (
+    /archive|staatsarchiv|meldekarte|melderegister|apostille|§\s*15|stag\b|bva\b|ma35|citizenship law|exchange rate|eur (to|rate)|current (law|requirement)/i.test(
+      t,
+    )
+  ) {
+    return ['Checking the case file', 'Searching the web'];
   }
 
   return ['Reading your request', 'Checking CRM', 'Thinking'];
@@ -185,6 +196,8 @@ export function labelForTool(name: string, argsRaw?: unknown): string {
       return 'Opening a past chat';
     case 'search_firm_knowledge':
       return 'Checking firm knowledge';
+    case 'web_search':
+      return 'Searching the web';
     default:
       return 'Checking CRM';
   }

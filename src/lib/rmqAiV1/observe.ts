@@ -28,7 +28,12 @@ export function classifyAnswerability(input: {
   if (input.toolErrors.length > 0 && /meeting|contract|status|unsigned/i.test(input.userMessage)) {
     return 'cannot_verify';
   }
-  if (/policy|procedure|sop|rule/i.test(input.userMessage) && !input.selectedTools.includes('search_firm_knowledge')) {
+  if (
+    /policy|procedure|sop|rule|how do we (normally )?(request|order)|archive (contact|procedure)/i.test(
+      input.userMessage,
+    ) &&
+    !input.selectedTools.includes('search_firm_knowledge')
+  ) {
     return 'retrieve_more';
   }
   return 'answer';
@@ -68,6 +73,12 @@ export function detectQualityEvents(input: {
     /\bwhat('s| is) happening|status|update me\b/i.test(input.userMessage)
   ) {
     events.push('write_without_clear_target');
+  }
+  if (
+    /\b(who is|who'?s)\b.+\b(handler|expert|manager|closer|scheduler)\b/i.test(input.userMessage) &&
+    input.selectedTools.includes('web_search')
+  ) {
+    events.push('unexpected_tool');
   }
   if (input.toolErrors.length > 0) events.push('tool_error');
   if ((input.totalMs || 0) > 8000) events.push('high_latency');
@@ -140,14 +151,33 @@ export function evidenceFromTools(
   toolResults: Array<{ name: string; content: string }>,
   finalContent: string,
 ): AiAnswerEvidence {
-  const claims = toolResults.slice(0, 6).map((row) => ({
-    claim: finalContent.slice(0, 180) || row.name,
-    evidence: {
-      type: 'current_crm_fact' as const,
-      tool: row.name,
-      fetchedAt: new Date().toISOString(),
-    },
-  }));
+  const claims = toolResults.slice(0, 6).map((row) => {
+    if (row.name === 'web_search') {
+      let sourceUrls: string[] = [];
+      try {
+        const parsed = JSON.parse(row.content) as { sources?: Array<{ url?: string }> };
+        sourceUrls = (parsed.sources || []).map((src) => String(src.url || '')).filter(Boolean);
+      } catch {
+        sourceUrls = [];
+      }
+      return {
+        claim: finalContent.slice(0, 180) || 'web research',
+        evidence: {
+          type: 'web_research' as const,
+          sourceUrls,
+          fetchedAt: new Date().toISOString(),
+        },
+      };
+    }
+    return {
+      claim: finalContent.slice(0, 180) || row.name,
+      evidence: {
+        type: 'current_crm_fact' as const,
+        tool: row.name,
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+  });
   if (claims.length === 0 && finalContent) {
     claims.push({ claim: finalContent.slice(0, 180), evidence: { type: 'model_inference' } });
   }

@@ -1,3 +1,5 @@
+import type { HandlerEmailFlagTarget } from '../../lib/handlerEmailFlag';
+
 export type HandlerBucket = 'new' | 'active' | 'non_active' | 'closed';
 
 export type HandlerPipelineRow = {
@@ -39,6 +41,8 @@ export type HandlerPipelineRow = {
   previousHandlerAssignedDate?: string | null;
   stage105Date?: string | null;
   stage110Date?: string | null;
+  /** Newest email/manual interaction flagged with type 5, if any */
+  emailFlag5?: HandlerEmailFlagTarget | null;
 };
 
 export function handlerDbId(row: HandlerPipelineRow): string {

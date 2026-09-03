@@ -29,6 +29,7 @@ import {
   markHandlerReadyToPay,
 } from './HandlerCaseActions';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
+import { fetchHandlerEmailFlag5Targets } from '../../lib/handlerEmailFlag';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import {
   handlePipelineRowPick,
@@ -440,6 +441,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
         const db = b.assigned_date ? Date.parse(b.assigned_date) : 0;
         return db - da;
       });
+
       setRows(processed);
       snapshotStore.set({
         identityKey: pipelineViewIdentityKey(viewAs),
@@ -447,6 +449,23 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
         countries: nextCountries,
         currentUserId,
       });
+
+      try {
+        const flag5ByRowId = await fetchHandlerEmailFlag5Targets(supabase, processed);
+        const withEmailFlags = processed.map((row) => ({
+          ...row,
+          emailFlag5: flag5ByRowId.get(row.id) || null,
+        }));
+        setRows(withEmailFlags);
+        snapshotStore.set({
+          identityKey: pipelineViewIdentityKey(viewAs),
+          rows: withEmailFlags,
+          countries: nextCountries,
+          currentUserId,
+        });
+      } catch (flagErr) {
+        console.warn('Retention pipeline email flags:', flagErr);
+      }
     } catch (err) {
       console.error('Retention pipeline load:', err);
       if (silent) return;

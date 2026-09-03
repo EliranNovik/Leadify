@@ -1026,45 +1026,157 @@ export function ChatExpensesTable({
   );
 }
 
-function lastMarkerSplit(text: string, pattern: RegExp): { before: string; after: string } | null {
-  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
-  const re = new RegExp(pattern.source, flags);
-  let found: RegExpExecArray | null = null;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) found = match;
-  if (!found || found.index == null) return null;
-  return {
-    before: text.slice(0, found.index).trim(),
-    after: text.slice(found.index + found[0].length).replace(/^[-*•]\s*/, '').trim(),
-  };
+const CASE_ABOUT_MARKER =
+  /(?:^|\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case|general summary)(?:\*\*)?\s*[:—-]?\s*/i;
+const RISKS_MARKER = /(?:^|\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?risks?(?:\*\*)?\s*[:—-]\s*/i;
+const NEXT_SUMMARY_SECTION =
+  /(?:\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case|general summary|risks?)(?:\*\*)?\s*[:—-]?\s*|(?:\n+)(?=[-*•]\s+)/i;
+
+function cleanSummaryChunk(text: string): string {
+  return String(text || '')
+    .replace(/^#{1,6}\s+.*$/gm, '')
+    .replace(/(?:^|\n)\s*#{1,6}\s*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function extractLabeledBlock(raw: string, marker: RegExp): { remaining: string; value: string } {
+  const source = new RegExp(marker.source, marker.flags);
+  const match = source.exec(raw);
+  if (!match || match.index == null) return { remaining: raw, value: '' };
+  const after = raw.slice(match.index + match[0].length);
+  const stop = after.search(NEXT_SUMMARY_SECTION);
+  const value = cleanSummaryChunk(stop >= 0 ? after.slice(0, stop) : after);
+  const remaining = `${raw.slice(0, match.index).trim()}\n${stop >= 0 ? after.slice(stop).trim() : ''}`.trim();
+  return { remaining, value };
+}
+
+function peelOpeningNarrative(body: string): { caseAbout: string; body: string } {
+  const raw = String(body || '').trim();
+  if (!raw || /^(?:[-*•]|\d+[.)])\s/.test(raw)) return { caseAbout: '', body: raw };
+  const split = raw.search(/\n+(?=[-*•]\s+)/);
+  if (split < 0) return { caseAbout: '', body: raw };
+  const opening = cleanSummaryChunk(raw.slice(0, split));
+  const rest = raw.slice(split).trim();
+  if (opening.split(/\s+/).length < 12) return { caseAbout: '', body: raw };
+  return { caseAbout: opening, body: rest };
+}
+
+function splitTrailingProse(body: string): { body: string; trailing: string } {
+  const raw = String(body || '').trim();
+  const lines = raw.split('\n');
+  let lastBullet = -1;
+  lines.forEach((line, index) => {
+    if (/^\s*(?:[-*•]|\d+[.)])\s/.test(line)) lastBullet = index;
+  });
+  if (lastBullet < 0 || lastBullet >= lines.length - 1) return { body: raw, trailing: '' };
+  const trailing = cleanSummaryChunk(lines.slice(lastBullet + 1).join('\n'));
+  if (!trailing) return { body: raw, trailing: '' };
+  return { body: lines.slice(0, lastBullet + 1).join('\n').trim(), trailing };
+}
+
+function looksLikeRisk(text: string): boolean {
+  return /\b(risk|hinder|stall|delay|block|stale|missing|not scheduled|not assigned|no recent|no meeting|no communication|may (?:hinder|delay|block|slow))\b/i.test(
+    text,
+  );
+}
+
+function splitProseByRisk(text: string): { narrative: string; risks: string } {
+  const sentences = String(text || '')
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!sentences.length) return { narrative: '', risks: '' };
+  const riskSents = sentences.filter((part) => looksLikeRisk(part));
+  const otherSents = sentences.filter((part) => !looksLikeRisk(part));
+  return { narrative: otherSents.join(' '), risks: riskSents.join(' ') };
+}
+
+function bulletValue(body: string, label: string): string {
+  const re = new RegExp(
+    `(?:^|\\n)\\s*[-*•]\\s*(?:\\*\\*)?${label}(?:\\*\\*)?\\s*[:—-]\\s*(.+)`,
+    'i',
+  );
+  return String(body.match(re)?.[1] || '').replace(/\s+/g, ' ').trim();
+}
+
+function withSentence(text: string): string {
+  const value = String(text || '').trim();
+  if (!value) return '';
+  return /[.!?]$/.test(value) ? value : `${value}.`;
+}
+
+export function fallbackNarrativeFromLeadSummary(
+  data: ChatLeadSummaryData | null | undefined,
+  body: string,
+): string {
+  const name = cleanCardText(data?.name);
+  const topic = cleanCardText(data?.topic) || bulletValue(body, 'Topic');
+  const facts = bulletValue(body, 'Key Facts') || bulletValue(body, 'Facts');
+  const comms = bulletValue(body, 'Communications') || bulletValue(body, 'Last communication');
+  const expert = bulletValue(body, 'Expert Assessment') || bulletValue(body, 'Eligibility');
+  const meetings = bulletValue(body, 'Meetings');
+  const bits: string[] = [];
+  if (topic) {
+    bits.push(name ? `${name} is inquiring about ${topic.replace(/\.$/, '')}.` : `The case concerns ${topic.replace(/\.$/, '')}.`);
+  } else if (name) {
+    bits.push(`This is the case for ${name}.`);
+  }
+  if (facts) bits.push(withSentence(facts));
+  if (expert) bits.push(withSentence(expert));
+  if (meetings) bits.push(withSentence(meetings));
+  if (comms) bits.push(withSentence(comms));
+  return bits.join(' ');
 }
 
 export function splitLeadSummaryParts(text: string): { body: string; risks: string; caseAbout: string } {
   let raw = String(text || '').trim();
   if (!raw) return { body: '', risks: '', caseAbout: '' };
 
-  const about = lastMarkerSplit(
-    raw,
-    /(?:\n+|\s+)(?:[-*•]\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case)(?:\*\*)?\s*[:—-]\s*/i,
-  );
-  let caseAbout = '';
-  if (about) {
-    raw = about.before;
-    caseAbout = about.after;
+  const about = extractLabeledBlock(raw, CASE_ABOUT_MARKER);
+  raw = about.remaining;
+  let caseAbout = about.value;
+
+  const risk = extractLabeledBlock(raw, RISKS_MARKER);
+  raw = risk.remaining;
+  let risks = risk.value;
+  if (!risks) {
+    const inline = raw.match(/^(?:[-*•]\s*)?(?:\*\*)?risks?(?:\*\*)?\s*[:—-]\s*([\s\S]+)$/i);
+    if (inline) {
+      risks = cleanSummaryChunk(String(inline[1] || '').replace(/^[-*•]\s*/, ''));
+      raw = '';
+    }
   }
 
-  const risk = lastMarkerSplit(
-    raw,
-    /(?:\n+|\s+)(?:[-*•]\s*)?(?:\*\*)?risks?(?:\*\*)?\s*[:—-]\s*/i,
-  );
-  if (risk) {
-    return { body: risk.before, risks: risk.after, caseAbout };
+  let body = cleanSummaryChunk(raw);
+  if (!caseAbout) {
+    const peeled = peelOpeningNarrative(body);
+    caseAbout = peeled.caseAbout;
+    body = peeled.body;
   }
-  const inline = raw.match(/^(?:[-*•]\s*)?(?:\*\*)?risks?(?:\*\*)?\s*[:—-]\s*([\s\S]+)$/i);
-  if (inline) {
-    return { body: '', risks: String(inline[1] || '').replace(/^[-*•]\s*/, '').trim(), caseAbout };
+
+  const tail = splitTrailingProse(body);
+  if (tail.trailing) {
+    const split = splitProseByRisk(tail.trailing);
+    body = tail.body;
+    if (split.risks && !risks) risks = split.risks;
+    else if (!split.narrative && tail.trailing && !risks && looksLikeRisk(tail.trailing)) {
+      risks = tail.trailing;
+    }
+    if (split.narrative && !caseAbout) caseAbout = split.narrative;
+    else if (!split.risks && tail.trailing && !caseAbout && !looksLikeRisk(tail.trailing)) {
+      caseAbout = tail.trailing;
+    }
   }
-  return { body: raw, risks: '', caseAbout };
+
+  if (!caseAbout && body && !/(^|\n)\s*(?:[-*•]|\d+[.)])\s/.test(body)) {
+    const split = splitProseByRisk(body);
+    caseAbout = split.narrative || body;
+    if (split.risks && !risks) risks = split.risks;
+    body = '';
+  }
+
+  return { body, risks: cleanSummaryChunk(risks), caseAbout: cleanSummaryChunk(caseAbout) };
 }
 
 export function ChatRisksBox({
@@ -1117,7 +1229,10 @@ export function ChatLeadSummaryCards({
   const teamByRole = new Map(
     (data.team || []).map((row) => [String(row.role || '').trim(), cleanCardText(row.name)]),
   );
-  const { body, risks, caseAbout } = splitLeadSummaryParts(summaryText);
+  const parts = splitLeadSummaryParts(summaryText);
+  const body = parts.body;
+  const caseAbout = parts.caseAbout || fallbackNarrativeFromLeadSummary(data, body);
+  const risks = parts.risks;
 
   return (
     <div className="ai-meeting-stack">
@@ -1158,6 +1273,7 @@ export function ChatLeadSummaryCards({
           {renderText ? renderText(asBulletPoints(body)) : asBulletPoints(body)}
         </div>
       ) : null}
+      <ChatRisksBox text={risks} renderText={renderText} />
       <div
         className="ai-lead-roles-grid"
         style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.7rem', width: '100%' }}
@@ -1185,7 +1301,6 @@ export function ChatLeadSummaryCards({
           );
         })}
       </div>
-      <ChatRisksBox text={risks} renderText={renderText} />
     </div>
   );
 }

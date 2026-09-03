@@ -4853,13 +4853,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         >
           <div
             ref={searchContainerRef}
-            className={`min-w-12 min-h-12 md:min-h-0 md:h-12 transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${isSearchActive
+            className={`min-w-12 min-h-12 md:min-h-0 md:h-12 transition-[width,max-width] duration-[400ms] ease-out cursor-pointer px-2 md:px-0 ${isSearchActive
               ? isMobile
-                ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]'
-                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
+                ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)] max-w-[calc(100vw-120px)]'
+                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl'
               : isMobile
                 ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(42vw,9rem)] max-w-[152px]'
-                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 md:w-48'
+                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-48 max-w-[12rem]'
               }`}
             style={{
               background: 'transparent'
@@ -4868,14 +4868,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             onMouseLeave={!isMobile ? handleDesktopSearchMouseLeave : undefined}
           >
             <div
-              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out border-0 outline-none shadow-none ring-0 ${
+              className={`relative flex w-full items-center rounded-full border-0 outline-none shadow-none ring-0 ${
                 isSearchActive
-                  ? isMobile
-                    ? 'w-full overflow-hidden bg-gray-100 dark:bg-gray-800'
-                    : 'w-full overflow-hidden bg-gray-100 dark:bg-gray-800'
+                  ? 'overflow-hidden bg-gray-50 dark:bg-gray-800'
                   : isMobile
-                    ? 'w-full min-h-9 h-9 bg-transparent box-border'
-                    : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:bg-gray-100 dark:md:bg-gray-800'
+                    ? 'min-h-9 h-9 overflow-hidden bg-transparent box-border'
+                    : 'overflow-hidden md:bg-gray-50 dark:md:bg-gray-800'
               }`}
             >
               {/* Search icon left — mobile: always; desktop active: Siriwave; desktop idle: icon */}

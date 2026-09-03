@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   CheckCircleIcon,
+  EnvelopeIcon,
   ExclamationTriangleIcon,
   PaperAirplaneIcon,
   ArrowUturnLeftIcon,
@@ -86,6 +87,7 @@ type ActionHandlers = {
   onOpenRmq: (row: HandlerPipelineRow) => void;
   onToggleRetention: (row: HandlerPipelineRow, nextType: 1 | 2, e: React.MouseEvent) => void;
   onMarkReadyToPay: (row: HandlerPipelineRow, e: React.MouseEvent) => void;
+  onEmailAction: (row: HandlerPipelineRow, e: React.MouseEvent) => void;
 };
 
 export const HandlerActionsColumn: React.FC<{
@@ -93,6 +95,25 @@ export const HandlerActionsColumn: React.FC<{
   handlers: ActionHandlers;
 }> = ({ row, handlers }) => (
   <div className="flex items-center justify-end gap-1.5">
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        handlers.onEmailAction(row, e);
+      }}
+      className={
+        row.emailFlag5
+          ? 'btn btn-circle btn-md border-none bg-blue-600 text-white hover:bg-blue-700'
+          : 'btn btn-circle btn-md border border-gray-300 bg-white text-gray-400 hover:border-gray-400 hover:text-gray-600'
+      }
+      title={
+        row.emailFlag5
+          ? 'Open flagged email in Interactions'
+          : 'Send email'
+      }
+    >
+      <EnvelopeIcon className="h-6 w-6" />
+    </button>
     {!row.hasPaymentPlan && (
       <button
         type="button"

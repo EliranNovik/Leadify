@@ -7,6 +7,7 @@ import { toast } from 'react-hot-toast';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
 import RmqAiIntroModal from './RmqAiIntroModal';
 import { executeRmqAiTool, RMQ_AI_SYSTEM_PROMPT, RMQ_AI_TOOLS } from '../lib/rmqAiChatTools';
+import { streamRmqAiChat } from '../lib/rmqAiChatStream';
 import { executeGetClientPortalAccess, parsePortalLinkFromToolResult } from '../lib/rmqAiPortalTools';
 import {
   isThinkingContent,
@@ -100,6 +101,8 @@ import {
   type ChatSignedContractsData,
   LEAD_SUMMARY_ROLES,
 } from './ChatMeetingCard';
+import { ChatWebSources } from './ChatWebSources';
+import { parseWebSearchCard, type WebSearchCardData } from '../lib/rmqAiWebSearch';
 import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
 import { formatChatCurrencyText } from '../lib/leadCurrencyDisplay';
 import {
@@ -155,8 +158,13 @@ interface Message {
   expenses?: ChatExpensesData;
   employeePresence?: ChatEmployeePresenceData;
   leadSummary?: ChatLeadSummaryData;
+  webSources?: WebSearchCardData;
+  researchRating?: 'useful' | 'wrong';
+  researchSaved?: boolean;
+  promptContent?: string;
   aiTraceId?: string;
   feedback?: 'up' | 'down';
+  streaming?: boolean;
 }
 
 interface ChatHistory {
@@ -274,7 +282,7 @@ const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
     label: 'Lead summary',
     hint: 'Overview of this lead',
     prompt:
-      'Create a summary of this lead. Call get_lead_case_file. First a short status summary as bullet points (- ) covering eligibility, value, meetings, last communication, follow-up. Then a line Risks: … with no bullet. Then end with CASE ABOUT: two or three sentences on what the case is, what the client wants, and the citizenship/path from the case file. Do not list lead number, name, category, topic, stage, or team. Do not mention unsigned contract. Do not greet.',
+      'Create a summary of this lead. Call get_lead_case_file. Start with CASE ABOUT: a full paragraph of 5 to 8 sentences in plain text (no bullets) covering what the case is, what the client is inquiring about, the family or eligibility story, and the important points from emails, WhatsApp, calls, and notes. That paragraph must come first and must not be short. Then a short status summary as bullet points (- ) covering eligibility, value, meetings, last communication, follow-up. Then a line Risks: … with no bullet. Never skip CASE ABOUT or Risks. Do not list lead number, name, category, topic, stage, or team. Do not mention unsigned contract. Do not greet.',
     Icon: DocumentTextIcon,
   },
   {
@@ -330,6 +338,26 @@ const WELCOME_LEAD_QUESTIONS = [
 ];
 
 const WELCOME_GENERAL_QUESTIONS = [...RMQ_AI_DASHBOARD_ASKS];
+
+const CANNED_ASK_LABELS = new Map<string, string>(
+  [
+    ...READY_ASKS,
+    ...WELCOME_LEAD_ACTIONS,
+    ...WELCOME_GENERAL_ACTIONS,
+    { label: 'Draft reminder', prompt: 'Draft a concise contract-signature reminder for this client.' },
+    { label: 'Open client', prompt: 'Give me the contract and signing status for this client.' },
+    { label: 'Draft follow-up', prompt: 'Draft a detailed professional follow-up for this client.' },
+    { label: 'Wrap up meeting', prompt: 'Wrap up the latest meeting for this client.' },
+    { label: 'Draft reply', prompt: 'Draft a reply to the latest client message.' },
+    { label: 'Set new follow-up', prompt: 'Suggest a follow-up date and next action for this client.' },
+    { label: 'Show roles', prompt: 'Who is the handler, expert, and closer on this client?' },
+  ].map((row) => [row.prompt.trim(), row.label]),
+);
+
+function shortAskLabel(text: string): string | null {
+  const key = String(text || '').trim();
+  return key ? CANNED_ASK_LABELS.get(key) || null : null;
+}
 
 const AI_DRAWER_THEME_KEY = 'rmqAiDrawerTheme';
 const AI_DRAWER_POS_KEY = 'rmqAiDrawerPos';
@@ -418,6 +446,9 @@ const clampPanelPos = (pos: PanelPos, width: number, height: number): PanelPos =
   };
 };
 
+const AI_CHROME_DARK = '#121316';
+const AI_CHROME_LIGHT = '#f9fafb';
+
 const readAiDrawerDark = (): boolean => {
   try {
     const stored = localStorage.getItem(AI_DRAWER_THEME_KEY);
@@ -455,7 +486,7 @@ function ChatWelcomeHome({
 }: {
   hasLead: boolean;
   disabled?: boolean;
-  onAction: (prompt: string) => void;
+  onAction: (prompt: string, label?: string) => void;
   signals?: Array<{ id: string; title: string; reason: string; actions: Array<{ label: string; prompt: string }> }>;
 }) {
   const actions = hasLead ? WELCOME_LEAD_ACTIONS : WELCOME_GENERAL_ACTIONS;
@@ -486,7 +517,7 @@ function ChatWelcomeHome({
                     type="button"
                     className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-amber-900 ring-1 ring-amber-200"
                     disabled={disabled}
-                    onClick={() => onAction(action.prompt)}
+                    onClick={() => onAction(action.prompt, action.label)}
                   >
                     {action.label}
                   </button>
@@ -503,7 +534,7 @@ function ChatWelcomeHome({
             type="button"
             className="ai-welcome-card"
             disabled={disabled}
-            onClick={() => onAction(prompt)}
+            onClick={() => onAction(prompt, label)}
           >
             <span className="ai-welcome-card-icon">
               <Icon className="h-6 w-6 max-md:h-7 max-md:w-7" />
@@ -587,9 +618,13 @@ function isLeadSummaryAsk(text: string): boolean {
   return (
     /\boverview\b/.test(t) ||
     /\blead summary\b/.test(t) ||
+    /\bgeneral summary\b/.test(t) ||
+    /\bcase summary\b/.test(t) ||
     /create a summary/.test(t) ||
-    /summar(?:y|ise|ize).{0,40}\b(lead|client)\b/.test(t) ||
-    /\b(lead|client).{0,40}summar(?:y|ise|ize)\b/.test(t)
+    /summar(?:y|ise|ize).{0,40}\b(lead|client|case)\b/.test(t) ||
+    /\b(lead|client).{0,40}summar(?:y|ise|ize)\b/.test(t) ||
+    /\bwhat (?:is|'s|was) (?:this|the) (?:lead|case) about\b/.test(t) ||
+    /\bwhat (?:is|'s) this about\b/.test(t)
   );
 }
 
@@ -712,6 +747,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const panelRef = useRef<HTMLDivElement>(null);
   const panelResizeRef = useRef<{
     pointerId: number;
+    corner: 'nw' | 'ne' | 'se' | 'sw';
     startX: number;
     startY: number;
     origLeft: number;
@@ -738,6 +774,34 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       /* ignore */
     }
   }, [isDarkTheme]);
+
+  useEffect(() => {
+    if (!isOpen || !isMobile) return;
+    const html = document.documentElement;
+    const body = document.body;
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    const color = isDarkTheme ? AI_CHROME_DARK : AI_CHROME_LIGHT;
+    const cls = isDarkTheme ? 'rmq-ai-chat-dark' : 'rmq-ai-chat-light';
+    const prevTheme = metaTheme?.getAttribute('content') ?? '#ffffff';
+    const prevScheme = html.style.colorScheme;
+    const prevHtmlBg = html.style.backgroundColor;
+    const prevBodyBg = body.style.backgroundColor;
+
+    html.classList.remove('rmq-ai-chat-dark', 'rmq-ai-chat-light');
+    html.classList.add(cls);
+    html.style.colorScheme = isDarkTheme ? 'dark' : 'light';
+    html.style.backgroundColor = color;
+    body.style.backgroundColor = color;
+    metaTheme?.setAttribute('content', color);
+
+    return () => {
+      html.classList.remove('rmq-ai-chat-dark', 'rmq-ai-chat-light');
+      html.style.colorScheme = prevScheme;
+      html.style.backgroundColor = prevHtmlBg;
+      body.style.backgroundColor = prevBodyBg;
+      metaTheme?.setAttribute('content', prevTheme);
+    };
+  }, [isOpen, isMobile, isDarkTheme]);
 
   useEffect(() => {
     if (isOpen) return;
@@ -928,8 +992,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   }, [isOpen, messages.length, userName]);
 
   // Quick action handlers
-  const handleQuickAction = (action: string) => {
-    handleSend(action);
+  const handleQuickAction = (action: string, label?: string) => {
+    handleSend(action, { display: label || shortAskLabel(action) || undefined });
   };
 
   const insertClientPortalLink = async () => {
@@ -1373,12 +1437,17 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (!text) return null;
     if (opts.role !== 'assistant' || opts.asEmailDraft) return renderChatProse(text, opts);
     const parts = splitLeadSummaryParts(text);
-    if (!parts.risks) return renderChatProse(text, opts);
+    if (!parts.risks && !parts.caseAbout) return renderChatProse(text, opts);
     return (
       <div className="ai-meeting-stack">
+        {parts.caseAbout ? (
+          <div className="ai-lead-case-about">
+            <div className="ai-meeting-card-title">General summary</div>
+            {renderChatProse(parts.caseAbout, opts)}
+          </div>
+        ) : null}
         {parts.body ? renderChatProse(parts.body, opts) : null}
         <ChatRisksBox text={parts.risks} renderText={(risks) => renderChatProse(risks, opts)} />
-        {parts.caseAbout ? renderChatProse(parts.caseAbout, opts) : null}
       </div>
     );
   };
@@ -1390,7 +1459,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   ) => {
     await syncOpenClient();
     const lastUser = [...conversationMessages].reverse().find((message) => message.role === 'user');
-    const userText = String(lastUser?.content || '');
+    const userText = String(lastUser?.promptContent || lastUser?.content || '');
     const pageType = location.pathname.startsWith('/clients')
       ? 'client'
       : location.pathname.split('/').filter(Boolean)[0] || 'app';
@@ -1421,47 +1490,58 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         expenses: _expenses,
         employeePresence: _employeePresence,
         leadSummary: _leadSummary,
+        webSources: _webSources,
         draftAction: _draftAction,
+        promptContent,
+        streaming: _streaming,
         ...message
-      }) => message,
+      }) => ({ ...message, content: promptContent || message.content }),
     );
-
-    const callChat = async (payloadMessages: Message[], includeImages = false) => {
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify({
-          messages: [{
-            role: 'system',
-            content: systemPrompt,
-          }, ...payloadMessages],
-          images: includeImages ? imagesData : [],
-          tools: toolsForTurn,
-          aiTraceId: trace.aiTraceId,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `Request failed with status ${response.status}`);
-      }
-      return data as Message;
-    };
 
     const thinkingPlan = thinkingPlanForAsk(userText);
     let thinkingStep = 0;
     let thinkingLocked = false;
-    const applyThinking = (label: string) => {
+    let pendingStreamText: string | null = null;
+    let streamRaf = 0;
+    const flushStream = () => {
+      streamRaf = 0;
+      if (pendingStreamText == null) return;
+      const text = pendingStreamText;
+      pendingStreamText = null;
       setMessages((prev) => {
         const next = [...prev];
         const lastIndex = next.length - 1;
-        if (lastIndex < 0 || next[lastIndex].role !== 'assistant' || !isThinkingContent(next[lastIndex].content)) {
-          return prev;
-        }
-        next[lastIndex] = { ...next[lastIndex], content: thinkingContent(label) };
+        if (lastIndex < 0 || next[lastIndex].role !== 'assistant') return prev;
+        next[lastIndex] = { ...next[lastIndex], content: text, streaming: true };
         return next;
+      });
+    };
+    const applyStreamDelta = (text: string) => {
+      if (!text) return;
+      thinkingLocked = true;
+      pendingStreamText = text;
+      if (!streamRaf) streamRaf = window.requestAnimationFrame(flushStream);
+    };
+    const applyThinking = (label: string, force = false) => {
+      setMessages((prev) => {
+        const next = [...prev];
+        const lastIndex = next.length - 1;
+        if (lastIndex < 0 || next[lastIndex].role !== 'assistant') return prev;
+        if (!force && !isThinkingContent(next[lastIndex].content)) return prev;
+        next[lastIndex] = { ...next[lastIndex], content: thinkingContent(label), streaming: false };
+        return next;
+      });
+    };
+    const callChat = async (payloadMessages: Message[], includeImages = false) => {
+      return streamRmqAiChat({
+        messages: [{
+          role: 'system',
+          content: systemPrompt,
+        }, ...payloadMessages],
+        images: includeImages ? imagesData : [],
+        tools: toolsForTurn,
+        aiTraceId: trace.aiTraceId,
+        onDelta: applyStreamDelta,
       });
     };
     const thinkingTimer = window.setInterval(() => {
@@ -1484,6 +1564,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       let expenses: ChatExpensesData | undefined;
       let employeePresence: ChatEmployeePresenceData | undefined;
       let leadSummary: ChatLeadSummaryData | undefined;
+      let webSources: WebSearchCardData | undefined;
       const toolResults: Array<{ name: string; content: string }> = [];
       let toolExecutionMs = 0;
       const modelStarted = Date.now();
@@ -1495,6 +1576,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       };
       for (let round = 0; round < 6; round += 1) {
         const reply = await callChat(conversation, round === 0);
+        if (streamRaf) {
+          window.cancelAnimationFrame(streamRaf);
+          streamRaf = 0;
+        }
+        pendingStreamText = null;
         if (reply.tool_calls?.length) {
           conversation = [
             ...conversation,
@@ -1502,10 +1588,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           ];
           thinkingLocked = true;
           const firstTool = reply.tool_calls[0];
-          applyThinking(labelForTool(firstTool?.function?.name, firstTool?.function?.arguments));
+          applyThinking(labelForTool(firstTool?.function?.name, firstTool?.function?.arguments), true);
           for (const toolCall of reply.tool_calls) {
             const fnName = toolCall?.function?.name;
-            if (fnName) applyThinking(labelForTool(fnName, toolCall?.function?.arguments));
+            if (fnName) applyThinking(labelForTool(fnName, toolCall?.function?.arguments), true);
             const toolStarted = Date.now();
             const toolResult = await executeRmqAiTool(toolCall);
             toolExecutionMs += Date.now() - toolStarted;
@@ -1571,6 +1657,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             if (fnName === 'list_employee_presence') {
               employeePresence = parseEmployeePresenceCard(toolResult) || employeePresence;
             }
+            if (fnName === 'web_search') {
+              webSources = parseWebSearchCard(toolResult) || webSources;
+            }
             if (fnName === 'get_lead_case_file' && isLeadSummaryAsk(userText)) {
               const parsed = parseLeadSummaryCard(toolResult);
               if (parsed) {
@@ -1603,7 +1692,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               { role: 'tool', content: toolResult, tool_call_id: toolCall.id },
             ];
           }
-          applyThinking('Putting it together');
+          applyThinking('Putting it together', true);
           continue;
         }
         aiResponseMessage = reply;
@@ -1678,6 +1767,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           details: { events, tools: selectedTools, trace: finished },
         });
       }
+      if (isLeadSummaryAsk(userText) && !leadSummary) {
+        const prior = [...conversationMessages].reverse().find((message) => message.leadSummary);
+        if (prior?.leadSummary) leadSummary = prior.leadSummary;
+      }
       setMessages((prev) => [
         ...prev.slice(0, -1),
         {
@@ -1694,6 +1787,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           expenses,
           employeePresence,
           leadSummary,
+          webSources,
           aiTraceId: trace.aiTraceId,
         },
       ]);
@@ -1707,33 +1801,42 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           updated[lastIndex] = {
             ...updated[lastIndex],
             content: `Sorry, an error occurred: ${errorMessage}`,
+            streaming: false,
           };
         }
         return updated;
       });
     } finally {
       window.clearInterval(thinkingTimer);
+      if (streamRaf) window.cancelAnimationFrame(streamRaf);
       setIsLoading(false);
     }
   };
 
-  const handleSend = async (customInput?: string) => {
+  const handleSend = async (customInput?: string, opts?: { display?: string }) => {
     const messageToSend = customInput || input;
     if (!messageToSend.trim() && images.length === 0) return;
     await syncOpenClient();
     setIsLoading(true);
+    const sendText = messageToSend.trim();
+    const shownText = opts?.display || shortAskLabel(sendText) || sendText;
 
     let userMessage: any;
     if (images.length > 0 && imagePreviews.length > 0) {
       userMessage = {
         role: 'user',
         content: [
-          ...(messageToSend.trim() ? [{ type: 'text', text: messageToSend.trim() }] : []),
+          ...(shownText ? [{ type: 'text', text: shownText }] : []),
           ...imagePreviews.map(url => ({ type: 'image_url', image_url: { url } }))
-        ]
+        ],
+        ...(shownText !== sendText ? { promptContent: sendText } : {}),
       };
     } else {
-      userMessage = { role: 'user', content: messageToSend.trim() };
+      userMessage = {
+        role: 'user',
+        content: shownText,
+        ...(shownText !== sendText ? { promptContent: sendText } : {}),
+      };
     }
     const priorMessages = messages.filter((message) => !isWelcomeMessage(message));
     const newMessages = [...priorMessages, userMessage];
@@ -2475,8 +2578,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     const el = panelRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
+    const cornerAttr = event.currentTarget.getAttribute('data-ai-resize');
+    const corner =
+      cornerAttr === 'ne' || cornerAttr === 'se' || cornerAttr === 'sw' ? cornerAttr : 'nw';
     panelResizeRef.current = {
       pointerId: event.pointerId,
+      corner,
       startX: event.clientX,
       startY: event.clientY,
       origLeft: panelPos?.left ?? rect.left,
@@ -2501,14 +2608,21 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const movePanelResize = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     const resize = panelResizeRef.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
+    const dx = event.clientX - resize.startX;
+    const dy = event.clientY - resize.startY;
     const right = resize.origLeft + resize.origWidth;
     const bottom = resize.origTop + resize.origHeight;
+    const fromWest = resize.corner === 'nw' || resize.corner === 'sw';
+    const fromNorth = resize.corner === 'nw' || resize.corner === 'ne';
     const nextSize = clampPanelSize({
-      width: right - (resize.origLeft + (event.clientX - resize.startX)),
-      height: bottom - (resize.origTop + (event.clientY - resize.startY)),
+      width: fromWest ? resize.origWidth - dx : resize.origWidth + dx,
+      height: fromNorth ? resize.origHeight - dy : resize.origHeight + dy,
     });
     const nextPos = clampPanelPos(
-      { left: right - nextSize.width, top: bottom - nextSize.height },
+      {
+        left: fromWest ? right - nextSize.width : resize.origLeft,
+        top: fromNorth ? bottom - nextSize.height : resize.origTop,
+      },
       nextSize.width,
       nextSize.height,
     );
@@ -2837,13 +2951,107 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     </>
   );
 
+  const plusMenuItems = (
+    <>
+      <button
+        type="button"
+        role="menuitem"
+        className="ai-plus-item"
+        onClick={() => {
+          setAttachMenuOpen(false);
+          fileInputRef.current?.click();
+        }}
+      >
+        <PlusMenuImagesIcon className="ai-plus-icon" />
+        <span className="ai-plus-copy">
+          <span className="ai-plus-title">Images</span>
+          <span className="ai-plus-hint">Attach photos to this chat</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="ai-plus-item"
+        onClick={() => {
+          setAttachMenuOpen(false);
+          onClose();
+          navigate('/documents');
+        }}
+      >
+        <PlusMenuDocumentsIcon className="ai-plus-icon" />
+        <span className="ai-plus-copy">
+          <span className="ai-plus-title">Documents</span>
+          <span className="ai-plus-hint">Open the documents folder</span>
+        </span>
+      </button>
+      <div className="ai-plus-divider" />
+      <p className="ai-plus-section">Client links</p>
+      <button
+        type="button"
+        role="menuitem"
+        className="ai-plus-item"
+        onClick={() => void insertCrmDocumentLink('contract')}
+      >
+        <DocumentCheckIcon className="ai-plus-icon ai-plus-icon-muted" />
+        <span className="ai-plus-copy">
+          <span className="ai-plus-title">Contract</span>
+          <span className="ai-plus-hint">Insert this client’s signing link</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="ai-plus-item"
+        onClick={() => void insertCrmDocumentLink('poa')}
+      >
+        <DocumentTextIcon className="ai-plus-icon ai-plus-icon-muted" />
+        <span className="ai-plus-copy">
+          <span className="ai-plus-title">POA</span>
+          <span className="ai-plus-hint">Insert this client’s POA link</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="ai-plus-item"
+        onClick={() => void insertClientPortalLink()}
+      >
+        <LinkIcon className="ai-plus-icon ai-plus-icon-muted" />
+        <span className="ai-plus-copy">
+          <span className="ai-plus-title">Portal</span>
+          <span className="ai-plus-hint">Insert this client’s portal link</span>
+        </span>
+      </button>
+      <div className="ai-plus-divider" />
+      <p className="ai-plus-section">Quick asks</p>
+      {READY_ASKS.map(({ label, hint, prompt, Icon }) => (
+        <button
+          key={label}
+          type="button"
+          role="menuitem"
+          className="ai-plus-item"
+          onClick={() => {
+            setAttachMenuOpen(false);
+            handleQuickAction(prompt, label);
+          }}
+        >
+          <Icon className="ai-plus-icon ai-plus-icon-muted" />
+          <span className="ai-plus-copy">
+            <span className="ai-plus-title">{label}</span>
+            <span className="ai-plus-hint">{hint}</span>
+          </span>
+        </button>
+      ))}
+    </>
+  );
+
   if (!isOpen) return null;
 
   return (
     <>
     <div
       ref={panelRef}
-      className={`${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-[10050] flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
+      className={`ai-chat-panel ${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-[10050] flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
           isFullPage || isMobile
           ? 'inset-0 h-[100dvh] w-full max-w-none'
           : hasCustomSize
@@ -2901,34 +3109,67 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-drawer-moving .ai-expand-drag {
           cursor: grabbing;
         }
-        .ai-resize-nw {
+        .ai-resize-handle {
           position: absolute;
-          top: 0;
-          left: 0;
-          z-index: 45;
-          width: 32px;
-          height: 32px;
+          z-index: 40;
+          width: 44px;
+          height: 44px;
           padding: 0;
           border: 0;
           background: transparent;
-          cursor: nwse-resize;
           touch-action: none;
         }
-        .ai-resize-nw::before {
+        .ai-resize-nw,
+        .ai-resize-ne {
+          z-index: 60;
+          width: 18px;
+          height: 18px;
+        }
+        .ai-resize-handle::before {
           content: '';
           position: absolute;
-          top: 8px;
-          left: 8px;
           width: 11px;
           height: 11px;
-          border-top: 2px solid currentColor;
-          border-left: 2px solid currentColor;
-          border-radius: 3px 0 0 0;
-          opacity: 0.62;
+          border: 2px solid currentColor;
+          opacity: 0;
+          transition: opacity 120ms ease;
         }
-        .ai-resize-nw:hover::before,
-        .ai-resize-nw:focus-visible::before {
-          opacity: 0.8;
+        .ai-resize-handle:hover::before,
+        .ai-resize-handle:active::before,
+        .ai-resize-handle:focus-visible::before {
+          opacity: 0.75;
+        }
+        .ai-resize-nw { top: 0; left: 0; cursor: nwse-resize; }
+        .ai-resize-ne { top: 0; right: 0; cursor: nesw-resize; }
+        .ai-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }
+        .ai-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+        .ai-resize-nw::before {
+          top: 5px;
+          left: 5px;
+          border-right: 0;
+          border-bottom: 0;
+          border-radius: 3px 0 0 0;
+        }
+        .ai-resize-ne::before {
+          top: 5px;
+          right: 5px;
+          border-left: 0;
+          border-bottom: 0;
+          border-radius: 0 3px 0 0;
+        }
+        .ai-resize-se::before {
+          bottom: 8px;
+          right: 8px;
+          border-left: 0;
+          border-top: 0;
+          border-radius: 0 0 3px 0;
+        }
+        .ai-resize-sw::before {
+          bottom: 8px;
+          left: 8px;
+          border-right: 0;
+          border-top: 0;
+          border-radius: 0 0 0 3px;
         }
         .ai-messages-scroll {
           scrollbar-width: none;
@@ -2980,6 +3221,51 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           outline: 0;
           box-shadow: none;
         }
+        .ai-plus-item {
+          display: flex;
+          width: 100%;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 0.65rem 0.75rem;
+          text-align: left;
+        }
+        .ai-plus-item:hover {
+          background: #f9fafb;
+        }
+        .ai-plus-icon {
+          width: 1.25rem;
+          height: 1.25rem;
+          flex-shrink: 0;
+        }
+        .ai-plus-icon-muted {
+          color: #6b7280;
+        }
+        .ai-plus-copy {
+          min-width: 0;
+          line-height: 1.35;
+        }
+        .ai-plus-title {
+          font-size: 0.875rem;
+          font-weight: 500;
+          color: #111827;
+        }
+        .ai-plus-hint {
+          margin-left: 0.25rem;
+          font-size: 0.75rem;
+          color: #6b7280;
+        }
+        .ai-plus-section {
+          padding: 0.35rem 0.75rem 0.25rem;
+          font-size: 11px;
+          font-weight: 600;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: #9ca3af;
+        }
+        .ai-plus-divider {
+          margin: 0.25rem 0;
+          border-top: 1px solid #f3f4f6;
+        }
         .ai-drawer-light {
           --ai-bg: #f9fafb;
           --ai-bg-raised: #ffffff;
@@ -2993,6 +3279,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           --ai-bubble-ai: #ffffff;
           --ai-bubble-ai-text: #1f2937;
           --ai-send: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
+          --ai-send-from: #6366f1;
+          --ai-send-to: #38bdf8;
           --ai-header-bg: rgba(255, 255, 255, 0.42);
           --ai-header-border: rgba(255, 255, 255, 0.45);
           box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
@@ -3011,6 +3299,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           --ai-bubble-ai: #2a2c32;
           --ai-bubble-ai-text: #e6e7eb;
           --ai-send: linear-gradient(90deg, #7c3aed 0%, #4f46e5 100%);
+          --ai-send-from: #7c3aed;
+          --ai-send-to: #4f46e5;
           --ai-header-bg: rgba(42, 44, 50, 0.62);
           --ai-header-border: rgba(42, 44, 50, 0.35);
           border-left: 1px solid #2a2c32;
@@ -3064,6 +3354,251 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           background: #32343a;
           border: 0;
           box-shadow: none;
+        }
+        .ai-sources-box {
+          margin-top: 0.75rem;
+          border: 0;
+          border-radius: 1rem;
+          padding: 0.9rem 1rem 0.85rem;
+          outline: none;
+          box-shadow: none;
+        }
+        .ai-drawer-light .ai-sources-box {
+          background: #ffffff;
+          color: #1f2937;
+        }
+        .ai-drawer-dark .ai-sources-box {
+          background: #32343a;
+          color: #e6e7eb;
+        }
+        .ai-sources-kicker {
+          margin-bottom: 0.55rem;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          opacity: 0.48;
+        }
+        .ai-sources-item {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.55rem;
+          min-width: 0;
+          text-decoration: none;
+          color: inherit;
+        }
+        .ai-drawer-light a.ai-sources-item,
+        .ai-drawer-light a.ai-sources-item .ai-sources-link {
+          color: #1e3a8a;
+        }
+        .ai-drawer-dark a.ai-sources-item,
+        .ai-drawer-dark a.ai-sources-item .ai-sources-link {
+          color: #93c5fd;
+        }
+        .ai-sources-favicon {
+          width: 1.75rem;
+          height: 1.75rem;
+          margin-top: 0.1rem;
+          border-radius: 999px;
+          object-fit: cover;
+          flex-shrink: 0;
+          background: rgba(15, 23, 42, 0.04);
+          border: 1px solid rgba(15, 23, 42, 0.08);
+        }
+        .ai-drawer-dark .ai-sources-favicon {
+          background: rgba(255, 255, 255, 0.06);
+          border-color: rgba(255, 255, 255, 0.1);
+        }
+        .ai-sources-favicon.is-fallback {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: #6b7280;
+        }
+        .ai-drawer-dark .ai-sources-favicon.is-fallback {
+          color: #c5c8d0;
+        }
+        .ai-sources-favicon.is-fallback svg {
+          width: 1.05rem;
+          height: 1.05rem;
+        }
+        .ai-sources-copy {
+          min-width: 0;
+          flex: 1;
+        }
+        .ai-sources-link {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 0.875rem;
+          font-weight: 600;
+          text-decoration: none;
+          color: inherit;
+        }
+        .ai-sources-item:hover .ai-sources-link {
+          text-decoration: underline;
+        }
+        .ai-sources-meta {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 11px;
+          opacity: 0.5;
+        }
+        .ai-sources-actions {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 0.4rem;
+          margin-top: 0.85rem;
+        }
+        .ai-sources-save-icon,
+        .ai-sources-saved {
+          margin-left: auto;
+        }
+        .ai-sources-saved {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          height: 2.15rem;
+          font-size: 12px;
+          font-weight: 650;
+          line-height: 1;
+          color: #9ca3af;
+        }
+        .ai-drawer-dark .ai-sources-saved {
+          color: #8b8e96;
+        }
+        .ai-sources-saved svg {
+          fill: currentColor;
+        }
+        .ai-sources-save-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.35rem;
+          height: 2.15rem;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          color: inherit;
+          font-size: 12px;
+          font-weight: 650;
+          line-height: 1;
+          opacity: 0.55;
+          cursor: pointer;
+        }
+        .ai-sources-save-icon:hover {
+          opacity: 0.9;
+        }
+        .ai-sources-save-icon.is-on {
+          opacity: 1;
+          color: var(--ai-send-from);
+        }
+        .ai-sources-save-icon.is-on svg,
+        .ai-sources-save-icon.is-on svg path {
+          fill: url(#ai-sources-send-grad);
+        }
+        .ai-sources-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          box-sizing: border-box;
+          height: 2.15rem;
+          min-height: 2.15rem;
+          gap: 0.35rem;
+          border: 0;
+          border-radius: 999px;
+          padding: 0 0.85rem;
+          font-size: 12px;
+          font-weight: 650;
+          letter-spacing: 0.01em;
+          line-height: 1;
+          cursor: pointer;
+          transition: transform 120ms ease, filter 120ms ease, background 120ms ease, color 120ms ease;
+        }
+        .ai-sources-btn-useful,
+        .ai-sources-btn-wrong {
+          background: transparent;
+        }
+        .ai-sources-btn-useful {
+          color: #047857;
+        }
+        .ai-sources-btn-wrong {
+          color: #be123c;
+        }
+        .ai-sources-btn-useful:hover,
+        .ai-sources-btn-useful.is-on {
+          background: rgba(16, 185, 129, 0.16);
+        }
+        .ai-sources-btn-useful.is-on {
+          background: rgba(16, 185, 129, 0.2);
+          color: #047857;
+        }
+        .ai-sources-btn-wrong:hover,
+        .ai-sources-btn-wrong.is-on {
+          background: rgba(244, 63, 94, 0.14);
+        }
+        .ai-sources-btn-wrong.is-on {
+          background: rgba(244, 63, 94, 0.18);
+          color: #be123c;
+        }
+        .ai-sources-form .ai-sources-btn-save {
+          background: var(--ai-send);
+          color: #fff;
+        }
+        .ai-drawer-dark .ai-sources-btn-useful {
+          background: transparent;
+          color: #6ee7b7;
+        }
+        .ai-drawer-dark .ai-sources-btn-wrong {
+          background: transparent;
+          color: #fda4af;
+        }
+        .ai-drawer-dark .ai-sources-btn-useful:hover,
+        .ai-drawer-dark .ai-sources-btn-useful.is-on {
+          background: rgba(52, 211, 153, 0.16);
+        }
+        .ai-drawer-dark .ai-sources-btn-useful.is-on {
+          background: rgba(52, 211, 153, 0.22);
+          color: #6ee7b7;
+        }
+        .ai-drawer-dark .ai-sources-btn-wrong:hover,
+        .ai-drawer-dark .ai-sources-btn-wrong.is-on {
+          background: rgba(251, 113, 133, 0.16);
+        }
+        .ai-drawer-dark .ai-sources-btn-wrong.is-on {
+          background: rgba(251, 113, 133, 0.22);
+          color: #fda4af;
+        }
+        .ai-sources-hint {
+          margin-top: 0.55rem;
+          font-size: 11px;
+          opacity: 0.45;
+        }
+        .ai-sources-form {
+          margin-top: 0.75rem;
+          border: 0;
+          border-radius: 0.85rem;
+          padding: 0.75rem;
+        }
+        .ai-drawer-light .ai-sources-form {
+          background: #ffffff;
+        }
+        .ai-drawer-dark .ai-sources-form {
+          background: #26282e;
+        }
+        .ai-sources-form input,
+        .ai-sources-form select {
+          border: 0;
+          border-radius: 0.65rem;
+          background: rgba(0, 0, 0, 0.05);
+        }
+        .ai-drawer-dark .ai-sources-form input,
+        .ai-drawer-dark .ai-sources-form select {
+          background: #1c1e22;
+          color: #e6e7eb;
         }
         .ai-meeting-card-head {
           display: flex;
@@ -3265,10 +3800,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           text-overflow: ellipsis;
           white-space: nowrap;
         }
-        .ai-lead-summary-text,
-        .ai-lead-case-about {
+        .ai-lead-summary-text {
           font-size: 0.9375rem;
           line-height: 1.6;
+        }
+        .ai-lead-case-about {
+          font-size: 1.0625rem;
+          line-height: 1.75;
+          padding: 0.15rem 0 0.35rem;
         }
         .ai-lead-summary-text .ai-chat-msg-text,
         .ai-lead-risks .ai-chat-msg-text,
@@ -3294,9 +3833,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           background: rgba(248, 113, 113, 0.16);
           color: var(--ai-text);
         }
-        .ai-lead-risks .ai-meeting-card-title,
-        .ai-lead-case-about .ai-meeting-card-title {
+        .ai-lead-risks .ai-meeting-card-title {
           margin-bottom: 0.45rem;
+        }
+        .ai-lead-case-about .ai-meeting-card-title {
+          font-size: 0.8rem;
+          letter-spacing: 0.07em;
+          margin-bottom: 0.6rem;
         }
         .ai-drawer-light .ai-lead-risks {
           background: rgba(248, 113, 113, 0.14);
@@ -3791,11 +4334,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           display: inline-flex;
           align-items: center;
           gap: 0.7rem;
-          min-height: 1.5rem;
+          min-height: 1.65rem;
         }
         .ai-thinking-ring {
-          width: 1.15rem;
-          height: 1.15rem;
+          width: 1.4rem;
+          height: 1.4rem;
           flex-shrink: 0;
           border-radius: 9999px;
           background: conic-gradient(from 90deg, #818cf8, #38bdf8, #c084fc, #818cf8);
@@ -3828,6 +4371,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           from { opacity: 0; transform: translateY(3px); }
           to { opacity: 1; transform: none; }
         }
+        .ai-stream-caret {
+          display: inline-block;
+          width: 0.12em;
+          height: 1em;
+          margin-left: 0.08em;
+          vertical-align: -0.12em;
+          background: currentColor;
+          animation: ai-stream-caret 0.9s steps(1) infinite;
+        }
+        @keyframes ai-stream-caret {
+          0%, 49% { opacity: 1; }
+          50%, 100% { opacity: 0; }
+        }
         .ai-send-thinking {
           width: 1.05rem;
           height: 1.05rem;
@@ -3848,7 +4404,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           .ai-thinking-ring,
           .ai-thinking-dots span,
           .ai-thinking-label,
-          .ai-send-thinking {
+          .ai-send-thinking,
+          .ai-stream-caret {
             animation: none;
           }
         }
@@ -3869,21 +4426,45 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         /* Mobile: larger header, welcome, composer (desktop unchanged). */
         @media (max-width: 768px) {
           .ai-chat-header {
-            padding-bottom: 0.65rem;
+            min-height: calc(3.7rem + max(0.5rem, env(safe-area-inset-top, 0px)));
+            padding-bottom: 0.55rem;
+            padding-top: max(0.5rem, env(safe-area-inset-top));
           }
           .ai-chat-under-header {
-            padding-top: calc(3.85rem + max(0.5rem, env(safe-area-inset-top, 0px)));
+            padding-top: calc(6.5rem + env(safe-area-inset-top, 0px));
+          }
+          .ai-msg-anchor {
+            scroll-margin-top: calc(5.85rem + env(safe-area-inset-top, 0px));
+          }
+          .ai-header-logo {
+            height: 2.75rem !important;
+            width: 2.75rem !important;
+          }
+          .ai-header-title {
+            font-size: 1.2rem !important;
+            line-height: 1.2 !important;
+          }
+          .ai-header-beta {
+            height: 1.2rem;
+            padding-left: 0.45rem;
+            padding-right: 0.45rem;
+            font-size: 0.65rem;
+          }
+          .ai-header-client {
+            max-width: 13rem;
+            padding: 0.3rem 0.7rem;
+            font-size: 0.8125rem;
           }
           .ai-theme-switch {
-            width: 4rem;
-            height: 2.35rem;
+            width: 4.1rem;
+            height: 2.4rem;
           }
           .ai-theme-knob {
-            height: 1.9rem;
-            width: 1.9rem;
+            height: 1.95rem;
+            width: 1.95rem;
           }
           .ai-theme-knob.is-dark {
-            transform: translateX(1.65rem);
+            transform: translateX(1.7rem);
           }
           .ai-theme-knob svg {
             height: 1.1rem;
@@ -3896,8 +4477,77 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           }
           .ai-close-btn svg,
           .ai-history-header-btn svg {
-            height: 1.45rem;
-            width: 1.45rem;
+            height: 1.5rem;
+            width: 1.5rem;
+          }
+          .ai-bubble-copy {
+            width: 2.85rem;
+            height: 2.85rem;
+          }
+          .ai-bubble-copy svg {
+            width: 1.65rem;
+            height: 1.65rem;
+          }
+          .ai-drawer-dark .ai-chat-header {
+            background: #121316;
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+          }
+          .ai-drawer-light .ai-chat-header {
+            background: #f9fafb;
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+          }
+          .ai-sources-box {
+            padding: 1.1rem 1.1rem 1rem;
+          }
+          .ai-sources-kicker {
+            font-size: 0.75rem;
+            margin-bottom: 0.7rem;
+          }
+          .ai-sources-item {
+            gap: 0.7rem;
+            margin-bottom: 0.35rem;
+          }
+          .ai-sources-favicon {
+            width: 2.15rem;
+            height: 2.15rem;
+          }
+          .ai-sources-favicon.is-fallback svg {
+            width: 1.2rem;
+            height: 1.2rem;
+          }
+          .ai-sources-link {
+            font-size: 1.0625rem;
+          }
+          .ai-sources-meta {
+            font-size: 0.8125rem;
+          }
+          .ai-sources-actions {
+            gap: 0.5rem;
+            margin-top: 1rem;
+          }
+          .ai-sources-btn,
+          .ai-sources-save-icon,
+          .ai-sources-saved {
+            height: 2.7rem;
+            min-height: 2.7rem;
+            font-size: 0.9375rem;
+            padding: 0 1rem;
+          }
+          .ai-sources-btn svg,
+          .ai-sources-save-icon svg,
+          .ai-sources-saved svg {
+            width: 1.35rem;
+            height: 1.35rem;
+          }
+          .ai-sources-form {
+            font-size: 0.9375rem;
+          }
+          .ai-sources-form input,
+          .ai-sources-form select {
+            font-size: 1rem;
+            min-height: 2.6rem;
           }
           .ai-welcome-home {
             padding-top: 1.25rem;
@@ -3945,18 +4595,33 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             width: 1.25rem;
           }
           .contract-ai-input-shell {
-            min-height: 3.85rem;
+            min-height: 4.65rem;
+          }
+          .contract-ai-input-area {
+            padding-left: 1rem;
+            padding-right: 1rem;
+            padding-bottom: 1.15rem;
+          }
+          .ai-composer-btn {
+            height: 3.25rem !important;
+            width: 3.25rem !important;
+            min-height: 3.25rem !important;
+            min-width: 3.25rem !important;
+          }
+          .ai-composer-btn svg {
+            height: 1.65rem;
+            width: 1.65rem;
           }
           .contract-ai-input-area textarea,
           .contract-ai-input-area textarea:focus {
-            font-size: 1.125rem !important;
-            line-height: 1.55rem !important;
-            min-height: 1.55rem;
+            font-size: 1.25rem !important;
+            line-height: 1.7rem !important;
+            min-height: 1.7rem;
             height: auto;
           }
           .contract-ai-input-area textarea::placeholder {
-            font-size: 1.125rem !important;
-            line-height: 1.55rem;
+            font-size: 1.25rem !important;
+            line-height: 1.7rem;
           }
         }
         
@@ -3968,6 +4633,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           overflow: hidden;
         }
         .ai-chat-header {
+          z-index: 50;
           background: var(--ai-header-bg);
           border-bottom: 1px solid var(--ai-header-border);
           box-shadow: 0 8px 32px rgba(15, 23, 42, 0.04);
@@ -3994,6 +4660,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         .ai-chat-under-header {
           padding-top: calc(3.15rem + max(0.5rem, env(safe-area-inset-top, 0px)));
+        }
+        @media (max-width: 768px) {
+          .ai-chat-under-header {
+            padding-top: calc(6.5rem + env(safe-area-inset-top, 0px));
+          }
+          .ai-msg-anchor {
+            scroll-margin-top: calc(5.85rem + env(safe-area-inset-top, 0px));
+          }
         }
         .ai-theme-switch {
           position: relative;
@@ -4042,6 +4716,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           width: 0.9rem;
         }
         .ai-close-btn {
+          position: relative;
+          z-index: 50;
           display: inline-flex;
           height: 2.25rem;
           width: 2.25rem;
@@ -4106,8 +4782,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-drawer-dark .ai-plus-menu {
           background: #32343a !important;
         }
-        .ai-drawer-dark .ai-plus-menu .hover\\:bg-gray-50:hover {
-          background: #3a3d45 !important;
+        .ai-drawer-dark .ai-plus-item:hover {
+          background: #3a3d45;
+        }
+        .ai-drawer-dark .ai-plus-title {
+          color: var(--ai-text);
+        }
+        .ai-drawer-dark .ai-plus-hint,
+        .ai-drawer-dark .ai-plus-icon-muted {
+          color: var(--ai-text-muted);
+        }
+        .ai-drawer-dark .ai-plus-divider {
+          border-color: var(--ai-border);
         }
         .ai-drawer-dark .bg-gray-50 { background-color: var(--ai-bg) !important; }
         .ai-drawer-dark .bg-gray-100 { background-color: var(--ai-bg-overlay) !important; }
@@ -4173,10 +4859,93 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-send-btn:hover {
           filter: brightness(1.08);
         }
+        .ai-plus-overlay,
         .ai-history-overlay {
           position: absolute;
           inset: 0;
           z-index: 45;
+        }
+        .ai-plus-overlay {
+          z-index: 46;
+        }
+        .ai-plus-drawer {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 0;
+          display: flex;
+          width: min(90vw, 24rem);
+          height: 100%;
+          flex-direction: column;
+          overflow: hidden;
+          background: rgba(255, 255, 255, 0.94);
+          backdrop-filter: blur(26px) saturate(1.6);
+          -webkit-backdrop-filter: blur(26px) saturate(1.6);
+          border: 0;
+          outline: none;
+          border-top-right-radius: 1.85rem;
+          border-bottom-right-radius: 1.85rem;
+          box-shadow: 16px 0 48px rgba(15, 23, 42, 0.2);
+          animation: ai-history-slide 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .ai-plus-drawer-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: calc(0.85rem + env(safe-area-inset-top, 0px)) 1rem 0.75rem 1.15rem;
+          font-size: 1.25rem;
+          font-weight: 700;
+          color: var(--ai-text);
+        }
+        .ai-plus-drawer-close {
+          display: inline-flex;
+          height: 2.75rem;
+          width: 2.75rem;
+          align-items: center;
+          justify-content: center;
+          border: 0;
+          border-radius: 999px;
+          background: transparent;
+          color: #6b7280;
+        }
+        .ai-plus-drawer-body {
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          padding: 0.25rem 0 1.25rem;
+        }
+        .ai-plus-drawer .ai-plus-item {
+          gap: 1rem;
+          padding: 0.95rem 1.15rem;
+        }
+        .ai-plus-drawer .ai-plus-icon {
+          width: 1.85rem;
+          height: 1.85rem;
+        }
+        .ai-plus-drawer .ai-plus-copy {
+          display: flex;
+          flex-direction: column;
+          gap: 0.15rem;
+        }
+        .ai-plus-drawer .ai-plus-title {
+          font-size: 1.125rem;
+          font-weight: 600;
+        }
+        .ai-plus-drawer .ai-plus-hint {
+          margin-left: 0;
+          font-size: 0.9375rem;
+        }
+        .ai-plus-drawer .ai-plus-section {
+          padding: 0.85rem 1.15rem 0.35rem;
+          font-size: 0.8rem;
+        }
+        .ai-drawer-dark .ai-plus-drawer {
+          background: rgba(24, 26, 30, 0.94);
+          box-shadow: 16px 0 56px rgba(0, 0, 0, 0.5);
+        }
+        .ai-drawer-dark .ai-plus-drawer-close {
+          color: #c5c8d0;
         }
         .ai-history-backdrop {
           position: absolute;
@@ -4446,25 +5215,33 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           background: #059669 !important;
         }
       `}</style>
-      {(canResizePanel || isFullPage) && !isMobile ? (
-        <button
-          type="button"
-          className={`ai-resize-nw ${isDarkTheme ? 'text-zinc-300' : 'text-gray-500'}`}
-          onPointerDown={beginPanelResize}
-          onPointerMove={movePanelResize}
-          onPointerUp={endPanelResize}
-          onPointerCancel={endPanelResize}
-          onDoubleClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            panelResizeRef.current = null;
-            setIsResizingPanel(false);
-            onToggleFullPage?.();
-          }}
-          title={isFullPage ? 'Double-click to exit full page' : 'Drag to resize · double-click for full page'}
-          aria-label={isFullPage ? 'Double-click to exit full page' : 'Resize chat from the top-left corner. Double-click for full page.'}
-        />
-      ) : null}
+      {(canResizePanel || isFullPage) && !isMobile
+        ? (['nw', 'ne', 'se', 'sw'] as const).map((corner) => (
+            <button
+              key={corner}
+              type="button"
+              data-ai-resize={corner}
+              className={`ai-resize-handle ai-resize-${corner} ${isDarkTheme ? 'text-zinc-300' : 'text-gray-500'}`}
+              onPointerDown={beginPanelResize}
+              onPointerMove={movePanelResize}
+              onPointerUp={endPanelResize}
+              onPointerCancel={endPanelResize}
+              onDoubleClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                panelResizeRef.current = null;
+                setIsResizingPanel(false);
+                onToggleFullPage?.();
+              }}
+              title={isFullPage ? 'Double-click to exit full page' : 'Drag to resize · double-click for full page'}
+              aria-label={
+                isFullPage
+                  ? 'Double-click to exit full page'
+                  : 'Resize chat. Double-click for full page.'
+              }
+            />
+          ))
+        : null}
       <div 
         className={`${isFullPage || isMobile ? 'ai-glass-fullpage' : 'ai-glass'} relative flex h-full w-full flex-col`}
         style={{
@@ -4476,7 +5253,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       >
         {/* Header */}
         <div
-              className="ai-chat-header absolute inset-x-0 top-0 z-30 flex items-center pb-1.5 pt-[max(0.5rem,env(safe-area-inset-top))] max-md:pb-2.5"
+              className="ai-chat-header absolute inset-x-0 top-0 z-50 flex items-center pb-1.5 pt-[max(0.5rem,env(safe-area-inset-top))]"
           onPointerDown={beginPanelMove}
           onPointerMove={movePanel}
           onPointerUp={endPanelMove}
@@ -4496,13 +5273,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 tabIndex={0}
                 aria-label="About RMQ AI"
               >
-                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-9 w-9 max-md:h-11 max-md:w-11" />
+                <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="ai-header-logo h-9 w-9" />
               </button>
               <div className="flex min-w-0 flex-col justify-center leading-tight">
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    className={`text-sm font-bold max-md:text-lg ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
+                    className={`ai-header-title text-sm font-bold ${isDarkTheme ? 'text-zinc-100' : 'text-gray-900'}`}
                     onClick={() => setShowRmqAiIntroModal(true)}
                     aria-haspopup="dialog"
                     aria-expanded={showRmqAiIntroModal}
@@ -4512,7 +5289,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     RMQ AI
                   </button>
                   <span
-                    className={`inline-flex h-4 shrink-0 -translate-y-1 items-center rounded-full px-1.5 text-[9px] font-bold uppercase leading-none tracking-wide max-md:h-5 max-md:px-2 max-md:text-[11px] ${
+                    className={`ai-header-beta inline-flex h-4 shrink-0 -translate-y-1 items-center rounded-full px-1.5 text-[9px] font-bold uppercase leading-none tracking-wide ${
                       isDarkTheme ? 'bg-[#3a3d45] text-[#c4b5fd]' : 'bg-gray-100 text-[#3b28c7]'
                     }`}
                   >
@@ -4529,7 +5306,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               } top-[max(0.5rem,env(safe-area-inset-top))] bottom-1.5`}
             >
               <span
-                className={`pointer-events-auto max-w-[11rem] truncate rounded-full px-2.5 py-1 text-[11px] font-medium max-md:max-w-[13rem] max-md:px-3 max-md:py-1.5 max-md:text-sm ${
+                className={`ai-header-client pointer-events-auto max-w-[11rem] truncate rounded-full px-2.5 py-1 text-[11px] font-medium ${
                   isDarkTheme ? 'bg-violet-500/20 text-violet-200' : 'bg-violet-100 text-violet-800'
                 }`}
                 title="Questions about this client use the open lead automatically"
@@ -4590,115 +5367,17 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             </div>
           )}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
-            {attachMenuOpen ? (
+            {attachMenuOpen && !isMobile ? (
               <div
                 ref={plusMenuRef}
                 role="menu"
                 className="ai-plus-menu absolute left-4 z-20 w-80 rounded-2xl bg-white py-1.5 md:left-5"
               >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                  onClick={() => {
-                    setAttachMenuOpen(false);
-                    fileInputRef.current?.click();
-                  }}
-                >
-                  <PlusMenuImagesIcon className="h-5 w-5 shrink-0" />
-                  <span className="min-w-0 leading-snug">
-                    <span className="text-sm font-medium text-gray-900">Images</span>
-                    {' '}
-                    <span className="text-xs text-gray-500">Attach photos to this chat</span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                  onClick={() => {
-                    setAttachMenuOpen(false);
-                    onClose();
-                    navigate('/documents');
-                  }}
-                >
-                  <PlusMenuDocumentsIcon className="h-5 w-5 shrink-0" />
-                  <span className="min-w-0 leading-snug">
-                    <span className="text-sm font-medium text-gray-900">Documents</span>
-                    {' '}
-                    <span className="text-xs text-gray-500">Open the documents folder</span>
-                  </span>
-                </button>
-                <div className="my-1 border-t border-gray-100" />
-                <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                  Client links
-                </p>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                  onClick={() => void insertCrmDocumentLink('contract')}
-                >
-                  <DocumentCheckIcon className="h-5 w-5 shrink-0 text-gray-500" />
-                  <span className="min-w-0 leading-snug">
-                    <span className="text-sm font-medium text-gray-900">Contract</span>
-                    {' '}
-                    <span className="text-xs text-gray-500">Insert this client’s signing link</span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                  onClick={() => void insertCrmDocumentLink('poa')}
-                >
-                  <DocumentTextIcon className="h-5 w-5 shrink-0 text-gray-500" />
-                  <span className="min-w-0 leading-snug">
-                    <span className="text-sm font-medium text-gray-900">POA</span>
-                    {' '}
-                    <span className="text-xs text-gray-500">Insert this client’s POA link</span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                  onClick={() => void insertClientPortalLink()}
-                >
-                  <LinkIcon className="h-5 w-5 shrink-0 text-gray-500" />
-                  <span className="min-w-0 leading-snug">
-                    <span className="text-sm font-medium text-gray-900">Portal</span>
-                    {' '}
-                    <span className="text-xs text-gray-500">Insert this client’s portal link</span>
-                  </span>
-                </button>
-                <div className="my-1 border-t border-gray-100" />
-                <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                  Quick asks
-                </p>
-                {READY_ASKS.map(({ label, hint, prompt, Icon }) => (
-                  <button
-                    key={label}
-                    type="button"
-                    role="menuitem"
-                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50"
-                    onClick={() => {
-                      setAttachMenuOpen(false);
-                      handleQuickAction(prompt);
-                    }}
-                  >
-                    <Icon className="h-5 w-5 shrink-0 text-gray-500" />
-                    <span className="min-w-0 leading-snug">
-                      <span className="text-sm font-medium text-gray-900">{label}</span>
-                      {' '}
-                      <span className="text-xs text-gray-500">{hint}</span>
-                    </span>
-                  </button>
-                ))}
+                {plusMenuItems}
               </div>
             ) : null}
             <div 
-              className="ai-chat-under-header ai-messages-scroll scrollbar-hide flex min-h-0 flex-1 flex-col overflow-y-auto bg-gray-50 px-4 pb-32 md:px-5 md:pb-32"
+              className="ai-chat-under-header ai-messages-scroll scrollbar-hide flex min-h-0 flex-1 flex-col overflow-y-auto bg-gray-50 px-4 pb-36 md:px-5 md:pb-32"
               style={{
                 ...(isMobile && keyboardOpen && {
                   paddingBottom: '120px'
@@ -4739,9 +5418,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     ? calendarDayIntro(String(msg.content || ''))
                     : String(msg.content || '');
                 const summaryText = msg.leadSummary ? String(msg.content || '') : '';
+                const userVisible =
+                  msg.role === 'user'
+                    ? shortAskLabel(plainTextFromMessage(msg)) || plainTextFromMessage(msg)
+                    : '';
                 const canCopy =
                   msg.role === 'assistant' &&
                   !thinking &&
+                  !msg.streaming &&
                   !isWelcomeMessage(msg) &&
                   Boolean(plainTextFromMessage(msg));
                 return (
@@ -4750,7 +5434,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   ref={isLatestAnswer ? latestAnswerRef : undefined}
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} ${
                     msg.paidPayments || msg.signedContracts || msg.missedComms ? 'w-full' : ''
-                  } ${isLatestAnswer ? 'scroll-mt-3' : ''}`}
+                    } ${isLatestAnswer ? 'ai-msg-anchor scroll-mt-3' : ''}`}
                 >
                   <div
                     className={
@@ -4769,16 +5453,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     {Array.isArray(msg.content) ? (
                       msg.content.map((item, i) => {
                         if (item.type === 'text') {
+                          const text =
+                            msg.role === 'user'
+                              ? userVisible || item.text
+                              : asEmailDraft
+                                ? stripAiEmailSignature(item.text)
+                                : item.text;
                           return (
                             <React.Fragment key={i}>
-                              {renderAssistantWithRisks(
-                                asEmailDraft ? stripAiEmailSignature(item.text) : item.text,
-                                {
-                                  role: msg.role,
-                                  asEmailDraft,
-                                  welcome: isWelcomeMessage(msg),
-                                },
-                              )}
+                              {renderAssistantWithRisks(text, {
+                                role: msg.role,
+                                asEmailDraft,
+                                welcome: isWelcomeMessage(msg),
+                              })}
                             </React.Fragment>
                           );
                         }
@@ -4789,12 +5476,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       })
                     ) : thinking ? (
                       <ChatThinkingIndicator label={thinkingLabelFromContent(msg.content)} />
-                    ) : assistantText && !msg.leadSummary ? (
-                      renderAssistantWithRisks(assistantText, {
-                        role: msg.role,
-                        asEmailDraft,
-                        welcome: isWelcomeMessage(msg),
-                      })
+                    ) : (msg.role === 'user' ? userVisible : assistantText) && !msg.leadSummary ? (
+                      <>
+                        {renderAssistantWithRisks(msg.role === 'user' ? userVisible : assistantText, {
+                          role: msg.role,
+                          asEmailDraft,
+                          welcome: isWelcomeMessage(msg),
+                        })}
+                        {msg.streaming ? <span className="ai-stream-caret" aria-hidden /> : null}
+                      </>
                     ) : null}
                     {msg.role === 'assistant' && msg.meetingCard ? (
                       <ChatMeetingCards data={msg.meetingCard} />
@@ -4816,6 +5506,32 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     ) : null}
                     {msg.role === 'assistant' && msg.employeePresence ? (
                       <ChatEmployeePresenceTable data={msg.employeePresence} employees={chatEmployees} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.webSources ? (
+                      <ChatWebSources
+                        data={msg.webSources}
+                        conversationId={currentChatId}
+                        messageId={msg.id || bubbleKey}
+                        initialRating={msg.researchRating ?? null}
+                        initialSaved={Boolean(msg.researchSaved)}
+                        onStateChange={(next) => {
+                          setMessages((prev) =>
+                            prev.map((row) => {
+                              const sameId = Boolean(msg.id) && row.id === msg.id;
+                              const sameSources =
+                                !msg.id &&
+                                row.webSources &&
+                                row.webSources.summary === msg.webSources?.summary &&
+                                row.webSources.sources[0]?.url === msg.webSources.sources[0]?.url;
+                              if (!sameId && !sameSources) return row;
+                              const rating = next.rating === undefined ? row.researchRating : next.rating || undefined;
+                              const saved = next.saved === undefined ? row.researchSaved : next.saved;
+                              if (row.researchRating === rating && row.researchSaved === saved) return row;
+                              return { ...row, researchRating: rating, researchSaved: saved };
+                            }),
+                          );
+                        }}
+                      />
                     ) : null}
                     {msg.role === 'assistant' && msg.leadSummary ? (
                       <ChatLeadSummaryCards
@@ -5000,7 +5716,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   <div className="relative shrink-0 self-center pl-1.5" ref={attachMenuRef}>
                     <button
                       type="button"
-                      className="btn btn-ghost btn-circle btn-sm h-10 w-10 max-md:h-12 max-md:w-12 text-slate-500 hover:bg-gray-100"
+                      className="ai-composer-btn btn btn-ghost btn-circle btn-sm h-10 w-10 text-slate-500 hover:bg-gray-100"
                       onClick={() => setAttachMenuOpen((open) => !open)}
                       disabled={isLoading}
                       aria-expanded={attachMenuOpen}
@@ -5008,10 +5724,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       title="Add"
                       aria-label="Add"
                     >
-                      <PlusIcon className="h-5 w-5 max-md:h-6 max-md:w-6" />
+                      <PlusIcon className="h-5 w-5" />
                     </button>
                   </div>
-                  <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center max-md:min-h-[3.85rem]">
+                  <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center">
                     {isVoiceRecording || isVoiceListening || isVoiceBusy ? (
                       <div className="flex h-full w-full items-center gap-2.5 pl-1" aria-live="polite">
                         {isVoiceBusy ? (
@@ -5093,7 +5809,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   <div className="relative mr-1.5 shrink-0 self-center">
                     <button
                       type="button"
-                      className={`btn btn-circle btn-sm h-10 w-10 max-md:h-12 max-md:w-12 border-0 ${
+                      className={`ai-composer-btn btn btn-circle btn-sm h-10 w-10 border-0 ${
                         isVoiceRecording || isVoiceListening
                           ? 'ai-voice-accept-btn'
                           : 'btn-ghost text-slate-500 hover:bg-gray-100'
@@ -5117,16 +5833,16 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       }
                     >
                       {isVoiceRecording || isVoiceListening ? (
-                        <CheckIcon className="h-5 w-5 max-md:h-6 max-md:w-6" strokeWidth={2.5} />
+                        <CheckIcon className="h-5 w-5" strokeWidth={2.5} />
                       ) : (
-                        <MicrophoneIcon className="h-5 w-5 max-md:h-6 max-md:w-6" />
+                        <MicrophoneIcon className="h-5 w-5" />
                       )}
                     </button>
                   </div>
                   <div className="relative shrink-0 self-center pr-1.5">
                     <button
                       type="button"
-                      className="ai-send-btn btn btn-circle btn-sm h-10 w-10 max-md:h-12 max-md:w-12 shrink-0 border-0 text-white disabled:opacity-60"
+                      className="ai-send-btn ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 text-white disabled:opacity-60"
                       onClick={() => handleSend()}
                       disabled={
                         isVoiceBusy ||
@@ -5141,7 +5857,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       {isLoading ? (
                         <span className="ai-send-thinking" aria-hidden />
                       ) : (
-                        <PaperAirplaneIcon className="h-5 w-5 max-md:h-6 max-md:w-6" />
+                        <PaperAirplaneIcon className="h-5 w-5" />
                       )}
                     </button>
                   </div>
@@ -5158,6 +5874,31 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             </div>
           </div>
         </div>
+
+        {attachMenuOpen && isMobile ? (
+          <div className="ai-plus-overlay" role="dialog" aria-modal="true" aria-label="Add">
+            <button
+              type="button"
+              className="ai-history-backdrop"
+              onClick={() => setAttachMenuOpen(false)}
+              aria-label="Close add menu"
+            />
+            <aside ref={plusMenuRef} className="ai-plus-drawer" role="menu">
+              <div className="ai-plus-drawer-head">
+                <span>Add</span>
+                <button
+                  type="button"
+                  className="ai-plus-drawer-close"
+                  onClick={() => setAttachMenuOpen(false)}
+                  aria-label="Close"
+                >
+                  <XMarkIcon className="h-6 w-6" />
+                </button>
+              </div>
+              <div className="ai-plus-drawer-body">{plusMenuItems}</div>
+            </aside>
+          </div>
+        ) : null}
 
         {showHistoryPanel && isMobile ? (
           <div className="ai-history-overlay" role="dialog" aria-modal="true" aria-label="Chat history">

@@ -3,6 +3,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 /** Matches sql/create_flag_types.sql seed ids */
 export const FLAG_TYPE_PROBABILITY = 1;
 export const FLAG_TYPE_REFERRAL = 2;
+/** Handler pipeline email badge — flagged email/manual interaction type id 5 */
+export const FLAG_TYPE_HANDLER_EMAIL = 5;
 
 export type FlagTypeRow = { id: number; code: string; label: string };
 

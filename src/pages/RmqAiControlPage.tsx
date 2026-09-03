@@ -6,6 +6,7 @@ import {
   deleteKnowledgeFile,
   getKnowledgePreview,
   ingestKnowledgeText,
+  knowledgeNeedsReview,
   listFirmLessonCandidates,
   listKnowledgeFiles,
   promoteKnowledgeToFirm,
@@ -98,7 +99,7 @@ export default function RmqAiControlPage() {
           <div>
             <h2 className="font-semibold text-slate-900">Knowledge files</h2>
             <p className="mt-1 text-xs text-slate-500">
-              Playbooks from chat start as personal. Make firm-wide so everyone can use them.
+              Playbooks from chat start as personal. Research saved from chat becomes verified firm knowledge with a review date.
             </p>
           </div>
           <label className="cursor-pointer rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
@@ -135,8 +136,18 @@ export default function RmqAiControlPage() {
                     <p className="text-sm font-medium text-slate-900">{file.title}</p>
                     <p className="mt-0.5 text-xs text-slate-500">
                       {file.scope === 'firm' ? 'Firm-wide' : 'Personal'} · {file.status}
+                      {file.knowledge_kind ? ` · ${file.knowledge_kind}` : ''}
+                      {file.topic_scope ? ` · ${file.topic_scope}` : ''}
                       {file.owner ? ` · ${file.owner}` : ''}
                     </p>
+                    {file.verified_by || file.review_after ? (
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {file.verified_by ? `Verified by ${file.verified_by}` : ''}
+                        {file.verified_at ? ` · ${String(file.verified_at).slice(0, 10)}` : ''}
+                        {file.review_after ? ` · review ${String(file.review_after).slice(0, 10)}` : ''}
+                        {knowledgeNeedsReview(file) ? ' · needs re-check' : ''}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button

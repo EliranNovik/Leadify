@@ -16,19 +16,21 @@ export type ChatCompletionBodyInput = {
 
 export function buildChatCompletionBody(input: ChatCompletionBodyInput): Record<string, unknown> {
   const hasTools = Array.isArray(input.tools) && input.tools.length > 0;
-  const reasoning_effort: OpenAiReasoningEffort =
-    input.reasoningEffort ?? (hasTools ? 'none' : 'low');
 
   const body: Record<string, unknown> = {
     model: OPENAI_CHAT_MODEL,
     messages: input.messages,
-    reasoning_effort,
   };
+
+  // Only send when the caller opts in — many models/proxies reject this field.
+  if (input.reasoningEffort) {
+    body.reasoning_effort = input.reasoningEffort;
+  }
 
   if (input.maxTokens != null) {
     body.max_completion_tokens = input.maxTokens;
   }
-  if (input.temperature != null && reasoning_effort === 'none') {
+  if (input.temperature != null && (input.reasoningEffort == null || input.reasoningEffort === 'none')) {
     body.temperature = input.temperature;
   }
   if (hasTools) {

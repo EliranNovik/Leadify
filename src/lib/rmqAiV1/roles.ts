@@ -96,6 +96,10 @@ export function filterToolsForRole<T extends { function?: { name?: string } }>(
   });
 }
 
+export function canPromoteFirmKnowledge(role: RmqAiRolePackId): boolean {
+  return role === 'manager' || role === 'expert' || role === 'caseHandler';
+}
+
 export async function resolveRmqAiRolePack(): Promise<RmqAiRolePackId> {
   const { data: session } = await supabase.auth.getUser();
   const email = session.user?.email || '';

@@ -44,6 +44,12 @@ import {
   openHandlerRmqForCloser,
   toggleHandlerRetention,
 } from './HandlerCaseActions';
+import {
+  buildHandlerInteractionsEmailPath,
+  fetchHandlerEmailFlag5Targets,
+  markOpenEmailCompose,
+  markScrollToFlaggedEmail,
+} from '../../lib/handlerEmailFlag';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import HandlerAssignedDateBadge from './HandlerAssignedDateBadge';
@@ -487,6 +493,7 @@ const HandlerPipelineView: React.FC<Props> = ({
         const db = b.assigned_date ? Date.parse(b.assigned_date) : 0;
         return db - da;
       });
+
       setRows(processed);
       snapshotStore.set({
         identityKey: pipelineViewIdentityKey(viewAs),
@@ -495,6 +502,24 @@ const HandlerPipelineView: React.FC<Props> = ({
         countries: nextCountries,
         currentUserId,
       });
+
+      try {
+        const flag5ByRowId = await fetchHandlerEmailFlag5Targets(supabase, processed);
+        const withEmailFlags = processed.map((row) => ({
+          ...row,
+          emailFlag5: flag5ByRowId.get(row.id) || null,
+        }));
+        setRows(withEmailFlags);
+        snapshotStore.set({
+          identityKey: pipelineViewIdentityKey(viewAs),
+          rows: withEmailFlags,
+          metrics: snapshotStore.get()?.metrics || new Map(),
+          countries: nextCountries,
+          currentUserId,
+        });
+      } catch (flagErr) {
+        console.warn('Handler pipeline email flags:', flagErr);
+      }
     } catch (err) {
       console.error('Handler pipeline load:', err);
       if (silent) return;
@@ -562,8 +587,19 @@ const HandlerPipelineView: React.FC<Props> = ({
             toast.error(err instanceof Error ? err.message : 'Failed to mark payment as ready to pay');
           });
       },
+      onEmailAction: (row: HandlerPipelineRow, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (row.emailFlag5) markScrollToFlaggedEmail(row.emailFlag5);
+        else markOpenEmailCompose();
+        const path = buildHandlerInteractionsEmailPath(row.navId, row.emailFlag5 || null);
+        if (e.metaKey || e.ctrlKey || e.button === 1) {
+          window.open(path, '_blank', 'noopener');
+          return;
+        }
+        navigate(path);
+      },
     }),
-    [load],
+    [load, navigate],
   );
 
   const openFollowUpModal = (row: HandlerPipelineRow, e: React.MouseEvent) => {

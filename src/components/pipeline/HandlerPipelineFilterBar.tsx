@@ -5,10 +5,12 @@ import { rowAssignmentFlags } from './HandlerAssignedDateBadge';
 
 export type HandlerPaidFilter = '' | 'paid' | 'not_paid';
 export type HandlerAssignmentFilter = '' | 'new' | 'reassigned';
+export type HandlerEmailSentFilter = '' | 'sent' | 'not_sent';
 
 export type HandlerTableFilters = {
   paid: HandlerPaidFilter;
   assignment: HandlerAssignmentFilter;
+  emailSent: HandlerEmailSentFilter;
   category: string;
   language: string;
   country: string;
@@ -17,6 +19,7 @@ export type HandlerTableFilters = {
 export const EMPTY_HANDLER_TABLE_FILTERS: HandlerTableFilters = {
   paid: '',
   assignment: '',
+  emailSent: '',
   category: '',
   language: '',
   country: '',
@@ -31,6 +34,9 @@ export function uniqueSorted(values: Array<string | null | undefined>): string[]
 export function matchesHandlerTableFilters(row: HandlerPipelineRow, filters: HandlerTableFilters): boolean {
   if (filters.paid === 'paid' && !row.isFirstPaymentPaid) return false;
   if (filters.paid === 'not_paid' && row.isFirstPaymentPaid) return false;
+  const emailSent = Boolean(row.emailFlag5);
+  if (filters.emailSent === 'sent' && !emailSent) return false;
+  if (filters.emailSent === 'not_sent' && emailSent) return false;
   if (filters.assignment) {
     const flags = rowAssignmentFlags(row);
     if (filters.assignment === 'new' && (!flags.isNew || flags.isReassigned)) return false;
@@ -43,7 +49,9 @@ export function matchesHandlerTableFilters(row: HandlerPipelineRow, filters: Han
 }
 
 export function handlerTableFiltersActive(filters: HandlerTableFilters): boolean {
-  return Boolean(filters.paid || filters.assignment || filters.category || filters.language || filters.country);
+  return Boolean(
+    filters.paid || filters.assignment || filters.emailSent || filters.category || filters.language || filters.country,
+  );
 }
 
 const selectClass = 'select select-bordered w-full rounded-xl border-gray-200 bg-white text-sm';
@@ -82,6 +90,21 @@ const HandlerPipelineFilterBar: React.FC<Props> = ({
           <option value="">All</option>
           <option value="paid">Paid</option>
           <option value="not_paid">Not paid</option>
+        </select>
+      </div>
+      <div className="w-full min-w-0 sm:w-40">
+        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+          Email sent
+        </label>
+        <select
+          className={selectClass}
+          value={filters.emailSent}
+          title="Sent = blue envelope (flagged email). Not sent = grey envelope."
+          onChange={(e) => patch({ emailSent: e.target.value as HandlerEmailSentFilter })}
+        >
+          <option value="">All</option>
+          <option value="sent">Sent</option>
+          <option value="not_sent">Not sent</option>
         </select>
       </div>
       {showAssignmentFilter ? (

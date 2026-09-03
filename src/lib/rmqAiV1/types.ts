@@ -22,6 +22,7 @@ export type EvidenceType =
   | 'current_crm_fact'
   | 'historical_chat'
   | 'firm_policy'
+  | 'web_research'
   | 'user_preference'
   | 'model_inference';
 
@@ -29,6 +30,7 @@ export type AiClaimEvidence =
   | { type: 'current_crm_fact'; tool: string; recordIds?: string[]; fetchedAt: string }
   | { type: 'historical_chat'; conversationId: string }
   | { type: 'firm_policy'; knowledgeChunkId: string; documentVersion: string }
+  | { type: 'web_research'; sourceUrls?: string[]; fetchedAt: string }
   | { type: 'user_preference'; memoryId?: string }
   | { type: 'model_inference' };
 
