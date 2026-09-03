@@ -7107,6 +7107,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         );
       } catch (err) {
         for (const url of previousUrls) URL.revokeObjectURL(url);
+        if (generation === attachmentViewerGenerationRef.current) {
+          setAttachmentViewerDocs((prev) => {
+            if (initialIndex >= prev.length) return prev;
+            const next = [...prev];
+            next[initialIndex] = { ...next[initialIndex], url: 'failed' };
+            return next;
+          });
+        }
         const error = err instanceof Error ? err : new Error('Failed to open attachment');
         const errorMessage = error.message;
         const statusCode = (error as any).statusCode;
@@ -10976,8 +10984,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                         <ul className="flex flex-col gap-2">
                           {group.items.map((item) => {
                             const sizeLabel = formatAttachmentBytes(item.attachment.sizeInBytes);
-                            const isDownloading = Boolean(
+                            const isOpening = Boolean(
                               item.attachment.id && downloadingAttachments[item.attachment.id],
+                            );
+                            const canOpen = Boolean(
+                              item.attachment.id ||
+                                item.attachment.contentBytes ||
+                                item.attachment.content_bytes ||
+                                item.attachment.contentUrl,
                             );
                             const dateLabel = item.emailDate
                               ? new Date(item.emailDate).toLocaleString('en-GB', {
@@ -10994,16 +11008,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   type="button"
                                   className="flex w-full items-center gap-3 rounded-xl border border-base-200 bg-base-200/20 p-3 text-left transition hover:border-base-300 hover:bg-base-200/40 disabled:opacity-60"
                                   onClick={() =>
-                                    void handleDownloadAttachment(item.emailId, item.attachment)
+                                    void handleOpenEmailAttachment(
+                                      item.emailId,
+                                      item.attachment,
+                                      group.items,
+                                    )
                                   }
-                                  disabled={isDownloading || !item.attachment.id}
+                                  disabled={isOpening || !canOpen}
                                   title={
-                                    item.attachment.id
-                                      ? `Download ${item.attachment.name}`
-                                      : 'Attachment id missing — open the email to download'
+                                    canOpen
+                                      ? `Open ${item.attachment.name}`
+                                      : 'Attachment id missing — open the email to view'
                                   }
                                 >
-                                  {isDownloading ? (
+                                  {isOpening ? (
                                     <span className="loading loading-spinner loading-sm text-primary" />
                                   ) : (
                                     <DocumentTextIcon className="h-5 w-5 shrink-0 text-blue-600" />

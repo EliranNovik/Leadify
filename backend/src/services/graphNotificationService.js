@@ -11,7 +11,7 @@ class GraphNotificationService {
     this.pendingUsers = new Set();
     this.activeUsers = new Set();
     this.flushTimer = null;
-    this.defaultDebounceMs = Number(process.env.GRAPH_WEBHOOK_DEBOUNCE_MS || 10000);
+    this.defaultDebounceMs = Number(process.env.GRAPH_WEBHOOK_DEBOUNCE_MS || 3000);
   }
 
   /**

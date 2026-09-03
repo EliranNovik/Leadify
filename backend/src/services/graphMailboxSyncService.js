@@ -12,6 +12,9 @@ const ALLOWLIST_TABLE = process.env.CLIENT_ALLOWLIST_TABLE || 'client_email_allo
 const TRACKED_THREADS_TABLE = process.env.TRACKED_THREADS_TABLE || 'tracked_threads';
 const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
 const DEFAULT_SYNC_BATCH = parseInt(process.env.GRAPH_DELTA_PAGE_SIZE || '50', 10);
+const MAX_DELTA_PAGES = Math.max(1, parseInt(process.env.GRAPH_DELTA_MAX_PAGES || '4', 10) || 4);
+const DELTA_MESSAGE_SELECT =
+  'id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId';
 const MEMBERSHIP_DOMAINS = (process.env.CLIENT_EMAIL_DOMAINS || '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
 const WEBHOOK_URL = process.env.GRAPH_WEBHOOK_NOTIFICATION_URL;
 /** Graph max for mail message subscriptions (~2.9 days). */
@@ -433,7 +436,16 @@ const preferContactMatches = (matches = []) => {
 const contactIdsFromMatches = (matches = []) =>
   [...new Set(matches.map((m) => m.contactId).filter((id) => id != null && Number(id) > 0).map(Number))];
 
-const primaryMatchFrom = (matches = []) => preferContactMatches(matches)[0] || null;
+const primaryMatchFrom = (matches = []) => {
+  const ordered = preferContactMatches(matches);
+  return (
+    ordered.find((m) => m.clientId && m.contactId) ||
+    ordered.find((m) => m.clientId) ||
+    ordered.find((m) => m.legacyId && m.contactId) ||
+    ordered[0] ||
+    null
+  );
+};
 
 const collectMatchesForEmailRow = (row, leadMappings) => {
   const recipientAddresses = row.recipient_list
@@ -621,9 +633,50 @@ async function patchMailboxEmailBody(id, patch) {
   }
 }
 
-const fetchRecentMessagesSnapshot = async ({ accessToken, mailboxAddress, top = 25 }) => {
+const parseFolderDeltaState = (raw) => {
+  const empty = { inbox: null, sent: null, sentSubId: null, sentSubExp: null };
+  if (!raw || typeof raw !== 'string') return empty;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) {
+    // Legacy MsgFolderRoot / single-folder URL — wrong scope, start fresh folder tokens.
+    return empty;
+  }
   try {
-    const url = `${GRAPH_BASE_URL}/users/${mailboxAddress}/mailFolders('Inbox')/messages?$orderby=receivedDateTime desc&$select=id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId&$top=${top}`;
+    const parsed = JSON.parse(trimmed);
+    return {
+      inbox: parsed.inbox || parsed.inboxDelta || null,
+      sent: parsed.sent || parsed.sentDelta || null,
+      sentSubId: parsed.sentSubId || null,
+      sentSubExp: parsed.sentSubExp || null,
+    };
+  } catch {
+    return empty;
+  }
+};
+
+const serializeFolderDeltaState = (state = {}) =>
+  JSON.stringify({
+    inbox: state.inbox || null,
+    sent: state.sent || null,
+    sentSubId: state.sentSubId || null,
+    sentSubExp: state.sentSubExp || null,
+  });
+
+const mergeGraphMessages = (base = [], extra = []) => {
+  const seen = new Set(base.map((m) => m?.id).filter(Boolean));
+  const out = [...base];
+  for (const msg of extra) {
+    if (!msg?.id || seen.has(msg.id)) continue;
+    out.push(msg);
+    seen.add(msg.id);
+  }
+  return out;
+};
+
+const fetchRecentMessagesSnapshot = async ({ accessToken, mailboxAddress, top = 25, folder = 'Inbox' }) => {
+  try {
+    const folderName = folder === 'SentItems' ? 'SentItems' : 'Inbox';
+    const url = `${GRAPH_BASE_URL}/users/${mailboxAddress}/mailFolders('${folderName}')/messages?$orderby=receivedDateTime desc&$select=id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId&$top=${top}`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -763,7 +816,7 @@ class GraphMailboxSyncService {
     }
 
     const state = await mailboxStateService.getState(resolvedUserId);
-    const deltaLink = reset ? null : state?.delta_link || null;
+    const folderState = reset ? parseFolderDeltaState(null) : parseFolderDeltaState(state?.delta_link);
     const mailboxAddress = tokenRecord.mailbox_address;
 
     console.log(
@@ -772,48 +825,72 @@ class GraphMailboxSyncService {
       }`
     );
 
-    let { messages, nextDeltaLink } = await this.fetchDeltaMessages({
-      accessToken,
-      mailboxAddress,
-      deltaLink,
-    });
+    const [inboxDelta, sentDelta] = await Promise.all([
+      this.fetchFolderDelta({
+        accessToken,
+        mailboxAddress,
+        folder: 'Inbox',
+        deltaLink: folderState.inbox,
+      }),
+      this.fetchFolderDelta({
+        accessToken,
+        mailboxAddress,
+        folder: 'SentItems',
+        deltaLink: folderState.sent,
+      }),
+    ]);
 
-    const isInitialSync = !deltaLink;
-    if (!messages.length) {
-      // If delta returned no messages (either on first sync or later),
-      // take a fresh snapshot of the most recent Inbox messages.
-      // Upsert on message_id keeps this idempotent and also recovers from
-      // any missed delta pages or invalid delta links.
-      const snapshotMessages = await fetchRecentMessagesSnapshot({
+    let messages = mergeGraphMessages(inboxDelta.messages, sentDelta.messages);
+
+    // Recent snapshots cover mail that arrives while a first-time folder crawl is
+    // still paging, and recover if a folder delta token is quiet.
+    const [inboxSnapshot, sentSnapshot] = await Promise.all([
+      fetchRecentMessagesSnapshot({
         accessToken,
         mailboxAddress,
         top: DEFAULT_SYNC_BATCH,
-      });
-      if (snapshotMessages.length) {
-        console.log(
-          `📸 Snapshot fallback fetched ${snapshotMessages.length} Inbox messages` +
-            (isInitialSync ? ' (initial sync)' : ' (delta empty, using snapshot)')
-        );
-        messages = snapshotMessages;
-      }
-    }
-
-    console.log(`📬 Graph sync: fetched ${messages.length} messages for ${mailboxAddress}${deltaLink ? ' (delta)' : ''}`);
+        folder: 'Inbox',
+      }),
+      fetchRecentMessagesSnapshot({
+        accessToken,
+        mailboxAddress,
+        top: DEFAULT_SYNC_BATCH,
+        folder: 'SentItems',
+      }),
+    ]);
+    const beforeSnapshot = messages.length;
+    messages = mergeGraphMessages(messages, inboxSnapshot);
+    messages = mergeGraphMessages(messages, sentSnapshot);
+    console.log(
+      `📬 Graph sync ${mailboxAddress}: inboxDelta=${inboxDelta.messages.length} sentDelta=${sentDelta.messages.length} snapshots=+${messages.length - beforeSnapshot} total=${messages.length}`
+    );
 
     const skipFullBodies = ['scheduled', 'interval', 'initial'].includes(String(trigger));
     const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages, accessToken, {
       skipFullBodies,
     });
 
+    const nextFolderState = {
+      inbox: inboxDelta.nextDeltaLink || folderState.inbox,
+      sent: sentDelta.nextDeltaLink || folderState.sent,
+      sentSubId: folderState.sentSubId,
+      sentSubExp: folderState.sentSubExp,
+    };
+
     await mailboxStateService.upsertState(resolvedUserId, {
-      delta_link: nextDeltaLink || deltaLink || null,
+      delta_link: serializeFolderDeltaState(nextFolderState),
       last_synced_at: new Date().toISOString(),
     });
 
     try {
       await this.ensureInboxMailSubscription(resolvedUserId, accessToken, mailboxAddress);
     } catch (subErr) {
-      console.warn(`⚠️ Graph mail subscription ensure failed (sync still succeeded):`, subErr.message || subErr);
+      console.warn(`⚠️ Graph Inbox subscription ensure failed (sync still succeeded):`, subErr.message || subErr);
+    }
+    try {
+      await this.ensureSentItemsMailSubscription(resolvedUserId, accessToken, mailboxAddress);
+    } catch (subErr) {
+      console.warn(`⚠️ Graph Sent Items subscription ensure failed (sync still succeeded):`, subErr.message || subErr);
     }
 
     try {
@@ -846,7 +923,7 @@ class GraphMailboxSyncService {
       inserted: stored.inserted,
       skipped: stored.skipped,
       trackedConversations: stored.trackedCount,
-      deltaLink: nextDeltaLink || deltaLink || null,
+      deltaLink: serializeFolderDeltaState(nextFolderState),
     };
   }
 
@@ -969,6 +1046,105 @@ class GraphMailboxSyncService {
     return { created: true, subscriptionId: json.id, expirationDateTime: json.expirationDateTime };
   }
 
+  /**
+   * Push notifications on Sent Items so employee → client Outlook sends sync immediately.
+   * Subscription id is stored in mailbox_state.delta_link JSON (sentSubId / sentSubExp).
+   */
+  async ensureSentItemsMailSubscription(resolvedUserId, accessToken, mailboxAddress) {
+    if (!WEBHOOK_URL) {
+      return { skipped: true, reason: 'GRAPH_WEBHOOK_NOTIFICATION_URL not set' };
+    }
+    if (!resolvedUserId || !accessToken || !mailboxAddress) {
+      return { skipped: true, reason: 'missing_parameters' };
+    }
+
+    const state = await mailboxStateService.getState(resolvedUserId);
+    const folderState = parseFolderDeltaState(state?.delta_link);
+    const now = Date.now();
+    const subId = folderState.sentSubId || null;
+    const subExpMs = folderState.sentSubExp ? new Date(folderState.sentSubExp).getTime() : 0;
+
+    const persistSentSub = async (id, expiry) => {
+      const latest = parseFolderDeltaState((await mailboxStateService.getState(resolvedUserId))?.delta_link);
+      latest.sentSubId = id || null;
+      latest.sentSubExp = expiry || null;
+      await mailboxStateService.upsertState(resolvedUserId, {
+        delta_link: serializeFolderDeltaState(latest),
+      });
+    };
+
+    if (subId && subExpMs > now + GRAPH_SUBSCRIPTION_RENEW_BEFORE_MS) {
+      return { skipped: true, reason: 'subscription_valid', expiry: folderState.sentSubExp };
+    }
+
+    if (subId && subExpMs > now) {
+      try {
+        const newExp = this.nextMailSubscriptionExpiryIso();
+        const res = await fetch(`${GRAPH_BASE_URL}/subscriptions/${encodeURIComponent(subId)}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expirationDateTime: newExp }),
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          throw new Error(text || `PATCH ${res.status}`);
+        }
+        let json = {};
+        if (text) {
+          try {
+            json = JSON.parse(text);
+          } catch {
+            json = {};
+          }
+        }
+        const expiry = json.expirationDateTime || newExp;
+        await persistSentSub(json.id || subId, expiry);
+        console.log(`🔔 Extended Graph Sent Items subscription for user ${resolvedUserId} until ${expiry}`);
+        return { renewed: true, subscriptionId: json.id || subId, expirationDateTime: expiry };
+      } catch (patchErr) {
+        console.warn(`⚠️ Sent Items subscription PATCH failed, recreating:`, patchErr.message || patchErr);
+        await this.deleteGraphMailSubscription(accessToken, subId).catch(() => {});
+        await persistSentSub(null, null);
+      }
+    } else if (subId) {
+      await this.deleteGraphMailSubscription(accessToken, subId).catch(() => {});
+      await persistSentSub(null, null);
+    }
+
+    const expirationDateTime = this.nextMailSubscriptionExpiryIso();
+    const resource = `users/${encodeURIComponent(mailboxAddress)}/mailFolders('SentItems')/messages`;
+    const body = {
+      changeType: 'created,updated',
+      notificationUrl: WEBHOOK_URL,
+      resource,
+      expirationDateTime,
+      clientState: String(resolvedUserId),
+    };
+
+    const res = await fetch(`${GRAPH_BASE_URL}/subscriptions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Create Sent Items subscription failed (${res.status}): ${text.slice(0, 500)}`);
+    }
+    const json = JSON.parse(text);
+    const expiry = json.expirationDateTime || expirationDateTime;
+    await persistSentSub(json.id, expiry);
+    console.log(
+      `🔔 Created Graph Sent Items subscription for user ${resolvedUserId} (${mailboxAddress}) until ${expiry}`
+    );
+    return { created: true, subscriptionId: json.id, expirationDateTime: expiry };
+  }
+
   /** Ensure webhook subscription only (no mail fetch). Used after OAuth connect from the client. */
   async ensureSubscriptionForUser(userId) {
     const tokenRecord = await mailboxTokenService.getTokenByUserId(userId);
@@ -983,11 +1159,20 @@ class GraphMailboxSyncService {
     if (!accessToken) {
       throw new Error('Unable to acquire Microsoft Graph access token');
     }
-    return this.ensureInboxMailSubscription(
+    const inbox = await this.ensureInboxMailSubscription(
       resolvedUserId,
       accessToken,
       tokenRecord.mailbox_address
     );
+    const sent = await this.ensureSentItemsMailSubscription(
+      resolvedUserId,
+      accessToken,
+      tokenRecord.mailbox_address
+    ).catch((err) => {
+      console.warn(`⚠️ Sent Items subscription after connect failed:`, err.message || err);
+      return { skipped: true, reason: err.message || 'sent_subscription_failed' };
+    });
+    return { inbox, sent };
   }
 
   async syncAllMailboxes(options = {}) {
@@ -1114,7 +1299,12 @@ class GraphMailboxSyncService {
           throw new Error('No access token');
         }
 
-        const result = await this.ensureInboxMailSubscription(
+        const inbox = await this.ensureInboxMailSubscription(
+          token.user_id,
+          accessToken,
+          tokenRecord.mailbox_address
+        );
+        const sent = await this.ensureSentItemsMailSubscription(
           token.user_id,
           accessToken,
           tokenRecord.mailbox_address
@@ -1123,7 +1313,8 @@ class GraphMailboxSyncService {
         acc.details.push({
           userId: token.user_id,
           mailbox: token.mailbox_address,
-          ...result,
+          inbox,
+          sent,
         });
       } catch (error) {
         acc.failed += 1;
@@ -1183,14 +1374,17 @@ class GraphMailboxSyncService {
     };
   }
 
-  async fetchDeltaMessages({ accessToken, mailboxAddress, deltaLink }) {
-    const initialUrl = `${GRAPH_BASE_URL}/users/${mailboxAddress}/mailFolders('MsgFolderRoot')/messages/delta?$select=id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId&$top=${DEFAULT_SYNC_BATCH}`;
+  async fetchFolderDelta({ accessToken, mailboxAddress, folder, deltaLink }) {
+    const folderName = folder === 'SentItems' ? 'SentItems' : 'Inbox';
+    const initialUrl = `${GRAPH_BASE_URL}/users/${encodeURIComponent(mailboxAddress)}/mailFolders('${folderName}')/messages/delta?$select=${DELTA_MESSAGE_SELECT}&$top=${DEFAULT_SYNC_BATCH}`;
     let url = deltaLink || initialUrl;
     const messages = [];
     let nextLink = null;
     let retried410 = false;
+    let pages = 0;
 
-    while (url) {
+    while (url && pages < MAX_DELTA_PAGES) {
+      pages += 1;
       const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -1202,20 +1396,21 @@ class GraphMailboxSyncService {
         const errorText = await response.text();
         if (!retried410) {
           console.warn(
-            `⚠️ Graph delta returned 410 (expired or invalid delta); restarting from full delta once. ${errorText.slice(0, 240)}`
+            `⚠️ Graph ${folderName} delta returned 410; restarting that folder once. ${errorText.slice(0, 240)}`
           );
           retried410 = true;
           messages.length = 0;
           nextLink = null;
           url = initialUrl;
+          pages = 0;
           continue;
         }
-        throw new Error(`Graph delta request failed (${response.status}): ${errorText}`);
+        throw new Error(`Graph ${folderName} delta request failed (${response.status}): ${errorText}`);
       }
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Graph delta request failed (${response.status}): ${errorText}`);
+        throw new Error(`Graph ${folderName} delta request failed (${response.status}): ${errorText}`);
       }
 
       const json = await response.json();
@@ -1225,14 +1420,43 @@ class GraphMailboxSyncService {
 
       if (json['@odata.nextLink']) {
         url = json['@odata.nextLink'];
+        if (pages >= MAX_DELTA_PAGES) {
+          nextLink = url;
+          break;
+        }
       } else {
         url = null;
-        // After a 410 retry the previous delta token is invalid — do not fall back to it if Graph omits a new link.
         nextLink = json['@odata.deltaLink'] || (retried410 ? null : deltaLink);
       }
     }
 
-    return { messages, nextDeltaLink: nextLink };
+    return { messages, nextDeltaLink: nextLink, folder: folderName, pages };
+  }
+
+  async fetchDeltaMessages({ accessToken, mailboxAddress, deltaLink }) {
+    const state = parseFolderDeltaState(deltaLink);
+    const [inbox, sent] = await Promise.all([
+      this.fetchFolderDelta({
+        accessToken,
+        mailboxAddress,
+        folder: 'Inbox',
+        deltaLink: state.inbox,
+      }),
+      this.fetchFolderDelta({
+        accessToken,
+        mailboxAddress,
+        folder: 'SentItems',
+        deltaLink: state.sent,
+      }),
+    ]);
+    return {
+      messages: mergeGraphMessages(inbox.messages, sent.messages),
+      nextDeltaLink: serializeFolderDeltaState({
+        ...state,
+        inbox: inbox.nextDeltaLink || state.inbox,
+        sent: sent.nextDeltaLink || state.sent,
+      }),
+    };
   }
 
   async persistMessages(userId, mailboxAddress, messages = [], accessToken = null, options = {}) {

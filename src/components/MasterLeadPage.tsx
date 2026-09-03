@@ -316,7 +316,8 @@ const MasterLeadPage: React.FC = () => {
   const currentLeadNumberRef = useRef<string | undefined>(undefined);
   const masterLeadInfoRef = useRef(masterLeadInfo);
   const subLeadsRef = useRef(subLeads);
-  const fetchInFlightRef = useRef(false);
+  const fetchGenRef = useRef(0);
+  const fetchInFlightForRef = useRef<string | null>(null);
   const lastFetchedBaseRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -674,21 +675,23 @@ const MasterLeadPage: React.FC = () => {
 
   const fetchSubLeads = useCallback(async () => {
     if (!lead_number) return;
-    if (fetchInFlightRef.current) return;
 
     const decodedLeadNumber = decodeURIComponent(lead_number);
     const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
     const routeBase = getRouteBaseLeadNumber(lead_number);
     const normalizedId = extractNumericId(baseLeadNumber);
+    const gen = ++fetchGenRef.current;
+    fetchInFlightForRef.current = routeBase;
 
-    fetchInFlightRef.current = true;
+    const stillCurrent = () =>
+      fetchGenRef.current === gen && getRouteBaseLeadNumber(lead_number) === routeBase;
+
     try {
       const hasExistingData = persistedMatchesRoute(
         routeBase,
         masterLeadInfoRef.current,
         subLeadsRef.current
       );
-      // Never block the page when we already have matching rows — soft-refresh only.
       if (hasExistingData) {
         setLoading(false);
         setSubLeadsLoading(true);
@@ -698,18 +701,18 @@ const MasterLeadPage: React.FC = () => {
       }
       setError(null);
 
-      // Start new-leads fetch immediately; in parallel check whether legacy id is a true root master.
       let probedNewContracts: Map<string, ContractData> | null = null;
       const probeSetContracts: typeof setContractsDataMap = (updater) => {
         probedNewContracts = updater(new Map());
       };
 
+      const numericId = normalizedId ? parseInt(normalizedId, 10) : NaN;
       const legacyRootPromise =
-        normalizedId && !Number.isNaN(parseInt(normalizedId, 10))
+        Number.isFinite(numericId)
           ? supabase
               .from('leads_lead')
               .select('id, master_id')
-              .eq('id', parseInt(normalizedId, 10))
+              .eq('id', numericId)
               .maybeSingle()
           : Promise.resolve({ data: null as any, error: null });
 
@@ -718,65 +721,84 @@ const MasterLeadPage: React.FC = () => {
         legacyRootPromise,
       ]);
 
-      const legacyRow = legacyRootRes?.data;
-      const isLegacyRootMaster =
-        !!legacyRow?.id &&
-        (legacyRow.master_id == null || String(legacyRow.master_id).trim() === '');
+      if (!stillCurrent()) return;
 
+      const legacyRow = legacyRootRes?.data;
       const newCount = newLeadResult.subLeads?.length || 0;
       const newOk = !!(newLeadResult.success && newLeadResult.masterLead);
+      const looksLikeLegacyId = Number.isFinite(numericId);
+      const isLegacyLead = !!legacyRow?.id;
 
-      // Prefer the new-leads chain whenever it resolves — avoids a second heavy legacy round-trip.
-      if (newOk && newCount > 0) {
+      const applyNew = () => {
         if (probedNewContracts) {
           setContractsDataMap(() => probedNewContracts as Map<string, ContractData>);
         }
         setMasterLeadInfo(newLeadResult.masterLead);
         setSubLeads(newLeadResult.subLeads || []);
         lastFetchedBaseRef.current = routeBase;
+      };
+
+      // A matching new lead (often L{legacyId}) must not hide the legacy sublead chain.
+      if (looksLikeLegacyId && (isLegacyLead || !newOk || newCount <= 1)) {
+        const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId as string, setContractsDataMap);
+        if (!stillCurrent()) return;
+        const legacyCount = legacyResult.subLeads?.length || 0;
+        if (legacyResult.success && legacyResult.masterLead && legacyCount > 0) {
+          if (newOk && newCount > 0) {
+            const seen = new Set(
+              (legacyResult.subLeads || []).map((row) => String(row.id || '').replace(/^legacy_/, '')),
+            );
+            const extras = (newLeadResult.subLeads || []).filter((row) => {
+              const id = String(row.id || '').replace(/^legacy_/, '');
+              const actual = String(row.actual_lead_id || '').replace(/^legacy_/, '');
+              return !seen.has(id) && !seen.has(actual);
+            });
+            setMasterLeadInfo(legacyResult.masterLead);
+            setSubLeads([...(legacyResult.subLeads || []), ...extras]);
+          } else {
+            setMasterLeadInfo(legacyResult.masterLead);
+            setSubLeads(legacyResult.subLeads || []);
+          }
+          lastFetchedBaseRef.current = routeBase;
+          return;
+        }
+      }
+
+      if (newOk && newCount > 0) {
+        applyNew();
         return;
       }
 
-      if (isLegacyRootMaster && normalizedId) {
+      if (looksLikeLegacyId && normalizedId) {
         const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
+        if (!stillCurrent()) return;
         if (legacyResult.success && legacyResult.masterLead) {
           setMasterLeadInfo(legacyResult.masterLead);
           setSubLeads(legacyResult.subLeads || []);
           lastFetchedBaseRef.current = routeBase;
+          return;
+        }
+        if (!newOk) {
+          setError(legacyResult.error || 'Failed to fetch master lead');
           return;
         }
       }
 
       if (newOk) {
-        if (probedNewContracts) {
-          setContractsDataMap(() => probedNewContracts as Map<string, ContractData>);
-        }
-        setMasterLeadInfo(newLeadResult.masterLead);
-        setSubLeads(newLeadResult.subLeads || []);
-        lastFetchedBaseRef.current = routeBase;
-        return;
-      }
-
-      if (normalizedId) {
-        const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
-        if (legacyResult.success && legacyResult.masterLead) {
-          setMasterLeadInfo(legacyResult.masterLead);
-          setSubLeads(legacyResult.subLeads || []);
-          lastFetchedBaseRef.current = routeBase;
-          return;
-        }
-        setError(legacyResult.error || 'Failed to fetch master lead');
+        applyNew();
         return;
       }
 
       setError('Invalid master lead number');
     } catch (error) {
       console.error('Error fetching sub-leads:', error);
-      setError('An unexpected error occurred while fetching data');
+      if (stillCurrent()) setError('An unexpected error occurred while fetching data');
     } finally {
-      fetchInFlightRef.current = false;
-      setLoading(false);
-      setSubLeadsLoading(false);
+      if (fetchInFlightForRef.current === routeBase) fetchInFlightForRef.current = null;
+      if (stillCurrent()) {
+        setLoading(false);
+        setSubLeadsLoading(false);
+      }
     }
   }, [
     lead_number,
@@ -1040,16 +1062,15 @@ const MasterLeadPage: React.FC = () => {
             // Fetch signed date from leads_leadstage table (stage 60 = Client signed agreement)
             let signedDate: string | undefined = undefined;
             if (hasSigned && legacyContractData.lead_id) {
-              const { data: stageData } = await supabase
+              const { data: stageRows } = await supabase
                 .from('leads_leadstage')
                 .select('cdate')
                 .eq('lead_id', legacyContractData.lead_id)
                 .eq('stage', 60)
                 .order('cdate', { ascending: false })
-                .limit(1)
-                .maybeSingle();
+                .limit(1);
 
-              signedDate = stageData?.cdate || undefined;
+              signedDate = stageRows?.[0]?.cdate || undefined;
             }
 
             setViewingContract({

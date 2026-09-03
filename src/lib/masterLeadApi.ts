@@ -100,20 +100,27 @@ export const getCategoryName = (categoryId: string | number | null | undefined, 
   return 'Unknown';
 };
 
+function isSelfOrEmptyMasterId(masterId: unknown, leadId: unknown): boolean {
+  const mid = masterId == null ? '' : String(masterId).trim();
+  if (!mid) return true;
+  const lid = String(leadId ?? '').replace(/^legacy_/, '').trim();
+  return Boolean(lid) && mid === lid;
+}
+
 // Helper function to format lead number for legacy leads
 export const formatLegacyLeadNumber = (legacyLead: any, subLeadSuffix?: number, hasSubLeads: boolean = false): string => {
-  const masterId = legacyLead.master_id;
-  const leadId = String(legacyLead.id);
+  const leadId = String(legacyLead?.id ?? '').replace(/^legacy_/, '');
+  const masterId = legacyLead?.master_id == null ? '' : String(legacyLead.master_id).trim();
 
-  if (!masterId || String(masterId).trim() === '') {
+  if (isSelfOrEmptyMasterId(masterId, leadId)) {
     return hasSubLeads ? `${leadId}/1` : leadId;
   }
 
-  if (subLeadSuffix !== undefined) {
+  if (subLeadSuffix != null && Number.isFinite(Number(subLeadSuffix))) {
     return `${masterId}/${subLeadSuffix}`;
   }
 
-  return `${masterId}/?`;
+  return `${masterId}/2`;
 };
 
 // Helper function to get currency symbol
@@ -752,7 +759,7 @@ export const fetchLegacyMasterLead = async (
   try {
     const legacyId = parseInt(normalizedId, 10);
 
-    const { data: masterLead, error: masterError } = await supabase
+    const { data: masterLeadRow, error: masterError } = await supabase
       .from('leads_lead')
       .select(`
           id, name, total, total_base, stage, manual_id, master_id,
@@ -780,13 +787,55 @@ export const fetchLegacyMasterLead = async (
           )
         `)
       .eq('id', legacyId)
-      .single();
+      .maybeSingle();
 
     if (masterError) {
       console.error('Error fetching master lead:', masterError);
       return { success: false, error: 'Failed to fetch master lead information' };
     }
+    if (!masterLeadRow) {
+      return { success: false, error: 'Legacy lead not found' };
+    }
 
+    let masterLead = masterLeadRow;
+    const parentMasterId = String(masterLead.master_id || '').trim();
+    if (parentMasterId && !isSelfOrEmptyMasterId(parentMasterId, masterLead.id)) {
+      const parentNumeric = parseInt(parentMasterId, 10);
+      if (!Number.isNaN(parentNumeric)) {
+        const { data: parentLead } = await supabase
+          .from('leads_lead')
+          .select(`
+          id, name, total, total_base, stage, manual_id, master_id,
+          category_id,
+          topic,
+          meeting_scheduler_id,
+          closer_id,
+          case_handler_id,
+          retainer_handler_id,
+          docs_url,
+          currency_id,
+          no_of_applicants,
+          accounting_currencies!leads_lead_currency_id_fkey (
+            name,
+            iso_code
+          ),
+          scheduler:tenants_employee!meeting_scheduler_id (
+            display_name
+          ),
+          closer:tenants_employee!closer_id (
+            display_name
+          ),
+          handler:tenants_employee!case_handler_id (
+            display_name
+          )
+        `)
+          .eq('id', parentNumeric)
+          .maybeSingle();
+        if (parentLead) masterLead = parentLead;
+      }
+    }
+
+    const rootLegacyId = String(masterLead.id);
     const subLeadsQuery = supabase
       .from('leads_lead')
       .select(`
@@ -814,7 +863,7 @@ export const fetchLegacyMasterLead = async (
             display_name
           )
         `)
-      .or(`master_id.eq.${baseLeadNumber},master_id.eq.${normalizedId}`)
+      .or(`master_id.eq.${rootLegacyId},master_id.eq.${baseLeadNumber},master_id.eq.${normalizedId}`)
       .order('id', { ascending: true })
       .limit(50);
 
@@ -981,6 +1030,7 @@ export const fetchLegacyMasterLead = async (
           .in('lead_id', allLeadIds)
           .eq('stage', 60)
           .order('cdate', { ascending: false })
+          .limit(200)
         : Promise.resolve({ data: null, error: null })
     ]);
 
