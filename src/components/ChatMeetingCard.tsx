@@ -554,14 +554,71 @@ export function ChatMeetingCards({
   return <div className="ai-meeting-stack">{cards}</div>;
 }
 
+export function meetingPrepAskLabel(meeting: ChatCalendarMeetingItem): string {
+  const leadNumber = cleanCardText(meeting.leadNumber);
+  return leadNumber ? `Prep ${leadNumber}` : 'Prep meeting';
+}
+
+export function meetingPrepPrompt(
+  meeting: ChatCalendarMeetingItem,
+  dayDate?: string | null,
+): string {
+  const leadNumber = cleanCardText(meeting.leadNumber);
+  const name = cleanCardText(meeting.name);
+  const time = cleanCardText(meeting.time);
+  const location = cleanCardText(meeting.location);
+  const who = [leadNumber, name].filter(Boolean).join(' ');
+  const when = [dayDate, time, location].filter(Boolean).join(' · ');
+  const query = leadNumber || name;
+  return (
+    `Prep me for the meeting${when ? ` at ${when}` : ''}${who ? ` with ${who}` : ''}. ` +
+    `ALWAYS call get_lead_case_file${query ? ` with query=${query}` : ''} and prep_meeting` +
+    `${query ? ` with query=${query}` : ''}${dayDate ? ` and date=${dayDate}` : ''}. ` +
+    'Read every block in the case file: facts, expert, notes, emails, WhatsApp, calls, meetings, proposal, and payments. ' +
+    'Write a meeting briefing only, in this order: ' +
+    'what the case is and what the client wants; ' +
+    'keypoints for this meeting; ' +
+    'important notes from communications and the case file; ' +
+    '3 questions to ask. ' +
+    'Do not greet. Do not write a General summary heading. Do not list team roles.'
+  );
+}
+
+function MeetingPrepSparkle({ mark }: { mark: string }) {
+  const gid = `ai-prep-grad-${mark.replace(/[^a-zA-Z0-9_-]/g, '') || 'x'}`;
+  return (
+    <svg viewBox="0 0 24 24" className="ai-cal-meeting-prep-spark" aria-hidden>
+      <defs>
+        <linearGradient id={gid} x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stopColor="#38bdf8" />
+          <stop offset="48%" stopColor="#818cf8" />
+          <stop offset="100%" stopColor="#c084fc" />
+        </linearGradient>
+      </defs>
+      <path
+        fill={`url(#${gid})`}
+        d="M11.2 1.6c.18-.42.82-.42 1 0L14.1 7c.08.2.24.36.44.44l5.4 1.9c.42.18.42.82 0 1L14.54 12.3c-.2.08-.36.24-.44.44L12.2 18.1c-.18.42-.82.42-1 0L9.3 12.74c-.08-.2-.24-.36-.44-.44L3.46 10.4c-.42-.18-.42-.82 0-1L8.86 7.44c.2-.08.36-.24.44-.44L11.2 1.6z"
+      />
+      <path
+        fill={`url(#${gid})`}
+        d="M19.15 14.35c.12-.28.54-.28.66 0l.72 1.85c.05.13.15.23.28.28l1.85.72c.28.12.28.54 0 .66l-1.85.72c-.13.05-.23.15-.28.28l-.72 1.85c-.12.28-.54.28-.66 0l-.72-1.85a.45.45 0 00-.28-.28l-1.85-.72c-.28-.12-.28-.54 0-.66l1.85-.72c.13-.05.23-.15.28-.28l.72-1.85z"
+      />
+    </svg>
+  );
+}
+
 function CalendarMeetingCard({
   meeting,
   employees,
   dark = false,
+  disabled = false,
+  onPrepMeeting,
 }: {
   meeting: ChatCalendarMeetingItem;
   employees: ChatEmployeeHit[];
   dark?: boolean;
+  disabled?: boolean;
+  onPrepMeeting?: (meeting: ChatCalendarMeetingItem) => void;
 }) {
   const time = cleanCardText(meeting.time);
   const name = cleanCardText(meeting.name);
@@ -658,6 +715,23 @@ function CalendarMeetingCard({
         ) : null}
       </div>
       <div className="ai-meeting-card ai-cal-meeting-details">
+        {leadNumber && onPrepMeeting ? (
+          <button
+            type="button"
+            className="ai-cal-meeting-prep"
+            title="Prep this meeting"
+            aria-label={`Prep meeting for ${leadNumber}`}
+            disabled={disabled}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (disabled) return;
+              onPrepMeeting(meeting);
+            }}
+          >
+            <MeetingPrepSparkle mark={leadNumber} />
+          </button>
+        ) : null}
         {details.map((row) => (
           <div key={row.label} className="ai-cal-meeting-detail">
             <span className="ai-cal-meeting-detail-label">{row.label}</span>
@@ -679,10 +753,14 @@ export function ChatCalendarMeetingCards({
   data,
   employees = [],
   dark = false,
+  disabled = false,
+  onPrepMeeting,
 }: {
   data: ChatCalendarDayData;
   employees?: ChatEmployeeHit[];
   dark?: boolean;
+  disabled?: boolean;
+  onPrepMeeting?: (meeting: ChatCalendarMeetingItem, dayDate?: string) => void;
 }) {
   return (
     <div className="ai-meeting-stack ai-cal-meeting-stack">
@@ -692,6 +770,12 @@ export function ChatCalendarMeetingCards({
           meeting={meeting}
           employees={employees}
           dark={dark}
+          disabled={disabled}
+          onPrepMeeting={
+            onPrepMeeting
+              ? (row) => onPrepMeeting(row, data.date)
+              : undefined
+          }
         />
       ))}
     </div>
@@ -1027,13 +1111,15 @@ export function ChatExpensesTable({
 }
 
 const CASE_ABOUT_MARKER =
-  /(?:^|\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case|general summary)(?:\*\*)?\s*[:—-]?\s*/i;
+  /(?:^|\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case)(?:\*\*)?\s*[:—-]\s*/i;
 const RISKS_MARKER = /(?:^|\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?risks?(?:\*\*)?\s*[:—-]\s*/i;
 const NEXT_SUMMARY_SECTION =
-  /(?:\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case|general summary|risks?)(?:\*\*)?\s*[:—-]?\s*|(?:\n+)(?=[-*•]\s+)/i;
+  /(?:\n+)\s*(?:[-*•]\s*)?(?:#{1,6}\s*)?(?:\*\*)?(?:case about|what (?:the )?case is about|about the case|risks?)(?:\*\*)?\s*[:—-]\s*|(?:\n+)(?=[-*•]\s+)/i;
 
 function cleanSummaryChunk(text: string): string {
   return String(text || '')
+    .replace(/^(?:\*\*)?(?:general summary|case about)(?:\*\*)?\s*[:—-]?\s*$/gim, '')
+    .replace(/^(?:\*\*)?(?:general summary|case about)(?:\*\*)?\s*[:—-]\s*/i, '')
     .replace(/^#{1,6}\s+.*$/gm, '')
     .replace(/(?:^|\n)\s*#{1,6}\s*$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -1129,7 +1215,10 @@ export function fallbackNarrativeFromLeadSummary(
   return bits.join(' ');
 }
 
-export function splitLeadSummaryParts(text: string): { body: string; risks: string; caseAbout: string } {
+export function splitLeadSummaryParts(
+  text: string,
+  opts?: { loose?: boolean },
+): { body: string; risks: string; caseAbout: string } {
   let raw = String(text || '').trim();
   if (!raw) return { body: '', risks: '', caseAbout: '' };
 
@@ -1149,6 +1238,10 @@ export function splitLeadSummaryParts(text: string): { body: string; risks: stri
   }
 
   let body = cleanSummaryChunk(raw);
+  if (!opts?.loose) {
+    return { body, risks: cleanSummaryChunk(risks), caseAbout: cleanSummaryChunk(caseAbout) };
+  }
+
   if (!caseAbout) {
     const peeled = peelOpeningNarrative(body);
     caseAbout = peeled.caseAbout;
@@ -1167,13 +1260,6 @@ export function splitLeadSummaryParts(text: string): { body: string; risks: stri
     else if (!split.risks && tail.trailing && !caseAbout && !looksLikeRisk(tail.trailing)) {
       caseAbout = tail.trailing;
     }
-  }
-
-  if (!caseAbout && body && !/(^|\n)\s*(?:[-*•]|\d+[.)])\s/.test(body)) {
-    const split = splitProseByRisk(body);
-    caseAbout = split.narrative || body;
-    if (split.risks && !risks) risks = split.risks;
-    body = '';
   }
 
   return { body, risks: cleanSummaryChunk(risks), caseAbout: cleanSummaryChunk(caseAbout) };
@@ -1229,7 +1315,7 @@ export function ChatLeadSummaryCards({
   const teamByRole = new Map(
     (data.team || []).map((row) => [String(row.role || '').trim(), cleanCardText(row.name)]),
   );
-  const parts = splitLeadSummaryParts(summaryText);
+  const parts = splitLeadSummaryParts(summaryText, { loose: true });
   const body = parts.body;
   const caseAbout = parts.caseAbout || fallbackNarrativeFromLeadSummary(data, body);
   const risks = parts.risks;
@@ -1238,7 +1324,6 @@ export function ChatLeadSummaryCards({
     <div className="ai-meeting-stack">
       {caseAbout ? (
         <div className="ai-lead-case-about">
-          <div className="ai-meeting-card-title">General summary</div>
           {renderText ? renderText(caseAbout) : caseAbout}
         </div>
       ) : null}

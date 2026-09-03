@@ -74,6 +74,8 @@ import { loadChatEmployeeDirectory, type ChatEmployeeHit } from './ChatEmployeeN
 import { ChatStageBadgeText, buildChatStageHits, loadChatStageHits, type ChatStageHit } from './ChatStageBadgeText';
 import {
   ChatCalendarMeetingCards,
+  meetingPrepAskLabel,
+  meetingPrepPrompt,
   ChatEmployeePresenceTable,
   ChatExpensesTable,
   ChatLeadSummaryCards,
@@ -282,7 +284,7 @@ const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
     label: 'Lead summary',
     hint: 'Overview of this lead',
     prompt:
-      'Create a summary of this lead. Call get_lead_case_file. Start with CASE ABOUT: a full paragraph of 5 to 8 sentences in plain text (no bullets) covering what the case is, what the client is inquiring about, the family or eligibility story, and the important points from emails, WhatsApp, calls, and notes. That paragraph must come first and must not be short. Then a short status summary as bullet points (- ) covering eligibility, value, meetings, last communication, follow-up. Then a line Risks: … with no bullet. Never skip CASE ABOUT or Risks. Do not list lead number, name, category, topic, stage, or team. Do not mention unsigned contract. Do not greet.',
+      'Create a summary of this lead. Call get_lead_case_file. Start with CASE ABOUT: a full paragraph of 5 to 8 sentences in plain text (no bullets) covering what the case is, what the client is inquiring about, the family or eligibility story, and the important points from emails, WhatsApp, calls, and notes. That paragraph must come first and must not be short. Never write a visible heading such as General summary or Summary for Lead. Then a short status summary as bullet points (- ) covering eligibility, value, meetings, last communication, follow-up. Then a line Risks: … with no bullet. Never skip CASE ABOUT or Risks. Do not list lead number, name, category, topic, stage, or team. Do not mention unsigned contract. Do not greet.',
     Icon: DocumentTextIcon,
   },
   {
@@ -1173,30 +1175,35 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       return { prefix, numbered, items };
     };
     
-    const renderDirectedBlock = (text: string, key: string | number) => {
+    const headingMatch = (line: string) => line.trim().match(/^(#{1,6})\s+(.*\S.*)$/);
+    const renderHeadingLine = (line: string, key: string | number) => {
+      const match = headingMatch(line);
+      const text = (match ? match[2] : line.trim().replace(/^#{1,6}\s+/, '')).trim();
+      if (!text) return null;
       const rtl = textIsMostlyHebrew(text);
       return (
-        <p
+        <div
           key={key}
           dir={rtl ? 'rtl' : 'ltr'}
-          className={`ai-chat-msg-text my-2.5 leading-relaxed whitespace-pre-line last:mb-0 first:mt-0 ${rtl ? 'text-right' : 'text-left'}`}
+          className={`ai-chat-msg-text mt-3 mb-1 font-semibold leading-snug first:mt-0 ${rtl ? 'text-right' : 'text-left'}`}
         >
           {formatInlineText(text, employees, stages)}
-        </p>
+        </div>
       );
     };
 
-    return blocks.map((block, bIdx) => {
-      const trimmed = block.trim();
-      const lines = trimmed.split('\n').filter(l => l.trim());
-      const grouped = groupListWithContinuations(lines);
+    const renderBodyLines = (bodyLines: string[], keyPrefix: string | number) => {
+      if (!bodyLines.length) return null;
+      const trimmed = bodyLines.join('\n').trim();
+      if (!trimmed) return null;
+      const grouped = groupListWithContinuations(bodyLines);
 
       if (grouped && grouped.items.length) {
         const rtl = textIsMostlyHebrew(trimmed);
         const ListTag = grouped.numbered ? 'ol' : 'ul';
         return (
-          <div key={bIdx}>
-            {grouped.prefix.map((line, idx) => renderDirectedBlock(line.trim(), `${bIdx}-p-${idx}`))}
+          <div key={`${keyPrefix}-list`}>
+            {grouped.prefix.map((line, idx) => renderDirectedBlock(line.trim(), `${keyPrefix}-p-${idx}`))}
             <ListTag
               dir={rtl ? 'rtl' : 'ltr'}
               className={`my-3 space-y-3 list-outside pl-5 ${grouped.numbered ? 'list-decimal' : 'list-disc'} ${
@@ -1218,16 +1225,63 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         );
       }
 
-      const mixedLines = lines.length > 1 && lines.some(textIsMostlyHebrew) && lines.some((line) => !textIsMostlyHebrew(line));
+      const mixedLines = bodyLines.length > 1 && bodyLines.some(textIsMostlyHebrew) && bodyLines.some((line) => !textIsMostlyHebrew(line));
       if (mixedLines) {
         return (
-          <div key={bIdx}>
-            {lines.map((line, idx) => renderDirectedBlock(line.trim(), `${bIdx}-${idx}`))}
+          <div key={`${keyPrefix}-mix`}>
+            {bodyLines.map((line, idx) => renderDirectedBlock(line.trim(), `${keyPrefix}-${idx}`))}
           </div>
         );
       }
 
-      return renderDirectedBlock(trimmed, bIdx);
+      return renderDirectedBlock(trimmed, keyPrefix);
+    };
+    
+    const renderDirectedBlock = (text: string, key: string | number) => {
+      const rtl = textIsMostlyHebrew(text);
+      return (
+        <p
+          key={key}
+          dir={rtl ? 'rtl' : 'ltr'}
+          className={`ai-chat-msg-text my-2.5 leading-relaxed whitespace-pre-line last:mb-0 first:mt-0 ${rtl ? 'text-right' : 'text-left'}`}
+        >
+          {formatInlineText(text, employees, stages)}
+        </p>
+      );
+    };
+
+    return blocks.map((block, bIdx) => {
+      const lines = block
+        .trim()
+        .split('\n')
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim() && !/^#{1,6}\s*$/.test(line.trim()));
+      if (!lines.length) return null;
+
+      const segments: Array<{ type: 'heading' | 'body'; lines: string[] }> = [];
+      for (const line of lines) {
+        if (headingMatch(line)) {
+          segments.push({ type: 'heading', lines: [line] });
+          continue;
+        }
+        const last = segments[segments.length - 1];
+        if (last?.type === 'body') last.lines.push(line);
+        else segments.push({ type: 'body', lines: [line] });
+      }
+
+      if (segments.some((segment) => segment.type === 'heading')) {
+        return (
+          <div key={bIdx}>
+            {segments.map((segment, sIdx) =>
+              segment.type === 'heading'
+                ? renderHeadingLine(segment.lines[0], `${bIdx}-h-${sIdx}`)
+                : renderBodyLines(segment.lines, `${bIdx}-b-${sIdx}`),
+            )}
+          </div>
+        );
+      }
+
+      return renderBodyLines(lines, bIdx);
     });
   };
 
@@ -1437,15 +1491,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (!text) return null;
     if (opts.role !== 'assistant' || opts.asEmailDraft) return renderChatProse(text, opts);
     const parts = splitLeadSummaryParts(text);
-    if (!parts.risks && !parts.caseAbout) return renderChatProse(text, opts);
+    if (!parts.risks) return renderChatProse(text, opts);
     return (
       <div className="ai-meeting-stack">
-        {parts.caseAbout ? (
-          <div className="ai-lead-case-about">
-            <div className="ai-meeting-card-title">General summary</div>
-            {renderChatProse(parts.caseAbout, opts)}
-          </div>
-        ) : null}
+        {parts.caseAbout ? renderChatProse(parts.caseAbout, opts) : null}
         {parts.body ? renderChatProse(parts.body, opts) : null}
         <ChatRisksBox text={parts.risks} renderText={(risks) => renderChatProse(risks, opts)} />
       </div>
@@ -1501,11 +1550,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     const thinkingPlan = thinkingPlanForAsk(userText);
     let thinkingStep = 0;
     let thinkingLocked = false;
+    let holdTypewriter = isLeadSummaryAsk(userText);
     let pendingStreamText: string | null = null;
     let streamRaf = 0;
     const flushStream = () => {
       streamRaf = 0;
-      if (pendingStreamText == null) return;
+      if (holdTypewriter || pendingStreamText == null) return;
       const text = pendingStreamText;
       pendingStreamText = null;
       setMessages((prev) => {
@@ -1518,6 +1568,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     };
     const applyStreamDelta = (text: string) => {
       if (!text) return;
+      if (holdTypewriter) return;
       thinkingLocked = true;
       pendingStreamText = text;
       if (!streamRaf) streamRaf = window.requestAnimationFrame(flushStream);
@@ -1638,27 +1689,35 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             }
             if (fnName === 'list_client_meetings') {
               meetingCard = parseClientMeetingCard(toolResult) || meetingCard;
+              if (meetingCard) holdTypewriter = true;
             }
             if (fnName === 'list_calendar_day' || fnName === 'list_meetings') {
               calendarMeetings = parseCalendarDayCards(toolResult) || calendarMeetings;
+              if (calendarMeetings) holdTypewriter = true;
             }
             if (fnName === 'list_signed_contracts') {
               signedContracts = parseSignedContractsCard(toolResult) || signedContracts;
+              if (signedContracts) holdTypewriter = true;
             }
             if (fnName === 'list_paid_payments') {
               paidPayments = parsePaidPaymentsCard(toolResult) || paidPayments;
+              if (paidPayments) holdTypewriter = true;
             }
             if (fnName === 'list_missed_client_comms') {
               missedComms = parseMissedCommsCard(toolResult) || missedComms;
+              if (missedComms) holdTypewriter = true;
             }
             if (fnName === 'list_expenses') {
               expenses = parseExpensesCard(toolResult) || expenses;
+              if (expenses) holdTypewriter = true;
             }
             if (fnName === 'list_employee_presence') {
               employeePresence = parseEmployeePresenceCard(toolResult) || employeePresence;
+              if (employeePresence) holdTypewriter = true;
             }
             if (fnName === 'web_search') {
               webSources = parseWebSearchCard(toolResult) || webSources;
+              if (webSources) holdTypewriter = true;
             }
             if (fnName === 'get_lead_case_file' && isLeadSummaryAsk(userText)) {
               const parsed = parseLeadSummaryCard(toolResult);
@@ -1686,6 +1745,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   })),
                 };
               }
+              if (leadSummary) holdTypewriter = true;
             }
             conversation = [
               ...conversation,
@@ -3878,15 +3938,54 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           display: none;
         }
         .ai-cal-meeting-details {
+          position: relative;
           flex: 0 0 10.5rem;
           width: 10.5rem;
           min-width: 10.5rem;
-          padding: 0.75rem 0.85rem;
+          padding: 0.75rem 2.15rem 0.75rem 0.85rem;
           display: flex;
           flex-direction: column;
           justify-content: center;
           gap: 0.55rem;
           overflow: hidden;
+        }
+        .ai-cal-meeting-prep {
+          position: absolute;
+          top: 0.32rem;
+          right: 0.32rem;
+          z-index: 2;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 1.95rem;
+          height: 1.95rem;
+          padding: 0;
+          border: 0;
+          border-radius: 9999px;
+          background: transparent;
+          cursor: pointer;
+        }
+        .ai-cal-meeting-prep:hover:not(:disabled) {
+          background: var(--ai-bg-overlay);
+        }
+        .ai-cal-meeting-prep:disabled {
+          opacity: 0.45;
+          cursor: default;
+        }
+        .ai-cal-meeting-prep-spark {
+          width: 1.45rem;
+          height: 1.45rem;
+          display: block;
+          filter: drop-shadow(0 0 4px rgba(129, 140, 248, 0.45));
+        }
+        .ai-cal-meeting-prep:hover:not(:disabled) .ai-cal-meeting-prep-spark {
+          animation: ai-prep-spark 0.9s ease-in-out;
+          filter: drop-shadow(0 0 6px rgba(192, 132, 252, 0.7));
+        }
+        @keyframes ai-prep-spark {
+          0% { transform: rotate(0deg) scale(1); }
+          40% { transform: rotate(-12deg) scale(1.12); }
+          100% { transform: rotate(0deg) scale(1); }
         }
         .ai-cal-meeting-detail {
           display: flex;
@@ -4405,7 +4504,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           .ai-thinking-dots span,
           .ai-thinking-label,
           .ai-send-thinking,
-          .ai-stream-caret {
+          .ai-stream-caret,
+          .ai-cal-meeting-prep-spark {
             animation: none;
           }
         }
@@ -5490,7 +5590,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       <ChatMeetingCards data={msg.meetingCard} />
                     ) : null}
                     {msg.role === 'assistant' && msg.calendarMeetings ? (
-                      <ChatCalendarMeetingCards data={msg.calendarMeetings} employees={chatEmployees} dark={isDarkTheme} />
+                      <ChatCalendarMeetingCards
+                        data={msg.calendarMeetings}
+                        employees={chatEmployees}
+                        dark={isDarkTheme}
+                        disabled={isLoading}
+                        onPrepMeeting={(meeting, dayDate) => {
+                          handleQuickAction(
+                            meetingPrepPrompt(meeting, dayDate),
+                            meetingPrepAskLabel(meeting),
+                          );
+                        }}
+                      />
                     ) : null}
                     {msg.role === 'assistant' && msg.signedContracts ? (
                       <ChatSignedContractsTable data={msg.signedContracts} employees={chatEmployees} />
