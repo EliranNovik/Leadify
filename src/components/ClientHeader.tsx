@@ -1838,11 +1838,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // Helper function to get employee initials
     const getEmployeeInitials = (name: string | null | undefined): string => {
         if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
-        const parts = name.trim().split(' ');
+        const parts = name.trim().split(/\s+/).filter((part) => part.length > 0);
         if (parts.length >= 2) {
-            return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+            return `${parts[0][0] ?? ''}${parts[parts.length - 1][0] ?? ''}`.toUpperCase();
         }
-        return name.substring(0, 2).toUpperCase();
+        return (parts[0] || name).substring(0, 2).toUpperCase();
     };
 
     // Helper function to format role display value
@@ -1979,10 +1979,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // Component to render employee avatar (exact copy from RolesTab)
     const EmployeeAvatar: React.FC<{
         employeeId: string | number | null | undefined;
+        fallbackName?: string | null;
         size?: 'sm' | 'md' | 'lg' | 'xl' | 'hero';
-    }> = ({ employeeId, size = 'md' }) => {
+    }> = ({ employeeId, fallbackName, size = 'md' }) => {
         const [imageError, setImageError] = useState(false);
-        const employee = getEmployeeById(employeeId);
+        const employee = getEmployeeById(employeeId) || getEmployeeById(fallbackName);
         const sizeClasses =
             size === 'sm'
                 ? 'w-8 h-8 text-xs'
@@ -1995,61 +1996,47 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                       : 'w-36 h-36 text-4xl';
 
         // Check cache first to prevent flickering
-        const cacheKey = employeeId?.toString() || '';
+        const cacheKey = (employeeId ?? fallbackName)?.toString() || '';
         const cachedError = imageErrorCache.current.get(cacheKey) || false;
+        const name = employee?.display_name || fallbackName || '';
+        const initials = getEmployeeInitials(name);
+        const rawPhoto = employee?.photo_url || employee?.photo;
+        const trimmedPhoto = rawPhoto != null ? String(rawPhoto).trim() : '';
+        const hasError = cachedError || imageError;
+        const photoUrl = !hasError && trimmedPhoto && trimmedPhoto !== 'null' && trimmedPhoto !== 'undefined'
+            ? trimmedPhoto
+            : null;
 
-        // Debug logging
-        if (employeeId && !employee) {
-            console.warn('[ClientHeader EmployeeAvatar] No employee found for:', employeeId, 'employeesToUse length:', employeesToUse?.length);
-        }
-
-        if (!employee) {
+        if (!initials && !photoUrl) {
             return null;
         }
 
-        const photoUrl = employee.photo_url || employee.photo;
-        const initials = getEmployeeInitials(employee.display_name);
-
-        // Use cached error if available, otherwise use state
-        const hasError = cachedError || imageError;
-
-        // If we know there's no photo URL or we have a cached error, show initials immediately
-        if (hasError || !photoUrl) {
-            return (
-                <div
-                    className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
-                    onClick={() => {
-                        if (employee.id) {
-                            navigate(`/my-profile/${employee.id}`);
-                        }
-                    }}
-                    title={`View ${employee.display_name}'s profile`}
-                >
-                    {initials}
-                </div>
-            );
-        }
-
-        // Try to render image
         return (
-            <img
-                src={photoUrl}
-                alt={employee.display_name}
-                className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+            <div
+                className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity`}
                 onClick={() => {
-                    if (employee.id) {
+                    if (employee?.id) {
                         navigate(`/my-profile/${employee.id}`);
                     }
                 }}
-                onError={() => {
-                    // Cache the error to prevent flickering on re-renders
-                    if (cacheKey) {
-                        imageErrorCache.current.set(cacheKey, true);
-                    }
-                    setImageError(true);
-                }}
-                title={`View ${employee.display_name}'s profile`}
-            />
+                title={name ? `View ${name}'s profile` : undefined}
+            >
+                {photoUrl ? (
+                    <img
+                        src={photoUrl}
+                        alt=""
+                        className="h-full w-full object-cover"
+                        onError={() => {
+                            if (cacheKey) {
+                                imageErrorCache.current.set(cacheKey, true);
+                            }
+                            setImageError(true);
+                        }}
+                    />
+                ) : (
+                    initials
+                )}
+            </div>
         );
     };
     const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -4815,17 +4802,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
                         // Helper functions for display
+                        const resolveRoleDisplay = (textValue: unknown, idValue: unknown): string => {
+                            const fromId = getEmployeeDisplayNameFromId(idValue);
+                            if (fromId && fromId !== '---') return fromId;
+                            if (textValue == null) return '---';
+                            const text = String(textValue).trim();
+                            if (!text || text === '---' || text === '--') return '---';
+                            if (/^\d+$/.test(text)) return getEmployeeDisplayNameFromId(text);
+                            const employee = allEmployees.find((emp: any) =>
+                                emp.display_name && emp.display_name.trim().toLowerCase() === text.toLowerCase()
+                            );
+                            return employee?.display_name || text;
+                        };
+
                         const getCloserDisplay = (): string => {
                             if (isLegacyLead) {
                               const fromJoin = (selectedClient as any).closer;
                               if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
                               return getEmployeeDisplayNameFromId((selectedClient as any).closer_id);
                             }
-                            const closer = selectedClient.closer;
-                            if (!closer || closer === '---' || closer === '--') return '---';
-                            if (/^\d+$/.test(String(closer).trim())) return getEmployeeDisplayNameFromId(Number(closer));
-                            const employee = allEmployees.find((emp: any) => emp.display_name && emp.display_name.trim() === String(closer).trim());
-                            return employee ? employee.display_name : closer;
+                            return resolveRoleDisplay(selectedClient.closer, (selectedClient as any).closer_id);
                         };
 
                         const getExpertDisplay = (): string => {
@@ -4834,7 +4830,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                               if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
                               return getEmployeeDisplayNameFromId((selectedClient as any).expert_id);
                             }
-                            return getEmployeeDisplayNameFromId((selectedClient as any).expert) || '---';
+                            return resolveRoleDisplay((selectedClient as any).expert, (selectedClient as any).expert_id);
                         };
 
                         const getHandlerDisplay = (): string => {
@@ -4870,16 +4866,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                               }
                               return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
                             }
-                            const schedulerValue = selectedClient.scheduler;
-                            if (!schedulerValue || schedulerValue === '---' || schedulerValue === '--') return '---';
-                            // Automated booking stores tenants_employee.id (e.g. "177") — show display_name
-                            if (
-                              typeof schedulerValue === 'number' ||
-                              (typeof schedulerValue === 'string' && /^\d+$/.test(schedulerValue.trim()))
-                            ) {
-                              return getEmployeeDisplayNameFromId(schedulerValue) || String(schedulerValue);
-                            }
-                            return String(schedulerValue);
+                            return resolveRoleDisplay(selectedClient.scheduler, (selectedClient as any).meeting_scheduler_id);
                         };
 
                         /** tenants_employee.id is numeric — never pass display names into avatar / batch id queries. */
@@ -4903,13 +4890,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         // Role IDs for Avatars
                         const closerId = (() => {
                             if (isLegacyLead) return (selectedClient as any).closer_id ? Number((selectedClient as any).closer_id) : null;
-                            return resolveNumericEmployeeId(selectedClient.closer);
+                            return resolveNumericEmployeeId((selectedClient as any).closer_id)
+                                ?? resolveNumericEmployeeId(selectedClient.closer);
                         })();
 
                         const expertId = (() => {
                             if (isLegacyLead) return (selectedClient as any).expert_id ? Number((selectedClient as any).expert_id) : null;
-                            const expertId = (selectedClient as any).expert;
-                            return expertId ? Number(expertId) : null;
+                            return resolveNumericEmployeeId((selectedClient as any).expert_id)
+                                ?? resolveNumericEmployeeId((selectedClient as any).expert);
                         })();
 
                         const handlerId = (() => {
@@ -4924,7 +4912,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         const schedulerId = (() => {
                             if (isLegacyLead) return (selectedClient as any).meeting_scheduler_id ? Number((selectedClient as any).meeting_scheduler_id) : null;
-                            return resolveNumericEmployeeId(selectedClient.scheduler);
+                            return resolveNumericEmployeeId((selectedClient as any).meeting_scheduler_id)
+                                ?? resolveNumericEmployeeId(selectedClient.scheduler);
                         })();
 
                         const retentionHandlerId = (selectedClient as any).retainer_handler_id ? Number((selectedClient as any).retainer_handler_id) : null;
@@ -5040,7 +5029,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             />
                                         ) : null}
                                         <div className="relative z-[1]">
-                                            <EmployeeAvatar employeeId={entry.id} size="md" />
+                                            <EmployeeAvatar employeeId={entry.id} fallbackName={entry.display} size="md" />
                                         </div>
                                         {options?.showHandlerRing && options?.handlerActive ? (
                                             <div className="absolute -top-0.5 -right-0.5 z-[2] rounded-full bg-emerald-500 p-0.5 ring-2 ring-white">
@@ -5049,7 +5038,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         ) : null}
                                     </div>
                                 ) : (
-                                    <EmployeeAvatar employeeId={entry.id} size="md" />
+                                    <EmployeeAvatar employeeId={entry.id} fallbackName={entry.display} size="md" />
                                 )}
                                 <div className="flex min-w-0 flex-col">
                                     <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
@@ -5275,7 +5264,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <span className="inline-flex items-center gap-2">
                                                 <span>by</span>
                                                 {unactivatedEmployee ? (
-                                                    <EmployeeAvatar employeeId={unactivatedEmployee.id} size="sm" />
+                                                    <EmployeeAvatar employeeId={unactivatedEmployee.id} fallbackName={unactivatedBy} size="sm" />
                                                 ) : (
                                                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-200/80 text-xs font-semibold text-red-800 dark:bg-red-800/50 dark:text-red-100">
                                                         {getEmployeeInitials(unactivatedBy)}
@@ -5731,17 +5720,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 >                    {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
+                        const resolveRoleDisplay = (textValue: unknown, idValue: unknown): string => {
+                            const fromId = getEmployeeDisplayNameFromId(idValue);
+                            if (fromId && fromId !== '---') return fromId;
+                            if (textValue == null) return '---';
+                            const text = String(textValue).trim();
+                            if (!text || text === '---' || text === '--') return '---';
+                            if (/^\d+$/.test(text)) return getEmployeeDisplayNameFromId(text);
+                            const employee = allEmployees.find((emp: any) =>
+                                emp.display_name && emp.display_name.trim().toLowerCase() === text.toLowerCase()
+                            );
+                            return employee?.display_name || text;
+                        };
+
                         const getCloserDisplay = (): string => {
                             if (isLegacyLead) {
                               const fromJoin = (selectedClient as any).closer;
                               if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
                               return getEmployeeDisplayNameFromId((selectedClient as any).closer_id);
                             }
-                            const closer = selectedClient.closer;
-                            if (!closer || closer === '---' || closer === '--') return '---';
-                            if (/^\d+$/.test(String(closer).trim())) return getEmployeeDisplayNameFromId(Number(closer));
-                            const employee = allEmployees.find((emp: any) => emp.display_name && emp.display_name.trim() === String(closer).trim());
-                            return employee ? employee.display_name : closer;
+                            return resolveRoleDisplay(selectedClient.closer, (selectedClient as any).closer_id);
                         };
 
                         const getExpertDisplay = (): string => {
@@ -5750,7 +5748,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                               if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
                               return getEmployeeDisplayNameFromId((selectedClient as any).expert_id);
                             }
-                            return getEmployeeDisplayNameFromId((selectedClient as any).expert) || '---';
+                            return resolveRoleDisplay((selectedClient as any).expert, (selectedClient as any).expert_id);
                         };
 
                         const getHandlerDisplay = (): string => {
@@ -5786,16 +5784,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                               }
                               return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
                             }
-                            const schedulerValue = selectedClient.scheduler;
-                            if (!schedulerValue || schedulerValue === '---' || schedulerValue === '--') return '---';
-                            // Automated booking stores tenants_employee.id (e.g. "177") — show display_name
-                            if (
-                              typeof schedulerValue === 'number' ||
-                              (typeof schedulerValue === 'string' && /^\d+$/.test(schedulerValue.trim()))
-                            ) {
-                              return getEmployeeDisplayNameFromId(schedulerValue) || String(schedulerValue);
-                            }
-                            return String(schedulerValue);
+                            return resolveRoleDisplay(selectedClient.scheduler, (selectedClient as any).meeting_scheduler_id);
                         };
 
                         const resolveNumericEmployeeId = (value: unknown): number | null => {
@@ -5817,12 +5806,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         const closerId = (() => {
                             if (isLegacyLead) return (selectedClient as any).closer_id ? Number((selectedClient as any).closer_id) : null;
-                            return resolveNumericEmployeeId(selectedClient.closer);
+                            return resolveNumericEmployeeId((selectedClient as any).closer_id)
+                                ?? resolveNumericEmployeeId(selectedClient.closer);
                         })();
                         const expertId = (() => {
                             if (isLegacyLead) return (selectedClient as any).expert_id ? Number((selectedClient as any).expert_id) : null;
-                            const expertId = (selectedClient as any).expert;
-                            return expertId ? Number(expertId) : null;
+                            return resolveNumericEmployeeId((selectedClient as any).expert_id)
+                                ?? resolveNumericEmployeeId((selectedClient as any).expert);
                         })();
                         const handlerId = (() => {
                             const ch = (selectedClient as any).case_handler_id;
@@ -5835,7 +5825,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         })();
                         const schedulerId = (() => {
                             if (isLegacyLead) return (selectedClient as any).meeting_scheduler_id ? Number((selectedClient as any).meeting_scheduler_id) : null;
-                            return resolveNumericEmployeeId(selectedClient.scheduler);
+                            return resolveNumericEmployeeId((selectedClient as any).meeting_scheduler_id)
+                                ?? resolveNumericEmployeeId(selectedClient.scheduler);
                         })();
                         const retentionHandlerId = (selectedClient as any).retainer_handler_id ? Number((selectedClient as any).retainer_handler_id) : null;
 
@@ -5903,7 +5894,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         className={`${CLIENT_HEADER_CARD} flex w-full flex-col justify-center`}
                                     >
                                         <div className="flex shrink-0 items-center gap-2">
-                                            <EmployeeAvatar employeeId={group.id} size="md" />
+                                            <EmployeeAvatar employeeId={group.id} fallbackName={group.display} size="md" />
                                             <div className="flex flex-col">
                                                 <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
                                                     {group.roles.join(', ')}
@@ -5918,7 +5909,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {hasHandlerRole ? (
                                     <div className={`${CLIENT_HEADER_CARD} flex w-full flex-col justify-center`}>
                                         <div className="flex shrink-0 items-center gap-2">
-                                            <EmployeeAvatar employeeId={handlerId} size="md" />
+                                            <EmployeeAvatar employeeId={handlerId} fallbackName={handlerDisplay} size="md" />
                                             <div className="flex flex-col">
                                                 <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>Handler</span>
                                                 <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
@@ -5931,7 +5922,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {hasRetentionRole ? (
                                     <div className={`${CLIENT_HEADER_CARD} flex w-full flex-col justify-center`}>
                                         <div className="flex shrink-0 items-center gap-2">
-                                            <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
+                                            <EmployeeAvatar employeeId={retentionHandlerId} fallbackName={retentionHandlerDisplay} size="md" />
                                             <div className="flex flex-col">
                                                 <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>R-Handler</span>
                                                 <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
@@ -6276,7 +6267,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             }`}
                                         >
                                             {activeRoleReveal.employeeId ? (
-                                                <EmployeeAvatar employeeId={activeRoleReveal.employeeId} size="hero" />
+                                                <EmployeeAvatar employeeId={activeRoleReveal.employeeId} fallbackName={activeRoleReveal.displayName} size="hero" />
                                             ) : (
                                                 <div
                                                     className={`flex h-36 w-36 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-inner ${

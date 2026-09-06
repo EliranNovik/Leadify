@@ -59,8 +59,21 @@ function guessMimeType(fileName: string, fallback?: string | null): string {
   return map[ext] || 'application/octet-stream';
 }
 
-function sanitizeFileName(name: string): string {
-  return name.replace(/[^\w.\-()+ ]/g, '_').slice(0, 180) || 'file';
+function displayFileName(name: string): string {
+  const base = String(name || '')
+    .replace(/^.*[/\\]/, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim();
+  return base.slice(0, 180) || 'file';
+}
+
+function storageSafeFileName(name: string): string {
+  const cleaned = displayFileName(name)
+    .replace(/[^\w.\-()+ ]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.slice(0, 180) || 'file';
 }
 
 export function buildEmployeeHrDocumentStoragePath(
@@ -70,7 +83,7 @@ export function buildEmployeeHrDocumentStoragePath(
   originalFileName: string,
 ): string {
   const safeType = typeSlug.replace(/[^\w\-]/g, '_').slice(0, 60) || 'doc';
-  const safeName = sanitizeFileName(originalFileName);
+  const safeName = storageSafeFileName(originalFileName);
   return `employees/${employeeId}/${safeType}/${documentId}_${Date.now()}_${safeName}`;
 }
 
@@ -113,7 +126,7 @@ export async function uploadEmployeeHrDocument(params: {
 }): Promise<EmployeeHrDocument> {
   const { employeeId, documentTypeId, typeSlug, file, notes } = params;
   const mimeType = guessMimeType(file.name, file.type);
-  const fileName = sanitizeFileName(file.name);
+  const fileName = displayFileName(file.name);
 
   const {
     data: { user },

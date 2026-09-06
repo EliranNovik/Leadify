@@ -940,6 +940,10 @@ export interface Lead {
   next_followup?: string;
   category?: string;
   date_signed?: string;
+  /** Last WhatsApp send from a partner / external firm. */
+  whatsapp_timestamp?: string | null;
+  /** When the WhatsApp 24h reply window closes (written by PEX). */
+  wa_window_expires_at?: string | null;
 }
 
 export interface Meeting {

@@ -64,8 +64,23 @@ function guessMimeType(fileName: string, fallback?: string | null): string {
   return map[ext] || 'application/octet-stream';
 }
 
-function sanitizeFileName(name: string): string {
-  return name.replace(/[^\w.\-()+ ]/g, '_').slice(0, 180) || 'file';
+/** Keep the original name for display (Hebrew/Unicode). Only strip path and control chars. */
+export function displayFileName(name: string): string {
+  const base = String(name || '')
+    .replace(/^.*[/\\]/, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim();
+  return base.slice(0, 180) || 'file';
+}
+
+/** ASCII-safe name for storage object keys only. */
+function storageSafeFileName(name: string): string {
+  const cleaned = displayFileName(name)
+    .replace(/[^\w.\-()+ ]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.slice(0, 180) || 'file';
 }
 
 export function buildRecruitmentDocumentStoragePath(
@@ -75,7 +90,7 @@ export function buildRecruitmentDocumentStoragePath(
   originalFileName: string,
 ): string {
   const safeType = typeSlug.replace(/[^\w\-]/g, '_').slice(0, 60) || 'doc';
-  const safeName = sanitizeFileName(originalFileName);
+  const safeName = storageSafeFileName(originalFileName);
   return `recruitment/${userId}/${safeType}/${documentId}_${Date.now()}_${safeName}`;
 }
 
@@ -124,7 +139,7 @@ export async function uploadRecruitmentDocument(params: {
 }): Promise<RecruitmentDocument> {
   const { userId, candidateId, documentTypeId, typeSlug, file, notes } = params;
   const mimeType = guessMimeType(file.name, file.type);
-  const fileName = sanitizeFileName(file.name);
+  const fileName = displayFileName(file.name);
 
   const {
     data: { user },
@@ -179,6 +194,27 @@ export async function uploadRecruitmentDocument(params: {
 
   if (updateError) throw updateError;
   return mapDoc(updated);
+}
+
+export async function renameRecruitmentDocument(
+  documentId: number,
+  fileName: string,
+): Promise<RecruitmentDocument> {
+  const nextName = displayFileName(fileName);
+  if (!nextName) throw new Error('File name is required');
+
+  const { data, error } = await supabase
+    .from('recruitment_documents')
+    .update({
+      file_name: nextName,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', documentId)
+    .select(DOC_SELECT)
+    .single();
+
+  if (error) throw error;
+  return mapDoc(data);
 }
 
 export async function deleteRecruitmentDocument(

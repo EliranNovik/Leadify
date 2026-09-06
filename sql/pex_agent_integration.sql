@@ -236,6 +236,29 @@ CREATE TRIGGER trg_pex_fill_manual_interaction_employee
   WHEN (NEW.employee_id IS NOT NULL)
   EXECUTE FUNCTION public.pex_fill_manual_interaction_employee();
 
+-- PEX may UPDATE only leads.wa_window_expires_at (WhatsApp 24h reply window).
+-- Same block as sql/2026-09-06_leads_wa_window_expires_at.sql (idempotent).
+ALTER TABLE public.leads
+  ADD COLUMN IF NOT EXISTS wa_window_expires_at timestamptz;
+
+COMMENT ON COLUMN public.leads.wa_window_expires_at IS
+  'When the WhatsApp 24h customer-care window closes for this lead. Written by PEX after a client inbound message.';
+
+CREATE INDEX IF NOT EXISTS idx_leads_wa_window_expires_at
+  ON public.leads (wa_window_expires_at)
+  WHERE wa_window_expires_at IS NOT NULL;
+
+REVOKE UPDATE ON TABLE public.leads FROM anon;
+GRANT UPDATE (wa_window_expires_at) ON TABLE public.leads TO anon;
+
+DROP POLICY IF EXISTS "pex_update_leads_wa_window" ON public.leads;
+CREATE POLICY "pex_update_leads_wa_window"
+  ON public.leads
+  FOR UPDATE
+  TO anon
+  USING (true)
+  WITH CHECK (true);
+
 -- Do NOT grant UPDATE on leads.manual_interactions to anon (deprecated write path).
 
 COMMENT ON FUNCTION public.sync_lead_manual_interactions_json_for_lead(uuid) IS

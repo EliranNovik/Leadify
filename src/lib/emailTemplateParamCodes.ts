@@ -39,4 +39,15 @@ export const EMAIL_TEMPLATE_PARAM_CODES: EmailTemplateParamCode[] = [
     label: 'Portal access code',
     description: 'Client portal password / access code saved for the lead',
   },
+  {
+    code: '{{list_cases}}',
+    label: 'Handler new cases table',
+    description:
+      'HTML table of New and Re-assigned handler cases (lead number + name, stage, category, topic, date assigned). Used by the daily 10:00 handler digest (template 194).',
+  },
+  {
+    code: '{{handler_name}}',
+    label: 'Handler name',
+    description: 'Display name of the case handler receiving the daily new-cases digest',
+  },
 ];

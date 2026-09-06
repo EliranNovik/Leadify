@@ -109,82 +109,94 @@ const RolesTab: React.FC<ClientTabProps> = ({
     return null;
   };
 
+  const firstInitialChar = (word: string): string => {
+    const match = word.match(/[\p{L}\p{N}]/u);
+    return match?.[0] ?? '';
+  };
+
   // Helper function to get employee initials
   const getEmployeeInitials = (name: string | null | undefined): string => {
     if (isUnassignedValue(name)) return '';
-    const safeName = name ?? '';
-    const parts = safeName.trim().split(' ');
+    const parts = (name ?? '').trim().split(/\s+/).filter((part) => part.length > 0);
+    if (parts.length === 0) return '';
     if (parts.length >= 2) {
-      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      return `${firstInitialChar(parts[0])}${firstInitialChar(parts[parts.length - 1])}`.toUpperCase();
     }
-    return safeName.substring(0, 2).toUpperCase();
+    const word = parts[0];
+    const letters = [...word].filter((ch) => /[\p{L}\p{N}]/u.test(ch)).slice(0, 2).join('');
+    return (letters || word.substring(0, 2)).toUpperCase();
   };
 
-  // Helper to get employee ID from role assignee name
+  // Helper to get employee ID from role assignee — ID columns first (new and legacy)
   const getEmployeeIdFromRole = (role: Role): string | number | null => {
     const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
 
+    if (role.legacyFieldName) {
+      const raw = (client as any)[role.legacyFieldName];
+      if (raw != null && String(raw).trim() !== '' && String(raw).trim() !== '---') {
+        return raw;
+      }
+    }
+
     if (!role.assignee || role.assignee === '---') return null;
 
-    if (isLegacyLead && role.legacyFieldName) {
-      // For legacy leads, get the ID directly from the client
-      return (client as any)[role.legacyFieldName] || null;
-    } else {
-      // For new leads, find employee by display name
-      const employee = employeesToUse.find((emp: any) => {
-        return emp.display_name && emp.display_name.trim() === role.assignee.trim();
-      });
-      return employee?.id || null;
-    }
+    const employee = employeesToUse.find((emp: any) => {
+      return emp.display_name && emp.display_name.trim().toLowerCase() === role.assignee.trim().toLowerCase();
+    });
+    return employee?.id || null;
   };
 
-  // Component to render employee avatar
+  // Initials always paint; a photo only covers them after it actually loads.
   const EmployeeAvatar: React.FC<{
     employeeId: string | number | null | undefined;
+    displayName?: string | null;
     size?: 'sm' | 'md' | 'lg';
-  }> = ({ employeeId, size = 'md' }) => {
+  }> = ({ employeeId, displayName, size = 'md' }) => {
     const [imageError, setImageError] = useState(false);
-    const employee = getEmployeeById(employeeId);
+    const [imageLoaded, setImageLoaded] = useState(false);
+    const employee = getEmployeeById(employeeId) || getEmployeeById(displayName);
     const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+    const name = employee?.display_name || employee?.official_name || displayName || '';
+    const initials = getEmployeeInitials(name);
+    const rawPhoto = employee?.photo_url || employee?.photo;
+    const trimmedPhoto = rawPhoto != null ? String(rawPhoto).trim() : '';
+    const photoUrl = !imageError && trimmedPhoto && trimmedPhoto !== 'null' && trimmedPhoto !== 'undefined'
+      ? trimmedPhoto
+      : null;
 
-    if (!employee) {
+    useEffect(() => {
+      setImageError(false);
+      setImageLoaded(false);
+    }, [employeeId, displayName]);
+
+    if (!initials && !photoUrl) {
       return null;
     }
 
-    const photoUrl = employee.photo_url || employee.photo;
-    const initials = getEmployeeInitials(employee.display_name);
-
-    // If we know there's no photo URL or we have an error, show initials immediately
-    if (imageError || !photoUrl) {
-      return (
-        <div
-          className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
-          onClick={() => {
-            if (employee.id) {
-              navigate(`/my-profile/${employee.id}`);
-            }
-          }}
-          title={`View ${employee.display_name}'s profile`}
-        >
-          {initials}
-        </div>
-      );
-    }
-
-    // Try to render image
     return (
-      <img
-        src={photoUrl}
-        alt={employee.display_name}
-        className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+      <div
+        className={`${sizeClasses} relative rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity`}
         onClick={() => {
-          if (employee.id) {
+          if (employee?.id) {
             navigate(`/my-profile/${employee.id}`);
           }
         }}
-        onError={() => setImageError(true)}
-        title={`View ${employee.display_name}'s profile`}
-      />
+        title={name ? `View ${name}'s profile` : undefined}
+      >
+        {(!photoUrl || !imageLoaded) && initials}
+        {photoUrl ? (
+          <img
+            src={photoUrl}
+            alt=""
+            className={`absolute inset-0 h-full w-full object-cover ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
+            onLoad={() => setImageLoaded(true)}
+            onError={() => {
+              setImageError(true);
+              setImageLoaded(false);
+            }}
+          />
+        ) : null}
+      </div>
     );
   };
 
@@ -304,6 +316,21 @@ const RolesTab: React.FC<ClientTabProps> = ({
       return null;
     };
 
+    const resolveAssignee = (textValue: unknown, idValue: unknown) => {
+      if (idValue != null && String(idValue).trim() !== '') {
+        const fromId = getEmployeeDisplayName(idValue, employeesToUse);
+        if (fromId && fromId !== '---') return fromId;
+      }
+      if (textValue == null) return '---';
+      const text = String(textValue).trim();
+      if (!text || text === '---' || text === '--' || /^not[_\s]?assigned$/i.test(text)) return '---';
+      if (/^\d+$/.test(text)) return getEmployeeDisplayName(text, employeesToUse);
+      const employee = employeesToUse.find((emp: any) =>
+        emp.display_name && emp.display_name.trim().toLowerCase() === text.toLowerCase()
+      );
+      return employee?.display_name || text;
+    };
+
     return [
       {
         id: 'scheduler',
@@ -319,16 +346,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
             }
             return getEmployeeDisplayName((client as any).meeting_scheduler_id, employeesToUse);
           }
-          const schedulerValue = client.scheduler;
-          if (!schedulerValue || schedulerValue === '---' || schedulerValue === '--') return '---';
-          // Partner/automated booking stores employee id (e.g. "177") — resolve to display_name
-          if (
-            typeof schedulerValue === 'number' ||
-            (typeof schedulerValue === 'string' && /^\d+$/.test(String(schedulerValue).trim()))
-          ) {
-            return getEmployeeDisplayName(schedulerValue, employeesToUse);
-          }
-          return String(schedulerValue);
+          return resolveAssignee(client.scheduler, (client as any).meeting_scheduler_id);
         })(),
         fieldName: 'scheduler',
         legacyFieldName: 'meeting_scheduler_id'
@@ -338,7 +356,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
         title: 'Manager',
         assignee: isLegacyLead
           ? (legacyDisplay('manager') ?? getEmployeeDisplayName((client as any).meeting_manager_id, employeesToUse))
-          : getEmployeeDisplayName((client as any).manager, employeesToUse) || '---',
+          : resolveAssignee((client as any).manager, (client as any).meeting_manager_id),
         fieldName: 'manager',
         legacyFieldName: 'meeting_manager_id'
       },
@@ -347,7 +365,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
         title: 'Helper',
         assignee: isLegacyLead
           ? getEmployeeDisplayName((client as any).meeting_lawyer_id, employeesToUse)
-          : getEmployeeDisplayName((client as any).helper, employeesToUse) || '---',
+          : resolveAssignee((client as any).helper, (client as any).meeting_lawyer_id),
         fieldName: 'helper',
         legacyFieldName: 'meeting_lawyer_id'
       },
@@ -356,7 +374,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
         title: 'Expert',
         assignee: isLegacyLead
           ? (legacyDisplay('expert') ?? getEmployeeDisplayName((client as any).expert_id, employeesToUse))
-          : getEmployeeDisplayName((client as any).expert, employeesToUse) || '---',
+          : resolveAssignee((client as any).expert, (client as any).expert_id),
         fieldName: 'expert',
         legacyFieldName: 'expert_id'
       },
@@ -367,21 +385,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
           if (isLegacyLead) {
             return legacyDisplay('closer') ?? getEmployeeDisplayName((client as any).closer_id, employeesToUse);
           }
-          // For new leads, closer is saved as display_name (text) or potentially as ID
-          const closer = client.closer;
-          if (!closer || closer === '---' || closer === '--') {
-            return '---';
-          }
-          // If it's numeric, treat as ID and convert to display name
-          if (/^\d+$/.test(String(closer).trim())) {
-            return getEmployeeDisplayName(Number(closer), employeesToUse);
-          }
-          // Otherwise, it's already a display name, but verify it exists in employees
-          const employee = employeesToUse.find((emp: any) =>
-            emp.display_name && emp.display_name.trim() === String(closer).trim()
-          );
-          // If found, return the display name; otherwise return as-is (might be a name not in our list)
-          return employee ? employee.display_name : closer;
+          return resolveAssignee(client.closer, (client as any).closer_id);
         })(),
         fieldName: 'closer',
         legacyFieldName: 'closer_id'
@@ -397,39 +401,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
             if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') return '---';
             return handlerDisplayName;
           })()
-          : (() => {
-            // For new leads: handler can be stored as employee_id in handler column OR as display_name
-            // Also check case_handler_id if available
-            const handlerId = (client as any).case_handler_id || (client as any).handler;
-            const handlerValue = (client as any).handler;
-
-            // If case_handler_id exists, use it (most reliable)
-            if ((client as any).case_handler_id) {
-              const handlerDisplayName = getEmployeeDisplayName((client as any).case_handler_id, employeesToUse);
-              // Normalize "Not_assigned", "Not assigned", etc. to '---'
-              if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') {
-                return '---';
-              }
-              return handlerDisplayName;
-            }
-
-            // If handler is numeric (employee ID), map it
-            if (handlerValue && (typeof handlerValue === 'number' || (typeof handlerValue === 'string' && !isNaN(Number(handlerValue)) && handlerValue.toString().trim() !== ''))) {
-              const handlerDisplayName = getEmployeeDisplayName(handlerValue, employeesToUse);
-              // Normalize "Not_assigned", "Not assigned", etc. to '---'
-              if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') {
-                return '---';
-              }
-              return handlerDisplayName;
-            }
-
-            // Otherwise, assume handler is already a display name
-            // Normalize "Not_assigned", "Not assigned", etc. to '---'
-            if (!handlerValue || handlerValue === '---' || handlerValue.toLowerCase() === 'not_assigned' || handlerValue.toLowerCase() === 'not assigned') {
-              return '---';
-            }
-            return handlerValue;
-          })(),
+          : resolveAssignee((client as any).handler, (client as any).case_handler_id),
         fieldName: 'handler',
         legacyFieldName: 'case_handler_id'
       },
@@ -1100,7 +1072,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
                       <div className="flex items-center gap-3">
                         {hasAssignee ? (
-                          <EmployeeAvatar employeeId={getEmployeeIdFromRole(role)} size="md" />
+                          <EmployeeAvatar employeeId={getEmployeeIdFromRole(role)} displayName={role.assignee} size="md" />
                         ) : (
                           <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-200 flex-shrink-0">
                             {React.createElement(getRoleIcon(role.id), { className: 'w-6 h-6 text-gray-500' })}
@@ -1176,8 +1148,6 @@ const RolesTab: React.FC<ClientTabProps> = ({
                     </thead>
                     <tbody>
                       {subEffortContributors.map((row) => {
-                        const avatarId = row.employeeId ?? row.employeeName;
-                        const matchedEmployee = getEmployeeById(avatarId);
                         const totalEffortPct = row.efforts.reduce(
                           (sum, effort) => sum + (effort.balancedPercentage ?? 0),
                           0,
@@ -1189,13 +1159,11 @@ const RolesTab: React.FC<ClientTabProps> = ({
                           <tr key={row.employeeName}>
                             <td className="align-middle">
                               <div className="flex items-center gap-3 min-w-0">
-                                {matchedEmployee ? (
-                                  <EmployeeAvatar employeeId={avatarId} size="md" />
-                                ) : (
-                                  <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-200 text-gray-600 text-sm font-medium flex-shrink-0">
-                                    {getEmployeeInitials(row.employeeName)}
-                                  </div>
-                                )}
+                                <EmployeeAvatar
+                                  employeeId={row.employeeId}
+                                  displayName={row.employeeName}
+                                  size="md"
+                                />
                                 <span className="font-medium text-gray-900 truncate">
                                   {row.employeeName}
                                 </span>

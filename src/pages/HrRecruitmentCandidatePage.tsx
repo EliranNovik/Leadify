@@ -60,6 +60,7 @@ import {
   fetchRecruitmentInterviewDocuments,
   getRecruitmentDocumentSignedUrl,
   getStaffMeetingDocumentSignedUrl,
+  renameRecruitmentDocument,
   uploadRecruitmentDocument,
   type RecruitmentDocument,
   type RecruitmentDocumentType,
@@ -224,6 +225,9 @@ const HrRecruitmentCandidatePage: React.FC = () => {
   const [creatingContract, setCreatingContract] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadTypeId, setUploadTypeId] = useState<number | ''>('');
+  const [renamingDocId, setRenamingDocId] = useState<number | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const [viewer, setViewer] = useState<{
     url: string;
     name: string;
@@ -670,6 +674,30 @@ const HrRecruitmentCandidatePage: React.FC = () => {
     } catch (error) {
       console.error(error);
       toast.error('Could not open file');
+    }
+  };
+
+  const handleStartRename = (doc: RecruitmentDocument) => {
+    setRenamingDocId(doc.id);
+    setRenameName(doc.file_name);
+  };
+
+  const handleSaveRename = async (doc: RecruitmentDocument) => {
+    if (!renameName.trim()) {
+      toast.error('File name is required');
+      return;
+    }
+    setRenaming(true);
+    try {
+      const updated = await renameRecruitmentDocument(doc.id, renameName);
+      setDocuments((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+      setRenamingDocId(null);
+      toast.success('File name updated');
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : 'Failed to rename file');
+    } finally {
+      setRenaming(false);
     }
   };
 
@@ -1437,30 +1465,77 @@ const HrRecruitmentCandidatePage: React.FC = () => {
                 {documents.map((doc) => (
                   <tr key={doc.id}>
                     <td className="font-medium">
-                      <span className="inline-flex items-center gap-1.5">
-                        <DocumentTextIcon className="h-5 w-5 shrink-0 text-gray-400" />
-                        {doc.file_name}
-                      </span>
+                      {renamingDocId === doc.id ? (
+                        <div className="flex items-center gap-2">
+                          <DocumentTextIcon className="h-5 w-5 shrink-0 text-gray-400" />
+                          <input
+                            className="input input-bordered input-sm min-w-[12rem] flex-1"
+                            value={renameName}
+                            onChange={(e) => setRenameName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void handleSaveRename(doc);
+                              if (e.key === 'Escape') setRenamingDocId(null);
+                            }}
+                            autoFocus
+                          />
+                        </div>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5" title={doc.file_name}>
+                          <DocumentTextIcon className="h-5 w-5 shrink-0 text-gray-400" />
+                          {doc.file_name}
+                        </span>
+                      )}
                     </td>
                     <td>{doc.document_type?.label || '—'}</td>
                     <td>{formatCreatedAt(doc.created_at)}</td>
-                    <td className="text-right">
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm btn-circle"
-                        title="View"
-                        onClick={() => void handleOpenDoc(doc)}
-                      >
-                        <EyeIcon className="h-5 w-5" />
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm btn-circle text-error"
-                        title="Delete"
-                        onClick={() => void handleDeleteDoc(doc)}
-                      >
-                        <TrashIcon className="h-5 w-5" />
-                      </button>
+                    <td className="text-right whitespace-nowrap">
+                      {renamingDocId === doc.id ? (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            disabled={renaming}
+                            onClick={() => void handleSaveRename(doc)}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            disabled={renaming}
+                            onClick={() => setRenamingDocId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm btn-circle"
+                            title="View"
+                            onClick={() => void handleOpenDoc(doc)}
+                          >
+                            <EyeIcon className="h-5 w-5" />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm btn-circle"
+                            title="Rename"
+                            onClick={() => handleStartRename(doc)}
+                          >
+                            <PencilIcon className="h-5 w-5" />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm btn-circle text-error"
+                            title="Delete"
+                            onClick={() => void handleDeleteDoc(doc)}
+                          >
+                            <TrashIcon className="h-5 w-5" />
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}

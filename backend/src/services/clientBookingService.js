@@ -1730,6 +1730,11 @@ const PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID = Number(
   process.env.PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID || 177,
 );
 
+/** CRM-sent meeting confirmation email + WhatsApp for PEX / partner webhook bookings. */
+function isPexCrmOutboundEnabled() {
+  return (process.env.ENABLE_PEX_CRM_OUTBOUND_NOTIFICATIONS || 'true').toLowerCase() !== 'false';
+}
+
 async function resolvePartnerSchedulerEmployee() {
   const employeeId = PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID;
   if (!Number.isFinite(employeeId) || employeeId < 1) {
@@ -2006,7 +2011,9 @@ async function createPartnerMeeting(payload) {
     notificationWarnings.push(`Lead stage: ${stageErr.message}`);
   }
 
-  if (sendNotifications !== false) {
+  const crmOutboundEnabled = isPexCrmOutboundEnabled();
+  const shouldSendCrmOutbound = sendNotifications !== false && crmOutboundEnabled;
+  if (shouldSendCrmOutbound) {
     try {
       const notifyWarnings = await sendBookingNotifications({
         settings,
@@ -2029,6 +2036,10 @@ async function createPartnerMeeting(payload) {
       console.error('Partner meeting notifications failed:', notifyErr);
       notificationWarnings.push(notifyErr.message);
     }
+  } else if (!crmOutboundEnabled) {
+    console.log(
+      '⏸️  PEX CRM outbound email/WhatsApp skipped (ENABLE_PEX_CRM_OUTBOUND_NOTIFICATIONS=false)',
+    );
   }
 
   return {
@@ -2056,6 +2067,7 @@ async function createPartnerMeeting(payload) {
       name: externalFirm.name,
     },
     warnings: notificationWarnings.length > 0 ? notificationWarnings : undefined,
+    crm_outbound_notifications: shouldSendCrmOutbound,
   };
 }
 
@@ -2065,4 +2077,5 @@ module.exports = {
   getScheduledMeetings,
   bookMeeting,
   createPartnerMeeting,
+  isPexCrmOutboundEnabled,
 };

@@ -35,6 +35,8 @@ const { startGoogleSheetsConversionSyncScheduler } = require('./src/services/goo
 const { startPelecardPaymentReconciliationScheduler } = require('./src/services/pelecardPaymentReconciliationScheduler');
 const { startPaymentPlanInvoiceAutomationScheduler } = require('./src/services/paymentPlanInvoiceAutomationScheduler');
 const { startNineHourAutoClockOutScheduler } = require('./src/services/nineHourAutoClockOutScheduler');
+const { startHandlerNewCasesDigestScheduler } = require('./src/services/handlerNewCasesDigestScheduler');
+const handlerNewCasesDigestRoutes = require('./src/routes/handlerNewCasesDigestRoutes');
 const accessLogger = require('./src/middleware/accessLogger');
 const { notifyConversationParticipants } = require('./src/services/rmqNotificationService');
 
@@ -419,6 +421,7 @@ app.use('/api', syncRoutes);
 app.use('/api', pushNotificationRoutes);
 app.use('/api/currency-rates', currencyRatesRoutes);
 app.use('/api/payment-plan-invoice-automation', paymentPlanInvoiceAutomationRoutes);
+app.use('/api/handler-new-cases-digest', handlerNewCasesDigestRoutes);
 app.use('/api/payments/pelecard', pelecardPaymentRoutes);
 app.use('/api/nine-hour-auto-clock-out', nineHourAutoClockOutRoutes);
 app.use('/api/client-booking', clientBookingRoutes);
@@ -519,6 +522,7 @@ server.listen(PORT, () => {
   startPelecardPaymentReconciliationScheduler();
   startPaymentPlanInvoiceAutomationScheduler();
   startNineHourAutoClockOutScheduler();
+  startHandlerNewCasesDigestScheduler();
 });
 
 // Graceful shutdown

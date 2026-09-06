@@ -51,6 +51,20 @@ function normalizeBaseLeadNumber(baseLeadNumber: string): string {
   return firstSegment || baseLeadNumber;
 }
 
+/** Values Clients.tsx uses when resolving linked_master_lead / master_id. */
+function linkedMasterLookupValues(...rawValues: Array<string | number | null | undefined>): string[] {
+  const values = new Set<string>();
+  rawValues.forEach((raw) => {
+    const trimmed = String(raw ?? '').trim();
+    if (!trimmed) return;
+    const noPrefix = trimmed.replace(/^[LC]/i, '').split('/')[0];
+    [trimmed, noPrefix, `${noPrefix}/1`, `L${noPrefix}`, `C${noPrefix}`, `L${noPrefix}/1`, `C${noPrefix}/1`]
+      .filter(Boolean)
+      .forEach((value) => values.add(value));
+  });
+  return [...values];
+}
+
 /**
  * True when linked_master_lead points at another lead (not the row's own self-root marker).
  * New masters may store linked_master_lead = their own lead_number after the first combine.
@@ -124,6 +138,46 @@ export const formatLegacyLeadNumber = (legacyLead: any, subLeadSuffix?: number, 
 };
 
 // Helper function to get currency symbol
+function resolveNewLeadRole(
+  lead: any,
+  idFields: string[],
+  textFields: string[],
+  employeeMap: Map<any, string>,
+  employeeNameToIdMap: Map<string, number>,
+): { name: string; id?: number } {
+  const lookupName = (id: number) =>
+    employeeMap.get(id) || employeeMap.get(String(id)) || employeeMap.get(Number(id));
+
+  for (const field of idFields) {
+    const raw = lead?.[field];
+    if (raw == null || raw === '') continue;
+    const idNum = typeof raw === 'string' ? parseInt(String(raw), 10) : Number(raw);
+    if (Number.isNaN(idNum)) continue;
+    const name = lookupName(idNum);
+    if (name) return { name, id: idNum };
+    return { name: '---', id: idNum };
+  }
+
+  for (const field of textFields) {
+    const text = lead?.[field];
+    if (text == null) continue;
+    const trimmed = String(text).trim();
+    if (!trimmed || trimmed === '---' || trimmed === '--' || /^not[_\s]?assigned$/i.test(trimmed)) {
+      continue;
+    }
+    if (/^\d+$/.test(trimmed)) {
+      const idNum = parseInt(trimmed, 10);
+      const name = lookupName(idNum);
+      if (name) return { name, id: idNum };
+    }
+    const foundId = employeeNameToIdMap.get(trimmed.toLowerCase());
+    if (foundId != null) return { name: lookupName(foundId) || trimmed, id: foundId };
+    return { name: trimmed };
+  }
+
+  return { name: '---' };
+}
+
 export const getCurrencySymbol = (currencyCode?: string): string => {
   if (!currencyCode) return '₪';
   const symbols: { [key: string]: string } = {
@@ -309,7 +363,12 @@ export const fetchNewMasterLead = async (
         : Promise.resolve({ data: null as any[] | null, error: null });
 
     // Also include new leads and legacy leads that point to this master via linked_master_lead (text: "L210292" or "210292").
-    const linkedMasterValues = [normalizedBaseForLinked, baseLeadNumber].filter(Boolean);
+    const linkedMasterValues = linkedMasterLookupValues(
+      normalizedBaseForLinked,
+      baseLeadNumber,
+      masterLead?.lead_number,
+      masterLead?.manual_id,
+    );
     const [
       { data: linkedSubLeadsData },
       { data: linkedLegacyToNewData },
@@ -348,46 +407,34 @@ export const fetchNewMasterLead = async (
 
     // For new leads, fetch main contacts from contacts table and lead_leadcontact
     if (leadIdsForContacts.length > 0) {
-      console.log('🔍 Fetching main contacts for leads:', leadIdsForContacts);
-
-      // Fetch from contacts table (new leads structure)
       const { data: contactsData } = await supabase
         .from('contacts')
         .select('id, lead_id, is_main_applicant, relationship')
         .in('lead_id', leadIdsForContacts.map(id => String(id)));
-
-      console.log('🔍 Contacts from contacts table:', contactsData);
 
       if (contactsData) {
         contactsData.forEach((contact: any) => {
           const isMain = contact.is_main_applicant === true ||
             contact.relationship === 'persecuted_person';
           if (isMain && contact.lead_id) {
-            console.log('🔍 Found main contact:', contact.id, 'for lead:', contact.lead_id);
             mainContactsMap.set(String(contact.lead_id), contact.id);
           }
         });
       }
 
-      // Also check lead_leadcontact for main contacts (fallback)
       const { data: leadContacts } = await supabase
         .from('lead_leadcontact')
         .select('newlead_id, contact_id, main')
         .in('newlead_id', leadIdsForContacts.map(id => String(id)))
         .eq('main', 'true');
 
-      console.log('🔍 Main contacts from lead_leadcontact:', leadContacts);
-
       if (leadContacts) {
         leadContacts.forEach((lc: any) => {
           if (lc.newlead_id && !mainContactsMap.has(String(lc.newlead_id))) {
-            console.log('🔍 Found main contact from lead_leadcontact:', lc.contact_id, 'for lead:', lc.newlead_id);
             mainContactsMap.set(String(lc.newlead_id), lc.contact_id);
           }
         });
       }
-
-      console.log('🔍 Final mainContactsMap:', Array.from(mainContactsMap.entries()));
     }
 
     // Parallelize all independent queries
@@ -495,46 +542,34 @@ export const fetchNewMasterLead = async (
     // This matches ContactInfoTab logic: fetch by client_id, then filter by main contact's contact_id
     const newContractsMap = new Map<string, { id: string; isLegacy: boolean }>();
     if (newContractsData) {
-      console.log('🔍 Processing new contracts:', newContractsData.length, 'contracts');
       newContractsData.forEach((contract: any) => {
         if (!contract.client_id || !contract.id) return;
 
         const leadId = String(contract.client_id);
         const mainContactId = mainContactsMap.get(leadId);
 
-        console.log('🔍 Contract:', contract.id, 'for lead:', leadId, 'contact_id:', contract.contact_id, 'mainContactId:', mainContactId);
-
-        // Only assign contract if it belongs to the main contact (coerce ids — DB may return string/number)
         if (
           contract.contact_id != null &&
           mainContactId != null &&
           Number(contract.contact_id) === Number(mainContactId)
         ) {
-          // Only set if we don't already have a contract for this lead, or if this one is more recent/signed
           const existing = newContractsMap.get(leadId);
           if (!existing) {
-            console.log('🔍 ✅ Assigning contract', contract.id, 'to lead', leadId);
             newContractsMap.set(leadId, {
               id: contract.id,
               isLegacy: false
             });
           }
         } else if (!contract.contact_id && mainContactId) {
-          // Fallback: if no contact_id, assign to main contact (backward compatibility)
-          // Only if this lead has a main contact
           const existing = newContractsMap.get(leadId);
           if (!existing) {
-            console.log('🔍 ✅ Assigning contract (no contact_id)', contract.id, 'to lead', leadId);
             newContractsMap.set(leadId, {
               id: contract.id,
               isLegacy: false
             });
           }
-        } else {
-          console.log('🔍 ❌ Skipping contract', contract.id, '- does not match main contact');
         }
       });
-      console.log('🔍 Final newContractsMap:', Array.from(newContractsMap.entries()));
     }
 
     // Update contractsDataMap
@@ -920,7 +955,7 @@ export const fetchLegacyMasterLead = async (
             display_name
           )
         `)
-      .eq('linked_master_lead', masterLegacyIdStr);
+      .in('linked_master_lead', linkedMasterLookupValues(masterLegacyIdStr, baseLeadNumber, normalizedId));
 
     // New leads linked to this legacy master (linked_master_lead = legacy id as text)
     // PLUS new leads whose master_id is the corresponding new-lead UUID or numeric legacy id
@@ -940,18 +975,32 @@ export const fetchLegacyMasterLead = async (
       .limit(1);
     const newMasterForLegacy = newMasterRows?.[0] ?? null;
 
-    const newSubleadMasterIdOr: string[] = [
-      `master_id.eq.${masterLegacyIdStr}`,
-      `linked_master_lead.eq.${masterLegacyIdStr}`,
+    const linkedNewValues = linkedMasterLookupValues(masterLegacyIdStr, baseLeadNumber, normalizedId);
+    const newLeadSelect = `
+        id, lead_number, manual_id, name, stage, master_id, linked_master_lead,
+        category_id, topic, balance, proposal_total, balance_currency, number_of_applicants_meeting,
+        meeting_scheduler_id, closer_id, case_handler_id, scheduler, closer, handler
+      `;
+    const newLeadByMasterIdQueries = [
+      supabase.from('leads').select(newLeadSelect).eq('master_id', masterLegacyIdStr),
     ];
     if (newMasterForLegacy?.id) {
-      newSubleadMasterIdOr.unshift(`master_id.eq.${newMasterForLegacy.id}`);
+      newLeadByMasterIdQueries.push(
+        supabase.from('leads').select(newLeadSelect).eq('master_id', newMasterForLegacy.id),
+      );
     }
-
-    const { data: linkedNewToLegacyRaw } = await supabase
-      .from('leads')
-      .select('*')
-      .or(newSubleadMasterIdOr.join(','));
+    const [{ data: linkedNewByMasterIdRows }, { data: linkedNewByLinkedRows }] = await Promise.all([
+      Promise.all(newLeadByMasterIdQueries).then((results) => ({
+        data: results.flatMap((result) => result.data || []),
+      })),
+      linkedNewValues.length > 0
+        ? supabase.from('leads').select(newLeadSelect).in('linked_master_lead', linkedNewValues)
+        : Promise.resolve({ data: [] as any[] }),
+    ]);
+    const linkedNewToLegacyRaw = [
+      ...(linkedNewByMasterIdRows || []),
+      ...(linkedNewByLinkedRows || []),
+    ];
 
     // Exclude the corresponding new master row itself; keep true subleads / linked leads only
     const linkedNewToLegacyData = (linkedNewToLegacyRaw || []).filter((lead: any) => {
@@ -973,25 +1022,19 @@ export const fetchLegacyMasterLead = async (
     const legacyMainContactsMap = new Map<number, number>(); // leadId -> mainContactId
 
     if (allLeadIds.length > 0) {
-      console.log('🔍 Fetching main contacts for legacy leads:', allLeadIds);
       const { data: mainLeadContacts } = await supabase
         .from('lead_leadcontact')
         .select('lead_id, contact_id, main')
         .in('lead_id', allLeadIds)
         .eq('main', 'true');
 
-      console.log('🔍 Main contacts from lead_leadcontact for legacy leads:', mainLeadContacts);
-
       if (mainLeadContacts) {
         mainLeadContacts.forEach((lc: any) => {
           if (lc.lead_id && lc.contact_id) {
-            console.log('🔍 Found main contact:', lc.contact_id, 'for legacy lead:', lc.lead_id);
             legacyMainContactsMap.set(Number(lc.lead_id), lc.contact_id);
           }
         });
       }
-
-      console.log('🔍 Final legacyMainContactsMap:', Array.from(legacyMainContactsMap.entries()));
     }
 
     const [
@@ -1020,8 +1063,9 @@ export const fetchLegacyMasterLead = async (
       allLeadIds.length > 0
         ? supabase
           .from('lead_leadcontact')
-          .select('lead_id, id, contact_id, public_token, contract_html, signed_contract_html')
+          .select('lead_id, id, contact_id, public_token')
           .in('lead_id', allLeadIds)
+          .or('contract_html.not.is.null,signed_contract_html.not.is.null')
         : Promise.resolve({ data: null, error: null }),
       allLeadIds.length > 0
         ? supabase
@@ -1054,7 +1098,6 @@ export const fetchLegacyMasterLead = async (
           const first = leadContacts.find((lc: any) => Number(lc.lead_id) === leadId);
           if (first && first.contact_id) {
             legacyMainContactsMap.set(leadId, first.contact_id);
-            console.log('🔍 Fallback main contact for lead', leadId, '-> contact', first.contact_id);
           }
         }
       });
@@ -1114,51 +1157,27 @@ export const fetchLegacyMasterLead = async (
     // Process legacy contracts (filtered by main contact)
     // This matches ContactInfoTab logic: fetch by lead_id, then filter by main contact's contact_id
     if (legacyContractsData) {
-      console.log('🔍 Processing legacy contracts:', legacyContractsData.length, 'contracts');
       legacyContractsData.forEach((lc: any) => {
-        const hasContract = (lc.contract_html && lc.contract_html !== '\\N' && lc.contract_html.trim() !== '') ||
-          (lc.signed_contract_html && lc.signed_contract_html !== '\\N' && lc.signed_contract_html.trim() !== '');
-
-        if (!lc.lead_id || !lc.id || !hasContract) {
-          console.log('🔍 Skipping legacy contract - missing data:', { lead_id: lc.lead_id, id: lc.id, hasContract });
-          return;
-        }
+        if (!lc.lead_id || !lc.id) return;
 
         const leadId = String(lc.lead_id);
         const mainContactId = legacyMainContactsMap.get(Number(lc.lead_id));
 
-        console.log('🔍 Legacy contract:', lc.id, 'for lead:', leadId, 'contact_id:', lc.contact_id, 'mainContactId:', mainContactId);
-
-        // Assign when this row's contact_id matches the lead's main (or fallback) contact (same as ContactInfoTab)
         if (mainContactId != null && Number(mainContactId) === Number(lc.contact_id)) {
           const leadIdNum = Number(lc.lead_id);
           const signedDate = signedDatesMap.get(leadIdNum);
-          const hasSignedContract = lc.signed_contract_html &&
-            lc.signed_contract_html.trim() !== '' &&
-            lc.signed_contract_html !== '\\N';
-          // When contract has signed content but no stage 60 date, still treat as signed (same as ContactInfoTab)
-          const effectiveSignedAt = signedDate ?? (hasSignedContract ? new Date().toISOString() : undefined);
-
           const existing = contractsMap.get(leadId);
 
           if (!existing || existing.isLegacy === false) {
-            console.log('🔍 ✅ Assigning legacy contract', lc.id, 'to lead', leadId);
             contractsMap.set(leadId, {
               id: `legacy_${lc.id}`,
               isLegacy: true,
-              contractHtml: lc.contract_html,
-              signedContractHtml: lc.signed_contract_html,
               public_token: lc.public_token,
-              signed_at: effectiveSignedAt
+              signed_at: signedDate
             });
-          } else {
-            console.log('🔍 ⚠️ Legacy contract already exists for lead', leadId, '- keeping existing');
           }
-        } else {
-          console.log('🔍 ❌ Skipping legacy contract', lc.id, '- does not match main contact');
         }
       });
-      console.log('🔍 Final contractsMap after legacy processing:', Array.from(contractsMap.entries()));
     }
 
     // Contracts for new (UUID) subleads linked into this legacy master chain
@@ -1334,6 +1353,27 @@ export const fetchLegacyMasterLead = async (
       const leadNum = lead.lead_number || String(lead.id);
       const hasMasterId = lead.master_id != null && String(lead.master_id).trim() !== '';
       const linkedOnly = !hasMasterId && isNonSelfLinkedMasterLead(lead.linked_master_lead, lead.lead_number, lead.id);
+      const schedulerRole = resolveNewLeadRole(
+        lead,
+        ['meeting_scheduler_id', 'scheduler_id'],
+        ['scheduler', 'meeting_scheduler'],
+        employeeMap,
+        employeeNameToIdMap,
+      );
+      const closerRole = resolveNewLeadRole(
+        lead,
+        ['closer_id', 'meeting_closer_id'],
+        ['closer', 'meeting_closer'],
+        employeeMap,
+        employeeNameToIdMap,
+      );
+      const handlerRole = resolveNewLeadRole(
+        lead,
+        ['case_handler_id', 'handler_id'],
+        ['handler', 'case_handler'],
+        employeeMap,
+        employeeNameToIdMap,
+      );
       processedSubLeads.push({
         id: String(lead.id),
         lead_number: leadNum,
@@ -1351,12 +1391,12 @@ export const fetchLegacyMasterLead = async (
         applicants: Number(lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0) || 0,
         agreement: contractsMap.get(String(lead.id))?.id ?? undefined,
         agreementIsLegacy: contractsMap.get(String(lead.id))?.isLegacy,
-        scheduler: '---',
-        scheduler_id: undefined,
-        closer: '---',
-        closer_id: undefined,
-        handler: '---',
-        handler_id: undefined,
+        scheduler: schedulerRole.name,
+        scheduler_id: schedulerRole.id,
+        closer: closerRole.name,
+        closer_id: closerRole.id,
+        handler: handlerRole.name,
+        handler_id: handlerRole.id,
         master_id: lead.master_id || undefined,
         isMaster: false,
         isLinkedOnly: linkedOnly || undefined,

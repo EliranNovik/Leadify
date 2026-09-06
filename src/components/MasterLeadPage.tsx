@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
+import { getStageName, getStageColour, fetchStageNames, getSoftStageBadgeStyle } from '../lib/stageUtils';
 import {
   ArrowLeftIcon,
   UserIcon,
@@ -295,10 +295,12 @@ const MasterLeadPage: React.FC = () => {
     return new Map<string, ContractData>(contractsDataArray);
   }, [contractsDataArray]);
 
-  const setContractsDataMap = (updater: (prev: Map<string, ContractData>) => Map<string, ContractData>) => {
-    const newMap = updater(contractsDataMap);
-    setContractsDataArray(Array.from(newMap.entries()));
-  };
+  const setContractsDataMap = useCallback((updater: (prev: Map<string, ContractData>) => Map<string, ContractData>) => {
+    setContractsDataArray((prev) => {
+      const newMap = updater(new Map(prev));
+      return Array.from(newMap.entries());
+    });
+  }, [setContractsDataArray]);
 
   const [subLeads, setSubLeads] = usePersistedState<SubLead[]>(
     'masterLeadPage_subLeads',
@@ -461,29 +463,10 @@ const MasterLeadPage: React.FC = () => {
     }
   `;
 
-  // Helper function to get contrasting text color based on background
-  const getContrastingTextColor = (hexColor?: string | null) => {
-    if (!hexColor) return '#ffffff';
-    let sanitized = hexColor.trim();
-    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
-    if (sanitized.length === 3) {
-      sanitized = sanitized.split('').map(char => char + char).join('');
-    }
-    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
-      return '#ffffff';
-    }
-    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
-    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
-    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
-
-    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    return luminance > 0.55 ? '#111827' : '#ffffff';
-  };
-
   const getStageBadge = (stage?: string | number) => {
     if (!stage && stage !== 0) {
       return (
-        <span className="stage-badge badge badge-md bg-gray-100 text-gray-600 text-sm px-2.5 py-1.5">
+        <span className="badge stage-badge rounded-full shrink-0 border-0 text-xs px-2.5 py-0.5 max-w-full bg-gray-100 text-gray-600">
           No Stage
         </span>
       );
@@ -491,20 +474,21 @@ const MasterLeadPage: React.FC = () => {
 
     const stageStr = String(stage);
     const stageName = getStageName(stageStr);
-    const stageColor = getStageColour(stageStr);
-    const textColor = getContrastingTextColor(stageColor);
-
-    // Use the stage color if available, otherwise use default purple
-    const backgroundColor = stageColor || '#3b28c7';
+    const stageColour = getStageColour(stageStr);
+    const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
 
     return (
       <span
-        className="stage-badge badge badge-md text-sm px-2.5 py-1.5"
+        className="badge stage-badge rounded-full shrink-0 border-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full"
         style={{
-          backgroundColor: backgroundColor,
-          color: textColor,
-          borderColor: backgroundColor,
+          backgroundColor: softBadgeStyle.backgroundColor,
+          color: softBadgeStyle.color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
         }}
+        title={stageName}
       >
         {stageName}
       </span>
@@ -524,20 +508,28 @@ const MasterLeadPage: React.FC = () => {
     const useInactiveStyle = isInactiveLead(lead);
     if (useInactiveStyle) {
       return (
-        <span className="stage-badge badge badge-sm px-2 py-0.5 bg-gray-300 text-black border border-gray-400">
+        <span className="badge stage-badge rounded-full shrink-0 border-0 text-xs px-2.5 py-0.5 bg-gray-300 text-black">
           {stageName}
         </span>
       );
     }
-    const backgroundColor =
+    const stageColour =
       (lead.stage_colour && lead.stage_colour.trim()) ||
       (/^\d+$/.test(stageStr) ? getStageColour(stageStr) : '') ||
-      '#3b28c7';
-    const textColor = getContrastingTextColor(backgroundColor);
+      '';
+    const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
     return (
       <span
-        className="stage-badge badge badge-sm text-xs px-2 py-0.5"
-        style={{ backgroundColor, color: textColor, borderColor: backgroundColor }}
+        className="badge stage-badge rounded-full shrink-0 border-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full"
+        style={{
+          backgroundColor: softBadgeStyle.backgroundColor,
+          color: softBadgeStyle.color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+        }}
+        title={stageName}
       >
         {stageName}
       </span>
@@ -566,84 +558,92 @@ const MasterLeadPage: React.FC = () => {
     };
   }, []);
 
-  // Helper function to get employee by ID
-  const getEmployeeById = (employeeId: string | number | null | undefined) => {
-    if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) {
+  // Helper function to get employee by ID or display name
+  const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+    if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--') {
       return null;
     }
 
-    const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
-    if (isNaN(idAsNumber)) return null;
-
-    return (
-      allEmployees.find((emp) => {
+    const idAsNumber = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : Number(employeeIdOrName);
+    if (!Number.isNaN(idAsNumber)) {
+      const byId = allEmployees.find((emp) => {
         const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
         const empIdNum = typeof empId === 'string' ? parseInt(empId, 10) : Number(empId);
-        if (isNaN(empIdNum)) return false;
+        if (Number.isNaN(empIdNum)) return false;
         return empIdNum === idAsNumber;
-      }) || null
-    );
-  };
-
-  // Helper function to get employee initials
-  const getEmployeeInitials = (name: string | null | undefined): string => {
-    if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
-    const parts = name.trim().split(' ');
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      });
+      if (byId) return byId;
     }
-    return name.substring(0, 2).toUpperCase();
-  };
 
-  // Component to render employee avatar
-  const EmployeeAvatar: React.FC<{
-    employeeId: string | number | null | undefined;
-    size?: 'sm' | 'md' | 'lg';
-  }> = ({ employeeId, size = 'sm' }) => {
-    const [imageError, setImageError] = useState(false);
-    const employee = getEmployeeById(employeeId);
-    const sizeClasses = size === 'sm' ? 'w-6 h-6 text-xs' : size === 'md' ? 'w-8 h-8 text-sm' : 'w-12 h-12 text-base';
-
-    useEffect(() => {
-      setImageError(false);
-    }, [employeeId]);
-
-    if (!employee) return null;
-
-    const photoUrl = employee.photo_url || employee.photo;
-    const initials = getEmployeeInitials(employee.display_name);
-
-    if (imageError || !photoUrl) {
+    if (typeof employeeIdOrName === 'string') {
+      const needle = employeeIdOrName.trim().toLowerCase();
+      if (!needle) return null;
       return (
-        <div
-          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
-          onClick={() => {
-            if (employee.id) {
-              navigate(`/my-profile/${employee.id}`);
-            }
-          }}
-          title={`View ${employee.display_name}'s profile`}
-        >
-          {initials}
-        </div>
+        allEmployees.find((emp) => emp.display_name?.trim().toLowerCase() === needle) || null
       );
     }
 
+    return null;
+  };
+
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name || name === '---' || name === '--' || /^not[_\s]?assigned$/i.test(name)) return '';
+    const parts = name.trim().split(/\s+/).filter((part) => part.length > 0);
+    if (parts.length >= 2) {
+      return `${parts[0][0] ?? ''}${parts[parts.length - 1][0] ?? ''}`.toUpperCase();
+    }
+    return (parts[0] || name).substring(0, 2).toUpperCase();
+  };
+
+  const normalizePhotoUrl = (url: unknown): string | null => {
+    if (url == null) return null;
+    const trimmed = String(url).trim();
+    if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return null;
+    return trimmed;
+  };
+
+  // Initials always paint; photo overlays only after a real URL loads (never use name as img alt).
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    displayName?: string | null;
+    size?: 'sm' | 'md' | 'lg';
+  }> = ({ employeeId, displayName, size = 'sm' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId) || getEmployeeById(displayName);
+    const sizeClasses = size === 'sm' ? 'w-6 h-6 text-xs' : size === 'md' ? 'w-8 h-8 text-sm' : 'w-12 h-12 text-base';
+    const name = employee?.display_name || displayName || '';
+    const initials = getEmployeeInitials(name);
+    const photoUrl = !imageError ? normalizePhotoUrl(employee?.photo_url || employee?.photo) : null;
+
+    useEffect(() => {
+      setImageError(false);
+    }, [employeeId, displayName]);
+
+    if (!initials && !photoUrl) return null;
+
     return (
-      <img
-        src={photoUrl}
-        alt={employee.display_name || ''}
-        loading="eager"
-        decoding="async"
-        className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+      <div
+        className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-semibold flex-shrink-0 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity`}
         onClick={() => {
-          if (employee.id) {
+          if (employee?.id) {
             navigate(`/my-profile/${employee.id}`);
           }
         }}
-        onError={() => setImageError(true)}
-        title={`View ${employee.display_name}'s profile`}
-      />
+        title={name ? `View ${name}'s profile` : undefined}
+      >
+        {photoUrl ? (
+          <img
+            src={photoUrl}
+            alt=""
+            loading="eager"
+            decoding="async"
+            className="h-full w-full object-cover"
+            onError={() => setImageError(true)}
+          />
+        ) : (
+          initials
+        )}
+      </div>
     );
   };
 
@@ -680,6 +680,7 @@ const MasterLeadPage: React.FC = () => {
     const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
     const routeBase = getRouteBaseLeadNumber(lead_number);
     const normalizedId = extractNumericId(baseLeadNumber);
+    if (fetchInFlightForRef.current === routeBase) return;
     const gen = ++fetchGenRef.current;
     fetchInFlightForRef.current = routeBase;
 
@@ -739,8 +740,9 @@ const MasterLeadPage: React.FC = () => {
       };
 
       // A matching new lead (often L{legacyId}) must not hide the legacy sublead chain.
-      if (looksLikeLegacyId && (isLegacyLead || !newOk || newCount <= 1)) {
-        const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId as string, setContractsDataMap);
+      let legacyResult: Awaited<ReturnType<typeof fetchLegacyMasterLead>> | null = null;
+      if (looksLikeLegacyId && normalizedId && (isLegacyLead || !newOk || newCount <= 1)) {
+        legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
         if (!stillCurrent()) return;
         const legacyCount = legacyResult.subLeads?.length || 0;
         if (legacyResult.success && legacyResult.masterLead && legacyCount > 0) {
@@ -770,7 +772,9 @@ const MasterLeadPage: React.FC = () => {
       }
 
       if (looksLikeLegacyId && normalizedId) {
-        const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
+        if (!legacyResult) {
+          legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
+        }
         if (!stillCurrent()) return;
         if (legacyResult.success && legacyResult.masterLead) {
           setMasterLeadInfo(legacyResult.masterLead);
@@ -946,6 +950,9 @@ const MasterLeadPage: React.FC = () => {
     }
   }, [addLeadSelected, lead_number, masterLeadInfo, subLeads, fetchSubLeads]);
 
+  const fetchSubLeadsRef = useRef(fetchSubLeads);
+  fetchSubLeadsRef.current = fetchSubLeads;
+
   useEffect(() => {
     if (!lead_number) {
       setLoading(false);
@@ -963,10 +970,11 @@ const MasterLeadPage: React.FC = () => {
       setMasterLeadInfo(null);
       setContractsDataArray([]);
       lastFetchedBaseRef.current = null;
+      fetchInFlightForRef.current = null;
       hasCheckedPersistedDataRef.current = undefined;
       prevLeadNumberRef.current = decodedLeadNumber;
       setLoading(true);
-      fetchSubLeads();
+      void fetchSubLeadsRef.current();
       return;
     }
 
@@ -982,40 +990,30 @@ const MasterLeadPage: React.FC = () => {
       // Paint cached rows immediately, then soft-refresh in background.
       setLoading(false);
       hasCheckedPersistedDataRef.current = routeBase;
-      if (lastFetchedBaseRef.current !== routeBase) {
-        fetchSubLeads();
+      if (lastFetchedBaseRef.current !== routeBase && fetchInFlightForRef.current !== routeBase) {
+        void fetchSubLeadsRef.current();
       }
       return;
     }
 
     hasCheckedPersistedDataRef.current = routeBase;
-    fetchSubLeads();
-  }, [lead_number, fetchSubLeads, getRouteBaseLeadNumber, persistedMatchesRoute, setSubLeads, setMasterLeadInfo, setContractsDataArray]);
+    if (fetchInFlightForRef.current !== routeBase) {
+      void fetchSubLeadsRef.current();
+    }
+  }, [lead_number, getRouteBaseLeadNumber, persistedMatchesRoute, setSubLeads, setMasterLeadInfo, setContractsDataArray]);
 
   // Handle view contract - for legacy contracts opens modal, for new contracts navigates
   const handleViewContract = async (contractId: string, isLegacyContract: boolean = false) => {
-    console.log('🔍 handleViewContract called with:', contractId, 'isLegacyContract:', isLegacyContract);
-
-    // Check if this is a legacy contract (ID starts with 'legacy_' or isLegacyContract is true)
     if (isLegacyContract || contractId.startsWith('legacy_')) {
-      console.log('🔍 Legacy contract detected');
-
-      // For legacy contracts, find the contract data and display it in a modal
       const legacyContractId = contractId.startsWith('legacy_')
         ? contractId.replace('legacy_', '')
         : contractId;
 
-      // Find the contract data in contractsDataMap by searching for the contract ID
       const contractData = Array.from(contractsDataMap.values()).find((value) =>
         value.isLegacy && (value.id === contractId || value.id === `legacy_${legacyContractId}`)
       );
 
-      console.log('🔍 Found contract data:', contractData);
-
       if (contractData && contractData.isLegacy && (contractData.contractHtml || contractData.signedContractHtml)) {
-        console.log('🔍 Setting up legacy contract modal');
-
-        // Determine if contract is signed or draft
         const hasSignedContract = contractData.signedContractHtml &&
           contractData.signedContractHtml.trim() !== '' &&
           contractData.signedContractHtml !== '\\N';
@@ -1023,29 +1021,22 @@ const MasterLeadPage: React.FC = () => {
           contractData.contractHtml.trim() !== '' &&
           contractData.contractHtml !== '\\N';
 
-        console.log('🔍 Contract status check:', { hasSignedContract, hasDraftContract });
-
         if (hasSignedContract || hasDraftContract) {
           setViewingContract({
             id: contractData.id,
-            mode: hasSignedContract ? 'view' : 'edit', // If signed, view only; if draft, editable
+            mode: hasSignedContract ? 'view' : 'edit',
             contractHtml: contractData.contractHtml,
             signedContractHtml: contractData.signedContractHtml,
             status: hasSignedContract ? 'signed' : 'draft',
             public_token: contractData.public_token,
             signed_at: contractData.signed_at
           });
-
-          console.log('🔍 Set viewingContract with mode:', hasSignedContract ? 'view' : 'edit');
           return;
         } else {
-          console.log('🔍 No contract content found');
           toast.error('No contract content found for this legacy contract.');
           return;
         }
       } else {
-        // Try to fetch the contract data from database if not in map
-        console.log('🔍 Contract data not in map, fetching from database...');
         const { data: legacyContractData, error: legacyError } = await supabase
           .from('lead_leadcontact')
           .select('id, contract_html, signed_contract_html, public_token, lead_id')
@@ -1090,8 +1081,6 @@ const MasterLeadPage: React.FC = () => {
       }
     }
 
-    // For new contracts, navigate to the contract page
-    console.log('🔍 New contract, navigating to:', `/contract/${contractId}`);
     navigate(`/contract/${contractId}`);
   };
 
@@ -1105,6 +1094,8 @@ const MasterLeadPage: React.FC = () => {
     const baseLeadNumberRaw = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
     const baseLeadNumber = baseLeadNumberRaw.replace(/^[LC]/i, '');
 
+    const masterInfoId = String(masterLeadInfo?.id ?? '').replace(/^legacy_/, '');
+
     return subLeads.filter(subLead => {
       if (subLead.isMaster || subLead.isLinkedOnly) return true;
       const subLeadNumber = String(subLead.lead_number || subLead.id || '');
@@ -1113,14 +1104,28 @@ const MasterLeadPage: React.FC = () => {
       const subLeadNumberClean = subLeadNumber.replace(/^[LC]/i, '');
       const actualId = String(subLead.actual_lead_id || '').replace(/^[LC]/i, '');
       const rowId = String(subLead.id || '').replace(/^legacy_/, '');
-      return (
+      if (
         subLeadBase === baseLeadNumber ||
         subLeadNumberClean === baseLeadNumber ||
         actualId === baseLeadNumber ||
         rowId === baseLeadNumber
+      ) {
+        return true;
+      }
+
+      // New leads keep their own L-number (e.g. L228774) when linked into this master chain.
+      const masterIdRaw = String(subLead.master_id || '').replace(/^legacy_/, '');
+      const masterIdBase = masterIdRaw.replace(/^[LC]/i, '').split('/')[0];
+      if (masterIdRaw && (masterIdRaw === masterInfoId || masterIdBase === baseLeadNumber)) {
+        return true;
+      }
+
+      const isNewLeadId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        String(subLead.id),
       );
+      return isNewLeadId && lastFetchedBaseRef.current === baseLeadNumber;
     });
-  }, [subLeads, lead_number]);
+  }, [subLeads, lead_number, masterLeadInfo]);
 
   // Linked-only leads (break-link applies only to these, not traditional subleads)
   const linkedOnlyLeads = useMemo(
@@ -1605,7 +1610,7 @@ const MasterLeadPage: React.FC = () => {
                             <div className="flex items-center gap-2">
                               {subLead.scheduler && subLead.scheduler !== '---' ? (
                                 <>
-                                  <EmployeeAvatar employeeId={subLead.scheduler_id} size="md" />
+                                  <EmployeeAvatar employeeId={subLead.scheduler_id} displayName={subLead.scheduler} size="md" />
                                   <span className="text-sm text-gray-600">{subLead.scheduler}</span>
                                 </>
                               ) : (
@@ -1617,7 +1622,7 @@ const MasterLeadPage: React.FC = () => {
                             <div className="flex items-center gap-2">
                               {subLead.closer && subLead.closer !== '---' ? (
                                 <>
-                                  <EmployeeAvatar employeeId={subLead.closer_id} size="md" />
+                                  <EmployeeAvatar employeeId={subLead.closer_id} displayName={subLead.closer} size="md" />
                                   <span className="text-sm text-gray-600">{subLead.closer}</span>
                                 </>
                               ) : (
@@ -1629,7 +1634,7 @@ const MasterLeadPage: React.FC = () => {
                             <div className="flex items-center gap-2">
                               {subLead.handler && subLead.handler !== '---' && subLead.handler !== 'Not assigned' ? (
                                 <>
-                                  <EmployeeAvatar employeeId={subLead.handler_id} size="md" />
+                                  <EmployeeAvatar employeeId={subLead.handler_id} displayName={subLead.handler} size="md" />
                                   <span className="text-sm text-gray-600">{subLead.handler}</span>
                                 </>
                               ) : (

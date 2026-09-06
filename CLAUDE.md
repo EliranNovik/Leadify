@@ -137,6 +137,19 @@ OPENAI_API_KEY= (set in Supabase dashboard)
 # BOI_BASE_CURRENCIES=USD,EUR,GBP,CHF,CAD,AUD
 # BOI_RATES_SYNC_CRON_SECRET=… + POST header x-cron-secret (6:00 Asia/Jerusalem via Dashboard cron or backend scheduler)
 # ENABLE_BOI_RATES_SCHEDULER=true  BOI_RATES_SYNC_HOUR_JERUSALEM=6
+
+# Daily handler New / Re-assigned cases digest (10:00 Asia/Jerusalem, misc_emailtemplate 194)
+# Sends from the same connected mailbox as payment receipts (PAYMENT_CONFIRMATION_MAILBOX_USER_ID)
+# ENABLE_HANDLER_NEW_CASES_DIGEST_SCHEDULER=true
+# HANDLER_NEW_CASES_DIGEST_HOUR_JERUSALEM=10
+# HANDLER_NEW_CASES_DIGEST_END_HOUR_JERUSALEM=11
+# HANDLER_NEW_CASES_TEMPLATE_ID=194
+# HANDLER_NEW_CASES_DIGEST_CRON_SECRET=… + POST /api/handler-new-cases-digest/run header x-cron-secret
+
+# PEX / partner webhook meeting confirmations (employee 177)
+# true (default) = CRM still sends email + WhatsApp templates after PEX books a meeting
+# false = skip CRM outbound so PEX can deliver those messages (inbox still works)
+# ENABLE_PEX_CRM_OUTBOUND_NOTIFICATIONS=true
 ```
 
 ### Development Patterns

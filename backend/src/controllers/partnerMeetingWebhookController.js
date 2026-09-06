@@ -33,6 +33,7 @@ const partnerMeetingWebhookController = {
       success: true,
       message: 'Partner meeting webhook is active',
       endpoint: 'POST /api/hook/partner/meeting',
+      crmOutboundNotifications: clientBookingService.isPexCrmOutboundEnabled(),
       timestamp: new Date().toISOString(),
     });
   },

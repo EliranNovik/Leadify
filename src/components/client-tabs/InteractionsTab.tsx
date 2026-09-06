@@ -9471,7 +9471,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     row.content ||
                                     '';
                                   // renderedContent is already ensureFormattedEmailHtml'd
-                                  return ensureFormattedEmailHtml(raw);
+                                  const formatted = ensureFormattedEmailHtml(raw);
+                                  // #region agent log
+                                  fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H4',location:'InteractionsTab.tsx:TruncatedContent',message:'timeline email box',data:{srcLen:String(raw).length,srcBr:(String(raw).match(/<br\s*\/?>/gi)||[]).length,outBr:(formatted.match(/<br\s*\/?>/gi)||[]).length,assembled:/email-signature-block/i.test(String(raw))},timestamp:Date.now()})}).catch(()=>{});
+                                  // #endregion
+                                  return formatted;
                                 }
 
                                 // WhatsApp / SMS / manual: keep real newlines (incl. blank lines)
