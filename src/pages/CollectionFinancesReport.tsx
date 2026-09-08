@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
+import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, CheckBadgeIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline, ClockIcon as ClockIconOutline, PaperAirplaneIcon, ChevronUpIcon, ChevronDownIcon, ChevronUpDownIcon } from '@heroicons/react/24/outline';
 import { PhoneIcon as PhoneIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
@@ -73,6 +73,7 @@ type Filters = {
   order: string[]; // Changed to array for multi-select
   currencyId: string[]; // Multi-select: accounting_currencies.id
   due: 'ignore' | 'due_only';
+  proformaEmail?: 'any' | 'not_sent' | 'sent';
 };
 
 export type PaymentRow = {
@@ -90,6 +91,9 @@ export type PaymentRow = {
   orderLabel: string;
   collected: boolean;
   hasProforma: boolean;
+  invoiceSent?: boolean;
+  invoiceSentAt?: string | null;
+  invoiceSentByName?: string | null;
   collectedDate: string | null;
   dueDate: string | null;
   /** Legacy only: the `date` column (used for date filter when Due = Ignore). New leads: null. */
@@ -247,7 +251,8 @@ const collectedOptions = [
   { value: 'all', label: 'All' },
   { value: 'yes_with_proforma', label: 'Yes - With Proforma' },
   { value: 'yes_without_proforma', label: 'Yes - Without Proforma' },
-  { value: 'no_with_proforma', label: 'No - With Proforma' },
+  { value: 'no_with_proforma', label: 'No - Pending (Proforma)' },
+  { value: 'no_with_proforma_sent', label: 'No - Pending (Proforma sent)' },
   { value: 'no_without_proforma', label: 'No - Without Proforma' },
 ] as const;
 
@@ -283,7 +288,25 @@ function collectedStatusLabel(row: PaymentRow): string {
   if (row.collected) {
     return row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma';
   }
-  return row.hasProforma ? 'Pending (Proforma)' : 'Pending';
+  if (row.hasProforma) {
+    return row.invoiceSent ? 'Pending (Proforma sent)' : 'Pending (Proforma)';
+  }
+  return 'Pending';
+}
+
+function rowMatchesCollectedFilter(row: PaymentRow, collected: string[]): boolean {
+  if (!Array.isArray(collected) || collected.length === 0) return true;
+  let matchesFilter = false;
+  if (collected.includes('yes_with_proforma') && row.collected && row.hasProforma) matchesFilter = true;
+  if (collected.includes('yes_without_proforma') && row.collected && !row.hasProforma) matchesFilter = true;
+  if (collected.includes('no_with_proforma') && !row.collected && row.hasProforma && !row.invoiceSent) {
+    matchesFilter = true;
+  }
+  if (collected.includes('no_with_proforma_sent') && !row.collected && row.hasProforma && row.invoiceSent) {
+    matchesFilter = true;
+  }
+  if (collected.includes('no_without_proforma') && !row.collected && !row.hasProforma) matchesFilter = true;
+  return matchesFilter;
 }
 
 function formatRowAmount(row: PaymentRow): string {
@@ -298,6 +321,21 @@ function formatRowDate(value: string | null | undefined): string {
   return new Date(value).toLocaleDateString();
 }
 
+function sentToFinanceEmployeeId(plan: { ready_to_pay_by?: unknown; due_by_id?: unknown }, isLegacy: boolean): number | null {
+  const raw = isLegacy ? (plan.due_by_id ?? plan.ready_to_pay_by) : plan.ready_to_pay_by;
+  const id = Number(raw);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function invoiceSentTooltip(row: PaymentRow): string {
+  const date = row.invoiceSentAt ? formatRowDate(row.invoiceSentAt) : null;
+  const by = row.invoiceSentByName?.trim();
+  if (date && by && date !== '—') return `Sent ${date} by ${by}`;
+  if (date && date !== '—') return `Sent ${date}`;
+  if (by) return `Sent by ${by}`;
+  return 'Invoice sent';
+}
+
 function InvoiceAutomationBadge({ row }: { row: PaymentRow }) {
   if (!row.invoiceSendAutomationActive) return null;
   const sent = Boolean(row.invoiceSendAutomationSentAt);
@@ -307,16 +345,14 @@ function InvoiceAutomationBadge({ row }: { row: PaymentRow }) {
     : `Scheduled invoice send on ${formatRowDate(scheduledDate)} (${row.invoiceSendAutomationLanguage === 'he' ? 'Hebrew' : 'English'})`;
   return (
     <span
-      className={`ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${
-        sent
-          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-          : 'border-violet-200 bg-violet-50 text-violet-700'
+      className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
+        sent ? 'bg-emerald-100 text-emerald-600' : 'bg-violet-100 text-violet-600'
       }`}
       title={title}
       aria-label={title}
     >
       {sent ? (
-        <CheckIcon className="h-3.5 w-3.5" aria-hidden />
+        <CheckBadgeIcon className="h-4 w-4" aria-hidden />
       ) : (
         <ClockIconOutline className="h-3.5 w-3.5" aria-hidden />
       )}
@@ -336,6 +372,7 @@ const DEFAULT_FILTERS: Filters = {
   order: [],
   currencyId: [],
   due: 'ignore',
+  proformaEmail: 'any',
 };
 
 const SAVED_VIEWS_STORAGE_KEY = 'collectionFinancesReport_savedViews';
@@ -534,6 +571,7 @@ const PAYMENT_SEARCH_FILTERS: Filters = {
   order: [],
   currencyId: [],
   due: 'ignore',
+  proformaEmail: 'any',
 };
 
 async function resolveLeadIdsForPaymentSearch(query: string): Promise<PaymentFetchScope> {
@@ -763,13 +801,8 @@ function getCollectionRowFilterReason(row: PaymentRow, filters: Filters): string
     }
   }
   if (Array.isArray(filters.collected) && filters.collected.length > 0) {
-    let matchesFilter = false;
-    if (filters.collected.includes('yes_with_proforma') && row.collected && row.hasProforma) matchesFilter = true;
-    if (filters.collected.includes('yes_without_proforma') && row.collected && !row.hasProforma) matchesFilter = true;
-    if (filters.collected.includes('no_with_proforma') && !row.collected && row.hasProforma) matchesFilter = true;
-    if (filters.collected.includes('no_without_proforma') && !row.collected && !row.hasProforma) matchesFilter = true;
-    if (!matchesFilter) {
-      return `collected: filter=[${filters.collected.join(',')}], row collected=${row.collected}, hasProforma=${row.hasProforma}`;
+    if (!rowMatchesCollectedFilter(row, filters.collected)) {
+      return `collected: filter=[${filters.collected.join(',')}], row collected=${row.collected}, hasProforma=${row.hasProforma}, invoiceSent=${row.invoiceSent}`;
     }
   }
   if (Array.isArray(filters.order) && filters.order.length > 0) {
@@ -1171,6 +1204,7 @@ import {
   collectionDisplayFilterForFocus,
   type FinanceCollectionFocusId,
 } from '../lib/financeCollectionFocus';
+import { applyInvoiceSentFromPaymentRequest, filterPaymentRowsByProformaEmail } from '../lib/paymentRequestEmail';
 
 const CollectionFinancesReport: React.FC<{
   /** Hide the local action rail (used inside Finance Management). */
@@ -1537,7 +1571,7 @@ const CollectionFinancesReport: React.FC<{
   const handleSelectAllCollected = () => {
     setFilters(prev => ({ 
       ...prev, 
-      collected: ['yes_with_proforma', 'yes_without_proforma', 'no_with_proforma', 'no_without_proforma'] 
+      collected: ['yes_with_proforma', 'yes_without_proforma', 'no_with_proforma', 'no_with_proforma_sent', 'no_without_proforma'] 
     }));
   };
 
@@ -1698,7 +1732,7 @@ const loadPayments = async ({
         hasProforma: p.hasProforma,
       })));
       
-      const combined = [...modern, ...legacy];
+      const combined = await applyInvoiceSentFromPaymentRequest([...modern, ...legacy]);
       const combined168080 = combined.filter((row) =>
         row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080'
       );
@@ -1757,32 +1791,7 @@ const loadPayments = async ({
         
         // Collected filter (multi-select)
         if (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) {
-          let matchesFilter = false;
-          
-          if (activeFilters.collected.includes('yes_with_proforma')) {
-            // Collected with proforma
-            if (row.collected && row.hasProforma) {
-              matchesFilter = true;
-            }
-          }
-          if (activeFilters.collected.includes('yes_without_proforma')) {
-            // Collected without proforma
-            if (row.collected && !row.hasProforma) {
-              matchesFilter = true;
-            }
-          }
-          if (activeFilters.collected.includes('no_with_proforma')) {
-            // Uncollected with proforma
-            if (!row.collected && row.hasProforma) {
-              matchesFilter = true;
-            }
-          }
-          if (activeFilters.collected.includes('no_without_proforma')) {
-            // Uncollected without proforma
-            if (!row.collected && !row.hasProforma) {
-              matchesFilter = true;
-            }
-          }
+          const matchesFilter = rowMatchesCollectedFilter(row, activeFilters.collected);
           
           if (!matchesFilter) {
             if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by collected: row.collected=${row.collected}, row.hasProforma=${row.hasProforma}, filter=${activeFilters.collected?.join(',')}`);
@@ -1961,6 +1970,11 @@ const loadPayments = async ({
         const bDate = b.collectedDate || b.dueDate || '';
         return bDate.localeCompare(aDate);
       });
+
+      const emailMode = activeFilters.proformaEmail || 'any';
+      if (emailMode !== 'any') {
+        rowsToSet = await filterPaymentRowsByProformaEmail(rowsToSet, emailMode);
+      }
       
       // Debug: Final check before setting rows
       const final199849 = rowsToSet.filter((row) =>
@@ -2443,6 +2457,13 @@ const loadPayments = async ({
             if (result.emailSent || result.whatsAppSent) {
               sent += 1;
               toast.success(buildProformaSendSuccessMessage(result, language));
+              setRows((prev) =>
+                prev.map((existing) =>
+                  existing.id === row.id
+                    ? { ...existing, invoiceSent: true, invoiceSentAt: new Date().toISOString() }
+                    : existing,
+                ),
+              );
             } else {
               failed += 1;
             }
@@ -3679,6 +3700,18 @@ const loadPayments = async ({
             </select>
           </div>
           <div className="form-control">
+            <label className="label mb-2"><span className="label-text">Payment request sent:</span></label>
+            <select
+              className="select select-bordered"
+              value={filters.proformaEmail || 'any'}
+              onChange={(e) => handleFilterChange('proformaEmail', e.target.value)}
+            >
+              <option value="any">Any</option>
+              <option value="not_sent">Not sent (email or WhatsApp)</option>
+              <option value="sent">Sent (email or WhatsApp)</option>
+            </select>
+          </div>
+          <div className="form-control">
             <label className="label mb-2"><span className="label-text">Payment from:</span></label>
             <input
               type="date"
@@ -3945,24 +3978,35 @@ const loadPayments = async ({
                   ) : null}
                   <td>{row.orderLabel || '—'}</td>
                   <td>
-                    <span className="inline-flex items-center">
+                    <span className="inline-flex items-center gap-1.5">
                       {row.collected ? (
-                        <span className="inline-flex items-center gap-2 text-green-600 font-semibold">
+                        <span className="inline-flex items-center gap-1.5 text-green-600 font-semibold">
                           <CheckCircleIcon className="w-5 h-5" />
                           {row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma'}
+                          <InvoiceAutomationBadge row={row} />
+                        </span>
+                      ) : row.hasProforma && row.invoiceSent ? (
+                        <span
+                          className="inline-flex items-center gap-1.5 text-indigo-600 font-semibold"
+                          title={invoiceSentTooltip(row)}
+                        >
+                          <PaperAirplaneIcon className="w-5 h-5" />
+                          Pending (Proforma sent)
+                          <InvoiceAutomationBadge row={row} />
                         </span>
                       ) : row.hasProforma ? (
-                        <span className="inline-flex items-center gap-2 text-yellow-600 font-semibold">
+                        <span className="inline-flex items-center gap-1.5 text-yellow-600 font-semibold">
                           <ExclamationTriangleIcon className="w-5 h-5" />
                           Pending (Proforma)
+                          <InvoiceAutomationBadge row={row} />
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-2 text-red-600 font-semibold">
+                        <span className="inline-flex items-center gap-1.5 text-red-600 font-semibold">
                           <XCircleIcon className="w-5 h-5" />
                           Pending
+                          <InvoiceAutomationBadge row={row} />
                         </span>
                       )}
-                      <InvoiceAutomationBadge row={row} />
                     </span>
                   </td>
                   <td>
@@ -4139,7 +4183,7 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
   console.log(`🔍 [fetchModernPayments] Starting with filters:`, filters);
   let query = supabase
     .from('payment_plans')
-    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at');
+    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, ready_to_pay_by, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at');
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
@@ -4286,6 +4330,11 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
   
   const leadIds = Array.from(new Set(dateFilteredPlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
   const leadMeta = await fetchLeadMetadata(leadIds, false);
+  const sentByNames = await fetchHandlerNames(
+    dateFilteredPlans
+      .map((plan: any) => sentToFinanceEmployeeId(plan, false))
+      .filter((id): id is number => id != null),
+  );
 
   // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
   // IMPORTANT: All payment values come from payment_plans table, NOT from leads table
@@ -4342,6 +4391,12 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
       orderLabel: mapOrderLabel(orderCode, plan.payment_order),
       collected: Boolean(paidAt || plan.paid),
       hasProforma,
+      invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
+      invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
+      invoiceSentByName: (() => {
+        const sentById = sentToFinanceEmployeeId(plan, false);
+        return sentById != null ? sentByNames.get(sentById) || null : null;
+      })(),
       collectedDate: paidAt,
       dueDate,
       planDate: null, // New leads have no separate "date" column; date filter uses due_date
@@ -4370,7 +4425,7 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
   let query = supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, ready_to_pay_by, due_by_id, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
     );
 
   // Always filter out cancelled plans
@@ -4625,6 +4680,12 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
     }
   }
 
+  const sentByNames = await fetchHandlerNames(
+    activePlans
+      .map((plan: any) => sentToFinanceEmployeeId(plan, true))
+      .filter((id): id is number => id != null),
+  );
+
   // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
   return activePlans
     .map((plan: any) => {
@@ -4752,6 +4813,12 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
       orderLabel: mapOrderLabel(orderCode, plan.order),
       collected: Boolean(actualDate),
       hasProforma,
+      invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
+      invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
+      invoiceSentByName: (() => {
+        const sentById = sentToFinanceEmployeeId(plan, true);
+        return sentById != null ? sentByNames.get(sentById) || null : null;
+      })(),
       collectedDate: actualDate,
       dueDate,
       planDate,
@@ -5258,7 +5325,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
     const { data: plans, error } = await supabase
       .from('payment_plans')
       .select(
-        'id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay'
+        'id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at'
       )
       .eq('lead_id', params.leadUuid)
       .is('cancel_date', null);
@@ -5300,6 +5367,8 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
         orderLabel: mapOrderLabel(orderCode, plan.payment_order),
         collected: Boolean(paidAt || plan.paid),
         hasProforma,
+        invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
+      invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
         collectedDate: paidAt,
         dueDate,
         planDate: null,
@@ -5324,7 +5393,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
   const { data: plans, error } = await supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)'
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)'
     )
     .eq('lead_id', legacyId)
     .is('cancel_date', null);
@@ -5419,6 +5488,8 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
       orderLabel: mapOrderLabel(orderCode, plan.order),
       collected: Boolean(actualDate),
       hasProforma,
+      invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
+      invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
       collectedDate: actualDate,
       dueDate,
       planDate,

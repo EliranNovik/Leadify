@@ -186,7 +186,7 @@ export function useMeetingSummaryVoiceRecorder(options?: {
   }, [clearTimer, cleanupStream, isRecording, isSupported, startAudioLevelMonitor, stopAudioLevelMonitor, stopInternal]);
 
   const stop = useCallback((): Promise<VoiceRecordingResult> => {
-    if (!isRecording || !recorderRef.current) {
+    if (!recorderRef.current || recorderRef.current.state === 'inactive') {
       return Promise.reject(new Error('Not recording'));
     }
 
@@ -195,7 +195,7 @@ export function useMeetingSummaryVoiceRecorder(options?: {
       stopRejectRef.current = reject;
       stopInternal();
     });
-  }, [isRecording, stopInternal]);
+  }, [stopInternal]);
 
   const cancel = useCallback(() => {
     stopResolverRef.current = null;

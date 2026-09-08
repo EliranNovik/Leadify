@@ -124,13 +124,7 @@ import {
   triggerBrowserDownload,
   type RmqAiChatFile,
 } from '../lib/rmqAiExcel';
-import { transcribeMeetingSummaryAudio } from '../lib/meetingSummaryNotesApi';
-import { useLiveSpeechRecognition } from '../lib/useLiveSpeechRecognition';
-import {
-  useMeetingSummaryVoiceRecorder,
-  voiceBlobToBase64,
-  type VoiceRecordingResult,
-} from '../lib/useMeetingSummaryVoiceRecorder';
+import { useLiveBackendTranscription } from '../lib/useLiveBackendTranscription';
 
 interface AIChatWindowProps {
   isOpen: boolean;
@@ -589,14 +583,6 @@ const combineLiveTranscript = (baseDraft: string, finalText: string, interimText
   return `${baseDraft.trim()}\n\n${spoken}`;
 };
 
-const chatSpeechLang = (leadLanguage?: string | null, sampleText = ''): 'he-IL' | 'en-US' => {
-  const blob = `${leadLanguage || ''} ${sampleText}`.toLowerCase();
-  if (textIsMostlyHebrew(sampleText) || /hebrew|עבר|\bhe\b/.test(blob)) return 'he-IL';
-  if (/\benglish\b|\ben\b/.test(blob)) return 'en-US';
-  if (typeof navigator !== 'undefined' && navigator.language?.toLowerCase().startsWith('he')) return 'he-IL';
-  return 'he-IL';
-};
-
 const plainTextFromMessage = (message: Message): string => {
   if (Array.isArray(message.content)) {
     return message.content
@@ -723,13 +709,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const copiedBubbleTimerRef = useRef<number | null>(null);
   const [isVoiceBusy, setIsVoiceBusy] = useState(false);
   const voiceBaseInputRef = useRef('');
-  const voiceFinishingRef = useRef(false);
-  const liveSpeech = useLiveSpeechRecognition();
-  const liveSpeechRef = useRef(liveSpeech);
-  liveSpeechRef.current = liveSpeech;
-  const finishVoiceRef = useRef<(payload: { recording?: VoiceRecordingResult | null; liveText: string }) => void>(
-    () => {},
-  );
+  const voiceShownTextRef = useRef('');
   const {
     isSupported: voiceRecordingSupported,
     isRecording: isVoiceRecording,
@@ -737,15 +717,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     start: startVoiceRecording,
     stop: stopVoiceRecording,
     cancel: cancelVoiceRecording,
-  } = useMeetingSummaryVoiceRecorder({
-    onRecordingComplete: (result) => {
-      const live = liveSpeechRef.current;
-      const liveText = live.isListening ? live.stop() : '';
-      finishVoiceRef.current({ recording: result, liveText });
-    },
-  });
-  const { isSupported: liveSpeechSupported, isListening: isVoiceListening, start: startLiveSpeech, stop: stopLiveSpeech, cancel: cancelLiveSpeech } = liveSpeech;
-  const isVoiceActive = isVoiceRecording || isVoiceListening || isVoiceBusy;
+  } = useLiveBackendTranscription();
+  const isVoiceActive = isVoiceRecording || isVoiceBusy;
   const panelRef = useRef<HTMLDivElement>(null);
   const panelResizeRef = useRef<{
     pointerId: number;
@@ -807,10 +780,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
 
   useEffect(() => {
     if (isOpen) return;
-    cancelLiveSpeech();
     cancelVoiceRecording();
     setIsVoiceBusy(false);
-  }, [isOpen, cancelLiveSpeech, cancelVoiceRecording]);
+  }, [isOpen, cancelVoiceRecording]);
 
   const syncOpenClient = useCallback(async () => {
     const slim = slimRmqAiCurrentLead(currentLead);
@@ -1969,105 +1941,57 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     return () => window.removeEventListener(RMQ_AI_OPEN_EVENT, onOpen);
   }, [isOpen]);
 
-  const finishVoiceToInput = async (payload: { recording?: VoiceRecordingResult | null; liveText: string }) => {
-    if (voiceFinishingRef.current) return;
-    voiceFinishingRef.current = true;
+  const startVoiceInput = async () => {
+    if (isLoading || isVoiceActive) return;
+    if (!voiceRecordingSupported) {
+      toast.error('Voice input is not supported in this browser');
+      return;
+    }
+    voiceBaseInputRef.current = input;
+    voiceShownTextRef.current = '';
+    try {
+      await startVoiceRecording();
+    } catch (err) {
+      cancelVoiceRecording();
+      voiceBaseInputRef.current = '';
+      voiceShownTextRef.current = '';
+      toast.error(err instanceof Error ? err.message : 'Could not start microphone');
+    }
+  };
+
+  const stopVoiceToInput = async () => {
+    if (!isVoiceRecording || isVoiceBusy) return;
+    const base = voiceBaseInputRef.current.trim();
     setIsVoiceBusy(true);
     try {
-      let transcript = '';
-      if (payload.recording) {
-        const audioBase64 = await voiceBlobToBase64(payload.recording.blob);
-        const whisper = await transcribeMeetingSummaryAudio({
-          audioBase64,
-          mimeType: payload.recording.mimeType,
-          language: 'auto',
-          prompt:
-            'Hebrew and English CRM chat. Accurately keep names, lead numbers, meetings, follow-ups, WhatsApp, and email.',
-        });
-        transcript = whisper.transcript.trim();
-      }
-      if (!transcript) {
-        transcript = payload.liveText.trim();
-      }
-      const message = combineLiveTranscript(voiceBaseInputRef.current, transcript, '');
+      const spoken = (await stopVoiceRecording()).trim();
+      const message = combineLiveTranscript(voiceBaseInputRef.current, spoken, '');
       voiceBaseInputRef.current = '';
-      if (!message.trim()) {
+      voiceShownTextRef.current = '';
+      if (!spoken) {
         toast.error('No speech detected');
-        setInput('');
-        setCaret(0);
+        setInput(base);
+        setCaret(base.length);
         return;
       }
       setInput(message);
       setCaret(message.length);
       setSuggestDismissed(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to transcribe voice');
+      toast.error(err instanceof Error ? err.message : 'Failed to stop recording');
+      setInput(base);
+      setCaret(base.length);
     } finally {
-      voiceFinishingRef.current = false;
       setIsVoiceBusy(false);
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
     }
   };
-  finishVoiceRef.current = (payload) => {
-    void finishVoiceToInput(payload);
-  };
-
-  const startVoiceInput = async () => {
-    if (isLoading || isVoiceActive) return;
-    if (!liveSpeechSupported && !voiceRecordingSupported) {
-      toast.error('Voice input is not supported in this browser');
-      return;
-    }
-    voiceBaseInputRef.current = input;
-    voiceFinishingRef.current = false;
-    try {
-      if (voiceRecordingSupported) {
-        await startVoiceRecording();
-      } else if (liveSpeechSupported) {
-        startLiveSpeech({
-          lang: chatSpeechLang(currentLead?.language, input),
-        });
-      }
-    } catch (err) {
-      cancelLiveSpeech();
-      cancelVoiceRecording();
-      voiceBaseInputRef.current = '';
-      toast.error(err instanceof Error ? err.message : 'Could not start microphone');
-    }
-  };
-
-  const stopVoiceToInput = async () => {
-    if (isVoiceBusy || voiceFinishingRef.current) return;
-    try {
-      const liveText = isVoiceListening ? stopLiveSpeech() : '';
-      let recording: VoiceRecordingResult | null = null;
-      try {
-        recording = await stopVoiceRecording();
-      } catch {
-        cancelVoiceRecording();
-      }
-      await finishVoiceToInput({ recording, liveText });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to stop recording');
-      voiceFinishingRef.current = false;
-      setIsVoiceBusy(false);
-    }
-  };
-
-  const cancelVoiceInput = () => {
-    voiceFinishingRef.current = false;
-    cancelLiveSpeech();
-    cancelVoiceRecording();
-    setInput(voiceBaseInputRef.current);
-    voiceBaseInputRef.current = '';
-    setIsVoiceBusy(false);
-  };
 
   const toggleVoiceInput = () => {
     if (isVoiceBusy) return;
-    if (isVoiceRecording || isVoiceListening) {
+    if (isVoiceRecording) {
       void stopVoiceToInput();
       return;
     }
@@ -3283,14 +3207,26 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         .ai-plus-item {
           display: flex;
-          width: 100%;
+          width: calc(100% - 0.7rem);
+          margin: 0 0.35rem;
           align-items: center;
           gap: 0.75rem;
           padding: 0.65rem 0.75rem;
           text-align: left;
+          border: 0;
+          border-radius: 0.7rem;
+          background: transparent;
+          cursor: pointer;
+          transition: background 0.15s ease, color 0.15s ease;
         }
         .ai-plus-item:hover {
-          background: #f9fafb;
+          background: #f3f4f6;
+        }
+        .ai-plus-item:hover .ai-plus-title {
+          color: #0f172a;
+        }
+        .ai-plus-item:active {
+          background: #e5e7eb;
         }
         .ai-plus-icon {
           width: 1.25rem;
@@ -4885,6 +4821,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-drawer-dark .ai-plus-item:hover {
           background: #3a3d45;
         }
+        .ai-drawer-dark .ai-plus-item:active {
+          background: #454851;
+        }
         .ai-drawer-dark .ai-plus-title {
           color: var(--ai-text);
         }
@@ -4968,13 +4907,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-plus-overlay {
           z-index: 46;
         }
+        .ai-plus-overlay-desktop {
+          pointer-events: none;
+        }
+        .ai-plus-overlay-desktop .ai-plus-drawer {
+          pointer-events: auto;
+        }
         .ai-plus-drawer {
           position: absolute;
           top: 0;
           bottom: 0;
           left: 0;
           display: flex;
-          width: min(90vw, 24rem);
+          width: min(90%, 24rem);
           height: 100%;
           flex-direction: column;
           overflow: hidden;
@@ -5018,6 +4963,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .ai-plus-drawer .ai-plus-item {
           gap: 1rem;
           padding: 0.95rem 1.15rem;
+          width: calc(100% - 0.9rem);
+          margin: 0 0.45rem;
+          border-radius: 0.85rem;
+        }
+        .ai-plus-drawer .ai-plus-item:hover {
+          background: #eef2f7;
         }
         .ai-plus-drawer .ai-plus-icon {
           width: 1.85rem;
@@ -5046,6 +4997,47 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         .ai-drawer-dark .ai-plus-drawer-close {
           color: #c5c8d0;
+        }
+        .ai-plus-drawer-desktop {
+          width: min(88%, 18.5rem);
+        }
+        .ai-plus-drawer-desktop .ai-plus-drawer-head {
+          padding: 0.7rem 0.75rem 0.45rem 0.95rem;
+          font-size: 0.9375rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-drawer-close {
+          height: 2rem;
+          width: 2rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-drawer-body {
+          padding: 0.1rem 0 0.75rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-item {
+          gap: 0.7rem;
+          padding: 0.5rem 0.75rem;
+          width: calc(100% - 0.7rem);
+          margin: 0 0.35rem;
+          border-radius: 0.55rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-item:hover {
+          background: #f3f4f6;
+        }
+        .ai-plus-drawer-desktop .ai-plus-icon {
+          width: 1.2rem;
+          height: 1.2rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-copy {
+          gap: 0.05rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-title {
+          font-size: 0.8125rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-hint {
+          font-size: 0.6875rem;
+        }
+        .ai-plus-drawer-desktop .ai-plus-section {
+          padding: 0.5rem 0.85rem 0.15rem;
+          font-size: 10px;
         }
         .ai-history-backdrop {
           position: absolute;
@@ -5467,15 +5459,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             </div>
           )}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
-            {attachMenuOpen && !isMobile ? (
-              <div
-                ref={plusMenuRef}
-                role="menu"
-                className="ai-plus-menu absolute left-4 z-20 w-80 rounded-2xl bg-white py-1.5 md:left-5"
-              >
-                {plusMenuItems}
-              </div>
-            ) : null}
             <div 
               className="ai-chat-under-header ai-messages-scroll scrollbar-hide flex min-h-0 flex-1 flex-col overflow-y-auto bg-gray-50 px-4 pb-36 md:px-5 md:pb-32"
               style={{
@@ -5839,26 +5822,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     </button>
                   </div>
                   <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center">
-                    {isVoiceRecording || isVoiceListening || isVoiceBusy ? (
-                      <div className="flex h-full w-full items-center gap-2.5 pl-1" aria-live="polite">
-                        {isVoiceBusy ? (
-                          <>
-                            <span className="loading loading-spinner loading-xs text-violet-500" />
-                            <span className={`text-sm font-medium ${isDarkTheme ? 'text-zinc-400' : 'text-gray-500'}`}>
-                              Transcribing…
-                            </span>
-                          </>
-                        ) : (
-                          <div className="ai-voice-meter pr-1" aria-hidden={false} aria-label="Recording">
-                            <span className="sr-only">Recording</span>
-                            {Array.from({ length: VOICE_METER_BAR_COUNT }, (_, index) => (
-                              <span
-                                key={index}
-                                style={{ height: voiceMeterBarHeight(index, voiceAudioLevel) }}
-                              />
-                            ))}
-                          </div>
-                        )}
+                    {isVoiceRecording || isVoiceBusy ? (
+                      <div className="ai-voice-meter w-full" aria-hidden={false} aria-label="Recording">
+                        <span className="sr-only">{isVoiceBusy ? 'Transcribing' : 'Recording'}</span>
+                        {Array.from({ length: VOICE_METER_BAR_COUNT }, (_, index) => (
+                          <span
+                            key={index}
+                            style={{ height: voiceMeterBarHeight(index, voiceAudioLevel) }}
+                          />
+                        ))}
                       </div>
                     ) : (
                       <>
@@ -5917,51 +5889,61 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       </>
                     )}
                   </div>
+                  {Boolean(input.trim() || images.length > 0) && !isVoiceActive ? (
                   <div className="relative mr-1.5 shrink-0 self-center">
                     <button
                       type="button"
-                      className={`ai-composer-btn btn btn-circle btn-sm h-10 w-10 border-0 ${
-                        isVoiceRecording || isVoiceListening
+                      className="ai-composer-btn btn btn-ghost btn-circle btn-sm h-10 w-10 border-0 text-slate-500 hover:bg-gray-100"
+                      onClick={() => toggleVoiceInput()}
+                      disabled={isLoading}
+                      aria-label="Voice input"
+                      title="Voice input"
+                    >
+                      <MicrophoneIcon className="h-5 w-5" />
+                    </button>
+                  </div>
+                  ) : null}
+                  <div className="relative shrink-0 self-center pr-1.5">
+                    {isVoiceActive || !(input.trim() || images.length > 0) ? (
+                    <button
+                      type="button"
+                      className={`ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 ${
+                        isVoiceRecording || isVoiceBusy
                           ? 'ai-voice-accept-btn'
-                          : 'btn-ghost text-slate-500 hover:bg-gray-100'
+                          : 'ai-send-btn text-white'
                       }`}
                       onClick={() => toggleVoiceInput()}
                       disabled={(isLoading && !isVoiceActive) || isVoiceBusy}
-                      aria-pressed={isVoiceRecording || isVoiceListening}
+                      aria-pressed={isVoiceRecording}
                       aria-label={
                         isVoiceBusy
                           ? 'Transcribing'
-                          : isVoiceRecording || isVoiceListening
+                          : isVoiceRecording
                             ? 'Use recording'
                             : 'Voice input'
                       }
                       title={
                         isVoiceBusy
                           ? 'Transcribing'
-                          : isVoiceRecording || isVoiceListening
+                          : isVoiceRecording
                             ? 'Use recording'
                             : 'Voice input'
                       }
                     >
-                      {isVoiceRecording || isVoiceListening ? (
+                      {isVoiceBusy ? (
+                        <span className="loading loading-spinner loading-xs text-white" />
+                      ) : isVoiceRecording ? (
                         <CheckIcon className="h-5 w-5" strokeWidth={2.5} />
                       ) : (
                         <MicrophoneIcon className="h-5 w-5" />
                       )}
                     </button>
-                  </div>
-                  <div className="relative shrink-0 self-center pr-1.5">
+                    ) : (
                     <button
                       type="button"
                       className="ai-send-btn ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 text-white disabled:opacity-60"
                       onClick={() => handleSend()}
-                      disabled={
-                        isVoiceBusy ||
-                        isVoiceRecording ||
-                        isVoiceListening ||
-                        isLoading ||
-                        (!input.trim() && images.length === 0)
-                      }
+                      disabled={isLoading}
                       aria-label="Send"
                       title="Send"
                     >
@@ -5971,6 +5953,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         <PaperAirplaneIcon className="h-5 w-5" />
                       )}
                     </button>
+                    )}
                   </div>
                 </div>
                 <input
@@ -5986,15 +5969,22 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           </div>
         </div>
 
-        {attachMenuOpen && isMobile ? (
-          <div className="ai-plus-overlay" role="dialog" aria-modal="true" aria-label="Add">
-            <button
-              type="button"
-              className="ai-history-backdrop"
-              onClick={() => setAttachMenuOpen(false)}
-              aria-label="Close add menu"
-            />
-            <aside ref={plusMenuRef} className="ai-plus-drawer" role="menu">
+        {attachMenuOpen ? (
+          <div
+            className={`ai-plus-overlay ${isMobile ? '' : 'ai-plus-overlay-desktop'}`}
+            role={isMobile ? 'dialog' : undefined}
+            aria-modal={isMobile ? true : undefined}
+            aria-label="Add"
+          >
+            {isMobile ? (
+              <button
+                type="button"
+                className="ai-history-backdrop"
+                onClick={() => setAttachMenuOpen(false)}
+                aria-label="Close add menu"
+              />
+            ) : null}
+            <aside ref={plusMenuRef} className={`ai-plus-drawer ${isMobile ? '' : 'ai-plus-drawer-desktop'}`} role="menu">
               <div className="ai-plus-drawer-head">
                 <span>Add</span>
                 <button
@@ -6003,7 +5993,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   onClick={() => setAttachMenuOpen(false)}
                   aria-label="Close"
                 >
-                  <XMarkIcon className="h-6 w-6" />
+                  <XMarkIcon className={isMobile ? 'h-6 w-6' : 'h-4 w-4'} />
                 </button>
               </div>
               <div className="ai-plus-drawer-body">{plusMenuItems}</div>

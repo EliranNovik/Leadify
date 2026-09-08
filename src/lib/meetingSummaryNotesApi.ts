@@ -29,6 +29,22 @@ export async function transcribeMeetingSummaryAudio(
   return { transcript: data.transcript };
 }
 
+export async function transcribeMeetingSummaryAudioAuto(
+  input: Omit<TranscribeMeetingSummaryAudioInput, 'language' | 'prompt'>,
+): Promise<{ transcript: string }> {
+  const languages: Array<'he' | 'auto' | 'en'> = ['he', 'auto', 'en'];
+  let lastError: Error | null = null;
+  for (const language of languages) {
+    try {
+      const result = await transcribeMeetingSummaryAudio({ ...input, language });
+      if (result.transcript.trim()) return result;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  throw lastError || new Error('No speech detected in the recording');
+}
+
 export type PolishMeetingSummaryNotesInput = {
   draft: string;
   clientName?: string | null;

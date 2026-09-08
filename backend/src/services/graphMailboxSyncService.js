@@ -2361,10 +2361,13 @@ class GraphMailboxSyncService {
         (recipientMappings[addr] || []).forEach((match) => collected.push(match));
       });
       const matches = preferContactMatches(uniqueMatches(collected));
-      const primary = primaryMatchFrom(matches) || {
-        clientId: clientId || null,
-        legacyId: legacyId || null,
-        contactId: contextContactId || null,
+      const addressPrimary = primaryMatchFrom(matches);
+      // Keep the lead we were sending from. Address matching often picks the
+      // parent master when a sub-lead shares the contact email.
+      const primary = {
+        clientId: clientId || addressPrimary?.clientId || null,
+        legacyId: legacyId || addressPrimary?.legacyId || null,
+        contactId: contextContactId || addressPrimary?.contactId || null,
       };
       const contactIds = contactIdsFromMatches(matches);
       if (contextContactId) contactIds.push(Number(contextContactId));

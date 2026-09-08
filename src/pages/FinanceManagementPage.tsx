@@ -292,7 +292,9 @@ const FinanceManagementPage: React.FC = () => {
         {hubTab === 'collection-due' && canViewCollectionTabs && (
           <FinanceCollectionDueTab focusPreset={focusPreset} />
         )}
-        {hubTab === 'signed' && canViewCollectionTabs && <FinanceSignedSalesTab />}
+        {hubTab === 'signed' && canViewCollectionTabs && (
+          <FinanceSignedSalesTab focusPreset={focusPreset} />
+        )}
         {hubTab === 'expenses' && canViewAllExpenses && <FinanceAllExpensesTab />}
         {hubTab === 'expense-entry' && (
           <FinanceExpensesTab canManageRestrictedKinds={canViewCollectionTabs} />

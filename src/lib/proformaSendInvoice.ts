@@ -9,6 +9,7 @@ import {
 } from './proformaSendWhatsApp';
 import type { ProformaSendLanguage } from './proformaSendLanguage';
 import { proformaSendLanguageLabel } from './proformaSendLanguage';
+import { markPaymentPlanInvoiceSent } from './markPaymentPlanInvoiceSent';
 
 export type ProformaSendBundleResult = {
   emailSent: boolean;
@@ -70,6 +71,8 @@ export async function sendProformaInvoiceBundle(
     if (primary) throw primary;
     throw new Error('Failed to send invoice.');
   }
+
+  await markPaymentPlanInvoiceSent(input);
 
   return {
     emailSent,

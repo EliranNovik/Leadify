@@ -1,13 +1,17 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowPathIcon,
   BanknotesIcon,
   BoltIcon,
   CalendarDaysIcon,
+  ClipboardDocumentCheckIcon,
   ClockIcon,
   DocumentTextIcon,
   ExclamationTriangleIcon,
+  PaperAirplaneIcon,
+  CheckCircleIcon,
   ReceiptPercentIcon,
+  XCircleIcon,
 } from '@heroicons/react/24/outline';
 import {
   CartesianGrid,
@@ -19,10 +23,16 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { Link } from 'react-router-dom';
 import {
+  fetchFinanceFailedPaymentsToday,
+  fetchFinanceInvoiceInstructions,
+  fetchFinanceLastPaymentsToday,
   fetchFinanceManagementOverview,
   fetchFinancePaymentTrend,
-  formatNis,
+  type FinanceFailedPaymentRow,
+  type FinanceInvoiceInstructionRow,
+  type FinanceLastPaymentRow,
   type FinanceOverviewSnapshot,
   type FinancePaymentTrendPoint,
 } from '../../lib/financeManagementOverview';
@@ -30,6 +40,11 @@ import {
   financeFocusDefaultTab,
   type FinanceCollectionFocusId,
 } from '../../lib/financeCollectionFocus';
+import { useAuthContext } from '../../contexts/AuthContext';
+import { getJerusalemTodayIsoDate } from '../../lib/boiCurrencyConversion';
+import { getGreetingFirstName, getJerusalemTimeGreeting } from '../../lib/clockInGreeting';
+import { usePersistedState } from '../../hooks/usePersistedState';
+import { supabase } from '../../lib/supabase';
 
 export type FinanceHubTabId =
   | 'dashboard'
@@ -52,6 +67,10 @@ const EMPTY: FinanceOverviewSnapshot = {
   expensesSalariesNis: 0,
   overdueUnpaidCount: 0,
   dueTodayCount: 0,
+  signedMissingPaymentPlanCount: 0,
+  dueUnsentProformaCount: 0,
+  dueSentProformaCount: 0,
+  dueNoProformaCount: 0,
   dueNext7DaysCount: 0,
   readyToPayUnpaidCount: 0,
   pendingWithProformaCount: 0,
@@ -111,57 +130,273 @@ const ATTENTION_TONES: Record<
   },
 };
 
+function BoxCount({
+  value,
+  loading,
+  singular,
+  plural,
+}: {
+  value: number;
+  loading: boolean;
+  singular: string;
+  plural: string;
+}) {
+  const label = value === 1 ? singular : plural;
+  return (
+    <div className="flex shrink-0 items-baseline gap-2 self-start">
+      <p className="text-4xl font-bold tabular-nums leading-none tracking-tight text-gray-900">
+        {loading ? '—' : value}
+      </p>
+      <p className="text-sm font-medium text-gray-500">{label}</p>
+    </div>
+  );
+}
+
+function FinanceAmountText({
+  currencySign,
+  amountNumber,
+  amountLabel,
+  tone = 'default',
+}: {
+  currencySign?: string;
+  amountNumber?: string;
+  amountLabel?: string;
+  tone?: 'default' | 'success' | 'danger';
+}) {
+  const color =
+    tone === 'success' ? 'text-emerald-600' : tone === 'danger' ? 'text-rose-600' : 'text-gray-800';
+  const text =
+    amountNumber && amountNumber !== '—'
+      ? `${currencySign || ''}${amountNumber}`
+      : amountLabel || '—';
+  return <span className={`whitespace-nowrap ${color}`}>{text}</span>;
+}
+
+function InvoiceInstructionTable({
+  rows,
+  loading,
+  emptyText,
+}: {
+  rows: FinanceInvoiceInstructionRow[];
+  loading: boolean;
+  emptyText: string;
+}) {
+  if (loading && rows.length === 0) {
+    return (
+      <div className="flex h-24 items-center justify-center">
+        <span className="loading loading-spinner loading-md text-blue-600" />
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
+        <CheckCircleIcon className="h-7 w-7 text-emerald-500" />
+        <p className="mt-2 text-sm text-gray-500">{emptyText}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3">
+      <table className="min-w-full divide-y divide-gray-100 text-sm">
+        <thead className="bg-white text-xs uppercase tracking-wide">
+          <tr>
+            <th className="px-1 py-2 text-left font-semibold text-gray-400">Lead</th>
+            <th className="px-2 py-2 text-left font-semibold text-gray-400">Client</th>
+            <th className="px-2 py-2 text-left font-semibold text-gray-400">Due</th>
+            <th className="px-2 py-2 text-right font-semibold text-gray-400">Amount</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-50 bg-white">
+          {rows.map((row) => (
+            <tr key={row.id} className="hover:bg-slate-50/80">
+              <td className="px-1 py-2 align-top">
+                <div className="min-w-0">
+                  {row.leadNumber && row.href !== '/clients' ? (
+                    <Link
+                      to={row.href}
+                      className="font-semibold text-sky-700 hover:text-sky-800 hover:underline"
+                      title={`Open finances for ${row.leadNumber}`}
+                    >
+                      {row.leadNumber}
+                    </Link>
+                  ) : (
+                    <span className="font-semibold text-gray-800">{row.leadNumber || '—'}</span>
+                  )}
+                  <p className="mt-0.5 text-[11px] uppercase tracking-wide text-gray-400">{row.orderLabel}</p>
+                </div>
+              </td>
+              <td className="max-w-[12rem] px-2 py-2 align-top text-gray-800">
+                <p className="truncate" title={row.clientName}>
+                  {row.clientName || '—'}
+                </p>
+              </td>
+              <td className="px-2 py-2 align-top">
+                <p
+                  className={`text-sm font-medium ${
+                    row.daysAgo >= 3 ? 'text-rose-700' : row.daysAgo >= 1 ? 'text-amber-700' : 'text-gray-800'
+                  }`}
+                >
+                  {row.dueLabel}
+                </p>
+              </td>
+              <td className="whitespace-nowrap px-2 py-2 text-right align-top">
+                <FinanceAmountText
+                  currencySign={row.currencySign}
+                  amountNumber={row.amountNumber}
+                  amountLabel={row.amountLabel}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
   onOpenTab,
   refreshKey = 0,
   canViewExpenses = false,
 }) => {
-  const [loading, setLoading] = useState(true);
-  const [trendLoading, setTrendLoading] = useState(true);
-  const [snapshot, setSnapshot] = useState<FinanceOverviewSnapshot>(EMPTY);
-  const [trend, setTrend] = useState<FinancePaymentTrendPoint[]>([]);
+  const { userFullName } = useAuthContext();
+  const welcomeName = getGreetingFirstName(userFullName || '');
+  const timeGreeting = getJerusalemTimeGreeting();
+  const [snapshot, setSnapshot] = usePersistedState<FinanceOverviewSnapshot>(
+    'financeDashboard_overview',
+    EMPTY,
+    { storage: 'sessionStorage', retainOnPageRefresh: true },
+  );
+  const [trend, setTrend] = usePersistedState<FinancePaymentTrendPoint[]>(
+    'financeDashboard_trend',
+    [],
+    { storage: 'sessionStorage', retainOnPageRefresh: true },
+  );
+  const [lastPayments, setLastPayments] = usePersistedState<FinanceLastPaymentRow[]>(
+    `financeDashboard_lastPayments_${getJerusalemTodayIsoDate()}`,
+    [],
+    { storage: 'sessionStorage', retainOnPageRefresh: true },
+  );
+  const [failedPayments, setFailedPayments] = usePersistedState<FinanceFailedPaymentRow[]>(
+    `financeDashboard_failedPayments_${getJerusalemTodayIsoDate()}`,
+    [],
+    { storage: 'sessionStorage', retainOnPageRefresh: true },
+  );
+  const [invoiceInstructions, setInvoiceInstructions] = usePersistedState<FinanceInvoiceInstructionRow[]>(
+    `financeDashboard_invoiceInstructions_${getJerusalemTodayIsoDate()}`,
+    [],
+    { storage: 'sessionStorage', retainOnPageRefresh: true },
+  );
+  const hadCachedSnapshotRef = useRef(Boolean(snapshot.asOf));
+  const [loading, setLoading] = useState(!hadCachedSnapshotRef.current);
+  const [trendLoading, setTrendLoading] = useState(!trend.length);
+  const [lastPaymentsLoading, setLastPaymentsLoading] = useState(
+    !lastPayments.length && !failedPayments.length,
+  );
+  const [instructionsLoading, setInstructionsLoading] = useState(!invoiceInstructions.length);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setTrendLoading(true);
+  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (!silent) {
+      setLoading(true);
+      setTrendLoading(true);
+      setLastPaymentsLoading(true);
+      setInstructionsLoading(true);
+    }
     try {
-      const [data, trendData] = await Promise.all([
+      const [data, trendData, lastPaymentsData, failedPaymentsData, instructionsData] = await Promise.all([
         fetchFinanceManagementOverview(),
         fetchFinancePaymentTrend(30).catch((err) => {
           console.error('FinanceManagementDashboard trend:', err);
           return [] as FinancePaymentTrendPoint[];
         }),
+        fetchFinanceLastPaymentsToday().catch((err) => {
+          console.error('FinanceManagementDashboard last payments:', err);
+          return [] as FinanceLastPaymentRow[];
+        }),
+        fetchFinanceFailedPaymentsToday().catch((err) => {
+          console.error('FinanceManagementDashboard failed payments:', err);
+          return [] as FinanceFailedPaymentRow[];
+        }),
+        fetchFinanceInvoiceInstructions().catch((err) => {
+          console.error('FinanceManagementDashboard invoice instructions:', err);
+          return [] as FinanceInvoiceInstructionRow[];
+        }),
       ]);
-      if (!canViewExpenses) {
-        setSnapshot({
-          ...data,
-          expensesThisMonthNis: 0,
-          expensesMarketingNis: 0,
-          expensesSalariesNis: 0,
-        });
-      } else {
-        setSnapshot(data);
-      }
+      const next = !canViewExpenses
+        ? { ...data, expensesThisMonthNis: 0, expensesMarketingNis: 0, expensesSalariesNis: 0 }
+        : data;
+      setSnapshot(next);
       setTrend(trendData);
+      setLastPayments(lastPaymentsData);
+      setFailedPayments(failedPaymentsData);
+      setInvoiceInstructions(instructionsData);
     } catch (err) {
       console.error('FinanceManagementDashboard:', err);
-      setSnapshot(EMPTY);
-      setTrend([]);
+      if (!silent) {
+        setSnapshot(EMPTY);
+        setTrend([]);
+        setLastPayments([]);
+        setFailedPayments([]);
+        setInvoiceInstructions([]);
+      }
     } finally {
       setLoading(false);
       setTrendLoading(false);
+      setLastPaymentsLoading(false);
+      setInstructionsLoading(false);
     }
-  }, [canViewExpenses]);
+  }, [canViewExpenses, setSnapshot, setTrend, setLastPayments, setFailedPayments, setInvoiceInstructions]);
+
+  const loadRef = useRef(load);
+  loadRef.current = load;
 
   useEffect(() => {
-    void load();
-  }, [load, refreshKey]);
+    void loadRef.current({ silent: hadCachedSnapshotRef.current });
+  }, [refreshKey]);
+
+  useEffect(() => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const triggerReload = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        void loadRef.current({ silent: true });
+      }, 600);
+    };
+
+    const handleFocus = () => triggerReload();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') triggerReload();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('paymentPlan:changed', triggerReload as EventListener);
+
+    const channel = supabase
+      .channel('finance-dashboard-kpis-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_plans' }, triggerReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'finances_paymentplanrow' }, triggerReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_links' }, triggerReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_transactions' }, triggerReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'proformainvoice' }, triggerReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_leadstage' }, triggerReload)
+      .subscribe();
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('paymentPlan:changed', triggerReload as EventListener);
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const attentionItems: AttentionItem[] = [
     {
       id: 'overdue',
       label: 'Overdue unpaid',
-      hint: 'Past due and still unpaid',
+      hint: 'Past due in the last 30 days, still unpaid',
       value: snapshot.overdueUnpaidCount,
       tone: 'danger',
       icon: ExclamationTriangleIcon,
@@ -185,7 +420,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
     {
       id: 'ready',
       label: 'Ready to pay',
-      hint: 'Marked ready to pay, unpaid',
+      hint: 'Marked ready to pay, unpaid · last 30 days',
       value: snapshot.readyToPayUnpaidCount,
       tone: 'info',
       icon: BoltIcon,
@@ -193,7 +428,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
     {
       id: 'pending-proforma',
       label: 'Pending + proforma',
-      hint: 'Unpaid with a proforma on file',
+      hint: 'Unpaid with a proforma · last 30 days',
       value: snapshot.pendingWithProformaCount,
       tone: 'neutral',
       icon: DocumentTextIcon,
@@ -201,7 +436,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
     {
       id: 'pending-no-proforma',
       label: 'Pending, no proforma',
-      hint: 'Unpaid without a proforma',
+      hint: 'Unpaid without a proforma · last 30 days',
       value: snapshot.pendingWithoutProformaCount,
       tone: 'warn',
       icon: DocumentTextIcon,
@@ -220,43 +455,52 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
     (item) => item.id !== 'collected-today' && item.value > 0,
   ).length;
 
+  const createProformaRows = useMemo(
+    () => invoiceInstructions.filter((row) => row.kind === 'create_proforma'),
+    [invoiceInstructions],
+  );
+  const sendInvoiceRows = useMemo(
+    () => invoiceInstructions.filter((row) => row.kind === 'send_invoice'),
+    [invoiceInstructions],
+  );
+
   const kpiCards = [
     {
-      id: 'overdue',
-      label: 'Overdue unpaid rows',
-      value: loading ? '—' : String(snapshot.overdueUnpaidCount),
-      icon: ExclamationTriangleIcon,
-      onClick: () => onOpenTab('collection-due'),
-      hint: 'Open Collection Due',
+      id: 'signed-missing-plan',
+      label: 'Signed, missing payment plan',
+      value: loading ? '—' : String(snapshot.signedMissingPaymentPlanCount),
+      icon: ClipboardDocumentCheckIcon,
+      onClick: () => onOpenTab('signed', 'signed-missing-plan'),
+      hint: 'No payment plan · last 30 days',
+      gradient: 'bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500',
     },
     {
-      id: 'due-today',
-      label: 'Due today',
-      value: loading ? '—' : String(snapshot.dueTodayCount),
-      icon: CalendarDaysIcon,
-      onClick: () => onOpenTab('collection'),
-      hint: 'Open Collection',
+      id: 'due-no-proforma',
+      label: 'Due last 30 days, no proforma',
+      value: loading ? '—' : String(snapshot.dueNoProformaCount),
+      icon: DocumentTextIcon,
+      onClick: () => onOpenTab('collection', 'due-no-proforma'),
+      hint: 'Due date set, no proforma created',
+      gradient: 'bg-gradient-to-tr from-pink-500 via-rose-500 to-orange-500',
     },
     {
-      id: 'collected',
-      label: 'Collected this month',
-      value: loading ? '—' : String(snapshot.collectedThisMonthCount),
-      icon: BanknotesIcon,
-      onClick: () => onOpenTab('collection'),
-      hint: 'Payment rows marked paid',
+      id: 'due-unsent-proforma',
+      label: 'Due last 30 days, proforma not sent',
+      value: loading ? '—' : String(snapshot.dueUnsentProformaCount),
+      icon: PaperAirplaneIcon,
+      onClick: () => onOpenTab('collection', 'due-unsent-proforma'),
+      hint: 'Proforma on file, not sent by email or WhatsApp',
+      gradient: 'bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-500',
     },
-    ...(canViewExpenses
-      ? [
-          {
-            id: 'expenses',
-            label: 'Expenses this month',
-            value: loading ? '—' : formatNis(snapshot.expensesThisMonthNis),
-            icon: ReceiptPercentIcon,
-            onClick: () => onOpenTab('expenses'),
-            hint: 'All expense categories',
-          },
-        ]
-      : []),
+    {
+      id: 'due-sent-proforma',
+      label: 'Due last 30 days, pending (proforma sent)',
+      value: loading ? '—' : String(snapshot.dueSentProformaCount),
+      icon: CheckCircleIcon,
+      onClick: () => onOpenTab('collection', 'due-sent-proforma'),
+      hint: 'Proforma already sent · still unpaid',
+      gradient: 'bg-gradient-to-tr from-teal-600 via-emerald-500 to-green-500',
+    },
   ];
 
   const shortcuts: Array<{
@@ -299,20 +543,20 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-xl md:text-2xl font-bold text-gray-900">Finance dashboard</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            {canViewExpenses
-              ? `Snapshot of collection pressure and company expenses${snapshot.asOf ? ` · as of ${snapshot.asOf}` : ''}.`
-              : `Snapshot of collection pressure${snapshot.asOf ? ` · as of ${snapshot.asOf}` : ''}.`}
+          <h2 className="text-xl md:text-2xl font-bold text-gray-900">
+            {welcomeName ? `${timeGreeting}, ${welcomeName}` : timeGreeting}
+          </h2>
+          <p className="text-sm text-gray-500 mt-1 max-w-2xl">
+            Start with the boxes below first. Keep them at a low rate through the end of your shift.
           </p>
         </div>
         <button
           type="button"
           className="btn btn-sm btn-outline gap-1.5"
           onClick={() => void load()}
-          disabled={loading || trendLoading}
+          disabled={loading || trendLoading || lastPaymentsLoading || instructionsLoading}
         >
-          {loading || trendLoading ? (
+          {loading || trendLoading || lastPaymentsLoading || instructionsLoading ? (
             <span className="loading loading-spinner loading-xs" />
           ) : (
             <ArrowPathIcon className="h-4 w-4" />
@@ -321,64 +565,35 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
         </button>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {kpiCards.map((card) => (
-          <button
-            key={card.id}
-            type="button"
-            onClick={card.onClick}
-            className="rounded-2xl bg-white border border-gray-200 p-5 md:p-6 text-left shadow-sm hover:border-blue-300 transition min-h-[7.5rem]"
-            title={card.hint}
-          >
-            <div className="flex items-center justify-between gap-3 h-full">
-              <div className="min-w-0">
-                <div className="text-2xl md:text-3xl font-bold text-gray-900 leading-none tracking-tight truncate">
-                  {card.value}
-                </div>
-                <div className="text-sm md:text-base font-semibold text-gray-600 mt-2.5 leading-snug">
-                  {card.label}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {kpiCards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <button
+              key={card.id}
+              type="button"
+              onClick={card.onClick}
+              className={`${card.gradient} flex min-h-[7rem] flex-col justify-between rounded-2xl p-4 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
+              title={card.hint}
+            >
+              <div className="flex w-full items-start justify-between gap-3">
+                <p className="text-4xl md:text-5xl font-bold leading-none tracking-tight">{card.value}</p>
+                <div className="ml-auto shrink-0 rounded-full bg-white/20 p-3.5">
+                  <Icon className="h-9 w-9 md:h-10 md:w-10" />
                 </div>
               </div>
-              <card.icon className="w-10 h-10 md:w-11 md:h-11 text-blue-600/80 shrink-0" />
-            </div>
-          </button>
-        ))}
+              <div className="min-w-0 mt-2">
+                <p className="text-base md:text-lg font-semibold leading-snug">{card.label}</p>
+                <p className="mt-0.5 truncate text-xs text-white/80" title={card.hint}>
+                  {card.hint}
+                </p>
+              </div>
+            </button>
+          );
+        })}
       </div>
 
-      {canViewExpenses ? (
-        <div className="rounded-2xl bg-white border border-gray-200 p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-wider text-gray-400">This month · expenses</p>
-          <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-start sm:justify-start">
-              <dt className="text-sm text-gray-600">Total</dt>
-              <dd className="text-base font-semibold text-gray-900">
-                {loading ? '—' : formatNis(snapshot.expensesThisMonthNis)}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-start sm:justify-start">
-              <dt className="text-sm text-gray-600">Marketing</dt>
-              <dd className="text-base font-semibold text-gray-900">
-                {loading ? '—' : formatNis(snapshot.expensesMarketingNis)}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-start sm:justify-start">
-              <dt className="text-sm text-gray-600">Salaries</dt>
-              <dd className="text-base font-semibold text-gray-900">
-                {loading ? '—' : formatNis(snapshot.expensesSalariesNis)}
-              </dd>
-            </div>
-          </dl>
-          <button
-            type="button"
-            className="btn btn-sm btn-primary mt-5 w-full sm:w-auto"
-            onClick={() => onOpenTab('expenses')}
-          >
-            Open all expenses
-          </button>
-        </div>
-      ) : null}
-
-      <div className="rounded-2xl bg-white border border-gray-200 p-5 shadow-sm">
+      <div className="rounded-2xl bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-2 mb-1">
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Payment trend</p>
@@ -465,7 +680,218 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
         </div>
       </div>
 
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="rounded-2xl bg-white p-5 shadow-sm">
+          <div className="mb-1 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Last payments</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <CheckCircleIcon className="h-8 w-8 text-emerald-600" />
+                <h3 className="text-xl font-semibold text-gray-800">Paid</h3>
+                <p className="text-xs text-gray-500">Today</p>
+              </div>
+            </div>
+            <BoxCount
+              value={lastPayments.length}
+              loading={lastPaymentsLoading}
+              singular="payment"
+              plural="payments"
+            />
+          </div>
+          <div className="mt-3">
+            {lastPaymentsLoading && lastPayments.length === 0 ? (
+              <div className="flex h-24 items-center justify-center">
+                <span className="loading loading-spinner loading-md text-blue-600" />
+              </div>
+            ) : lastPayments.length === 0 ? (
+              <div className="flex items-center justify-center py-10 text-sm text-gray-400">
+                No payments collected today.
+              </div>
+            ) : (
+              <table className="min-w-full divide-y divide-gray-100 text-sm">
+                <thead className="text-xs uppercase tracking-wide">
+                  <tr>
+                    <th className="px-1 py-2 text-left font-semibold text-gray-400">Lead</th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-400">Client</th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-400">Paid by</th>
+                    <th className="px-0 py-2 text-right font-semibold text-gray-400">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50 bg-white">
+                  {lastPayments.map((row) => (
+                    <tr key={row.id} className="hover:bg-slate-50/80">
+                      <td className="px-1 py-2 align-top">
+                        {row.leadNumber && row.href !== '/clients' ? (
+                          <Link
+                            to={row.href}
+                            className="font-semibold text-sky-700 hover:text-sky-800 hover:underline"
+                            title={`Open client ${row.leadNumber}`}
+                          >
+                            {row.leadNumber}
+                          </Link>
+                        ) : (
+                          <span className="font-semibold text-gray-800">{row.leadNumber || '—'}</span>
+                        )}
+                      </td>
+                      <td className="max-w-[12rem] px-2 py-2 align-top text-gray-800">
+                        <p className="truncate" title={row.clientName}>
+                          {row.clientName || '—'}
+                        </p>
+                      </td>
+                      <td className="px-2 py-2 align-top text-gray-700">{row.paidBy}</td>
+                      <td className="whitespace-nowrap px-0 py-2 text-right align-top">
+                        <FinanceAmountText
+                          currencySign={row.currencySign}
+                          amountNumber={row.amountNumber}
+                          amountLabel={row.amountLabel}
+                          tone="success"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white p-5 shadow-sm">
+          <div className="mb-1 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Last payments</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <XCircleIcon className="h-8 w-8 text-rose-600" />
+                <h3 className="text-xl font-semibold text-gray-800">Failed</h3>
+                <p className="text-xs text-gray-500">Today</p>
+              </div>
+            </div>
+            <BoxCount
+              value={failedPayments.length}
+              loading={lastPaymentsLoading}
+              singular="failed payment"
+              plural="failed payments"
+            />
+          </div>
+          <div className="mt-3">
+            {lastPaymentsLoading && failedPayments.length === 0 ? (
+              <div className="flex h-24 items-center justify-center">
+                <span className="loading loading-spinner loading-md text-blue-600" />
+              </div>
+            ) : failedPayments.length === 0 ? (
+              <div className="flex items-center justify-center py-10 text-sm text-gray-400">
+                No failed payments today.
+              </div>
+            ) : (
+              <table className="min-w-full divide-y divide-gray-100 text-sm">
+                <thead className="text-xs uppercase tracking-wide">
+                  <tr>
+                    <th className="px-1 py-2 text-left font-semibold text-gray-400">Lead</th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-400">Client</th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-400">Reason</th>
+                    <th className="px-0 py-2 text-right font-semibold text-gray-400">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50 bg-white">
+                  {failedPayments.map((row) => (
+                    <tr key={row.id} className="hover:bg-slate-50/80">
+                      <td className="px-1 py-2 align-top">
+                        {row.leadNumber && row.href !== '/clients' ? (
+                          <Link
+                            to={row.href}
+                            className="font-semibold text-sky-700 hover:text-sky-800 hover:underline"
+                            title={`Open client ${row.leadNumber}`}
+                          >
+                            {row.leadNumber}
+                          </Link>
+                        ) : (
+                          <span className="font-semibold text-gray-800">{row.leadNumber || '—'}</span>
+                        )}
+                      </td>
+                      <td className="max-w-[12rem] px-2 py-2 align-top text-gray-800">
+                        <p className="truncate" title={row.clientName}>
+                          {row.clientName || '—'}
+                        </p>
+                      </td>
+                      <td className="px-2 py-2 align-top">
+                        <p className="text-sm text-rose-700" title={row.errorReason}>
+                          {row.errorReason}
+                        </p>
+                      </td>
+                      <td className="whitespace-nowrap px-0 py-2 text-right align-top">
+                        <FinanceAmountText
+                          currencySign={row.currencySign}
+                          amountNumber={row.amountNumber}
+                          amountLabel={row.amountLabel}
+                          tone="danger"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="rounded-2xl bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Invoice instructions</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <DocumentTextIcon className="h-8 w-8 text-amber-600" />
+                <h3 className="text-xl font-semibold text-gray-800">Create proforma</h3>
+                <p className="text-xs text-gray-500">Last 7 days · sent to finance · no proforma yet</p>
+              </div>
+            </div>
+            <BoxCount
+              value={createProformaRows.length}
+              loading={instructionsLoading}
+              singular="proforma"
+              plural="proformas"
+            />
+          </div>
+          <InvoiceInstructionTable
+            rows={createProformaRows}
+            loading={instructionsLoading}
+            emptyText="No proformas to create for the last 7 days."
+          />
+        </div>
+
+        <div className="rounded-2xl bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Invoice instructions</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <PaperAirplaneIcon className="h-8 w-8 text-sky-600" />
+                <h3 className="text-xl font-semibold text-gray-800">Send invoice</h3>
+                <p className="text-xs text-gray-500">Last 7 days · sent to finance · proforma not sent</p>
+                <button
+                  type="button"
+                  className="btn btn-xs btn-outline rounded-lg"
+                  onClick={() => onOpenTab('collection', 'due-invoice-instructions')}
+                >
+                  Collection
+                </button>
+              </div>
+            </div>
+            <BoxCount
+              value={sendInvoiceRows.length}
+              loading={instructionsLoading}
+              singular="invoice"
+              plural="invoices"
+            />
+          </div>
+          <InvoiceInstructionTable
+            rows={sendInvoiceRows}
+            loading={instructionsLoading}
+            emptyText="No invoices waiting to be sent for the last 7 days."
+          />
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Attention</p>
@@ -545,7 +971,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
                 key={item.id}
                 type="button"
                 onClick={() => onOpenTab(item.id)}
-                className="rounded-2xl bg-white border border-gray-200 p-5 text-left shadow-sm hover:border-blue-300 transition"
+                className="rounded-2xl bg-white p-5 text-left shadow-sm transition"
               >
                 <Icon className="h-8 w-8 text-blue-600 mb-3" />
                 <div className="text-base font-semibold text-gray-900">{item.title}</div>

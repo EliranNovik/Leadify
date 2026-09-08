@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon, ArrowLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
@@ -7,6 +7,8 @@ import { getCurrencySymbol } from '../lib/currencyConversion';
 import {
   createBoiDateRateConverter,
 } from '../lib/boiCurrencyConversion';
+import { fetchAllStage60Records, last30DaysRange } from '../lib/paymentRequestEmail';
+import type { FinanceCollectionFocusId } from '../lib/financeCollectionFocus';
 import { computeDateBounds, fetchStage60RecordsInRange } from '../lib/stage60SignDate';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 import { usePersistedFilters } from '../hooks/usePersistedState';
@@ -69,6 +71,7 @@ type FiltersState = {
   category: string;
   employee: string;
   language: string;
+  paymentPlan: 'all' | 'missing' | 'has';
 };
 
 const signedStageNames = [
@@ -374,10 +377,15 @@ const reports: ReportSection[] = [
 type SignedSalesReportPageProps = {
   /** Hide Reports quick-switch chrome when rendered inside Finance Management. */
   embedded?: boolean;
+  focusPreset?: FinanceCollectionFocusId | null;
 };
 
-const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({ embedded = false }) => {
+const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
+  embedded = false,
+  focusPreset = null,
+}) => {
   const navigate = useNavigate();
+  const [, setSearchParams] = useSearchParams();
   const todayIso = useMemo(() => new Date().toISOString().split('T')[0], []);
   const [filters, setFilters] = usePersistedFilters<FiltersState>('signedSalesReport_filters', {
     fromDate: todayIso,
@@ -385,6 +393,7 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({ embedded 
     category: '',
     employee: '',
     language: '',
+    paymentPlan: 'all',
   }, {
     storage: 'sessionStorage',
   });
@@ -1083,17 +1092,19 @@ const resolveLegacyLanguage = (lead: any) => {
       .replace(/\b\w/g, letter => letter.toUpperCase());
   };
 
-  const handleSearch = async () => {
+  const handleSearch = async (override?: Partial<FiltersState>) => {
     setIsLoading(true);
     setSearchPerformed(true);
     setErrorMessage(null);
 
     try {
-      const employeeFilterName = filters.employee;
-      const fromDate = filters.fromDate;
-      const toDate = filters.toDate;
-      const categoryFilter = filters.category;
-      const languageFilter = filters.language;
+      const activeFilters = { ...filters, ...override };
+      const employeeFilterName = activeFilters.employee;
+      const fromDate = activeFilters.fromDate;
+      const toDate = activeFilters.toDate;
+      const categoryFilter = activeFilters.category;
+      const languageFilter = activeFilters.language;
+      const paymentPlanFilter = activeFilters.paymentPlan || 'all';
       const { startIso, endIso } = computeDateBounds(fromDate, toDate);
       const anyCalendarFilter = Boolean(fromDate || toDate);
 
@@ -1105,19 +1116,7 @@ const resolveLegacyLanguage = (lead: any) => {
           `[SignedSalesReport] Stage 60: ${allStage60Records.length} rows after Jerusalem-calendar filter (${fromDate} … ${toDate})`,
         );
       } else {
-        let stage60Query = supabase.from('leads_leadstage').select('id, lead_id, newlead_id, stage, cdate, date').eq('stage', 60);
-        if (startIso) {
-          stage60Query = stage60Query.gte('date', startIso);
-        }
-        if (endIso) {
-          stage60Query = stage60Query.lte('date', endIso);
-        }
-        const { data, error: stage60Error } = await stage60Query;
-        if (stage60Error) {
-          console.error('Failed to load stage 60 records:', stage60Error);
-          throw stage60Error;
-        }
-        allStage60Records = data || [];
+        allStage60Records = await fetchAllStage60Records();
       }
 
       console.log(`✅ Fetched ${allStage60Records.length} stage 60 records for signed-sales query`);
@@ -1554,6 +1553,12 @@ const resolveLegacyLanguage = (lead: any) => {
         hasPaymentPlan: leadsWithPaymentPlans.has(row.id)
       }));
 
+      if (paymentPlanFilter === 'missing') {
+        combinedRows = combinedRows.filter((row) => !row.hasPaymentPlan);
+      } else if (paymentPlanFilter === 'has') {
+        combinedRows = combinedRows.filter((row) => row.hasPaymentPlan);
+      }
+
       console.log(`✅ Final result: ${combinedRows.length} unique signed leads (${newLeadRows.length} new + ${legacyLeadRows.length} legacy)`);
       setRows(combinedRows);
     } catch (error: any) {
@@ -1564,6 +1569,38 @@ const resolveLegacyLanguage = (lead: any) => {
       setIsLoading(false);
     }
   };
+
+  const handleSearchRef = useRef(handleSearch);
+  handleSearchRef.current = handleSearch;
+  const signedFocusHandledRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (focusPreset !== 'signed-missing-plan') {
+      signedFocusHandledRef.current = null;
+      return;
+    }
+    if (signedFocusHandledRef.current === focusPreset) return;
+    signedFocusHandledRef.current = focusPreset;
+    const last30 = last30DaysRange();
+    const next: FiltersState = {
+      fromDate: last30.from,
+      toDate: last30.to,
+      category: '',
+      employee: '',
+      language: '',
+      paymentPlan: 'missing',
+    };
+    setFilters(next);
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        params.delete('focus');
+        return params;
+      },
+      { replace: true },
+    );
+    void handleSearchRef.current(next);
+  }, [focusPreset, setFilters, setSearchParams]);
 
   // Sort rows by handler (no handler on top) when sortByHandler is true
   const sortedRows = useMemo(() => {
@@ -1688,7 +1725,7 @@ const resolveLegacyLanguage = (lead: any) => {
 
       <div className="card bg-base-100 shadow-none border border-base-200">
         <div className="card-body space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div className="form-control">
               <label className="label">
                 <span className="label-text font-medium">From date</span>
@@ -1711,6 +1748,23 @@ const resolveLegacyLanguage = (lead: any) => {
                 value={filters.toDate}
                 onChange={e => handleFilterChange('toDate', e.target.value)}
               />
+            </div>
+
+            <div className="form-control">
+              <label className="label">
+                <span className="label-text font-medium">Payment plan</span>
+              </label>
+              <select
+                className="select select-bordered"
+                value={filters.paymentPlan || 'all'}
+                onChange={(e) =>
+                  handleFilterChange('paymentPlan', e.target.value as FiltersState['paymentPlan'])
+                }
+              >
+                <option value="all">All</option>
+                <option value="missing">Missing payment plan</option>
+                <option value="has">Has payment plan</option>
+              </select>
             </div>
 
             <div className="form-control" ref={employeeFilterRef}>

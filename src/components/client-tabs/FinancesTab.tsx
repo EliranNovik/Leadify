@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon, ReceiptPercentIcon, BuildingOffice2Icon } from '@heroicons/react/24/outline';
+import { CheckBadgeIcon } from '@heroicons/react/24/solid';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
 import FinancesExpensesFeesPage from './FinancesExpensesFeesPage';
 import {
@@ -30,6 +31,7 @@ import NotesModal from '../modals/NotesModal';
 import {
   PaymentPlanSummaryCards,
   PaymentStatusPill,
+  invoiceSentByLabel,
   ContactPlanHeader,
   computePlanSummary,
   DueDateBadge,
@@ -128,6 +130,7 @@ import { ArrowPathIcon } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../../contexts/AuthContext';
 import { usePaymentPlanExpenseDocs } from './PaymentPlanExpenseDocs';
 import ProformaSendLanguageModal from '../proforma/ProformaSendLanguageModal';
+import SentToFinanceChoiceModal from '../proforma/SentToFinanceChoiceModal';
 import type { ProformaSendLanguage } from '../../lib/proformaSendLanguage';
 import {
   disableInvoiceSendAutomation,
@@ -146,6 +149,7 @@ import {
   collectProformaSendPartialErrors,
   sendProformaInvoiceBundle,
 } from '../../lib/proformaSendInvoice';
+import { paymentPlanInvoiceSentState } from '../../lib/markPaymentPlanInvoiceSent';
 import { useMailboxReconnect } from '../../contexts/MailboxReconnectContext';
 import DisplayOnKioskModal from '../kiosk/DisplayOnKioskModal';
 
@@ -183,6 +187,8 @@ interface PaymentPlan {
   invoice_send_automation_language?: string | null;
   invoice_send_automation_at?: string | null;
   invoice_send_automation_sent_at?: string | null;
+  invoice_sent?: boolean;
+  invoice_sent_at?: string | null;
 }
 
 interface FinancePlan {
@@ -692,6 +698,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [selectedSendInvoicePaymentKeys, setSelectedSendInvoicePaymentKeys] = useState<Set<string>>(new Set());
   const [sendInvoiceModalOpen, setSendInvoiceModalOpen] = useState(false);
   const [sendingInvoice, setSendingInvoice] = useState(false);
+  const [sentToFinancePayment, setSentToFinancePayment] = useState<PaymentPlan | null>(null);
+  const [sendingReadyToPayInvoice, setSendingReadyToPayInvoice] = useState(false);
 
   // Add state for paid date modal
   const [showPaidDateModal, setShowPaidDateModal] = useState(false);
@@ -1068,7 +1076,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   // Handler to mark a payment as ready to pay
-  const handleMarkAsReadyToPay = async (payment: PaymentPlan) => {
+  const handleMarkAsReadyToPay = async (
+    payment: PaymentPlan,
+    options?: { skipToast?: boolean; successToast?: string },
+  ) => {
     try {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
       const currentDate = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
@@ -1162,7 +1173,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         };
       });
 
-      toast.success('Payment marked as ready to pay! Due date set to today. It will now appear in the collection page.');
+      if (!options?.skipToast) {
+        toast.success(
+          options?.successToast ||
+            'Payment marked as ready to pay! Due date set to today. It will now appear in the collection page.',
+        );
+      }
       // Notify Clients/ClientHeader banner listeners to refresh nextDuePayment
       if (client?.id) {
         window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
@@ -1172,6 +1188,119 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     } catch (error) {
       console.error('Error marking payment as ready to pay:', error);
       toast.error('Failed to mark payment as ready to pay');
+    }
+  };
+
+  const handleOpenSentToFinanceModal = (payment: PaymentPlan) => {
+    setSentToFinancePayment(payment);
+  };
+
+  const handleSentToFinanceByTeam = async () => {
+    if (!sentToFinancePayment) return;
+    await handleMarkAsReadyToPay(sentToFinancePayment, {
+      successToast: 'Sent to finance. The finance team will take care of the invoice.',
+    });
+    setSentToFinancePayment(null);
+  };
+
+  const handleSentToFinanceSendInvoice = async (language: ProformaSendLanguage) => {
+    if (!sentToFinancePayment || !client?.id) return;
+
+    let payment = sentToFinancePayment;
+    let proformasForSend = legacyProformas;
+
+    setSendingReadyToPayInvoice(true);
+    const isLegacyLead =
+      client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    const leadNumber = client.lead_number
+      ? String(client.lead_number).replace(/^#/, '').trim()
+      : String(client.id);
+
+    try {
+      if (!paymentPlanHasProforma(payment, proformasForSend)) {
+        const proformaBatch = await ensureProformasForAutomationPayments([payment], {
+          leadId: client.id,
+          leadNumber,
+          isLegacyLead,
+          createdBy: await getCurrentUserName(),
+          employeeId: await getCurrentUserEmployeeId(),
+          legacyProformas: proformasForSend,
+        });
+        if (proformaBatch.addedLegacyProformas.length > 0) {
+          proformasForSend = [...proformasForSend, ...proformaBatch.addedLegacyProformas];
+          setLegacyProformas((prev) => [...prev, ...proformaBatch.addedLegacyProformas]);
+        }
+        const createdJson = proformaBatch.newProformaByPaymentId.get(String(payment.id));
+        if (createdJson) {
+          payment = { ...payment, proforma: createdJson };
+        }
+        if (createdJson || proformaBatch.addedLegacyProformas.length > 0) {
+          setFinancePlan((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  payments: prev.payments.map((row) =>
+                    String(row.id) === String(payment.id)
+                      ? { ...row, proforma: createdJson ?? row.proforma }
+                      : row,
+                  ),
+                }
+              : prev,
+          );
+        }
+      }
+
+      const input = await buildSendInvoiceInputForPaymentPlan(payment, {
+        leadId: client.id,
+        leadNumber,
+        isLegacyLead,
+        language,
+        legacyProformas: proformasForSend,
+      });
+      if (!input) {
+        toast.error('Could not send invoice. Check the contact email or phone.');
+        return;
+      }
+
+      const result = await sendProformaInvoiceBundle(input);
+      collectProformaSendPartialErrors(result).forEach((message) => toast.error(message));
+
+      if (
+        result.emailError?.message === 'MAILBOX_NOT_CONNECTED' ||
+        (result.emailError as Error & { code?: string })?.code === 'MAILBOX_NOT_CONNECTED'
+      ) {
+        showReconnectModal('Connect Outlook to send invoices by email.');
+      }
+
+      if (!result.emailSent && !result.whatsAppSent) {
+        toast.error('Failed to send invoice');
+        return;
+      }
+
+      await handleMarkAsReadyToPay(payment, { skipToast: true });
+      setFinancePlan((prev) =>
+        prev
+          ? {
+              ...prev,
+              payments: prev.payments.map((row) =>
+                String(row.id) === String(payment.id)
+                  ? { ...row, invoice_sent: true, invoice_sent_at: new Date().toISOString(), ready_to_pay: true }
+                  : row,
+              ),
+            }
+          : prev,
+      );
+      toast.success(buildProformaSendSuccessMessage(result, language));
+      setSentToFinancePayment(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to send invoice';
+      if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
+        showReconnectModal('Connect Outlook to send invoices by email.');
+      } else {
+        toast.error(message);
+      }
+    } finally {
+      setSendingReadyToPayInvoice(false);
     }
   };
 
@@ -1688,7 +1817,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       showPaymentHistoryModal ||
       showPaidDateModal ||
       invoiceAutomationModalOpen ||
-      sendInvoiceModalOpen
+      sendInvoiceModalOpen ||
+      Boolean(sentToFinancePayment)
     ) {
       setOpenDropdownPaymentId(null);
       setFinancesMoreOpen(false);
@@ -1700,6 +1830,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     showPaidDateModal,
     invoiceAutomationModalOpen,
     sendInvoiceModalOpen,
+    sentToFinancePayment,
   ]);
 
   // Define fetchContacts at component level so it can be called from multiple places
@@ -2343,6 +2474,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 invoice_send_automation_language: plan.invoice_send_automation_language || null,
                 invoice_send_automation_at: plan.invoice_send_automation_at || null,
                 invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
+                ...paymentPlanInvoiceSentState(plan),
               };
             });
           } else {
@@ -2439,6 +2571,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 invoice_send_automation_language: plan.invoice_send_automation_language || null,
                 invoice_send_automation_at: plan.invoice_send_automation_at || null,
                 invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
+                ...paymentPlanInvoiceSentState(plan),
               };
             });
           }
@@ -2946,6 +3079,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               invoice_send_automation_language: plan.invoice_send_automation_language || null,
               invoice_send_automation_at: plan.invoice_send_automation_at || null,
               invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
+              ...paymentPlanInvoiceSentState(plan),
             };
           });
         } else {
@@ -3037,6 +3171,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               invoice_send_automation_language: plan.invoice_send_automation_language || null,
               invoice_send_automation_at: plan.invoice_send_automation_at || null,
               invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
+              ...paymentPlanInvoiceSentState(plan),
             };
           });
         }
@@ -6468,6 +6603,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           if (result.emailSent || result.whatsAppSent) {
             sent += 1;
             toast.success(buildProformaSendSuccessMessage(result, language));
+            setFinancePlan((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    payments: prev.payments.map((row) =>
+                      String(row.id) === String(payment.id)
+                        ? { ...row, invoice_sent: true, invoice_sent_at: new Date().toISOString() }
+                        : row,
+                    ),
+                  }
+                : prev,
+            );
           } else {
             failed += 1;
           }
@@ -6644,26 +6791,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const title = sent
       ? `Invoice sent automatically on ${formatDateDDMMYYYY(payment.invoice_send_automation_sent_at)}`
       : `Scheduled invoice send on ${formatDateDDMMYYYY(payment.dueDate)} (${payment.invoice_send_automation_language === 'he' ? 'Hebrew' : 'English'}) ? click to remove`;
+    if (sent) {
+      return (
+        <span
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600"
+          title={title}
+          aria-label={title}
+        >
+          <CheckBadgeIcon className="h-4 w-4" aria-hidden />
+        </span>
+      );
+    }
     return (
       <button
         type="button"
-        className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-0 ${
-          sent
-            ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-            : 'bg-violet-50 text-violet-700 hover:bg-violet-100'
-        }`}
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600 hover:bg-violet-200"
         title={title}
         aria-label={title}
         onClick={(e) => {
           e.stopPropagation();
-          if (!sent) void handleDisableInvoiceAutomation(payment);
+          void handleDisableInvoiceAutomation(payment);
         }}
       >
-        {sent ? (
-          <CheckIcon className="h-5 w-5" aria-hidden />
-        ) : (
-          <ClockIcon className="h-5 w-5" aria-hidden />
-        )}
+        <ClockIcon className="h-3.5 w-3.5" aria-hidden />
       </button>
     );
   };
@@ -7025,8 +7175,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           <button
             type="button"
             className={`${paymentRowIconBtn} bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
-            title="Mark as Ready to Pay"
-            onClick={() => handleMarkAsReadyToPay(p)}
+            title="Sent to finance"
+            onClick={() => handleOpenSentToFinanceModal(p)}
           >
             <PaperAirplaneIcon className="h-5 w-5" />
           </button>
@@ -7464,17 +7614,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         {renderAutomationSelectCell(p)}
                                         <td className="whitespace-nowrap align-middle">
                                           <div className="flex flex-wrap items-center gap-2">
-                                            <PaymentStatusPill
-                                              paid={isPaid}
-                                              readyToPay={p.ready_to_pay}
-                                              expensePaidBy={
-                                                isExpenseNoVatPayment(p.order)
-                                                  ? p.expensePaidBy ?? 'client'
-                                                  : null
-                                              }
-                                            />
+                                            <span className="inline-flex items-center gap-1">
+                                              <PaymentStatusPill
+                                                paid={isPaid}
+                                                readyToPay={p.ready_to_pay}
+                                                invoiceSent={p.invoice_sent}
+                                                invoiceSentAt={p.invoice_sent_at}
+                                                invoiceSentByName={invoiceSentByLabel(p)}
+                                                expensePaidBy={
+                                                  isExpenseNoVatPayment(p.order)
+                                                    ? p.expensePaidBy ?? 'client'
+                                                    : null
+                                                }
+                                              />
+                                              {renderInvoiceAutomationBadge(p)}
+                                            </span>
                                             <span className="text-xs text-slate-400">{p.duePercent}</span>
-                                            {renderInvoiceAutomationBadge(p)}
                                           </div>
                                         </td>
                                         <td className="whitespace-nowrap align-middle">
@@ -7486,6 +7641,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <DueDateBadge
                                               date={p.dueDate}
                                               readyToPay={p.ready_to_pay}
+                                              invoiceSent={p.invoice_sent}
+                                              invoiceSentAt={p.invoice_sent_at}
                                               matchStatus
                                             />
                                           )}
@@ -8059,16 +8216,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 onClick={(e) => e.stopPropagation()}
                                               />
                                             )}
-                                            <PaymentStatusPill
-                                              paid={!!isPaid}
-                                              readyToPay={p.ready_to_pay}
-                                              expensePaidBy={
-                                                isExpenseNoVatPayment(p.order)
-                                                  ? p.expensePaidBy ?? 'client'
-                                                  : null
-                                              }
-                                            />
-                                            {renderInvoiceAutomationBadge(p)}
+                                            <span className="inline-flex items-center gap-1">
+                                              <PaymentStatusPill
+                                                paid={!!isPaid}
+                                                readyToPay={p.ready_to_pay}
+                                                invoiceSent={p.invoice_sent}
+                                                invoiceSentAt={p.invoice_sent_at}
+                                                invoiceSentByName={invoiceSentByLabel(p)}
+                                                expensePaidBy={
+                                                  isExpenseNoVatPayment(p.order)
+                                                    ? p.expensePaidBy ?? 'client'
+                                                    : null
+                                                }
+                                              />
+                                              {renderInvoiceAutomationBadge(p)}
+                                            </span>
                                           </div>
                                           <p className="mt-2 text-sm font-medium text-slate-500">
                                             {expenseDocs.renderType(p, p.order)}
@@ -8095,6 +8257,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <DueDateBadge
                                               date={p.dueDate}
                                               readyToPay={p.ready_to_pay}
+                                              invoiceSent={p.invoice_sent}
+                                              invoiceSentAt={p.invoice_sent_at}
                                               matchStatus
                                             />
                                           )}
@@ -9433,6 +9597,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         onClose={() => setKioskPaymentToken(null)}
         resource={{ resourceType: 'payment', resourceToken: kioskPaymentToken || '' }}
         title="Display payment on kiosk"
+      />
+
+      <SentToFinanceChoiceModal
+        open={Boolean(sentToFinancePayment)}
+        onClose={() => !sendingReadyToPayInvoice && setSentToFinancePayment(null)}
+        sending={sendingReadyToPayInvoice}
+        contactLabel={sentToFinancePayment?.client}
+        onChooseFinanceTeam={() => void handleSentToFinanceByTeam()}
+        onSendInvoice={(language) => void handleSentToFinanceSendInvoice(language)}
       />
 
       <ProformaSendLanguageModal

@@ -26,6 +26,13 @@ export const PROFORMA_EMAIL_TEMPLATE_ID = PROFORMA_EMAIL_TEMPLATE_ID_EN;
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Accepts `123`, `"123"`, or `"legacy_123"`. Number("legacy_123") is NaN and used to drop the id. */
+export function parseLegacyLeadId(leadId: string | number | null | undefined): number | null {
+  if (leadId == null || leadId === '') return null;
+  const n = Number(String(leadId).replace(/^legacy_?/i, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
 export type ProformaSendEmailInput = {
   kind: ProformaLinkKind;
   recordId: string | number;
@@ -307,6 +314,7 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
     input.contactId != null && input.contactId !== '' && !Number.isNaN(Number(input.contactId))
       ? Number(input.contactId)
       : null;
+  const legacyLeadId = parseLegacyLeadId(input.isLegacyLead ? input.leadId : null);
 
   await sendEmailViaBackend({
     userId: user.id,
@@ -317,10 +325,7 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
     attachments: inlineAttachments.length > 0 ? inlineAttachments : undefined,
     context: {
       clientId: input.isLegacyLead ? null : input.leadId ?? null,
-      legacyLeadId:
-        input.isLegacyLead && input.leadId != null && !Number.isNaN(Number(input.leadId))
-          ? Number(input.leadId)
-          : null,
+      legacyLeadId,
       leadType: input.isLegacyLead ? 'legacy' : 'new',
       leadNumber: input.leadNumber,
       contactEmail: to,

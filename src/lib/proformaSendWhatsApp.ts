@@ -207,7 +207,7 @@ function buildClientForWhatsAppParams(
 
 function normalizeLeadIdForApi(input: ProformaSendWhatsAppInput): string | number {
   if (input.isLegacyLead && input.leadId != null) {
-    const n = Number(input.leadId);
+    const n = Number(String(input.leadId).replace(/^legacy_?/i, ''));
     return Number.isFinite(n) ? `legacy_${n}` : `legacy_${input.leadId}`;
   }
   return input.leadId ?? '';

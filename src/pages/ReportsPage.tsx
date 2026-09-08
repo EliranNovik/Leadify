@@ -9,6 +9,10 @@ import BadLeadsGoogleSheetExportReport from './BadLeadsGoogleSheetExportReport';
 import QLeadsGoogleSheetExportReport from './QLeadsGoogleSheetExportReport';
 import HQLeadsGoogleSheetExportReport from './HQLeadsGoogleSheetExportReport';
 import SalesLeadsGoogleSheetExportReport from './SalesLeadsGoogleSheetExportReport';
+import {
+  GoogleSheetConversionExportTabs,
+  isGoogleSheetConversionExportReport,
+} from '../components/reports/GoogleSheetConversionExportReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
@@ -8532,8 +8536,16 @@ export default function ReportsPage() {
       .filter((section) => section.items.length > 0);
   }, [searchQuery, isSuperUser, hasCollectionAccess]);
 
+  const greyExportReport = isGoogleSheetConversionExportReport(selectedReport?.label);
+
   return (
-    <div className="p-0 md:p-6 space-y-8">
+    <div
+      className={
+        greyExportReport
+          ? 'min-h-[calc(100dvh-3.5rem)] space-y-8 bg-[#f3f4f6] p-4 md:p-6'
+          : 'space-y-8 p-0 md:p-6'
+      }
+    >
       {!selectedReport ? (
         <>
           <div className="px-4 md:px-0">
@@ -8943,6 +8955,22 @@ export default function ReportsPage() {
                 )}
               </div>
               <div className="flex items-center gap-3 flex-wrap shrink-0">
+                {greyExportReport ? (
+                  <GoogleSheetConversionExportTabs
+                    activeLabel={selectedReport.label}
+                    onSelect={(label) => {
+                      const next = reports
+                        .flatMap((section) => section.items)
+                        .find((item) => item.label === label);
+                      if (next?.component) {
+                        setSelectedReport(next);
+                      }
+                      navigate(`/reports?report=${encodeURIComponent(label)}`, { replace: true });
+                      setSearchQuery('');
+                      setShowSearchDropdown(false);
+                    }}
+                  />
+                ) : null}
                 {/* Search Bar in Report View */}
                 <div className="relative max-w-xs">
                   <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -8963,7 +8991,7 @@ export default function ReportsPage() {
                       // Delay closing to allow click events to fire
                       setTimeout(() => setShowSearchDropdown(false), 200);
                     }}
-                    className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
+                    className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-10 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary"
                   />
                   {searchQuery && (
                     <button
@@ -8983,11 +9011,11 @@ export default function ReportsPage() {
                     setSelectedReport(null);
                     setSearchQuery('');
                   }}
-                  className="btn btn-outline btn-primary btn-square shrink-0 sm:btn-md sm:gap-2 sm:px-4"
+                  className="btn btn-outline btn-primary btn-square shrink-0"
                   aria-label="Back to Reports"
+                  title="Back to Reports"
                 >
                   <ArrowLeftIcon className="h-5 w-5" />
-                  <span className="hidden sm:inline">Back to Reports</span>
                 </button>
               </div>
             </div>

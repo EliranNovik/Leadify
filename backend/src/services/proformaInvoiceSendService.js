@@ -205,10 +205,16 @@ async function generateProformaWhatsAppParams(definitions, input, proformaContex
   return parameters;
 }
 
+function parseLegacyLeadId(leadId) {
+  if (leadId == null || leadId === '') return null;
+  const n = Number(String(leadId).replace(/^legacy_?/i, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
 function normalizeLeadIdForApi(input) {
   if (input.isLegacyLead && input.leadId != null) {
-    const n = Number(input.leadId);
-    return Number.isFinite(n) ? `legacy_${n}` : `legacy_${input.leadId}`;
+    const n = parseLegacyLeadId(input.leadId);
+    return n != null ? `legacy_${n}` : `legacy_${input.leadId}`;
   }
   return input.leadId ?? '';
 }
@@ -271,10 +277,7 @@ async function sendProformaInvoiceEmailBackend(input, mailboxUserId) {
     to: [to],
     context: {
       clientId: input.isLegacyLead ? null : input.leadId ?? null,
-      legacyLeadId:
-        input.isLegacyLead && input.leadId != null && !Number.isNaN(Number(input.leadId))
-          ? Number(input.leadId)
-          : null,
+      legacyLeadId: input.isLegacyLead ? parseLegacyLeadId(input.leadId) : null,
       leadType: input.isLegacyLead ? 'legacy' : 'new',
       leadNumber: input.leadNumber,
       contactEmail: to,
@@ -467,6 +470,18 @@ async function sendProformaInvoiceBundleBackend(input, mailboxUserId) {
     const primary = emailError || whatsAppError;
     if (primary) throw primary;
     throw new Error('Failed to send invoice.');
+  }
+
+  const planId = input.paymentPlanId ?? (input.kind === 'new' ? input.recordId : null);
+  if (planId != null && String(planId).trim() !== '') {
+    const table = input.isLegacyLead || input.kind === 'legacy' ? 'finances_paymentplanrow' : 'payment_plans';
+    const { error: invoiceSentError } = await supabase
+      .from(table)
+      .update({ invoice_sent: true, invoice_sent_at: new Date().toISOString() })
+      .eq('id', planId);
+    if (invoiceSentError) {
+      console.warn(`[sendProformaInvoiceBundleBackend] invoice_sent (${table}#${planId}):`, invoiceSentError.message);
+    }
   }
 
   return { emailSent, emailError, whatsAppSent, whatsAppPhone, whatsAppError };

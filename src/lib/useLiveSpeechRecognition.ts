@@ -97,7 +97,10 @@ export function useLiveSpeechRecognition() {
       const recognition = new Ctor();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = options?.lang || 'he-IL';
+      const lang = String(options?.lang || '').trim();
+      if (lang && lang.toLowerCase() !== 'auto') {
+        recognition.lang = lang;
+      }
 
       recognition.onresult = (event: SpeechRecognitionResultEvent) => {
         let interim = '';

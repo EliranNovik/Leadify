@@ -66,6 +66,8 @@ export type PaymentPlanRowLike = {
   /** Expense rows only: firm reduces lead total; client does not. */
   expensePaidBy?: 'firm' | 'client' | null;
   invoice_send_automation_active?: boolean;
+  invoice_sent?: boolean;
+  invoice_sent_at?: string | null;
 };
 
 export type CurrencyAmountMap = Record<string, { base: number; vat: number }>;
@@ -208,12 +210,14 @@ export function DueDateBadge({
   className = '',
   paid = false,
   readyToPay = false,
+  invoiceSent = false,
   matchStatus = false,
 }: {
   date: string | null | undefined;
   className?: string;
   paid?: boolean;
   readyToPay?: boolean;
+  invoiceSent?: boolean;
   matchStatus?: boolean;
 }) {
   const formatted = formatDateDDMMYYYY(date);
@@ -221,11 +225,13 @@ export function DueDateBadge({
     return <span className={`text-sm text-slate-400 ${className}`.trim()}>—</span>;
   }
   const badgeClass = matchStatus
-    ? readyToPay
-      ? 'bg-sky-50 text-sky-700'
-      : paid
-        ? 'bg-emerald-50 text-emerald-700'
-        : 'bg-amber-50 text-amber-700'
+    ? invoiceSent
+      ? 'bg-indigo-50 text-indigo-700'
+      : readyToPay
+        ? 'bg-sky-50 text-sky-700'
+        : paid
+          ? 'bg-emerald-50 text-emerald-700'
+          : 'bg-amber-50 text-amber-700'
     : 'bg-violet-50 text-violet-700';
   return (
     <span
@@ -255,18 +261,50 @@ export function PaidPaymentDateBadge({
   );
 }
 
+export function invoiceSentByLabel(payment: {
+  invoice_send_automation_sent_at?: string | null;
+  ready_to_pay_by_display_name?: string | null;
+}): string | null {
+  if (payment.invoice_send_automation_sent_at) return 'Automation';
+  const name = payment.ready_to_pay_by_display_name?.trim();
+  return name || null;
+}
+
 export function PaymentStatusPill({
   paid,
   readyToPay,
+  invoiceSent,
+  invoiceSentAt,
+  invoiceSentByName,
   expensePaidBy,
 }: {
   paid: boolean;
   readyToPay?: boolean;
+  invoiceSent?: boolean;
+  invoiceSentAt?: string | null;
+  invoiceSentByName?: string | null;
   expensePaidBy?: 'firm' | 'client' | null;
 }) {
+  const sentDate = invoiceSent ? formatDateDDMMYYYY(invoiceSentAt) : '';
+  const sentBy = invoiceSentByName?.trim() || '';
+  const invoiceTip =
+    sentDate && sentBy
+      ? `Sent ${sentDate} by ${sentBy}`
+      : sentDate
+        ? `Sent ${sentDate}`
+        : sentBy
+          ? `Sent by ${sentBy}`
+          : 'Invoice sent';
   const status = paid ? (
     <span className="inline-flex rounded-full bg-emerald-700 px-3.5 py-1.5 text-sm font-semibold text-white">
       Paid
+    </span>
+  ) : invoiceSent ? (
+    <span
+      className="tooltip tooltip-right z-50 inline-flex rounded-full bg-indigo-50 px-3.5 py-1.5 text-sm font-semibold text-indigo-700"
+      data-tip={invoiceTip}
+    >
+      Invoice sent
     </span>
   ) : readyToPay ? (
     <span className="inline-flex rounded-full bg-sky-50 px-3.5 py-1.5 text-sm font-semibold text-sky-700">

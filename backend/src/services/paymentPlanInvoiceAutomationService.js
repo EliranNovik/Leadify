@@ -217,6 +217,8 @@ async function markAutomationComplete({ table, rowId, isLegacy, leadId, authUser
 
   const update = {
     invoice_send_automation_sent_at: sentAt,
+    invoice_sent: true,
+    invoice_sent_at: sentAt,
     ready_to_pay: true,
     due_date: today,
   };

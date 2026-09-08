@@ -94,6 +94,8 @@ const AdminDropdownPortal: React.FC<{
   );
 };
 
+import { PaymentStatusPill } from '../client-tabs/paymentPlanUi';
+import { paymentPlanInvoiceSentState } from '../../lib/markPaymentPlanInvoiceSent';
 import { generateProformaName } from '../../lib/proforma';
 import {
   ensureProformasForAutomationPayments,
@@ -123,6 +125,8 @@ interface PaymentPlan {
   client_id?: number | null; // Contact ID (client_id from payment plan row)
   sent_to_finance?: boolean; // Flag to indicate if payment was sent to finance
   sent_to_finance_at?: string | null; // Timestamp when payment was sent to finance
+  invoice_sent?: boolean;
+  invoice_sent_at?: string | null;
 }
 
 interface FinancePlan {
@@ -1627,6 +1631,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                 sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
                 sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
                 original_due_date: plan.due_date || null, // Store original due_date for legacy leads to check if it exists
+                ...paymentPlanInvoiceSentState(plan),
               };
             });
           } else {
@@ -1713,6 +1718,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                 ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
                 sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
                 sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
+                ...paymentPlanInvoiceSentState(plan),
               };
             });
           }
@@ -2152,6 +2158,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
               ready_to_pay: isReadyToPay,
               ready_to_pay_by: readyToPayBy,
               ready_to_pay_by_display_name: readyToPayByDisplayName,
+              ...paymentPlanInvoiceSentState(plan),
             };
           });
         } else {
@@ -2235,6 +2242,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
               ready_to_pay: plan.ready_to_pay || false,
               ready_to_pay_by: plan.ready_to_pay_by || null,
               ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
+              ...paymentPlanInvoiceSentState(plan),
             };
           });
         }
@@ -5252,6 +5260,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Total</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Status</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
                                     <th className="px-4 py-3 text-center"></th>
@@ -5302,6 +5311,14 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {p.order}
+                                        </td>
+                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                          <PaymentStatusPill
+                                            paid={isPaid}
+                                            readyToPay={p.ready_to_pay}
+                                            invoiceSent={p.invoice_sent}
+                                            invoiceSentAt={p.invoice_sent_at}
+                                          />
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {p.isLegacy ? (
@@ -5929,6 +5946,16 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
                                         {/* Payment details */}
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">STATUS</span>
+                                            <PaymentStatusPill
+                                              paid={isPaid}
+                                              readyToPay={p.ready_to_pay}
+                                              invoiceSent={p.invoice_sent}
+                                            invoiceSentAt={p.invoice_sent_at}
+                                              invoiceSentAt={p.invoice_sent_at}
+                                            />
+                                          </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
                                             <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
