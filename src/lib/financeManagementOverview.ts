@@ -14,7 +14,12 @@ import {
   monthKeysForYearMonth,
   sumCategoryTotals,
 } from './allExpensesReport';
-import { getJerusalemDateFromTimestamp, getJerusalemTodayIsoDate } from './boiCurrencyConversion';
+import {
+  createBoiDateRateConverter,
+  getJerusalemDateFromTimestamp,
+  getJerusalemTodayIsoDate,
+  type CurrencyInput,
+} from './boiCurrencyConversion';
 import { buildJerusalemEndOfDayIso, buildJerusalemStartOfDayIso } from './leadDateFilters';
 import { formatLeadMoneyAmount, toLeadCurrencyIcon } from './leadCurrencyDisplay';
 import { buildCalendarClientRoute } from './calendarClientRoute';
@@ -22,8 +27,41 @@ import { buildClientFinancesTabPath } from './proformaClientNavigation';
 import {
   extractPelecardCodeFromText,
   formatPelecardHistoryStatus,
+  isPelecardApprovedCode,
   isPelecardSessionExpiredCode,
 } from './pelecardErrors';
+
+export type FinanceDateRange = {
+  from: string;
+  to: string;
+};
+
+function isIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+export function resolveFinanceDateRange(
+  range?: Partial<FinanceDateRange> | null,
+  fallback?: FinanceDateRange,
+): FinanceDateRange {
+  const today = getJerusalemTodayIsoDate();
+  const base = fallback ?? { from: today, to: today };
+  let from = String(range?.from || base.from).slice(0, 10);
+  let to = String(range?.to || base.to).slice(0, 10);
+  if (!isIsoDate(from)) from = base.from;
+  if (!isIsoDate(to)) to = base.to;
+  if (from > to) [from, to] = [to, from];
+  return { from, to };
+}
+
+function jerusalemDayInRange(
+  value: string | null | undefined,
+  from: string,
+  to: string,
+): boolean {
+  const day = getJerusalemDateFromTimestamp(value);
+  return Boolean(day && day >= from && day <= to);
+}
 
 export type FinanceOverviewSnapshot = {
   expensesThisMonthNis: number;
@@ -62,7 +100,11 @@ export type FinanceLastPaymentRow = {
   currencySign: string;
   amountNumber: string;
   amountLabel: string;
+  amountValue: number;
+  amountNis: number;
+  currency: CurrencyInput;
   paidBy: string;
+  markedPaidBy: string | null;
   href: string;
   paidAt: string;
 };
@@ -74,7 +116,15 @@ export type FinanceFailedPaymentRow = {
   currencySign: string;
   amountNumber: string;
   amountLabel: string;
+  amountValue: number;
+  amountNis: number;
+  currency: CurrencyInput;
   errorReason: string;
+  errorTitle: string;
+  errorDetail: string;
+  errorCode: string | null;
+  paymentMethod: string;
+  secureToken: string | null;
   href: string;
   failedAt: string;
 };
@@ -89,6 +139,9 @@ export type FinanceInvoiceInstructionRow = {
   currencySign: string;
   amountNumber: string;
   amountLabel: string;
+  amountValue: number;
+  amountNis: number;
+  currency: CurrencyInput;
   dueDate: string;
   dueLabel: string;
   daysAgo: number;
@@ -552,6 +605,38 @@ function parseMoney(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function shiftIsoDate(iso: string, days: number): string {
+  const [year, month, day] = iso.split('-').map(Number);
+  if (!year || !month || !day) return iso;
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + days);
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+async function withBoiNisTotals<T extends { amountValue: number }>(
+  rows: T[],
+  range: { from: string; to: string },
+  dateFor: (row: T) => string | null | undefined,
+  currencyFor: (row: T) => CurrencyInput,
+): Promise<Array<T & { amountNis: number }>> {
+  if (!rows.length) return [];
+  const converter = await createBoiDateRateConverter({
+    dateWindow: { from: shiftIsoDate(range.from, -14), to: range.to },
+  });
+  return Promise.all(
+    rows.map(async (row) => {
+      const amount = Number(row.amountValue) || 0;
+      const amountNis = amount
+        ? await converter.toNis(amount, currencyFor(row), dateFor(row) || range.to)
+        : 0;
+      return { ...row, amountNis };
+    }),
+  );
+}
+
 function toAmountParts(
   amount: number,
   currency?: string | number | null,
@@ -683,43 +768,43 @@ async function fetchPaidMethodHints(opts: {
   return hints;
 }
 
-/** Today's collected payment-plan rows (Asia/Jerusalem), newest first. */
-export async function fetchFinanceLastPaymentsToday(): Promise<FinanceLastPaymentRow[]> {
-  const today = getJerusalemTodayIsoDate();
-  const startIso = buildJerusalemStartOfDayIso(today);
-  const endIso = buildJerusalemEndOfDayIso(today);
+/** Collected payment-plan rows for a Jerusalem calendar range, newest first. */
+export async function fetchFinanceLastPaymentsToday(
+  range?: Partial<FinanceDateRange> | null,
+): Promise<FinanceLastPaymentRow[]> {
+  const { from: rangeFrom, to: rangeTo } = resolveFinanceDateRange(range);
+  const startIso = buildJerusalemStartOfDayIso(rangeFrom);
+  const endIso = buildJerusalemEndOfDayIso(rangeTo);
 
   const [modernRows, legacyRows] = await Promise.all([
-    fetchAllPaged<any>((from, to) =>
+    fetchAllPaged<any>((fromIdx, toIdx) =>
       supabase
         .from('payment_plans')
-        .select('id, lead_id, value, value_vat, currency, currency_id, paid_at, paid, client_name, cancel_date')
+        .select('id, lead_id, value, value_vat, currency, currency_id, paid_at, paid, paid_by, client_name, cancel_date')
         .eq('paid', true)
         .not('paid_at', 'is', null)
         .gte('paid_at', startIso)
         .lte('paid_at', endIso)
         .order('paid_at', { ascending: false })
-        .range(from, to),
+        .range(fromIdx, toIdx),
     ),
-    fetchAllPaged<any>((from, to) =>
+    fetchAllPaged<any>((fromIdx, toIdx) =>
       supabase
         .from('finances_paymentplanrow')
         .select('id, lead_id, client_id, value, value_base, vat_value, currency_id, actual_date, cancel_date')
         .is('cancel_date', null)
         .not('actual_date', 'is', null)
-        .gte('actual_date', today)
-        .lte('actual_date', today)
+        .gte('actual_date', rangeFrom)
+        .lte('actual_date', rangeTo)
         .order('actual_date', { ascending: false })
-        .range(from, to),
+        .range(fromIdx, toIdx),
     ),
   ]);
 
   const modern = modernRows.filter(
-    (row) =>
-      !row.cancel_date &&
-      getJerusalemDateFromTimestamp(row.paid_at) === today,
+    (row) => !row.cancel_date && jerusalemDayInRange(row.paid_at, rangeFrom, rangeTo),
   );
-  const legacy = legacyRows.filter((row) => getJerusalemDateFromTimestamp(row.actual_date) === today);
+  const legacy = legacyRows.filter((row) => jerusalemDayInRange(row.actual_date, rangeFrom, rangeTo));
 
   const newLeadIds = [...new Set(modern.map((row) => String(row.lead_id || '')).filter(Boolean))];
   const legacyLeadIds = [
@@ -784,7 +869,11 @@ export async function fetchFinanceLastPaymentsToday(): Promise<FinanceLastPaymen
       leadNumber,
       clientName,
       ...toAmountParts(amount, row.currency, row.currency_id),
+      amountValue: amount,
+      amountNis: 0,
+      currency: row.currency ?? row.currency_id ?? null,
       paidBy: formatFinancePaymentMethod(method),
+      markedPaidBy: String(row.paid_by || '').trim() || null,
       href: buildCalendarClientRoute({
         lead_type: 'new',
         lead_number: leadNumber || null,
@@ -808,7 +897,11 @@ export async function fetchFinanceLastPaymentsToday(): Promise<FinanceLastPaymen
       leadNumber,
       clientName,
       ...toAmountParts(amount, null, row.currency_id),
+      amountValue: amount,
+      amountNis: 0,
+      currency: row.currency_id ?? null,
       paidBy: formatFinancePaymentMethod(method),
+      markedPaidBy: null,
       href: buildCalendarClientRoute({
         lead_type: 'legacy',
         lead_number: lead?.lead_number || null,
@@ -820,44 +913,93 @@ export async function fetchFinanceLastPaymentsToday(): Promise<FinanceLastPaymen
   }
 
   rows.sort((a, b) => String(b.paidAt).localeCompare(String(a.paidAt)));
-  return rows;
+  return withBoiNisTotals(
+    rows,
+    { from: rangeFrom, to: rangeTo },
+    (row) => row.paidAt,
+    (row) => row.currency ?? row.currencySign,
+  );
+}
+
+function resolvePelecardAttemptCode(opts: {
+  errorMessage?: string | null;
+  statusCode?: string | null;
+}): string {
+  const fromMessage = extractPelecardCodeFromText(opts.errorMessage);
+  if (fromMessage) return fromMessage;
+  return String(opts.statusCode || '').trim();
 }
 
 function isSessionExpiredFailure(opts: {
   errorMessage?: string | null;
   statusCode?: string | null;
 }): boolean {
-  const code = String(opts.statusCode || '').trim() || extractPelecardCodeFromText(opts.errorMessage);
+  const code = resolvePelecardAttemptCode(opts);
   if (isPelecardSessionExpiredCode(code)) return true;
   const text = String(opts.errorMessage || '').toLowerCase();
   return text.includes('session expired') || text.includes('checkout session expired');
 }
 
-function failedPaymentReason(opts: {
+function shouldOmitFailedPayment(opts: {
+  errorMessage?: string | null;
+  statusCode?: string | null;
+}): boolean {
+  const code = resolvePelecardAttemptCode(opts);
+  return isPelecardApprovedCode(code) || isSessionExpiredFailure({ ...opts, statusCode: code });
+}
+
+function dashboardFailureTitle(title: string): string {
+  const t = title.trim();
+  if (/bank transfer was not completed/i.test(t)) return 'Bank transfer rejected';
+  if (/this card could not be charged/i.test(t)) return 'Card declined';
+  if (/payment could not be completed/i.test(t)) return 'Card declined';
+  if (/internet payment not enabled/i.test(t)) return 'Card declined';
+  if (/could not confirm payment/i.test(t)) return 'Payment unconfirmed';
+  return t || 'Payment failed';
+}
+
+function dashboardFailureDetail(explanation: string | null | undefined, rawMessage?: string | null): string {
+  const text = String(explanation || rawMessage || '')
+    .replace(/^\s*\[\d{3}\]\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  if (/lack of coverage|transaction expired|bank rejected/i.test(text)) {
+    return 'Insufficient funds, expired transaction or bank rejection';
+  }
+  if (text.length > 90) return `${text.slice(0, 87).trim()}…`;
+  return text;
+}
+
+function failedPaymentCopy(opts: {
   status?: string | null;
   errorMessage?: string | null;
   statusCode?: string | null;
-}): string {
+}): { reason: string; title: string; detail: string; code: string | null } {
   const view = formatPelecardHistoryStatus({
     status: opts.status,
     statusCode: opts.statusCode || extractPelecardCodeFromText(opts.errorMessage),
     errorMessage: opts.errorMessage,
   });
-  const title = String(view.title || '').trim();
+  const title = dashboardFailureTitle(String(view.title || '').trim() || 'Payment failed');
+  const detail = dashboardFailureDetail(view.explanation, opts.errorMessage);
   const raw = String(opts.errorMessage || '')
     .replace(/^\s*\[\d{3}\]\s*/, '')
     .trim();
-  if (title && raw && raw.length <= 80 && !title.toLowerCase().includes(raw.toLowerCase())) {
-    return `${title} · ${raw}`;
-  }
-  return title || raw || 'Payment failed';
+  const reason =
+    title && raw && raw.length <= 80 && !title.toLowerCase().includes(raw.toLowerCase())
+      ? `${title} · ${raw}`
+      : title || raw || 'Payment failed';
+  return { reason, title, detail, code: view.code };
 }
 
-/** Today's failed / cancelled payment-link attempts (Asia/Jerusalem), newest first. */
-export async function fetchFinanceFailedPaymentsToday(): Promise<FinanceFailedPaymentRow[]> {
-  const today = getJerusalemTodayIsoDate();
-  const startIso = buildJerusalemStartOfDayIso(today);
-  const endIso = buildJerusalemEndOfDayIso(today);
+/** Failed / cancelled payment-link attempts for a Jerusalem calendar range, newest first. */
+export async function fetchFinanceFailedPaymentsToday(
+  range?: Partial<FinanceDateRange> | null,
+): Promise<FinanceFailedPaymentRow[]> {
+  const { from, to } = resolveFinanceDateRange(range);
+  const startIso = buildJerusalemStartOfDayIso(from);
+  const endIso = buildJerusalemEndOfDayIso(to);
 
   const transactions = await fetchAllPaged<any>((from, to) =>
     supabase
@@ -871,8 +1013,8 @@ export async function fetchFinanceFailedPaymentsToday(): Promise<FinanceFailedPa
   ).catch(() => []);
 
   const todayTx = transactions.filter((tx) => {
-    if (getJerusalemDateFromTimestamp(tx.created_at || tx.completed_at) !== today) return false;
-    return !isSessionExpiredFailure({
+    if (!jerusalemDayInRange(tx.created_at || tx.completed_at, from, to)) return false;
+    return !shouldOmitFailedPayment({
       errorMessage: tx.error_message,
       statusCode: extractPelecardCodeFromText(tx.error_message),
     });
@@ -884,7 +1026,7 @@ export async function fetchFinanceFailedPaymentsToday(): Promise<FinanceFailedPa
         const { data, error } = await supabase
           .from('payment_links')
           .select(
-            'id, payment_plan_id, client_id, legacy_id, plan_contact_id, total_amount, currency, payment_method, status, pelecard_status_code',
+            'id, payment_plan_id, client_id, legacy_id, plan_contact_id, total_amount, currency, payment_method, status, pelecard_status_code, secure_token',
           )
           .in('id', chunk);
         if (error) throw error;
@@ -1012,7 +1154,7 @@ export async function fetchFinanceFailedPaymentsToday(): Promise<FinanceFailedPa
   for (const tx of todayTx) {
     const link = linkById.get(String(tx.payment_link_id ?? ''));
     if (
-      isSessionExpiredFailure({
+      shouldOmitFailedPayment({
         errorMessage: tx.error_message,
         statusCode: link?.pelecard_status_code,
       })
@@ -1050,23 +1192,41 @@ export async function fetchFinanceFailedPaymentsToday(): Promise<FinanceFailedPa
         manual_id: lead?.manual_id ?? null,
         id: lead?.id ?? leadId,
       });
+    const statusCode = resolvePelecardAttemptCode({
+      errorMessage: tx.error_message,
+      statusCode: link?.pelecard_status_code,
+    });
+    const copy = failedPaymentCopy({
+      status: tx.status,
+      errorMessage: tx.error_message,
+      statusCode,
+    });
     rows.push({
       id: `fail-${tx.id}`,
       leadNumber,
       clientName,
       ...toAmountParts(amount, link?.currency, null),
-      errorReason: failedPaymentReason({
-        status: tx.status,
-        errorMessage: tx.error_message,
-        statusCode: link?.pelecard_status_code,
-      }),
+      amountValue: amount,
+      amountNis: 0,
+      currency: link?.currency ?? null,
+      errorReason: copy.reason,
+      errorTitle: copy.title,
+      errorDetail: copy.detail,
+      errorCode: copy.code,
+      paymentMethod: formatFinancePaymentMethod(tx.payment_method || link?.payment_method),
+      secureToken: String(link?.secure_token || '').trim() || null,
       href,
       failedAt: String(tx.created_at || tx.completed_at || ''),
     });
   }
 
   rows.sort((a, b) => String(b.failedAt).localeCompare(String(a.failedAt)));
-  return rows;
+  return withBoiNisTotals(
+    rows,
+    { from, to },
+    (row) => row.failedAt,
+    (row) => row.currency ?? row.currencySign,
+  );
 }
 
 function rowHasInvoiceSentFlag(row: {
@@ -1167,10 +1327,12 @@ function legacyRowHasProforma(
   return leadLevel.has(`${leadId}_any`);
 }
 
-/** Unpaid sent-to-finance dues from the last 7 days that still need a proforma or a send. */
-export async function fetchFinanceInvoiceInstructions(): Promise<FinanceInvoiceInstructionRow[]> {
-  const range = last7DaysRange();
-  const today = range.to;
+/** Unpaid sent-to-finance dues in a due-date range that still need a proforma or a send. */
+export async function fetchFinanceInvoiceInstructions(
+  rangeInput?: Partial<FinanceDateRange> | null,
+): Promise<FinanceInvoiceInstructionRow[]> {
+  const range = resolveFinanceDateRange(rangeInput, last7DaysRange());
+  const today = getJerusalemTodayIsoDate();
 
   const [modernRows, legacyRows] = await Promise.all([
     fetchAllPaged<any>((from, to) =>
@@ -1223,6 +1385,8 @@ export async function fetchFinanceInvoiceInstructions(): Promise<FinanceInvoiceI
     amountLabel: string;
     currencySign: string;
     amountNumber: string;
+    amountValue: number;
+    currency: CurrencyInput;
     dueDate: string;
     orderLabel: string;
     hasProforma: boolean;
@@ -1234,17 +1398,16 @@ export async function fetchFinanceInvoiceInstructions(): Promise<FinanceInvoiceI
   const working: WorkingRow[] = [];
 
   for (const row of modern) {
+    const amount = parseMoney(row.value) + parseMoney(row.value_vat);
     working.push({
       id: `new-${row.id}`,
       leadType: 'new',
       leadId: String(row.lead_id),
       clientId: row.client_id ?? null,
       clientNameHint: String(row.client_name || '').trim(),
-      ...toAmountParts(
-        parseMoney(row.value) + parseMoney(row.value_vat),
-        row.currency,
-        row.currency_id,
-      ),
+      ...toAmountParts(amount, row.currency, row.currency_id),
+      amountValue: amount,
+      currency: row.currency ?? row.currency_id ?? null,
       dueDate: String(row.due_date || '').slice(0, 10),
       orderLabel: orderLabelFromCode(row.payment_order),
       hasProforma: hasProformaValue(row.proforma),
@@ -1264,6 +1427,8 @@ export async function fetchFinanceInvoiceInstructions(): Promise<FinanceInvoiceI
       clientId: row.client_id ?? null,
       clientNameHint: '',
       ...toAmountParts(amount, null, row.currency_id),
+      amountValue: amount,
+      currency: row.currency_id ?? null,
       dueDate: String(row.due_date || '').slice(0, 10),
       orderLabel: orderLabelFromCode(row.order),
       hasProforma: legacyRowHasProforma(row, byPpr, leadLevel),
@@ -1369,6 +1534,9 @@ export async function fetchFinanceInvoiceInstructions(): Promise<FinanceInvoiceI
       currencySign: row.currencySign,
       amountNumber: row.amountNumber,
       amountLabel: row.amountLabel,
+      amountValue: row.amountValue,
+      amountNis: 0,
+      currency: row.currency ?? row.currencySign,
       dueDate: row.dueDate,
       dueLabel,
       daysAgo,
@@ -1383,7 +1551,12 @@ export async function fetchFinanceInvoiceInstructions(): Promise<FinanceInvoiceI
     return a.clientName.localeCompare(b.clientName);
   });
 
-  return rows;
+  return withBoiNisTotals(
+    rows,
+    { from: range.from, to: range.to },
+    (row) => row.dueDate,
+    (row) => row.currency ?? row.currencySign,
+  );
 }
 
 export { formatNis };

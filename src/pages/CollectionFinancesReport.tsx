@@ -294,6 +294,36 @@ function collectedStatusLabel(row: PaymentRow): string {
   return 'Pending';
 }
 
+function collectedIsUnpaidOnly(collected?: string[]): boolean {
+  if (!Array.isArray(collected) || collected.length === 0) return false;
+  const unpaid = collected.filter((value) => value.startsWith('no_'));
+  const paid = collected.filter((value) => value.startsWith('yes_'));
+  return unpaid.length > 0 && paid.length === 0;
+}
+
+function collectedProformaHint(collected?: string[]): 'any' | 'with' | 'without' {
+  if (!Array.isArray(collected) || collected.length === 0) return 'any';
+  const relevant = collected.filter((value) => value.startsWith('no_') || value.startsWith('yes_'));
+  if (!relevant.length) return 'any';
+  const withProforma = relevant.every(
+    (value) =>
+      value === 'no_with_proforma' ||
+      value === 'no_with_proforma_sent' ||
+      value === 'yes_with_proforma',
+  );
+  const withoutProforma = relevant.every(
+    (value) => value === 'no_without_proforma' || value === 'yes_without_proforma',
+  );
+  if (withProforma && !withoutProforma) return 'with';
+  if (withoutProforma && !withProforma) return 'without';
+  return 'any';
+}
+
+function collectedAlreadyEncodesInvoiceSent(collected?: string[]): boolean {
+  if (!Array.isArray(collected) || collected.length === 0) return false;
+  return collected.every((value) => value === 'no_with_proforma' || value === 'no_with_proforma_sent');
+}
+
 function rowMatchesCollectedFilter(row: PaymentRow, collected: string[]): boolean {
   if (!Array.isArray(collected) || collected.length === 0) return true;
   let matchesFilter = false;
@@ -1972,7 +2002,7 @@ const loadPayments = async ({
       });
 
       const emailMode = activeFilters.proformaEmail || 'any';
-      if (emailMode !== 'any') {
+      if (emailMode !== 'any' && !collectedAlreadyEncodesInvoiceSent(activeFilters.collected)) {
         rowsToSet = await filterPaymentRowsByProformaEmail(rowsToSet, emailMode);
       }
       
@@ -2000,13 +2030,12 @@ const loadPayments = async ({
 
       const finalDanielGranot = rowsToSet.filter(rowMatchesDebugContact);
       if (finalDanielGranot.length === 0) {
-        logDanielGranotDebug('NOT in final results — running DB lookup', {
+        logDanielGranotDebug('NOT in final results', {
           inModernFetch: modern.filter(rowMatchesDebugContact).length,
           inLegacyFetch: legacy.filter(rowMatchesDebugContact).length,
           inCombinedBeforeFilter: withProforma.filter(rowMatchesDebugContact).length,
           activeFilters: activeFilters,
         });
-        await debugDanielGranotDbLookup(activeFilters);
       } else {
         logDanielGranotDebug('IN final results', finalDanielGranot.map(summarizeRowForDebug));
       }
@@ -4209,6 +4238,9 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
     } else {
       console.log(`🔍 [fetchModernPayments] Ignore: all rows in due_date range (no ready_to_pay filter)`);
     }
+    if (collectedIsUnpaidOnly(filters.collected) && !hasPaymentDateFilter(filters)) {
+      query = query.not('paid', 'eq', true).is('paid_at', null);
+    }
   }
 
   // Supabase returns max 1000 rows by default; paginate to fetch all
@@ -4304,7 +4336,16 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
   })));
 
   // Rows are already filtered by query (date range on due_date; due_only adds ready_to_pay). No extra filtering.
-  const dateFilteredPlans = data || [];
+  let dateFilteredPlans = data || [];
+  if (collectedIsUnpaidOnly(filters.collected) && !hasPaymentDateFilter(filters)) {
+    dateFilteredPlans = dateFilteredPlans.filter((plan: any) => !plan.paid && !plan.paid_at);
+  }
+  const proformaHint = collectedProformaHint(filters.collected);
+  if (proformaHint === 'with') {
+    dateFilteredPlans = dateFilteredPlans.filter((plan: any) => hasProformaValue(plan.proforma));
+  } else if (proformaHint === 'without') {
+    dateFilteredPlans = dateFilteredPlans.filter((plan: any) => !hasProformaValue(plan.proforma));
+  }
   
   // Debug: Check for lead 199849 after date filtering
   const dateFiltered199849 = dateFilteredPlans.filter((plan: any) => 
@@ -4329,12 +4370,14 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
   })));
   
   const leadIds = Array.from(new Set(dateFilteredPlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
-  const leadMeta = await fetchLeadMetadata(leadIds, false);
-  const sentByNames = await fetchHandlerNames(
-    dateFilteredPlans
-      .map((plan: any) => sentToFinanceEmployeeId(plan, false))
-      .filter((id): id is number => id != null),
-  );
+  const [leadMeta, sentByNames] = await Promise.all([
+    fetchLeadMetadata(leadIds, false),
+    fetchHandlerNames(
+      dateFilteredPlans
+        .map((plan: any) => sentToFinanceEmployeeId(plan, false))
+        .filter((id): id is number => id != null),
+    ),
+  ]);
 
   // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
   // IMPORTANT: All payment values come from payment_plans table, NOT from leads table
@@ -4419,6 +4462,88 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
   });
 }
 
+function legacyPlanHasProforma(
+  plan: any,
+  proformaDateMap: Map<number, string | null>,
+  leadLevelProformaMap: Map<string, string | null>,
+): boolean {
+  const paymentRowId = plan.id != null ? Number(plan.id) : null;
+  if (paymentRowId != null && !Number.isNaN(paymentRowId) && proformaDateMap.get(paymentRowId)) {
+    return true;
+  }
+  const leadIdKey = plan.lead_id?.toString?.() || '';
+  const clientId = plan.client_id ? Number(plan.client_id) : null;
+  const clientIdVal = clientId != null && !Number.isNaN(clientId) ? String(clientId) : 'any';
+  return Boolean(
+    leadLevelProformaMap.get(`${leadIdKey}_${clientIdVal}`) ?? leadLevelProformaMap.get(`${leadIdKey}_any`),
+  );
+}
+
+async function fetchLegacyContactMap(
+  clientIds: Set<number>,
+): Promise<Map<number, { name: string; email: string | null }>> {
+  const contactMap = new Map<number, { name: string; email: string | null }>();
+  if (clientIds.size === 0) return contactMap;
+  const { data: contacts, error } = await supabase
+    .from('leads_contact')
+    .select('id, name, email')
+    .in('id', Array.from(clientIds));
+  if (error || !contacts) return contactMap;
+  contacts.forEach((contact: any) => {
+    if (contact.id && contact.name) {
+      contactMap.set(contact.id, {
+        name: contact.name,
+        email: contact.email || null,
+      });
+    }
+  });
+  return contactMap;
+}
+
+async function fetchLegacyProformaDateMaps(leadIds: string[]): Promise<{
+  proformaDateMap: Map<number, string | null>;
+  leadLevelProformaMap: Map<string, string | null>;
+}> {
+  const proformaDateMap = new Map<number, string | null>();
+  const leadLevelProformaMap = new Map<string, string | null>();
+  const numericLeadIds = leadIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
+  const PROFORMA_BATCH = 400;
+  for (let i = 0; i < numericLeadIds.length; i += PROFORMA_BATCH) {
+    const batch = numericLeadIds.slice(i, i + PROFORMA_BATCH);
+    const { data: proformas, error: proformasError } = await supabase
+      .from('proformainvoice')
+      .select('ppr_id, client_id, cdate, lead_id')
+      .in('lead_id', batch)
+      .is('cxd_date', null);
+
+    if (proformasError) {
+      console.error('❌ [fetchLegacyPayments] Proforma batch error:', proformasError);
+      continue;
+    }
+    (proformas || []).forEach((proforma: any) => {
+      const normalizedDate = normalizeDate(proforma.cdate);
+      if (proforma.ppr_id != null) {
+        const pprId = Number(proforma.ppr_id);
+        if (!Number.isNaN(pprId)) {
+          const existingDate = proformaDateMap.get(pprId);
+          if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+            proformaDateMap.set(pprId, normalizedDate);
+          }
+        }
+      } else {
+        const leadIdStr = proforma.lead_id?.toString() ?? '';
+        const clientIdStr = proforma.client_id != null ? String(proforma.client_id) : 'any';
+        const key = `${leadIdStr}_${clientIdStr}`;
+        const existingDate = leadLevelProformaMap.get(key);
+        if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+          leadLevelProformaMap.set(key, normalizedDate);
+        }
+      }
+    });
+  }
+  return { proformaDateMap, leadLevelProformaMap };
+}
+
 async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope): Promise<PaymentRow[]> {
   console.log('🔍 [fetchLegacyPayments] Starting fetch with filters:', filters);
   
@@ -4456,6 +4581,9 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
         if (filters.toDate) query = query.lte('date', filters.toDate);
       }
       console.log(`🔍 [fetchLegacyPayments] Ignore: all rows in date column range (due_date can be null)`);
+    }
+    if (collectedIsUnpaidOnly(filters.collected) && !hasPaymentDateFilter(filters)) {
+      query = query.is('actual_date', null);
     }
   }
 
@@ -4524,7 +4652,10 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
   })));
 
   // Rows already filtered by query (date range on date or due_date; due_only adds ready_to_pay)
-  const activePlans = data || [];
+  let activePlans = data || [];
+  if (collectedIsUnpaidOnly(filters.collected) && !hasPaymentDateFilter(filters)) {
+    activePlans = activePlans.filter((plan: any) => !plan.actual_date);
+  }
   
   console.log(`✅ [fetchLegacyPayments] Active plans: ${activePlans.length}`);
   
@@ -4577,32 +4708,38 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
   console.log(`🔍 [fetchLegacyPayments] Checking if 199849 is in lead IDs:`, leadIds.includes('199849'));
   console.log(`🔍 [fetchLegacyPayments] Checking if 155026 is in lead IDs:`, leadIds.includes('155026'));
   
-  // Fetch lead metadata (only for lead_ids, not client_ids)
-  const leadMeta = await fetchLeadMetadata(leadIds, true);
+  const { proformaDateMap, leadLevelProformaMap } = await fetchLegacyProformaDateMaps(leadIds);
+  const proformaHint = collectedProformaHint(filters.collected);
+  if (proformaHint !== 'any') {
+    activePlans = activePlans.filter((plan: any) => {
+      const hasProforma = legacyPlanHasProforma(plan, proformaDateMap, leadLevelProformaMap);
+      return proformaHint === 'with' ? hasProforma : !hasProforma;
+    });
+    allLeadIds.clear();
+    allClientIds.clear();
+    activePlans.forEach((plan: any) => {
+      const leadId = plan.lead_id?.toString();
+      const clientId = plan.client_id ? Number(plan.client_id) : null;
+      if (leadId) allLeadIds.add(leadId);
+      if (clientId && !Number.isNaN(clientId)) allClientIds.add(clientId);
+    });
+    leadIds.length = 0;
+    leadIds.push(...allLeadIds);
+  }
+
+  const [leadMeta, contactMap, sentByNames] = await Promise.all([
+    fetchLeadMetadata(leadIds, true),
+    fetchLegacyContactMap(allClientIds),
+    fetchHandlerNames(
+      activePlans
+        .map((plan: any) => sentToFinanceEmployeeId(plan, true))
+        .filter((id): id is number => id != null),
+    ),
+  ]);
   console.log(`✅ [fetchLegacyPayments] Fetched metadata for ${leadMeta.size} leads`);
   console.log(`🔍 [fetchLegacyPayments] Metadata for 199849:`, leadMeta.get('199849'));
   console.log(`🔍 [fetchLegacyPayments] Metadata for 155026:`, leadMeta.get('155026'));
-  
-  // Fetch contact information for client_ids (contact_ids)
-  const contactMap = new Map<number, { name: string; email: string | null }>();
-  if (allClientIds.size > 0) {
-    const clientIdArray = Array.from(allClientIds);
-    const { data: contacts, error: contactsError } = await supabase
-      .from('leads_contact')
-      .select('id, name, email')
-      .in('id', clientIdArray);
-    if (!contactsError && contacts) {
-      contacts.forEach((contact: any) => {
-        if (contact.id && contact.name) {
-          contactMap.set(contact.id, {
-            name: contact.name,
-            email: contact.email || null,
-          });
-        }
-      });
-    }
-    console.log(`✅ [fetchLegacyPayments] Fetched ${contactMap.size} contact names for client_ids`);
-  }
+  console.log(`✅ [fetchLegacyPayments] Fetched ${contactMap.size} contact names for client_ids`);
 
   const danielGranotContactIds = Array.from(contactMap.entries())
     .filter(([, contact]) => nameMatchesDebugContact(contact.name))
@@ -4628,63 +4765,6 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
       hint: 'When Due=Ignore, legacy DB filters "date" column not due_date — due 28/05/2026 may differ from plan date',
     });
   }
-  
-  // Fetch proforma dates from proformainvoice table for legacy leads (batch to avoid URL/param limits with large date ranges)
-  // Match by ppr_id when set (payment plan row id), and by lead_id (+ client_id) when ppr_id is null (lead-level proformas)
-  const proformaDateMap = new Map<number, string | null>(); // Key: ppr_id (payment plan row id)
-  const leadLevelProformaMap = new Map<string, string | null>(); // Key: "leadId" or "leadId_clientId" for proformas with ppr_id null
-  if (leadIds.length > 0) {
-    const numericLeadIds = leadIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
-    if (numericLeadIds.length > 0) {
-      const PROFORMA_BATCH = 400;
-      for (let i = 0; i < numericLeadIds.length; i += PROFORMA_BATCH) {
-        const batch = numericLeadIds.slice(i, i + PROFORMA_BATCH);
-        const { data: proformas, error: proformasError } = await supabase
-          .from('proformainvoice')
-          .select('ppr_id, client_id, cdate, lead_id')
-          .in('lead_id', batch)
-          .is('cxd_date', null); // Only get active proformas (not cancelled) — include both ppr_id set and null
-
-        if (proformasError) {
-          console.error('❌ [fetchLegacyPayments] Proforma batch error:', proformasError);
-          continue;
-        }
-        if (proformas) {
-          proformas.forEach((proforma: any) => {
-            const normalizedDate = normalizeDate(proforma.cdate);
-            if (proforma.ppr_id != null) {
-              const pprId = Number(proforma.ppr_id);
-              if (!Number.isNaN(pprId)) {
-                const existingDate = proformaDateMap.get(pprId);
-                if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
-                  proformaDateMap.set(pprId, normalizedDate);
-                }
-              }
-            } else {
-              const leadIdStr = proforma.lead_id?.toString() ?? '';
-              const clientIdStr = proforma.client_id != null ? String(proforma.client_id) : 'any';
-              const key = `${leadIdStr}_${clientIdStr}`;
-              const existingDate = leadLevelProformaMap.get(key);
-              if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
-                leadLevelProformaMap.set(key, normalizedDate);
-              }
-            }
-          });
-        }
-      }
-      console.log(`✅ [fetchLegacyPayments] Fetched ${proformaDateMap.size} proforma dates by ppr_id, ${leadLevelProformaMap.size} lead-level proformas`);
-      // Debug 168080: what proforma keys exist for this lead
-      const leadLevelKeys168080 = Array.from(leadLevelProformaMap.keys()).filter((k) => k.startsWith('168080_'));
-      const pprIdsFor168080 = activePlans.filter((p: any) => p.lead_id?.toString() === '168080').map((p: any) => p.id);
-      console.log(`🔍 [fetchLegacyPayments] Proforma lookup for 168080: leadLevelKeys=`, leadLevelKeys168080, leadLevelKeys168080.map((k) => leadLevelProformaMap.get(k)), `ppr_ids of plans=`, pprIdsFor168080, pprIdsFor168080.map((id) => proformaDateMap.get(id)));
-    }
-  }
-
-  const sentByNames = await fetchHandlerNames(
-    activePlans
-      .map((plan: any) => sentToFinanceEmployeeId(plan, true))
-      .filter((id): id is number => id != null),
-  );
 
   // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
   return activePlans
@@ -4961,55 +5041,49 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
       .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id, master_id, manual_id, email')
       .in('id', numericIds);
     if (error) throw error;
-    const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
+    const leadsWithMaster = (data || []).filter((lead) => lead.master_id);
+    const numericMasterIds = Array.from(
+      new Set(leadsWithMaster.map((lead) => parseInt(String(lead.master_id), 10)).filter((id) => !Number.isNaN(id))),
+    );
     const legacyHandlerIds = (data || [])
       .map((lead) => normalizeHandlerId(lead.case_handler_id))
       .filter((id): id is number => id !== null);
-    const handlerMap = await fetchHandlerNames(legacyHandlerIds);
-    const contactMap = await fetchContactNameMap(normalizedIds, true);
+    const [categoryMap, handlerMap, contactMap, subLeadsResult] = await Promise.all([
+      fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean)),
+      fetchHandlerNames(legacyHandlerIds),
+      fetchContactNameMap(normalizedIds, true),
+      numericMasterIds.length > 0
+        ? supabase
+            .from('leads_lead')
+            .select('id, master_id')
+            .in('master_id', numericMasterIds)
+            .not('master_id', 'is', null)
+            .order('master_id', { ascending: true })
+            .order('id', { ascending: true })
+        : Promise.resolve({ data: [] as Array<{ id: number; master_id: number | null }> }),
+    ]);
     
-    // Calculate sublead suffixes for all leads with master_id
     const subLeadSuffixMap = new Map<string, number>();
-    const leadsWithMaster = (data || []).filter((lead) => lead.master_id);
-    const masterIds = Array.from(new Set(leadsWithMaster.map((lead) => lead.master_id?.toString()).filter(Boolean)));
-    
-    if (masterIds.length > 0) {
-      // Fetch all subleads for all master_ids in one query
-      const numericMasterIds = masterIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
-      if (numericMasterIds.length > 0) {
-        const { data: allSubLeads } = await supabase
-          .from('leads_lead')
-          .select('id, master_id')
-          .in('master_id', numericMasterIds)
-          .not('master_id', 'is', null)
-          .order('master_id', { ascending: true })
-          .order('id', { ascending: true });
-        
-        if (allSubLeads) {
-          // Group by master_id and calculate suffixes
-          const subLeadsByMaster = new Map<number, any[]>();
-          allSubLeads.forEach((subLead) => {
-            const masterId = subLead.master_id;
-            if (masterId) {
-              if (!subLeadsByMaster.has(masterId)) {
-                subLeadsByMaster.set(masterId, []);
-              }
-              subLeadsByMaster.get(masterId)!.push(subLead);
-            }
-          });
-          
-          // Calculate suffixes for each master's subleads
-          subLeadsByMaster.forEach((subLeads, masterId) => {
-            subLeads.forEach((subLead, index) => {
-              const subLeadKey = subLead.id?.toString();
-              if (subLeadKey) {
-                // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
-                subLeadSuffixMap.set(subLeadKey, index + 2);
-              }
-            });
-          });
+    const allSubLeads = subLeadsResult.data || [];
+    if (allSubLeads.length > 0) {
+      const subLeadsByMaster = new Map<number, any[]>();
+      allSubLeads.forEach((subLead) => {
+        const masterId = subLead.master_id;
+        if (masterId) {
+          if (!subLeadsByMaster.has(masterId)) {
+            subLeadsByMaster.set(masterId, []);
+          }
+          subLeadsByMaster.get(masterId)!.push(subLead);
         }
-      }
+      });
+      subLeadsByMaster.forEach((subLeads) => {
+        subLeads.forEach((subLead, index) => {
+          const subLeadKey = subLead.id?.toString();
+          if (subLeadKey) {
+            subLeadSuffixMap.set(subLeadKey, index + 2);
+          }
+        });
+      });
     }
     
     (data || []).forEach((lead) => {
@@ -5053,52 +5127,47 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
     .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category, master_id, manual_id, email')
     .in('id', normalizedIds);
   if (error) throw error;
-  const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
   const handlerIds = (data || [])
     .map((lead) => normalizeHandlerId(lead.case_handler_id))
     .filter((id): id is number => id !== null);
-  const handlerMap = await fetchHandlerNames(handlerIds);
-  const contactMap = await fetchContactNameMap(normalizedIds, false);
-  
-  // Calculate sublead suffixes for all leads with master_id
-  const subLeadSuffixMap = new Map<string, number>();
   const leadsWithMaster = (data || []).filter((lead) => lead.master_id);
   const masterIds = Array.from(new Set(leadsWithMaster.map((lead) => lead.master_id?.toString()).filter(Boolean)));
+  const [categoryMap, handlerMap, contactMap, subLeadsResult] = await Promise.all([
+    fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean)),
+    fetchHandlerNames(handlerIds),
+    fetchContactNameMap(normalizedIds, false),
+    masterIds.length > 0
+      ? supabase
+          .from('leads')
+          .select('id, master_id')
+          .in('master_id', masterIds)
+          .not('master_id', 'is', null)
+          .order('master_id', { ascending: true })
+          .order('id', { ascending: true })
+      : Promise.resolve({ data: [] as Array<{ id: string | number; master_id: string | number | null }> }),
+  ]);
   
-  if (masterIds.length > 0) {
-    // Fetch all subleads for all master_ids in one query
-    const { data: allSubLeads } = await supabase
-      .from('leads')
-      .select('id, master_id')
-      .in('master_id', masterIds)
-      .not('master_id', 'is', null)
-      .order('master_id', { ascending: true })
-      .order('id', { ascending: true });
-    
-    if (allSubLeads) {
-      // Group by master_id and calculate suffixes
-      const subLeadsByMaster = new Map<string, any[]>();
-      allSubLeads.forEach((subLead) => {
-        const masterId = subLead.master_id?.toString();
-        if (masterId) {
-          if (!subLeadsByMaster.has(masterId)) {
-            subLeadsByMaster.set(masterId, []);
-          }
-          subLeadsByMaster.get(masterId)!.push(subLead);
+  const subLeadSuffixMap = new Map<string, number>();
+  const allSubLeads = subLeadsResult.data || [];
+  if (allSubLeads.length > 0) {
+    const subLeadsByMaster = new Map<string, any[]>();
+    allSubLeads.forEach((subLead) => {
+      const masterId = subLead.master_id?.toString();
+      if (masterId) {
+        if (!subLeadsByMaster.has(masterId)) {
+          subLeadsByMaster.set(masterId, []);
+        }
+        subLeadsByMaster.get(masterId)!.push(subLead);
+      }
+    });
+    subLeadsByMaster.forEach((subLeads) => {
+      subLeads.forEach((subLead, index) => {
+        const subLeadKey = subLead.id?.toString();
+        if (subLeadKey) {
+          subLeadSuffixMap.set(subLeadKey, index + 2);
         }
       });
-      
-      // Calculate suffixes for each master's subleads
-      subLeadsByMaster.forEach((subLeads, masterId) => {
-        subLeads.forEach((subLead, index) => {
-          const subLeadKey = subLead.id?.toString();
-          if (subLeadKey) {
-            // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
-            subLeadSuffixMap.set(subLeadKey, index + 2);
-          }
-        });
-      });
-    }
+    });
   }
   
   (data || []).forEach((lead) => {

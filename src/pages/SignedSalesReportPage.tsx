@@ -10,7 +10,7 @@ import {
 import { fetchAllStage60Records, last30DaysRange } from '../lib/paymentRequestEmail';
 import type { FinanceCollectionFocusId } from '../lib/financeCollectionFocus';
 import { computeDateBounds, fetchStage60RecordsInRange } from '../lib/stage60SignDate';
-import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { fetchStageNames, getStageName, areStagesEquivalent } from '../lib/stageUtils';
 import { usePersistedFilters } from '../hooks/usePersistedState';
 import {
   applySubcontractorFeeTotalsToLeads,
@@ -402,6 +402,8 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
   });
   const [stageMap, setStageMap] = useState<{ [key: string]: string }>({});
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+  const [employeeDirectory, setEmployeeDirectory] = useState<Map<string, string>>(new Map());
+  const [lookupsReady, setLookupsReady] = useState(false);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [categoryNameToDataMap, setCategoryNameToDataMap] = useState<Map<string, any>>(new Map());
@@ -447,9 +449,9 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
       if (value === null || value === undefined) return '';
       const trimmed = value.toString().trim();
       if (!trimmed) return '';
-      return employeeIdMap.get(trimmed) || trimmed;
+      return employeeDirectory.get(trimmed) || employeeIdMap.get(trimmed) || trimmed;
     },
-    [employeeIdMap],
+    [employeeDirectory, employeeIdMap],
   );
 
   const resolveEmployeeIdValue = useCallback(
@@ -457,9 +459,10 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
       if (value === null || value === undefined) return null;
       const trimmed = value.toString().trim();
       if (!trimmed) return null;
-      return employeeIdMap.has(trimmed) ? trimmed : null;
+      if (employeeDirectory.has(trimmed) || employeeIdMap.has(trimmed)) return trimmed;
+      return /^\d+$/.test(trimmed) ? trimmed : null;
     },
-    [employeeIdMap],
+    [employeeDirectory, employeeIdMap],
   );
 
   const filteredEmployeeOptions = useMemo(() => {
@@ -497,6 +500,23 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
     return trimmed;
   };
 
+  const getRoleIdValue = (row: SignedLeadRow, role: RoleKey): string => {
+    switch (role) {
+      case 'scheduler':
+        return row.schedulerId ?? '';
+      case 'manager':
+        return row.managerId ?? '';
+      case 'closer':
+        return row.closerId ?? '';
+      case 'expert':
+        return row.expertId ?? '';
+      case 'handler':
+        return row.handlerId ?? '';
+      default:
+        return '';
+    }
+  };
+
   const getRoleDisplay = (row: SignedLeadRow, role: RoleKey): string => {
     let rawValue: string | null | undefined;
     switch (role) {
@@ -518,24 +538,16 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
       default:
         return '';
     }
-    return normalizeRoleValue(rawValue);
-  };
-
-  const getRoleIdValue = (row: SignedLeadRow, role: RoleKey): string => {
-    switch (role) {
-      case 'scheduler':
-        return row.schedulerId ?? '';
-      case 'manager':
-        return row.managerId ?? '';
-      case 'closer':
-        return row.closerId ?? '';
-      case 'expert':
-        return row.expertId ?? '';
-      case 'handler':
-        return row.handlerId ?? '';
-      default:
-        return '';
+    const normalized = normalizeRoleValue(rawValue);
+    if (!normalized) return '';
+    const resolved = resolveEmployeeDisplayValue(normalized);
+    if (resolved && resolved !== normalized) return resolved;
+    const roleId = getRoleIdValue(row, role);
+    if (roleId) {
+      const fromId = resolveEmployeeDisplayValue(roleId);
+      if (fromId && !/^\d+$/.test(fromId)) return fromId;
     }
+    return /^\d+$/.test(normalized) ? '' : resolved;
   };
 
   const updateRowWithRole = (
@@ -769,6 +781,7 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
         const [
           stageResult,
           activeUsersResult,
+          employeeDirectoryResult,
           categoriesResult,
           languagesResult,
         ] = await Promise.all([
@@ -786,6 +799,10 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
             `)
             .eq('is_active', true)
             .order('full_name', { ascending: true }),
+          supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .not('display_name', 'is', null),
           supabase
             .from('misc_category')
             .select(`
@@ -805,6 +822,13 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
         ]);
 
         setStageMap(stageResult);
+        const directory = new Map<string, string>();
+        (employeeDirectoryResult.data || []).forEach((emp: { id?: number | string; display_name?: string | null }) => {
+          if (emp?.id == null) return;
+          const name = emp.display_name?.trim();
+          if (!name || name.includes('@')) return;
+          directory.set(String(emp.id), name);
+        });
         if (activeUsersResult.data) {
           const employeeMap = new Map<string, string>();
           activeUsersResult.data.forEach(user => {
@@ -814,7 +838,10 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
               : user.tenants_employee;
             const displayName = employeeRelation?.display_name || user.full_name || '';
             if (!displayName || displayName.includes('@')) return;
-            employeeMap.set(String(user.employee_id), displayName.trim());
+            const id = String(user.employee_id);
+            const name = displayName.trim();
+            employeeMap.set(id, name);
+            directory.set(id, name);
           });
 
           const uniqueEmployees = Array.from(employeeMap.entries())
@@ -825,6 +852,7 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
             .sort((a, b) => a.display_name.localeCompare(b.display_name));
           setEmployees(uniqueEmployees);
         }
+        setEmployeeDirectory(directory);
 
         if (!categoriesResult.error && categoriesResult.data) {
           // Create a map from category name (normalized) to category data (including main category)
@@ -867,6 +895,8 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
         }
       } catch (error) {
         console.error('Failed to preload Signed Sales Report data:', error);
+      } finally {
+        setLookupsReady(true);
       }
     };
 
@@ -989,8 +1019,7 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
       return String(rec.display_name).trim();
     }
     if (fallbackId !== null && fallbackId !== undefined) {
-      const match = employees.find(emp => emp.id === String(fallbackId));
-      return match?.display_name || '';
+      return resolveEmployeeDisplayValue(fallbackId) || '';
     }
     return '';
   };
@@ -1087,6 +1116,8 @@ const resolveLegacyLanguage = (lead: any) => {
     const trimmed = stage.toString().trim();
     const cached = stageMap[trimmed];
     if (cached) return cached.trim();
+    const named = getStageName(trimmed);
+    if (named && named.trim() && named !== trimmed) return named.trim();
     return trimmed
       .replace(/_/g, ' ')
       .replace(/\b\w/g, letter => letter.toUpperCase());
@@ -1579,6 +1610,7 @@ const resolveLegacyLanguage = (lead: any) => {
       signedFocusHandledRef.current = null;
       return;
     }
+    if (!lookupsReady) return;
     if (signedFocusHandledRef.current === focusPreset) return;
     signedFocusHandledRef.current = focusPreset;
     const last30 = last30DaysRange();
@@ -1600,7 +1632,7 @@ const resolveLegacyLanguage = (lead: any) => {
       { replace: true },
     );
     void handleSearchRef.current(next);
-  }, [focusPreset, setFilters, setSearchParams]);
+  }, [focusPreset, lookupsReady, setFilters, setSearchParams]);
 
   // Sort rows by handler (no handler on top) when sortByHandler is true
   const sortedRows = useMemo(() => {
@@ -2023,7 +2055,7 @@ const resolveLegacyLanguage = (lead: any) => {
                       <td className="max-w-[220px] text-xs md:text-sm">
                         <span className="block line-clamp-2 break-words">{row.category}</span>
                       </td>
-                      <td className="text-xs md:text-sm font-semibold text-black">{row.stage}</td>
+                      <td className="text-xs md:text-sm font-semibold text-black">{formatStageLabel(row.stage)}</td>
                       <td className="text-xs md:text-sm">
                         <div className="flex items-center gap-1.5">
                           <span>{formatDate(row.signDate)}</span>

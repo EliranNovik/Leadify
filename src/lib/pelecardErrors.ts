@@ -4,6 +4,14 @@ export function isPelecardSessionExpiredCode(statusCode?: string | null): boolea
   return code === '301' || code === '302';
 }
 
+/** Pelecard 000 (and 0 / 00) means the charge was approved — not a failure. */
+export function isPelecardApprovedCode(statusCode?: string | null): boolean {
+  const code = String(statusCode || '').trim();
+  if (!code) return false;
+  if (/^\d+$/.test(code)) return code.padStart(3, '0') === '000';
+  return code === '000';
+}
+
 /** Terminal / acquirer permission — transaction type or CNP settings on the Pelecard terminal. */
 export function isPelecardTerminalConfigCode(statusCode?: string | null): boolean {
   const code = (statusCode || '').trim();
