@@ -11391,27 +11391,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           </div>,
           document.body
         )}
-      {/* AI Smart Recap Drawer for Mobile */}
-      {/* {aiDrawerOpen && createPortal(
-        <div className="fixed inset-0 z-[999] flex lg:hidden">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setAiDrawerOpen(false)} />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-[999]">
-            <div className="flex items-center justify-between p-6 border-b border-base-300 bg-gradient-to-r from-purple-600 to-indigo-600">
-              <div className="flex items-center gap-3">
-                <SparklesIcon className="w-6 h-6 text-white" />
-                <h3 className="text-xl font-bold text-white saira-regular">AI Smart Recap</h3>
-              </div>
-              <button className="btn btn-ghost btn-sm text-white hover:bg-white/20" onClick={() => setAiDrawerOpen(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-hidden">
-              <AISummaryPanel messages={aiSummaryMessages} />
-            </div>
-          </div>
-        </div>,
-        document.body
-      )} */}
       <DocumentViewerModal
         isOpen={attachmentViewerOpen && attachmentViewerDocs.length > 0}
         onClose={closeAttachmentViewer}

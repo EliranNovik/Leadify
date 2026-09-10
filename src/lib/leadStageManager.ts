@@ -587,6 +587,9 @@ export const updateLeadStageWithHistory = async ({
       proposal_text: data[0].proposal_text ? (typeof data[0].proposal_text === 'string' ? data[0].proposal_text.substring(0, 100) + '...' : data[0].proposal_text) : undefined,
     } : null,
   });
+  // #region agent log
+  fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'J',location:'leadStageManager.ts:updateLeadStageWithHistory',message:'stage history write',data:{tableName,writtenStage:data?.[0]?.stage??resolvedStageId??null,requestedStage:stage},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   // History + celebration must not delay the lead.stage write (Another meeting, etc.).
   void recordLeadStageChange({
     lead,

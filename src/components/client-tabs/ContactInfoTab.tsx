@@ -277,7 +277,28 @@ function isTempContactId(id: number): boolean {
   return id > TEMP_CONTACT_ID_THRESHOLD;
 }
 
-/** Preserve unsaved drafts and in-progress edits when contacts are refetched from the server. */
+function mergeFetchedContactContracts(
+  prev: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null },
+  incomingMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null },
+) {
+  const merged = { ...prev };
+  Object.keys(incomingMap).forEach((contactId) => {
+    const contactIdNum = Number(contactId);
+    const incoming = incomingMap[contactIdNum];
+    const existing = prev[contactIdNum];
+    if (incoming && incoming.status === 'signed') {
+      merged[contactIdNum] = incoming;
+      return;
+    }
+    if (existing?.status === 'signed' && (!incoming || incoming.status !== 'signed')) {
+      return;
+    }
+    if (incoming != null || !existing) {
+      merged[contactIdNum] = incoming;
+    }
+  });
+  return merged;
+}
 function mergeFetchedContactsWithLocalEdits(
   serverContacts: ContactEntry[],
   currentContacts: ContactEntry[],
@@ -447,7 +468,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           return s === leadIdStripped || s === leadIdRaw.toLowerCase();
         });
       };
-      return [{ table: 'lead_leadcontact', event: '*' as const, match: matchLead }];
+      const matchContract = (payload: RealtimeChangePayload) => {
+        const row = payload?.new ?? payload?.old;
+        if (!row) return true;
+        const r = row as Record<string, unknown>;
+        const clientId = r.client_id == null ? '' : String(r.client_id).toLowerCase();
+        const legacyId = r.legacy_id == null ? '' : String(r.legacy_id).toLowerCase();
+        return (
+          clientId === leadIdRaw.toLowerCase() ||
+          legacyId === leadIdStripped ||
+          legacyId === leadIdRaw.toLowerCase()
+        );
+      };
+      return [
+        { table: 'lead_leadcontact', event: '*' as const, match: matchLead },
+        { table: 'contracts', event: '*' as const, match: matchContract },
+      ];
     })(),
     onChange: () => {
       // Contract HTML is stored on lead_leadcontact for legacy leads — invalidate so we refetch.
@@ -1011,6 +1047,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     
     // If we've already fetched for this exact client+contacts combo this mount, skip
     if (contractsFetchedRef.current.has(clientKey)) {
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'C',location:'ContactInfoTab.tsx:fetchContracts:skip',message:'skipped contract fetch (already fetched this mount)',data:{contactCount:contacts.length,allContactsCovered,cachedContractStatuses:Object.values(contactContracts).map((c)=>c?.status||null),refreshKey:contractsRefreshKey},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       // Just ensure all contacts are in the map (don't fetch again)
       if (!allContactsCovered) {
         setContactContracts(prev => {
@@ -1082,6 +1121,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           if (newError) {
             console.error('❌ Error fetching new contracts for legacy lead:', newError);
           }
+          // #region agent log
+          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'D',location:'ContactInfoTab.tsx:fetchContracts:legacy',message:'fetched contracts for legacy lead',data:{legacyCount:legacyContracts?.length||0,newCount:newContracts?.length||0,newRows:(newContracts||[]).slice(0,8).map((c:any)=>({status:c.status,hasSignedAt:Boolean(c.signed_at),hasContactId:c.contact_id!=null,contactMatched:contacts.some(ct=>ct.id===c.contact_id)})),contactIds:contacts.map(c=>c.id),stage:client?.stage??null},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
 
           if (mounted) {
             // Group contracts by contact_id for legacy leads
@@ -1155,18 +1197,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // Merge with existing contracts to preserve any that might have been set
             if (mounted) {
               startTransition(() => {
-                setContactContracts(prev => {
-                  const merged = { ...prev };
-                  // Update with fetched contracts, but preserve any existing contracts that aren't being replaced
-                  Object.keys(contactContractsMap).forEach(contactId => {
-                    const contactIdNum = Number(contactId);
-                    // Only update if we have a new contract or if we're explicitly setting to null
-                    if (contactContractsMap[contactIdNum] !== null || !prev[contactIdNum]) {
-                      merged[contactIdNum] = contactContractsMap[contactIdNum];
-                    }
-                  });
-                  return merged;
-                });
+                setContactContracts(prev => mergeFetchedContactContracts(prev, contactContractsMap));
                 // Set most recent contract for backward compatibility
                 const allContracts = [...(legacyContracts || []), ...(newContracts || [])];
                 if (allContracts.length > 0) {
@@ -1192,6 +1223,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             console.error('Error fetching contracts:', error);
             throw error;
           }
+          // #region agent log
+          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'D',location:'ContactInfoTab.tsx:fetchContracts:new',message:'fetched contracts for new lead',data:{rowCount:data?.length||0,rows:(data||[]).slice(0,8).map((c:any)=>({status:c.status,hasSignedAt:Boolean(c.signed_at),hasContactId:c.contact_id!=null,contactMatched:contacts.some(ct=>ct.id===c.contact_id)})),contactIds:contacts.map(c=>c.id),mainContactId,stage:client?.stage??null},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
 
           if (mounted && data) {
 
@@ -1253,18 +1287,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // Merge with existing contracts to preserve any that might have been set
             if (mounted) {
               startTransition(() => {
-                setContactContracts(prev => {
-                  const merged = { ...prev };
-                  // Update with fetched contracts, but preserve any existing contracts that aren't being replaced
-                  Object.keys(contactContractsMap).forEach(contactId => {
-                    const contactIdNum = Number(contactId);
-                    // Only update if we have a new contract or if we're explicitly setting to null
-                    if (contactContractsMap[contactIdNum] !== null || !prev[contactIdNum]) {
-                      merged[contactIdNum] = contactContractsMap[contactIdNum];
-                    }
-                  });
-                  return merged;
-                });
+                setContactContracts(prev => mergeFetchedContactContracts(prev, contactContractsMap));
                 // Set most recent contract for backward compatibility
                 if (data.length > 0) {
                   setMostRecentContract(data[0]);

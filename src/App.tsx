@@ -15,6 +15,7 @@ import EmailThreadModal from './components/EmailThreadModal';
 import ContactSelectorModal from './components/ContactSelectorModal';
 import { supabase } from './lib/supabase';
 import { persistClientToSessionStorage } from './lib/clientSessionCache';
+import { preferNewerLeadStage, getStageName, getStageColour } from './lib/stageUtils';
 import {
   resolveLeadCategoryName,
   resolveLeadLanguageName,
@@ -442,7 +443,7 @@ const AppContentInner: React.FC = () => {
           ...preservedProperties,
           id: `legacy_${legacyLead.id}`,
           lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
-          stage: String(legacyLead.stage || ''),
+          stage: Number.isFinite(Number(legacyLead.stage)) ? Number(legacyLead.stage) : legacyLead.stage,
           source: preservedProperties.source || existingClient?.source || '',
           source_id: legacyLead.source_id ?? existingClient?.source_id ?? null,
           created_at: legacyLead.cdate,
@@ -481,16 +482,23 @@ const AppContentInner: React.FC = () => {
             persistClientToSessionStorage(clientData);
             return clientData;
           }
-          const merged = {
+          const incomingStageId = Number.isFinite(Number(clientData.stage)) ? Number(clientData.stage) : clientData.stage;
+          const merged = preferNewerLeadStage(prev, {
             ...prev,
             ...clientData,
+            stage: incomingStageId,
+            stage_name: getStageName(String(incomingStageId)),
+            stage_colour: getStageColour(String(incomingStageId)),
             language: clientData.language || prev.language,
             category: clientData.category || prev.category,
             source: clientData.source || prev.source,
             topic: clientData.topic || prev.topic,
             closer: clientData.closer ?? prev.closer,
             handler: clientData.handler ?? prev.handler,
-          };
+          });
+          // #region agent log
+          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'I',location:'App.tsx:refreshClientData:legacy',message:'legacy lead refetch merge',data:{prevStage:prev?.stage??null,incomingStage:clientData.stage??null,mergedStage:merged.stage??null},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
           persistClientToSessionStorage(merged);
           return merged;
         });
@@ -591,8 +599,12 @@ const AppContentInner: React.FC = () => {
             emails: data.emails ? [...(Array.isArray(data.emails) ? data.emails : [])] : [],
           };
           writeResolvedLeadMeta(newClientData, resolveLeadMetaChips(newClientData));
-          persistClientToSessionStorage(newClientData);
-          return newClientData;
+          const merged = sameLead ? preferNewerLeadStage(prev, { ...prev, ...newClientData }) : newClientData;
+          // #region agent log
+          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'I',location:'App.tsx:refreshClientData:new',message:'lead refetch merge',data:{prevStage:prev?.stage??null,incomingStage:newClientData.stage??null,mergedStage:merged.stage??null,keptNewerStage:sameLead && Number(merged.stage)===Number(prev?.stage) && Number(newClientData.stage)!==Number(prev?.stage)},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          persistClientToSessionStorage(merged);
+          return merged;
         });
         console.log('✅ setSelectedClient (functional) applied for new lead refresh');
       }

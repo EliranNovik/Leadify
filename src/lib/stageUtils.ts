@@ -106,6 +106,27 @@ export function listLeadStages(): Array<{ id: string; name: string }> {
  * @param stageId - The stage ID to get the name for
  * @returns The stage name or formatted stage ID as fallback
  */
+/**
+ * When a live stage patch lands before an in-flight lead refetch, keep the newer stage
+ * (by stage_changed_at) instead of rolling the UI back to the stale snapshot.
+ */
+export function preferNewerLeadStage<T extends Record<string, any>>(
+  prev: T | null | undefined,
+  incoming: T
+): T {
+  if (!prev || prev.stage == null) return incoming;
+  const prevTs = Date.parse(String(prev.stage_changed_at || '')) || 0;
+  const nextTs = Date.parse(String(incoming.stage_changed_at || '')) || 0;
+  if (prevTs <= nextTs) return incoming;
+  return {
+    ...incoming,
+    stage: prev.stage,
+    stage_changed_at: prev.stage_changed_at,
+    stage_name: prev.stage_name ?? incoming.stage_name,
+    stage_colour: prev.stage_colour ?? incoming.stage_colour,
+  };
+}
+
 export const getStageName = (stageId: string): string => {
   // Convert to string if it's a number
   const stageIdStr = String(stageId);

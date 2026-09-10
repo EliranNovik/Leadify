@@ -22,6 +22,7 @@ import {
 } from '../lib/recruitmentDigitalContracts';
 import { ensurePerEntityContractContentSnapshot } from '../lib/contractContentSnapshot';
 import { shareOrCopyUrl } from '../lib/webShare';
+import { broadcastPublicContractStage } from '../lib/publicContractStageBroadcast';
 
 function unwrapTemplateRelation(raw: any): any | null {
   if (!raw) return null;
@@ -1095,12 +1096,26 @@ const PublicContractView: React.FC<{
 
       // Fill in client fields in the contract content
       const filledContent = fillClientFieldsInContent(resolveContractBodyContent(contract, template));
-      await supabase.from('contracts').update({
+      const { data: sessionData } = await supabase.auth.getSession();
+      const hasStaffSession = Boolean(sessionData?.session?.user);
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'K',location:'PublicContractView.tsx:handleSubmitContract:auth',message:'public sign auth context',data:{hasStaffSession,hasPublicToken:Boolean(token)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+
+      let signQuery = supabase.from('contracts').update({
         custom_content: filledContent,
         client_inputs: clientFields, // Save the actual client input values
         status: 'signed',
         signed_at: new Date().toISOString(),
       }).eq('id', contract.id);
+      if (token) signQuery = signQuery.eq('public_token', token);
+      const { data: signedRows, error: signError, count: signCount } = await signQuery.select('id, status, signed_at, client_id, legacy_id, contact_id, public_token');
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'B',location:'PublicContractView.tsx:handleSubmitContract:sign',message:'contract status update result',data:{signError:signError?.message||null,signCode:signError?.code||null,signedRowCount:Array.isArray(signedRows)?signedRows.length:0,signCount:signCount??null,status:signedRows?.[0]?.status||null,hasSignedAt:Boolean(signedRows?.[0]?.signed_at),hasClientId:Boolean(signedRows?.[0]?.client_id),hasLegacyId:Boolean(signedRows?.[0]?.legacy_id),hasContactId:signedRows?.[0]?.contact_id!=null,hasPublicToken:Boolean(signedRows?.[0]?.public_token||contract.public_token)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      if (signError || !signedRows?.length) {
+        throw signError || new Error('Contract sign update returned 0 rows');
+      }
       // Fetch updated contract
       const { data: updatedContract } = await supabase
         .from('contracts')
@@ -1114,52 +1129,86 @@ const PublicContractView: React.FC<{
         (updatedContract.employee_id || updatedContract.external_firm_id || updatedContract.user_id)
       ) {
         console.log('📝 Public non-client contract signing: skipping lead stage update');
+        // #region agent log
+        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'PublicContractView.tsx:handleSubmitContract:skip',message:'skipped lead stage update',data:{hasEmployeeId:Boolean(updatedContract.employee_id),hasExternalFirmId:Boolean(updatedContract.external_firm_id),hasUserId:Boolean(updatedContract.user_id)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
       } else if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
         console.log('📝 Public contract signing: Updating lead stage to "Client signed agreement" for new lead:', updatedContract.client_id);
 
         const timestamp = new Date().toISOString();
         const stageId = 60; // Client signed agreement
+        const { data: rpcData, error: rpcError } = await supabase.rpc(
+          'update_lead_stage_for_public_contract_new',
+          {
+            p_contract_id: updatedContract.id,
+            p_public_token: token,
+            p_stage: stageId,
+          },
+        );
+        const rpcPayload = rpcData && typeof rpcData === 'object' ? (rpcData as { success?: boolean; error?: string; stage?: number }) : null;
+        const rpcOk = !rpcError && rpcPayload?.success === true;
+        // #region agent log
+        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'M',location:'PublicContractView.tsx:handleSubmitContract:new-lead-rpc',message:'public stage rpc (new lead)',data:{hasStaffSession,rpcOk,rpcError:rpcError?.message||null,rpcSuccess:rpcPayload?.success??null,rpcStage:rpcPayload?.stage??null,rpcFail:rpcPayload?.error??null},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
 
-        // Step 1: Insert into leads_leadstage table
-        const { error: stageInsertError } = await supabase
-          .from('leads_leadstage')
-          .insert({
-            newlead_id: updatedContract.client_id,
-            stage: stageId,
-            date: timestamp,
-            cdate: timestamp,
-            udate: timestamp,
-            creator_id: null, // No creator for public contract signing
-          });
+        let stageInsertError: { message?: string; code?: string } | null = rpcOk ? null : (rpcError || { message: rpcPayload?.error || 'rpc failed' });
+        let leadUpdateError: { message?: string; code?: string } | null = stageInsertError;
+        let leadUpdatedRows: { id?: string; stage?: number }[] | null = rpcOk ? [{ stage: rpcPayload?.stage ?? stageId }] : null;
+        let leadAfter: { stage?: number } | null = rpcOk ? { stage: rpcPayload?.stage ?? stageId } : null;
+        let leadAfterError: { message?: string } | null = null;
 
-        if (stageInsertError) {
+        if (!rpcOk) {
+          // Unsigned clients cannot UPDATE public.leads.stage (column grant is WhatsApp-only).
+          // Legacy leads_lead may still accept a direct write; new leads must succeed via RPC/trigger.
+          if (hasStaffSession) {
+            const insertResult = await supabase
+              .from('leads_leadstage')
+              .insert({
+                newlead_id: updatedContract.client_id,
+                stage: stageId,
+                date: timestamp,
+                cdate: timestamp,
+                udate: timestamp,
+                creator_id: null,
+              });
+            stageInsertError = insertResult.error;
+
+            const leadUpdateResult = await supabase
+              .from('leads')
+              .update({
+                stage: stageId,
+                stage_changed_at: timestamp,
+              })
+              .eq('id', updatedContract.client_id)
+              .select('id, stage');
+            leadUpdatedRows = leadUpdateResult.data;
+            leadUpdateError = leadUpdateResult.error;
+            const leadAfterResult = await supabase
+              .from('leads')
+              .select('id, stage')
+              .eq('id', updatedContract.client_id)
+              .maybeSingle();
+            leadAfter = leadAfterResult.data;
+            leadAfterError = leadAfterResult.error;
+          }
+        }
+        // #region agent log
+        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'PublicContractView.tsx:handleSubmitContract:new-lead-stage',message:'new lead stage write',data:{branch:'new',usedRpc:rpcOk,hasStaffSession,stageInsertError:stageInsertError?.message||null,stageInsertCode:stageInsertError?.code||null,leadUpdateError:leadUpdateError?.message||null,leadUpdateCode:leadUpdateError?.code||null,leadUpdatedCount:Array.isArray(leadUpdatedRows)?leadUpdatedRows.length:0,writtenStage:leadUpdatedRows?.[0]?.stage??null,readBackStage:leadAfter?.stage??null,leadAfterError:leadAfterError?.message||null,clientIdType:typeof updatedContract.client_id,stageIdType:typeof stageId},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        if (!rpcOk && stageInsertError) {
           console.error('❌ Failed to insert stage record:', stageInsertError);
           alert(`Warning: Contract signed but stage history update failed: ${stageInsertError.message || 'Database error'}. Please contact support.`);
-        } else {
-          console.log('✅ Stage history record inserted successfully');
         }
-
-        // Step 2: Update the lead's stage in leads table
-        const { error: leadUpdateError } = await supabase
-          .from('leads')
-          .update({
-            stage: stageId,
-            stage_changed_at: timestamp,
-          })
-          .eq('id', updatedContract.client_id);
-
-        if (leadUpdateError) {
-          console.error('❌ Failed to update lead stage:', {
-            error: leadUpdateError,
-            code: leadUpdateError.code,
-            message: leadUpdateError.message,
-            contractId: updatedContract.id,
-            token: token,
-            clientId: updatedContract.client_id,
-          });
+        if (!rpcOk && leadUpdateError) {
+          console.error('❌ Failed to update lead stage:', leadUpdateError);
           alert(`Warning: Contract signed but stage update failed: ${leadUpdateError.message || 'Database error'}. Please contact support.`);
-        } else {
-          console.log('✅ Lead stage "Client signed agreement" (stage 60) successfully updated');
+        } else if (!rpcOk && !leadUpdatedRows?.length) {
+          console.error('❌ Lead stage update returned 0 rows');
+          alert('Warning: Contract signed but the lead stage could not be updated. Please contact support.');
+        }
+        const appliedStage = Number(leadAfter?.stage ?? leadUpdatedRows?.[0]?.stage);
+        if (Number.isFinite(appliedStage) && appliedStage === stageId) {
+          void broadcastPublicContractStage({ stage: appliedStage, newLeadId: updatedContract.client_id });
         }
       } else if (updatedContract && updatedContract.legacy_id) {
         // For legacy leads (has legacy_id) in new contracts table, directly update stage
@@ -1172,45 +1221,72 @@ const PublicContractView: React.FC<{
           : parseInt(updatedContract.legacy_id, 10);
 
         // Step 1: Insert into leads_leadstage table
-        const { error: stageInsertError } = await supabase
-          .from('leads_leadstage')
-          .insert({
-            lead_id: legacyId,
-            stage: stageId,
-            date: timestamp,
-            cdate: timestamp,
-            udate: timestamp,
-            creator_id: null, // No creator for public contract signing
-          });
+        const { data: rpcData, error: rpcError } = await supabase.rpc(
+          'update_lead_stage_for_public_contract_legacy_in_contracts',
+          {
+            p_contract_id: updatedContract.id,
+            p_public_token: token,
+            p_stage: stageId,
+          },
+        );
+        const rpcPayload = rpcData && typeof rpcData === 'object' ? (rpcData as { success?: boolean; error?: string; stage?: number }) : null;
+        const rpcOk = !rpcError && rpcPayload?.success === true;
+        // #region agent log
+        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'M',location:'PublicContractView.tsx:handleSubmitContract:legacy-lead-rpc',message:'public stage rpc (legacy lead)',data:{hasStaffSession,rpcOk,rpcError:rpcError?.message||null,rpcSuccess:rpcPayload?.success??null,rpcStage:rpcPayload?.stage??null,rpcFail:rpcPayload?.error??null},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
 
-        if (stageInsertError) {
+        let stageInsertError: { message?: string; code?: string } | null = rpcOk ? null : (rpcError || { message: rpcPayload?.error || 'rpc failed' });
+        let leadUpdateError: { message?: string; code?: string } | null = stageInsertError;
+        let leadUpdatedRows: { id?: string; stage?: number }[] | null = rpcOk ? [{ stage: rpcPayload?.stage ?? stageId }] : null;
+        let leadAfter: { stage?: number } | null = rpcOk ? { stage: rpcPayload?.stage ?? stageId } : null;
+        let leadAfterError: { message?: string } | null = null;
+
+        if (!rpcOk) {
+          const insertResult = await supabase
+            .from('leads_leadstage')
+            .insert({
+              lead_id: legacyId,
+              stage: stageId,
+              date: timestamp,
+              cdate: timestamp,
+              udate: timestamp,
+              creator_id: null, // No creator for public contract signing
+            });
+          stageInsertError = insertResult.error;
+
+          const leadUpdateResult = await supabase
+            .from('leads_lead')
+            .update({
+              stage: stageId,
+              stage_changed_at: timestamp,
+            })
+            .eq('id', legacyId)
+            .select('id, stage');
+          leadUpdatedRows = leadUpdateResult.data;
+          leadUpdateError = leadUpdateResult.error;
+          const leadAfterResult = await supabase
+            .from('leads_lead')
+            .select('id, stage')
+            .eq('id', legacyId)
+            .maybeSingle();
+          leadAfter = leadAfterResult.data;
+          leadAfterError = leadAfterResult.error;
+        }
+        // #region agent log
+        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'PublicContractView.tsx:handleSubmitContract:legacy-lead-stage',message:'legacy lead stage write',data:{branch:'legacy',usedRpc:rpcOk,hasStaffSession,stageInsertError:stageInsertError?.message||null,stageInsertCode:stageInsertError?.code||null,leadUpdateError:leadUpdateError?.message||null,leadUpdateCode:leadUpdateError?.code||null,leadUpdatedCount:Array.isArray(leadUpdatedRows)?leadUpdatedRows.length:0,writtenStage:leadUpdatedRows?.[0]?.stage??null,readBackStage:leadAfter?.stage??null,leadAfterError:leadAfterError?.message||null,legacyIdType:typeof legacyId,stageIdType:typeof stageId},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+
+        if (!rpcOk && stageInsertError) {
           console.error('❌ Failed to insert stage record:', stageInsertError);
           alert(`Warning: Contract signed but stage history update failed: ${stageInsertError.message || 'Database error'}. Please contact support.`);
-        } else {
-          console.log('✅ Stage history record inserted successfully');
         }
-
-        // Step 2: Update the lead's stage in leads_lead table
-        const { error: leadUpdateError } = await supabase
-          .from('leads_lead')
-          .update({
-            stage: stageId,
-            stage_changed_at: timestamp,
-          })
-          .eq('id', legacyId);
-
-        if (leadUpdateError) {
-          console.error('❌ Failed to update legacy lead stage:', {
-            error: leadUpdateError,
-            code: leadUpdateError.code,
-            message: leadUpdateError.message,
-            contractId: updatedContract.id,
-            token: token,
-            legacyId: updatedContract.legacy_id,
-          });
+        if (!rpcOk && leadUpdateError) {
+          console.error('❌ Failed to update legacy lead stage:', leadUpdateError);
           alert(`Warning: Contract signed but stage update failed: ${leadUpdateError.message || 'Database error'}. Please contact support.`);
-        } else {
-          console.log('✅ Lead stage 60 (Client signed agreement) successfully updated');
+        }
+        const appliedStage = Number(leadAfter?.stage ?? leadUpdatedRows?.[0]?.stage);
+        if (Number.isFinite(appliedStage) && appliedStage === stageId) {
+          void broadcastPublicContractStage({ stage: appliedStage, legacyId });
         }
       }
 

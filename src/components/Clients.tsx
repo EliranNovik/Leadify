@@ -13,7 +13,7 @@ import {
   type LeadSourceOption,
 } from '../lib/leadSourceId';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
-import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage } from '../lib/stageUtils';
+import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage, preferNewerLeadStage } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import {
@@ -47,6 +47,11 @@ import {
 import { isExpenseNoVatPayment } from '../lib/proformaVat';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { useRealtimeRefresh, type RealtimeTableSubscription } from '../hooks/useRealtimeRefresh';
+import {
+  PUBLIC_CONTRACT_STAGE_CHANNEL,
+  PUBLIC_CONTRACT_STAGE_EVENT,
+  openLeadMatchesPublicContractStage,
+} from '../lib/publicContractStageBroadcast';
 import BalanceEditModal from './BalanceEditModal';
 import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
 import {
@@ -1822,16 +1827,30 @@ const Clients: React.FC<ClientsProps> = ({
   const [isClientSyncing, setIsClientSyncing] = useState(false);
   const lastClientRefreshAtRef = useRef(0);
   const clientSyncInFlightRef = useRef(false);
+  const clientSyncQueuedRef = useRef(false);
 
   const syncClientFromServer = useCallback(
     async (clientId: number | string, options?: { silent?: boolean }) => {
-      if (!clientId || clientSyncInFlightRef.current) return;
+      if (!clientId) return;
+      if (clientSyncInFlightRef.current) {
+        clientSyncQueuedRef.current = true;
+        // #region agent log
+        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'F',location:'Clients.tsx:syncClientFromServer:queue',message:'realtime sync queued because a fetch is already in flight',data:{clientId},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        return;
+      }
       clientSyncInFlightRef.current = true;
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'G',location:'Clients.tsx:syncClientFromServer:start',message:'starting lead sync from server',data:{clientId,silent:options?.silent===true},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       const showIndicator = options?.silent !== true;
       if (showIndicator) setIsClientSyncing(true);
       try {
-        await refreshClientData(clientId);
-        lastClientRefreshAtRef.current = Date.now();
+        do {
+          clientSyncQueuedRef.current = false;
+          await refreshClientData(clientId);
+          lastClientRefreshAtRef.current = Date.now();
+        } while (clientSyncQueuedRef.current);
       } finally {
         clientSyncInFlightRef.current = false;
         if (showIndicator) setIsClientSyncing(false);
@@ -1867,14 +1886,31 @@ const Clients: React.FC<ClientsProps> = ({
     const legacyNum = isLegacy ? idStr.replace(/^legacy_/, '') : null;
     const canonicalNewId = !isLegacy ? idStr.toLowerCase() : null;
     const match = (payload: { new?: Record<string, unknown> | null; old?: Record<string, unknown> | null }) => {
-      const rowId = payload?.new?.id ?? payload?.old?.id;
+      const row = { ...(payload?.old || {}), ...(payload?.new || {}) };
+      const rowId = row.id;
       if (rowId == null) return false;
       if (isLegacy) return String(rowId) === legacyNum;
       return String(rowId).toLowerCase() === canonicalNewId;
     };
+    const matchStageHistory = (payload: { new?: Record<string, unknown> | null; old?: Record<string, unknown> | null }) => {
+      const row = { ...(payload?.old || {}), ...(payload?.new || {}) };
+      if (!row || (row.lead_id == null && row.newlead_id == null)) return false;
+      if (isLegacy) return String(row.lead_id ?? '') === String(legacyNum ?? '');
+      return String(row.newlead_id ?? '').toLowerCase() === String(canonicalNewId ?? '');
+    };
+    const matchContract = (payload: { new?: Record<string, unknown> | null; old?: Record<string, unknown> | null }) => {
+      const row = { ...(payload?.old || {}), ...(payload?.new || {}) };
+      if (!row) return false;
+      if (isLegacy) return String(row.legacy_id ?? '') === String(legacyNum ?? '');
+      return String(row.client_id ?? '').toLowerCase() === String(canonicalNewId ?? '');
+    };
     return {
       channelName: `clients-page-lead-${encodeURIComponent(idStr)}`,
-      tables: [{ table, event: '*', match }],
+      tables: [
+        { table, event: '*', match },
+        { table: 'leads_leadstage', event: '*', match: matchStageHistory },
+        { table: 'contracts', event: '*', match: matchContract },
+      ],
     };
   }, [selectedClient?.id, selectedClient?.lead_type]);
 
@@ -1890,7 +1926,66 @@ const Clients: React.FC<ClientsProps> = ({
         void syncClientFromServer(selectedClient.id, { silent: true });
       }
     },
+    onPayload: (payload) => {
+      const row = payload?.new;
+      if (!row || row.stage == null || !selectedClient?.id) {
+        // #region agent log
+        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'H',location:'Clients.tsx:onPayload:skip',message:'realtime event matched but had no stage to patch',data:{hasRow:Boolean(row),stage:row?.stage??null,eventType:payload?.eventType??null},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        return;
+      }
+      const nextStage = Number(row.stage);
+      if (!Number.isFinite(nextStage)) return;
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'F',location:'Clients.tsx:onPayload:stage',message:'live-patching lead stage from realtime',data:{nextStage,prevStage:selectedClient.stage,hasStageChangedAt:Boolean(row.stage_changed_at)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      setSelectedClient((prev: any) => {
+        if (!prev || String(prev.id) !== String(selectedClient.id)) return prev;
+        if (Number(prev.stage) === nextStage) return prev;
+        const stageLabel = getStageName(String(nextStage));
+        const stageColour = getStageColour(String(nextStage));
+        return {
+          ...prev,
+          stage: nextStage,
+          stage_name: stageLabel || prev.stage_name,
+          stage_colour: stageColour || prev.stage_colour,
+          stage_changed_at: (row.stage_changed_at as string) || new Date().toISOString(),
+        };
+      });
+    },
   });
+
+  useEffect(() => {
+    if (!selectedClient?.id) return;
+    const openId = String(selectedClient.id);
+    const channel = supabase.channel(PUBLIC_CONTRACT_STAGE_CHANNEL);
+    channel.on('broadcast', { event: PUBLIC_CONTRACT_STAGE_EVENT }, (msg: { payload?: Record<string, unknown> }) => {
+      const payload = (msg?.payload || {}) as { stage?: number; leadId?: string; legacyId?: number | string | null; newLeadId?: string | null };
+      if (!openLeadMatchesPublicContractStage(openId, payload) || payload.stage == null) return;
+      const nextStage = Number(payload.stage);
+      if (!Number.isFinite(nextStage)) return;
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'N',location:'Clients.tsx:broadcast:stage',message:'applying public-sign stage broadcast',data:{nextStage,prevStage:selectedClient.stage,openId},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      setSelectedClient((prev: any) => {
+        if (!prev || String(prev.id) !== openId) return prev;
+        const stageLabel = getStageName(String(nextStage));
+        const stageColour = getStageColour(String(nextStage));
+        return {
+          ...prev,
+          stage: nextStage,
+          stage_name: stageLabel || prev.stage_name,
+          stage_colour: stageColour || prev.stage_colour,
+          stage_changed_at: new Date().toISOString(),
+        };
+      });
+      void syncClientFromServer(openId, { silent: true });
+    });
+    channel.subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [selectedClient?.id, setSelectedClient, syncClientFromServer]);
 
   // State for unactivation modal
   const [showUnactivationModal, setShowUnactivationModal] = useState(false);
@@ -3233,11 +3328,13 @@ const Clients: React.FC<ClientsProps> = ({
           setSelectedClient((prev: any) => {
             // Silent sync: merge onto the same lead identity so keep-alive tabs / header don't remount.
             if (prev && String(prev.id) === String(normalizedTransformedData.id)) {
-              return { ...prev, ...normalizedTransformedData, id: prev.id, lead_type: prev.lead_type ?? normalizedTransformedData.lead_type };
+              const next = preferNewerLeadStage(prev, { ...prev, ...normalizedTransformedData, id: prev.id, lead_type: prev.lead_type ?? normalizedTransformedData.lead_type });
+              persistClientData(next);
+              return next;
             }
+            persistClientData(normalizedTransformedData);
             return normalizedTransformedData;
           });
-          persistClientData(normalizedTransformedData);
         }
       } else {
         // For new leads, fetch from leads table - join with accounting_currencies (like legacy leads)
@@ -3375,7 +3472,9 @@ const Clients: React.FC<ClientsProps> = ({
                   sources: sourceOptions,
                 }),
               );
-              return merged;
+              const next = preferNewerLeadStage(prev, merged);
+              persistClientData(next);
+              return next;
             }
             writeResolvedLeadMeta(
               normalizedTransformedData,
@@ -3385,9 +3484,9 @@ const Clients: React.FC<ClientsProps> = ({
                 sources: sourceOptions,
               }),
             );
+            persistClientData(normalizedTransformedData);
             return normalizedTransformedData;
           });
-          persistClientData(normalizedTransformedData);
         }
       }
 
@@ -5437,6 +5536,9 @@ const Clients: React.FC<ClientsProps> = ({
       await refreshClientData(rawClientId ?? clientIdString);
 
       console.log('✅ Handler assignment complete!');
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'J',location:'Clients.tsx:assignSuccessStageHandler',message:'handler assignment wrote stage 105',data:{shouldUpdateStage,handlerSetStageId,prevStage:selectedClient.stage,hasHandlerId:handlerIdNumeric!=null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       toast.success(handlerLabel ? 'Case handler assigned and stage updated to Handler Set.' : 'Case handler cleared.');
     } catch (error) {
       console.error('❌ Error updating case handler for success stage:', error);
@@ -5448,8 +5550,11 @@ const Clients: React.FC<ClientsProps> = ({
 
   const getStageBadge = (stage: string | number, anchor: StageDropdownAnchor = 'badge', fromJoin?: { name?: string; colour?: string } | null) => {
     // Minimal computation for first paint so the badge appears with the rest of the header
-    const stageName = (fromJoin?.name && String(fromJoin.name).trim()) ? String(fromJoin.name).trim() : getStageName(String(stage));
-    const stageColourFromJoin = fromJoin?.colour && String(fromJoin.colour).trim() ? String(fromJoin.colour).trim() : null;
+    const idStageName = getStageName(String(stage));
+    const joinName = fromJoin?.name && String(fromJoin.name).trim() ? String(fromJoin.name).trim() : '';
+    const joinMatchesStage = !joinName || areStagesEquivalent(joinName, idStageName) || joinName === idStageName;
+    const stageName = joinMatchesStage && joinName ? joinName : idStageName;
+    const stageColourFromJoin = joinMatchesStage && fromJoin?.colour && String(fromJoin.colour).trim() ? String(fromJoin.colour).trim() : null;
     const fallbackStageColour = stageColourFromJoin || getStageColour(String(stage)) || '#ffffff';
     const badgeTextColour = (stageName === 'Scheduler assigned' || stageName === 'scheduler assigned' || stageName === 'scheduler_assigned')
       ? '#ffffff'
@@ -7953,6 +8058,9 @@ const Clients: React.FC<ClientsProps> = ({
         timestamp: stageTimestamp,
         stageDate: signedDate, // Pass the signed date to be used in leads_leadstage.date field
       });
+      // #region agent log
+      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'Clients.tsx:handleSignedAgreement',message:'manual stage 60 save via CRM',data:{signedStageId,prevStage:selectedClient.stage},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       setShowSignedDrawer(false);
       await onClientUpdate();
@@ -11981,31 +12089,15 @@ const Clients: React.FC<ClientsProps> = ({
     const key = `${selectedClient.id}:${selectedClient.stage}`;
     if (autoAdvanceHandlerSetRef.current === key) return;
     autoAdvanceHandlerSetRef.current = key;
-
-    void (async () => {
-      try {
-        const handlerSetStageId = getStageIdOrWarn('Handler Set') ?? 105;
-        const actor = await fetchStageActorInfo();
-        const timestamp = new Date().toISOString();
-
-        await updateLeadStageWithHistory({
-          lead: selectedClient,
-          stage: handlerSetStageId,
-          additionalFields: {},
-          actor,
-          timestamp,
-        });
-
-        setSelectedClient((prev: any) => {
-          if (!prev) return prev;
-          return { ...prev, stage: handlerSetStageId };
-        });
-
-        await onClientUpdate();
-      } catch (error) {
-        console.error('Error auto-advancing to Handler Set (stage 105):', error);
-      }
-    })();
+    // #region agent log
+    fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'Clients.tsx:autoAdvanceHandlerSet',message:'auto-advancing stage 60 to 105 because handler is set',data:{fromStage:selectedClient.stage,hasHandlerId:Boolean(handlerId),hasHandlerLabel:Boolean(handlerLabel)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    // Public contract signing already wrote stage 60. Handler assignment (not this effect)
+    // is what should move the lead to 105 — jumping here made history show 60 while the
+    // current stage skipped to 105 (or looked unchanged).
+    // #region agent log
+    fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'A',location:'Clients.tsx:autoAdvanceHandlerSet:skip',message:'leaving lead at stage 60 instead of auto-advancing to 105',data:{stage:selectedClient.stage,hasHandlerId:Boolean(handlerId)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
   }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
 
   // Stage 105 ("Handler Set" / Nominated) → 110 ("Handler Started") is owned by the DB:

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeftIcon, ArchiveBoxIcon, UserIcon, PencilSquareIcon, ChatBubbleLeftRightIcon, PhoneIcon, EnvelopeIcon, BanknotesIcon, ArrowPathIcon, UserPlusIcon, NoSymbolIcon, CheckCircleIcon, CalendarDaysIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { ArrowLeftIcon, ArchiveBoxIcon, UserIcon, PencilSquareIcon, ChatBubbleLeftRightIcon, PhoneIcon, EnvelopeIcon, BanknotesIcon, ArrowPathIcon, UserPlusIcon, NoSymbolIcon, CheckCircleIcon, CalendarDaysIcon, MagnifyingGlassIcon, ClockIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { Client } from '../types/client';
-import { fetchStageNames, getStageName, getStageColour } from '../lib/stageUtils';
+import { fetchStageNames, getStageName, getStageColour, areStagesEquivalent } from '../lib/stageUtils';
+import { displaySymbolForPaymentSave } from '../lib/paymentPlanCurrency';
 
 interface Employee {
   id: number;
@@ -23,6 +24,7 @@ interface HistoryEntry {
   descriptionBold?: string; // Bold part of description
   descriptionText?: string; // Regular text part of description
   changeDetails?: string[]; // List of specific changes
+  isAutomation?: boolean;
 }
 
 const HistoryPage: React.FC = () => {
@@ -34,6 +36,9 @@ const HistoryPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<'all' | 'lead_changes' | 'meeting_changes' | 'payment_changes'>('all');
   const [employeeSearch, setEmployeeSearch] = useState<string>('');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [stageNamesMap, setStageNamesMap] = useState<{ [key: number]: string }>({});
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [contactMap, setContactMap] = useState<{ [key: number]: string }>({});
@@ -234,6 +239,360 @@ const HistoryPage: React.FC = () => {
     return html.replace(/<[^>]*>/g, '').trim();
   };
 
+  const BOOLEAN_HISTORY_FIELDS = new Set([
+    'vat', 'paid', 'ready_to_pay', 'invoice_sent', 'no_vat', 'include_vat',
+    'success', 'is_active', 'active', 'bonus', 'recurring'
+  ]);
+
+  const parseHistoryBool = (val: any): boolean | null => {
+    if (val === true || val === false) return val;
+    if (val === null || val === undefined || val === '') return null;
+    const s = String(val).trim().toLowerCase();
+    if (['true', 't', 'yes', '1', 'y'].includes(s)) return true;
+    if (['false', 'f', 'no', '0', 'n'].includes(s)) return false;
+    return null;
+  };
+
+  const hasHebrewText = (text?: string | null) => /[\u0590-\u05FF\uFB1D-\uFB4F]/.test(String(text || ''));
+
+  const isEmptyHistoryValue = (value: any): boolean => {
+    if (value == null) return true;
+    const s = String(value).trim().toLowerCase();
+    return s === '' || s === '(empty)' || s === 'empty' || s === 'unassigned' || s === 'no stage' || s === '---' || s === '--' || s === 'null' || s === 'undefined';
+  };
+
+  const formatFieldChangeLine = (fieldName: string, oldDisplay: any, newDisplay: any, quoted = false): string => {
+    const wrap = (v: any) => {
+      const text = String(v ?? '').trim();
+      return quoted ? `"${text}"` : text;
+    };
+    if (isEmptyHistoryValue(oldDisplay) && !isEmptyHistoryValue(newDisplay)) {
+      return `changed ${fieldName} to ${wrap(newDisplay)}`;
+    }
+    if (!isEmptyHistoryValue(oldDisplay) && isEmptyHistoryValue(newDisplay)) {
+      return `removed ${fieldName}`;
+    }
+    return `changed ${fieldName} from ${wrap(oldDisplay)} to ${wrap(newDisplay)}`;
+  };
+
+  const formatHistoryNumber = (n: number): string => {
+    if (Number.isInteger(n)) return n.toLocaleString('en-US');
+    return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const isAutomationActor = (changedBy: any): boolean => {
+    if (changedBy == null || changedBy === '' || changedBy === 'System' || changedBy === '0' || changedBy === 0) {
+      return true;
+    }
+    const n = Number(changedBy);
+    return Number.isFinite(n) ? n <= 0 : String(changedBy).trim().toLowerCase() === 'system';
+  };
+
+  const summarizePaymentPlanRows = (entries: any[]): string[] => {
+    let total = 0;
+    let nextDue: Date | null = null;
+    let earliestDue: Date | null = null;
+    let currencyEntry = entries[0] || {};
+
+    entries.forEach((entry) => {
+      const base = Number(entry?.value ?? entry?.amount ?? 0);
+      const vat = Number(entry?.value_vat ?? entry?.vat_value ?? 0);
+      if (Number.isFinite(base)) total += base;
+      if (Number.isFinite(vat)) total += vat;
+
+      if (entry?.due_date) {
+        const due = new Date(entry.due_date);
+        if (!isNaN(due.getTime())) {
+          if (!earliestDue || due < earliestDue) earliestDue = due;
+          if (parseHistoryBool(entry.paid) !== true && (!nextDue || due < nextDue)) {
+            nextDue = due;
+          }
+        }
+      }
+      if (entry?.currency_id || entry?.currency || entry?.currency_code) {
+        currencyEntry = entry;
+      }
+    });
+
+    const due = nextDue || earliestDue;
+    const symbol = displaySymbolForPaymentSave(
+      {
+        currency: currencyEntry?.currency ?? currencyEntry?.currency_code ?? currencyEntry?.balance_currency,
+        currency_id: currencyEntry?.currency_id,
+      },
+      allCurrencies
+    );
+    const details: string[] = [`Total: ${formatHistoryNumber(total)} ${symbol}`.trim()];
+    details.push(`${entries.length} payment row${entries.length !== 1 ? 's' : ''}`);
+    if (due) {
+      details.push(`Next due: ${due.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}`);
+    }
+    return details;
+  };
+
+  const formatPaymentMoney = (entry: any): string => {
+    const raw = entry?.value ?? entry?.amount ?? entry?.total ?? entry?.meeting_amount;
+    const amount = Number(raw);
+    const amountText = Number.isFinite(amount) ? formatHistoryNumber(amount) : '';
+    const symbol = displaySymbolForPaymentSave(
+      {
+        currency: entry?.currency ?? entry?.currency_code ?? entry?.balance_currency,
+        currency_id: entry?.currency_id,
+      },
+      allCurrencies
+    );
+    if (amountText && symbol) return `${amountText} ${symbol}`;
+    if (amountText) return amountText;
+    return '';
+  };
+
+  const inferPaymentChannel = (entry: any, isAutomation: boolean): string => {
+    const blob = [entry?.payment_method, entry?.notes, entry?.paid_by, entry?.source]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    if (blob.includes('pelecard') || blob.includes('credit card') || blob.includes('card')) return 'Pelecard';
+    if (blob.includes('bit')) return 'Bit';
+    if (blob.includes('bank') || blob.includes('transfer') || blob.includes('wire')) return 'bank transfer';
+    if (blob.includes('cash')) return 'cash';
+    if (isAutomation) return 'Pelecard';
+    return 'payment';
+  };
+
+  const automatedStageEvent = (newStageId: string | null, newStageName: string): string => {
+    const events: Record<string, string> = {
+      '10': 'Scheduler assigned',
+      '11': 'Pre-communication started',
+      '15': 'Communication started',
+      '20': 'Meeting scheduled',
+      '21': 'Meeting rescheduled',
+      '30': 'Meeting completed',
+      '35': 'Meeting marked irrelevant',
+      '40': 'Waiting for meeting summary',
+      '50': 'Meeting summary and agreement sent',
+      '51': 'Client declined the offer',
+      '55': 'Another meeting scheduled',
+      '60': 'Client signed the agreement',
+      '70': 'Payment request sent',
+      '91': 'Lead dropped',
+      '100': 'Case marked success',
+      '105': 'Handler assigned',
+      '110': 'Handler started',
+      '150': 'Application submitted',
+    };
+    if (newStageId && events[String(newStageId)]) return events[String(newStageId)];
+    return newStageName ? `Moved to ${newStageName}` : 'Stage updated';
+  };
+
+  const HISTORY_FIELD_SYNONYMS: Record<string, string> = {
+    'handler': 'handler',
+    'handler id': 'handler',
+    'case handler': 'handler',
+    'case handler id': 'handler',
+    'closer': 'closer',
+    'closer id': 'closer',
+    'expert': 'expert',
+    'expert id': 'expert',
+    'scheduler': 'scheduler',
+    'meeting scheduler': 'scheduler',
+    'meeting scheduler id': 'scheduler',
+    'manager': 'manager',
+    'manager id': 'manager',
+    'meeting manager': 'meeting manager',
+    'meeting manager id': 'meeting manager',
+    'helper': 'helper',
+    'meeting lawyer': 'helper',
+    'meeting lawyer id': 'helper',
+    'retainer handler': 'retainer handler',
+    'retainer handler id': 'retainer handler',
+    'proposal total': 'proposal',
+    'vat value': 'vat amount',
+  };
+
+  const canonicalHistoryField = (label: string): string => {
+    const k = String(label || '').trim().toLowerCase().replace(/_/g, ' ');
+    return HISTORY_FIELD_SYNONYMS[k] || k;
+  };
+
+  const parseHistoryChangeJson = (change: string): any | null => {
+    const trimmed = String(change || '').trim();
+    if (!trimmed.startsWith('{')) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && parsed.type) return parsed;
+    } catch {
+      // plain text change
+    }
+    return null;
+  };
+
+  const interactionKindLabel = (kind: any): string => {
+    const k = String(kind || '').trim().toLowerCase();
+    if (!k) return 'interaction';
+    if (k.includes('mail')) return 'email';
+    if (k.includes('whats')) return 'WhatsApp';
+    if (k.includes('call') || k.includes('phone')) return 'call';
+    if (k.includes('sms')) return 'SMS';
+    if (k.includes('meet')) return 'meeting';
+    return k;
+  };
+
+  const interactionWhen = (interaction: any): string => {
+    if (!interaction || typeof interaction !== 'object') return '';
+    if (interaction.date || interaction.time) {
+      return [interaction.date, interaction.time].filter(Boolean).join(' ');
+    }
+    const raw = interaction.raw_date || interaction.created_at;
+    if (raw) {
+      try {
+        const date = new Date(raw);
+        if (!isNaN(date.getTime())) {
+          return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
+      } catch {
+        return String(raw);
+      }
+    }
+    return '';
+  };
+
+  const interactionContentPreview = (interaction: any): string => {
+    const raw = String(interaction?.content || interaction?.observation || '').trim();
+    if (!raw) return '';
+    const stripped = stripHtmlTags(raw);
+    return stripped.length > 140 ? `${stripped.slice(0, 140)}…` : stripped;
+  };
+
+  const serializeInteractionChange = (interaction: any, action: 'added' | 'removed'): string => {
+    return JSON.stringify({
+      type: 'interaction',
+      action,
+      kind: interactionKindLabel(interaction?.kind || interaction?.type),
+      employee: interaction?.employee || null,
+      when: interactionWhen(interaction),
+      content: interactionContentPreview(interaction),
+    });
+  };
+
+  const interactionHeadline = (parsed: any): { bold: string; text: string } => {
+    const kind = interactionKindLabel(parsed?.kind);
+    const noun = kind === 'interaction' ? 'interaction' : kind;
+    const bold = parsed?.action === 'removed'
+      ? `Removed ${noun}`
+      : (kind === 'interaction' ? 'Added interaction' : `Logged ${noun}`);
+    const bits = [parsed?.employee, parsed?.when].filter(Boolean);
+    return { bold, text: bits.join(' · ') };
+  };
+
+  const extractChangedFieldLabel = (change: string): string | null => {
+    const parsed = parseHistoryChangeJson(change);
+    if (parsed?.type === 'stage') return 'stage';
+    if (parsed?.type === 'interaction') return 'interaction';
+    const m = String(change).match(/^(?:changed|set|removed|updated|added|logged|marked|unmarked)\s+(.+?)(?:\s+from\s+|\s+to\s+|:\s+|$)/i);
+    return m ? canonicalHistoryField(m[1]) : null;
+  };
+
+  const rewriteChangeLabel = (change: string): string => {
+    return change
+      .replace(/\bcase handler(?: id)?\b/gi, 'handler')
+      .replace(/\bhandler id\b/gi, 'handler')
+      .replace(/\bcloser id\b/gi, 'closer')
+      .replace(/\bexpert id\b/gi, 'expert')
+      .replace(/\bproposal total\b/gi, 'proposal')
+      .replace(/\bvat value\b/gi, 'VAT amount')
+      .replace(/\bmeeting scheduler id\b/gi, 'scheduler')
+      .replace(/\bmeeting lawyer id\b/gi, 'helper');
+  };
+
+  const dedupeEquivalentHistoryChanges = (changes: string[]): string[] => {
+    const seenFields = new Set<string>();
+    const out: string[] = [];
+    for (const raw of changes) {
+      const change = rewriteChangeLabel(raw);
+      const parsed = parseHistoryChangeJson(change);
+      if (parsed?.type === 'stage') {
+        if (seenFields.has('stage')) continue;
+        seenFields.add('stage');
+        out.push(change);
+        continue;
+      }
+      if (parsed?.type === 'interaction') {
+        const key = `interaction:${parsed.action}:${parsed.kind}:${parsed.content}:${parsed.when}`;
+        if (seenFields.has(key)) continue;
+        seenFields.add(key);
+        out.push(change);
+        continue;
+      }
+      const field = extractChangedFieldLabel(change);
+      if (field && field !== 'interaction') {
+        if (seenFields.has(field)) continue;
+        seenFields.add(field);
+      }
+      out.push(change);
+    }
+    return out;
+  };
+
+  const titleCaseLabel = (label: string): string => {
+    const lower = label.toLowerCase();
+    if (lower === 'vat') return 'VAT';
+    if (lower === 'vat amount') return 'VAT';
+    return label.replace(/\b\w/g, l => l.toUpperCase());
+  };
+
+  const summarizeHistoryHeadline = (changes: string[]): { descriptionBold: string; descriptionText: string; changeDetails: string[] } => {
+    if (changes.length === 0) {
+      return { descriptionBold: 'Updated this record', descriptionText: '', changeDetails: [] };
+    }
+
+    if (changes.length === 1) {
+      const parsed = parseHistoryChangeJson(changes[0]);
+      if (parsed?.type === 'stage') {
+        return {
+          descriptionBold: '',
+          descriptionText: `changed stage from ${parsed.oldStageName} to ${parsed.newStageName}`,
+          changeDetails: changes,
+        };
+      }
+      if (parsed?.type === 'interaction') {
+        const { bold, text } = interactionHeadline(parsed);
+        return { descriptionBold: bold, descriptionText: text, changeDetails: parsed.content ? [changes[0]] : [] };
+      }
+      return { descriptionBold: '', descriptionText: rewriteChangeLabel(changes[0]), changeDetails: [] };
+    }
+
+    const interactionChanges = changes.filter(c => parseHistoryChangeJson(c)?.type === 'interaction');
+    const otherChanges = changes.filter(c => parseHistoryChangeJson(c)?.type !== 'interaction');
+
+    if (interactionChanges.length === changes.length) {
+      const added = interactionChanges.filter(c => parseHistoryChangeJson(c)?.action === 'added');
+      const bold = added.length === interactionChanges.length
+        ? `Logged ${interactionChanges.length} interactions`
+        : `Updated interactions`;
+      return { descriptionBold: bold, descriptionText: '', changeDetails: interactionChanges };
+    }
+
+    const labels = [...new Set(otherChanges.map(extractChangedFieldLabel).filter(Boolean) as string[])];
+    const details = otherChanges.length > 0 ? otherChanges : changes;
+
+    if (labels.length === 1) {
+      return { descriptionBold: '', descriptionText: rewriteChangeLabel(otherChanges[0]), changeDetails: otherChanges.slice(1) };
+    }
+
+    const financial = labels.every(l => ['proposal', 'balance', 'vat', 'vat amount', 'total', 'amount before vat', 'payment amount'].includes(l));
+    if (financial && labels.length > 1) {
+      return { descriptionBold: 'Updated proposal', descriptionText: '', changeDetails: details };
+    }
+
+    const pretty = labels.slice(0, 3).map(titleCaseLabel).join(', ');
+    const extra = labels.length > 3 ? ` +${labels.length - 3}` : '';
+    return {
+      descriptionBold: `Updated ${pretty}${extra}`,
+      descriptionText: '',
+      changeDetails: details,
+    };
+  };
+
   const detectChanges = (oldRecord: any, newRecord: any, tableType: 'lead' | 'meeting' | 'payment', employeesList: any[] = allEmployees): string[] => {
     const changes: string[] = [];
 
@@ -321,7 +680,9 @@ const HistoryPage: React.FC = () => {
         'stage_changed_at', 'communication_started_at', 'created_at', 'updated_at',
         'last_edited_at', 'last_edited_by',
         'comments', 'highlighted_by', 'expert_comments', 'pipeline_comments',
-        'expert_page_comments', 'expert_page_highlighted_by', 'additional_contacts'
+        'expert_page_comments', 'expert_page_highlighted_by', 'additional_contacts',
+        'stage_name', 'stage_colour', 'stage_color', 'colour', 'color',
+        'public_token', 'search_vector', 'html', 'raw_json'
       ];
       const keyFields = Array.from(allFields).filter(f =>
         !excludeFields.includes(f) &&
@@ -458,21 +819,21 @@ const HistoryPage: React.FC = () => {
             const oldCategoryName = getCategoryName(oldVal);
             const newCategoryName = getCategoryName(newVal);
             if (oldCategoryName !== newCategoryName) {
-              changes.push(`changed ${fieldName.toLowerCase()} from ${oldCategoryName} to ${newCategoryName}`);
+              changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldCategoryName, newCategoryName));
             }
           } else if (field === 'currency_id') {
             // Map currency_id to currency name
             const oldCurrencyName = getCurrencyName(oldVal);
             const newCurrencyName = getCurrencyName(newVal);
             if (oldCurrencyName !== newCurrencyName) {
-              changes.push(`changed ${fieldName.toLowerCase()} from ${oldCurrencyName} to ${newCurrencyName}`);
+              changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldCurrencyName, newCurrencyName));
             }
           } else if (employeeFields.includes(field)) {
             const oldEmp = getEmployeeNameFromId(oldVal);
             const newEmp = getEmployeeNameFromId(newVal);
             // Only show if there's an actual change (not both "Unassigned")
             if (oldEmp !== newEmp) {
-              changes.push(`changed ${fieldName.toLowerCase()} from "${oldEmp}" to "${newEmp}"`);
+              changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldEmp, newEmp, true));
             }
           } else if (numericFields.includes(field) || field === 'balance' || field === 'proposal_total' || field === 'total' || field === 'total_base' || field === 'vat_value' || field === 'meeting_amount') {
             // Handle numeric fields - convert to numbers, but skip if both are NaN or invalid
@@ -486,11 +847,11 @@ const HistoryPage: React.FC = () => {
               // Skip this change - both values are NaN
             } else if (oldNum !== newNum) {
               // Only show if there's a meaningful change
-              const oldDisplay = oldNum != null && !isNaN(Number(oldNum)) ? oldNum : '(empty)';
-              const newDisplay = newNum != null && !isNaN(Number(newNum)) ? newNum : '(empty)';
+              const oldDisplay = oldNum != null && !isNaN(Number(oldNum)) ? formatHistoryNumber(oldNum) : '(empty)';
+              const newDisplay = newNum != null && !isNaN(Number(newNum)) ? formatHistoryNumber(newNum) : '(empty)';
               // Skip if both display as "(empty)" - not meaningful
               if (oldDisplay !== '(empty)' || newDisplay !== '(empty)') {
-                changes.push(`changed ${fieldName.toLowerCase()} from ${oldDisplay} to ${newDisplay}`);
+                changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldDisplay, newDisplay));
               }
             }
           } else if (field === 'special_notes') {
@@ -870,41 +1231,31 @@ const HistoryPage: React.FC = () => {
             const normalizeText = (text: string) => text.trim().toLowerCase().replace(/\s+/g, ' ');
 
             // Filter out interactions that appear in both added and removed (same formatted text)
-            // If an interaction appears in both, keep it in "added" and remove it from "removed"
-            // This prevents showing the same interaction as both added and removed
             const removedTextsFiltered = removedTexts.filter(removedText => {
-              // Check if this exact text appears in added texts
               const normalizedRemoved = normalizeText(removedText);
-              return !addedTexts.some(addedText => {
-                const normalizedAdded = normalizeText(addedText);
-                return normalizedAdded === normalizedRemoved;
-              });
+              return !addedTexts.some(addedText => normalizeText(addedText) === normalizedRemoved);
             });
 
-            // Keep all added texts (don't filter them out even if they match removed)
-            // This ensures we still show interactions that were added, even if they were incorrectly detected as removed
-            const addedTextsFiltered = addedTexts;
-
-            if (addedTextsFiltered.length > 0) {
-              if (addedTextsFiltered.length === 1) {
-                changes.push(`added interaction: ${addedTextsFiltered[0]}`);
-              } else {
-                changes.push(`added ${addedTextsFiltered.length} interactions: ${addedTextsFiltered.join('; ')}`);
-              }
-            } else if (addedInteractions.length > 0 && addedTexts.length === 0) {
-              // If we have added interactions but no formatted texts, show count
-              changes.push(`added ${addedInteractions.length} interaction${addedInteractions.length !== 1 ? 's' : ''}`);
+            if (addedInteractions.length > 0) {
+              addedInteractions.forEach((interaction: any) => {
+                changes.push(serializeInteractionChange(interaction, 'added'));
+              });
             }
 
             if (removedTextsFiltered.length > 0) {
-              if (removedTextsFiltered.length === 1) {
-                changes.push(`removed interaction: ${removedTextsFiltered[0]}`);
-              } else {
-                changes.push(`removed ${removedTextsFiltered.length} interactions: ${removedTextsFiltered.join('; ')}`);
-              }
+              const removedToShow = removedInteractions.filter((interaction: any) => {
+                const formatted = formatInteraction(interaction);
+                if (!formatted) return false;
+                const normalizedRemoved = normalizeText(formatted);
+                return removedTextsFiltered.some(text => normalizeText(text) === normalizedRemoved);
+              });
+              removedToShow.forEach((interaction: any) => {
+                changes.push(serializeInteractionChange(interaction, 'removed'));
+              });
             } else if (removedInteractions.length > 0 && removedTexts.length === 0) {
-              // If we have removed interactions but no formatted texts, show count
-              changes.push(`removed ${removedInteractions.length} interaction${removedInteractions.length !== 1 ? 's' : ''}`);
+              removedInteractions.forEach((interaction: any) => {
+                changes.push(serializeInteractionChange(interaction, 'removed'));
+              });
             }
 
             // If no additions or removals detected, fall back to count comparison
@@ -968,9 +1319,9 @@ const HistoryPage: React.FC = () => {
               const oldDisplay = formatLatestInteraction(oldVal);
               const newDisplay = formatLatestInteraction(newVal);
 
-              // Skip changes from (empty) to (empty) - not meaningful
-              if (oldDisplay !== '(empty)' || newDisplay !== '(empty)') {
-                changes.push(`changed ${fieldName.toLowerCase()} from "${oldDisplay}" to "${newDisplay}"`);
+              // Skip no-op timestamp noise and empty-to-empty
+              if (oldDisplay !== newDisplay && (oldDisplay !== '(empty)' || newDisplay !== '(empty)')) {
+                changes.push(formatFieldChangeLine('last contact', oldDisplay, newDisplay));
               }
             }
             // If hasInteractionChanges is true, we skip adding the latest_interaction change
@@ -1009,6 +1360,18 @@ const HistoryPage: React.FC = () => {
               }
             }
             // For all unactivation fields, don't add individual changes - they'll be consolidated
+          } else if (BOOLEAN_HISTORY_FIELDS.has(field) || typeof oldVal === 'boolean' || typeof newVal === 'boolean') {
+            const oldBool = parseHistoryBool(oldVal);
+            const newBool = parseHistoryBool(newVal);
+            if (oldBool !== newBool) {
+              const formatBool = (value: boolean | null) => {
+                if (value === null) return '(empty)';
+                if (field === 'vat' || field === 'include_vat') return value ? 'included' : 'not included';
+                return value ? 'Yes' : 'No';
+              };
+              const label = field === 'vat' ? 'VAT' : fieldName;
+              changes.push(formatFieldChangeLine(label.toLowerCase(), formatBool(oldBool), formatBool(newBool)));
+            }
           } else {
             // Clean up values - remove "---", "#", etc.
             const cleanValue = (val: any): string => {
@@ -1069,7 +1432,7 @@ const HistoryPage: React.FC = () => {
             const newDisplay = cleanValue(newVal);
             // Skip changes from (empty) to (empty) - not meaningful
             if (oldDisplay !== '(empty)' || newDisplay !== '(empty)') {
-              changes.push(`changed ${fieldName.toLowerCase()} from "${oldDisplay}" to "${newDisplay}"`);
+              changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldDisplay, newDisplay, true));
             }
           }
         }
@@ -1094,7 +1457,7 @@ const HistoryPage: React.FC = () => {
             const newEmp = getEmployeeNameFromId(newVal);
             // Only show if there's an actual change (not both "Unassigned")
             if (oldEmp !== newEmp) {
-              changes.push(`changed ${fieldName.toLowerCase()} from "${oldEmp}" to "${newEmp}"`);
+              changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldEmp, newEmp, true));
             }
           } else {
             // Handle non-employee fields normally
@@ -1103,7 +1466,7 @@ const HistoryPage: React.FC = () => {
             } else if (oldVal != null && newVal == null) {
               changes.push(`removed ${fieldName.toLowerCase()}`);
             } else {
-              changes.push(`changed ${fieldName.toLowerCase()} from "${oldVal}" to "${newVal}"`);
+              changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldVal, newVal, true));
             }
           }
         }
@@ -1158,16 +1521,29 @@ const HistoryPage: React.FC = () => {
               // If cancel_date was removed (unlikely but handle it)
               changes.push(`removed ${fieldName.toLowerCase()}`);
             } else {
-              changes.push(`changed ${fieldName.toLowerCase()} from "${oldVal || '(empty)'}" to "${newVal || '(empty)'}"`);
+              changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldVal || '(empty)', newVal || '(empty)', true));
             }
-          } else if (field === 'paid' || field === 'ready_to_pay') {
-            changes.push(`${newVal ? 'marked' : 'unmarked'} ${fieldName.toLowerCase()}`);
+          } else if (field === 'paid') {
+            const wasPaid = parseHistoryBool(oldVal);
+            const nowPaid = parseHistoryBool(newVal);
+            if (wasPaid !== nowPaid) {
+              changes.push(nowPaid ? 'Marked as paid' : 'Marked as unpaid');
+            }
+          } else if (field === 'ready_to_pay') {
+            const wasReady = parseHistoryBool(oldVal);
+            const isReady = parseHistoryBool(newVal);
+            if (wasReady !== isReady) {
+              changes.push(isReady ? 'Marked ready to pay' : 'Unmarked ready to pay');
+            }
           } else if (normalizedOld == null && normalizedNew != null) {
-            changes.push(`set ${fieldName.toLowerCase()} to "${newVal}"`);
+            const displayVal = field === 'notes'
+              ? stripHtmlTags(String(newVal)).slice(0, 160) + (String(newVal).length > 160 ? '…' : '')
+              : newVal;
+            changes.push(`set ${fieldName.toLowerCase()} to "${displayVal}"`);
           } else if (normalizedOld != null && normalizedNew == null) {
             changes.push(`removed ${fieldName.toLowerCase()}`);
           } else {
-            changes.push(`changed ${fieldName.toLowerCase()} from "${oldVal || '(empty)'}" to "${newVal || '(empty)'}"`);
+            changes.push(formatFieldChangeLine(fieldName.toLowerCase(), oldVal || '(empty)', newVal || '(empty)', true));
           }
         }
       });
@@ -1176,7 +1552,7 @@ const HistoryPage: React.FC = () => {
     }
 
     // Filter out any changes that contain "NaN" (meaningless changes)
-    const filteredChanges = changes.filter(change => {
+    const filteredChanges = dedupeEquivalentHistoryChanges(changes.filter(change => {
       // Skip changes that contain "NaN" (e.g., "changed status from NaN to NaN")
       if (change.includes('NaN')) {
         return false;
@@ -1186,7 +1562,7 @@ const HistoryPage: React.FC = () => {
         return false;
       }
       return true;
-    });
+    }));
 
     // Debug: Log all detected changes
     console.log('🔍 [detectChanges] Final changes:', {
@@ -1200,7 +1576,7 @@ const HistoryPage: React.FC = () => {
   };
 
   // Create user-friendly description for a history entry
-  const createDescription = (entry: any, prevEntry: any | null, tableType: 'lead' | 'meeting' | 'payment', contactName?: string, employeesList: any[] = allEmployees): { description: string; descriptionBold: string; descriptionText: string; changeDetails: string[] } => {
+  const createDescription = (entry: any, prevEntry: any | null, tableType: 'lead' | 'meeting' | 'payment', contactName?: string, employeesList: any[] = allEmployees, isAutomation = false): { description: string; descriptionBold: string; descriptionText: string; changeDetails: string[] } => {
     const changes = detectChanges(prevEntry, entry, tableType, employeesList);
 
     if (entry.change_type === 'insert') {
@@ -1259,7 +1635,7 @@ const HistoryPage: React.FC = () => {
           description: `Created new payment plan${contactText}`,
           descriptionBold: 'Created new payment plan',
           descriptionText: contactText,
-          changeDetails: []
+          changeDetails: summarizePaymentPlanRows([entry])
         };
       }
     }
@@ -1338,11 +1714,14 @@ const HistoryPage: React.FC = () => {
               }
             })
           });
+          const eventLabel = isAutomation
+            ? automatedStageEvent(parsed.newStageId, parsed.newStageName)
+            : '';
           return {
-            description: `changed stage from ${parsed.oldStageName} to ${parsed.newStageName}`,
-            descriptionBold: '',
-            descriptionText: `changed stage from ${parsed.oldStageName} to ${parsed.newStageName}`,
-            changeDetails: [stageChange] // Store for badge rendering - only the stage change
+            description: eventLabel || `changed stage from ${parsed.oldStageName} to ${parsed.newStageName}`,
+            descriptionBold: eventLabel,
+            descriptionText: eventLabel ? '' : `changed stage from ${parsed.oldStageName} to ${parsed.newStageName}`,
+            changeDetails: [stageChange]
           };
         } catch (e) {
           console.error('🔍 [createDescription] Error parsing stage change:', e);
@@ -1762,20 +2141,38 @@ const HistoryPage: React.FC = () => {
       // For payment updates, show what was changed with clear text
       if (tableType === 'payment' && entry.change_type === 'update') {
         const contactText = contactName ? ` for contact ${contactName}` : '';
+        const filteredChanges = changes.filter(c => c !== '__PAYMENT_DELETED__');
+        const paidMarked = filteredChanges.includes('Marked as paid');
+        const unpaidMarked = filteredChanges.includes('Marked as unpaid');
 
-        // If we have detected changes, show them clearly
-        if (changes.length > 0) {
-          // Filter out the delete marker if present
-          const filteredChanges = changes.filter(c => c !== '__PAYMENT_DELETED__');
-
-          if (filteredChanges.length > 0) {
+        if (paidMarked || unpaidMarked) {
+          const money = formatPaymentMoney(entry);
+          if (paidMarked) {
+            const channel = inferPaymentChannel(entry, isAutomation);
+            const bold = isAutomation ? `Client paid via ${channel}` : 'Marked as paid';
+            const moneyText = money ? `(${money})` : '';
             return {
-              description: `Updated payment plan${contactText}`,
-              descriptionBold: 'Updated payment plan',
-              descriptionText: contactText,
-              changeDetails: filteredChanges
+              description: [bold, moneyText].filter(Boolean).join(' '),
+              descriptionBold: bold,
+              descriptionText: moneyText,
+              changeDetails: []
             };
           }
+          return {
+            description: money ? `Marked as unpaid (${money})` : 'Marked as unpaid',
+            descriptionBold: 'Marked as unpaid',
+            descriptionText: money ? `(${money})` : '',
+            changeDetails: []
+          };
+        }
+
+        if (filteredChanges.length > 0) {
+          return {
+            description: `Updated payment plan${contactText}`,
+            descriptionBold: 'Updated payment plan',
+            descriptionText: contactText,
+            changeDetails: filteredChanges
+          };
         }
 
         // If no prevEntry and no changes detected, show current payment plan details
@@ -1848,21 +2245,15 @@ const HistoryPage: React.FC = () => {
           descriptionText: '',
           changeDetails: []
         };
-      } else if (allChanges.length === 1) {
-        return {
-          description: allChanges[0],
-          descriptionBold: '',
-          descriptionText: allChanges[0],
-          changeDetails: []
-        };
-      } else {
-        return {
-          description: `Updated ${allChanges.length} fields`,
-          descriptionBold: `Updated ${allChanges.length} fields`,
-          descriptionText: '',
-          changeDetails: allChanges
-        };
       }
+
+      const summary = summarizeHistoryHeadline(allChanges);
+      return {
+        description: [summary.descriptionBold, summary.descriptionText].filter(Boolean).join(' ').trim() || 'Updated this record',
+        descriptionBold: summary.descriptionBold,
+        descriptionText: summary.descriptionText,
+        changeDetails: summary.changeDetails
+      };
     }
 
     return {
@@ -2270,7 +2661,8 @@ const HistoryPage: React.FC = () => {
 
         const empId = entry.changed_by ? Number(entry.changed_by) : null;
         const employeeData = getEmployeeByIdLocal(empId);
-        const employeeDisplayName = employeeData ? employeeData.display_name : 'System';
+        const isAutomation = isAutomationActor(entry.changed_by) || !employeeData;
+        const employeeDisplayName = employeeData && !isAutomation ? employeeData.display_name : 'Automation';
 
         // Get contact name for payments
         let contactName: string | undefined;
@@ -2288,9 +2680,14 @@ const HistoryPage: React.FC = () => {
 
         // First, detect all changes to see if there are interactions
         const allChanges = detectChanges(prevEntry, entry, tableType, employeesToUse);
-        const interactionChanges = allChanges.filter((c: string) =>
-          c.includes('interaction') || c.includes('added interaction') || c.includes('removed interaction')
-        );
+        const isInteractionChangeLine = (c: string) => {
+          const parsed = parseHistoryChangeJson(c);
+          if (parsed?.type === 'interaction') return true;
+          const lower = String(c).toLowerCase();
+          return lower.includes('added interaction') || lower.includes('removed interaction');
+        };
+        const interactionChanges = allChanges.filter(isInteractionChangeLine);
+        const nonInteractionChanges = allChanges.filter(c => !isInteractionChangeLine(c));
         const hasInteractionChanges = interactionChanges.length > 0;
 
         // Check if unactivation fields changed (these are handled specially and not added to changes array)
@@ -2356,7 +2753,7 @@ const HistoryPage: React.FC = () => {
           continue; // Skip this entry entirely
         }
 
-        const descData = createDescription(entry, prevEntry, tableType, contactName, employeesToUse);
+        const descData = createDescription(entry, prevEntry, tableType, contactName, employeesToUse, isAutomation);
 
         // Debug: Log entries that result in "Updated this record" to understand what's happening
         if (descData.description === 'Updated this record' || descData.description.includes('Updated this record')) {
@@ -2394,75 +2791,45 @@ const HistoryPage: React.FC = () => {
           descData.descriptionBold.includes('handler notes')
         );
 
-        if (isNotesUpdate && hasInteractionChanges && tableType === 'lead') {
-          // Split into two entries: one for notes, one for interactions
-
-          // First entry: notes only (already filtered in createDescription, but ensure no interactions)
-          const notesOnlyChangeDetails = descData.changeDetails.filter((c: string) =>
-            !c.includes('interaction') && !c.includes('added interaction') && !c.includes('removed interaction')
-          );
-
-          processedEntries.push({
-            entry,
-            descData: {
-              ...descData,
-              changeDetails: notesOnlyChangeDetails
-            },
-            employeeDisplayName,
-            contactName
-          });
-
-          // Second entry: interactions only
-          const interactionDescData = {
-            description: interactionChanges.length === 1
-              ? interactionChanges[0]
-              : `Updated interactions: ${interactionChanges.length} change${interactionChanges.length !== 1 ? 's' : ''}`,
-            descriptionBold: interactionChanges.length === 1 ? '' : 'Updated interactions:',
-            descriptionText: interactionChanges.length === 1 ? interactionChanges[0] : `${interactionChanges.length} change${interactionChanges.length !== 1 ? 's' : ''}`,
-            changeDetails: interactionChanges
+        const buildInteractionDesc = (items: string[]) => {
+          const summary = summarizeHistoryHeadline(items);
+          return {
+            description: [summary.descriptionBold, summary.descriptionText].filter(Boolean).join(' ').trim() || 'Added interaction',
+            descriptionBold: summary.descriptionBold,
+            descriptionText: summary.descriptionText,
+            changeDetails: summary.changeDetails
           };
+        };
+
+        if (hasInteractionChanges && tableType === 'lead') {
+          if (isNotesUpdate || nonInteractionChanges.length > 0) {
+            const otherSummary = !isNotesUpdate ? summarizeHistoryHeadline(nonInteractionChanges) : null;
+            processedEntries.push({
+              entry,
+              descData: isNotesUpdate
+                ? { ...descData, changeDetails: descData.changeDetails.filter((c: string) => !isInteractionChangeLine(c)) }
+                : {
+                    description: [otherSummary!.descriptionBold, otherSummary!.descriptionText].filter(Boolean).join(' ').trim() || descData.description,
+                    descriptionBold: otherSummary!.descriptionBold,
+                    descriptionText: otherSummary!.descriptionText,
+                    changeDetails: otherSummary!.changeDetails
+                  },
+              employeeDisplayName,
+              contactName
+            });
+          }
 
           processedEntries.push({
             entry: {
               ...entry,
-              // Create a unique ID for the interaction entry
               history_id: `${entry.history_id}_interactions`,
               _isInteractionEntry: true
             },
-            descData: interactionDescData,
-            employeeDisplayName,
-            contactName
-          });
-        } else if (hasInteractionChanges && !isNotesUpdate && tableType === 'lead') {
-          // If only interactions changed (no notes), create a single interaction entry
-          const interactionDescData = {
-            description: interactionChanges.length === 1
-              ? interactionChanges[0]
-              : `Updated interactions: ${interactionChanges.length} change${interactionChanges.length !== 1 ? 's' : ''}`,
-            descriptionBold: interactionChanges.length === 1 ? '' : 'Updated interactions:',
-            descriptionText: interactionChanges.length === 1 ? interactionChanges[0] : `${interactionChanges.length} change${interactionChanges.length !== 1 ? 's' : ''}`,
-            changeDetails: interactionChanges
-          };
-
-          console.log('🔍 [Interactions] Creating interaction-only entry:', {
-            history_id: entry.history_id,
-            interactionChanges: interactionChanges.length,
-            description: interactionDescData.description,
-            descriptionBold: interactionDescData.descriptionBold,
-            descriptionText: interactionDescData.descriptionText
-          });
-
-          processedEntries.push({
-            entry: {
-              ...entry,
-              _isInteractionEntry: true
-            },
-            descData: interactionDescData,
+            descData: buildInteractionDesc(interactionChanges),
             employeeDisplayName,
             contactName
           });
         } else {
-          // Normal entry - no splitting needed
           processedEntries.push({
             entry,
             descData,
@@ -2566,50 +2933,13 @@ const HistoryPage: React.FC = () => {
         const baseEntry = group[0];
         const contactName = baseEntry.contactName;
         const contactText = contactName ? ` for contact ${contactName}` : '';
+        const planSummary = summarizePaymentPlanRows(group.map(g => g.entry));
 
-        // Collect all payment row details
-        const paymentRows: string[] = [];
-        group.forEach((processed) => {
-          const entry = processed.entry;
-          const rowDetails: string[] = [];
-
-          if (entry.value != null && entry.value !== '') {
-            rowDetails.push(`Amount: ${entry.value}`);
-          }
-          if (entry.due_date) {
-            try {
-              const date = new Date(entry.due_date);
-              const formattedDate = date.toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric'
-              });
-              rowDetails.push(`Due: ${formattedDate}`);
-            } catch (e) {
-              rowDetails.push(`Due: ${entry.due_date}`);
-            }
-          }
-          if (entry.paid !== null && entry.paid !== undefined) {
-            rowDetails.push(`Paid: ${entry.paid ? 'Yes' : 'No'}`);
-          }
-          if (entry.ready_to_pay !== null && entry.ready_to_pay !== undefined) {
-            rowDetails.push(`Ready: ${entry.ready_to_pay ? 'Yes' : 'No'}`);
-          }
-          if (entry.payment_order != null && entry.payment_order !== '') {
-            rowDetails.push(`Order: ${entry.payment_order}`);
-          }
-
-          if (rowDetails.length > 0) {
-            paymentRows.push(`Row ${paymentRows.length + 1}: ${rowDetails.join(', ')}`);
-          }
-        });
-
-        // Create consolidated description
         const consolidatedDesc = {
-          description: `Created new payment plan${contactText} with ${group.length} payment row${group.length !== 1 ? 's' : ''}`,
+          description: `Created new payment plan${contactText}`,
           descriptionBold: 'Created new payment plan',
           descriptionText: contactText,
-          changeDetails: paymentRows
+          changeDetails: planSummary
         };
 
         // Create consolidated entry using the first entry's metadata
@@ -2905,7 +3235,8 @@ const HistoryPage: React.FC = () => {
           description: descData.description,
           descriptionBold: descData.descriptionBold,
           descriptionText: descData.descriptionText,
-          changeDetails: descData.changeDetails
+          changeDetails: descData.changeDetails,
+          isAutomation: employeeDisplayName === 'Automation'
         });
       }
 
@@ -2971,6 +3302,44 @@ const HistoryPage: React.FC = () => {
     return luminance > 0.55 ? '#111827' : '#ffffff';
   };
 
+  const getSoftStageBadgeStyle = (hexColor?: string | null, stageId?: string | number | null) => {
+    const stageStr = stageId != null ? String(stageId) : '';
+    const isMtngSumAgreement =
+      stageStr === '50'
+      || areStagesEquivalent(getStageName(stageStr), 'Mtng sum+Agreement sent');
+
+    if (isMtngSumAgreement) {
+      return {
+        backgroundColor: 'rgba(22, 163, 74, 0.3)',
+        borderColor: 'rgba(22, 163, 74, 0.45)',
+        color: '#15803d',
+      };
+    }
+
+    const fallback = '#3f28cd';
+    const color = hexColor || fallback;
+    let sanitized = color.trim();
+    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+    if (sanitized.length === 3) {
+      sanitized = sanitized.split('').map(char => char + char).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+      return {
+        backgroundColor: 'rgba(63, 40, 205, 0.12)',
+        borderColor: 'rgba(63, 40, 205, 0.28)',
+        color: fallback,
+      };
+    }
+    const r = parseInt(sanitized.slice(0, 2), 16);
+    const g = parseInt(sanitized.slice(2, 4), 16);
+    const b = parseInt(sanitized.slice(4, 6), 16);
+    return {
+      backgroundColor: `rgba(${r}, ${g}, ${b}, 0.14)`,
+      borderColor: `rgba(${r}, ${g}, ${b}, 0.32)`,
+      color: `#${sanitized}`,
+    };
+  };
+
   // Render lead number (same logic as ClientHeader.tsx)
   const renderLeadNumber = (selectedClient: any, isMasterLead?: boolean) => {
     if (!selectedClient) return '---';
@@ -2998,15 +3367,21 @@ const HistoryPage: React.FC = () => {
 
   const getFieldDisplayName = (field: string) => {
     const fieldMap: { [key: string]: string } = {
-      'name': 'Client Name',
+      'name': 'Client name',
       'email': 'Email',
       'phone': 'Phone',
       'stage': 'Stage',
       'status': 'Status',
       'balance': 'Balance',
-      'proposal_total': 'Proposal Total',
-      'special_notes': 'Special Notes',
-      'general_notes': 'General Notes',
+      'proposal_total': 'Proposal',
+      'total': 'Total',
+      'total_base': 'Amount before VAT',
+      'vat': 'VAT',
+      'vat_value': 'VAT amount',
+      'currency_id': 'Currency',
+      'category_id': 'Category',
+      'special_notes': 'Special notes',
+      'general_notes': 'General notes',
       'tags': 'Tags',
       'anchor': 'Anchor',
       'category': 'Category',
@@ -3016,46 +3391,58 @@ const HistoryPage: React.FC = () => {
       'expert_id': 'Expert',
       'handler': 'Handler',
       'handler_id': 'Handler',
-      'case_handler_id': 'Case Handler',
+      'case_handler_id': 'Handler',
       'scheduler': 'Scheduler',
       'meeting_scheduler_id': 'Scheduler',
       'manager': 'Manager',
       'manager_id': 'Manager',
-      'meeting_manager_id': 'Meeting Manager',
+      'meeting_manager': 'Meeting manager',
+      'meeting_manager_id': 'Meeting manager',
       'helper': 'Helper',
       'meeting_lawyer_id': 'Helper',
-      'retainer_handler_id': 'Retainer Handler',
-      'meeting_date': 'Meeting Date',
-      'meeting_time': 'Meeting Time',
-      'meeting_location': 'Meeting Location',
-      'meeting_manager': 'Meeting Manager',
-      'meeting_amount': 'Meeting Amount',
-      'attendance_probability': 'Attendance Probability',
+      'retainer_handler_id': 'Retainer handler',
+      'meeting_date': 'Meeting date',
+      'meeting_time': 'Meeting time',
+      'meeting_location': 'Meeting location',
+      'meeting_amount': 'Meeting amount',
+      'attendance_probability': 'Attendance probability',
       'complexity': 'Complexity',
-      'value': 'Payment Amount',
-      'due_date': 'Due Date',
-      'paid': 'Payment Status',
-      'ready_to_pay': 'Ready to Pay',
-      'payment_order': 'Payment Order',
-      'notes': 'Notes'
+      'value': 'Amount',
+      'due_date': 'Due date',
+      'paid': 'Paid',
+      'ready_to_pay': 'Ready to pay',
+      'payment_order': 'Payment order',
+      'notes': 'Notes',
+      'invoice_sent': 'Invoice sent',
+      'latest_interaction': 'Last contact',
+      'manual_interactions': 'Interactions',
+      'eligibility_status': 'Eligibility',
+      'section_eligibility': 'Section eligibility',
+      'expert_notes': 'Expert notes',
+      'handler_notes': 'Handler notes',
+      'facts': 'Facts',
+      'topic': 'Topic',
+      'language': 'Language',
+      'source': 'Source',
     };
     return fieldMap[field] || field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   };
 
   const getEntryIcon = (entry: HistoryEntry) => {
+    const iconClass = 'w-5 h-5 text-gray-400 shrink-0';
     if (entry.type === 'lead_created') {
-      return <UserPlusIcon className="w-5 h-5 text-green-500" />;
+      return <UserPlusIcon className={iconClass} />;
     }
     if (entry.type === 'lead_deleted') {
-      return <NoSymbolIcon className="w-5 h-5 text-red-500" />;
+      return <NoSymbolIcon className={iconClass} />;
     }
     if (entry.type === 'meeting_change') {
-      return <CalendarDaysIcon className="w-5 h-5 text-blue-500" />;
+      return <CalendarDaysIcon className={iconClass} />;
     }
     if (entry.type === 'payment_change') {
-      return <BanknotesIcon className="w-5 h-5 text-purple-500" />;
+      return <BanknotesIcon className={iconClass} />;
     }
-    return <PencilSquareIcon className="w-5 h-5 text-orange-500" />;
+    return <PencilSquareIcon className={iconClass} />;
   };
 
   const formatDate = (dateString: string) => {
@@ -3070,6 +3457,24 @@ const HistoryPage: React.FC = () => {
     } catch {
       return dateString;
     }
+  };
+
+  const formatTime = (dateString: string) => {
+    try {
+      return new Date(dateString).toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return dateString;
+    }
+  };
+
+  const getEntryTypeLabel = (entry: HistoryEntry) => {
+    if (entry.type === 'payment_change') return 'Payment';
+    if (entry.type === 'meeting_change') return 'Meeting';
+    if (entry.type === 'lead_created' || entry.type === 'lead_deleted') return 'Lead';
+    return 'Lead';
   };
 
   const formatDateOnly = (dateString: string) => {
@@ -3109,13 +3514,110 @@ const HistoryPage: React.FC = () => {
     return grouped;
   };
 
-  const getChangeTypeBadge = (changeType: string) => {
-    const badges = {
-      'insert': <span className="badge badge-sm text-white border-0" style={{ backgroundColor: '#2563eb' }}>Created</span>,
-      'update': <span className="badge badge-sm text-white border-0" style={{ backgroundColor: '#15803d' }}>Updated</span>,
-      'delete': <span className="badge badge-sm text-white border-0" style={{ backgroundColor: '#dc2626' }}>Deleted</span>
+  const getChangeTypeBadge = (changeType: string, isAutomation = false) => {
+    const softBadge = 'badge badge-sm border-0 font-medium';
+    if (isAutomation) {
+      return <span className={softBadge} style={{ backgroundColor: 'rgba(100, 116, 139, 0.14)', color: '#475569' }}>Auto</span>;
+    }
+    const styles: Record<string, { label: string; backgroundColor: string; color: string }> = {
+      insert: { label: 'Created', backgroundColor: 'rgba(37, 99, 235, 0.14)', color: '#2563eb' },
+      update: { label: 'Updated', backgroundColor: 'rgba(21, 128, 61, 0.14)', color: '#15803d' },
+      delete: { label: 'Deleted', backgroundColor: 'rgba(220, 38, 38, 0.14)', color: '#dc2626' },
     };
-    return badges[changeType as keyof typeof badges] || <span className="badge badge-sm border-0">Changed</span>;
+    const style = styles[changeType] || { label: 'Changed', backgroundColor: 'rgba(107, 114, 128, 0.14)', color: '#4b5563' };
+    return <span className={softBadge} style={{ backgroundColor: style.backgroundColor, color: style.color }}>{style.label}</span>;
+  };
+
+  const findEmployeeIdByName = (name: string): number | null => {
+    if (!name || name === 'Unassigned' || name === '(empty)' || name === '---' || name === '--') return null;
+    const emp = allEmployees.find((e: any) => {
+      if (!e || !e.display_name) return false;
+      return e.display_name.trim().toLowerCase() === name.trim().toLowerCase();
+    });
+    if (!emp) return null;
+    return typeof emp.id === 'bigint' ? Number(emp.id) : (typeof emp.id === 'string' ? parseInt(emp.id, 10) : emp.id);
+  };
+
+  const renderStageBadge = (stageId: string | null, stageName: string) => {
+    if (!stageId) {
+      return (
+        <span className="badge stage-badge rounded-full shrink-0 border-0 text-xs px-2.5 py-0.5 bg-gray-100 text-gray-600">
+          No stage
+        </span>
+      );
+    }
+    const stageColour = getStageColour(stageId);
+    const soft = getSoftStageBadgeStyle(stageColour, stageId);
+    return (
+      <span
+        className="badge stage-badge rounded-full shrink-0 border-0 text-xs px-2.5 py-0.5 max-w-full"
+        style={{
+          backgroundColor: soft.backgroundColor,
+          color: soft.color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+        }}
+        title={stageName}
+      >
+        {stageName}
+      </span>
+    );
+  };
+
+  const renderPersonChip = (name: string) => {
+    const empId = findEmployeeIdByName(name);
+    const isEmpty = !name || ['Unassigned', '(empty)', '---', '--', 'No Stage'].includes(name);
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        {empId && <EmployeeAvatar employeeId={empId} size="sm" />}
+        <span className={isEmpty ? 'text-gray-400 italic' : 'font-medium text-gray-900 dark:text-gray-100'}>
+          {isEmpty ? 'Unassigned' : name}
+        </span>
+      </span>
+    );
+  };
+
+  const isEmployeeRoleField = (field: string) => {
+    const f = field.trim().toLowerCase();
+    return ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting manager', 'retainer handler'].some(
+      role => f === role || f.includes(role)
+    );
+  };
+
+  const parseFieldFromTo = (change: string): { field: string; from?: string; to?: string; kind: 'changed' | 'set' | 'removed' } | null => {
+    const setMatch = change.match(/^set\s+(.+?)\s+to\s+"?([\s\S]+?)"?$/i);
+    if (setMatch) return { field: setMatch[1], to: setMatch[2].replace(/^"|"$/g, ''), kind: 'set' };
+    const removedMatch = change.match(/^removed\s+(.+)$/i);
+    if (removedMatch) return { field: removedMatch[1], kind: 'removed' };
+    const changedQuoted = change.match(/^changed\s+(.+?)\s+from\s+"([^"]*)"\s+to\s+"([^"]*)"$/i);
+    if (changedQuoted) return { field: changedQuoted[1], from: changedQuoted[2], to: changedQuoted[3], kind: 'changed' };
+    const changedBare = change.match(/^changed\s+(.+?)\s+from\s+(.+?)\s+to\s+(.+)$/i);
+    if (changedBare) {
+      return {
+        field: changedBare[1],
+        from: changedBare[2].replace(/^"|"$/g, ''),
+        to: changedBare[3].replace(/^"|"$/g, ''),
+        kind: 'changed'
+      };
+    }
+    const changedToOnly = change.match(/^changed\s+(.+?)\s+to\s+"?([\s\S]+?)"?$/i);
+    if (changedToOnly) return { field: changedToOnly[1], to: changedToOnly[2].replace(/^"|"$/g, ''), kind: 'set' };
+    return null;
+  };
+
+  const visibleChangeDetails = (entry: HistoryEntry): string[] => {
+    const details = entry.changeDetails || [];
+    const title = `${entry.descriptionBold || ''} ${entry.descriptionText || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+    return details.filter(change => {
+      const parsed = parseHistoryChangeJson(change);
+      if (parsed?.type === 'stage') return false;
+      if (parsed?.type === 'interaction') return Boolean(parsed.content);
+      const normalized = change.replace(/\s+/g, ' ').trim().toLowerCase();
+      if (title && (normalized === title || normalized === (entry.descriptionText || '').trim().toLowerCase())) return false;
+      return true;
+    });
   };
 
   const filteredHistory = historyData.filter(entry => {
@@ -3133,13 +3635,24 @@ const HistoryPage: React.FC = () => {
 
     if (!matchesType) return false;
 
-    // Filter by employee search
-    if (employeeSearch.trim() === '') return true;
+    if (employeeSearch.trim() !== '') {
+      const searchTerm = employeeSearch.trim().toLowerCase();
+      const employeeName = entry.employeeDisplayName || 'System';
+      if (!employeeName.toLowerCase().includes(searchTerm)) return false;
+    }
 
-    const searchTerm = employeeSearch.trim().toLowerCase();
-    const employeeName = entry.employeeDisplayName || 'System';
+    const changedAt = new Date(entry.changed_at);
+    if (Number.isNaN(changedAt.getTime())) return true;
+    if (dateFrom) {
+      const from = new Date(`${dateFrom}T00:00:00`);
+      if (changedAt < from) return false;
+    }
+    if (dateTo) {
+      const to = new Date(`${dateTo}T23:59:59.999`);
+      if (changedAt > to) return false;
+    }
 
-    return employeeName.toLowerCase().includes(searchTerm);
+    return true;
   });
 
   if (loading) {
@@ -3183,7 +3696,7 @@ const HistoryPage: React.FC = () => {
           <ArrowLeftIcon className="w-4 h-4" />
           <span className="text-sm md:text-base">Back to Client</span>
         </button>
-        <h1 className="text-xl md:text-3xl font-bold">Change History</h1>
+        <h1 className="text-xl md:text-3xl font-semibold tracking-tight">Change History</h1>
       </div>
 
       {client && (
@@ -3198,15 +3711,14 @@ const HistoryPage: React.FC = () => {
                 const stageId = String(client.stage);
                 const stageName = getStageName(stageId);
                 const stageColour = getStageColour(stageId);
-                const textColor = getContrastingTextColor(stageColour);
+                const soft = getSoftStageBadgeStyle(stageColour, stageId);
 
                 return (
                   <span
-                    className="badge badge-sm md:badge-lg font-semibold"
+                    className="badge stage-badge rounded-full shrink-0 border-0 text-xs md:text-sm px-2.5 py-0.5 max-w-full"
                     style={{
-                      backgroundColor: stageColour || undefined,
-                      color: stageColour ? textColor : undefined,
-                      borderColor: stageColour || undefined,
+                      backgroundColor: soft.backgroundColor,
+                      color: soft.color,
                     }}
                   >
                     {stageName}
@@ -3254,277 +3766,291 @@ const HistoryPage: React.FC = () => {
           <option value="payment_changes">Payment Changes</option>
         </select>
 
-        <div className="relative w-full md:flex-1 md:max-w-xs">
-          <MagnifyingGlassIcon className="absolute left-2 md:left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 md:w-5 md:h-5 text-gray-400" />
+        <label className="input input-bordered input-sm md:input-md flex items-center gap-2 w-full md:flex-1 md:max-w-xs">
+          <MagnifyingGlassIcon className="w-4 h-4 md:w-5 md:h-5 text-gray-400 shrink-0" />
           <input
             type="text"
             placeholder="Search by employee..."
             value={employeeSearch}
             onChange={(e) => setEmployeeSearch(e.target.value)}
-            className="input input-bordered input-sm md:input-md w-full pl-8 md:pl-10"
+            className="grow bg-transparent border-0 outline-none focus:outline-none p-0"
           />
-        </div>
+        </label>
+
+        <label className="input input-bordered input-sm md:input-md flex items-center gap-2 w-full md:w-auto">
+          <span className="text-xs font-semibold uppercase tracking-wide text-gray-400 shrink-0">From</span>
+          <input
+            type="date"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="grow bg-transparent border-0 outline-none focus:outline-none p-0 min-w-[8.5rem]"
+          />
+        </label>
+
+        <label className="input input-bordered input-sm md:input-md flex items-center gap-2 w-full md:w-auto">
+          <span className="text-xs font-semibold uppercase tracking-wide text-gray-400 shrink-0">To</span>
+          <input
+            type="date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="grow bg-transparent border-0 outline-none focus:outline-none p-0 min-w-[8.5rem]"
+          />
+        </label>
+
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value as 'newest' | 'oldest')}
+          className="select select-bordered select-sm md:select-md w-full md:w-auto"
+        >
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+        </select>
       </div>
 
-      <div className="space-y-3 md:space-y-6">
+      <div>
         {filteredHistory.length === 0 ? (
-          <div className="text-center py-12 text-gray-500 bg-base-100 rounded-lg">
+          <div className="text-center py-12 text-gray-500 bg-base-100 rounded-xl border border-gray-100 dark:border-gray-700">
             <ArchiveBoxIcon className="w-12 h-12 mx-auto mb-4 text-gray-400" />
             <p className="text-lg font-medium">No history entries found</p>
             <p className="text-sm mt-2">Changes will appear here once they are made.</p>
           </div>
         ) : (
           (() => {
-            const groupedHistory = groupHistoryByDate(filteredHistory);
-            const sortedDates = Object.keys(groupedHistory).sort((a, b) =>
-              new Date(b).getTime() - new Date(a).getTime()
-            );
+            const sortedHistory = [...filteredHistory].sort((a, b) => {
+              const diff = new Date(a.changed_at).getTime() - new Date(b.changed_at).getTime();
+              return sortOrder === 'oldest' ? diff : -diff;
+            });
+            const groupedHistory = groupHistoryByDate(sortedHistory);
+            const sortedDates = Object.keys(groupedHistory).sort((a, b) => {
+              const diff = new Date(a).getTime() - new Date(b).getTime();
+              return sortOrder === 'oldest' ? diff : -diff;
+            });
 
-            return sortedDates.map((dateKey) => (
-              <div key={dateKey} className="space-y-2 md:space-y-3">
-                <div className="sticky top-0 py-1 md:py-2 z-10 mb-2 md:mb-4">
-                  <span className="inline-flex items-center px-2 md:px-4 py-1 md:py-2 rounded-full text-xs md:text-sm font-semibold text-gray-700 dark:text-gray-300 bg-white/70 dark:bg-gray-800/70 backdrop-blur-md border border-white/20 dark:border-gray-700/20 shadow-sm">
-                    {dateKey}
-                  </span>
-                </div>
-                {groupedHistory[dateKey].map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="bg-white dark:bg-gray-800 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 p-2 md:p-4 border border-gray-200 dark:border-gray-700 ml-0 md:ml-4"
-                  >
-                    <div className="flex items-start gap-2 md:gap-4">
-                      <div className="mt-1 flex-shrink-0">
-                        {getEntryIcon(entry)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2 md:gap-4 mb-1 md:mb-2">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-1 md:gap-2 mb-1 md:mb-2 flex-wrap">
-                              {getChangeTypeBadge(entry.change_type)}
-                              <div className="text-sm md:text-base text-gray-900 dark:text-white">
-                                {entry.descriptionBold && (
-                                  <span className="font-semibold">{entry.descriptionBold} </span>
-                                )}
-                                {entry.descriptionText && (() => {
-                                  // Check if this is a stage change that should show badges
-                                  if (entry.changeDetails && entry.changeDetails.length === 1) {
-                                    try {
-                                      const parsed = JSON.parse(entry.changeDetails[0]);
-                                      if (parsed.type === 'stage') {
-                                        const renderStageBadge = (stageId: string | null, stageName: string) => {
-                                          if (!stageId) {
-                                            return <span className="text-gray-500 italic">No Stage</span>;
-                                          }
-                                          const stageColour = getStageColour(stageId);
-                                          // Force white text for "Scheduler assigned"
-                                          const textColor = stageName === 'Scheduler assigned' ? '#ffffff' : getContrastingTextColor(stageColour);
-                                          const backgroundColor = stageColour || '#3b28c7';
-
-                                          return (
-                                            <span
-                                              className="badge badge-sm text-xs px-2 py-1 inline-flex items-center"
-                                              style={{
-                                                backgroundColor: backgroundColor,
-                                                color: textColor,
-                                                borderColor: backgroundColor,
-                                              }}
-                                            >
-                                              {stageName}
-                                            </span>
-                                          );
-                                        };
-
-                                        return (
-                                          <span className="flex items-center gap-2 flex-wrap">
-                                            <span>changed {parsed.field} from </span>
-                                            {renderStageBadge(parsed.oldStageId, parsed.oldStageName)}
-                                            <span> to </span>
-                                            {renderStageBadge(parsed.newStageId, parsed.newStageName)}
-                                          </span>
-                                        );
-                                      }
-                                    } catch (e) {
-                                      // Not a stage change, check if it's an employee change
-                                    }
-                                  }
-
-                                  // Check if descriptionText contains an employee change
-                                  // Updated regex to match multi-word field names like "case handler"
-                                  const employeeChangeMatch = entry.descriptionText.match(/changed\s+([a-z\s]+?)\s+from\s+"([^"]+)"\s+to\s+"([^"]+)"/i);
-                                  if (employeeChangeMatch) {
-                                    const [, field, oldName, newName] = employeeChangeMatch;
-                                    const fieldLower = field.trim().toLowerCase();
-                                    const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting manager', 'meeting_lawyer', 'meeting lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id', 'case handler', 'case handler id', 'retainer handler', 'retainer handler id'];
-
-                                    if (employeeFields.includes(fieldLower) || fieldLower.includes('handler') || fieldLower.includes('closer') || fieldLower.includes('expert') || fieldLower.includes('scheduler') || fieldLower.includes('manager') || fieldLower.includes('retainer')) {
-                                      // Helper to find employee ID by name (works for both new and legacy leads)
-                                      const findEmployeeIdByName = (name: string): number | null => {
-                                        if (!name || name === 'Unassigned' || name === '(empty)' || name === '---' || name === '--') return null;
-
-                                        // Try to find by display name (case-insensitive)
-                                        const emp = allEmployees.find((e: any) => {
-                                          if (!e || !e.display_name) return false;
-                                          return e.display_name.trim().toLowerCase() === name.trim().toLowerCase();
-                                        });
-
-                                        if (emp) {
-                                          return typeof emp.id === 'bigint' ? Number(emp.id) : (typeof emp.id === 'string' ? parseInt(emp.id, 10) : emp.id);
-                                        }
-
-                                        return null;
-                                      };
-
-                                      const oldEmpId = findEmployeeIdByName(oldName);
-                                      const newEmpId = findEmployeeIdByName(newName);
-
-                                      return (
-                                        <span className="flex items-center gap-2 flex-wrap">
-                                          <span>changed {field.toLowerCase()} from </span>
-                                          <span className="flex items-center gap-1">
-                                            {oldEmpId && <EmployeeAvatar employeeId={oldEmpId} size="sm" />}
-                                            <span>{oldName}</span>
-                                          </span>
-                                          <span> to </span>
-                                          <span className="flex items-center gap-1">
-                                            {newEmpId && <EmployeeAvatar employeeId={newEmpId} size="sm" />}
-                                            <span>{newName}</span>
-                                          </span>
-                                        </span>
-                                      );
-                                    }
-                                  }
-
-                                  return <span>{entry.descriptionText}</span>;
-                                })()}
-                                {!entry.descriptionBold && !entry.descriptionText && (
-                                  <span>{entry.description}</span>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Show specific change details if available */}
-                            {entry.changeDetails && entry.changeDetails.length > 0 && (
-                              <div className="ml-1 md:ml-2 mb-1 md:mb-2 pl-2 md:pl-4 border-l-2 border-gray-300 dark:border-gray-600">
-                                <ul className="list-disc list-inside space-y-0.5 md:space-y-1 text-xs md:text-sm text-gray-700 dark:text-gray-300">
-                                  {entry.changeDetails.map((change, idx) => {
-                                    // Check if this is a stage change (JSON string)
-                                    try {
-                                      const parsed = JSON.parse(change);
-                                      if (parsed.type === 'stage') {
-                                        // Skip stage changes in the list if they're already shown in descriptionText
-                                        // (when changeDetails.length === 1, it's shown in descriptionText with badges)
-                                        if (entry.changeDetails && entry.changeDetails.length === 1 && entry.descriptionText) {
-                                          return null;
-                                        }
-
-                                        const renderStageBadge = (stageId: string | null, stageName: string) => {
-                                          if (!stageId) {
-                                            return <span className="text-gray-500 italic">No Stage</span>;
-                                          }
-                                          const stageColour = getStageColour(stageId);
-                                          // Force white text for "Scheduler assigned"
-                                          const textColor = stageName === 'Scheduler assigned' ? '#ffffff' : getContrastingTextColor(stageColour);
-                                          const backgroundColor = stageColour || '#3b28c7';
-
-                                          return (
-                                            <span
-                                              className="badge badge-sm text-xs px-2 py-1 inline-flex items-center"
-                                              style={{
-                                                backgroundColor: backgroundColor,
-                                                color: textColor,
-                                                borderColor: backgroundColor,
-                                              }}
-                                            >
-                                              {stageName}
-                                            </span>
-                                          );
-                                        };
-
-                                        return (
-                                          <li key={idx} className="flex items-center gap-2 flex-wrap">
-                                            <span>changed {parsed.field} from </span>
-                                            {renderStageBadge(parsed.oldStageId, parsed.oldStageName)}
-                                            <span> to </span>
-                                            {renderStageBadge(parsed.newStageId, parsed.newStageName)}
-                                          </li>
-                                        );
-                                      }
-                                    } catch (e) {
-                                      // Not JSON, render as regular text
-                                    }
-
-                                    // Check if this is an employee change (format: "changed [field] from "Name1" to "Name2"")
-                                    // Updated regex to match multi-word field names like "case handler"
-                                    const employeeChangeMatch = change.match(/changed\s+([a-z\s]+?)\s+from\s+"([^"]+)"\s+to\s+"([^"]+)"/i);
-                                    if (employeeChangeMatch) {
-                                      const [, field, oldName, newName] = employeeChangeMatch;
-                                      const fieldLower = field.trim().toLowerCase();
-                                      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting manager', 'meeting_lawyer', 'meeting lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'case handler', 'case handler id'];
-
-                                      if (employeeFields.includes(fieldLower) || fieldLower.includes('handler') || fieldLower.includes('closer') || fieldLower.includes('expert') || fieldLower.includes('scheduler') || fieldLower.includes('manager')) {
-                                        // Helper to find employee ID by name (works for both new and legacy leads)
-                                        const findEmployeeIdByName = (name: string): number | null => {
-                                          if (!name || name === 'Unassigned' || name === '(empty)' || name === '---' || name === '--') return null;
-
-                                          // Try to find by display name (case-insensitive)
-                                          const emp = allEmployees.find((e: any) => {
-                                            if (!e || !e.display_name) return false;
-                                            return e.display_name.trim().toLowerCase() === name.trim().toLowerCase();
-                                          });
-
-                                          if (emp) {
-                                            return typeof emp.id === 'bigint' ? Number(emp.id) : (typeof emp.id === 'string' ? parseInt(emp.id, 10) : emp.id);
-                                          }
-
-                                          return null;
-                                        };
-
-                                        const oldEmpId = findEmployeeIdByName(oldName);
-                                        const newEmpId = findEmployeeIdByName(newName);
-
-                                        return (
-                                          <li key={idx} className="flex items-center gap-2 flex-wrap">
-                                            <span>changed {field.toLowerCase()} from </span>
-                                            <span className="flex items-center gap-1">
-                                              {oldEmpId && <EmployeeAvatar employeeId={oldEmpId} size="sm" />}
-                                              <span>{oldName}</span>
-                                            </span>
-                                            <span> to </span>
-                                            <span className="flex items-center gap-1">
-                                              {newEmpId && <EmployeeAvatar employeeId={newEmpId} size="sm" />}
-                                              <span>{newName}</span>
-                                            </span>
-                                          </li>
-                                        );
-                                      }
-                                    }
-
-                                    return <li key={idx}>{change}</li>;
-                                  }).filter(Boolean)}
-                                </ul>
-                              </div>
-                            )}
-
-                            <div className="flex items-center gap-2 md:gap-4 text-xs md:text-sm text-gray-600 dark:text-gray-400 flex-wrap mt-1 md:mt-2">
-                              <span className="flex items-center gap-1 md:gap-2">
-                                <EmployeeAvatar employeeId={entry.changed_by !== 'System' ? Number(entry.changed_by) : null} size="sm" />
-                                <span className="font-medium">
-                                  {entry.employeeDisplayName || 'System'}
-                                </span>
-                              </span>
-                              <span className="flex items-center gap-1">
-                                <ArchiveBoxIcon className="w-3 h-3 md:w-4 md:h-4" />
-                                {formatDate(entry.changed_at)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+            return (
+              <div className="overflow-x-auto">
+                <div className="min-w-[52rem]">
+                  <div className="bg-gray-100 dark:bg-gray-700/60 px-0">
+                    <table className="table w-full table-fixed mb-0">
+                      <colgroup>
+                        <col className="w-[8.5rem]" />
+                        <col className="w-[7.5rem]" />
+                        <col />
+                        <col />
+                        <col className="w-[10rem]" />
+                      </colgroup>
+                      <thead>
+                        <tr>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 bg-transparent border-0">When</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 bg-transparent border-0">Type</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 bg-transparent border-0">Event</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 bg-transparent border-0">Details</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 bg-transparent border-0">By</th>
+                        </tr>
+                      </thead>
+                    </table>
                   </div>
-                ))}
+                  <div className="rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+                    <table className="table w-full table-fixed">
+                      <colgroup>
+                        <col className="w-[8.5rem]" />
+                        <col className="w-[7.5rem]" />
+                        <col />
+                        <col />
+                        <col className="w-[10rem]" />
+                      </colgroup>
+                      <tbody>
+                    {sortedDates.map((dateKey) => (
+                      <React.Fragment key={dateKey}>
+                        <tr className="bg-gray-50/90 dark:bg-gray-900/50">
+                          <td colSpan={5} className="px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                            {dateKey}
+                          </td>
+                        </tr>
+                        {groupedHistory[dateKey].map((entry) => {
+                          const details = visibleChangeDetails(entry);
+                          const stageDetail = (entry.changeDetails || []).map(parseHistoryChangeJson).find(p => p?.type === 'stage');
+                          const interactionDetails = details.map(parseHistoryChangeJson).filter(p => p?.type === 'interaction');
+                          const fieldDetails = details.filter(d => parseHistoryChangeJson(d)?.type !== 'interaction');
+
+                          return (
+                            <tr
+                              key={entry.id}
+                              className="border-t border-gray-100 dark:border-gray-700/80 hover:bg-gray-50/70 dark:hover:bg-gray-700/20 align-top"
+                            >
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">
+                                {formatTime(entry.changed_at)}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-col items-start gap-1.5">
+                                  <div className="flex items-center gap-1.5">
+                                    {getEntryIcon(entry)}
+                                    {getChangeTypeBadge(entry.change_type, entry.isAutomation)}
+                                  </div>
+                                  <span className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold pl-7">
+                                    {getEntryTypeLabel(entry)}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-900 dark:text-white">
+                                <div className="min-w-0">
+                                    {entry.descriptionBold && (
+                                      <div className="font-semibold leading-snug">{entry.descriptionBold}</div>
+                                    )}
+                                    {stageDetail && (
+                                      <div className="mt-1.5 inline-flex items-center gap-2 flex-wrap">
+                                        {stageDetail.oldStageId && !isEmptyHistoryValue(stageDetail.oldStageName) && (
+                                          <>
+                                            {renderStageBadge(stageDetail.oldStageId, stageDetail.oldStageName)}
+                                            <span className="text-gray-400">→</span>
+                                          </>
+                                        )}
+                                        {renderStageBadge(stageDetail.newStageId, stageDetail.newStageName)}
+                                      </div>
+                                    )}
+                                    {!stageDetail && entry.descriptionText && (() => {
+                                      const fromTo = parseFieldFromTo(entry.descriptionText);
+                                      if (fromTo) {
+                                        const label = titleCaseLabel(canonicalHistoryField(fromTo.field));
+                                        const hideFrom = fromTo.kind === 'set' || isEmptyHistoryValue(fromTo.from);
+                                        if (fromTo.kind === 'removed') {
+                                          return <div className="mt-0.5">Removed {label}</div>;
+                                        }
+                                        if (isEmployeeRoleField(fromTo.field)) {
+                                          return (
+                                            <div className="mt-1 inline-flex items-center gap-2 flex-wrap">
+                                              <span>{hideFrom ? `Assigned ${label}` : `Changed ${label}`}</span>
+                                              {!hideFrom && (
+                                                <>
+                                                  {renderPersonChip(fromTo.from || '')}
+                                                  <span className="text-gray-400">→</span>
+                                                </>
+                                              )}
+                                              {renderPersonChip(fromTo.to || '')}
+                                            </div>
+                                          );
+                                        }
+                                        return (
+                                          <div className="mt-0.5">
+                                            {hideFrom ? `Changed ${label} to ` : `Changed ${label} from ${fromTo.from} to `}
+                                            {hasHebrewText(fromTo.to) ? (
+                                              <span dir="rtl" className="text-right">{fromTo.to}</span>
+                                            ) : (
+                                              <span>{fromTo.to}</span>
+                                            )}
+                                          </div>
+                                        );
+                                      }
+                                      return <div className="text-gray-600 dark:text-gray-300 font-normal mt-0.5">{entry.descriptionText}</div>;
+                                    })()}
+                                    {!entry.descriptionBold && !entry.descriptionText && !stageDetail && (
+                                      <div>{entry.description}</div>
+                                    )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
+                                {interactionDetails.length === 0 && fieldDetails.length === 0 ? (
+                                  <span className="text-gray-300 dark:text-gray-600">—</span>
+                                ) : (
+                                  <div className="space-y-1.5">
+                                    {interactionDetails.map((parsed, i) => {
+                                      const hebrew = hasHebrewText(parsed.content);
+                                      return (
+                                      <p
+                                        key={`int-${i}`}
+                                        className={`leading-relaxed ${hebrew ? 'text-right pr-2.5 border-r-2 border-l-0' : 'pl-2.5 border-l-2'} border-emerald-400/70`}
+                                        dir={hebrew ? 'rtl' : undefined}
+                                      >
+                                        {interactionDetails.length > 1 && (parsed.employee || parsed.when) ? (
+                                          <span className="block text-xs text-gray-400 mb-0.5" dir="ltr">
+                                            {[parsed.employee, parsed.when].filter(Boolean).join(' · ')}
+                                          </span>
+                                        ) : null}
+                                        {parsed.content}
+                                      </p>
+                                      );
+                                    })}
+                                    {fieldDetails.map((change, idx) => {
+                                      const parsed = parseHistoryChangeJson(change);
+                                      if (parsed?.type === 'stage') {
+                                        return (
+                                          <div key={idx} className="flex items-center gap-2 flex-wrap">
+                                            {renderStageBadge(parsed.oldStageId, parsed.oldStageName)}
+                                            <span className="text-gray-400">→</span>
+                                            {renderStageBadge(parsed.newStageId, parsed.newStageName)}
+                                          </div>
+                                        );
+                                      }
+                                      const fromTo = parseFieldFromTo(change);
+                                      if (fromTo) {
+                                        const label = titleCaseLabel(canonicalHistoryField(fromTo.field));
+                                        const hideFrom = fromTo.kind === 'set' || isEmptyHistoryValue(fromTo.from);
+                                        if (fromTo.kind === 'removed') {
+                                          return <div key={idx}><span className="text-gray-400 font-medium">{label}:</span> removed</div>;
+                                        }
+                                        if (hideFrom) {
+                                          const noteText = fromTo.to && fromTo.to.length > 160 ? `${fromTo.to.slice(0, 160)}…` : fromTo.to;
+                                          const hebrew = hasHebrewText(noteText);
+                                          return (
+                                            <div key={idx} className={hebrew ? 'text-right' : undefined}>
+                                              <span className="text-gray-400 font-medium" dir="ltr">{label}{hebrew ? '' : ':'}</span>
+                                              {hebrew ? (
+                                                <div dir="rtl">{noteText}</div>
+                                              ) : (
+                                                <> {noteText}</>
+                                              )}
+                                            </div>
+                                          );
+                                        }
+                                        const hebrewFrom = hasHebrewText(fromTo.from);
+                                        const hebrewTo = hasHebrewText(fromTo.to);
+                                        return (
+                                          <div key={idx} className={`flex items-center gap-2 flex-wrap ${hebrewFrom || hebrewTo ? 'justify-end' : ''}`}>
+                                            <span className="text-gray-400 font-medium">{label}</span>
+                                            {isEmployeeRoleField(fromTo.field)
+                                              ? renderPersonChip(fromTo.from || '')
+                                              : <span className={`text-gray-400 ${hebrewFrom ? 'text-right' : ''}`} dir={hebrewFrom ? 'rtl' : undefined}>{fromTo.from}</span>}
+                                            <span className="text-gray-300">→</span>
+                                            {isEmployeeRoleField(fromTo.field)
+                                              ? renderPersonChip(fromTo.to || '')
+                                              : <span className={`font-medium text-gray-900 dark:text-white ${hebrewTo ? 'text-right' : ''}`} dir={hebrewTo ? 'rtl' : undefined}>{fromTo.to}</span>}
+                                          </div>
+                                        );
+                                      }
+                                      const hebrewChange = hasHebrewText(change);
+                                      return (
+                                        <div key={idx} className={hebrewChange ? 'text-right' : undefined} dir={hebrewChange ? 'rtl' : undefined}>
+                                          {change}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  {entry.isAutomation ? (
+                                    <ArrowPathIcon className="w-4 h-4 text-slate-400 shrink-0" />
+                                  ) : (
+                                    <EmployeeAvatar employeeId={entry.changed_by !== 'System' ? Number(entry.changed_by) : null} size="sm" />
+                                  )}
+                                  <span className="text-sm font-medium text-gray-700 dark:text-gray-200 whitespace-nowrap">
+                                    {entry.isAutomation ? 'Automation' : (entry.employeeDisplayName || 'System')}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+                  </div>
+                </div>
               </div>
-            ));
+            );
           })()
         )}
       </div>
