@@ -5700,7 +5700,7 @@ const Clients: React.FC<ClientsProps> = ({
         <div className="relative" ref={dropdownRef}>
           <button
             type="button"
-            className={`stage-badge shadow-none ${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' || anchor === 'desktop' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
+            className={`stage-badge shadow-none border-0 outline-none ${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' || anchor === 'desktop' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
               ? 'cursor-pointer hover:scale-[1.02]'
               : 'cursor-default'
               }`}
@@ -5711,8 +5711,9 @@ const Clients: React.FC<ClientsProps> = ({
               fontWeight: 600,
               borderRadius: '9999px',
               minHeight: anchor === 'mobile' || anchor === 'desktop' ? '2.25rem' : '2rem',
-              border: `2px solid ${fallbackStageColour}`,
+              border: 'none',
               boxShadow: 'none',
+              outline: 'none',
             }}
             onClick={(e) => {
               e.preventDefault();

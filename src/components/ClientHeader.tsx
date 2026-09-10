@@ -24,6 +24,7 @@ import {
     StarIcon,
     PencilSquareIcon,
     Squares2X2Icon,
+    Square2StackIcon,
     TrashIcon,
     ArrowPathIcon,
     ChatBubbleLeftRightIcon,
@@ -42,8 +43,7 @@ import {
     MagnifyingGlassIcon,
     RectangleStackIcon,
     LockClosedIcon,
-    DocumentArrowUpIcon,
-    DocumentPlusIcon,
+    FolderOpenIcon,
     BookmarkIcon,
 } from '@heroicons/react/24/outline';
 import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
@@ -66,7 +66,7 @@ import {
 } from '../lib/leadSourceId';
 import type { ContactInfo } from '../lib/contactHelpers';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
-import { FaWhatsapp } from 'react-icons/fa';
+import { FaFileWord, FaWhatsapp } from 'react-icons/fa';
 import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAndVatForCurrency, pickUnpaidExpenseForCurrency, type UnpaidByCurrencyMap, type UnpaidExpenseByCurrencyMap } from '../lib/financeUnpaidTotal';
 import { useAuthContext } from '../contexts/AuthContext';
 import { createLeadShare, resolveAuthEmployeeId } from '../lib/leadShares';
@@ -436,16 +436,69 @@ const HEADER_ACTION_BAR_DUPLICATES_BTN =
     `${HEADER_ACTION_BAR_ROUND_BADGE} text-orange-700 hover:!bg-orange-50 hover:text-orange-800 dark:text-orange-300 dark:hover:!bg-orange-900/30`;
 
 const HEADER_DUPLICATES_BTN_CLASS =
-    'btn btn-circle btn-ghost relative shrink-0 !overflow-visible border border-orange-200/80 bg-orange-50 text-orange-700 hover:border-orange-300 hover:bg-orange-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-orange-800/50 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
+    'relative inline-flex shrink-0 items-center justify-center overflow-visible rounded-full border-0 bg-orange-50 text-orange-700 shadow-none outline-none ring-0 hover:bg-orange-100 focus-visible:outline-none h-10 w-10 p-0 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/45 md:h-11 md:w-11';
+
+const ACTIONS_DRAWER_CONTACT_KEYS = new Set(['call', 'whatsapp', 'email']);
+
+const ACTIONS_DRAWER_CONTACT_BTN =
+    'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-0 bg-transparent p-0 shadow-none outline-none ring-0 transition-colors duration-150 hover:!text-white focus-visible:outline-none';
+
+const ACTIONS_DRAWER_CONTACT_BTN_TONE: Record<string, string> = {
+    share: `${ACTIONS_DRAWER_CONTACT_BTN} text-violet-500 hover:!bg-violet-500`,
+    call: `${ACTIONS_DRAWER_CONTACT_BTN} text-emerald-500 hover:!bg-emerald-500`,
+    whatsapp: `${ACTIONS_DRAWER_CONTACT_BTN} text-[#25D366] hover:!bg-[#25D366]`,
+    email: `${ACTIONS_DRAWER_CONTACT_BTN} text-sky-500 hover:!bg-sky-500`,
+};
+
+const ACTIONS_DRAWER_DELETE_BTN =
+    'flex w-full items-center gap-3 rounded-xl !border-0 !bg-red-50 px-3 py-3 text-left text-[15px] font-medium leading-snug !text-red-700 shadow-none outline-none hover:!bg-red-100';
+
+const ACTIONS_DRAWER_FOOTER_BTN =
+    'group/footer-badge flex min-w-0 flex-1 flex-nowrap items-center justify-start gap-2 overflow-visible rounded-xl px-1 py-1 text-left transition-colors';
+
+const ACTIONS_DRAWER_FOOTER_ICON =
+    'flex h-12 w-12 shrink-0 items-center justify-center rounded-full !text-white transition-transform duration-200 ease-out group-hover/footer-badge:scale-125';
+
+const ACTIONS_DRAWER_FOOTER_ICON_GLYPH = 'h-7 w-7';
+
+const ACTIONS_DRAWER_FOOTER_LABEL =
+    'min-w-0 text-[12px] font-semibold leading-tight text-neutral-700';
 
 const MORE_ACTIONS_SECTION_LABEL =
-    'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500';
+    'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] !text-gray-400';
 
 const MORE_ACTIONS_SHEET_ITEM =
     'client-actions-drawer-item group flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-[15px] font-medium leading-snug text-black';
 
 const MORE_ACTIONS_ICON_BOX =
-    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-black';
+    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-transform duration-200 ease-out group-hover:scale-125';
+
+const ACTIONS_DRAWER_LIST_ICON_TONE: Record<
+    'violet' | 'slate' | 'emerald' | 'sky' | 'cyan' | 'indigo' | 'purple' | 'amber' | 'orange',
+    string
+> = {
+    violet: 'text-violet-500',
+    slate: 'text-blue-500',
+    emerald: 'text-emerald-500',
+    sky: 'text-sky-500',
+    cyan: 'text-cyan-500',
+    indigo: 'text-indigo-500',
+    purple: 'text-purple-500',
+    amber: 'text-amber-500',
+    orange: 'text-orange-500',
+};
+
+const MORE_ACTIONS_ROW_ICON_TONE: Record<
+    'default' | 'success' | 'danger' | 'warning' | 'primary' | 'purple',
+    string
+> = {
+    default: 'text-sky-500',
+    success: 'text-emerald-500',
+    danger: 'text-red-500',
+    warning: 'text-orange-500',
+    primary: 'text-indigo-500',
+    purple: 'text-purple-500',
+};
 
 const ACTIONS_DRAWER_COUNT =
     'ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-black px-1.5 text-[11px] font-semibold text-white';
@@ -2996,6 +3049,28 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setIsDuplicateDropdownOpen(false);
     };
 
+    const renderDuplicatesNextToStage = () => {
+        if (!duplicateContacts || duplicateContacts.length === 0) return null;
+        return (
+            <button
+                type="button"
+                onClick={handleDuplicatesClick}
+                className={HEADER_DUPLICATES_BTN_CLASS}
+                title={
+                    duplicateContacts.length === 1
+                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
+                        : `${duplicateContacts.length} Duplicate Contacts`
+                }
+                aria-label="Duplicate contacts"
+            >
+                <DocumentDuplicateIcon className="h-6 w-6 md:h-7 md:w-7" />
+                <span className="pointer-events-none absolute -right-0.5 -top-0.5 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-500 px-0.5 text-[10px] font-bold text-white">
+                    {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
+                </span>
+            </button>
+        );
+    };
+
     const goToFlaggedExpertOpinion = () => {
         onSwitchClientTab?.('expert');
         window.setTimeout(() => {
@@ -3151,7 +3226,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     }) => {
         return (
             <button type="button" className={`${MORE_ACTIONS_SHEET_ITEM} ${className}`.trim()} onClick={onClick}>
-                <span className={MORE_ACTIONS_ICON_BOX}>
+                <span className={`${MORE_ACTIONS_ICON_BOX} ${MORE_ACTIONS_ROW_ICON_TONE[iconTone]}`}>
                     <Icon className="h-5 w-5" aria-hidden />
                 </span>
                 <span className="min-w-0 flex-1">{label}</span>
@@ -3198,6 +3273,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             {renderMoreActionRow({
                                 icon: isInHighlightsState ? StarIcon : StarIcon,
                                 label: isInHighlightsState ? 'Remove from Highlights' : 'Add to Highlights',
+                                iconTone: 'warning',
                                 onClick: async () => {
                                     if (!selectedClient?.id) return;
                                     const isLegacyLead =
@@ -3218,29 +3294,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 },
                             })}
                             {renderMoreActionRow({
-                                icon: PencilSquareIcon,
-                                label: 'Edit Details',
-                                iconTone: 'primary',
-                                onClick: () => {
-                                    closeMoreActionsSheet();
-                                    handleOpenEditLeadDrawer();
-                                },
-                            })}
-                            {renderMoreActionRow({
                                 icon: LinkIcon,
                                 label: 'Client portal',
                                 iconTone: 'default',
                                 onClick: () => {
                                     setClientPortalModalOpen(true);
-                                    closeMoreActionsSheet();
-                                },
-                            })}
-                            {renderMoreActionRow({
-                                icon: Squares2X2Icon,
-                                label: 'Create Sub-Lead',
-                                iconTone: 'default',
-                                onClick: () => {
-                                    setShowSubLeadDrawer(true);
                                     closeMoreActionsSheet();
                                 },
                             })}
@@ -3258,48 +3316,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </>,
                     )}
 
-                    {renderMoreActionSection(
-                        'Status',
-                        (() => {
-                            const isLegacy =
-                                selectedClient?.lead_type === 'legacy' ||
-                                selectedClient?.id?.toString().startsWith('legacy_');
-                            const isUnactivated = isLegacy
-                                ? selectedClient?.status === 10
-                                : selectedClient?.status === 'inactive';
-                            return isUnactivated
-                                ? renderMoreActionRow({
-                                      icon: CheckCircleIcon,
-                                      label: 'Activate Case',
-                                      onClick: () => {
-                                          handleActivation();
-                                          closeMoreActionsSheet();
-                                      },
-                                  })
-                                : renderMoreActionRow({
-                                      icon: NoSymbolIcon,
-                                      label: 'Deactivate / Spam',
-                                      onClick: () => {
-                                          setShowUnactivationModal(true);
-                                          closeMoreActionsSheet();
-                                      },
-                                  });
-                        })(),
-                    )}
-
-                    {isSuperuser
-                        ? renderMoreActionSection(
-                              'Danger zone',
-                              renderMoreActionRow({
-                                  icon: TrashIcon,
-                                  label: 'Delete Lead',
-                                  onClick: () => {
-                                      setShowDeleteModal(true);
-                                      closeMoreActionsSheet();
-                                  },
-                              }),
-                          )
-                        : null}
+                    {isSuperuser ? (
+                        <button
+                            type="button"
+                            className={ACTIONS_DRAWER_DELETE_BTN}
+                            onClick={() => {
+                                setShowDeleteModal(true);
+                                closeMoreActionsSheet();
+                            }}
+                        >
+                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg !text-red-600">
+                                <TrashIcon className="h-5 w-5" aria-hidden />
+                            </span>
+                            <span className="min-w-0 flex-1">Delete Lead</span>
+                        </button>
+                    ) : null}
                 </>
             ) : null}
         </div>
@@ -3401,7 +3432,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             disabled: !headerDocsLeadNumber,
             onClick: () => runHeaderAction(openHeaderDocumentsModal),
             count: headerSupabaseDocumentsCount,
-            children: <DocumentArrowUpIcon className={HEADER_ACTION_ICON} aria-hidden />,
+            children: <FolderOpenIcon className={HEADER_ACTION_ICON} aria-hidden />,
         });
 
         items.push({
@@ -3410,14 +3441,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             title: leadIdentifier
                 ? 'Create a Word document with letterhead'
                 : 'Lead number required',
-            tone: 'indigo',
+            tone: 'sky',
             disabled: !leadIdentifier,
             onClick: () =>
                 runHeaderAction(() => {
                     if (!leadIdentifier) return;
                     navigate(`/clients/${encodeURIComponent(String(leadIdentifier))}/word-document`);
                 }),
-            children: <DocumentPlusIcon className={HEADER_ACTION_ICON} aria-hidden />,
+            children: <FaFileWord className={`${HEADER_ACTION_ICON} text-[#185ABD]`} aria-hidden />,
         });
 
         items.push({
@@ -3444,39 +3475,128 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         return items;
     };
 
+    const toggleSharePanel = () => {
+        setSharePanelOpen((open) => {
+            const next = !open;
+            if (next && !currentShareEmployeeId && user?.id) {
+                void resolveAuthEmployeeId(user.id).then((id) => {
+                    if (id) setCurrentShareEmployeeId(id);
+                });
+            }
+            if (!next) {
+                setShareSearch('');
+                setShareSelectedEmployeeId(null);
+            }
+            return next;
+        });
+    };
+
+    const renderActionsDrawerContactButtons = () => {
+        const items = getHeaderActionItems().filter((item) => ACTIONS_DRAWER_CONTACT_KEYS.has(item.key));
+        return (
+            <div className="flex items-center justify-end gap-2">
+                <span className="tooltip tooltip-bottom z-50" data-tip="Share">
+                    <button
+                        type="button"
+                        className={`${ACTIONS_DRAWER_CONTACT_BTN_TONE.share} ${sharePanelOpen ? '!bg-violet-500 !text-white' : ''}`}
+                        aria-label="Share"
+                        aria-pressed={sharePanelOpen}
+                        onClick={toggleSharePanel}
+                    >
+                        <ShareIcon className={HEADER_ACTION_ICON} aria-hidden />
+                    </button>
+                </span>
+                {items.map((item) => (
+                    <span key={item.key} className="tooltip tooltip-bottom z-50" data-tip={item.title || item.label}>
+                        <button
+                            type="button"
+                            className={ACTIONS_DRAWER_CONTACT_BTN_TONE[item.key] || ACTIONS_DRAWER_CONTACT_BTN}
+                            aria-label={item.label}
+                            disabled={item.disabled}
+                            onClick={item.onClick}
+                        >
+                            {item.children}
+                        </button>
+                    </span>
+                ))}
+            </div>
+        );
+    };
+
+    const renderActionsDrawerLeadFooter = () => {
+        if (hideActionsDropdown) return null;
+        const isLegacy =
+            selectedClient?.lead_type === 'legacy' ||
+            selectedClient?.id?.toString().startsWith('legacy_');
+        const isUnactivated = isLegacy
+            ? selectedClient?.status === 10
+            : selectedClient?.status === 'inactive';
+        return (
+            <div className="flex items-stretch gap-1 overflow-visible px-3 pt-3">
+                <button
+                    type="button"
+                    className={ACTIONS_DRAWER_FOOTER_BTN}
+                    title={isUnactivated ? 'Activate Case' : 'Deactivate / Spam'}
+                    aria-label={isUnactivated ? 'Activate Case' : 'Deactivate'}
+                    onClick={() => {
+                        closeHeaderActionsMenu();
+                        closeMoreActionsSheet();
+                        if (isUnactivated) handleActivation();
+                        else setShowUnactivationModal(true);
+                    }}
+                >
+                    <span className={`${ACTIONS_DRAWER_FOOTER_ICON} ${isUnactivated ? '!bg-emerald-500' : '!bg-rose-500'}`}>
+                        {isUnactivated ? (
+                            <CheckCircleIcon className={ACTIONS_DRAWER_FOOTER_ICON_GLYPH} aria-hidden />
+                        ) : (
+                            <NoSymbolIcon className={ACTIONS_DRAWER_FOOTER_ICON_GLYPH} aria-hidden />
+                        )}
+                    </span>
+                    <span className={ACTIONS_DRAWER_FOOTER_LABEL}>
+                        {isUnactivated ? 'Activate' : 'Deactivate'}
+                    </span>
+                </button>
+                <button
+                    type="button"
+                    className={ACTIONS_DRAWER_FOOTER_BTN}
+                    title="Edit Details"
+                    aria-label="Edit Details"
+                    onClick={() => {
+                        closeHeaderActionsMenu();
+                        closeMoreActionsSheet();
+                        handleOpenEditLeadDrawer();
+                    }}
+                >
+                    <span className={`${ACTIONS_DRAWER_FOOTER_ICON} !bg-indigo-500`}>
+                        <PencilSquareIcon className={ACTIONS_DRAWER_FOOTER_ICON_GLYPH} aria-hidden />
+                    </span>
+                    <span className={ACTIONS_DRAWER_FOOTER_LABEL}>Edit details</span>
+                </button>
+                <button
+                    type="button"
+                    className={ACTIONS_DRAWER_FOOTER_BTN}
+                    title="Create Sub-Lead"
+                    aria-label="Create Sub-Lead"
+                    onClick={() => {
+                        closeHeaderActionsMenu();
+                        closeMoreActionsSheet();
+                        setShowSubLeadDrawer(true);
+                    }}
+                >
+                    <span className={`${ACTIONS_DRAWER_FOOTER_ICON} !bg-violet-600`}>
+                        <Square2StackIcon className={ACTIONS_DRAWER_FOOTER_ICON_GLYPH} aria-hidden />
+                    </span>
+                    <span className={ACTIONS_DRAWER_FOOTER_LABEL}>Create sub-lead</span>
+                </button>
+            </div>
+        );
+    };
+
     const renderHeaderActionsSheetList = () => {
-        const items = getHeaderActionItems();
+        const items = getHeaderActionItems().filter((item) => !ACTIONS_DRAWER_CONTACT_KEYS.has(item.key));
         return (
             <div className="flex flex-col">
                 <div data-keep-actions-open className="mb-1">
-                    <button
-                        type="button"
-                        className={`${MORE_ACTIONS_SHEET_ITEM} ${sharePanelOpen ? 'bg-neutral-50' : ''}`}
-                        onClick={() => {
-                            setSharePanelOpen((open) => {
-                                const next = !open;
-                                if (next && !currentShareEmployeeId && user?.id) {
-                                    void resolveAuthEmployeeId(user.id).then((id) => {
-                                        if (id) setCurrentShareEmployeeId(id);
-                                    });
-                                }
-                                if (!next) {
-                                    setShareSearch('');
-                                    setShareSelectedEmployeeId(null);
-                                }
-                                return next;
-                            });
-                        }}
-                    >
-                        <span className={MORE_ACTIONS_ICON_BOX}>
-                            <ShareIcon className={HEADER_ACTION_ICON} aria-hidden />
-                        </span>
-                        <span className="min-w-0 flex-1">Share</span>
-                        <ChevronDownIcon
-                            className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${sharePanelOpen ? 'rotate-180 text-black' : ''}`}
-                            aria-hidden
-                        />
-                    </button>
                     {sharePanelOpen ? (
                         <div className="mt-1 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
                             <label className="relative block">
@@ -3541,7 +3661,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         disabled={item.disabled}
                         onClick={item.onClick}
                     >
-                        <span className={MORE_ACTIONS_ICON_BOX}>{item.children}</span>
+                        <span className={`${MORE_ACTIONS_ICON_BOX} ${ACTIONS_DRAWER_LIST_ICON_TONE[item.tone]}`}>
+                            {item.children}
+                        </span>
                         <span className="min-w-0 flex-1">{item.label}</span>
                         {item.count && item.count > 0 ? (
                             <span className={ACTIONS_DRAWER_COUNT}>
@@ -4060,7 +4182,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         title="Case documents on OneDrive"
                         aria-label="Case documents"
                     >
-                        <DocumentArrowUpIcon className="h-6 w-6" />
+                        <FolderOpenIcon className="h-6 w-6" />
                         {headerSupabaseDocumentsCount > 0 && (
                             <span
                                 className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
@@ -4216,7 +4338,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             title={headerDocsLeadNumber ? 'Case documents on OneDrive' : 'Lead number required'}
             aria-label="Case documents"
         >
-            <DocumentArrowUpIcon className={HEADER_ACTION_ICON} aria-hidden />
+            <FolderOpenIcon className={HEADER_ACTION_ICON} aria-hidden />
             {headerSupabaseDocumentsCount > 0 && (
                 <span
                     className="absolute -right-1 -top-1 z-10 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-[10px] font-bold text-white"
@@ -4378,6 +4500,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </button>
                                             ) : null}
                                             <div className="shrink-0">{renderStageBadge('mobile')}</div>
+                                            {renderDuplicatesNextToStage()}
                                         </div>
                                         <p className={CLIENT_HEADER_LEAD_NUMBER}>
                                             {renderLeadNumber()}
@@ -4637,6 +4760,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             </button>
                                         ) : null}
                                         <div className="shrink-0">{renderStageBadge('desktop')}</div>
+                                        {renderDuplicatesNextToStage()}
                                     </div>
                                     <span className={CLIENT_HEADER_LEAD_NUMBER}>
                                         {renderLeadNumber()}
@@ -5944,16 +6068,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <MobileBottomSheet
                     open={headerActionsMenuOpen}
                     onClose={closeHeaderActionsMenu}
-                    title="Actions"
                     subtitle={
                         selectedClient?.name
                             ? `${selectedClient.name}${selectedClient?.lead_number ? ` · #${selectedClient.lead_number}` : ''}`
                             : undefined
                     }
+                    headerRight={renderActionsDrawerContactButtons()}
+                    footer={renderActionsDrawerLeadFooter()}
                     desktopLayout="drawer-right"
                     zIndex={325}
-                    headerClassName="!border-b border-neutral-200"
-                    contentClassName="!px-3 !pb-6 !bg-white"
+                    headerClassName="!items-center !border-b-0"
+                    contentClassName="!px-3 !pb-4 !bg-white"
+                    footerClassName="!bg-white !border-t-0"
                     overlayClassName="bg-black/40"
                     sheetClassName="md:max-w-[min(100%,22rem)] md:shadow-xl md:!border-l md:!border-neutral-200 md:!bg-white"
                 >
@@ -5969,7 +6095,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     >
                         {renderHeaderActionsSheetList()}
                         {!hideActionsDropdown ? (
-                            <div className="mt-6 border-t border-neutral-200 pt-5">
+                            <div className="mt-4">
                                 {moreActionsMenuItems}
                             </div>
                         ) : null}
@@ -5979,7 +6105,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <MobileBottomSheet
                     open={moreActionsSheetOpen}
                     onClose={closeMoreActionsSheet}
-                    title="Actions"
                     subtitle={
                         selectedClient?.name
                             ? `${selectedClient.name}${selectedClient?.lead_number ? ` · #${selectedClient.lead_number}` : ''}`

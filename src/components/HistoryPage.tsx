@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import { Client } from '../types/client';
 import { fetchStageNames, getStageName, getStageColour, areStagesEquivalent } from '../lib/stageUtils';
 import { displaySymbolForPaymentSave } from '../lib/paymentPlanCurrency';
+import LeadSubpageQuickNav from './LeadSubpageQuickNav';
 
 interface Employee {
   id: number;
@@ -3688,16 +3689,38 @@ const HistoryPage: React.FC = () => {
 
   return (
     <div className="p-2 md:p-8 w-full">
-      <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 mb-4 md:mb-8">
+      <div className="flex flex-wrap items-center gap-2 md:gap-4 mb-3">
         <button
-          onClick={() => navigate(`/clients/${lead_number}`)}
-          className="flex items-center gap-1 md:gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors self-start"
+          type="button"
+          onClick={() => {
+            const backId =
+              client?.lead_number || (client as any)?.manual_id || lead_number || '';
+            navigate(`/clients/${encodeURIComponent(String(backId))}`);
+          }}
+          aria-label="Back to Client"
+          title="Back to Client"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-gray-700 shadow-sm hover:bg-gray-50"
         >
-          <ArrowLeftIcon className="w-4 h-4" />
-          <span className="text-sm md:text-base">Back to Client</span>
+          <ArrowLeftIcon className="h-5 w-5" />
         </button>
         <h1 className="text-xl md:text-3xl font-semibold tracking-tight">Change History</h1>
       </div>
+      {lead_number ? (
+        <LeadSubpageQuickNav
+          leadPathId={lead_number}
+          clientName={client?.name}
+          clientId={client?.id}
+          leadNumber={client?.lead_number || (client as any)?.manual_id || lead_number}
+          leadType={
+            client?.lead_type ||
+            (typeof client?.id === 'number' || String(client?.id || '').startsWith('legacy_')
+              ? 'legacy'
+              : 'new')
+          }
+          leadStage={client?.stage}
+          categoryId={(client as any)?.category_id}
+        />
+      ) : null}
 
       {client && (
         <div className="mb-3 md:mb-6">
@@ -3754,11 +3777,11 @@ const HistoryPage: React.FC = () => {
         </div>
       )}
 
-      <div className="mb-3 md:mb-6 flex flex-col md:flex-row gap-2 md:gap-4 items-stretch md:items-center">
+      <div className="mb-3 md:mb-6 flex flex-wrap items-end gap-x-5 gap-y-3">
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value as any)}
-          className="select select-bordered select-sm md:select-md w-full md:max-w-xs"
+          className="h-8 bg-transparent border-0 border-b border-gray-300 rounded-none px-0 pr-6 text-sm text-gray-700 shadow-none focus:outline-none focus:border-gray-500"
         >
           <option value="all">All Changes</option>
           <option value="lead_changes">Lead Changes</option>
@@ -3766,43 +3789,43 @@ const HistoryPage: React.FC = () => {
           <option value="payment_changes">Payment Changes</option>
         </select>
 
-        <label className="input input-bordered input-sm md:input-md flex items-center gap-2 w-full md:flex-1 md:max-w-xs">
-          <MagnifyingGlassIcon className="w-4 h-4 md:w-5 md:h-5 text-gray-400 shrink-0" />
+        <label className="flex items-center gap-1.5 min-w-[12rem] md:max-w-xs">
+          <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 shrink-0" />
           <input
             type="text"
-            placeholder="Search by employee..."
+            placeholder="Employee"
             value={employeeSearch}
             onChange={(e) => setEmployeeSearch(e.target.value)}
-            className="grow bg-transparent border-0 outline-none focus:outline-none p-0"
+            className="h-8 w-full bg-transparent border-0 border-b border-gray-300 rounded-none px-0 text-sm text-gray-700 shadow-none placeholder:text-gray-400 focus:outline-none focus:border-gray-500"
           />
         </label>
 
-        <label className="input input-bordered input-sm md:input-md flex items-center gap-2 w-full md:w-auto">
-          <span className="text-xs font-semibold uppercase tracking-wide text-gray-400 shrink-0">From</span>
+        <label className="flex items-center gap-1.5 text-sm text-gray-500">
+          <span>From</span>
           <input
             type="date"
             value={dateFrom}
             max={dateTo || undefined}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="grow bg-transparent border-0 outline-none focus:outline-none p-0 min-w-[8.5rem]"
+            className="h-8 min-w-[8.5rem] bg-transparent border-0 border-b border-gray-300 rounded-none px-0 text-sm text-gray-700 shadow-none focus:outline-none focus:border-gray-500"
           />
         </label>
 
-        <label className="input input-bordered input-sm md:input-md flex items-center gap-2 w-full md:w-auto">
-          <span className="text-xs font-semibold uppercase tracking-wide text-gray-400 shrink-0">To</span>
+        <label className="flex items-center gap-1.5 text-sm text-gray-500">
+          <span>To</span>
           <input
             type="date"
             value={dateTo}
             min={dateFrom || undefined}
             onChange={(e) => setDateTo(e.target.value)}
-            className="grow bg-transparent border-0 outline-none focus:outline-none p-0 min-w-[8.5rem]"
+            className="h-8 min-w-[8.5rem] bg-transparent border-0 border-b border-gray-300 rounded-none px-0 text-sm text-gray-700 shadow-none focus:outline-none focus:border-gray-500"
           />
         </label>
 
         <select
           value={sortOrder}
           onChange={(e) => setSortOrder(e.target.value as 'newest' | 'oldest')}
-          className="select select-bordered select-sm md:select-md w-full md:w-auto"
+          className="h-8 bg-transparent border-0 border-b border-gray-300 rounded-none px-0 pr-6 text-sm text-gray-700 shadow-none focus:outline-none focus:border-gray-500"
         >
           <option value="newest">Newest</option>
           <option value="oldest">Oldest</option>
