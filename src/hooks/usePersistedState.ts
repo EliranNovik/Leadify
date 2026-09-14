@@ -20,6 +20,35 @@ let pathnameWhenRefreshDetected: string | null = null;
 const persistedMemory = new Map<string, string>();
 /** Keys already wiped once after this document reload — do not wipe again on remount. */
 const refreshClearedKeys = new Set<string>();
+/** Avoid spamming the console when sessionStorage is full. */
+const quotaWarnedKeys = new Set<string>();
+
+const BULKY_SESSION_KEYS = [
+  'persisted_state_whatsapp_allContacts_clients',
+  'persisted_state_whatsapp_myContacts_clients',
+  'persisted_state_whatsapp_allMessages',
+  'persisted_state_whatsapp_allContacts_messages',
+  'persisted_state_whatsapp_myContacts_messages',
+];
+
+function isQuotaExceeded(error: unknown): boolean {
+  return (
+    error instanceof DOMException &&
+    (error.name === 'QuotaExceededError' || error.code === 22 || error.code === 1014)
+  );
+}
+
+function evictBulkySessionKeys(exceptKey?: string) {
+  if (typeof window === 'undefined') return;
+  for (const key of BULKY_SESSION_KEYS) {
+    if (key === exceptKey) continue;
+    try {
+      sessionStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 const DEBUG_PERSISTED_STATE =
   typeof import.meta !== 'undefined' &&
@@ -275,7 +304,7 @@ export function usePersistedState<T>(
   key: string,
   initialState: T,
   options: {
-    storage?: 'localStorage' | 'sessionStorage' | 'url' | 'both';
+    storage?: 'localStorage' | 'sessionStorage' | 'url' | 'both' | 'memory';
     syncWithUrl?: boolean; // If true, syncs with URL query params
     urlKey?: string; // Key for URL query param (defaults to 'key' parameter)
     /** Keep session/local storage on browser refresh (still clears on true navigation away). */
@@ -367,6 +396,19 @@ export function usePersistedState<T>(
       }
     }
 
+    // Memory-only: SPA remounts restore from the in-tab map, not sessionStorage.
+    if (storage === 'memory') {
+      const memoryItem = persistedMemory.get(storageKey);
+      if (memoryItem) {
+        try {
+          return JSON.parse(memoryItem) as T;
+        } catch (e) {
+          console.warn(`Failed to parse in-memory state for ${storageKey}:`, e);
+        }
+      }
+      return initialState;
+    }
+
     // Try storage
     if (storage === 'localStorage' || storage === 'both') {
       try {
@@ -431,6 +473,10 @@ export function usePersistedState<T>(
       const serialized = JSON.stringify(newState);
       persistedMemory.set(storageKey, serialized);
 
+      if (storage === 'memory') {
+        return;
+      }
+
       if (storage === 'localStorage' || storage === 'both') {
         try {
           localStorage.setItem(storageKey, serialized);
@@ -443,6 +489,26 @@ export function usePersistedState<T>(
         try {
           sessionStorage.setItem(storageKey, serialized);
         } catch (e) {
+          if (isQuotaExceeded(e)) {
+            evictBulkySessionKeys(storageKey);
+            try {
+              sessionStorage.setItem(storageKey, serialized);
+              return;
+            } catch {
+              try {
+                sessionStorage.removeItem(storageKey);
+              } catch {
+                /* ignore */
+              }
+              if (!quotaWarnedKeys.has(storageKey)) {
+                quotaWarnedKeys.add(storageKey);
+                console.warn(
+                  `sessionStorage quota exceeded for ${storageKey}; keeping in-memory only`,
+                );
+              }
+              return;
+            }
+          }
           console.warn(`Failed to save sessionStorage for ${storageKey}:`, e);
         }
       }
@@ -468,6 +534,9 @@ export function usePersistedState<T>(
   // Clear state function
   const clearState = useCallback(() => {
     persistedMemory.delete(storageKey);
+    if (storage === 'memory') {
+      return;
+    }
     if (storage === 'localStorage' || storage === 'both') {
       localStorage.removeItem(storageKey);
     }

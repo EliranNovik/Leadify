@@ -83,6 +83,7 @@ import {
   runMailboxCatchUpSync,
   fetchEmailBodyFromBackend,
   downloadAttachmentFromBackend,
+  backfillEmailAttachments,
   getMailboxLoginUrl,
   getMailboxStatus,
 } from '../../lib/mailboxApi';
@@ -127,6 +128,14 @@ import {
   type TimelinePreviewKind,
 } from './TimelineAttachmentPreviews';
 import { lookupEmployeePhotoFromMap, resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
+import {
+  AI_AGENT_DISPLAY_NAME,
+  applyAiAgentEmailNameAliases,
+  applyAiAgentPhotoAliases,
+  isAiAgentEmail,
+  mailboxPartyLabel,
+} from '../../lib/aiAgentMailbox';
+import { resolveWhatsAppOutgoingSenderUi } from '../../lib/pexWhatsAppChat';
 import { COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from '../signature/ComposeSignaturePreview';
 import { EmailMessageActionsDropdown } from './EmailMessageActionsDropdown';
 import { WhatsAppMessageActionsDropdown } from './WhatsAppMessageActionsDropdown';
@@ -407,6 +416,12 @@ function formatAttachmentBytes(bytes?: number | null): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function emailAttachmentsNeedPersist(raw: unknown): boolean {
+  const files = fileAttachmentsForUi(parseEmailAttachmentsFromDb(raw));
+  if (files.length === 0) return false;
+  return files.some((att: any) => !att?.stored && !att?.storage_path && !emailAttachmentDataUrl(att));
 }
 
 function emailAttachmentDataUrl(attachment: any): string | null {
@@ -914,8 +929,8 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
           emailToNameMap.set(patternEmail, displayName);
         }
       });
-      cachedEmployeeEmailToNameMap = emailToNameMap;
-      return emailToNameMap;
+      cachedEmployeeEmailToNameMap = applyAiAgentEmailNameAliases(emailToNameMap);
+      return cachedEmployeeEmailToNameMap;
     }
     // Fallback: two queries when join/FK not available
     const [employeesResult, usersResult] = await Promise.all([
@@ -924,7 +939,8 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
     ]);
     if (employeesResult.error || usersResult.error) {
       console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
-      return emailToNameMap;
+      cachedEmployeeEmailToNameMap = applyAiAgentEmailNameAliases(emailToNameMap);
+      return cachedEmployeeEmailToNameMap;
     }
     const employeeIdToEmail = new Map<number, string>();
     usersResult.data?.forEach((user: any) => {
@@ -940,8 +956,8 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
   } catch (error) {
     console.error('Error building employee email-to-name map:', error);
   }
-  cachedEmployeeEmailToNameMap = emailToNameMap;
-  return emailToNameMap;
+  cachedEmployeeEmailToNameMap = applyAiAgentEmailNameAliases(emailToNameMap);
+  return cachedEmployeeEmailToNameMap;
   })().finally(() => {
     employeeEmailToNameMapPromise = null;
   });
@@ -4166,6 +4182,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const formData = new FormData();
       formData.append('file', selectedFile);
       formData.append('leadId', client.id);
+      if (client.phone || client.mobile) {
+        formData.append('phoneNumber', String(client.phone || client.mobile));
+      }
 
       // Upload media to WhatsApp
       const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
@@ -4481,7 +4500,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   let query = supabase
                     .from('whatsapp_messages')
                     .select(
-                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id, media_url, media_id, message_type, media_filename, media_mime_type, caption'
+                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id, media_url, media_id, message_type, media_filename, media_mime_type, caption, whatsapp_message_id'
                     )
                     .limit(FETCH_BATCH_SIZE);
                   if (isLegacyLead) {
@@ -4543,12 +4562,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               });
             }
             
+            const lookedUpSender = (allEmployees || []).find((emp: any) => {
+              if (!emp?.display_name || !msg.sender_name) return false;
+              return String(emp.display_name).trim().toLowerCase() === String(msg.sender_name).trim().toLowerCase();
+            });
+            const employeeName =
+              msg.direction === 'out'
+                ? resolveWhatsAppOutgoingSenderUi(msg, lookedUpSender?.id).label || msg.sender_name || 'You'
+                : msg.sender_name || 'You';
+
             return {
               id: msg.id,
               date: sentAtDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
               time: sentAtDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
               raw_date: sentAt,
-              employee: msg.sender_name || 'You',
+              employee: employeeName,
               direction: msg.direction || 'in',
               kind: 'whatsapp',
               length: '',
@@ -5160,6 +5188,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             
             // Find employee email in recipient list
             for (const recipientEmail of recipients) {
+              if (isAiAgentEmail(recipientEmail)) {
+                employeeRecipientName = AI_AGENT_DISPLAY_NAME;
+                break;
+              }
               if (isOfficeEmail(recipientEmail)) {
                 // Get employee name from employeeEmailMap
                 employeeRecipientName = employeeEmailMap.get(recipientEmail) || recipientEmail;
@@ -5903,6 +5935,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           /* ignore optional user→photo enrichment */
         }
 
+        applyAiAgentPhotoAliases(photoMap, employees, photoByEmployeeId);
+
         interactionsDevLog(`✅ Loaded employee phone map with ${phoneMap.size} entries`);
         interactionsDevLog(`✅ Loaded employee photo map with ${photoMap.size} entries`);
         cachedEmployeePhoneMap = phoneMap;
@@ -6271,6 +6305,36 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [userId]);
 
+  const persistHistoricalAttachments = useCallback(
+    async (messages: Array<{ id?: string | number; attachments?: unknown }>) => {
+      if (!userId) return;
+      const ids = messages
+        .filter((email) => email?.id && emailAttachmentsNeedPersist(email.attachments))
+        .map((email) => email.id as string | number)
+        .slice(0, 15);
+      if (!ids.length) return;
+      try {
+        const results = await backfillEmailAttachments(userId, ids);
+        if (!results.length) return;
+        const byId = new Map(results.map((row) => [String(row.emailId), row.attachments]));
+        setEmails((prev) =>
+          prev.map((email) => {
+            const next = byId.get(String(email.id));
+            return next?.length ? { ...email, attachments: next } : email;
+          })
+        );
+        setSelectedEmailForView((prev: any) => {
+          if (!prev) return prev;
+          const next = byId.get(String(prev.id));
+          return next?.length ? { ...prev, attachments: next } : prev;
+        });
+      } catch {
+        /* Graph may still fail for mailboxes that are no longer connected */
+      }
+    },
+    [userId]
+  );
+
   /** When body is already loaded but attachment metadata was missing, one GET /body fills attachments.
    * Do NOT replace body_html here — that caused a ~2s format flash in the email modal on open. */
   const ensureAttachmentsIfNeeded = useCallback(
@@ -6297,10 +6361,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     [userId]
   );
 
-  // When opening the attachments modal, try to fill missing attachment metadata for loaded emails.
+  // When opening the attachments modal, fill missing names and copy old Graph files into Storage.
   useEffect(() => {
     if (!attachmentsModalOpen || !userId || emails.length === 0) return;
-    const needing = emails
+    const snapshot = emails;
+    const needing = snapshot
       .filter(
         (e) =>
           e?.id &&
@@ -6312,7 +6377,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         void ensureAttachmentsIfNeeded(e);
       }, i * 200);
     });
-  }, [attachmentsModalOpen, userId, emails, ensureAttachmentsIfNeeded]);
+    void persistHistoricalAttachments(snapshot);
+    // Only when the modal opens — emails updates from this pass must not loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachmentsModalOpen, userId]);
 
   const fetchEmailsForModal = useCallback(async () => {
     const clientNow = clientRef.current;
@@ -6910,10 +6978,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       toast.error('Please sign in to download attachments.');
       return;
     }
-    if (!mailboxStatus.connected) {
-      toast.error('Connect your mailbox to download attachments.');
-      return;
-    }
 
     setDownloadingAttachments(prev => ({ ...prev, [attachment.id]: true }));
     toast.loading(`Downloading ${attachment.name}...`, { id: attachment.id });
@@ -6972,9 +7036,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       if (!userId) {
         throw new Error('Please sign in to open attachments.');
       }
-      if (!mailboxStatus.connected) {
-        throw new Error('Connect your mailbox to open attachments.');
-      }
       if (!attachment?.id) {
         throw new Error('Attachment id missing — open the email to view');
       }
@@ -6995,7 +7056,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       attachmentViewerBlobUrlsRef.current.push(url);
       return url;
     },
-    [mailboxStatus.connected, userId],
+    [userId],
   );
 
   const handleOpenEmailAttachment = useCallback(
@@ -9111,9 +9172,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               if (employeeData) {
                 // Calls have employee_data from JOIN
                 employeePhoto = Array.isArray(employeeData) ? employeeData[0]?.photo_url : employeeData?.photo_url;
-              } else if (!isClientSender && row.employee && employeePhotoMap.has(row.employee)) {
-                // For email/WhatsApp/etc (not manual interactions with client as sender), look up by employee name
-                employeePhoto = employeePhotoMap.get(row.employee) || null;
+              } else if (!isClientSender && row.employee) {
+                employeePhoto =
+                  lookupEmployeePhotoFromMap(
+                    employeePhotoMap,
+                    row.employee,
+                    (row as any).sender_email,
+                  ) ||
+                  employeePhotoMap.get(row.employee) ||
+                  null;
               }
               // If isClientSender is true, leave employeePhoto as null (will show initials only)
               
@@ -9375,7 +9442,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     // If incoming (client to employee), show employee name
                                     // For incoming emails, row.employee contains the CLIENT name (the sender)
                                     // Use the stored employee_recipient_name that was set when creating the interaction
-                                    const employeeRecipientName = (row as any).employee_recipient_name || 'Team';
+                                    const employeeRecipientName = mailboxPartyLabel(
+                                      (row as any).employee_recipient_name,
+                                      (row as any).employee_recipient_name || 'Team',
+                                    ) || (row as any).employee_recipient_name || 'Team';
                                     
                                     return (
                                       <div className="text-sm sm:text-xs text-gray-500 flex items-center gap-1">
@@ -9971,6 +10041,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                         group.messages.forEach((m) => {
                                           void ensureAttachmentsIfNeeded(m);
                                         });
+                                        void persistHistoricalAttachments(group.messages);
                                       }}
                                     >
                                       {outgoing ? (

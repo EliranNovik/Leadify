@@ -36,6 +36,8 @@ export function formatWhatsAppMessagePreview(msg: WhatsAppMessagePreviewFields):
 }
 
 const MESSAGE_PAGE_SIZE = 1000;
+/** Cap the RPC-timeout fallback so we never scan the entire whatsapp_messages table. */
+const MESSAGE_INDEX_MAX_PAGES = 8;
 
 /** Paginated lightweight index for building the conversation list (not full message bodies). */
 export async function fetchWhatsAppMessageIndex(
@@ -45,7 +47,7 @@ export async function fetchWhatsAppMessageIndex(
   let page = 0;
   let hasMore = true;
 
-  while (hasMore) {
+  while (hasMore && page < MESSAGE_INDEX_MAX_PAGES) {
     const { data, error } = await client
       .from('whatsapp_messages')
       .select(WHATSAPP_MESSAGE_INDEX_SELECT)
@@ -65,6 +67,12 @@ export async function fetchWhatsAppMessageIndex(
     rows.push(...data);
     hasMore = data.length >= MESSAGE_PAGE_SIZE;
     page += 1;
+  }
+
+  if (hasMore) {
+    console.warn(
+      `WhatsApp: message index fallback stopped after ${rows.length} recent rows (RPC unavailable)`,
+    );
   }
 
   return rows;
@@ -566,18 +574,34 @@ export async function fetchWhatsAppConversationSummary(
       : null;
   const employeeName = (employeeFilter?.employeeName || '').trim() || null;
 
-  const { data, error } = await client.rpc('whatsapp_conversation_summary', {
-    p_employee_id: employeeId,
-    p_employee_name: employeeName,
-  });
-  if (error) {
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const { data, error } = await client.rpc(
+      'whatsapp_conversation_summary',
+      {
+        p_employee_id: employeeId,
+        p_employee_name: employeeName,
+      },
+      { abortSignal: controller.signal },
+    );
+    if (error) {
+      console.warn(
+        'WhatsApp: conversation summary RPC unavailable, using recent-message index fallback',
+        error.message,
+      );
+      return null;
+    }
+    return (data || []) as WhatsAppConversationSummaryRow[];
+  } catch (err) {
     console.warn(
-      'WhatsApp: conversation summary RPC unavailable, using message index fallback',
-      error.message,
+      'WhatsApp: conversation summary RPC unavailable, using recent-message index fallback',
+      err instanceof Error ? err.message : err,
     );
     return null;
+  } finally {
+    clearTimeout(abortTimer);
   }
-  return (data || []) as WhatsAppConversationSummaryRow[];
 }
 
 export function maxSentAtMsFromConversationIndex(
@@ -622,7 +646,7 @@ export async function loadWhatsAppConversationIndexState(
   employeeFilter?: WhatsAppConversationEmployeeFilter,
 ): Promise<WhatsAppConversationIndexState> {
   const summary = await fetchWhatsAppConversationSummary(client, employeeFilter);
-  if (summary?.length) {
+  if (summary) {
     return applySummaryRowsToIndexState(summary);
   }
   const messages = await fetchWhatsAppMessageIndex(client);

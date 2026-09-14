@@ -7,6 +7,8 @@ export type SubEffortDocItem = {
   name?: string;
   mimeType?: string;
   folder_id?: string | null;
+  /** Storage bucket when the file is not in `lead-sub-efforts-documents`. */
+  bucket?: string;
 };
 
 export type SubEffortAttachmentRef = {
@@ -48,6 +50,7 @@ export function normalizeSubEffortDocItems(documentUrl: unknown): SubEffortDocIt
               : o.folder_id === null
                 ? null
                 : undefined,
+          bucket: typeof o.bucket === 'string' && o.bucket.trim() ? o.bucket.trim() : undefined,
         },
       ];
     }
@@ -88,7 +91,12 @@ export async function attachStoragePathsToSubEffort(params: {
   targetSubEffortId: string | number;
   targetDocumentUrl: unknown;
   activeFolderId?: string | null;
-  items: Array<{ path: string; name?: string | null; mimeType?: string | null }>;
+  items: Array<{
+    path: string;
+    name?: string | null;
+    mimeType?: string | null;
+    bucket?: string | null;
+  }>;
 }): Promise<{ addedCount: number }> {
   const existingItems = normalizeSubEffortDocItems(params.targetDocumentUrl);
   const existingKeySet = new Set(
@@ -102,6 +110,8 @@ export async function attachStoragePathsToSubEffort(params: {
         name: d.name?.trim() || undefined,
         mimeType: d.mimeType?.trim() || undefined,
       };
+      const bucket = d.bucket?.trim();
+      if (bucket) item.bucket = bucket;
       if (params.activeFolderId) item.folder_id = params.activeFolderId;
       return item;
     })

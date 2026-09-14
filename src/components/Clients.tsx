@@ -15,6 +15,7 @@ import {
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
 import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage, preferNewerLeadStage } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
+import { tryAdvanceClientSignedToHandlerSet } from '../lib/advanceClientSignedToHandlerSet';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import {
   findDuplicateContacts as findDuplicateContactsApi,
@@ -2180,6 +2181,7 @@ const Clients: React.FC<ClientsProps> = ({
       waitingformtngsumpriceoffer: 'waitingformtngsum',
       waitingforsumandpriceoffer: 'waitingformtngsum',
       waitingformtngsumandpriceoffer: 'waitingformtngsum',
+      handlernominated: 'handlerset',
     }),
     []
   );
@@ -2208,6 +2210,7 @@ const Clients: React.FC<ClientsProps> = ({
       droppedspamirrelevant: 91,
       success: 100,
       handlerset: 105,
+      handlernominated: 105,
       handlerstarted: 110,
       applicationsubmitted: 150,
       caseclosed: 200,
@@ -12068,8 +12071,10 @@ const Clients: React.FC<ClientsProps> = ({
     setSelectedClient((prev: any) => (prev ? { ...prev, stage } : prev));
   }, [selectedClient?.id, setSelectedClient]);
 
-  // Stage 60 ("Client signed agreement") should never be visible once a handler is set:
-  // If handler exists, auto-advance to stage 105 ("Handler Set") and skip stage 60 UI.
+  // Stage 60 ("Client signed agreement") should never stay visible once a handler is set.
+  // DB owns 60→105 (sql/2026-09-14_client_signed_to_handler_nominated.sql): writes current
+  // stage 105 and inserts a 105 history row, leaving the signed-at-60 history row in place.
+  // This effect heals already-stuck leads when the client page is opened.
   useEffect(() => {
     if (!selectedClient) return;
 
@@ -12090,16 +12095,53 @@ const Clients: React.FC<ClientsProps> = ({
     const key = `${selectedClient.id}:${selectedClient.stage}`;
     if (autoAdvanceHandlerSetRef.current === key) return;
     autoAdvanceHandlerSetRef.current = key;
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'Clients.tsx:autoAdvanceHandlerSet',message:'auto-advancing stage 60 to 105 because handler is set',data:{fromStage:selectedClient.stage,hasHandlerId:Boolean(handlerId),hasHandlerLabel:Boolean(handlerLabel)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    // Public contract signing already wrote stage 60. Handler assignment (not this effect)
-    // is what should move the lead to 105 — jumping here made history show 60 while the
-    // current stage skipped to 105 (or looked unchanged).
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'A',location:'Clients.tsx:autoAdvanceHandlerSet:skip',message:'leaving lead at stage 60 instead of auto-advancing to 105',data:{stage:selectedClient.stage,hasHandlerId:Boolean(handlerId)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-  }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
+
+    const clientId = selectedClient.id;
+    const isLegacy =
+      selectedClient.lead_type === 'legacy' ||
+      String(clientId).startsWith('legacy_');
+    const lead = selectedClient;
+
+    void (async () => {
+      const result = await tryAdvanceClientSignedToHandlerSet({
+        leadId: clientId,
+        isLegacy,
+      });
+      if (autoAdvanceHandlerSetRef.current !== key) return;
+      if (result.advanced) {
+        setSelectedClient((prev: any) => {
+          if (!prev || String(prev.id) !== String(clientId)) return prev;
+          return { ...prev, stage: 105 };
+        });
+        try {
+          await refreshClientData(clientId);
+        } catch (err) {
+          console.warn('refresh after 60→105 failed', err);
+        }
+        return;
+      }
+      if (!result.rpcAvailable) {
+        try {
+          const actor = await fetchStageActorInfo();
+          await updateLeadStageWithHistory({
+            lead,
+            stage: 105,
+            actor,
+          });
+          setSelectedClient((prev: any) => {
+            if (!prev || String(prev.id) !== String(clientId)) return prev;
+            return { ...prev, stage: 105 };
+          });
+          await refreshClientData(clientId);
+        } catch (err) {
+          console.warn('fallback 60→105 failed', err);
+          if (autoAdvanceHandlerSetRef.current === key) {
+            autoAdvanceHandlerSetRef.current = '';
+          }
+        }
+      }
+    })();
+  }, [selectedClient, currentStageName, isStageNumeric, stageNumeric, refreshClientData]);
 
   // Stage 105 ("Handler Set" / Nominated) → 110 ("Handler Started") is owned by the DB:
   // sql/2026-07-26_handler_started_on_paid_payment.sql advances when a payment is marked

@@ -52,6 +52,7 @@ export type DocumentViewerItem = {
   lastModified?: string;
   /** Storage object path — enables the shared employee comment thread. */
   storagePath?: string | null;
+  storageBucket?: string | null;
 };
 
 type DocumentFileComment = {
@@ -98,6 +99,11 @@ function isDirectPreviewUrl(url: string): boolean {
   // Vite-dev relative backend routes, e.g. /api/whatsapp/media/:id
   if (u.startsWith('/api/')) return true;
   return false;
+}
+
+function isFailedPreviewUrl(url: string): boolean {
+  const u = String(url || '').trim().toLowerCase();
+  return u === 'failed' || u === '__failed__';
 }
 
 function inferFileType(name: string, fileType?: string): string {
@@ -475,6 +481,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             path: d.storagePath!.trim(),
             name: d.name,
             mimeType: d.fileType,
+            bucket: d.storageBucket?.trim() || undefined,
           })),
         });
         if (addedCount === 0) {
@@ -883,13 +890,34 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   };
 
   useEffect(() => {
-    if (!isOpen || !activeUrl) {
+    if (!isOpen) {
       setSignedUrl(null);
       setSignedDocId(null);
+      setLoadingUrl(false);
       return;
     }
 
     const docId = activeDoc?.id ?? null;
+
+    if (!activeUrl) {
+      setSignedUrl(null);
+      setSignedDocId(null);
+      setLoadingUrl(true);
+      setImageError(false);
+      setPdfError(false);
+      setOfficeError(false);
+      return;
+    }
+
+    if (isFailedPreviewUrl(activeUrl)) {
+      setSignedUrl(null);
+      setSignedDocId(null);
+      setLoadingUrl(false);
+      setImageError(true);
+      setPdfError(true);
+      setOfficeError(true);
+      return;
+    }
 
     if (isDirectPreviewUrl(activeUrl)) {
       setSignedUrl(activeUrl);

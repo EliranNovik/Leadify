@@ -76,10 +76,21 @@ export async function searchMyPastChats(input: {
   query?: string;
   conversationId?: string;
   limit?: number;
+  leadId?: string | null;
+  leadNumber?: string | null;
+  excludeConversationId?: string | null;
 }): Promise<PastChatHit[]> {
   const open = getRmqAiCurrentLead();
-  const activeLeadId = open?.id != null ? String(open.id) : null;
-  const activeLeadNumber = open?.lead_number ? String(open.lead_number) : '';
+  const activeLeadId = input.leadId != null && String(input.leadId).trim()
+    ? String(input.leadId)
+    : open?.id != null
+      ? String(open.id)
+      : null;
+  const activeLeadNumber = input.leadNumber != null && String(input.leadNumber).trim()
+    ? String(input.leadNumber)
+    : open?.lead_number
+      ? String(open.lead_number)
+      : '';
   const query = String(input.query || '').trim();
   const limit = Math.min(8, Math.max(1, input.limit || 5));
 
@@ -91,16 +102,19 @@ export async function searchMyPastChats(input: {
     p_limit: limit,
   });
 
+  const excludeId = String(input.excludeConversationId || '').trim();
   if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
-    return rpcData.map((row: Record<string, unknown>) => ({
-      date: String(row.updated_at || row.created_at || ''),
-      title: String(row.title || 'Untitled'),
-      summary: parseChatSummary(row.summary) || String(row.summary || ''),
-      matchingSnippet: String(row.matching_snippet || row.snippet || ''),
-      conversationId: String(row.id),
-      leadNumber: row.lead_number ? String(row.lead_number) : undefined,
-      matchReason: (row.match_reason as PastChatHit['matchReason']) || 'summary',
-    }));
+    return rpcData
+      .map((row: Record<string, unknown>) => ({
+        date: String(row.updated_at || row.created_at || ''),
+        title: String(row.title || 'Untitled'),
+        summary: parseChatSummary(row.summary) || String(row.summary || ''),
+        matchingSnippet: String(row.matching_snippet || row.snippet || ''),
+        conversationId: String(row.id),
+        leadNumber: row.lead_number ? String(row.lead_number) : undefined,
+        matchReason: (row.match_reason as PastChatHit['matchReason']) || 'summary',
+      }))
+      .filter((hit) => !excludeId || hit.conversationId !== excludeId);
   }
 
   let request = supabase
@@ -132,7 +146,7 @@ export async function searchMyPastChats(input: {
         _score: scored.score,
       };
     })
-    .filter((row) => row._score > 0)
+    .filter((row) => row._score > 0 && (!excludeId || row.conversationId !== excludeId))
     .sort((a, b) => b._score - a._score)
     .slice(0, limit)
     .map(({ _score, ...hit }) => hit);
@@ -173,8 +187,27 @@ export async function getPastChat(conversationId: string): Promise<{
 }
 
 export async function fetchRelatedChatForOpenLead(): Promise<PastChatHit | null> {
-  const open = getRmqAiCurrentLead();
-  if (!open?.id && !open?.lead_number) return null;
-  const hits = await searchMyPastChats({ query: String(open.lead_number || ''), limit: 1 });
+  const hits = await fetchRelatedChatsForLead({ limit: 1 });
   return hits[0] || null;
+}
+
+export async function fetchRelatedChatsForLead(input?: {
+  query?: string;
+  leadId?: string | null;
+  leadNumber?: string | null;
+  excludeConversationId?: string | null;
+  limit?: number;
+}): Promise<PastChatHit[]> {
+  const open = getRmqAiCurrentLead();
+  const leadNumber = input?.leadNumber || open?.lead_number || '';
+  const leadId = input?.leadId || (open?.id != null ? String(open.id) : null);
+  const query = String(input?.query || leadNumber || '').trim();
+  if (!leadId && !leadNumber && !query) return [];
+  return searchMyPastChats({
+    query,
+    leadId,
+    leadNumber: leadNumber ? String(leadNumber) : null,
+    excludeConversationId: input?.excludeConversationId,
+    limit: input?.limit || 3,
+  });
 }

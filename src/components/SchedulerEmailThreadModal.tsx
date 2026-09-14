@@ -17,6 +17,9 @@ import {
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
+import { AI_AGENT_DISPLAY_NAME, AI_AGENT_EMPLOYEE_ID, applyAiAgentEmailNameAliases, isAiAgentEmail, mailboxPartyLabel } from '../lib/aiAgentMailbox';
+import { TeamAvatar } from './client-tabs/InteractionsEmailModal';
+import { resolveEmployeePhotoUrl } from '../lib/employeePhotoUrl';
 import EmailSentSuccessModal from './EmailSentSuccessModal';
 import { ComposeBodyWithSignature, COMPOSE_ACTION_BUTTON_CLASS, COMPOSE_ACTION_BUTTON_STYLE, COMPOSE_SEND_BUTTON_CLASS, COMPOSE_CC_TOGGLE_CLASS } from './signature/ComposeSignaturePreview';
 import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews';
@@ -368,7 +371,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
     
     if (employeesResult.error || usersResult.error) {
       console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
-      return emailToNameMap;
+      return applyAiAgentEmailNameAliases(emailToNameMap);
     }
     
     // Create employee_id to email mapping from users table
@@ -397,7 +400,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
     console.error('Error building employee email-to-name map:', error);
   }
   
-  return emailToNameMap;
+  return applyAiAgentEmailNameAliases(emailToNameMap);
 };
 
 const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
@@ -434,6 +437,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
   
   // Employee autocomplete state
   const [employees, setEmployees] = useState<Array<{ email: string; name: string }>>([]);
+  const [aiAgentPhotoUrl, setAiAgentPhotoUrl] = useState<string | null>(null);
   const [toSuggestions, setToSuggestions] = useState<Array<{ email: string; name: string }>>([]);
   const [ccSuggestions, setCcSuggestions] = useState<Array<{ email: string; name: string }>>([]);
   const [showToSuggestions, setShowToSuggestions] = useState(false);
@@ -444,6 +448,22 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
   useEffect(() => {
     if (!showCompose) setShowCcField(false);
   }, [showCompose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('tenants_employee')
+        .select('photo_url, photo')
+        .eq('id', AI_AGENT_EMPLOYEE_ID)
+        .maybeSingle();
+      if (cancelled || !data) return;
+      setAiAgentPhotoUrl(resolveEmployeePhotoUrl(data.photo_url, data.photo));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [showLinkForm, setShowLinkForm] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
@@ -2218,7 +2238,9 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
                       
                       // Get sender display name - use employee display_name for office emails
                       let senderDisplayName: string;
-                      if (isTeamEmail) {
+                      if (isAiAgentEmail(senderEmail)) {
+                        senderDisplayName = AI_AGENT_DISPLAY_NAME;
+                      } else if (isTeamEmail) {
                         // For team/user emails: use employee display_name from cache if available, otherwise fallback
                         senderDisplayName = (message as any).sender_display_name 
                           || message.sender_name 
@@ -2245,6 +2267,14 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
                           
                           <div className={`flex flex-col ${isTeamEmail ? 'items-end' : 'items-start'}`}>
                             <div className="flex items-center gap-2 mb-1">
+                              {isAiAgentEmail(senderEmail) && (
+                                <TeamAvatar
+                                  photoUrl={aiAgentPhotoUrl}
+                                  initials="AA"
+                                  name={AI_AGENT_DISPLAY_NAME}
+                                  size="sm"
+                                />
+                              )}
                               <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
                                 isTeamEmail
                                   ? 'bg-blue-100 text-blue-700 border border-blue-200'
@@ -2277,7 +2307,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
                                 </div>
                                 <div className="text-xs text-gray-500 mt-1 space-y-0.5" dir="ltr" style={{ textAlign: 'left' }}>
                                   <div>
-                                    <span className="font-medium">From:</span> <span className="text-gray-700">{message.from || message.sender_email || 'Unknown'}</span>
+                                    <span className="font-medium">From:</span> <span className="text-gray-700">{mailboxPartyLabel(message.from || message.sender_email, 'Unknown')}</span>
                                   </div>
                                   {message.to && (() => {
                                     const recipients = message.to.split(/[,;]/).map((r: string) => r.trim()).filter((r: string) => r);
@@ -2286,7 +2316,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({
                                         <span className="font-medium">To:</span> <span className="text-gray-700">
                                           {recipients.map((recipient: string, idx: number) => (
                                             <span key={idx}>
-                                              {recipient}
+                                              {mailboxPartyLabel(recipient, recipient)}
                                               {idx < recipients.length - 1 && ', '}
                                             </span>
                                           ))}

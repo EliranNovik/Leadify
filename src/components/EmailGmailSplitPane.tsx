@@ -14,6 +14,13 @@ import { EmailMessageComments } from './client-tabs/EmailMessageComments';
 import { EmailSidepanelListMenu } from './client-tabs/EmailSidepanelListMenu';
 import type { EmailComment } from '../lib/interactions/emailComments';
 import { fetchEmailCommentsByEmailIds } from '../lib/interactions/emailComments';
+import { lookupEmployeePhotoFromMap } from '../lib/employeePhotoUrl';
+import { TeamAvatar } from './client-tabs/InteractionsEmailModal';
+import {
+  AI_AGENT_DISPLAY_NAME,
+  isAiAgentEmail,
+  mailboxPartyLabel,
+} from '../lib/aiAgentMailbox';
 
 export type ThreadEmailMessage = {
   id: string;
@@ -74,9 +81,11 @@ function collectConversationParticipants(
       .toLowerCase();
     if (!email) continue;
     const outgoing = opts.getIsOutgoing(message);
-    const name = outgoing
-      ? String(message.sender_name || message.sender_email || 'Team').trim()
-      : String(opts.contactName || message.sender_name || email).trim();
+    const name = isAiAgentEmail(email)
+      ? AI_AGENT_DISPLAY_NAME
+      : outgoing
+        ? String(message.sender_name || message.sender_email || 'Team').trim()
+        : String(opts.contactName || message.sender_name || email).trim();
     if (!byKey.has(email)) {
       byKey.set(email, { key: email, name: name || email, email, outgoing });
     }
@@ -102,6 +111,7 @@ type Props = {
   onReplyMessage?: (message: ThreadEmailMessage) => void;
   onForwardMessage?: (message: ThreadEmailMessage) => void;
   onDeleteMessage?: (message: ThreadEmailMessage) => void;
+  employeePhotoMap?: Map<string, string>;
 };
 
 export default function EmailGmailSplitPane({
@@ -122,6 +132,7 @@ export default function EmailGmailSplitPane({
   onReplyMessage,
   onForwardMessage,
   onDeleteMessage,
+  employeePhotoMap,
 }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [listMode, setListMode] = useState<EmailSidepanelListMode>('newest');
@@ -294,8 +305,13 @@ export default function EmailGmailSplitPane({
               );
               const preview = previewText(message) || '—';
               const displayName = outgoing
-                ? message.recipient_list?.split(/[,;]/)[0]?.trim() || 'Recipient'
-                : message.sender_name || message.sender_email || 'Sender';
+                ? mailboxPartyLabel(
+                    message.recipient_list?.split(/[,;]/)[0]?.trim(),
+                    message.recipient_list?.split(/[,;]/)[0]?.trim() || 'Recipient',
+                  ) || 'Recipient'
+                : isAiAgentEmail(message.sender_email)
+                  ? AI_AGENT_DISPLAY_NAME
+                  : message.sender_name || message.sender_email || 'Sender';
               const initials = initialsFromName(displayName);
               return (
                 <li key={group.key}>
@@ -495,9 +511,21 @@ export default function EmailGmailSplitPane({
               {visibleConversationEmails.map((message, index) => {
                 const outgoing = getIsOutgoing(message);
                 const personName = outgoing
-                  ? message.sender_name || message.sender_email || 'Team'
-                  : contactName || message.sender_name || message.sender_email || 'Client';
+                  ? isAiAgentEmail(message.sender_email)
+                    ? AI_AGENT_DISPLAY_NAME
+                    : message.sender_name || message.sender_email || 'Team'
+                  : isAiAgentEmail(message.sender_email)
+                    ? AI_AGENT_DISPLAY_NAME
+                    : contactName || message.sender_name || message.sender_email || 'Client';
                 const initials = initialsFromName(personName);
+                const teamPhotoUrl =
+                  outgoing && employeePhotoMap
+                    ? lookupEmployeePhotoFromMap(
+                        employeePhotoMap,
+                        personName,
+                        message.sender_email,
+                      )
+                    : null;
                 const bodySource = message.body_html || message.body_preview || '';
                 const bodyHtml = ensureFormattedEmailHtml(bodySource);
                 // #region agent log
@@ -510,14 +538,21 @@ export default function EmailGmailSplitPane({
                     className="rounded-xl border border-slate-200/80 bg-white px-3 py-4 shadow-sm md:px-5 md:py-5"
                   >
                     <div className="mb-3 flex items-start gap-2.5">
-                      <div
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[0.7rem] font-bold uppercase tracking-wide text-white shadow-sm ring-1 ring-white/90 ${
-                          outgoing ? 'bg-[#4218CC]' : 'bg-emerald-600'
-                        }`}
-                        aria-hidden
-                      >
-                        {initials}
-                      </div>
+                      {outgoing ? (
+                        <TeamAvatar
+                          photoUrl={teamPhotoUrl}
+                          initials={initials}
+                          name={personName}
+                          size="lg"
+                        />
+                      ) : (
+                        <div
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[0.7rem] font-bold uppercase tracking-wide text-white shadow-sm ring-1 ring-white/90"
+                          aria-hidden
+                        >
+                          {initials}
+                        </div>
+                      )}
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-sm font-semibold text-slate-900" dir="auto">
@@ -560,7 +595,7 @@ export default function EmailGmailSplitPane({
                                 href={`mailto:${message.sender_email}`}
                                 className="truncate text-blue-600 underline underline-offset-2 hover:text-blue-800"
                               >
-                                {message.sender_email}
+                                {mailboxPartyLabel(message.sender_email, message.sender_email)}
                               </a>
                             </span>
                           )}
@@ -582,7 +617,7 @@ export default function EmailGmailSplitPane({
                                         href={`mailto:${recipient}`}
                                         className="text-blue-600 underline underline-offset-2 hover:text-blue-800"
                                       >
-                                        {recipient}
+                                        {mailboxPartyLabel(recipient, recipient)}
                                       </a>
                                       {idx < arr.length - 1 && ', '}
                                     </span>

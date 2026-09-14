@@ -184,6 +184,37 @@ class MailboxTokenService {
     return decodeTokenRow(rows[0]);
   }
 
+  async getTokensForMailboxAddresses(addresses = []) {
+    const wanted = [...new Set((addresses || []).map(normaliseMailbox).filter(Boolean))];
+    if (!wanted.length) return [];
+
+    let rows = [];
+    try {
+      rows = await safeQuery(supabase.from(TOKEN_TABLE).select('*').in('mailbox_address', wanted));
+    } catch {
+      rows = [];
+    }
+
+    if (!rows?.length) {
+      try {
+        const all = await safeQuery(supabase.from(TOKEN_TABLE).select('*'));
+        rows = (all || []).filter((row) => wanted.has(normaliseMailbox(row.mailbox_address)));
+      } catch {
+        return [];
+      }
+    }
+
+    const tokens = [];
+    for (const row of rows || []) {
+      try {
+        tokens.push(decodeTokenRow(row));
+      } catch (error) {
+        console.warn('⚠️  Skipping mailbox token for', row.mailbox_address, error.message || error);
+      }
+    }
+    return tokens;
+  }
+
   async getAllTokens() {
     const rows = await safeQuery(
       supabase.from(TOKEN_TABLE).select('*')

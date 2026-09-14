@@ -32,7 +32,15 @@ import {
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
 import { fetchAiMessageSuggestion } from '../../lib/aiMessageSuggestion';
-import { isUsableEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
+import { isUsableEmployeePhotoUrl, lookupEmployeePhotoFromMap, resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
+import {
+  AI_AGENT_DISPLAY_NAME,
+  applyAiAgentEmailNameAliases,
+  applyAiAgentPhotoAliases,
+  isAiAgentEmail,
+  mailboxPartyLabel,
+} from '../../lib/aiAgentMailbox';
+import { resolveWhatsAppOutgoingSenderUi } from '../../lib/pexWhatsAppChat';
 import { toast } from 'react-hot-toast';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from '../client-tabs/AISummaryPanel';
@@ -550,7 +558,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
     
     if (employeesResult.error || usersResult.error) {
       console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
-      return emailToNameMap;
+      return applyAiAgentEmailNameAliases(emailToNameMap);
     }
     
     // Create employee_id to email mapping from users table
@@ -579,7 +587,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
     console.error('Error building employee email-to-name map:', error);
   }
   
-  return emailToNameMap;
+  return applyAiAgentEmailNameAliases(emailToNameMap);
 };
 
 const emailTemplates = [
@@ -2666,6 +2674,9 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
       const formData = new FormData();
       formData.append('file', selectedFile);
       formData.append('leadId', client.id);
+      if (client.phone || client.mobile) {
+        formData.append('phoneNumber', String(client.phone || client.mobile));
+      }
 
       // Upload media to WhatsApp
       const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
@@ -2949,7 +2960,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
             try {
               let query = supabase
                 .from('whatsapp_messages')
-                .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id')
+                .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id, whatsapp_message_id')
                 .limit(FETCH_BATCH_SIZE);
               
               if (isLegacyLead) {
@@ -3188,12 +3199,21 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
               });
             }
             
+            const lookedUpSender = (allEmployees || []).find((emp: any) => {
+              if (!emp?.display_name || !msg.sender_name) return false;
+              return String(emp.display_name).trim().toLowerCase() === String(msg.sender_name).trim().toLowerCase();
+            });
+            const employeeName =
+              msg.direction === 'out'
+                ? resolveWhatsAppOutgoingSenderUi(msg, lookedUpSender?.id).label || msg.sender_name || 'You'
+                : msg.sender_name || 'You';
+
             return {
               id: msg.id,
               date: sentAtDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
               time: sentAtDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
               raw_date: sentAt,
-              employee: msg.sender_name || 'You',
+              employee: employeeName,
               direction: msg.direction || 'in',
               kind: 'whatsapp',
               length: '',
@@ -3789,9 +3809,11 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
           
           if (isOutgoing) {
             // For team/user emails: use employee display_name from cache if available, otherwise fallback
-            employeeName = senderDisplayName 
-              || userFullName 
-              || senderEmail 
+            employeeName = isAiAgentEmail(senderEmail)
+              ? AI_AGENT_DISPLAY_NAME
+              : senderDisplayName
+              || userFullName
+              || senderEmail
               || 'Team';
           } else {
             // For client emails - use contact name or client name
@@ -3811,6 +3833,10 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
             
             // Find employee email in recipient list
             for (const recipientEmail of recipients) {
+              if (isAiAgentEmail(recipientEmail)) {
+                employeeRecipientName = AI_AGENT_DISPLAY_NAME;
+                break;
+              }
               if (isOfficeEmail(recipientEmail)) {
                 // Get employee name from employeeEmailMap
                 employeeRecipientName = employeeEmailMap.get(recipientEmail) || recipientEmail;
@@ -4468,7 +4494,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
           // Fallback: fetch employees if not provided via prop
           const { data, error } = await supabase
             .from('tenants_employee')
-            .select('id, display_name, phone_ext, phone, mobile, mobile_ext, onecom_code, photo_url')
+            .select('id, display_name, phone_ext, phone, mobile, mobile_ext, onecom_code, photo_url, photo')
             .not('display_name', 'is', null);
 
           if (error) {
@@ -4505,9 +4531,9 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
         employees?.forEach((emp: any) => {
           if (!emp.display_name) return;
 
-          // Map employee name to photo URL
-          if (emp.photo_url) {
-            photoMap.set(emp.display_name, emp.photo_url);
+          const photoUrl = resolveEmployeePhotoUrl(emp.photo_url, emp.photo);
+          if (photoUrl) {
+            photoMap.set(emp.display_name, photoUrl);
           }
 
           // Map all phone/ext variations to employee name
@@ -4573,6 +4599,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
             }
           }
         });
+
+        applyAiAgentPhotoAliases(photoMap, employees);
 
         console.log(`✅ Loaded employee phone map with ${phoneMap.size} entries`);
         console.log(`✅ Loaded employee photo map with ${photoMap.size} entries`);
@@ -6647,9 +6675,15 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
               if (employeeData) {
                 // Calls have employee_data from JOIN
                 employeePhoto = Array.isArray(employeeData) ? employeeData[0]?.photo_url : employeeData?.photo_url;
-              } else if (!isClientSender && row.employee && employeePhotoMap.has(row.employee)) {
-                // For email/WhatsApp/etc (not manual interactions with client as sender), look up by employee name
-                employeePhoto = employeePhotoMap.get(row.employee) || null;
+              } else if (!isClientSender && row.employee) {
+                employeePhoto =
+                  lookupEmployeePhotoFromMap(
+                    employeePhotoMap,
+                    row.employee,
+                    (row as any).sender_email,
+                  ) ||
+                  employeePhotoMap.get(row.employee) ||
+                  null;
               }
               // If isClientSender is true, leave employeePhoto as null (will show initials only)
               
@@ -6836,7 +6870,10 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                                     // If incoming (client to employee), show employee name
                                     // For incoming emails, row.employee contains the CLIENT name (the sender)
                                     // Use the stored employee_recipient_name that was set when creating the interaction
-                                    const employeeRecipientName = (row as any).employee_recipient_name || 'Team';
+                                    const employeeRecipientName = mailboxPartyLabel(
+                                      (row as any).employee_recipient_name,
+                                      (row as any).employee_recipient_name || 'Team',
+                                    ) || (row as any).employee_recipient_name || 'Team';
                                     
                                     return (
                                       <div className="text-xs text-gray-500 flex items-center gap-1">
@@ -7301,7 +7338,9 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                       const isFromOffice = isOfficeEmail(message.from);
                       const isTeamEmail = isFromOffice || message.direction === 'outgoing';
                       const senderName = isTeamEmail 
-                        ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                        ? (isAiAgentEmail(message.from)
+                          ? AI_AGENT_DISPLAY_NAME
+                          : ((message as any).sender_display_name || currentUserFullName || 'Team'))
                         : (selectedContactForEmail?.contact.name || client.name || 'Client');
                       if (senderName.toLowerCase().includes(searchTerm)) return true;
                       
@@ -7335,7 +7374,9 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                       const isFromOffice = isOfficeEmail(senderEmail);
                       const isOutgoing = isFromOffice ? true : (message.direction === 'outgoing');
                       const senderDisplayName = isOutgoing
-                        ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                        ? (isAiAgentEmail(senderEmail)
+                          ? AI_AGENT_DISPLAY_NAME
+                          : ((message as any).sender_display_name || currentUserFullName || 'Team'))
                         : (selectedContactForEmail?.contact.name || client.name || 'Client');
                       const isSelected = selectedEmailForView?.id === message.id;
                       
@@ -7426,7 +7467,9 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                               </div>
                               <span className="text-sm font-semibold text-gray-700" dir="auto">
                                 {(isOfficeEmail(selectedEmailForView.from) || selectedEmailForView.direction === 'outgoing')
-                                  ? ((selectedEmailForView as any).sender_display_name || currentUserFullName || 'Team')
+                                  ? (isAiAgentEmail(selectedEmailForView.from)
+                                    ? AI_AGENT_DISPLAY_NAME
+                                    : ((selectedEmailForView as any).sender_display_name || currentUserFullName || 'Team'))
                                   : (selectedContactForEmail?.contact.name || client.name || 'Client')}
                               </span>
                             </div>
@@ -7438,7 +7481,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                         <div className="space-y-2 text-sm">
                           <div>
                             <span className="font-semibold text-gray-600">From:</span>
-                            <span className="ml-2 text-gray-900" dir="ltr">{selectedEmailForView.from || 'Unknown'}</span>
+                            <span className="ml-2 text-gray-900" dir="ltr">{mailboxPartyLabel(selectedEmailForView.from, selectedEmailForView.from || 'Unknown')}</span>
                           </div>
                           {selectedEmailForView.to && (() => {
                             const recipients = selectedEmailForView.to.split(/[,;]/).map((r: string) => r.trim()).filter((r: string) => r);
@@ -7448,7 +7491,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                                 <span className="ml-2 text-gray-900" dir="ltr">
                                   {recipients.map((recipient: string, idx: number) => (
                                     <span key={idx}>
-                                      {recipient}
+                                      {mailboxPartyLabel(recipient, recipient)}
                                       {idx < recipients.length - 1 && ', '}
                                     </span>
                                   ))}

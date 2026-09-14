@@ -36,6 +36,9 @@ import {
 } from '../lib/subEffortDocumentAttach';
 import { supabase } from '../lib/supabase';
 import {
+  isLeadEmailAttachmentId,
+} from '../lib/leadEmailAttachments';
+import {
   CaseDocumentsModalFilterBar,
   DocumentUploaderCell,
   DocRowActionsMenu,
@@ -433,13 +436,17 @@ export function SequenceOfEventsDocumentsModal({
     fileType: d.fileType,
     lastModified: d.lastModified,
     storagePath: d.storagePath,
+    storageBucket: d.storageBucket ?? null,
   }));
 
   const renameDocument = useCallback(
-    async (doc: { id: string; name: string; storagePath?: string | null }, newName: string) => {
+    async (doc: { id: string; name: string; storagePath?: string | null; source?: string | null }, newName: string) => {
       const trimmed = newName.trim();
       if (!trimmed) throw new Error('Name is required');
       if (trimmed === doc.name) return;
+      if (isLeadEmailAttachmentId(doc.id) || doc.source === 'email') {
+        throw new Error('Email attachments stay with the email and cannot be renamed here.');
+      }
 
       const path = normalizeStorageKey(doc.storagePath);
       const id = String(doc.id);
@@ -568,6 +575,10 @@ export function SequenceOfEventsDocumentsModal({
   };
 
   const deleteDocument = async (doc: CaseCategoryDocument) => {
+    if (isLeadEmailAttachmentId(doc.id) || doc.source === 'email') {
+      toast.error('Email attachments stay with the email and cannot be deleted here.');
+      return;
+    }
     if (!leadNumber?.trim()) {
       toast.error('Missing lead number');
       return;
@@ -606,6 +617,10 @@ export function SequenceOfEventsDocumentsModal({
     doc: CaseCategoryDocument,
     type: LeadCaseDocumentType | null,
   ) => {
+    if (isLeadEmailAttachmentId(doc.id) || doc.source === 'email') {
+      toast.error('Email attachments keep the Email attachment type.');
+      return;
+    }
     if (!leadNumber?.trim()) {
       toast.error('Missing lead number');
       return;
@@ -702,6 +717,7 @@ export function SequenceOfEventsDocumentsModal({
           path: d.storagePath!.trim(),
           name: d.name,
           mimeType: d.fileType,
+          bucket: d.storageBucket,
         })),
       });
       if (addedCount === 0) {
@@ -1187,12 +1203,16 @@ export function SequenceOfEventsDocumentsModal({
                                         disabled={busy || isRenaming}
                                         deleting={deletingDocId === doc.id}
                                         savingDocumentType={savingTypeDocId === doc.id}
+                                        canRename={doc.source !== 'email' && !isLeadEmailAttachmentId(doc.id)}
+                                        canDelete={doc.source !== 'email' && !isLeadEmailAttachmentId(doc.id)}
                                         documentTypes={documentTypes}
                                         currentDocumentTypeId={doc.documentTypeId}
                                         onEditFileName={() => startInlineRename(doc)}
                                         onDelete={() => void deleteDocument(doc)}
-                                        onSelectDocumentType={(type) =>
-                                          void assignDocumentType(doc, type)
+                                        onSelectDocumentType={
+                                          doc.source === 'email' || isLeadEmailAttachmentId(doc.id)
+                                            ? undefined
+                                            : (type) => void assignDocumentType(doc, type)
                                         }
                                       />
                                     </td>

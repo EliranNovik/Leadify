@@ -379,6 +379,8 @@ export function DocRowActionsMenu({
   disabled = false,
   deleting = false,
   savingDocumentType = false,
+  canRename = true,
+  canDelete = true,
 }: {
   onEditFileName: () => void;
   onDelete: () => void;
@@ -388,6 +390,8 @@ export function DocRowActionsMenu({
   disabled?: boolean;
   deleting?: boolean;
   savingDocumentType?: boolean;
+  canRename?: boolean;
+  canDelete?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [typePanelOpen, setTypePanelOpen] = useState(false);
@@ -462,6 +466,9 @@ export function DocRowActionsMenu({
   }, [open, typePanelOpen]);
 
   const busy = disabled || deleting || savingDocumentType;
+  const showType = Boolean(onSelectDocumentType);
+  const hasAnyAction = canRename || canDelete || showType;
+  if (!hasAnyAction) return null;
 
   const menu =
     open && menuPos
@@ -533,20 +540,22 @@ export function DocRowActionsMenu({
               className="flex w-48 shrink-0 flex-col overflow-y-auto overscroll-contain rounded-xl border border-base-200 bg-white py-1 shadow-lg"
               style={{ maxHeight: menuPos.maxHeight }}
             >
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
-                onClick={() => {
-                  setOpen(false);
-                  setTypePanelOpen(false);
-                  onEditFileName();
-                }}
-              >
-                <PencilSquareIcon className="h-4 w-4 opacity-70" />
-                Edit file name
-              </button>
-              {onSelectDocumentType ? (
+              {canRename ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
+                  onClick={() => {
+                    setOpen(false);
+                    setTypePanelOpen(false);
+                    onEditFileName();
+                  }}
+                >
+                  <PencilSquareIcon className="h-4 w-4 opacity-70" />
+                  Edit file name
+                </button>
+              ) : null}
+              {showType ? (
                 <button
                   type="button"
                   role="menuitem"
@@ -563,19 +572,21 @@ export function DocRowActionsMenu({
                   <ChevronRightIcon className="h-4 w-4 opacity-60" />
                 </button>
               ) : null}
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-red-600 hover:bg-red-50"
-                onClick={() => {
-                  setOpen(false);
-                  setTypePanelOpen(false);
-                  onDelete();
-                }}
-              >
-                <TrashIcon className="h-4 w-4" />
-                Delete
-              </button>
+              {canDelete ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-red-600 hover:bg-red-50"
+                  onClick={() => {
+                    setOpen(false);
+                    setTypePanelOpen(false);
+                    onDelete();
+                  }}
+                >
+                  <TrashIcon className="h-4 w-4" />
+                  Delete
+                </button>
+              ) : null}
             </div>
           </div>,
           document.body,

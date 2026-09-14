@@ -33,6 +33,20 @@ const emailController = {
     }
   },
 
+  async backfillAttachments(req, res) {
+    try {
+      const { userId, emailIds } = req.body || {};
+      if (!userId) {
+        return res.status(400).json({ success: false, error: 'userId is required' });
+      }
+      const data = await graphMailboxSyncService.persistExistingEmailAttachments(userId, emailIds);
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('❌ Backfill attachments error:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to backfill attachments' });
+    }
+  },
+
   async downloadAttachment(req, res) {
     try {
       const { userId } = req.query;

@@ -10,6 +10,12 @@ import { ComposeSignaturePreview } from '../components/signature/ComposeSignatur
 import { ComposeAttachmentPreviews } from '../components/signature/ComposeAttachmentPreviews';
 import { fetchHeaderOfficeInboxUnreadEmails } from '../lib/headerEmailNotifications';
 import { isUsableEmployeePhotoUrl, resolveEmployeePhotoUrl } from '../lib/employeePhotoUrl';
+import {
+  AI_AGENT_DISPLAY_NAME,
+  AI_AGENT_EMAIL,
+  AI_AGENT_EMPLOYEE_ID,
+  isAiAgentEmail,
+} from '../lib/aiAgentMailbox';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { useRealtimeRefresh } from '../hooks/useRealtimeRefresh';
 import {
@@ -721,10 +727,31 @@ const EmailThreadLeadPage: React.FC = () => {
           const emp = Array.isArray(empRaw) ? empRaw[0] : empRaw;
           const photo = resolveEmployeePhotoUrl(emp?.photo_url, emp?.photo);
           next[email] = {
-            name: String(emp?.display_name || row.full_name || email).trim(),
+            name: isAiAgentEmail(email)
+              ? AI_AGENT_DISPLAY_NAME
+              : String(emp?.display_name || row.full_name || email).trim(),
             photoUrl: photo && isUsableEmployeePhotoUrl(photo) ? photo : null,
           };
         });
+        try {
+          const { data: agentEmp } = await supabase
+            .from('tenants_employee')
+            .select('photo_url, photo')
+            .eq('id', AI_AGENT_EMPLOYEE_ID)
+            .maybeSingle();
+          const agentPhoto = agentEmp
+            ? resolveEmployeePhotoUrl(agentEmp.photo_url, agentEmp.photo)
+            : null;
+          next[AI_AGENT_EMAIL] = {
+            name: AI_AGENT_DISPLAY_NAME,
+            photoUrl: agentPhoto && isUsableEmployeePhotoUrl(agentPhoto) ? agentPhoto : next[AI_AGENT_EMAIL]?.photoUrl || null,
+          };
+        } catch {
+          next[AI_AGENT_EMAIL] = {
+            name: AI_AGENT_DISPLAY_NAME,
+            photoUrl: next[AI_AGENT_EMAIL]?.photoUrl || null,
+          };
+        }
         setEmployeeProfileByEmail(next);
       } catch (error) {
         console.warn('Failed to load employee profiles:', error);
@@ -3373,7 +3400,9 @@ const EmailThreadLeadPage: React.FC = () => {
                       const showDateSeparator = index === 0 ||
                         new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
                       const senderEmailKey = (message.sender_email || '').toLowerCase().trim();
-                      const staffProfile = senderEmailKey ? employeeProfileByEmail[senderEmailKey] : undefined;
+                      const staffProfile = senderEmailKey
+                        ? employeeProfileByEmail[isAiAgentEmail(senderEmailKey) ? AI_AGENT_EMAIL : senderEmailKey]
+                        : undefined;
                       const isOutgoing =
                         message.direction === 'outgoing' ||
                         Boolean(staffProfile) ||
@@ -3387,14 +3416,18 @@ const EmailThreadLeadPage: React.FC = () => {
                         isOutgoing &&
                         !!userEmail &&
                         senderEmailKey === userEmail.toLowerCase().trim();
-                      const outgoingDisplayName = isOutgoing
+                      const outgoingDisplayName = isAiAgentEmail(message.sender_email)
+                        ? AI_AGENT_DISPLAY_NAME
+                        : isOutgoing
                         ? staffProfile?.name ||
                           message.sender_name ||
                           (isCurrentUserOutgoing ? currentUserFullName : null) ||
                           message.sender_email ||
                           'You'
                         : message.sender_name || selectedLead?.sender_name || 'Sender';
-                      const outgoingPhotoUrl = isOutgoing
+                      const outgoingPhotoUrl = isAiAgentEmail(message.sender_email)
+                        ? employeeProfileByEmail[AI_AGENT_EMAIL]?.photoUrl || staffProfile?.photoUrl || null
+                        : isOutgoing
                         ? staffProfile?.photoUrl ||
                           (isCurrentUserOutgoing ? currentUserPhotoUrl : null)
                         : null;

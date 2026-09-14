@@ -23,6 +23,15 @@ import {
 import { normalizeStorageKey, normalizeSubEffortDocItems } from './subEffortDocumentAttach';
 import { supabase } from './supabase';
 import { resolveUploaderDisplayByKey } from './uploaderDisplay';
+import {
+  EMAIL_ATTACHMENTS_STORAGE_BUCKET,
+  createStorageSignedUrlMap,
+  emailAttachmentUploaderLabel,
+  fetchLeadEmailAttachmentStoragePaths,
+  fetchLeadEmailAttachments,
+  isEmailAttachmentsBucket,
+  isLeadEmailAttachmentId,
+} from './leadEmailAttachments';
 
 export type CaseCategoryDocument = {
   id: string;
@@ -40,6 +49,9 @@ export type CaseCategoryDocument = {
   documentTypeId: string | null;
   /** Document type the client selected when uploading via portal. */
   documentTypeName: string | null;
+  /** Storage bucket when the file is not in `lead-sub-efforts-documents`. */
+  storageBucket?: string;
+  source?: 'case' | 'subeffort' | 'email';
 };
 
 /** @deprecated Prefer CaseCategoryDocument */
@@ -209,6 +221,54 @@ async function createSignedUrlMap(paths: string[]): Promise<Map<string, string>>
   return out;
 }
 
+async function createSignedUrlMapForItems(
+  items: Array<{ path?: string | null; bucket?: string | null }>,
+): Promise<Map<string, string>> {
+  const byBucket = new Map<string, string[]>();
+  for (const it of items) {
+    const path = String(it.path ?? '').trim();
+    if (!path) continue;
+    const bucket = isEmailAttachmentsBucket(it.bucket)
+      ? EMAIL_ATTACHMENTS_STORAGE_BUCKET
+      : CASE_DOCUMENTS_STORAGE_BUCKET;
+    const list = byBucket.get(bucket) ?? [];
+    list.push(path);
+    byBucket.set(bucket, list);
+  }
+
+  const out = new Map<string, string>();
+  await Promise.all(
+    [...byBucket.entries()].map(async ([bucket, paths]) => {
+      const signed =
+        bucket === EMAIL_ATTACHMENTS_STORAGE_BUCKET
+          ? await createStorageSignedUrlMap(bucket, paths)
+          : await createSignedUrlMap(paths);
+      for (const [path, url] of signed) out.set(path, url);
+    }),
+  );
+  return out;
+}
+
+function mapEmailAttachmentsToCaseDocuments(
+  files: Awaited<ReturnType<typeof fetchLeadEmailAttachments>>,
+): CaseCategoryDocument[] {
+  return files.map((file) => ({
+    id: file.id,
+    name: file.name,
+    url: file.url,
+    fileType: file.fileType,
+    lastModified: file.lastModified,
+    storagePath: file.storagePath,
+    uploadedByName: emailAttachmentUploaderLabel(file.subject),
+    uploadedByPhotoUrl: null,
+    isClientPortalUpload: false,
+    documentTypeId: null,
+    documentTypeName: 'Email attachment',
+    storageBucket: EMAIL_ATTACHMENTS_STORAGE_BUCKET,
+    source: 'email' as const,
+  }));
+}
+
 async function fetchCaseCategoryRows(leadNumber: string, classificationIds: string[]): Promise<CaseDocRow[]> {
   const { data: rows, error } = await supabase
     .from('lead_case_documents')
@@ -300,6 +360,8 @@ async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryD
       isClientPortalUpload,
       documentTypeId: typeId || null,
       documentTypeName,
+      storageBucket: CASE_DOCUMENTS_STORAGE_BUCKET,
+      source: 'case' as const,
     };
   });
 }
@@ -319,6 +381,7 @@ async function collectSubEffortCategoryItems(params: {
     lastModified: string;
     uploadedByName: string | null;
     uploadedByPhotoUrl: string | null;
+    bucket?: string | null;
   }[]
 > {
   const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
@@ -362,6 +425,7 @@ async function collectSubEffortCategoryItems(params: {
     lastModified: string;
     uploadedByName: string | null;
     uploadedByPhotoUrl: string | null;
+    bucket?: string | null;
   }[] = [];
 
   for (const r of (seRows || []) as any[]) {
@@ -390,6 +454,8 @@ async function collectSubEffortCategoryItems(params: {
         (path ? path.split('/').pop() : rawUrl ? rawUrl.split('/').pop() : '') ||
         'Document';
 
+      const bucket =
+        typeof (it as any)?.bucket === 'string' ? String((it as any).bucket).trim() : '';
       out.push({
         id: `subeffort:${String(r?.id ?? '')}:${path || rawUrl}`,
         name,
@@ -399,6 +465,7 @@ async function collectSubEffortCategoryItems(params: {
         lastModified: createdAt,
         uploadedByName: who ? String(who) : null,
         uploadedByPhotoUrl: photoUrl,
+        bucket: bucket || null,
       });
     }
   }
@@ -434,7 +501,17 @@ export async function fetchCaseCategoryDocumentCount(
     return true;
   });
 
-  return caseRows.length + uniqueSub.length;
+  let emailCount = 0;
+  if (category === 'sequence_of_events') {
+    const emailPaths = await fetchLeadEmailAttachmentStoragePaths({ clientId, leadNumber: lead });
+    const known = new Set([
+      ...casePaths,
+      ...uniqueSub.map((d) => d.path?.trim()).filter((p): p is string => Boolean(p)),
+    ]);
+    emailCount = emailPaths.filter((p) => !known.has(p)).length;
+  }
+
+  return caseRows.length + uniqueSub.length + emailCount;
 }
 
 export async function fetchCaseCategoryDocuments(
@@ -473,14 +550,17 @@ export async function fetchCaseCategoryDocuments(
     .map((it) => it.path?.trim())
     .filter((p): p is string => Boolean(p));
 
-  const [caseDocs, signedByPath, portalMetaByPath] = await Promise.all([
+  const [caseDocs, signedByPath, portalMetaByPath, emailFiles] = await Promise.all([
     mapCaseRowsToDocuments(caseRows),
-    createSignedUrlMap(subPaths),
+    createSignedUrlMapForItems(pendingSubItems),
     subPaths.length > 0
       ? fetchCaseDocPortalMetaByPaths(lead, subPaths)
       : Promise.resolve(
           new Map() as Awaited<ReturnType<typeof fetchCaseDocPortalMetaByPaths>>,
         ),
+    category === 'sequence_of_events'
+      ? fetchLeadEmailAttachments({ clientId, leadNumber: lead })
+      : Promise.resolve([]),
   ]);
 
   const subEffortDocs: CaseCategoryDocument[] = [];
@@ -503,6 +583,10 @@ export async function fetchCaseCategoryDocuments(
       isClientPortalUpload: false,
       documentTypeId: null,
       documentTypeName: null,
+      storageBucket: isEmailAttachmentsBucket(it.bucket)
+        ? EMAIL_ATTACHMENTS_STORAGE_BUCKET
+        : CASE_DOCUMENTS_STORAGE_BUCKET,
+      source: 'subeffort' as const,
     };
 
     if (p) {
@@ -521,7 +605,17 @@ export async function fetchCaseCategoryDocuments(
     subEffortDocs.push(doc);
   }
 
-  return [...caseDocs, ...subEffortDocs].sort(
+  const knownPaths = new Set(
+    [...caseDocs, ...subEffortDocs]
+      .map((d) => d.storagePath?.trim())
+      .filter((p): p is string => Boolean(p)),
+  );
+  const emailDocs = mapEmailAttachmentsToCaseDocuments(emailFiles).filter((d) => {
+    const p = d.storagePath?.trim();
+    return !p || !knownPaths.has(p);
+  });
+
+  return [...caseDocs, ...subEffortDocs, ...emailDocs].sort(
     (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
   );
 }
@@ -703,6 +797,9 @@ export async function deleteCaseCategoryDocument(params: {
   const path = normalizeStorageKey(params.storagePath);
   if (!lead) throw new Error('Missing lead number');
   if (!path) throw new Error('Missing storage path for this document');
+  if (isLeadEmailAttachmentId(params.documentId)) {
+    throw new Error('Email attachments stay with the email and cannot be deleted here.');
+  }
 
   const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
   if (rmErr) throw rmErr;

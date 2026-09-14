@@ -247,88 +247,128 @@ STABLE
 SECURITY INVOKER
 SET search_path = public
 AS $$
-  WITH filtered_messages AS (
-    SELECT wm.*
-    FROM public.whatsapp_messages wm
-    WHERE public.whatsapp_message_visible_to_employee(wm, p_employee_id, p_employee_name)
+  WITH params AS (
+    SELECT (
+      p_employee_id IS NULL
+      AND (p_employee_name IS NULL OR btrim(p_employee_name) = '')
+    ) AS skip_vis
+  ),
+  visible_new_lead_ids AS (
+    SELECT l.id
+    FROM public.leads l
+    CROSS JOIN params p
+    WHERE NOT p.skip_vis
+      AND public.whatsapp_new_lead_visible_to_employee(l, p_employee_id, p_employee_name)
+  ),
+  visible_legacy_lead_ids AS (
+    SELECT leg.id
+    FROM public.leads_lead leg
+    CROSS JOIN params p
+    WHERE NOT p.skip_vis
+      AND public.whatsapp_legacy_lead_visible_to_employee(leg, p_employee_id, p_employee_name)
+  ),
+  visible_contact_ids AS (
+    SELECT DISTINCT llc.contact_id
+    FROM public.lead_leadcontact llc
+    CROSS JOIN params p
+    LEFT JOIN public.leads nl ON nl.id = llc.newlead_id
+    LEFT JOIN public.leads_lead leg ON leg.id = llc.lead_id
+    WHERE NOT p.skip_vis
+      AND llc.contact_id IS NOT NULL
+      AND (
+        (nl.id IS NOT NULL AND public.whatsapp_new_lead_visible_to_employee(nl, p_employee_id, p_employee_name))
+        OR (leg.id IS NOT NULL AND public.whatsapp_legacy_lead_visible_to_employee(leg, p_employee_id, p_employee_name))
+      )
   ),
   lead_latest AS (
-    SELECT DISTINCT ON (fm.lead_id)
+    SELECT DISTINCT ON (wm.lead_id)
       'lead'::text AS entity_type,
-      fm.lead_id::text AS entity_id,
+      wm.lead_id::text AS entity_id,
       NULL::bigint AS legacy_id,
-      fm.sent_at AS last_sent_at,
-      fm.direction AS last_message_direction,
+      wm.sent_at AS last_sent_at,
+      wm.direction AS last_message_direction,
       public.whatsapp_message_preview_text(
-        fm.message, fm.message_type, fm.caption, fm.voice_note, fm.media_filename
+        wm.message, wm.message_type, wm.caption, wm.voice_note, wm.media_filename
       ) AS last_message_preview
-    FROM filtered_messages fm
-    WHERE fm.lead_id IS NOT NULL
-      AND fm.contact_id IS NULL
-    ORDER BY fm.lead_id, fm.sent_at DESC
+    FROM public.whatsapp_messages wm
+    CROSS JOIN params p
+    WHERE wm.lead_id IS NOT NULL
+      AND wm.contact_id IS NULL
+      AND (p.skip_vis OR wm.lead_id IN (SELECT id FROM visible_new_lead_ids))
+    ORDER BY wm.lead_id, wm.sent_at DESC
   ),
   lead_unread AS (
     SELECT
-      fm.lead_id,
-      COUNT(*) FILTER (
-        WHERE fm.direction = 'in' AND COALESCE(fm.is_read, false) = false
-      )::bigint AS unread_count
-    FROM filtered_messages fm
-    WHERE fm.lead_id IS NOT NULL
-      AND fm.contact_id IS NULL
-    GROUP BY fm.lead_id
+      wm.lead_id,
+      COUNT(*)::bigint AS unread_count
+    FROM public.whatsapp_messages wm
+    CROSS JOIN params p
+    WHERE wm.lead_id IS NOT NULL
+      AND wm.contact_id IS NULL
+      AND wm.direction = 'in'
+      AND COALESCE(wm.is_read, false) = false
+      AND (p.skip_vis OR wm.lead_id IN (SELECT id FROM visible_new_lead_ids))
+    GROUP BY wm.lead_id
   ),
   contact_latest AS (
-    SELECT DISTINCT ON (fm.contact_id)
+    SELECT DISTINCT ON (wm.contact_id)
       'contact'::text AS entity_type,
-      fm.contact_id::text AS entity_id,
-      fm.legacy_id,
-      fm.sent_at AS last_sent_at,
-      fm.direction AS last_message_direction,
+      wm.contact_id::text AS entity_id,
+      wm.legacy_id,
+      wm.sent_at AS last_sent_at,
+      wm.direction AS last_message_direction,
       public.whatsapp_message_preview_text(
-        fm.message, fm.message_type, fm.caption, fm.voice_note, fm.media_filename
+        wm.message, wm.message_type, wm.caption, wm.voice_note, wm.media_filename
       ) AS last_message_preview
-    FROM filtered_messages fm
-    WHERE fm.contact_id IS NOT NULL
-    ORDER BY fm.contact_id, fm.sent_at DESC
+    FROM public.whatsapp_messages wm
+    CROSS JOIN params p
+    WHERE wm.contact_id IS NOT NULL
+      AND (p.skip_vis OR wm.contact_id IN (SELECT contact_id FROM visible_contact_ids))
+    ORDER BY wm.contact_id, wm.sent_at DESC
   ),
   contact_unread AS (
     SELECT
-      fm.contact_id,
-      COUNT(*) FILTER (
-        WHERE fm.direction = 'in' AND COALESCE(fm.is_read, false) = false
-      )::bigint AS unread_count
-    FROM filtered_messages fm
-    WHERE fm.contact_id IS NOT NULL
-    GROUP BY fm.contact_id
+      wm.contact_id,
+      COUNT(*)::bigint AS unread_count
+    FROM public.whatsapp_messages wm
+    CROSS JOIN params p
+    WHERE wm.contact_id IS NOT NULL
+      AND wm.direction = 'in'
+      AND COALESCE(wm.is_read, false) = false
+      AND (p.skip_vis OR wm.contact_id IN (SELECT contact_id FROM visible_contact_ids))
+    GROUP BY wm.contact_id
   ),
   legacy_latest AS (
-    SELECT DISTINCT ON (fm.legacy_id)
+    SELECT DISTINCT ON (wm.legacy_id)
       'legacy'::text AS entity_type,
-      fm.legacy_id::text AS entity_id,
-      fm.legacy_id,
-      fm.sent_at AS last_sent_at,
-      fm.direction AS last_message_direction,
+      wm.legacy_id::text AS entity_id,
+      wm.legacy_id,
+      wm.sent_at AS last_sent_at,
+      wm.direction AS last_message_direction,
       public.whatsapp_message_preview_text(
-        fm.message, fm.message_type, fm.caption, fm.voice_note, fm.media_filename
+        wm.message, wm.message_type, wm.caption, wm.voice_note, wm.media_filename
       ) AS last_message_preview
-    FROM filtered_messages fm
-    WHERE fm.legacy_id IS NOT NULL
-      AND fm.lead_id IS NULL
-      AND fm.contact_id IS NULL
-    ORDER BY fm.legacy_id, fm.sent_at DESC
+    FROM public.whatsapp_messages wm
+    CROSS JOIN params p
+    WHERE wm.legacy_id IS NOT NULL
+      AND wm.lead_id IS NULL
+      AND wm.contact_id IS NULL
+      AND (p.skip_vis OR wm.legacy_id IN (SELECT id FROM visible_legacy_lead_ids))
+    ORDER BY wm.legacy_id, wm.sent_at DESC
   ),
   legacy_unread AS (
     SELECT
-      fm.legacy_id,
-      COUNT(*) FILTER (
-        WHERE fm.direction = 'in' AND COALESCE(fm.is_read, false) = false
-      )::bigint AS unread_count
-    FROM filtered_messages fm
-    WHERE fm.legacy_id IS NOT NULL
-      AND fm.lead_id IS NULL
-      AND fm.contact_id IS NULL
-    GROUP BY fm.legacy_id
+      wm.legacy_id,
+      COUNT(*)::bigint AS unread_count
+    FROM public.whatsapp_messages wm
+    CROSS JOIN params p
+    WHERE wm.legacy_id IS NOT NULL
+      AND wm.lead_id IS NULL
+      AND wm.contact_id IS NULL
+      AND wm.direction = 'in'
+      AND COALESCE(wm.is_read, false) = false
+      AND (p.skip_vis OR wm.legacy_id IN (SELECT id FROM visible_legacy_lead_ids))
+    GROUP BY wm.legacy_id
   ),
   combined AS (
     SELECT

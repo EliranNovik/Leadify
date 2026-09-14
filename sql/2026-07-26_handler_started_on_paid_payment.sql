@@ -27,10 +27,13 @@ BEGIN
   END IF;
 
   IF p_is_legacy THEN
+    -- finances_paymentplanrow.lead_id is TEXT. Comparing it to BIGINT raises
+    -- "operator does not exist: text = bigint", which this function swallowed
+    -- and returned FALSE — so legacy 105→110 never fired.
     SELECT EXISTS (
       SELECT 1
       FROM public.finances_paymentplanrow fpr
-      WHERE fpr.lead_id = p_lead_id::BIGINT
+      WHERE btrim(fpr.lead_id::text) = btrim(p_lead_id)
         AND fpr.cancel_date IS NULL
         AND fpr.actual_date IS NOT NULL
       LIMIT 1

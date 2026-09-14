@@ -38,3 +38,16 @@ export function whatsAppMessageLinkFontWeight(style: WhatsAppMessageLinkStyle): 
 
 /** WhatsApp *bold* markers — softer than font-black (900). */
 export const WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT = 600;
+
+/** Composer: tools + textarea + send sit inside one input field. */
+export const WHATSAPP_COMPOSER_FIELD_CLASS =
+  'flex items-end w-full min-w-0 rounded-2xl border border-white/40 bg-white/90 shadow-[0_2px_8px_rgba(0,0,0,0.08)] backdrop-blur-md px-1 py-1 gap-1';
+
+export const WHATSAPP_COMPOSER_TEXTAREA_CLASS =
+  'textarea flex-1 min-w-0 resize-none border-0 bg-transparent shadow-none focus:outline-none focus:border-0 focus:shadow-none px-1 py-2 min-h-0';
+
+export const WHATSAPP_COMPOSER_TOOLS_BTN_CLASS =
+  'btn btn-circle border border-gray-200 bg-white text-gray-700 hover:bg-white hover:border-gray-300 shadow-sm flex-shrink-0 disabled:opacity-50';
+
+export const WHATSAPP_COMPOSER_SEND_BTN_CLASS =
+  'btn btn-circle text-white shadow-md hover:shadow-lg transition-shadow disabled:opacity-50 flex-shrink-0';

@@ -2,10 +2,9 @@ import { searchLeads, type CombinedLead } from './legacyLeadsApi';
 import {
   currentLeadAsToolArgs,
   getRmqAiCurrentLead,
-  isThisClientQuery,
-  isOpenClientRoleQuestion,
+  masterLeadToken,
   normalizeLeadNumberToken,
-  queryMatchesOpenLead,
+  queryNamesDifferentLead,
 } from './rmqAiChatContext';
 
 export type ResolvedLead = {
@@ -94,6 +93,19 @@ function isExactTokenMatch(row: CombinedLead, query: string): boolean {
   );
 }
 
+function sameLeadFamily(row: CombinedLead, openNumber?: string | null): boolean {
+  const openMaster = masterLeadToken(openNumber);
+  const rowMaster = masterLeadToken(row.lead_number || row.manual_id);
+  return Boolean(openMaster && rowMaster && openMaster === rowMaster);
+}
+
+function resolvedFromStickyOpen(isLegacyHint?: boolean): ResolvedLead | null {
+  const open = getRmqAiCurrentLead();
+  if (!open?.id && !open?.lead_number) return null;
+  const id = open.id != null && String(open.id).trim() ? String(open.id) : String(open.lead_number);
+  return fromOpenLead(id, isLegacyHint ?? open.lead_type === 'legacy');
+}
+
 function fromOpenLead(id: string, isLegacyHint?: boolean): ResolvedLead {
   const open = getRmqAiCurrentLead();
   const rawId = id.replace(/^legacy_/i, '');
@@ -127,21 +139,32 @@ export function formatLeadResolutionForModel(result: LeadResolutionResult): stri
 
 export async function resolveCrmLead(args: LeadResolveArgs): Promise<LeadResolutionResult> {
   const fallback = currentLeadAsToolArgs();
+  const open = getRmqAiCurrentLead();
+  const openNumber = String(open?.lead_number || fallback.query || '').trim();
   const rawQuery = String(args.query || '').trim();
-  const useOpen =
-    !rawQuery || isThisClientQuery(rawQuery) || queryMatchesOpenLead(rawQuery, fallback) || isOpenClientRoleQuestion(rawQuery, fallback);
+  const namedOther = queryNamesDifferentLead(rawQuery, openNumber);
+  const useOpen = Boolean(openNumber || fallback.lead_id) && !namedOther;
+
   const explicitId = String(args.lead_id || (useOpen ? fallback.lead_id : '') || '').trim();
 
-  if (explicitId && useOpen) {
-    const result: LeadResolutionResult = {
-      status: 'resolved',
-      lead: fromOpenLead(explicitId, args.is_legacy ?? fallback.is_legacy),
-    };
-    rememberLeadResolution(result);
-    return result;
+  if (useOpen && !namedOther) {
+    if (explicitId) {
+      const result: LeadResolutionResult = {
+        status: 'resolved',
+        lead: fromOpenLead(explicitId, args.is_legacy ?? fallback.is_legacy),
+      };
+      rememberLeadResolution(result);
+      return result;
+    }
+    const sticky = resolvedFromStickyOpen(args.is_legacy ?? fallback.is_legacy);
+    if (sticky) {
+      const result: LeadResolutionResult = { status: 'resolved', lead: sticky };
+      rememberLeadResolution(result);
+      return result;
+    }
   }
 
-  const query = useOpen ? String(fallback.query || getRmqAiCurrentLead()?.lead_number || '').trim() : rawQuery;
+  const query = useOpen ? String(fallback.query || open?.lead_number || '').trim() : rawQuery;
   if (!query) {
     const result: LeadResolutionResult = { status: 'not_found' };
     rememberLeadResolution(result);
@@ -150,17 +173,34 @@ export async function resolveCrmLead(args: LeadResolveArgs): Promise<LeadResolut
 
   const matches = await searchLeads(query, { limit: 8, timeoutMs: 4000 });
   if (!matches.length) {
-    if (useOpen && fallback.lead_id) {
-      const result: LeadResolutionResult = {
-        status: 'resolved',
-        lead: fromOpenLead(String(fallback.lead_id), fallback.is_legacy),
-      };
+    const sticky = useOpen ? resolvedFromStickyOpen(fallback.is_legacy) : null;
+    if (sticky) {
+      const result: LeadResolutionResult = { status: 'resolved', lead: sticky };
       rememberLeadResolution(result);
       return result;
     }
     const result: LeadResolutionResult = { status: 'not_found', query };
     rememberLeadResolution(result);
     return result;
+  }
+
+  if (openNumber && !namedOther) {
+    const openExact = matches.find(
+      (row) => tokenOf(row.lead_number) === tokenOf(openNumber) || tokenOf(row.manual_id) === tokenOf(openNumber),
+    );
+    if (openExact) {
+      const result: LeadResolutionResult = { status: 'resolved', lead: toResolved(openExact) };
+      rememberLeadResolution(result);
+      return result;
+    }
+    if (matches.some((row) => sameLeadFamily(row, openNumber))) {
+      const sticky = resolvedFromStickyOpen(fallback.is_legacy);
+      if (sticky) {
+        const result: LeadResolutionResult = { status: 'resolved', lead: sticky };
+        rememberLeadResolution(result);
+        return result;
+      }
+    }
   }
 
   const exact = matches.filter((row) => isExactTokenMatch(row, query));

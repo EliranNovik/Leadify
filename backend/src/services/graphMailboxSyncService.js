@@ -3,11 +3,11 @@ const mailboxStateService = require('./mailboxStateService');
 const graphAuthService = require('./graphAuthService');
 const supabase = require('../config/supabase');
 const pushNotificationService = require('./pushNotificationService');
+const emailAttachmentStorage = require('./emailAttachmentStorageService');
 
 const EMAIL_HEADERS_TABLE = process.env.EMAIL_HEADERS_TABLE || 'emails';
 const EMAIL_CONTACTS_TABLE = process.env.EMAIL_CONTACTS_TABLE || 'email_contacts';
 const EMAIL_BODIES_TABLE = process.env.EMAIL_BODIES_TABLE || 'email_bodies';
-const EMAIL_ATTACHMENTS_TABLE = process.env.EMAIL_ATTACHMENTS_TABLE || 'email_attachments';
 const ALLOWLIST_TABLE = process.env.CLIENT_ALLOWLIST_TABLE || 'client_email_allowlist';
 const TRACKED_THREADS_TABLE = process.env.TRACKED_THREADS_TABLE || 'tracked_threads';
 const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
@@ -550,9 +550,17 @@ async function findEmailRowByMessageId(messageId) {
   return data?.[0] || null;
 }
 
+function mailboxEmailDbRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  const dbRow = { ...row };
+  delete dbRow._hasAttachments;
+  delete dbRow._backfillAttachments;
+  return dbRow;
+}
+
 async function insertMailboxEmailRow(row) {
   // emails.user_id_fkey does not accept CRM users.id — inserting it logs 23503 on every row.
-  const rpcRow = { ...row, user_id: null };
+  const rpcRow = { ...mailboxEmailDbRow(row), user_id: null };
   if (mailboxWriteRpcsAvailable) {
     let error = null;
     const result = await supabase.rpc('insert_mailbox_email', { p_row: rpcRow });
@@ -580,9 +588,9 @@ async function insertMailboxEmailRow(row) {
     }
   }
 
-  const attempts = [{ ...row, user_id: null }];
+  const attempts = [{ ...mailboxEmailDbRow(row), user_id: null }];
   if (row.client_id || row.legacy_id) {
-    attempts.push({ ...row, client_id: null, legacy_id: null, user_id: null });
+    attempts.push({ ...mailboxEmailDbRow(row), client_id: null, legacy_id: null, user_id: null });
   }
   let lastError = null;
   for (const attempt of attempts) {
@@ -762,6 +770,37 @@ const isGraphMessageNotFound = (err) => {
   return msg.includes('404') || msg.includes('ErrorItemNotFound') || msg.includes('itemNotFound');
 };
 
+const isInvalidMailboxItemId = (err) => {
+  const msg = err?.message || String(err);
+  return msg.includes('ErrorInvalidMailboxItemId');
+};
+
+const isRetryableMailboxGraphError = (err) =>
+  isInvalidMailboxItemId(err) ||
+  isGraphMessageNotFound(err) ||
+  err?.code === 'MAILBOX_NOT_CONNECTED' ||
+  err?.code === 'EXPIRED_REFRESH_TOKEN';
+
+const collectHeaderAddresses = (header) => {
+  const addresses = [];
+  const add = (value) => {
+    const n = normalise(value);
+    if (n && !addresses.includes(n)) addresses.push(n);
+  };
+  const recipients = String(header?.recipient_list || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (header?.direction === 'outgoing') {
+    add(header.sender_email);
+    recipients.forEach(add);
+  } else {
+    recipients.forEach(add);
+    add(header.sender_email);
+  }
+  return addresses;
+};
+
 const fetchMessageAttachmentsMetadata = async (accessToken, mailboxAddress, messageId) => {
   const encodedUser = encodeURIComponent(mailboxAddress);
   const encodedMsg = encodeURIComponent(messageId);
@@ -775,6 +814,21 @@ const fetchMessageAttachmentsMetadata = async (accessToken, mailboxAddress, mess
       const n = normalizeAttachmentForStorage(raw);
       if (n) collected.push(n);
     }
+    url = json['@odata.nextLink'] || null;
+  }
+  return collected;
+};
+
+const fetchMessageAttachmentsWithContent = async (accessToken, mailboxAddress, messageId) => {
+  const encodedUser = encodeURIComponent(mailboxAddress);
+  const encodedMsg = encodeURIComponent(messageId);
+  let url = `${GRAPH_BASE_URL}/users/${encodedUser}/messages/${encodedMsg}/attachments?$top=20`;
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  const collected = [];
+  while (url && collected.length < 80) {
+    const json = await fetchGraphJsonWithRetry(url, { headers });
+    const page = Array.isArray(json.value) ? json.value : [];
+    collected.push(...page.filter((att) => att && att.id));
     url = json['@odata.nextLink'] || null;
   }
   return collected;
@@ -868,6 +922,10 @@ class GraphMailboxSyncService {
     const skipFullBodies = ['scheduled', 'interval', 'initial'].includes(String(trigger));
     const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages, accessToken, {
       skipFullBodies,
+    });
+
+    this.backfillOwnedMailboxAttachments(mailboxAddress, messages, accessToken).catch((err) => {
+      console.warn('⚠️  Historical attachment backfill failed:', err.message || err);
     });
 
     const nextFolderState = {
@@ -1506,6 +1564,7 @@ class GraphMailboxSyncService {
         legacy_id: null,
         contact_id: null,
         body_cached: false, // Flag to indicate full body needs to be fetched
+        _hasAttachments: Boolean(msg.hasAttachments),
       };
     });
 
@@ -1618,6 +1677,9 @@ class GraphMailboxSyncService {
       if (result.id && !result.error) {
         if (result.duplicate) {
           duplicatesSkipped += 1;
+          if (item.row._hasAttachments) {
+            insertedForBodies.push({ ...item.row, id: result.id, _backfillAttachments: true });
+          }
         } else {
           insertedCount += 1;
           insertedForBodies.push({ ...item.row, id: result.id });
@@ -1666,14 +1728,16 @@ class GraphMailboxSyncService {
       console.log(`ℹ️  No new email leads to notify (${insertedCount} new emails processed)`);
     }
 
-    if (accessToken && insertedForBodies.length && !options.skipFullBodies) {
-      this.fetchFullBodiesForMessages(userId, mailboxAddress, insertedForBodies, accessToken).catch((err) => {
-        console.error('⚠️  Error fetching full email bodies:', err.message || err);
-      });
-    } else if (options.skipFullBodies && insertedForBodies.length) {
-      console.log(
-        `⏭️ Skipping eager full-body fetch for ${insertedForBodies.length} new email(s) on scheduled sync (loaded when opened)`
-      );
+    if (accessToken && insertedForBodies.length) {
+      if (!options.skipFullBodies) {
+        this.fetchFullBodiesForMessages(userId, mailboxAddress, insertedForBodies, accessToken).catch((err) => {
+          console.error('⚠️  Error fetching full email bodies:', err.message || err);
+        });
+      } else {
+        this.persistAttachmentsForMessages(mailboxAddress, insertedForBodies, accessToken).catch((err) => {
+          console.error('⚠️  Error persisting email attachments:', err.message || err);
+        });
+      }
     }
 
     console.log(`📥 Stored ${insertedCount} new emails (processed ${messages.length}, ${duplicatesSkipped} already saved, ${filteredOut} filtered out)`);
@@ -1684,6 +1748,109 @@ class GraphMailboxSyncService {
       skipped: filteredOut + duplicatesSkipped + errorCount,
       trackedCount: 0,
     };
+  }
+
+  async persistGraphAttachmentsForEmail({ emailId, messageId, accessToken, mailboxAddress }) {
+    if (!emailId || !messageId || !accessToken || !mailboxAddress) return [];
+
+    const stored = await emailAttachmentStorage.listStoredForEmail(emailId);
+    const storedIds = new Set(stored.map((att) => String(att.id)));
+
+    let graphAttachments = [];
+    try {
+      graphAttachments = await fetchMessageAttachmentsWithContent(accessToken, mailboxAddress, messageId);
+    } catch (error) {
+      if (!isGraphMessageNotFound(error) && !isInvalidMailboxItemId(error)) {
+        console.warn(
+          `⚠️  Error fetching attachment bytes for ${String(messageId).substring(0, 24)}...:`,
+          error.message || error
+        );
+      }
+      return stored;
+    }
+
+    const metas = [];
+    for (const att of graphAttachments) {
+      const already = storedIds.has(String(att.id));
+      if (already) {
+        metas.push(stored.find((row) => String(row.id) === String(att.id)));
+        continue;
+      }
+
+      const bytes = att.contentBytes || att.content_bytes;
+      if (!bytes) {
+        metas.push(emailAttachmentStorage.toMeta(att));
+        continue;
+      }
+
+      try {
+        const buffer = Buffer.from(bytes, 'base64');
+        const meta = await emailAttachmentStorage.saveAttachmentBuffer({
+          emailId,
+          messageId,
+          attachment: att,
+          buffer,
+        });
+        metas.push(meta);
+      } catch (error) {
+        console.warn(`⚠️  Failed to store attachment ${att.name || att.id}:`, error.message || error);
+        metas.push(emailAttachmentStorage.toMeta(att));
+      }
+    }
+
+    const merged = emailAttachmentStorage.mergeAttachmentLists(metas.filter(Boolean), stored);
+    await patchMailboxEmailBody(emailId, { attachments: merged.length ? merged : null });
+    return merged;
+  }
+
+  async persistAttachmentsForMessages(mailboxAddress, emailRows, accessToken) {
+    if (!emailRows?.length || !accessToken || !mailboxAddress) return;
+
+    const graphDelayMs = Math.max(
+      200,
+      parseInt(process.env.GRAPH_EMAIL_BODY_GRAPH_DELAY_MS || '500', 10) || 500
+    );
+
+    const unique = [];
+    const seen = new Set();
+    for (const row of emailRows) {
+      if (!row?.id || !row.message_id || seen.has(row.message_id)) continue;
+      if (row._hasAttachments === false && !row._backfillAttachments) continue;
+      seen.add(row.message_id);
+      unique.push(row);
+    }
+
+    const toPersist = [];
+    for (const row of unique) {
+      if (row._backfillAttachments && (await emailAttachmentStorage.emailHasStoredAttachments(row.id))) {
+        continue;
+      }
+      toPersist.push(row);
+    }
+
+    if (!toPersist.length) return;
+
+    console.log(`📎 Persisting attachments for ${toPersist.length} email(s) into Storage`);
+
+    for (let i = 0; i < toPersist.length; i++) {
+      const row = toPersist[i];
+      try {
+        await this.persistGraphAttachmentsForEmail({
+          emailId: row.id,
+          messageId: row.message_id,
+          accessToken,
+          mailboxAddress,
+        });
+      } catch (error) {
+        console.warn(
+          `⚠️  Attachment persist failed for ${String(row.message_id).substring(0, 24)}...:`,
+          error.message || error
+        );
+      }
+      if (i + 1 < toPersist.length) {
+        await sleep(graphDelayMs);
+      }
+    }
   }
 
   // Fetch full email bodies for messages that only have truncated previews
@@ -1730,10 +1897,15 @@ class GraphMailboxSyncService {
       let attachmentsMeta = [];
       let attachmentsFetched = false;
       try {
-        attachmentsMeta = await fetchMessageAttachmentsMetadata(accessToken, mailboxAddress, messageId);
+        attachmentsMeta = await this.persistGraphAttachmentsForEmail({
+          emailId: idByMessageId.get(messageId),
+          messageId,
+          accessToken,
+          mailboxAddress,
+        });
         attachmentsFetched = true;
       } catch (attErr) {
-        if (!isGraphMessageNotFound(attErr)) {
+        if (!isGraphMessageNotFound(attErr) && !isInvalidMailboxItemId(attErr)) {
           console.warn(
             `⚠️  Error fetching attachments for ${messageId?.substring(0, 40) || 'unknown'}...:`,
             attErr.message || attErr
@@ -1782,9 +1954,90 @@ class GraphMailboxSyncService {
     console.log(`✅ Finished full-body + attachments pass (${uniqueMessageIds.length} unique message(s))`);
   }
 
+  async persistExistingEmailAttachments(userId, emailIds = []) {
+    const ids = [...new Set((emailIds || []).map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 20);
+    const results = [];
+
+    for (const emailId of ids) {
+      try {
+        const header = await this.getEmailById(userId, emailId);
+        if (!header?.id || !header.message_id || String(header.message_id).startsWith('offer_')) {
+          results.push({ emailId, attachments: [] });
+          continue;
+        }
+
+        const stored = await emailAttachmentStorage.listStoredForEmail(header.id);
+        if (stored.some((att) => att.stored)) {
+          const merged = emailAttachmentStorage.mergeAttachmentLists(
+            this.normalizeAttachmentsArray(header.attachments),
+            stored
+          );
+          results.push({ emailId: header.id, attachments: merged });
+          continue;
+        }
+
+        const attachments = await this.withMailboxForEmail(header, userId, ({ accessToken, mailboxAddress }) =>
+          this.persistGraphAttachmentsForEmail({
+            emailId: header.id,
+            messageId: header.message_id,
+            accessToken,
+            mailboxAddress,
+          })
+        );
+        results.push({ emailId: header.id, attachments: attachments || [] });
+      } catch (error) {
+        results.push({ emailId, attachments: [], error: error.message || 'failed' });
+      }
+    }
+
+    return results;
+  }
+
+  async backfillOwnedMailboxAttachments(mailboxAddress, messages, accessToken) {
+    if (!mailboxAddress || !accessToken) return;
+
+    const graphDelayMs = Math.max(
+      200,
+      parseInt(process.env.GRAPH_EMAIL_BODY_GRAPH_DELAY_MS || '500', 10) || 500
+    );
+    const candidates = (messages || []).filter((msg) => msg?.id && msg.hasAttachments).slice(0, 20);
+    if (!candidates.length) return;
+
+    let persisted = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      const messageId = candidates[i].id;
+      try {
+        const existing = await findEmailRowByMessageId(messageId);
+        if (!existing?.id) continue;
+        if (await emailAttachmentStorage.emailHasStoredAttachments(existing.id)) continue;
+        await this.persistGraphAttachmentsForEmail({
+          emailId: existing.id,
+          messageId,
+          accessToken,
+          mailboxAddress,
+        });
+        persisted += 1;
+      } catch (error) {
+        if (!isGraphMessageNotFound(error) && !isInvalidMailboxItemId(error)) {
+          console.warn(
+            `⚠️  Snapshot attachment backfill failed for ${String(messageId).substring(0, 24)}...:`,
+            error.message || error
+          );
+        }
+      }
+      if (i + 1 < candidates.length) {
+        await sleep(graphDelayMs);
+      }
+    }
+
+    if (persisted) {
+      console.log(`📎 Backfilled ${persisted} already-received email(s) into Storage for ${mailboxAddress}`);
+    }
+  }
+
   /**
-   * Older syncs stored `attachments: []` when hasAttachments was true, or never fetched metadata.
-   * Refreshes attachment JSON for recent cached rows that still have null/empty attachments.
+   * Older syncs stored attachment metadata only. Copy those files into Storage
+   * while this mailbox token can still read them.
    */
   async backfillAttachmentMetadata(userId, mailboxAddress, accessToken, { limit = 30 } = {}) {
     if (!userId || !mailboxAddress || !accessToken) return;
@@ -1794,13 +2047,13 @@ class GraphMailboxSyncService {
       parseInt(process.env.GRAPH_EMAIL_BODY_GRAPH_DELAY_MS || '500', 10) || 500
     );
 
-    const sinceIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-    const take = Math.min(80, Math.max(5, limit * 2));
+    const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+    const take = Math.min(40, Math.max(5, limit));
     const { data: rows, error } = await supabase
       .from(EMAIL_HEADERS_TABLE)
       .select('id, message_id, attachments')
-      .eq('user_id', userId)
-      .eq('body_cached', true)
+      .eq('sender_email', String(mailboxAddress).toLowerCase())
+      .not('attachments', 'is', null)
       .gte('sent_at', sinceIso)
       .order('sent_at', { ascending: false })
       .limit(take);
@@ -1810,45 +2063,32 @@ class GraphMailboxSyncService {
       return;
     }
 
-    const needsMeta = rows.filter((r) => {
-      if (!r.message_id) return false;
-      const a = r.attachments;
-      if (a == null) return true;
-      if (Array.isArray(a) && a.length === 0) return true;
-      return false;
-    });
-    const uniqueIds = [...new Set(needsMeta.map((r) => r.message_id).filter(Boolean))].slice(0, limit);
+    const needsPersist = [];
+    for (const row of rows) {
+      if (!row?.id || !row.message_id) continue;
+      if (await emailAttachmentStorage.emailHasStoredAttachments(row.id)) continue;
+      needsPersist.push(row);
+    }
 
-    if (!uniqueIds.length) return;
+    if (!needsPersist.length) return;
 
-    console.log(`📎 Backfilling attachment metadata for up to ${uniqueIds.length} message(s)`);
+    console.log(`📎 Persisting already-received attachments for ${needsPersist.length} outgoing email(s)`);
 
-    const idByMessageId = new Map();
-    needsMeta.forEach((row) => {
-      if (row?.message_id && row?.id && !idByMessageId.has(row.message_id)) {
-        idByMessageId.set(row.message_id, row.id);
-      }
-    });
-
-    for (let i = 0; i < uniqueIds.length; i++) {
-      const messageId = uniqueIds[i];
+    for (let i = 0; i < needsPersist.length; i++) {
+      const row = needsPersist[i];
       try {
-        const attachmentsMeta = await fetchMessageAttachmentsMetadata(accessToken, mailboxAddress, messageId);
-        const payload = attachmentsMeta.length ? attachmentsMeta : null;
-        const dbId = idByMessageId.get(messageId);
-        if (dbId) {
-          await patchMailboxEmailBody(dbId, { attachments: payload });
-        } else {
-          console.warn(
-            `⚠️  Skipping attachment backfill for ${messageId?.substring(0, 24)}... (no row id; avoiding message_id scan)`
-          );
-        }
+        await this.persistGraphAttachmentsForEmail({
+          emailId: row.id,
+          messageId: row.message_id,
+          accessToken,
+          mailboxAddress,
+        });
       } catch (err) {
-        if (!isGraphMessageNotFound(err)) {
-          console.warn(`⚠️  Attachment backfill Graph error for ${messageId?.substring(0, 24)}...:`, err.message || err);
+        if (!isGraphMessageNotFound(err) && !isInvalidMailboxItemId(err)) {
+          console.warn(`⚠️  Attachment backfill Graph error for ${row.message_id?.substring(0, 24)}...:`, err.message || err);
         }
       }
-      if (i + 1 < uniqueIds.length) {
+      if (i + 1 < needsPersist.length) {
         await sleep(graphDelayMs);
       }
     }
@@ -1913,6 +2153,109 @@ class GraphMailboxSyncService {
     return data || [];
   }
 
+  async resolveMailboxCandidates(header, fallbackUserId) {
+    const candidates = [];
+    const seen = new Set();
+    const addToken = (token) => {
+      if (!token?.user_id || !token.mailbox_address) return;
+      const key = String(token.user_id);
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push(token);
+    };
+
+    const participantTokens = await mailboxTokenService.getTokensForMailboxAddresses(
+      collectHeaderAddresses(header)
+    );
+    participantTokens.forEach(addToken);
+
+    if (header?.user_id) {
+      try {
+        addToken(await mailboxTokenService.getTokenByUserId(header.user_id));
+      } catch {
+        // Ignore unresolved stored owner
+      }
+    }
+
+    if (fallbackUserId) {
+      try {
+        addToken(await mailboxTokenService.getTokenByUserId(fallbackUserId));
+      } catch {
+        // Ignore viewer mailbox if it is not connected
+      }
+    }
+
+    return candidates;
+  }
+
+  async withMailboxForEmail(header, fallbackUserId, fn) {
+    const candidates = await this.resolveMailboxCandidates(header, fallbackUserId);
+    const seen = new Set(candidates.map((token) => String(token.user_id)));
+    const tryCandidates = async (tokens) => {
+      let lastError = null;
+      for (const token of tokens) {
+        try {
+          const { accessToken } = await graphAuthService.getAccessTokenForUser(token.user_id);
+          if (!accessToken) {
+            lastError = new Error('Unable to acquire Microsoft Graph access token');
+            continue;
+          }
+          return {
+            ok: true,
+            value: await fn({
+              accessToken,
+              mailboxAddress: token.mailbox_address,
+              userId: token.user_id,
+            }),
+          };
+        } catch (error) {
+          lastError = error;
+          if (isRetryableMailboxGraphError(error)) {
+            continue;
+          }
+          throw error;
+        }
+      }
+      return { ok: false, lastError };
+    };
+
+    const firstPass = await tryCandidates(candidates);
+    if (firstPass.ok) return firstPass.value;
+
+    if (firstPass.lastError && (isInvalidMailboxItemId(firstPass.lastError) || isGraphMessageNotFound(firstPass.lastError))) {
+      const extras = [];
+      try {
+        const allRows = await mailboxTokenService.getAllTokens();
+        for (const row of allRows) {
+          if (!row?.user_id || seen.has(String(row.user_id))) continue;
+          if (row.status === mailboxTokenService.STATUS_NEEDS_RECONNECT) continue;
+          try {
+            const token = await mailboxTokenService.getTokenByUserId(row.user_id);
+            if (token?.user_id && token.mailbox_address) {
+              seen.add(String(token.user_id));
+              extras.push(token);
+            }
+          } catch {
+            // Skip unreadable tokens
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️  Could not load extra mailbox tokens for Graph fallback:', error.message || error);
+      }
+
+      if (extras.length) {
+        const secondPass = await tryCandidates(extras);
+        if (secondPass.ok) return secondPass.value;
+        throw secondPass.lastError || firstPass.lastError;
+      }
+    }
+
+    if (!candidates.length && !firstPass.lastError) {
+      throw new Error('Mailbox is not connected for this email');
+    }
+    throw firstPass.lastError || new Error('Email does not belong to any connected mailbox');
+  }
+
   async getEmailById(userId, emailId) {
     if (!emailId) throw new Error('emailId is required');
 
@@ -1939,12 +2282,7 @@ class GraphMailboxSyncService {
       if (legacyError) throw new Error(legacyError.message || 'Failed to load legacy email');
 
       if (legacyData && legacyData.length) {
-        const legacyRecord = legacyData[0];
-        const updateQuery = isNumericId
-          ? supabase.from(EMAIL_HEADERS_TABLE).update({ user_id: userId }).eq('id', Number(idValue))
-          : supabase.from(EMAIL_HEADERS_TABLE).update({ user_id: userId }).eq('message_id', idValue);
-        await updateQuery;
-        record = { ...legacyRecord, user_id: userId };
+        record = legacyData[0];
       }
     }
 
@@ -1990,34 +2328,30 @@ class GraphMailboxSyncService {
       .maybeSingle();
 
     const fromDb = this.normalizeAttachmentsArray(row?.attachments ?? header.attachments);
-    if (fromDb.length > 0) return fromDb;
-
-    const emailOwnerId = header.user_id || userId;
-    const tokenRecord = await mailboxTokenService.getTokenByUserId(emailOwnerId);
-    if (!tokenRecord?.mailbox_address) return [];
-
-    let accessToken;
-    try {
-      ({ accessToken } = await graphAuthService.getAccessTokenForUser(emailOwnerId));
-    } catch {
-      return [];
+    const stored = await emailAttachmentStorage.listStoredForEmail(header.id);
+    const mergedExisting = emailAttachmentStorage.mergeAttachmentLists(fromDb, stored);
+    if (mergedExisting.some((att) => att.stored)) {
+      if (stored.length) {
+        await supabase.from(EMAIL_HEADERS_TABLE).update({ attachments: mergedExisting }).eq('id', header.id);
+      }
+      return mergedExisting;
     }
-    if (!accessToken) return [];
 
     try {
-      const list = await fetchMessageAttachmentsMetadata(
-        accessToken,
-        tokenRecord.mailbox_address,
-        header.message_id
+      const list = await this.withMailboxForEmail(header, userId, ({ accessToken, mailboxAddress }) =>
+        this.persistGraphAttachmentsForEmail({
+          emailId: header.id,
+          messageId: header.message_id,
+          accessToken,
+          mailboxAddress,
+        })
       );
-      const payload = list.length ? list : null;
-      await supabase.from(EMAIL_HEADERS_TABLE).update({ attachments: payload }).eq('id', header.id);
-      return list;
+      return list.length ? list : mergedExisting;
     } catch (e) {
-      if (!isGraphMessageNotFound(e)) {
+      if (!isGraphMessageNotFound(e) && !isInvalidMailboxItemId(e)) {
         console.warn(`⚠️  ensureAttachmentsOnHeader failed for ${header.message_id?.substring(0, 30)}...:`, e.message || e);
       }
-      return [];
+      return mergedExisting;
     }
   }
 
@@ -2068,49 +2402,49 @@ class GraphMailboxSyncService {
   }
 
   async fetchAndCacheBody(userId, header) {
-    // Use the email's owner user_id if available, otherwise fall back to the provided userId
-    // This ensures we fetch from the correct mailbox that owns the email
-    const emailOwnerId = header.user_id || userId;
-    const tokenRecord = await mailboxTokenService.getTokenByUserId(emailOwnerId);
-    if (!tokenRecord) {
-      throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
-    }
+    const { bodyHtml, attachmentsPayload, attachmentsOk } = await this.withMailboxForEmail(
+      header,
+      userId,
+      async ({ accessToken, mailboxAddress }) => {
+        const message = await fetchJson(
+          `${GRAPH_BASE_URL}/users/${encodeURIComponent(mailboxAddress)}/messages/${encodeURIComponent(header.message_id)}?$select=body`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        );
 
-    const { accessToken } = await graphAuthService.getAccessTokenForUser(emailOwnerId);
-    if (!accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
+        let attachmentsPayload = null;
+        let attachmentsOk = false;
+        try {
+          const list = await this.persistGraphAttachmentsForEmail({
+            emailId: header.id,
+            messageId: header.message_id,
+            accessToken,
+            mailboxAddress,
+          });
+          attachmentsOk = true;
+          attachmentsPayload = list.length ? list : null;
+        } catch (e) {
+          if (!isGraphMessageNotFound(e) && !isInvalidMailboxItemId(e)) {
+            console.warn(`⚠️  fetchAndCacheBody: attachments list failed for ${header.message_id}:`, e.message || e);
+          }
+        }
 
-    const message = await fetchJson(
-      `${GRAPH_BASE_URL}/users/${tokenRecord.mailbox_address}/messages/${header.message_id}?$select=body`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
+        return {
+          bodyHtml: message.body?.content || '',
+          attachmentsPayload,
+          attachmentsOk,
+        };
       }
     );
-
-    const bodyHtml = message.body?.content || '';
 
     await supabase.from(EMAIL_BODIES_TABLE).upsert({
       email_id: header.id,
       body_html: bodyHtml,
       updated_at: new Date().toISOString(),
     });
-
-    let attachmentsPayload = null;
-    let attachmentsOk = false;
-    try {
-      const list = await fetchMessageAttachmentsMetadata(
-        accessToken,
-        tokenRecord.mailbox_address,
-        header.message_id
-      );
-      attachmentsOk = true;
-      attachmentsPayload = list.length ? list : null;
-    } catch (e) {
-      if (!isGraphMessageNotFound(e)) {
-        console.warn(`⚠️  fetchAndCacheBody: attachments list failed for ${header.message_id}:`, e.message || e);
-      }
-    }
 
     const headerUpdate = { body_cached: true };
     if (attachmentsOk) {
@@ -2123,27 +2457,24 @@ class GraphMailboxSyncService {
   }
 
   async downloadAttachment(userId, emailId, attachmentId) {
+    const stored = await emailAttachmentStorage.downloadStoredAttachment(emailId, attachmentId);
+    if (stored) return stored;
+
     const header = await this.getEmailById(userId, emailId);
     if (!header) throw new Error('Email not found');
-    
-    // Use the email's owner user_id if available, otherwise fall back to the provided userId
-    // This ensures we fetch from the correct mailbox that owns the email
-    const emailOwnerId = header.user_id || userId;
-    const tokenRecord = await mailboxTokenService.getTokenByUserId(emailOwnerId);
-    if (!tokenRecord) {
-      throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
-    }
 
-    const { accessToken } = await graphAuthService.getAccessTokenForUser(emailOwnerId);
-    if (!accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
+    const storedAfterHeader = await emailAttachmentStorage.downloadStoredAttachment(header.id, attachmentId);
+    if (storedAfterHeader) return storedAfterHeader;
 
-    const attachment = await fetchJson(
-      `${GRAPH_BASE_URL}/users/${tokenRecord.mailbox_address}/messages/${header.message_id}/attachments/${attachmentId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+    const attachment = await this.withMailboxForEmail(header, userId, ({ accessToken, mailboxAddress }) =>
+      fetchJson(
+        `${GRAPH_BASE_URL}/users/${encodeURIComponent(mailboxAddress)}/messages/${encodeURIComponent(header.message_id)}/attachments/${encodeURIComponent(attachmentId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      )
     );
 
     if (!attachment?.contentBytes) {
@@ -2151,6 +2482,12 @@ class GraphMailboxSyncService {
     }
 
     const buffer = Buffer.from(attachment.contentBytes, 'base64');
+    await emailAttachmentStorage.saveAttachmentBuffer({
+      emailId: header.id,
+      messageId: header.message_id,
+      attachment,
+      buffer,
+    });
     return {
       buffer,
       fileName: attachment.name || 'attachment',

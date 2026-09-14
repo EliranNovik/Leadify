@@ -31,6 +31,11 @@ import { EmailSidepanelListMenu } from './EmailSidepanelListMenu';
 import type { EmailComment } from '../../lib/interactions/emailComments';
 import { fetchEmailCommentsByEmailIds } from '../../lib/interactions/emailComments';
 import { lookupEmployeePhotoFromMap } from '../../lib/employeePhotoUrl';
+import {
+  AI_AGENT_DISPLAY_NAME,
+  isAiAgentEmail,
+  mailboxPartyLabel,
+} from '../../lib/aiAgentMailbox';
 
 /** Stable palette — looks varied but does not flicker on re-render */
 const CLIENT_AVATAR_BACKGROUNDS = [
@@ -87,12 +92,14 @@ export function resolveOutgoingSenderLabel(
   },
   opts?: { currentUserFullName?: string | null; currentUserEmail?: string | null },
 ): string {
-  const display = String(message.sender_display_name || '').trim();
-  if (display) return display;
-  const senderName = String(message.sender_name || '').trim();
-  if (senderName) return senderName;
-
   const email = String(message.from || message.sender_email || '').trim();
+  if (isAiAgentEmail(email)) return AI_AGENT_DISPLAY_NAME;
+
+  const display = String(message.sender_display_name || '').trim();
+  if (display) return isAiAgentEmail(display) ? AI_AGENT_DISPLAY_NAME : display;
+  const senderName = String(message.sender_name || '').trim();
+  if (senderName) return isAiAgentEmail(senderName) ? AI_AGENT_DISPLAY_NAME : senderName;
+
   const myEmail = String(opts?.currentUserEmail || '').trim().toLowerCase();
   if (email && myEmail && email.toLowerCase() === myEmail) {
     const me = String(opts?.currentUserFullName || '').trim();
@@ -176,7 +183,9 @@ function collectConversationParticipants(
           currentUserFullName: opts.currentUserFullName,
           currentUserEmail: opts.currentUserEmail,
         })
-      : String(opts.contactName || opts.clientName || message.sender_name || email).trim();
+      : isAiAgentEmail(email)
+        ? AI_AGENT_DISPLAY_NAME
+        : String(opts.contactName || opts.clientName || message.sender_name || email).trim();
     if (!byKey.has(email)) {
       byKey.set(email, { key: email, name: name || email, email, isOutgoing });
     }
@@ -980,7 +989,7 @@ export function InteractionsEmailModal({
                                       href={`mailto:${message.from}`}
                                       className="truncate text-blue-600 underline underline-offset-2 hover:text-blue-800"
                                     >
-                                      {message.from}
+                                      {mailboxPartyLabel(message.from, message.from)}
                                     </a>
                                   </span>
                                 )}
@@ -1002,7 +1011,7 @@ export function InteractionsEmailModal({
                                               href={`mailto:${recipient}`}
                                               className="text-blue-600 underline underline-offset-2 hover:text-blue-800"
                                             >
-                                              {recipient}
+                                              {mailboxPartyLabel(recipient, recipient)}
                                             </a>
                                             {idx < arr.length - 1 && ', '}
                                           </span>

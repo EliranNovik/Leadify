@@ -37,6 +37,7 @@ import { ComposeAttachmentPreviews } from './signature/ComposeAttachmentPreviews
 import { ComposeAiEmptyPrompt, ComposeAiRedoButton, isUsableAiDraft, useComposeAiTypewriter } from './signature/ComposeAiEmptyPrompt';
 import { TeamAvatar } from './client-tabs/InteractionsEmailModal';
 import { lookupEmployeePhotoFromMap, resolveEmployeePhotoUrl } from '../lib/employeePhotoUrl';
+import { AI_AGENT_DISPLAY_NAME, applyAiAgentEmailNameAliases, applyAiAgentPhotoAliases, isAiAgentEmail } from '../lib/aiAgentMailbox';
 import {
   buildEmailFilterClauses,
   collectClientEmails,
@@ -454,7 +455,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
 
     if (employeesResult.error || usersResult.error) {
       console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
-      return emailToNameMap;
+      return applyAiAgentEmailNameAliases(emailToNameMap);
     }
 
     // Create employee_id to email mapping from users table
@@ -483,7 +484,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
     console.error('Error building employee email-to-name map:', error);
   }
 
-  return emailToNameMap;
+  return applyAiAgentEmailNameAliases(emailToNameMap);
 };
 
 interface EmailThreadModalProps {
@@ -1023,8 +1024,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           const mail = typeof user.email === 'string' ? user.email.trim().toLowerCase() : '';
           if (url && mail) photoMap.set(mail, url);
         });
+        applyAiAgentPhotoAliases(photoMap, employeesResult.data || [], photoByEmployeeId);
 
-        setEmployees(uniqueEmployees);
+        setEmployees(
+          uniqueEmployees.map((emp) =>
+            isAiAgentEmail(emp.email) ? { ...emp, name: AI_AGENT_DISPLAY_NAME } : emp,
+          ),
+        );
         setEmployeePhotoMap(photoMap);
       } catch (error) {
         console.error('Error fetching employees:', error);
@@ -4088,10 +4094,6 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       toast.error('Please sign in to download attachments.');
       return;
     }
-    if (!mailboxStatus.connected) {
-      toast.error('Mailbox not connected. Connect it to download attachments.');
-      return;
-    }
     if (downloadingAttachments[attachment.id]) {
       return;
     }
@@ -4482,6 +4484,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   onReplyMessage={(message) => openComposeAction('reply', message as any)}
                   onForwardMessage={(message) => openComposeAction('forward', message as any)}
                   onDeleteMessage={(message) => void handleDeleteEmailMessage(message as any)}
+                  employeePhotoMap={employeePhotoMap}
                 />
                 </div>
 
@@ -4612,9 +4615,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           .replace(/<[^>]*>/g, ' ')
                           .replace(/\s+/g, ' ')
                           .trim();
-                        const displayName = outgoing
-                          ? message.sender_name || message.sender_email || 'Team'
-                          : message.sender_name || selectedContact?.name || 'Sender';
+                        const displayName = isAiAgentEmail(message.sender_email)
+                          ? AI_AGENT_DISPLAY_NAME
+                          : outgoing
+                            ? message.sender_name || message.sender_email || 'Team'
+                            : message.sender_name || selectedContact?.name || 'Sender';
                         const initials = String(displayName)
                           .trim()
                           .split(/\s+/)

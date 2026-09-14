@@ -59,6 +59,13 @@ MAILBOX_STATE_TABLE=mailbox_state
 EMAIL_HEADERS_TABLE=emails
 EMAIL_BODIES_TABLE=email_bodies
 EMAIL_ATTACHMENTS_TABLE=email_attachments
+EMAIL_ATTACHMENTS_BUCKET=email-attachments
+# Optional: skip Graph files larger than this (default 25MB)
+# EMAIL_ATTACHMENT_MAX_BYTES=26214400
+
+# PEX staff-reply webhook (WhatsApp / later emails)
+# PEX_CRM_CHAT_WEBHOOK_URL=https://pexagent-production.up.railway.app/webhooks/crm-chat
+# PEX_CRM_CHAT_WEBHOOK_SECRET=shared_secret_from_pex
 
 # Security
 BCRYPT_ROUNDS=12

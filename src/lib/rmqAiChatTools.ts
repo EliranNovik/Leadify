@@ -312,7 +312,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'get_lead_case_file',
       description:
-        'Load a full CRM snapshot for one lead (new or legacy): ASSIGNED ROLES (Handler, Expert, Manager, Closer, Scheduler), EXPERT ELIGIBILITY, EXPERT OPINION, handler notes, identity, stage, proposal, facts, meetings, WhatsApp, email, calls, and manuals. ALWAYS use this for who the expert / handler / manager / closer / scheduler is — then answer from the matching ASSIGNED ROLES line only. Manager is Roles tab Manager, not the case handler. ALWAYS use this for eligibility, expert opinion, what was said, a communication summary, or a lead overview / summary. For a lead overview or general summary, start with CASE ABOUT: what the case is, what the client is inquiring about, and important points from communications — then status bullets, then Risks:. Uses the open client page when query is omitted. Identify another lead only when they named a different number.',
+        'Load a full CRM snapshot for one lead (new or legacy): ASSIGNED ROLES (Handler, Expert, Manager, Closer, Scheduler), EXPERT ELIGIBILITY, EXPERT OPINION, handler notes, identity, stage, proposal, facts, meetings, WhatsApp, email, calls, and manuals. ALWAYS use this for who the expert / handler / manager / closer / scheduler is — then answer from the matching ASSIGNED ROLES line only. Manager is Roles tab Manager, not the case handler. ALWAYS use this for eligibility, expert opinion, what was said, a communication summary, a lead overview / summary, or what should be done next on THIS lead / this client / this case. For a lead overview or general summary, start with CASE ABOUT: what the case is, what the client is inquiring about, and important points from communications — then status bullets, then Risks:. Uses the open client page when query is omitted. Identify another lead only when they named a different number. Do not use list_my_sales_day for a single open lead.',
       parameters: {
         type: 'object',
         properties: {
@@ -780,7 +780,7 @@ export const RMQ_AI_TOOLS = [
     function: {
       name: 'list_my_sales_day',
       description:
-        'The logged-in salesperson’s work queue for today (Asia/Jerusalem): my meetings today/tomorrow, overdue and today follow-ups, and my leads waiting in reschedule (21), price offer (40), or unsigned (50). ALWAYS use for “my day”, what should I do now, or my follow-ups.',
+        'The logged-in salesperson’s work queue across MANY leads for today (Asia/Jerusalem): my meetings today/tomorrow, overdue and today follow-ups, and my leads waiting in reschedule (21), price offer (40), or unsigned (50). Use ONLY for “my day”, “what should I do now” with no client in context, or “my follow-ups” as a personal queue. NEVER use when they say this lead / this client / this case / the open lead, or ask what is next on one file — use get_lead_case_file instead.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -1086,10 +1086,11 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'If a required CRM query fails, say you cannot verify the current fact. Do not guess. ' +
   'When the user asks about a specific client, call get_lead_case_file first, then answer the question they asked from that data. Do not turn a specific question into a full lead recap. For next meeting, meeting brief, or meeting summary questions, call list_client_meetings instead. ' +
   'Identify leads by lead number (L226999), name, email, phone, or id. If they say this client / this lead and a client page is open, omit query — tools use that lead. ' +
-  'When an OPEN CLIENT block is present, NEVER ask for a lead number. Use that lead immediately. ' +
+  'When an OPEN CLIENT or LAST DISCUSSED CLIENT block is present, NEVER ask which lead they mean and NEVER list sibling subleads (other /8 /9 /10 numbers of the same family). Use that exact lead_number. Only switch if they type a different L-number. ' +
   'When they ask for this client’s next meeting, what the meeting is for, or the meeting summary / brief, ALWAYS call list_client_meetings using the open client. If they name a date (e.g. 02.09.2026), pass date=. Reply with one short sentence only. The UI shows date, time, location, brief, and summary in a card. Do not repeat those fields in prose. Do not say there is no brief if the tool JSON has text. list_calendar_day is only for a calendar day across many leads. ' +
   'When listing leads or meetings, ALWAYS copy the lead number from the tool (L214188 or 209994/9) as a bare token so it stays clickable. Never write Unnamed if the tool gave a number, name, or Internal meeting. Never list a client by name only. ' +
-  'When they ask for my day, what to do now, or my follow-ups, ALWAYS call list_my_sales_day. Reply as a short numbered list with lead numbers and one next action each. ' +
+  'When they ask what should be done next, what is next, or the next step ON THIS LEAD / this client / this case / the open lead, ALWAYS call get_lead_case_file (omit query). Answer from that file only: stage, follow-up, last communication, unsigned items, and the next concrete action for THIS lead. Do not call list_my_sales_day and do not list other clients. ' +
+  'When they ask for MY day, what I should do now with no client specified, or MY follow-ups as a personal queue, ALWAYS call list_my_sales_day. Reply as a short numbered list with lead numbers and one next action each. ' +
   'When they ask to draft, write, or rephrase an email or WhatsApp, ALWAYS call draft_client_message, then reply with ONLY the draft in the client language. The draft must be detailed and professional: read the case file, use real facts, and write 4–7 short paragraphs — never a one-line follow-up. Stop after Best regards / בברכה. Do not add a signature, name, title, phone, or email — the CRM appends that. ' +
   'When they ask for a contract, agreement, signing link, POA, or power of attorney link, ALWAYS call get_lead_case_file or draft_client_message and copy the exact https URL from REQUIRED LINKS / signing_link / poa_link onto its own line. Never invent a URL. Never use example.com. ' +
   'When they ask for the client portal, portal link, portal password, access code, or how the client signs in, ALWAYS call get_client_portal_access. ' +

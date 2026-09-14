@@ -5,6 +5,7 @@ import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, Use
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
+import { tryAdvanceClientSignedToHandlerSet } from '../../lib/advanceClientSignedToHandlerSet';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
 import {
   clientsTabCacheLeadKey,
@@ -746,6 +747,11 @@ const RolesTab: React.FC<ClientTabProps> = ({
       setShowDropdowns({});
 
       toast.success('Roles saved successfully');
+
+      await tryAdvanceClientSignedToHandlerSet({
+        leadId: client.id,
+        isLegacy: isLegacyLead,
+      });
 
       // Refresh client data in parent component
       if (onClientUpdate) {

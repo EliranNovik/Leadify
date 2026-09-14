@@ -5,6 +5,7 @@ const router = express.Router();
 
 router.get('/emails', emailController.list);
 router.get('/emails/offers', emailController.listOffers);
+router.post('/emails/backfill-attachments', emailController.backfillAttachments);
 router.get('/emails/:id/body', emailController.body);
 router.get('/emails/:id/attachments/:attachmentId', emailController.downloadAttachment);
 router.post('/emails/:conversationId/track', emailController.toggleThread);

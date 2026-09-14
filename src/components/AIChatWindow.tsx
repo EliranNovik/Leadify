@@ -34,12 +34,14 @@ import {
   isFirmWideLesson,
   isForgetMemoryRequest,
   isPreferenceCorrection,
+  memoriesFromUserText,
   persistAnswerEvidence,
   persistFeedback,
   persistIncident,
   persistQualityEvents,
   persistRecommendation,
   persistStructuredChatSummary,
+  extractLeadNumbers,
   formatChatHistoryPreview,
   proposeFirmLesson,
   recordRecommendationOutcome,
@@ -51,7 +53,9 @@ import {
 } from '../lib/rmqAiV1';
 import {
   hydrateRmqAiRoleNames,
+  clearRmqAiConversationLead,
   getRmqAiCurrentLead,
+  getRmqAiPageLead,
   leadNumberFromClientsPath,
   setRmqAiCurrentLead,
   slimRmqAiCurrentLead,
@@ -805,11 +809,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     void syncOpenClient();
   }, [syncOpenClient, isOpen]);
 
+  const onClientPage = Boolean(leadNumberFromClientsPath(location.pathname, location.search));
   const openClientChip = slimRmqAiCurrentLead(currentLead)
     || (leadNumberFromClientsPath(location.pathname, location.search)
       ? { lead_number: leadNumberFromClientsPath(location.pathname, location.search) }
       : getRmqAiCurrentLead());
-  const onClientPage = Boolean(leadNumberFromClientsPath(location.pathname, location.search));
+  const clientChipIsSticky = !onClientPage && Boolean(openClientChip?.lead_number || openClientChip?.name);
   const showWelcomeHome =
     !isLoading && messages.filter(isVisibleChatMessage).every(isWelcomeMessage);
   
@@ -1105,7 +1110,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     
     // Split by double newlines for paragraphs, but preserve single newlines within paragraphs
     const blocks = normalized.split(/\n\n+/).filter(p => p.trim());
-
+    
     const stripListMarker = (line: string) =>
       line.trim().replace(/^\d+[.)]\s+/, '').replace(/^[-*•]\s+/, '').trim();
     const isNumberedLine = (line: string) => /^\d+[.)]\s/.test(line.trim());
@@ -1173,7 +1178,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       if (grouped && grouped.items.length) {
         const rtl = textIsMostlyHebrew(trimmed);
         const ListTag = grouped.numbered ? 'ol' : 'ul';
-        return (
+          return (
           <div key={`${keyPrefix}-list`}>
             {grouped.prefix.map((line, idx) => renderDirectedBlock(line.trim(), `${keyPrefix}-p-${idx}`))}
             <ListTag
@@ -1199,7 +1204,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
 
       const mixedLines = bodyLines.length > 1 && bodyLines.some(textIsMostlyHebrew) && bodyLines.some((line) => !textIsMostlyHebrew(line));
       if (mixedLines) {
-        return (
+          return (
           <div key={`${keyPrefix}-mix`}>
             {bodyLines.map((line, idx) => renderDirectedBlock(line.trim(), `${keyPrefix}-${idx}`))}
           </div>
@@ -1351,15 +1356,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             );
           }
           return (
-            <a 
-              key={`format-${keyCounter++}`} 
-              href={url} 
-              target="_blank" 
-              rel="noopener noreferrer" 
+          <a 
+            key={`format-${keyCounter++}`} 
+            href={url} 
+            target="_blank" 
+            rel="noopener noreferrer" 
               className="ai-chat-link underline"
-            >
-              {match}
-            </a>
+          >
+            {match}
+          </a>
           );
         }
       },
@@ -1486,7 +1491,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       : location.pathname.split('/').filter(Boolean)[0] || 'app';
     const rolePack = await resolveRmqAiRolePack();
     const toolsForTurn = filterToolsForRole(RMQ_AI_TOOLS, rolePack);
-    const systemPrompt = await buildRmqAiSystemPrompt(RMQ_AI_SYSTEM_PROMPT);
+    const systemPrompt = await buildRmqAiSystemPrompt(RMQ_AI_SYSTEM_PROMPT, {
+      userText,
+      conversationMessages: conversationMessages,
+      conversationId: currentChatIdRef.current,
+    });
     const trace = beginAiTrace({
       conversationId: currentChatIdRef.current,
       userMessage: userText.slice(0, 240),
@@ -1849,10 +1858,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     const messageToSend = customInput || input;
     if (!messageToSend.trim() && images.length === 0) return;
     await syncOpenClient();
-    setIsLoading(true);
     const sendText = messageToSend.trim();
+    if (!getRmqAiPageLead()) {
+      const mentionedLead = extractLeadNumbers(sendText)[0];
+      if (mentionedLead) setRmqAiCurrentLead({ lead_number: mentionedLead });
+    }
+    setIsLoading(true);
     const shownText = opts?.display || shortAskLabel(sendText) || sendText;
-
+    
     let userMessage: any;
     if (images.length > 0 && imagePreviews.length > 0) {
       userMessage = {
@@ -1883,15 +1896,22 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       });
     }
     const preference = isPreferenceCorrection(messageToSend);
-    if (preference) {
-      void upsertUserMemory({
-        fact: preference.fact,
-        category: preference.category,
-        sourceType: 'feedback',
-        sourceConversationId: currentChatId || undefined,
-        explicit: true,
-      }).then((row) => {
-        if (row) toast.success(row.reinforced ? 'Updated that preference.' : 'I’ll remember that.');
+    const memories = memoriesFromUserText(messageToSend);
+    if (preference || memories.length > 0) {
+      void Promise.all(
+        (memories.length ? memories : preference ? [preference] : []).map((item) =>
+          upsertUserMemory({
+            fact: item.fact,
+            category: item.category,
+            sourceType: 'feedback',
+            sourceConversationId: currentChatId || undefined,
+            explicit: true,
+          }),
+        ),
+      ).then((rows) => {
+        if (rows.some((row) => row)) {
+          toast.success(rows.some((row) => row?.reinforced) ? 'Updated that preference.' : 'I’ll remember that.');
+        }
       });
     }
     const firmLesson = isFirmWideLesson(messageToSend);
@@ -2252,6 +2272,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
 
   const startNewChat = () => {
     void persistLeavingChat(currentChatIdRef.current, messagesRef.current);
+    clearRmqAiConversationLead();
+    void syncOpenClient();
     lastSummaryRef.current = null;
     lastSummarizedCountRef.current = 0;
     pinnedVisibleCountRef.current = 0;
@@ -2804,8 +2826,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             {chatHistory.map((chat) => {
               const isSelected = selectedHistoryIds.includes(chat.id);
               const historyPreview = formatChatHistoryPreview(chat.summary);
-              return (
-                <div
+  return (
+    <div
                   key={chat.id}
                   className={`ai-history-item cursor-pointer rounded-l-xl rounded-r-3xl bg-white p-4 ring-1 transition-colors ${
                     historySelecting && isSelected
@@ -5358,15 +5380,15 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             }`}
           >
             <div className="flex items-center gap-1">
-              <button
-                className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
-                style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
-                onClick={handleAiIconClick}
-                tabIndex={0}
+            <button
+              className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
+              style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
+              onClick={handleAiIconClick}
+              tabIndex={0}
                 aria-label="About RMQ AI"
-              >
+            >
                 <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="ai-header-logo h-9 w-9" />
-              </button>
+            </button>
               <div className="flex min-w-0 flex-col justify-center leading-tight">
                 <div className="flex items-center gap-1.5">
                   <button
@@ -5387,7 +5409,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   >
                     Beta
                   </span>
-                </div>
+          </div>
               </div>
             </div>
           </div>
@@ -5401,8 +5423,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 className={`ai-header-client pointer-events-auto max-w-[11rem] truncate rounded-full px-2.5 py-1 text-[11px] font-medium ${
                   isDarkTheme ? 'bg-violet-500/20 text-violet-200' : 'bg-violet-100 text-violet-800'
                 }`}
-                title="Questions about this client use the open lead automatically"
+                title={
+                  clientChipIsSticky
+                    ? 'Last discussed client — still used when you continue that work'
+                    : 'Questions about this client use the open lead automatically'
+                }
               >
+                {clientChipIsSticky ? 'Last · ' : ''}
                 {openClientChip.lead_number || openClientChip.name}
               </span>
             </div>
@@ -5419,7 +5446,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             >
               <ClockOutlineIcon className="h-5 w-5" />
             </button>
-            <button
+              <button 
               type="button"
               className="ai-theme-switch"
               onClick={() => setIsDarkTheme((value) => !value)}
@@ -5434,7 +5461,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   <SunIcon className="text-amber-500" />
                 )}
               </span>
-            </button>
+              </button>
             <button
               type="button"
               className="ai-close-btn"
@@ -5763,18 +5790,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                             <HandThumbDownIcon className="thumb-main h-5 w-5" strokeWidth={1.75} />
                           )}
                         </button>
-                      </div>
-                    ) : null}
                   </div>
+                    ) : null}
                 </div>
+            </div>
                 );
               })}
               </div>
-              )}
+            )}
               <div ref={messagesEndRef} />
             </div>
 
-            <div
+            <div 
               className={`contract-ai-input-area pointer-events-none absolute inset-x-0 bottom-0 z-20 px-4 pb-4 pt-2 md:px-5 ${isMobile && keyboardOpen ? 'pb-safe' : ''}`}
               style={{
                 ...(isMobile && keyboardOpen && {
@@ -5794,21 +5821,21 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   {imagePreviews.map((preview, idx) => (
                     <div key={idx} className="relative">
                       <img src={preview} alt="preview" className="h-16 w-16 rounded-xl object-cover shadow-md" />
-                      <button
+              <button
                         type="button"
                         onClick={() => handleRemoveImage(idx)}
                         className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs text-gray-600 shadow-sm"
                       >
                         ×
-                      </button>
-                    </div>
+              </button>
+            </div>
                   ))}
-                </div>
+          </div>
               )}
               <div className="pointer-events-auto flex items-end gap-2">
                 <div className="contract-ai-input-shell relative flex min-w-0 flex-1 items-center overflow-visible">
                   <div className="relative shrink-0 self-center pl-1.5" ref={attachMenuRef}>
-                    <button
+                  <button
                       type="button"
                       className="ai-composer-btn btn btn-ghost btn-circle btn-sm h-10 w-10 text-slate-500 hover:bg-gray-100"
                       onClick={() => setAttachMenuOpen((open) => !open)}
@@ -5819,8 +5846,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       aria-label="Add"
                     >
                       <PlusIcon className="h-5 w-5" />
-                    </button>
-                  </div>
+                  </button>
+                </div>
                   <div className="relative flex min-h-[3.25rem] min-w-0 flex-1 items-center">
                     {isVoiceRecording || isVoiceBusy ? (
                       <div className="ai-voice-meter w-full" aria-hidden={false} aria-label="Recording">
@@ -5831,8 +5858,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                             style={{ height: voiceMeterBarHeight(index, voiceAudioLevel) }}
                           />
                         ))}
-                      </div>
-                    ) : (
+                  </div>
+                ) : (
                       <>
                     {ghostSuffix ? (
                       <div
@@ -5842,7 +5869,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       >
                         <span className="invisible whitespace-pre-wrap break-words">{input}</span>
                         <span className="whitespace-pre-wrap break-words">{ghostSuffix}</span>
-                      </div>
+                            </div>
                     ) : null}
                     <textarea
                       ref={textareaRef}
@@ -5901,7 +5928,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     >
                       <MicrophoneIcon className="h-5 w-5" />
                     </button>
-                  </div>
+                              </div>
                   ) : null}
                   <div className="relative shrink-0 self-center pr-1.5">
                     {isVoiceActive || !(input.trim() || images.length > 0) ? (
@@ -5939,7 +5966,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       )}
                     </button>
                     ) : (
-                    <button
+                          <button
                       type="button"
                       className="ai-send-btn ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 text-white disabled:opacity-60"
                       onClick={() => handleSend()}
@@ -5952,10 +5979,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       ) : (
                         <PaperAirplaneIcon className="h-5 w-5" />
                       )}
-                    </button>
+                          </button>
                     )}
-                  </div>
-                </div>
+                        </div>
+                      </div>
                 <input
                   type="file"
                   accept="image/*"
@@ -5964,9 +5991,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   onChange={handleImageChange}
                   multiple
                 />
+                  </div>
               </div>
             </div>
-          </div>
         </div>
 
         {attachMenuOpen ? (

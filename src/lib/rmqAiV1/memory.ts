@@ -39,6 +39,17 @@ function similarFacts(a: string, b: string): boolean {
   return overlap / Math.min(left.size, right.size) >= 0.7;
 }
 
+export async function listActiveFirmMemories(limit = 8): Promise<Array<{ id: string; fact: string }>> {
+  const { data, error } = await supabase
+    .from('ai_firm_memory')
+    .select('id, fact')
+    .eq('active', true)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error || !data) return [];
+  return (data as Array<{ id: string; fact: string }>).filter((row) => String(row.fact || '').trim());
+}
+
 export async function listActiveUserMemories(limit = 12): Promise<AiUserMemoryRow[]> {
   const { data, error } = await supabase
     .from('ai_user_memory')
@@ -240,7 +251,8 @@ export async function reviewFirmLesson(id: string, status: 'approved' | 'rejecte
 function categorizeMemory(raw: string): UserMemoryCategory {
   if (/hebrew|english|german|language|עברית|deutsch/i.test(raw)) return 'language';
   if (/short|concise|brief|long|detail|bullet|format/i.test(raw)) return 'format';
-  if (/tone|formal|friendly|warm|casual|polite/i.test(raw)) return 'tone';
+  if (/tone|formal|friendly|warm|casual|polite|personal|human/i.test(raw)) return 'tone';
+  if (/\b(amount|total|price|balance|proposal)\b/i.test(raw)) return 'preference';
   if (/follow[- ]?up|workflow|after meeting|when i/i.test(raw)) return 'workflow';
   return 'preference';
 }
@@ -287,6 +299,23 @@ function styleMemoriesFromText(text: string): Array<{ fact: string; category: Us
   if (/\b(short|concise|brief)\b/i.test(text) && /\b(reply|draft|email|answer)\b/i.test(text)) {
     found.push({ fact: 'Prefers short concise replies', category: 'format' });
   }
+  if (/\b(more )?personal|warmer|less formal|more human|too (formal|salesy|generic|robotic)\b/i.test(text)) {
+    found.push({
+      fact: 'Write client follow-up emails in a personal, human tone — not generic or salesy',
+      category: 'tone',
+    });
+  }
+  if (
+    /\b(don'?t|do not|never|no|skip|leave out|without|not mention)\b[\s\S]{0,60}\b(total|amount|price|balance|proposal value|sum|fee)\b/i.test(
+      text,
+    ) ||
+    /\b(total|amount|price|balance)s?\b[\s\S]{0,40}\b(don'?t|do not|never mention|leave out)\b/i.test(text)
+  ) {
+    found.push({
+      fact: 'Do not mention total amounts, prices, or balances in client follow-up drafts',
+      category: 'preference',
+    });
+  }
   if (/\b(hebrew|עברית)\b/i.test(text) && /\b(reply|draft|email|write|whatsapp)\b/i.test(text)) {
     found.push({ fact: 'Prefers Hebrew for client drafts', category: 'language' });
   }
@@ -299,32 +328,52 @@ function styleMemoriesFromText(text: string): Array<{ fact: string; category: Us
 export function isPreferenceCorrection(text: string): { fact: string; category: UserMemoryCategory } | null {
   const raw = text.trim();
   if (raw.length < 8 || isForgetMemoryRequest(raw)) return null;
+  const styles = styleMemoriesFromText(raw);
+  if (styles[0]) return styles[0];
   const fact = raw.replace(/^(hey[, ]+|please\s+)/i, '').slice(0, 180);
 
-  if (/\b(don'?t|never|stop) (write|use|say|start with).{8,}/i.test(raw)) {
-    return { fact, category: 'tone' };
+  if (/\b(don'?t|never|stop) (write|use|say|mention|include|start with).{6,}/i.test(raw)) {
+    return { fact, category: categorizeMemory(raw) };
   }
   if (
-    /\b(remember( that| this| to)?|please remember|keep in mind|note that|don'?t forget|from now on|going forward)\b/i.test(
+    /\b(remember( that| this| to)?|please remember|keep in mind|note that|don'?t forget|from now on|going forward|next time|for (all|every|other) leads?|in general|do it (this way|differently))\b/i.test(
       raw,
     )
   ) {
     return { fact, category: categorizeMemory(raw) };
   }
-  if (/\b(i prefer|i want you to|i always want)\b.{6,}/i.test(raw)) {
+  if (/\b(i prefer|i want you to|i always want|have it more|make it more)\b.{6,}/i.test(raw)) {
     return { fact, category: categorizeMemory(raw) };
   }
   if (
     /\b(always|never)\b.{6,}/i.test(raw) &&
-    /\b(write|draft|use|say|keep|start|reply|answer|hebrew|english|german|short|concise|brief|formal|friendly)\b/i.test(
+    /\b(write|draft|use|say|keep|start|reply|answer|mention|hebrew|english|german|short|concise|brief|formal|friendly|personal|amount|total)\b/i.test(
       raw,
     )
   ) {
     return { fact, category: categorizeMemory(raw) };
   }
-  const style = styleMemoriesFromText(raw)[0];
-  if (style) return style;
   return null;
+}
+
+export function memoriesFromUserText(text: string): Array<{ fact: string; category: UserMemoryCategory }> {
+  const raw = text.trim();
+  if (!raw || isForgetMemoryRequest(raw) || isCannedAsk(raw)) return [];
+  const seen = new Set<string>();
+  const out: Array<{ fact: string; category: UserMemoryCategory }> = [];
+  const add = (item: { fact: string; category: UserMemoryCategory } | null) => {
+    if (!item?.fact) return;
+    const key = item.fact.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(item);
+  };
+  for (const style of styleMemoriesFromText(raw)) add(style);
+  const correction = isPreferenceCorrection(raw);
+  if (correction && !styleMemoriesFromText(raw).some((row) => similarFacts(row.fact, correction.fact))) {
+    add(correction);
+  }
+  return out;
 }
 
 export async function ingestMemoriesFromChat(input: {

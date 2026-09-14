@@ -37,6 +37,13 @@ import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerModal';
 import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
 import { expandLeadCaseDocumentLeadNumbers } from '../lib/leadCaseDocumentKeys';
+import {
+  EMAIL_ATTACHMENTS_STORAGE_BUCKET,
+  emailAttachmentUploaderLabel,
+  fetchLeadEmailAttachments,
+  isEmailAttachmentsBucket,
+  isLeadEmailAttachmentId,
+} from '../lib/leadEmailAttachments';
 
 type CaseDocumentAiSummaryStatus = 'pending' | 'ready' | 'failed' | 'skipped';
 
@@ -49,9 +56,10 @@ interface Document {
   webUrl: string;
   fileType: string;
   /** Where the document comes from. */
-  source?: 'case' | 'subeffort';
+  source?: 'case' | 'subeffort' | 'email';
   /** Storage object path inside `CASE_DOCUMENTS_STORAGE_BUCKET` when available. */
   storagePath?: string | null;
+  storageBucket?: string | null;
   /** DB id in `lead_case_documents` for case documents only. */
   caseDocDbId?: string | null;
   /** Row id in `lead_sub_efforts` for sub-efforts documents only. */
@@ -377,21 +385,25 @@ function DocumentRowActionMenu({
             <ArrowDownTrayIcon className="h-5 w-5 text-white" aria-hidden />
           )}
         </button>
-        <div className="mx-px w-px shrink-0 self-stretch bg-white/20" aria-hidden />
-        <button
-          type="button"
-          className={iconBtnClassDesktop}
-          title="Delete"
-          aria-label={`Delete ${doc.name}`}
-          disabled={isDeleting}
-          onClick={() => void onDelete(doc)}
-        >
-          {isDeleting ? (
-            <span className="loading loading-spinner loading-sm text-white" />
-          ) : (
-            <TrashIcon className="h-5 w-5 text-white" aria-hidden />
-          )}
-        </button>
+        {doc.source !== 'email' ? (
+          <>
+            <div className="mx-px w-px shrink-0 self-stretch bg-white/20" aria-hidden />
+            <button
+              type="button"
+              className={iconBtnClassDesktop}
+              title="Delete"
+              aria-label={`Delete ${doc.name}`}
+              disabled={isDeleting}
+              onClick={() => void onDelete(doc)}
+            >
+              {isDeleting ? (
+                <span className="loading loading-spinner loading-sm text-white" />
+              ) : (
+                <TrashIcon className="h-5 w-5 text-white" aria-hidden />
+              )}
+            </button>
+          </>
+        ) : null}
       </div>
 
       {/* Mobile: kebab + dropdown */}
@@ -462,26 +474,28 @@ function DocumentRowActionMenu({
                 Download
               </button>
             </li>
-            <li>
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 text-sm text-error"
-                role="menuitem"
-                disabled={isDeleting}
-                onClick={(e) => {
-                  e.preventDefault();
-                  setOpen(false);
-                  void onDelete(doc);
-                }}
-              >
-                {isDeleting ? (
-                  <span className="loading loading-spinner loading-xs" />
-                ) : (
-                  <TrashIcon className="h-4 w-4 shrink-0" />
-                )}
-                {isDeleting ? 'Deleting…' : 'Delete'}
-              </button>
-            </li>
+            {doc.source !== 'email' ? (
+              <li>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 text-sm text-error"
+                  role="menuitem"
+                  disabled={isDeleting}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setOpen(false);
+                    void onDelete(doc);
+                  }}
+                >
+                  {isDeleting ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <TrashIcon className="h-4 w-4 shrink-0" />
+                  )}
+                  {isDeleting ? 'Deleting…' : 'Delete'}
+                </button>
+              </li>
+            ) : null}
           </ul>
         ) : null}
       </div>
@@ -544,6 +558,7 @@ export type DocumentPreviewItem = {
   lastModified?: string;
   /** Storage object path for document comment threads. */
   storagePath?: string | null;
+  storageBucket?: string | null;
 };
 
 export async function shareDocumentPreviewItem(
@@ -622,6 +637,7 @@ export function DocumentPreviewModal({
         fileType: d.fileType,
         lastModified: d.lastModified,
         storagePath: d.storagePath ?? null,
+        storageBucket: d.storageBucket ?? null,
       })),
     [documents],
   );
@@ -899,6 +915,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       if (!doc) throw new Error('Document not found');
       const trimmed = newName.trim();
       if (!trimmed) throw new Error('Name is required');
+
+      if (doc.source === 'email' || isLeadEmailAttachmentId(doc.id)) {
+        throw new Error('Email attachments stay with the email and cannot be renamed here.');
+      }
 
       if (doc.source === 'subeffort') {
         const rowId = doc.subEffortRowId;
@@ -1331,7 +1351,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         return classificationCanonicalByAliasRef.current.get(cid) ?? cid;
       };
 
-      const cachedCase = (cached || []).filter((d) => d.source !== 'subeffort');
+      const cachedCase = (cached || []).filter((d) => d.source !== 'subeffort' && d.source !== 'email');
       const cachedByCaseId = new Map(
         cachedCase.map((d) => [d.caseDocDbId || d.id, d] as const),
       );
@@ -1365,6 +1385,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             webUrl: url,
             fileType: mimeFromFileName(r.file_name, r.mime_type),
             source: 'case' as const,
+            storageBucket: CASE_DOCUMENTS_STORAGE_BUCKET,
             storagePath: r.storage_path,
             caseDocDbId: r.id,
             subEffortRowId: null,
@@ -1493,6 +1514,9 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                   (path ? path.split('/').pop() : url ? url.split('/').pop() : '') ||
                   'Document';
                 const mime = inferMime(name, (it as any)?.mimeType as string | null | undefined);
+                const itemBucket = isEmailAttachmentsBucket((it as any)?.bucket)
+                  ? EMAIL_ATTACHMENTS_STORAGE_BUCKET
+                  : CASE_DOCUMENTS_STORAGE_BUCKET;
                 const cacheId = `subeffort:${String(r?.id ?? '')}:${path || (typeof url === 'string' ? url.trim() : '')}`;
                 const cachedSub = cachedSubById.get(cacheId);
                 if (cachedSub?.downloadUrl) {
@@ -1500,6 +1524,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     ...cachedSub,
                     name,
                     lastModified: createdAt,
+                    storageBucket: itemBucket,
                     caseClassificationId: categoryId,
                     caseClassificationLabel: idToLabel.get(categoryId) ?? cachedSub.caseClassificationLabel ?? null,
                     uploadedByName: who ? String(who) : cachedSub.uploadedByName,
@@ -1507,11 +1532,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                   });
                   continue;
                 }
-
                 let signedUrl = '';
                 if (path && typeof path === 'string') {
                   const { data: signed } = await supabase.storage
-                    .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+                    .from(itemBucket)
                     .createSignedUrl(path, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
                   signedUrl = signed?.signedUrl?.trim() || '';
                 } else if (url && typeof url === 'string') {
@@ -1528,6 +1552,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                   webUrl: signedUrl,
                   fileType: mime,
                   source: 'subeffort',
+                  storageBucket: itemBucket,
                   storagePath: path || null,
                   caseDocDbId: null,
                   subEffortRowId: Number.isFinite(Number(r?.id)) ? Number(r?.id) : null,
@@ -1554,7 +1579,72 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         return !p || !casePaths.has(p);
       });
 
-      commitCachedDocuments(key, gen, [...uniqueSubEffortDocuments, ...mappedDocuments]);
+      const emailDocuments: Document[] = [];
+      if (requireCaseDocumentClassification) {
+        let soeId: string | null = null;
+        let soeLabel: string | null = null;
+        for (const c of classificationsRef.current) {
+          if (!isSequenceOfEventsClassification(c)) continue;
+          soeId = classificationCanonicalByAliasRef.current.get(c.id) ?? c.id;
+          soeLabel = idToLabel.get(soeId) ?? c.label ?? 'Sequence of Events';
+          break;
+        }
+        if (!soeId) {
+          const { data: catRows } = await supabase
+            .from('case_document_classifications')
+            .select('id, slug, label');
+          for (const c of (catRows ?? []) as { id: string; slug: string; label: string }[]) {
+            if (!isSequenceOfEventsClassification(c)) continue;
+            soeId = classificationCanonicalByAliasRef.current.get(c.id) ?? c.id;
+            soeLabel = c.label || idToLabel.get(soeId) || 'Sequence of Events';
+            break;
+          }
+        }
+        if (soeId) {
+          const emailFiles = await fetchLeadEmailAttachments({ clientId, leadNumber });
+          const knownPaths = new Set(
+            [...mappedDocuments, ...uniqueSubEffortDocuments]
+              .map((d) => d.storagePath?.trim())
+              .filter(Boolean) as string[],
+          );
+          const cachedEmailById = new Map(
+            (cached || []).filter((d) => d.source === 'email').map((d) => [d.id, d] as const),
+          );
+          for (const file of emailFiles) {
+            if (knownPaths.has(file.storagePath)) continue;
+            const cachedEmail = cachedEmailById.get(file.id);
+            emailDocuments.push({
+              id: file.id,
+              name: file.name,
+              size: file.size,
+              lastModified: file.lastModified,
+              downloadUrl: file.url || cachedEmail?.downloadUrl || '',
+              webUrl: file.url || cachedEmail?.webUrl || '',
+              fileType: file.fileType,
+              source: 'email',
+              storagePath: file.storagePath,
+              storageBucket: EMAIL_ATTACHMENTS_STORAGE_BUCKET,
+              caseDocDbId: null,
+              subEffortRowId: null,
+              caseClassificationId: soeId,
+              caseClassificationLabel: soeLabel,
+              uploadedByName: emailAttachmentUploaderLabel(file.subject),
+              uploadedByPhotoUrl: null,
+              aiSummary: null,
+              aiSummaryStatus: null,
+              aiSummaryError: null,
+            });
+          }
+        }
+      }
+
+      commitCachedDocuments(
+        key,
+        gen,
+        [...uniqueSubEffortDocuments, ...mappedDocuments, ...emailDocuments.filter((d) => d.downloadUrl)].sort(
+          (a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime(),
+        ),
+      );
     } catch (err) {
       console.error('Error fetching documents:', err);
       fail(`Failed to fetch documents: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -1637,6 +1727,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   const handleDeleteDocument = async (doc: Document) => {
     if (deleting.includes(doc.id)) return;
+    if (doc.source === 'email' || isLeadEmailAttachmentId(doc.id)) {
+      toast.error('Email attachments stay with the email and cannot be deleted here.');
+      return;
+    }
     const ok = window.confirm(`Delete "${doc.name}"? This cannot be undone.`);
     if (!ok) return;
 
@@ -2014,6 +2108,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         fileType: d.fileType,
         lastModified: d.lastModified,
         storagePath: d.storagePath ?? null,
+        storageBucket: d.storageBucket ?? null,
       })),
     [documents],
   );

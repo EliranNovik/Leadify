@@ -183,6 +183,10 @@ const AppContentInner: React.FC = () => {
     () => location.pathname === '/pipeline' || location.pathname.startsWith('/pipeline/'),
     [location.pathname],
   );
+  const isHandlerManagementPage = useMemo(
+    () => location.pathname === '/handler-management' || location.pathname.startsWith('/handler-management/'),
+    [location.pathname],
+  );
   const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
   const isContractPage = useMemo(() => {
     const path = location.pathname;
@@ -237,12 +241,12 @@ const AppContentInner: React.FC = () => {
   // Memoize computed props for Header/Sidebar to prevent unnecessary re-renders
   const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
   const sidebarMobileOnly = useMemo(
-    () => isReportsPage || isPipelinePage || (isAdminPage && !adminAppNavOpen),
-    [isReportsPage, isPipelinePage, isAdminPage, adminAppNavOpen],
+    () => isReportsPage || isPipelinePage || isHandlerManagementPage || (isAdminPage && !adminAppNavOpen),
+    [isReportsPage, isPipelinePage, isHandlerManagementPage, isAdminPage, adminAppNavOpen],
   );
   const showBottomNav = useMemo(
-    () => !isFullBleedEditorPage && !isCaseManagerPage && !isReportsPage && !isPipelinePage,
-    [isFullBleedEditorPage, isCaseManagerPage, isReportsPage, isPipelinePage]
+    () => !isFullBleedEditorPage && !isCaseManagerPage && !isReportsPage && !isPipelinePage && !isHandlerManagementPage,
+    [isFullBleedEditorPage, isCaseManagerPage, isReportsPage, isPipelinePage, isHandlerManagementPage]
   );
   const useStaffSidebarInset = useMemo(
     () =>
@@ -251,6 +255,7 @@ const AppContentInner: React.FC = () => {
       !isSignedSalesPage &&
       !isCaseManagerPage &&
       !isPipelinePage &&
+      !isHandlerManagementPage &&
       !isFullBleedEditorPage &&
       !(isExternalUser && !isLoadingExternal),
     [
@@ -259,6 +264,7 @@ const AppContentInner: React.FC = () => {
       isSignedSalesPage,
       isCaseManagerPage,
       isPipelinePage,
+      isHandlerManagementPage,
       isFullBleedEditorPage,
       isExternalUser,
       isLoadingExternal,
@@ -1083,7 +1089,9 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                   clearFloatingSidebar={isClientDetailPage}
-                  startInsetClassName={isPipelinePage ? 'left-16' : undefined}
+                  startInsetClassName={
+                    isPipelinePage ? 'left-16' : isHandlerManagementPage ? 'md:left-16' : undefined
+                  }
                 />
                 <main
                   className={`app-main-scroll relative min-h-0 w-full min-w-0 flex-1 ${

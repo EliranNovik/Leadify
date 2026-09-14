@@ -150,6 +150,12 @@ OPENAI_API_KEY= (set in Supabase dashboard)
 # true (default) = CRM still sends email + WhatsApp templates after PEX books a meeting
 # false = skip CRM outbound so PEX can deliver those messages (inbox still works)
 # ENABLE_PEX_CRM_OUTBOUND_NOTIFICATIONS=true
+
+# PEX staff-reply webhook (WhatsApp first; emails use the same payload later)
+# After CRM saves a staff reply on a PEX thread, POST the new row id instead of sending via Meta.
+# Safe to call before PEX flips their send switch; they also poll the tables every 2 minutes.
+# PEX_CRM_CHAT_WEBHOOK_URL=https://pexagent-production.up.railway.app/webhooks/crm-chat
+# PEX_CRM_CHAT_WEBHOOK_SECRET=…  (shared separately; if unset we still save the row)
 ```
 
 ### Development Patterns

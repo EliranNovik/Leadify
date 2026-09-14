@@ -53,7 +53,14 @@ export function thinkingPlanForAsk(text: string): string[] {
   ) {
     return ['Opening the case file', 'Reviewing meetings', 'Writing the summary'];
   }
-  if (/\bmy day\b|what should i do|work queue/.test(t)) {
+  if (
+    (/\b(this|the|open|current)\s+(lead|client|case|one|file)\b/.test(t) ||
+      /\bin this lead\b/.test(t)) &&
+    /\b(next|done next|should be done|next step|what now)\b/.test(t)
+  ) {
+    return ['Opening the case file', 'Checking stage and follow-up', 'Deciding the next step'];
+  }
+  if (/\bmy day\b|work queue/.test(t) || (/\bwhat should i do\b/.test(t) && !/\b(this|the)\s+(lead|client|case)\b/.test(t))) {
     return ["Checking today's meetings", 'Checking follow-ups', 'Building your day'];
   }
   if (/\bprep\b/.test(t) && /meeting/.test(t)) {

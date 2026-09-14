@@ -5,6 +5,7 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 const pushNotificationService = require('../services/pushNotificationService');
+const pexCrmChatWebhookService = require('../services/pexCrmChatWebhookService');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -1988,8 +1989,22 @@ const sendMessage = async (req, res) => {
 
     let whatsappMessageId;
     let responseData;
+    const routeViaPex = await pexCrmChatWebhookService.isPexWhatsAppConversation({
+      leadId: leadId === null ? null : (isLegacyLead ? null : leadId),
+      legacyId: isLegacyLead ? lead.id : null,
+      phoneNumber,
+    });
 
-    if (isDevelopmentMode) {
+    if (routeViaPex) {
+      console.log('📣 PEX WhatsApp thread — skip Meta send, save row + notify PEX');
+      whatsappMessageId = pexCrmChatWebhookService.buildPexCrmMessageId();
+      responseData = {
+        success: true,
+        messageId: whatsappMessageId,
+        via: 'pex',
+        message: 'Message saved. PEX will send it.',
+      };
+    } else if (isDevelopmentMode) {
       // Mock WhatsApp API response for development
       console.log('📱 Sending message in DEVELOPMENT MODE (mock)');
       console.log('📱 Message:', message);
@@ -2189,7 +2204,7 @@ const sendMessage = async (req, res) => {
       template_id: finalTemplateId, // Store template ID for proper matching (converted to number)
       sent_at: new Date().toISOString(),
       whatsapp_message_id: whatsappMessageId,
-      whatsapp_status: 'pending', // Start as pending, will be updated by webhook
+      whatsapp_status: routeViaPex ? 'sent' : 'pending', // PEX has no Meta status webhook
       message_type: 'text', // Always use 'text' as the database doesn't support 'template' type
       whatsapp_timestamp: new Date().toISOString()
     };
@@ -2241,6 +2256,11 @@ const sendMessage = async (req, res) => {
     } else {
       console.error('❌ CRITICAL: Message inserted but no data returned from insert operation!');
       console.error('❌ This means we cannot verify if template_id was saved.');
+    }
+
+    if (routeViaPex && insertedData?.[0]?.id) {
+      responseData.rowId = insertedData[0].id;
+      await pexCrmChatWebhookService.notifyWhatsAppRow(insertedData[0].id);
     }
 
     console.log('✅ Message sent successfully:', responseData);
@@ -2342,8 +2362,22 @@ const sendMedia = async (req, res) => {
 
     let whatsappMessageId;
     let responseData;
+    const routeViaPex = await pexCrmChatWebhookService.isPexWhatsAppConversation({
+      leadId: leadId === null ? null : (isLegacyLead ? null : leadId),
+      legacyId: isLegacyLead ? lead.id : null,
+      phoneNumber,
+    });
 
-    if (isDevelopmentMode) {
+    if (routeViaPex) {
+      console.log('📣 PEX WhatsApp thread — skip Meta media send, save row + notify PEX');
+      whatsappMessageId = pexCrmChatWebhookService.buildPexCrmMessageId();
+      responseData = {
+        success: true,
+        messageId: whatsappMessageId,
+        via: 'pex',
+        message: 'Media saved. PEX will send it.',
+      };
+    } else if (isDevelopmentMode) {
       // Mock WhatsApp API response for development
 
       whatsappMessageId = `mock_media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -2399,7 +2433,7 @@ const sendMedia = async (req, res) => {
       message: caption || `${mediaType} message`,
       sent_at: new Date().toISOString(),
       whatsapp_message_id: whatsappMessageId,
-      whatsapp_status: 'pending', // Start as pending, will be updated by webhook
+      whatsapp_status: routeViaPex ? 'sent' : 'pending',
       message_type: mediaType,
       media_url: mediaUrl,
       media_id: mediaUrl, // Also store as media_id for consistency
@@ -2407,13 +2441,19 @@ const sendMedia = async (req, res) => {
       voice_note: req.body.voiceNote || false // Store voice note flag
     };
 
-    const { error: insertError } = await supabase
+    const { data: insertedMedia, error: insertError } = await supabase
       .from('whatsapp_messages')
-      .insert([messageData]);
+      .insert([messageData])
+      .select('id');
 
     if (insertError) {
       console.error('Error saving outgoing media message:', insertError);
       return res.status(500).json({ error: 'Failed to save message' });
+    }
+
+    if (routeViaPex && insertedMedia?.[0]?.id) {
+      responseData.rowId = insertedMedia[0].id;
+      await pexCrmChatWebhookService.notifyWhatsAppRow(insertedMedia[0].id);
     }
 
     res.json(responseData);
@@ -2501,11 +2541,16 @@ const uploadMedia = async (req, res) => {
 
 
     const { file } = req;
-    const { leadId, caption } = req.body;
+    const { leadId, caption, phoneNumber } = req.body;
 
     if (!file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
+
+    const routeViaPex = await pexCrmChatWebhookService.isPexWhatsAppConversation({
+      leadId,
+      phoneNumber,
+    });
 
     // Upload file to your server first
     const uploadsDir = path.join(__dirname, '../../uploads');
@@ -2519,18 +2564,21 @@ const uploadMedia = async (req, res) => {
     const filePath = path.join(uploadsDir, fileName);
 
     fs.writeFileSync(filePath, file.buffer);
+    await uploadMediaToBucket(fileName, file.buffer, file.mimetype || 'application/octet-stream');
 
     let mediaId;
     let responseData;
 
-    if (isDevelopmentMode) {
-      // Mock media upload for development
-
-      mediaId = fileName; // Use the actual filename as the media ID
+    if (routeViaPex || isDevelopmentMode) {
+      if (routeViaPex) {
+        console.log('📣 PEX WhatsApp thread — skip Meta media upload, store file for PEX');
+      }
+      mediaId = fileName;
       responseData = {
         success: true,
-        mediaId: mediaId,
-        fileName: fileName
+        mediaId,
+        fileName,
+        via: routeViaPex ? 'pex' : undefined,
       };
     } else {
       // Upload to WhatsApp

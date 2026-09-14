@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { toast } from 'react-hot-toast';
 import { usePersistedState } from '../hooks/usePersistedState';
+import { useAdminRole } from '../hooks/useAdminRole';
 import type { WhatsAppReadFilter } from '../lib/whatsappPageLoadHelpers';
 import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
@@ -32,6 +33,10 @@ import {
   WHATSAPP_OUTGOING_TEXT_COLOR,
   WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS,
   WHATSAPP_CHAT_HEADER_GLASS_CLASS,
+  WHATSAPP_COMPOSER_FIELD_CLASS,
+  WHATSAPP_COMPOSER_TEXTAREA_CLASS,
+  WHATSAPP_COMPOSER_TOOLS_BTN_CLASS,
+  WHATSAPP_COMPOSER_SEND_BTN_CLASS,
   WHATSAPP_READ_RECEIPT_COLOR,
   WHATSAPP_SENT_RECEIPT_COLOR,
   type WhatsAppMessageLinkStyle,
@@ -39,6 +44,20 @@ import {
   whatsAppMessageLinkFontWeight,
   WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT,
 } from '../lib/whatsappOutgoingMessageStyle';
+import {
+  isPexWhatsAppThread,
+  WhatsAppPexComposerHint,
+  WhatsAppPexUnlockMenuItem,
+  WhatsAppTemplateMenuItem,
+  WhatsAppWindowLockBanner,
+  whatsAppComposerLocked,
+  whatsAppLockedPlaceholder,
+  whatsAppSendSuccessToast,
+  PEX_TEMPLATES_UNAVAILABLE,
+  PEX_TEMPLATES_UNAVAILABLE_SHORT,
+  resolveWhatsAppOutgoingSenderUi,
+} from '../lib/pexWhatsAppChat';
+import { AI_AGENT_DISPLAY_NAME } from '../lib/aiAgentMailbox';
 import TemplateOptionCard from '../components/whatsapp/TemplateOptionCard';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
 import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
@@ -57,6 +76,7 @@ import {
   PhotoIcon,
   FilmIcon,
   LockClosedIcon,
+  LockOpenIcon,
   PencilIcon,
   TrashIcon,
   CheckIcon,
@@ -147,6 +167,7 @@ const getLeadSidebarTitle = (lead: WhatsAppLead): string =>
   leadHasSidebarDisplayName(lead) ? (lead.sender_name || '').trim() : 'Unknown contact';
 
 const WhatsAppLeadsPage: React.FC = () => {
+  const { isSuperUser } = useAdminRole();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [leads, setLeads] = useState<WhatsAppLead[]>([]);
@@ -179,6 +200,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [isLocked, setIsLocked] = useState(false);
+  const [pexWindowUnlocked, setPexWindowUnlocked] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const leadsListRef = useRef<HTMLDivElement>(null);
@@ -843,6 +865,30 @@ const WhatsAppLeadsPage: React.FC = () => {
     fetchMessages();
   }, [selectedLead]);
 
+  const isPexChat = useMemo(
+    () => isPexWhatsAppThread({ messages }),
+    [messages],
+  );
+
+  useEffect(() => {
+    setPexWindowUnlocked(false);
+  }, [selectedLead?.id]);
+
+  const pexAdminBypass = isPexChat && isSuperUser && pexWindowUnlocked;
+  const inputLocked = whatsAppComposerLocked(isLocked, pexAdminBypass);
+
+  const togglePexWindowUnlock = useCallback(() => {
+    setPexWindowUnlocked((prev) => {
+      const next = !prev;
+      toast.success(
+        next
+          ? '24-hour window unlocked — you can send a test message'
+          : '24-hour window re-locked',
+      );
+      return next;
+    });
+  }, []);
+
   // Update timer for 24-hour window
   useEffect(() => {
     if (!selectedLead) {
@@ -875,7 +921,13 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       return () => clearInterval(interval);
     }
-  }, [selectedLead, messages]);
+  }, [selectedLead, messages, isPexChat]);
+
+  useEffect(() => {
+    if (!isPexChat) return;
+    setShowTemplateSelector(false);
+    setSelectedTemplate(null);
+  }, [isPexChat]);
 
   // Load user names for edited/deleted messages
   useEffect(() => {
@@ -1140,6 +1192,10 @@ const WhatsAppLeadsPage: React.FC = () => {
   // Send reply message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isPexChat && selectedTemplate) {
+      toast.error(PEX_TEMPLATES_UNAVAILABLE);
+      return;
+    }
     if ((!newMessage.trim() && !selectedTemplate) || !selectedLead || !currentUser) return;
 
     setSending(true);
@@ -1399,7 +1455,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
 
-      toast.success('Reply sent successfully!');
+      toast.success(whatsAppSendSuccessToast(result.via));
     } catch (error) {
       console.error('Error sending message:', error);
       toast.error('Failed to send message: ' + (error as Error).message);
@@ -1476,6 +1532,9 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       formData.append('file', fileForUpload);
       formData.append('leadId', selectedLead.lead_id || selectedLead.id.toString());
+      if (selectedLead.phone_number) {
+        formData.append('phoneNumber', selectedLead.phone_number);
+      }
 
       // Upload media to WhatsApp
       const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
@@ -1547,7 +1606,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         setSelectedFile(null);
       }
       setShowVoiceRecorder(false); // Close voice recorder if it was open
-      toast.success('Media sent via WhatsApp!');
+      toast.success(result.via === 'pex' ? 'Media saved — PEX will send it' : 'Media sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending media:', error);
       toast.error('Failed to send media: ' + (error as Error).message);
@@ -3139,10 +3198,20 @@ const WhatsAppLeadsPage: React.FC = () => {
               <div className="flex items-center gap-2 flex-shrink-0">
                 {timeLeft && (
                   <div
-                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap ${
+                      pexAdminBypass
+                        ? 'bg-violet-100 text-violet-800'
+                        : isLocked
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-yellow-100 text-yellow-700'
                       }`}
                   >
-                    {isLocked ? (
+                    {pexAdminBypass ? (
+                      <>
+                        <LockOpenIcon className="w-4 h-4" />
+                        <span>Test</span>
+                      </>
+                    ) : isLocked ? (
                       <>
                         <LockClosedIcon className="w-4 h-4" />
                         <span>Locked</span>
@@ -3337,6 +3406,14 @@ const WhatsAppLeadsPage: React.FC = () => {
                       <EnvelopeIcon className="w-5 h-5 text-gray-600 flex-shrink-0" />
                       <span className="text-sm text-gray-700 whitespace-nowrap">Mark as unread</span>
                     </button>
+                    <WhatsAppPexUnlockMenuItem
+                      isPex={isPexChat}
+                      isSuperuser={isSuperUser}
+                      windowLocked={isLocked}
+                      unlocked={pexWindowUnlocked}
+                      onToggle={togglePexWindowUnlock}
+                      onClose={() => setShowSidePanelSettingsMenu(false)}
+                    />
                   </div>
                 )}
               </div>
@@ -3544,7 +3621,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                           size="sm"
                           colorSeed={String(selectedLead.phone_number ?? selectedLead.id)}
                         />
-                        {isLocked && (
+                        {inputLocked && (
                           <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 pointer-events-none">
                             <LockClosedIcon className="w-3.5 h-3.5 text-white" />
                           </div>
@@ -3616,6 +3693,19 @@ const WhatsAppLeadsPage: React.FC = () => {
                       // Check if we need to show a date separator
                       const showDateSeparator = index === 0 ||
                         new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
+                      const lookedUpSenderId = getEmployeeById(message.sender_name)?.id;
+                      const outgoingSender =
+                        message.direction === 'out'
+                          ? resolveWhatsAppOutgoingSenderUi(message, lookedUpSenderId)
+                          : {
+                              label: message.sender_first_name || message.sender_name || 'You',
+                              employeeId: lookedUpSenderId ?? null,
+                            };
+                      const outgoingSenderLabel =
+                        outgoingSender.label === AI_AGENT_DISPLAY_NAME
+                          ? AI_AGENT_DISPLAY_NAME
+                          : message.sender_first_name || outgoingSender.label || message.sender_name || 'You';
+                      const outgoingEmployeeId = outgoingSender.employeeId;
 
                       return (
                         <React.Fragment key={message.id || index}>
@@ -3634,10 +3724,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                             {message.direction === 'out' && (
                               <div className="flex items-center gap-2 mb-1 mr-2">
                                 <span className="text-sm text-gray-600 font-medium">
-                                  {message.sender_first_name || message.sender_name || 'You'}
+                                  {outgoingSenderLabel}
                                 </span>
                                 <EmployeeAvatar
-                                  employeeId={getEmployeeById(message.sender_name)?.id || null}
+                                  employeeId={outgoingEmployeeId}
                                   size="md"
                                 />
                               </div>
@@ -4241,21 +4331,36 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                   )}
 
+                  {isPexChat && (
+                    <div className={isMobile ? 'px-3 pt-2' : 'px-3 pt-1'}>
+                      <WhatsAppPexComposerHint />
+                    </div>
+                  )}
+                  {isLocked && (
+                    <div className={isMobile ? 'px-3 pt-2' : 'px-3 pt-1'}>
+                      <WhatsAppWindowLockBanner
+                        isPex={isPexChat}
+                        windowLocked={isLocked}
+                        adminUnlocked={pexAdminBypass}
+                        className=""
+                      />
+                    </div>
+                  )}
                   {/* Input Form */}
-                  <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'px-3 py-2'}`}>
+                  <form onSubmit={handleSendMessage} className={`flex items-center ${isMobile ? 'p-3' : 'px-3 py-2'}`}>
                     <div className="relative space-y-2 pointer-events-auto" style={{ overflow: 'visible', flex: 1, minWidth: 0 }}>
-                      <div className="flex items-center gap-2" style={{ width: '100%' }}>
+                      <div className={`${WHATSAPP_COMPOSER_FIELD_CLASS} items-center`} style={{ width: '100%' }}>
                         {/* Dropdown Button - Always visible */}
                         <div className="relative flex-shrink-0" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
                           <button
                             type="button"
                             onClick={() => setShowMobileDropdown(!showMobileDropdown)}
-                            className={`btn btn-ghost btn-circle flex-shrink-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 border-none shadow-none transition-colors ${isMobile ? 'w-12 h-12 min-h-12 min-w-12' : 'w-10 h-10 min-h-10 min-w-10'}`}
-                            title={isLocked ? 'Messaging window expired — use templates' : 'Message tools'}
+                            className={`${WHATSAPP_COMPOSER_TOOLS_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
+                            title={inputLocked ? (isPexChat ? PEX_TEMPLATES_UNAVAILABLE_SHORT : 'Messaging window expired — use templates') : 'Message tools'}
                           >
-                            <Squares2X2Icon className={isMobile ? 'w-6 h-6' : 'w-5 h-5'} />
+                            <Squares2X2Icon className="w-5 h-5" />
                           </button>
-                          {isLocked && (
+                          {inputLocked && (
                             <div
                               className="absolute -top-1 -right-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 pointer-events-none"
                               title="Messaging window expired"
@@ -4265,18 +4370,23 @@ const WhatsAppLeadsPage: React.FC = () => {
                           )}
                           {showMobileDropdown && (
                             <div className="absolute left-0 z-[9999] bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100 pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
-                              <button
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
+                              <WhatsAppTemplateMenuItem
+                                isPex={isPexChat}
+                                compact
+                                onOpen={() => {
                                   setShowTemplateSelector(true);
                                   setShowMobileDropdown(false);
                                 }}
-                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
-                              >
-                                <DocumentTextIcon className="w-4 h-4 text-green-600" />
-                                Template
-                              </button>
+                              />
+                              <WhatsAppPexUnlockMenuItem
+                                isPex={isPexChat}
+                                isSuperuser={isSuperUser}
+                                windowLocked={isLocked}
+                                unlocked={pexWindowUnlocked}
+                                onToggle={togglePexWindowUnlock}
+                                onClose={() => setShowMobileDropdown(false)}
+                                compact
+                              />
                               <label className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 cursor-pointer">
                                 <PaperClipIcon className="w-4 h-4 text-gray-600" />
                                 Attachment
@@ -4292,7 +4402,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                     }
                                     setShowMobileDropdown(false);
                                   }}
-                                  disabled={uploadingMedia || isLocked}
+                                  disabled={uploadingMedia || inputLocked}
                                 />
                               </label>
                               <button
@@ -4300,7 +4410,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   setShowVoiceRecorder(!showVoiceRecorder);
                                   setShowMobileDropdown(false);
                                 }}
-                                disabled={isLocked}
+                                disabled={inputLocked}
                                 className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
                               >
                                 <MicrophoneIcon className="w-4 h-4 text-gray-600" />
@@ -4311,7 +4421,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   setIsEmojiPickerOpen(!isEmojiPickerOpen);
                                   setShowMobileDropdown(false);
                                 }}
-                                disabled={isLocked}
+                                disabled={inputLocked}
                                 className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
                               >
                                 <FaceSmileIcon className="w-4 h-4 text-yellow-500" />
@@ -4322,7 +4432,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   handleAISuggestions();
                                   setShowMobileDropdown(false);
                                 }}
-                                disabled={isLoadingAI || isLocked || !selectedLead}
+                                disabled={isLoadingAI || inputLocked || !selectedLead}
                                 className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
                               >
                                 {isLoadingAI ? (
@@ -4338,7 +4448,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                           )}
 
                           {/* Mobile Emoji Picker */}
-                          {isEmojiPickerOpen && !isLocked && (
+                          {isEmojiPickerOpen && !inputLocked && (
                             <div className="absolute left-0 z-[9999] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
                               <EmojiPicker
                                 onEmojiClick={handleEmojiClick}
@@ -4357,41 +4467,34 @@ const WhatsAppLeadsPage: React.FC = () => {
                           )}
                         </div>
 
-                        <div className="flex-1" style={{ minWidth: 0 }}>
-                          <textarea
-                            ref={textareaRef}
-                            value={newMessage}
-                            onChange={handleMessageChange}
-                            onFocus={(e) => {
-                              if (isMobile) {
-                                setIsInputFocused(true);
-                                // Expand to max height when focused on mobile
-                                adjustTextareaHeight();
-                              }
-                            }}
-                            onBlur={(e) => {
-                              if (isMobile) {
-                                setIsInputFocused(false);
-                                // Reset to normal height when blurred
-                              }
-                            }}
-                            placeholder={isLocked ? 'Window expired - use templates' : 'Type a message...'}
-                            className={`textarea w-full resize-none border rounded-2xl focus:outline-none ${isMobile
-                              ? 'border-white/30 focus:border-white/50'
-                              : 'border-gray-200 focus:border-green-400 py-2 min-h-0 text-sm'
-                              }`}
-                            rows={1}
-                            disabled={isLocked || sending}
-                            style={{
-                              backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : isMobile ? 'rgba(255, 255, 255, 0.8)' : '#fff',
-                              backdropFilter: isMobile ? 'blur(10px)' : undefined,
-                              boxShadow: isMobile ? '0 2px 8px rgba(0, 0, 0, 0.1)' : 'none',
-                              maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : isMobile ? '128px' : '96px',
-                              cursor: isLocked || selectedTemplate ? 'not-allowed' : 'text',
-                              minHeight: isMobile ? '48px' : '40px',
-                            }}
-                          />
-                        </div>
+                        <textarea
+                          ref={textareaRef}
+                          value={newMessage}
+                          onChange={handleMessageChange}
+                          onFocus={(e) => {
+                            if (isMobile) {
+                              setIsInputFocused(true);
+                              // Expand to max height when focused on mobile
+                              adjustTextareaHeight();
+                            }
+                          }}
+                          onBlur={(e) => {
+                            if (isMobile) {
+                              setIsInputFocused(false);
+                              // Reset to normal height when blurred
+                            }
+                          }}
+                            placeholder={inputLocked ? whatsAppLockedPlaceholder(isPexChat, false) : 'Type a message...'}
+                          className={`${WHATSAPP_COMPOSER_TEXTAREA_CLASS} ${isMobile ? '' : 'text-sm'}`}
+                          rows={1}
+                          disabled={inputLocked || sending}
+                          style={{
+                            backgroundColor: 'transparent',
+                            maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : isMobile ? '128px' : '96px',
+                            cursor: inputLocked || selectedTemplate ? 'not-allowed' : 'text',
+                            minHeight: isMobile ? '40px' : '36px',
+                          }}
+                        />
 
                         {/* Send Button */}
                         <button
@@ -4410,15 +4513,15 @@ const WhatsAppLeadsPage: React.FC = () => {
                               handleSendMessage(syntheticEvent);
                             }
                           }}
-                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
-                          className={`btn btn-circle text-white shadow-md hover:shadow-lg transition-shadow disabled:opacity-50 flex-shrink-0 ${isMobile ? 'w-12 h-12' : 'w-10 h-10'}`}
+                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia || inputLocked}
+                          className={`${WHATSAPP_COMPOSER_SEND_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
                           style={{ background: '#000000', borderColor: 'transparent' }}
                           title={selectedFile ? 'Send media' : 'Send message'}
                         >
                           {sending || uploadingMedia ? (
                             <div className="loading loading-spinner loading-sm"></div>
                           ) : (
-                            <PaperAirplaneIcon className={isMobile ? 'w-5 h-5' : 'w-4 h-4'} />
+                            <PaperAirplaneIcon className="w-5 h-5" />
                           )}
                         </button>
                       </div>

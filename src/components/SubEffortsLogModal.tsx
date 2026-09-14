@@ -39,6 +39,10 @@ import {
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import { createPortal } from 'react-dom';
 import { normalizeStorageKey } from '../lib/subEffortDocumentAttach';
+import {
+  EMAIL_ATTACHMENTS_STORAGE_BUCKET,
+  isEmailAttachmentsBucket,
+} from '../lib/leadEmailAttachments';
 import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
 import { resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
 import { DocumentUploaderCell } from './caseDocumentsModalUi';
@@ -79,6 +83,7 @@ type ResolvedDoc = {
   isPdf: boolean;
   path?: string;
   folder_id?: string | null;
+  bucket?: string;
   documentTypeName?: string | null;
   uploadedByName?: string | null;
   uploadedByPhotoUrl?: string | null;
@@ -113,6 +118,7 @@ type DocItem = {
   mimeType?: string;
   /** Optional folder id from lead_sub_effort_folders; null/missing = unfiled. */
   folder_id?: string | null;
+  bucket?: string;
 };
 
 type SubEffortFolder = {
@@ -178,12 +184,17 @@ function normalizeDocItems(documentUrl: any): DocItem[] {
           : folderRaw === null
             ? null
             : undefined;
+      const bucket =
+        typeof (documentUrl as any).bucket === 'string'
+          ? String((documentUrl as any).bucket).trim()
+          : '';
       const item: DocItem = {};
       if (url) item.url = url;
       if (path) item.path = path;
       if (name) item.name = name;
       if (mimeType) item.mimeType = mimeType;
       if (folder_id !== undefined) item.folder_id = folder_id;
+      if (bucket) item.bucket = bucket;
       return [item].filter((i) => i.url || i.path);
     }
     const out: DocItem[] = [];
@@ -231,9 +242,22 @@ function inferMimeFromName(name: string): string {
 }
 
 function guessPathList(documentUrl: any): string[] {
+  return guessPathEntries(documentUrl).map((e) => e.path);
+}
+
+function guessPathEntries(documentUrl: any): { path: string; bucket: string }[] {
   return normalizeDocItems(documentUrl)
-    .map((d) => (typeof d.path === 'string' ? d.path.trim() : ''))
-    .filter(Boolean);
+    .map((d) => {
+      const path = typeof d.path === 'string' ? d.path.trim() : '';
+      if (!path) return null;
+      return {
+        path,
+        bucket: isEmailAttachmentsBucket(d.bucket)
+          ? EMAIL_ATTACHMENTS_STORAGE_BUCKET
+          : SUB_EFFORTS_DOCS_BUCKET,
+      };
+    })
+    .filter((e): e is { path: string; bucket: string } => Boolean(e));
 }
 
 function containsHebrew(text: string): boolean {
@@ -822,6 +846,7 @@ function resolvedDocsToPreviewItems(docs: ResolvedDoc[]): DocumentPreviewItem[] 
       downloadUrl: d.url,
       fileType: d.mimeType || inferMimeFromName(d.name),
       storagePath: d.path || null,
+      storageBucket: d.bucket || null,
     }));
 }
 
@@ -850,6 +875,7 @@ function resolveSubEffortDocs(documentUrl: unknown, signedUrls: Map<string, stri
         isPdf,
         path: d.path,
         folder_id: d.folder_id ?? null,
+        bucket: d.bucket,
       };
     })
     .filter(Boolean) as ResolvedDoc[];
@@ -1868,29 +1894,36 @@ export function SubEffortsLogModal({
   React.useEffect(() => {
     if (!open) return;
     if (!selectedRow) return;
-    const paths = guessPathList(selectedRow?.document_url);
-    if (!paths.length) return;
+    const entries = guessPathEntries(selectedRow?.document_url);
+    if (!entries.length) return;
     let cancelled = false;
     void (async () => {
       try {
-        const missing = paths.filter((p) => !signedUrls.has(p));
+        const missing = entries.filter((e) => !signedUrls.has(e.path));
         if (!missing.length) return;
-        // Prefer bulk API (faster), but fall back for older/limited environments.
-        const storageBucket: any = supabase.storage.from(SUB_EFFORTS_DOCS_BUCKET) as any;
-        let data: any[] = [];
-        if (typeof storageBucket.createSignedUrls === 'function') {
-          const res = await storageBucket.createSignedUrls(missing, 60 * 60);
-          if (res?.error) throw res.error;
-          data = res?.data ?? [];
-        } else {
-          const results = await Promise.all(
-            missing.map(async (p) => {
-              const res = await storageBucket.createSignedUrl(p, 60 * 60);
-              if (res?.error) throw res.error;
-              return { path: p, signedUrl: res?.data?.signedUrl };
-            })
-          );
-          data = results;
+        const byBucket = new Map<string, string[]>();
+        for (const e of missing) {
+          const list = byBucket.get(e.bucket) ?? [];
+          list.push(e.path);
+          byBucket.set(e.bucket, list);
+        }
+        const data: Array<{ path?: string; signedUrl?: string }> = [];
+        for (const [bucket, paths] of byBucket) {
+          const storageBucket: any = supabase.storage.from(bucket) as any;
+          if (typeof storageBucket.createSignedUrls === 'function') {
+            const res = await storageBucket.createSignedUrls(paths, 60 * 60);
+            if (res?.error) throw res.error;
+            data.push(...(res?.data ?? []));
+          } else {
+            const results = await Promise.all(
+              paths.map(async (p) => {
+                const res = await storageBucket.createSignedUrl(p, 60 * 60);
+                if (res?.error) throw res.error;
+                return { path: p, signedUrl: res?.data?.signedUrl };
+              }),
+            );
+            data.push(...results);
+          }
         }
         if (cancelled) return;
         setSignedUrls((prev) => {

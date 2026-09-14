@@ -3,13 +3,21 @@ import { usePersistedState } from '../hooks/usePersistedState';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { UserGroupIcon, DocumentTextIcon, CurrencyDollarIcon, BriefcaseIcon, XMarkIcon, ArrowPathIcon, MagnifyingGlassIcon, Squares2X2Icon, Bars3Icon } from '@heroicons/react/24/outline';
-import { getStageName, fetchStageNames, getStageColour, getSoftStageBadgeStyle } from '../lib/stageUtils';
+import { UserGroupIcon, DocumentTextIcon, CurrencyDollarIcon, BriefcaseIcon, XMarkIcon, ArrowPathIcon, MagnifyingGlassIcon, Squares2X2Icon, Bars3Icon, UserPlusIcon, QueueListIcon, ArrowLeftIcon, PauseCircleIcon } from '@heroicons/react/24/outline';
+import { tryAdvanceClientSignedToHandlerSet } from '../lib/advanceClientSignedToHandlerSet';
 import { convertToNIS } from '../lib/currencyConversion';
 import { isDepartmentManagerBonusesRole, isHandlerBonusesRole } from '../lib/employeeLeadReporting';
 import LeadDetailsModal from '../components/LeadDetailsModal';
 import AssignMultipleLeadsModal from '../components/AssignMultipleLeadsModal';
+import HandlerManagementSidebar, {
+  HandlerManagementMobileTabs,
+  type HandlerPageTab,
+} from '../components/HandlerManagementSidebar';
 import { PIPELINE_SUMMARY_GRADIENTS } from '../components/PipelineSummaryCards';
+import HandlerPipelineView from '../components/pipeline/HandlerPipelineView';
+import RetentionHandlerPipelineView from '../components/pipeline/RetentionHandlerPipelineView';
+import type { PipelineViewAs } from '../lib/resolvePipelineIdentity';
+import { pipelineViewIdentityKey } from '../lib/pipelineLiveCache';
 import {
   PIPELINE_CELL_STYLE,
   PIPELINE_TABLE_CLASS,
@@ -26,6 +34,8 @@ interface Handler {
   bonuses_role?: string | null;
   newCasesCount: number;
   activeCasesCount: number;
+  nonActiveCount?: number;
+  closedCasesCount?: number;
   inProcessCount?: number;
   applicationsSentCount?: number;
   dueAmount?: number;
@@ -74,9 +84,42 @@ interface HandlerManagementPageData {
   loadedAt: number | null;
 }
 
+type HandlerSortColumn = 'due' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases';
+
+const summarizeHandlerTeam = (list: Handler[]) => {
+  const teamSize = list.length;
+  const newCases = list.reduce((sum, handler) => sum + (handler.newCasesCount || 0), 0);
+  const activeCases = list.reduce((sum, handler) => sum + (handler.activeCasesCount || 0), 0);
+  const nonActive = list.reduce((sum, handler) => sum + (handler.nonActiveCount || 0), 0);
+  const due = list.reduce((sum, handler) => sum + (handler.dueAmount || 0), 0);
+  return { teamSize, newCases, activeCases, nonActive, due };
+};
+
+const formatCompactIls = (value: number) => {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `₪${(value / 1_000_000).toFixed(1)}M`;
+  if (abs >= 10_000) return `₪${(value / 1_000).toFixed(1)}K`;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'ILS',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+};
+
+const handlerOpenLoad = (handler: Handler) =>
+  (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) + (handler.nonActiveCount || 0);
+
+const topHandlersBy = (list: Handler[], getValue: (handler: Handler) => number, limit = 3) =>
+  [...list]
+    .map((handler) => ({ handler, value: getValue(handler) }))
+    .filter((row) => row.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, limit);
+
 // Module-level cache for table data - persists across SPA navigation, clears on page refresh
 // Bump CACHE_VERSION when data structure changes to invalidate stale cache
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 6;
 let handlerManagementCache: (HandlerManagementPageData & { _v?: number }) | null = null;
 
 const HandlerManagementPage: React.FC = () => {
@@ -102,14 +145,17 @@ const HandlerManagementPage: React.FC = () => {
   const [selectedHandlerId, setSelectedHandlerId] = useState<number | null>(null);
   const [employees, setEmployees] = useState<Map<number, { id: number; display_name: string; photo_url?: string; photo?: string }>>(new Map());
   const [viewMode, setViewMode] = usePersistedState<'boxes' | 'table'>('handlerManagement_viewMode', 'table', { storage: 'sessionStorage' });
+  const [activeTab, setActiveTab] = usePersistedState<HandlerPageTab>('handlerManagement_activeTab', 'dashboard', { storage: 'sessionStorage' });
+  const [handlerPipelineViewAs, setHandlerPipelineViewAs] = useState<PipelineViewAs | null>(null);
+  const [retentionPipelineViewAs, setRetentionPipelineViewAs] = useState<PipelineViewAs | null>(null);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedLeadForAssign, setSelectedLeadForAssign] = useState<string | number | null>(null);
   const [employeeSearchQuery, setEmployeeSearchQuery] = useState('');
   const [pageEmployeeSearchQuery, setPageEmployeeSearchQuery] = usePersistedState('handlerManagement_pageEmployeeSearchQuery', '', { storage: 'sessionStorage' });
   const [selectedDepartment, setSelectedDepartment] = usePersistedState('handlerManagement_selectedDepartment', '', { storage: 'sessionStorage' });
-  const [sortColumn, setSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases' | null>('handlerManagement_sortColumn', null, { storage: 'sessionStorage' });
+  const [sortColumn, setSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases' | null>('handlerManagement_sortColumn', null, { storage: 'sessionStorage' });
   const [sortDirection, setSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_sortDirection', 'asc', { storage: 'sessionStorage' });
-  const [retentionSortColumn, setRetentionSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases' | null>('handlerManagement_retentionSortColumn', null, { storage: 'sessionStorage' });
+  const [retentionSortColumn, setRetentionSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases' | null>('handlerManagement_retentionSortColumn', null, { storage: 'sessionStorage' });
   const [retentionSortDirection, setRetentionSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_retentionSortDirection', 'asc', { storage: 'sessionStorage' });
   const [selectedCategories, setSelectedCategories] = usePersistedState<string[]>('handlerManagement_selectedCategories', [], { storage: 'sessionStorage' });
   const [selectedStages, setSelectedStages] = usePersistedState<number[]>('handlerManagement_selectedStages', [], { storage: 'sessionStorage' });
@@ -427,6 +473,7 @@ const HandlerManagementPage: React.FC = () => {
               handler_stage,
               category_id,
               case_handler_id,
+              active_handler_type,
               misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
             `)
             .eq(roleField, handlerId)
@@ -444,6 +491,7 @@ const HandlerManagementPage: React.FC = () => {
               total_base,
               currency_id,
               category_id,
+              active_handler_type,
               accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code),
               misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))
             `)
@@ -452,31 +500,50 @@ const HandlerManagementPage: React.FC = () => {
             .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
             .or('status.eq.0,status.is.null'); // Only active leads (status 0 or null = active, status 10 = inactive)
 
-          // Categorize leads into new and active cases (same logic as DashboardTab)
+          // Categorize leads using the same bucket rules as the handlers / retention pipeline
           let newCasesCount = 0;
           let activeCasesCount = 0;
+          let nonActiveCount = 0;
+          let closedCasesCount = 0;
+          const isRetentionRole = roleField === 'retainer_handler_id';
 
           const allLeads = [
-            ...(newLeads || []).map(l => ({ stage: (l as any).handler_stage || l.stage, lead_type: 'new' })),
-            ...(legacyLeads || []).map(l => ({ stage: l.stage, lead_type: 'legacy' }))
+            ...(newLeads || []).map(l => ({
+              stage: (l as any).handler_stage || l.stage,
+              leadStage: l.stage,
+              lead_type: 'new',
+              active_handler_type: Number((l as any).active_handler_type) === 1 ? 1 : 2,
+            })),
+            ...(legacyLeads || []).map(l => ({
+              stage: l.stage,
+              leadStage: l.stage,
+              lead_type: 'legacy',
+              active_handler_type: Number((l as any).active_handler_type) === 1 ? 1 : 2,
+            })),
           ];
+
+          const isNonActiveLead = (lead: { active_handler_type: number }) =>
+            isRetentionRole ? lead.active_handler_type === 2 : lead.active_handler_type === 1;
 
           allLeads.forEach(lead => {
             const stageId = getStageId(lead.stage);
+            const leadStageId = getStageId(lead.leadStage);
+            if (stageId === 200 || leadStageId === 200) {
+              closedCasesCount++;
+              return;
+            }
+            if (isNonActiveLead(lead)) {
+              nonActiveCount++;
+              return;
+            }
 
             if (stageId === null || stageId === undefined) {
-              // If we can't determine stage, count as new case
               newCasesCount++;
-            } else if (stageId === 200) {
-              // Closed cases: stage === 200 (don't count)
             } else if (stageId <= 105) {
-              // New cases: stage <= 105 (up to and including "handler set")
               newCasesCount++;
             } else if (stageId >= 110) {
-              // Active cases: stage >= 110 (from "handler started" and beyond) and stage !== 200
               activeCasesCount++;
             } else {
-              // Anything else goes to new cases
               newCasesCount++;
             }
           });
@@ -484,9 +551,9 @@ const HandlerManagementPage: React.FC = () => {
           // Calculate "In Process" = New Cases (stage <= 105) + Active Cases (stage >= 110 AND stage < 150)
           let inProcessCount = 0;
           allLeads.forEach(lead => {
+            if (isNonActiveLead(lead)) return;
             const stageId = getStageId(lead.stage);
             if (stageId !== null && stageId !== undefined && stageId !== 200) {
-              // New cases: stage <= 105 OR Active cases: stage >= 110 AND stage < 150 (exclude Application Submitted and above)
               if (stageId <= 105 || (stageId >= 110 && stageId < 150)) {
                 inProcessCount++;
               }
@@ -810,6 +877,8 @@ const HandlerManagementPage: React.FC = () => {
             ...handler,
             newCasesCount,
             activeCasesCount,
+            nonActiveCount,
+            closedCasesCount,
             inProcessCount,
             applicationsSentCount,
             dueAmount,
@@ -887,7 +956,7 @@ const HandlerManagementPage: React.FC = () => {
           retentionEmployees.map((handler) => buildHandlerRow(handler, 'retainer_handler_id')),
         )
       )
-        .filter((handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) > 0)
+        .filter((handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) + (handler.nonActiveCount || 0) > 0)
         .sort((a, b) => a.display_name.localeCompare(b.display_name));
 
       return { handlers: handlersWithCounts, retentionHandlers: retentionHandlersWithCounts, handlerPoolCount };
@@ -1685,6 +1754,8 @@ const HandlerManagementPage: React.FC = () => {
         if (error) throw error;
       }
 
+      await tryAdvanceClientSignedToHandlerSet({ leadId, isLegacy });
+
       toast.success(`Handler ${handlerName} assigned successfully!`);
 
       removeAssignedLeadsFromState([leadId]);
@@ -1834,14 +1905,11 @@ const HandlerManagementPage: React.FC = () => {
       String(stageId).includes(stageSearch);
   });
 
-  const handlersWithCases = handlers.filter(
-    (handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) > 0
-  );
-  const retentionHandlersWithCases = retentionHandlers.filter(
-    (handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) > 0
-  );
+  const handlerOpenCases = (handler: Handler) =>
+    (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) + (handler.nonActiveCount || 0);
 
-  type HandlerSortColumn = 'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases';
+  const handlersWithCases = handlers.filter((handler) => handlerOpenCases(handler) > 0);
+  const retentionHandlersWithCases = retentionHandlers.filter((handler) => handlerOpenCases(handler) > 0);
 
   const sortHandlerList = (
     list: Handler[],
@@ -1865,6 +1933,10 @@ const HandlerManagementPage: React.FC = () => {
           valueA = a.activeCasesCount;
           valueB = b.activeCasesCount;
           break;
+        case 'nonActive':
+          valueA = a.nonActiveCount || 0;
+          valueB = b.nonActiveCount || 0;
+          break;
         case 'inProcess':
           valueA = a.inProcessCount || 0;
           valueB = b.inProcessCount || 0;
@@ -1874,8 +1946,12 @@ const HandlerManagementPage: React.FC = () => {
           valueB = b.applicationsSentCount || 0;
           break;
         case 'totalCases':
-          valueA = a.newCasesCount + a.activeCasesCount;
-          valueB = b.newCasesCount + b.activeCasesCount;
+          valueA = handlerOpenCases(a);
+          valueB = handlerOpenCases(b);
+          break;
+        case 'closedCases':
+          valueA = a.closedCasesCount || 0;
+          valueB = b.closedCasesCount || 0;
           break;
         default:
           return 0;
@@ -1928,6 +2004,171 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
+  const applyHandlerTeamSort = (column: HandlerSortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('desc');
+    }
+  };
+
+  const applyRetentionTeamSort = (column: HandlerSortColumn) => {
+    if (retentionSortColumn === column) {
+      setRetentionSortDirection(retentionSortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setRetentionSortColumn(column);
+      setRetentionSortDirection('desc');
+    }
+  };
+
+  const renderTeamSummary = (
+    list: Handler[],
+    variant: 'handlers' | 'retention',
+    currentSort: HandlerSortColumn | null,
+    onSort: (column: HandlerSortColumn) => void,
+  ) => {
+    const summary = summarizeHandlerTeam(list);
+    const filteredView = Boolean(selectedDepartment || pageEmployeeSearchQuery.trim());
+    const cards: Array<{
+      key: string;
+      value: React.ReactNode;
+      label: string;
+      hint: string;
+      icon: typeof UserGroupIcon;
+      gradient: string;
+      sort: HandlerSortColumn | null;
+      top: Array<{ handler: Handler; formatted: string }>;
+    }> = [
+      {
+        key: 'handlers',
+        value: summary.teamSize,
+        label: variant === 'retention' ? 'Retention Handlers' : 'Handlers',
+        hint: filteredView
+          ? 'In the current search or department filter'
+          : variant === 'retention'
+            ? 'Retention handlers with open cases'
+            : 'Handlers with open cases',
+        icon: UserGroupIcon,
+        gradient: PIPELINE_SUMMARY_GRADIENTS.missed_interaction,
+        sort: null,
+        top: topHandlersBy(list, handlerOpenLoad).map((row) => ({
+          handler: row.handler,
+          formatted: String(row.value),
+        })),
+      },
+      {
+        key: 'active',
+        value: summary.activeCases,
+        label: 'Active Cases',
+        hint: summary.teamSize > 0
+          ? `Avg ${(summary.activeCases / summary.teamSize).toFixed(1)} per person`
+          : 'Cases currently in work',
+        icon: BriefcaseIcon,
+        gradient: PIPELINE_SUMMARY_GRADIENTS.upcoming_meeting,
+        sort: 'activeCases',
+        top: topHandlersBy(list, (handler) => handler.activeCasesCount || 0).map((row) => ({
+          handler: row.handler,
+          formatted: String(row.value),
+        })),
+      },
+      {
+        key: 'new',
+        value: summary.newCases,
+        label: 'New Cases',
+        hint: variant === 'retention' ? 'Newly assigned to retention' : 'Waiting for first handler action',
+        icon: DocumentTextIcon,
+        gradient: PIPELINE_SUMMARY_GRADIENTS.lost_interaction,
+        sort: 'newCases',
+        top: topHandlersBy(list, (handler) => handler.newCasesCount || 0).map((row) => ({
+          handler: row.handler,
+          formatted: String(row.value),
+        })),
+      },
+      {
+        key: 'nonActive',
+        value: summary.nonActive,
+        label: 'Non-active',
+        hint: 'Parked cases that still sit on a handler',
+        icon: PauseCircleIcon,
+        gradient: PIPELINE_SUMMARY_GRADIENTS.high_value,
+        sort: 'nonActive',
+        top: topHandlersBy(list, (handler) => handler.nonActiveCount || 0).map((row) => ({
+          handler: row.handler,
+          formatted: String(row.value),
+        })),
+      },
+      {
+        key: 'due',
+        value: formatCompactIls(summary.due),
+        label: 'Due (30 days)',
+        hint: 'Ready-to-pay amounts in the last 30 days',
+        icon: CurrencyDollarIcon,
+        gradient: 'bg-gradient-to-tr from-violet-600 via-purple-600 to-indigo-500',
+        sort: 'due',
+        top: topHandlersBy(list, (handler) => handler.dueAmount || 0).map((row) => ({
+          handler: row.handler,
+          formatted: formatCompactIls(row.value),
+        })),
+      },
+    ];
+
+    return (
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {cards.map((card) => {
+          const Icon = card.icon;
+          const active = card.sort != null && currentSort === card.sort;
+          return (
+            <button
+              key={card.key}
+              type="button"
+              aria-pressed={active}
+              onClick={() => {
+                if (card.sort) onSort(card.sort);
+              }}
+              className={`${card.gradient} flex flex-col rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 ${
+                card.sort ? 'hover:scale-105 hover:shadow-2xl' : 'cursor-default'
+              } ${active ? 'ring-4 ring-white/70 scale-[1.02]' : ''}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className={`${typeof card.value === 'number' ? 'text-5xl' : 'text-3xl'} font-bold leading-none`}>
+                  {card.value}
+                </p>
+                <div className="-mt-1 shrink-0 rounded-full bg-white/20 p-3.5">
+                  <Icon className="h-9 w-9" />
+                </div>
+              </div>
+              <div className="mt-3 min-w-0">
+                <p className="text-lg font-semibold text-white/90">{card.label}</p>
+                <p className="mt-0.5 truncate text-xs text-white/80" title={card.hint}>
+                  {card.hint}
+                </p>
+              </div>
+              <div className="mt-3 space-y-2 border-t border-white/20 pt-3">
+                {card.top.length === 0 ? (
+                  <p className="text-sm text-white/70">No employees in this section</p>
+                ) : (
+                  card.top.map((row, index) => (
+                    <div key={row.handler.id} className="flex items-center gap-2.5">
+                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/25 text-xs font-bold text-white shadow-sm backdrop-blur-md">
+                        {index + 1}
+                      </span>
+                      <EmployeeAvatar employeeId={row.handler.id} size="sm" />
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-white/90" title={row.handler.display_name}>
+                        {row.handler.display_name}
+                      </span>
+                      <span className="shrink-0 text-sm font-bold tabular-nums text-white">{row.formatted}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
   // Filter handlers based on modal search query
   const filteredHandlersForModal = handlers.filter(handler => {
     if (!employeeSearchQuery.trim()) return true;
@@ -1950,6 +2191,26 @@ const HandlerManagementPage: React.FC = () => {
       setEmployeeSearchQuery('');
     }
   };
+
+  const openEmployeePipeline = async (handler: Handler, target: 'handler' | 'retention') => {
+    const { data } = await supabase
+      .from('users')
+      .select('id, full_name')
+      .eq('employee_id', handler.id)
+      .maybeSingle();
+    const viewAs: PipelineViewAs = {
+      employeeId: handler.id,
+      displayName: handler.display_name,
+      fullName: String(data?.full_name || handler.official_name || handler.display_name),
+      userId: data?.id ? String(data.id) : null,
+      photoUrl: null,
+    };
+    if (target === 'handler') setHandlerPipelineViewAs(viewAs);
+    else setRetentionPipelineViewAs(viewAs);
+  };
+
+  const showingHandlerPipeline = activeTab === 'handlers' && handlerPipelineViewAs != null;
+  const showingRetentionPipeline = activeTab === 'retention' && retentionPipelineViewAs != null;
 
   const scrollToUnassignedLeads = () => {
     unassignedLeadsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1984,15 +2245,35 @@ const HandlerManagementPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex min-h-full w-full items-center justify-center bg-[#f3f4f6]">
-        <span className="loading loading-spinner loading-lg text-primary"></span>
+      <div className="flex min-h-full w-full bg-[#f3f4f6]">
+        <HandlerManagementSidebar activeTab={activeTab} onChange={setActiveTab} />
+        <div className="flex min-w-0 flex-1 items-center justify-center">
+          <span className="loading loading-spinner loading-lg text-primary"></span>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex min-h-full w-full bg-[#f3f4f6]">
+      <HandlerManagementSidebar
+        activeTab={activeTab}
+        onChange={(tab) => {
+          if (tab === activeTab && tab === 'handlers') setHandlerPipelineViewAs(null);
+          if (tab === activeTab && tab === 'retention') setRetentionPipelineViewAs(null);
+          setActiveTab(tab);
+        }}
+      />
       <div className="min-w-0 flex-1 px-2 py-6 sm:px-3">
+      <HandlerManagementMobileTabs
+        activeTab={activeTab}
+        onChange={(tab) => {
+          if (tab === activeTab && tab === 'handlers') setHandlerPipelineViewAs(null);
+          if (tab === activeTab && tab === 'retention') setRetentionPipelineViewAs(null);
+          setActiveTab(tab);
+        }}
+      />
+      {activeTab === 'dashboard' && (
       <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-bold flex items-center gap-3">
@@ -2015,8 +2296,10 @@ const HandlerManagementPage: React.FC = () => {
           Refresh
         </button>
       </div>
+      )}
 
       {/* Employee Search Bar and Department Filter */}
+      {(activeTab === 'handlers' || activeTab === 'retention') && !showingHandlerPipeline && !showingRetentionPipeline && (
       <div
         className={`mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between ${
           pageEmployeeSearchQuery.trim()
@@ -2036,73 +2319,111 @@ const HandlerManagementPage: React.FC = () => {
             value={pageEmployeeSearchQuery}
             onChange={(e) => {
               setPageEmployeeSearchQuery(e.target.value);
-              scrollToHandlers();
             }}
           />
         </div>
-        <div className="w-full md:w-64">
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            Department
-          </label>
-          <select
-            className="select select-bordered w-full rounded-xl border-gray-200 bg-white text-sm"
-            value={selectedDepartment}
-            onChange={(e) => setSelectedDepartment(e.target.value)}
-          >
-            <option value="">All Departments</option>
-            {uniqueDepartments.map(dept => (
-              <option key={dept} value={dept}>{dept}</option>
-            ))}
-          </select>
+        <div className="flex w-full flex-col items-stretch gap-2 md:w-auto md:flex-row md:items-end">
+          <div className="w-full md:w-64">
+            <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Department
+            </label>
+            <select
+              className="select select-bordered w-full rounded-xl border-gray-200 bg-white text-sm"
+              value={selectedDepartment}
+              onChange={(e) => setSelectedDepartment(e.target.value)}
+            >
+              <option value="">All Departments</option>
+              {uniqueDepartments.map(dept => (
+                <option key={dept} value={dept}>{dept}</option>
+              ))}
+            </select>
+          </div>
+          {activeTab === 'handlers' && (
+            <div className="inline-flex shrink-0 items-center gap-1 self-end rounded-full bg-gray-200/70 p-1">
+              <button
+                type="button"
+                className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
+                  viewMode === 'boxes' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
+                }`}
+                onClick={() => setViewMode('boxes')}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Squares2X2Icon className="h-4 w-4" />
+                  Boxes
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
+                  viewMode === 'table' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
+                }`}
+                onClick={() => setViewMode('table')}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Bars3Icon className="h-4 w-4" />
+                  Table
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
+      )}
 
+      {activeTab === 'dashboard' && (
+      <>
       {/* Summary Boxes */}
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <button
           type="button"
-          onClick={scrollToHandlers}
-          className={`${PIPELINE_SUMMARY_GRADIENTS.missed_interaction} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
+          onClick={() => setActiveTab('handlers')}
+          className={`${PIPELINE_SUMMARY_GRADIENTS.missed_interaction} flex flex-col rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
         >
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-white/90">Total Handlers</p>
-            <p className="text-3xl font-bold">{handlerPoolCount}</p>
-            <p className="mt-1 truncate text-xs text-white/80">Employees with bonus roles H and DM</p>
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-5xl font-bold leading-none">{handlerPoolCount}</p>
+            <div className="-mt-1 shrink-0 rounded-full bg-white/20 p-3.5">
+              <UserGroupIcon className="h-9 w-9" />
+            </div>
           </div>
-          <div className="shrink-0 rounded-full bg-white/20 p-3">
-            <UserGroupIcon className="h-7 w-7" />
+          <div className="mt-3 min-w-0">
+            <p className="text-base font-medium text-white/90">Total Handlers</p>
+            <p className="mt-0.5 truncate text-xs text-white/80">Employees with bonus roles H and DM</p>
           </div>
         </button>
 
         <button
           type="button"
-          onClick={scrollToHandlers}
-          className={`${PIPELINE_SUMMARY_GRADIENTS.upcoming_meeting} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
+          onClick={() => setActiveTab('handlers')}
+          className={`${PIPELINE_SUMMARY_GRADIENTS.upcoming_meeting} flex flex-col rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
         >
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-white/90">Total Cases</p>
-            <p className="text-3xl font-bold">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-5xl font-bold leading-none">
               {handlersWithCases.reduce((sum, h) => sum + h.newCasesCount + h.activeCasesCount, 0)}
             </p>
-            <p className="mt-1 truncate text-xs text-white/80">New + active cases across handlers</p>
+            <div className="-mt-1 shrink-0 rounded-full bg-white/20 p-3.5">
+              <BriefcaseIcon className="h-9 w-9" />
+            </div>
           </div>
-          <div className="shrink-0 rounded-full bg-white/20 p-3">
-            <BriefcaseIcon className="h-7 w-7" />
+          <div className="mt-3 min-w-0">
+            <p className="text-base font-medium text-white/90">Total Cases</p>
+            <p className="mt-0.5 truncate text-xs text-white/80">New + active cases across handlers</p>
           </div>
         </button>
 
         <button
           type="button"
           onClick={scrollToUnassignedLeads}
-          className={`${PIPELINE_SUMMARY_GRADIENTS.lost_interaction} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
+          className={`${PIPELINE_SUMMARY_GRADIENTS.lost_interaction} flex flex-col rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
         >
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-white/90">Unassigned Leads</p>
-            <p className="text-3xl font-bold">{unassignedLeads.length}</p>
-            <p className="mt-1 truncate text-xs text-white/80">Signed leads waiting for a handler</p>
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-5xl font-bold leading-none">{unassignedLeads.length}</p>
+            <div className="-mt-1 shrink-0 rounded-full bg-white/20 p-3.5">
+              <DocumentTextIcon className="h-9 w-9" />
+            </div>
           </div>
-          <div className="shrink-0 rounded-full bg-white/20 p-3">
-            <DocumentTextIcon className="h-7 w-7" />
+          <div className="mt-3 min-w-0">
+            <p className="text-base font-medium text-white/90">Unassigned Leads</p>
+            <p className="mt-0.5 truncate text-xs text-white/80">Signed leads waiting for a handler</p>
           </div>
         </button>
 
@@ -2116,17 +2437,19 @@ const HandlerManagementPage: React.FC = () => {
               }, 100);
             }
           }}
-          className={`${PIPELINE_SUMMARY_GRADIENTS.high_value} flex items-center justify-between gap-3 rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl ${
+          className={`${PIPELINE_SUMMARY_GRADIENTS.high_value} flex flex-col rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl ${
             showNextPaymentsTable ? 'ring-4 ring-white/70 scale-[1.02]' : ''
           }`}
         >
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-white/90">Upcoming Payments</p>
-            <p className="text-3xl font-bold">{nextPayments.length}</p>
-            <p className="mt-1 truncate text-xs text-white/80">Next payments on unassigned leads</p>
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-5xl font-bold leading-none">{nextPayments.length}</p>
+            <div className="-mt-1 shrink-0 rounded-full bg-white/20 p-3.5">
+              <CurrencyDollarIcon className="h-9 w-9" />
+            </div>
           </div>
-          <div className="shrink-0 rounded-full bg-white/20 p-3">
-            <CurrencyDollarIcon className="h-7 w-7" />
+          <div className="mt-3 min-w-0">
+            <p className="text-base font-medium text-white/90">Upcoming Payments</p>
+            <p className="mt-0.5 truncate text-xs text-white/80">Next payments on unassigned leads</p>
           </div>
         </button>
       </div>
@@ -2313,7 +2636,7 @@ const HandlerManagementPage: React.FC = () => {
             {/* Assign Buttons */}
             <div className="flex items-end gap-2">
               <button
-                className="btn btn-primary"
+                className="btn btn-primary !rounded-full gap-2"
                 onClick={() => {
                   if (!isSelectionMode) {
                     setIsSelectionMode(true);
@@ -2328,6 +2651,7 @@ const HandlerManagementPage: React.FC = () => {
                   }
                 }}
               >
+                <UserPlusIcon className="h-5 w-5" />
                 {isSelectionMode
                   ? selectedLeads.size > 0
                     ? `Assign Selected Leads (${selectedLeads.size})`
@@ -2348,7 +2672,7 @@ const HandlerManagementPage: React.FC = () => {
                 </button>
               )}
               <button
-                className="btn btn-primary"
+                className="btn !rounded-full gap-2 !border-gray-200 !bg-white !text-gray-800 hover:!bg-gray-50"
                 onClick={() => {
                   const filteredLeads = unassignedLeads.filter(lead => {
                     const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
@@ -2368,6 +2692,7 @@ const HandlerManagementPage: React.FC = () => {
                 }}
                 disabled={unassignedLeads.length === 0}
               >
+                <QueueListIcon className="h-5 w-5" />
                 Assign Multiple Leads
               </button>
             </div>
@@ -2540,7 +2865,7 @@ const HandlerManagementPage: React.FC = () => {
                     <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">{formatCurrency(lead.total || 0, lead.currency)}</td>
                     <td className="px-2 py-3.5 text-right">
                       <button
-                        className="btn btn-ghost btn-sm"
+                        className="btn btn-ghost btn-sm !rounded-full"
                         disabled={assigningLeadId === lead.id}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -2561,46 +2886,45 @@ const HandlerManagementPage: React.FC = () => {
           </div>
         )}
       </div>
+      </>
+      )}
 
       {/* Handlers and Their Cases */}
-      <div ref={handlersRef} className="mb-8">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-xl font-bold text-gray-900">Handlers & Their Cases</h2>
-          <div className="inline-flex shrink-0 items-center gap-1 rounded-full bg-gray-200/70 p-1">
-            <button
-              type="button"
-              className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
-                viewMode === 'boxes' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
-              }`}
-              onClick={() => setViewMode('boxes')}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Squares2X2Icon className="h-4 w-4" />
-                Boxes
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
-                viewMode === 'table' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'
-              }`}
-              onClick={() => setViewMode('table')}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Bars3Icon className="h-4 w-4" />
-                Table
-              </span>
-            </button>
+      {activeTab === 'handlers' && showingHandlerPipeline && handlerPipelineViewAs ? (
+      <div className="mb-8">
+        <div className="mb-4 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setHandlerPipelineViewAs(null)}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+            aria-label="Back to handlers"
+            title="Back to handlers"
+          >
+            <ArrowLeftIcon className="h-5 w-5" />
+            Back
+          </button>
+          <div className="min-w-0">
+            <h2 className="truncate text-xl font-bold text-gray-900">{handlerPipelineViewAs.displayName}</h2>
+            <p className="text-sm text-gray-500">Handler pipeline</p>
           </div>
         </div>
-
+        <HandlerPipelineView
+          key={pipelineViewIdentityKey(handlerPipelineViewAs)}
+          viewAs={handlerPipelineViewAs}
+        />
+      </div>
+      ) : activeTab === 'handlers' ? (
+      <div ref={handlersRef} className="mb-8">
+        {renderTeamSummary(filteredHandlersForPage, 'handlers', sortColumn, applyHandlerTeamSort)}
         {viewMode === 'boxes' ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {filteredHandlersForPage.map(handler => (
               <div
                 key={handler.id}
                 className="flex cursor-pointer flex-col justify-between rounded-2xl border border-gray-100 bg-white p-5 shadow-md transition-all duration-200 hover:-translate-y-1 hover:shadow-xl"
-                onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
+                onClick={() => {
+                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
+                }}
               >
                 <div className="mb-3 flex items-center gap-3">
                   <EmployeeAvatar employeeId={handler.id} size="md" />
@@ -2609,7 +2933,7 @@ const HandlerManagementPage: React.FC = () => {
                     <p className="text-xs text-gray-500">{handler.department || 'Unknown'}</p>
                   </div>
                 </div>
-                <div className="mt-2 grid grid-cols-2 gap-4">
+                <div className="mt-2 grid grid-cols-3 gap-4">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">New Cases</p>
                     <p className="text-xl font-bold text-gray-900">{handler.newCasesCount}</p>
@@ -2617,6 +2941,10 @@ const HandlerManagementPage: React.FC = () => {
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Active Cases</p>
                     <p className="text-xl font-bold text-gray-900">{handler.activeCasesCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Non-active</p>
+                    <p className="text-xl font-bold text-gray-900">{handler.nonActiveCount || 0}</p>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-4 border-t border-gray-100 pt-3">
@@ -2674,19 +3002,10 @@ const HandlerManagementPage: React.FC = () => {
                     className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleSort('inProcess');
+                      handleSort('nonActive');
                     }}
                   >
-                    In Process {sortColumn === 'inProcess' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSort('applicationsSent');
-                    }}
-                  >
-                    Applications Sent {sortColumn === 'applicationsSent' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
+                    Non-active {sortColumn === 'nonActive' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
                   <th
                     className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
@@ -2697,6 +3016,15 @@ const HandlerManagementPage: React.FC = () => {
                   >
                     Total Cases {sortColumn === 'totalCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold !text-gray-400"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSort('closedCases');
+                    }}
+                  >
+                    Closed Cases {sortColumn === 'closedCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -2704,7 +3032,9 @@ const HandlerManagementPage: React.FC = () => {
                   <tr
                     key={handler.id}
                     className={pipelineRowClassName()}
-                    onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
+                    onClick={() => {
+                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
+                }}
                   >
                     <td className="px-2 py-3.5">
                       <div className="flex items-center gap-3">
@@ -2718,10 +3048,12 @@ const HandlerManagementPage: React.FC = () => {
                     </td>
                     <td className="px-2 py-3.5 text-sm text-gray-900">{handler.newCasesCount}</td>
                     <td className="px-2 py-3.5 text-sm text-gray-900">{handler.activeCasesCount}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.inProcessCount || 0}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.applicationsSentCount || 0}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.nonActiveCount || 0}</td>
                     <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
-                      {handler.newCasesCount + handler.activeCasesCount}
+                      {handlerOpenCases(handler)}
+                    </td>
+                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-400">
+                      {handler.closedCasesCount || 0}
                     </td>
                   </tr>
                 ))}
@@ -2730,10 +3062,35 @@ const HandlerManagementPage: React.FC = () => {
           </div>
         )}
       </div>
+      ) : null}
 
       {/* Retention Handlers and Their Cases */}
+      {activeTab === 'retention' && showingRetentionPipeline && retentionPipelineViewAs ? (
+      <div className="mb-8">
+        <div className="mb-4 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setRetentionPipelineViewAs(null)}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+            aria-label="Back to retention handlers"
+            title="Back to retention handlers"
+          >
+            <ArrowLeftIcon className="h-5 w-5" />
+            Back
+          </button>
+          <div className="min-w-0">
+            <h2 className="truncate text-xl font-bold text-gray-900">{retentionPipelineViewAs.displayName}</h2>
+            <p className="text-sm text-gray-500">Retention handler pipeline</p>
+          </div>
+        </div>
+        <RetentionHandlerPipelineView
+          key={pipelineViewIdentityKey(retentionPipelineViewAs)}
+          viewAs={retentionPipelineViewAs}
+        />
+      </div>
+      ) : activeTab === 'retention' ? (
       <div ref={retentionHandlersRef} className="mb-8">
-        <h2 className="mb-4 text-xl font-bold text-gray-900">Retention Handler & Their Cases</h2>
+        {renderTeamSummary(filteredRetentionHandlersForPage, 'retention', retentionSortColumn, applyRetentionTeamSort)}
         {filteredRetentionHandlersForPage.length === 0 ? (
           <div className={PIPELINE_TABLE_SHELL}>
             <table className={PIPELINE_TABLE_CLASS}>
@@ -2752,7 +3109,9 @@ const HandlerManagementPage: React.FC = () => {
               <div
                 key={handler.id}
                 className="flex cursor-pointer flex-col justify-between rounded-2xl border border-gray-100 bg-white p-5 shadow-md transition-all duration-200 hover:-translate-y-1 hover:shadow-xl"
-                onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
+                onClick={() => {
+                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
+                }}
               >
                 <div className="mb-3 flex items-center gap-3">
                   <EmployeeAvatar employeeId={handler.id} size="md" />
@@ -2761,7 +3120,7 @@ const HandlerManagementPage: React.FC = () => {
                     <p className="text-xs text-gray-500">{handler.department || 'Unknown'}</p>
                   </div>
                 </div>
-                <div className="mt-2 grid grid-cols-2 gap-4">
+                <div className="mt-2 grid grid-cols-3 gap-4">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">New Cases</p>
                     <p className="text-xl font-bold text-gray-900">{handler.newCasesCount}</p>
@@ -2769,6 +3128,10 @@ const HandlerManagementPage: React.FC = () => {
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Active Cases</p>
                     <p className="text-xl font-bold text-gray-900">{handler.activeCasesCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Non-active</p>
+                    <p className="text-xl font-bold text-gray-900">{handler.nonActiveCount || 0}</p>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-4 border-t border-gray-100 pt-3">
@@ -2826,19 +3189,10 @@ const HandlerManagementPage: React.FC = () => {
                     className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleRetentionSort('inProcess');
+                      handleRetentionSort('nonActive');
                     }}
                   >
-                    In Process {retentionSortColumn === 'inProcess' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRetentionSort('applicationsSent');
-                    }}
-                  >
-                    Applications Sent {retentionSortColumn === 'applicationsSent' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                    Non-active {retentionSortColumn === 'nonActive' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
                   <th
                     className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
@@ -2849,6 +3203,15 @@ const HandlerManagementPage: React.FC = () => {
                   >
                     Total Cases {retentionSortColumn === 'totalCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
                   </th>
+                  <th
+                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold !text-gray-400"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRetentionSort('closedCases');
+                    }}
+                  >
+                    Closed Cases {retentionSortColumn === 'closedCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -2856,7 +3219,9 @@ const HandlerManagementPage: React.FC = () => {
                   <tr
                     key={handler.id}
                     className={pipelineRowClassName()}
-                    onClick={() => navigate(`/case-manager?handlerId=${handler.id}`)}
+                    onClick={() => {
+                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
+                }}
                   >
                     <td className="px-2 py-3.5">
                       <div className="flex items-center gap-3">
@@ -2870,10 +3235,12 @@ const HandlerManagementPage: React.FC = () => {
                     </td>
                     <td className="px-2 py-3.5 text-sm text-gray-900">{handler.newCasesCount}</td>
                     <td className="px-2 py-3.5 text-sm text-gray-900">{handler.activeCasesCount}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.inProcessCount || 0}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.applicationsSentCount || 0}</td>
+                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.nonActiveCount || 0}</td>
                     <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
-                      {handler.newCasesCount + handler.activeCasesCount}
+                      {handlerOpenCases(handler)}
+                    </td>
+                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-400">
+                      {handler.closedCasesCount || 0}
                     </td>
                   </tr>
                 ))}
@@ -2882,10 +3249,11 @@ const HandlerManagementPage: React.FC = () => {
           </div>
         )}
       </div>
+      ) : null}
 
 
       {/* Next Payments */}
-      {showNextPaymentsTable && (
+      {activeTab === 'dashboard' && showNextPaymentsTable && (
         <div ref={nextPaymentsRef} className="mb-8">
           <h2 className="mb-4 text-xl font-bold text-gray-900">Next Payments (Unassigned Leads)</h2>
           <div className={PIPELINE_TABLE_SHELL}>
@@ -2932,7 +3300,7 @@ const HandlerManagementPage: React.FC = () => {
                       <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">{formatCurrency(payment.value, payment.currency)}</td>
                       <td className="px-2 py-3.5 text-right">
                         <button
-                          className="btn btn-ghost btn-sm"
+                          className="btn btn-ghost btn-sm !rounded-full"
                           disabled={assigningLeadId === payment.lead_id}
                           onClick={() => handleAssignClick(payment.lead_id)}
                         >

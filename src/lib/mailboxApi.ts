@@ -175,6 +175,21 @@ export type EmailBodyFromBackend = {
   attachments: any[];
 };
 
+export const backfillEmailAttachments = async (
+  userId: string,
+  emailIds: Array<string | number>,
+): Promise<Array<{ emailId: string | number; attachments: any[] }>> => {
+  if (!userId || !emailIds?.length) return [];
+  const url = buildBackendApiUrlObject('/api/emails/backfill-attachments');
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, emailIds }),
+  });
+  const data = await parseJsonResponse(response);
+  return Array.isArray(data?.data) ? data.data : [];
+};
+
 export const fetchEmailBodyFromBackend = async (userId: string, emailId: string): Promise<EmailBodyFromBackend> => {
   if (!userId || !emailId) throw new Error('userId and emailId are required');
   const url = buildBackendApiUrlObject(`/api/emails/${encodeURIComponent(emailId)}/body`);
@@ -201,7 +216,15 @@ export const downloadAttachmentFromBackend = async (userId: string, emailId: str
   const response = await fetch(url);
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'Failed to download attachment');
+    try {
+      const data = JSON.parse(text);
+      throw new Error(data?.error || text || 'Failed to download attachment');
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error(text || 'Failed to download attachment');
+      }
+      throw error;
+    }
   }
   const blob = await response.blob();
   const disposition = response.headers.get('Content-Disposition') || '';

@@ -72,7 +72,12 @@ export function chatSummarySearchText(summary: ChatSummary | string | null | und
 
 export function extractLeadNumbers(text: string): string[] {
   const found = text.match(LEAD_NUMBER_RE) || [];
-  return [...new Set(found.map((item) => item.replace(/^l/i, 'L')))];
+  const normalized = [...new Set(found.map((item) => item.replace(/^l/i, 'L')))];
+  return normalized.filter((num) => {
+    const token = num.replace(/^L/i, '');
+    if (token.includes('/')) return true;
+    return !normalized.some((other) => other.replace(/^L/i, '').startsWith(`${token}/`));
+  });
 }
 
 function messageText(content: unknown): string {

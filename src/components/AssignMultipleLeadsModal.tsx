@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { tryAdvanceClientSignedToHandlerSet } from '../lib/advanceClientSignedToHandlerSet';
 import toast from 'react-hot-toast';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 
@@ -290,6 +291,8 @@ const AssignMultipleLeadsModal: React.FC<AssignMultipleLeadsModalProps> = ({
 
       if (error) throw error;
     }
+
+    await tryAdvanceClientSignedToHandlerSet({ leadId: lead.id, isLegacy });
   };
 
   if (!isOpen) return null;

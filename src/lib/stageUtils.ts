@@ -226,6 +226,7 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
     'communicationstarted': ['communicationstarted', 'communication_started', 'communication'],
     'mtngsumagreementsent': ['mtngsumagreementsent', 'mtng_sum_agreement_sent', 'meetingsummaryagreementsent'],
     'handlerassigned': ['handlerassigned', 'handler_assigned', 'handler'],
+    'handlerset': ['handlerset', 'handlernominated', 'handlerassigned'],
     'success': ['success', 'completed', 'finished'],
     'unactivated': ['unactivated', 'inactive', 'deactivated', 'droppedspamirrelevant', 'unactivatespam'],
     'clientdeclined': ['clientdeclined', 'client_declined', 'declined'],

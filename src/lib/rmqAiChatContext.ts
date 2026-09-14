@@ -31,6 +31,8 @@ export type RmqAiDraftMeta = {
 };
 
 let currentLead: RmqAiCurrentLead | null = null;
+/** Last client this chat discussed — kept after leaving the client page. */
+let conversationLead: RmqAiCurrentLead | null = null;
 let lastDraftMeta: RmqAiDraftMeta | null = null;
 
 function slimRoleField(value: unknown): string | number | null {
@@ -158,6 +160,26 @@ export function normalizeLeadNumberToken(value: unknown): string {
     .toLowerCase();
 }
 
+export function masterLeadToken(value: unknown): string {
+  return normalizeLeadNumberToken(value).split('/')[0];
+}
+
+/** True when the text names a different L-number than the open client (sibling sublead counts). */
+export function queryNamesDifferentLead(
+  query: unknown,
+  openNumber?: string | null,
+): boolean {
+  const open = normalizeLeadNumberToken(openNumber);
+  if (!open) return false;
+  const mentioned = String(query ?? '').match(/\bL?\d{5,}(?:\/\d+)?\b/gi) || [];
+  return mentioned.some((item) => {
+    const token = normalizeLeadNumberToken(item);
+    if (!token || token === open) return false;
+    if (token === masterLeadToken(open)) return false;
+    return true;
+  });
+}
+
 export function queryMatchesOpenLead(
   query: unknown,
   open: { query?: string; lead_id?: string } | null | undefined,
@@ -169,12 +191,18 @@ export function queryMatchesOpenLead(
   const openNumber = normalizeLeadNumberToken(open.query);
   const openId = normalizeLeadNumberToken(open.lead_id);
   if ((openNumber && token === openNumber) || (openId && token === openId)) return true;
+  if (openNumber && masterLeadToken(token) === masterLeadToken(openNumber) && !queryNamesDifferentLead(raw, open.query)) {
+    return true;
+  }
   if (openNumber && raw.toLowerCase().includes(String(open.query || '').toLowerCase())) return true;
-  const mentioned = raw.match(/\bL\d{4,}(?:\/\d+)?\b/gi) || [];
+  const mentioned = raw.match(/\bL?\d{4,}(?:\/\d+)?\b/gi) || [];
   if (openNumber && mentioned.some((item) => normalizeLeadNumberToken(item) === openNumber)) return true;
   const openName = String(getRmqAiCurrentLead()?.name || '').trim().toLowerCase();
   const queryName = raw.toLowerCase().replace(/['’]s$/u, '');
-  return Boolean(openName && queryName && openName === queryName);
+  if (openName && queryName && (openName === queryName || queryName.includes(openName) || openName.includes(queryName))) {
+    return true;
+  }
+  return false;
 }
 
 export function isThisClientQuery(value: unknown): boolean {
@@ -201,41 +229,58 @@ export function isOpenClientRoleQuestion(query: string, fallback: { query?: stri
 
 export function setRmqAiCurrentLead(lead: RmqAiCurrentLead | null) {
   currentLead = lead && (lead.id != null || lead.lead_number) ? lead : null;
+  if (currentLead) conversationLead = currentLead;
 }
 
-export function getRmqAiCurrentLead(): RmqAiCurrentLead | null {
+export function clearRmqAiConversationLead() {
+  conversationLead = null;
+}
+
+export function getRmqAiPageLead(): RmqAiCurrentLead | null {
   return currentLead;
 }
 
+export function getRmqAiConversationLead(): RmqAiCurrentLead | null {
+  return conversationLead;
+}
+
+export function getRmqAiCurrentLead(): RmqAiCurrentLead | null {
+  return currentLead || conversationLead;
+}
+
 export function currentLeadAsToolArgs(): { query?: string; lead_id?: string; is_legacy?: boolean } {
-  if (!currentLead) return {};
+  const lead = getRmqAiCurrentLead();
+  if (!lead) return {};
   const isLegacy =
-    currentLead.lead_type === 'legacy' || String(currentLead.id || '').startsWith('legacy_');
-  if (currentLead.id != null && String(currentLead.id).trim() !== '') {
+    lead.lead_type === 'legacy' || String(lead.id || '').startsWith('legacy_');
+  if (lead.id != null && String(lead.id).trim() !== '') {
     return {
-      lead_id: String(currentLead.id),
+      lead_id: String(lead.id),
       is_legacy: isLegacy,
-      query: String(currentLead.lead_number || currentLead.name || '').trim() || undefined,
+      query: String(lead.lead_number || lead.name || '').trim() || undefined,
     };
   }
-  if (currentLead.lead_number) return { query: String(currentLead.lead_number) };
+  if (lead.lead_number) return { query: String(lead.lead_number) };
   return {};
 }
 
 export function describeCurrentLeadForPrompt(): string {
-  if (!currentLead) return '';
-  const number = currentLead.lead_number ? String(currentLead.lead_number) : '';
-  const name = currentLead.name ? String(currentLead.name) : '';
+  const pageLead = currentLead;
+  const lead = pageLead || conversationLead;
+  if (!lead) return '';
+  const sticky = !pageLead && !!conversationLead;
+  const number = lead.lead_number ? String(lead.lead_number) : '';
+  const name = lead.name ? String(lead.name) : '';
   const hasSlash = number.includes('/');
   const legacy =
-    currentLead.lead_type === 'legacy' || String(currentLead.id || '').startsWith('legacy_');
+    lead.lead_type === 'legacy' || String(lead.id || '').startsWith('legacy_');
   const entityType = hasSlash ? 'sublead' : legacy ? 'legacy_lead' : 'lead';
   const master = hasSlash ? number.split('/')[0] : '';
-  const handler = roleName(currentLead.handler);
-  const expert = roleName(currentLead.expert);
-  const closer = roleName(currentLead.closer);
-  const scheduler = roleName(currentLead.scheduler);
-  const manager = roleName(currentLead.manager);
+  const handler = roleName(lead.handler);
+  const expert = roleName(lead.expert);
+  const closer = roleName(lead.closer);
+  const scheduler = roleName(lead.scheduler);
+  const manager = roleName(lead.manager);
   const roleParts = [
     handler && `Handler=${handler}`,
     expert && `Expert=${expert}`,
@@ -244,13 +289,18 @@ export function describeCurrentLeadForPrompt(): string {
     scheduler && `Scheduler=${scheduler}`,
   ].filter(Boolean);
   return [
-    'OPEN CLIENT (authoritative — do not ask for a lead number while this block is present):',
+    sticky
+      ? 'LAST DISCUSSED CLIENT (user left the client page — still use this client when they continue the same work, say this/that lead, the follow-up, or the draft):'
+      : 'OPEN CLIENT (authoritative — do not ask for a lead number while this block is present):',
     name && `name: ${name}`,
     number && `lead_number: ${number}`,
     `type: ${entityType}`,
     master && `master_lead_number: ${master}`,
     roleParts.length > 0 && `Roles tab: ${roleParts.join('; ')}`,
-    'If they say this client / this lead / the meeting / next meeting / the brief / the summary without naming a different lead, use this client.',
+    'If they say this client / this lead / the meeting / next meeting / the brief / the summary / that lead without naming a different lead, use this client.',
+    sticky
+      ? 'For unrelated general questions (calendar, firm, another client), do not assume this client.'
+      : null,
     'When they ask who the handler / expert / manager / closer / scheduler is, copy that Roles tab name if it is listed. If that role is not listed, ALWAYS call get_lead_case_file and use ASSIGNED ROLES. Never say unassigned just because a role is missing from this block.',
     'For this client’s next meeting, brief, or AI summary, call list_client_meetings. list_calendar_day is only for a calendar day across people, not one client.',
   ]
