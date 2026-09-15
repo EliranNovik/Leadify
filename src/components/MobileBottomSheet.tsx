@@ -548,8 +548,7 @@ export default function MobileBottomSheet({
 
           {footer && (
             <div
-              className={`shrink-0 border-t border-base-200/80 bg-base-100/95 backdrop-blur-sm ${footerClassName}`}
-              style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
+              className={`shrink-0 border-t border-base-200/80 bg-base-100/95 backdrop-blur-sm pb-[max(1rem,env(safe-area-inset-bottom,0px))] ${footerClassName}`}
               data-sheet-no-drag
             >
               {footer}

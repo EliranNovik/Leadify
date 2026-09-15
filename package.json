@@ -50,6 +50,7 @@
     "luxon": "^3.6.1",
     "node-fetch": "^2.7.0",
     "opus-media-recorder": "^0.8.0",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.8.69",
     "plyr": "^3.8.4",
     "postcss": "^8.4.38",

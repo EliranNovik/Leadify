@@ -48,7 +48,7 @@ GRAPH_CLIENT_ID=your_aad_app_client_id
 GRAPH_CLIENT_SECRET=your_aad_app_client_secret
 GRAPH_TENANT_ID=your_tenant_id
 GRAPH_REDIRECT_URI=https://your-backend.com/auth/callback
-GRAPH_SCOPES="offline_access Mail.Read Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared OnlineMeetings.ReadWrite"
+GRAPH_SCOPES="offline_access Mail.Read Mail.Read.Shared Mail.ReadWrite.Shared Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared OnlineMeetings.ReadWrite"
 # Client booking (public /book page): delegated mailbox for Teams + email (required when tenant blocks app-only Graph)
 BOOKING_MAILBOX_USER_ID=your_supabase_users_id_uuid
 GRAPH_WEBHOOK_NOTIFICATION_URL=https://your-backend.com/api/graph/webhook
@@ -62,6 +62,16 @@ EMAIL_ATTACHMENTS_TABLE=email_attachments
 EMAIL_ATTACHMENTS_BUCKET=email-attachments
 # Optional: skip Graph files larger than this (default 25MB)
 # EMAIL_ATTACHMENT_MAX_BYTES=26214400
+
+# Smart Scan AI classify/split (supabase/functions/smart-scan-classify)
+# Deploy: supabase functions deploy smart-scan-classify
+# SQL: sql/2026-09-15_smart_scan_documents.sql
+# SQL: sql/2026-09-15_smart_scan_removed.sql
+# SMART_SCAN_CLASSIFY_SECRET=optional_shared_secret
+# SMART_SCAN_CLASSIFY_URL=http://localhost:54321/functions/v1/smart-scan-classify
+# Scan Center mailbox auto-fetch (default every 20s while backend is running)
+# ENABLE_SCAN_CENTER_SYNC_SCHEDULER=true
+# SCAN_CENTER_SYNC_INTERVAL_SECONDS=20
 
 # PEX staff-reply webhook (WhatsApp / later emails)
 # PEX_CRM_CHAT_WEBHOOK_URL=https://pexagent-production.up.railway.app/webhooks/crm-chat

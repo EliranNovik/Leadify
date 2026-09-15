@@ -142,6 +142,7 @@ import {
   LazyTeamsPage,
   LazyTimelinePage,
   LazyWaitingForPriceOfferPage,
+  LazySmartScanPage,
   LazyWhatsAppLeadsPage,
   LazyWhatsAppPage,
   LazyRMQMessagesPage,
@@ -1196,6 +1197,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/employee-performance" element={<RouteSuspense><LazyEmployeePerformancePage /></RouteSuspense>} />
                     <Route path="/scheduler-tool" element={<RouteSuspense><LazySchedulerToolPage /></RouteSuspense>} />
                     <Route path="/whatsapp" element={<RouteSuspense><LazyWhatsAppPage /></RouteSuspense>} />
+                    <Route path="/smart-scan" element={<RouteSuspense><LazySmartScanPage /></RouteSuspense>} />
                     <Route path="/whatsapp-leads" element={<RouteSuspense><LazyWhatsAppLeadsPage /></RouteSuspense>} />
                     <Route path="/email-leads" element={<RouteSuspense><LazyEmailThreadLeadPage /></RouteSuspense>} />
                     <Route path="/collection" element={<RouteSuspense><LazyCollectionPage /></RouteSuspense>} />

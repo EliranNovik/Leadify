@@ -1,9 +1,11 @@
 import {
   applyInvoiceSentFromPaymentRequest,
   countDueLast30DayFocus,
+  countDueFocusInRange,
   countSignedLeadsMissingPaymentPlan,
   last7DaysRange,
   last30DaysRange,
+  yearToDateRange,
 } from './paymentRequestEmail';
 import { supabase } from './supabase';
 import {
@@ -18,6 +20,7 @@ import {
   createBoiDateRateConverter,
   getJerusalemDateFromTimestamp,
   getJerusalemTodayIsoDate,
+  type BoiDateRateConverter,
   type CurrencyInput,
 } from './boiCurrencyConversion';
 import { buildJerusalemEndOfDayIso, buildJerusalemStartOfDayIso } from './leadDateFilters';
@@ -68,16 +71,32 @@ export type FinanceOverviewSnapshot = {
   expensesMarketingNis: number;
   expensesSalariesNis: number;
   overdueUnpaidCount: number;
+  overdueUnpaidNis: number;
   dueTodayCount: number;
+  dueTodayNis: number;
   signedMissingPaymentPlanCount: number;
   dueUnsentProformaCount: number;
+  dueUnsentProformaNis: number;
   dueSentProformaCount: number;
+  dueSentProformaNis: number;
   dueNoProformaCount: number;
+  dueNoProformaNis: number;
+  dueNoProformaThisYearCount: number;
+  dueNoProformaThisYearNis: number;
+  dueUnsentProformaThisYearCount: number;
+  dueUnsentProformaThisYearNis: number;
+  dueSentProformaThisYearCount: number;
+  dueSentProformaThisYearNis: number;
   dueNext7DaysCount: number;
+  dueNext7DaysNis: number;
   readyToPayUnpaidCount: number;
+  readyToPayUnpaidNis: number;
   pendingWithProformaCount: number;
+  pendingWithProformaNis: number;
   pendingWithoutProformaCount: number;
+  pendingWithoutProformaNis: number;
   collectedTodayCount: number;
+  collectedTodayNis: number;
   collectedThisMonthCount: number;
   asOf: string;
 };
@@ -312,6 +331,7 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
   const today = todayIso();
   const monthStart = monthStartIso();
   const last30 = last30DaysRange();
+  const ytd = yearToDateRange();
   const now = new Date();
   const year = String(now.getFullYear());
   const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -341,6 +361,20 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     collectedLegacy,
     signedMissingPaymentPlanCount,
     dueLast30,
+    dueThisYear,
+    overdueNewVals,
+    overdueLegacyVals,
+    dueTodayNewVals,
+    dueTodayLegacyVals,
+    dueNext7NewVals,
+    dueNext7LegacyVals,
+    readyNewVals,
+    readyLegacyVals,
+    pendingWithNewVals,
+    pendingWithoutNewVals,
+    pendingWithoutLegacyVals,
+    collectedTodayNewVals,
+    collectedTodayLegacyVals,
   ] = await Promise.all([
     fetchAllExpensesBreakdown(monthKeys).catch(() => []),
     countNewPlans({ unpaidOnly: true, dueFrom: last30.from, dueBefore: today }),
@@ -360,6 +394,20 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     countLegacyPlans({ paidFrom: monthStart, paidTo: today }),
     countSignedLeadsMissingPaymentPlan(),
     countDueLast30DayFocus(),
+    countDueFocusInRange(ytd),
+    fetchNewPlanValueRows({ unpaidOnly: true, dueFrom: last30.from, dueBefore: today }),
+    fetchLegacyPlanValueRows({ unpaidOnly: true, dueFrom: last30.from, dueBefore: today }),
+    fetchNewPlanValueRows({ unpaidOnly: true, dueOn: today }),
+    fetchLegacyPlanValueRows({ unpaidOnly: true, dueOn: today }),
+    fetchNewPlanValueRows({ unpaidOnly: true, dueFrom: tomorrowIso, dueTo: in7Iso }),
+    fetchLegacyPlanValueRows({ unpaidOnly: true, dueFrom: tomorrowIso, dueTo: in7Iso }),
+    fetchNewPlanValueRows({ unpaidOnly: true, readyToPay: true, dueFrom: last30.from, dueTo: last30.to }),
+    fetchLegacyPlanValueRows({ unpaidOnly: true, readyToPay: true, dueFrom: last30.from, dueTo: last30.to }),
+    fetchNewPlanValueRows({ unpaidOnly: true, withProforma: true, dueFrom: last30.from, dueTo: last30.to }),
+    fetchNewPlanValueRows({ unpaidOnly: true, withProforma: false, dueFrom: last30.from, dueTo: last30.to }),
+    fetchLegacyPlanValueRows({ unpaidOnly: true, dueFrom: last30.from, dueTo: last30.to }),
+    fetchNewPlanValueRows({ paidFrom: today, paidTo: today }),
+    fetchLegacyPlanValueRows({ paidFrom: today, paidTo: today }),
   ]);
 
   const totals = sumCategoryTotals(expenseRows);
@@ -368,21 +416,71 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     expensesThisMonthNis += totals[key] || 0;
   }
 
+  const nisRange = { from: ytd.from, to: in7Iso };
+  const converter = await createBoiDateRateConverter({
+    dateWindow: { from: shiftIsoDate(ytd.from, -14), to: nisRange.to },
+  });
+  const [
+    overdueUnpaidNis,
+    dueTodayNis,
+    dueNext7DaysNis,
+    readyToPayUnpaidNis,
+    pendingWithProformaNis,
+    pendingWithoutProformaNis,
+    collectedTodayNis,
+    dueNoProformaNis,
+    dueUnsentProformaNis,
+    dueSentProformaNis,
+    dueNoProformaThisYearNis,
+    dueUnsentProformaThisYearNis,
+    dueSentProformaThisYearNis,
+  ] = await Promise.all([
+    sumAmountRowsNis([...overdueNewVals, ...overdueLegacyVals], nisRange, converter),
+    sumAmountRowsNis([...dueTodayNewVals, ...dueTodayLegacyVals], nisRange, converter),
+    sumAmountRowsNis([...dueNext7NewVals, ...dueNext7LegacyVals], nisRange, converter),
+    sumAmountRowsNis([...readyNewVals, ...readyLegacyVals], nisRange, converter),
+    sumAmountRowsNis(pendingWithNewVals, nisRange, converter),
+    sumAmountRowsNis([...pendingWithoutNewVals, ...pendingWithoutLegacyVals], nisRange, converter),
+    sumAmountRowsNis([...collectedTodayNewVals, ...collectedTodayLegacyVals], nisRange, converter),
+    sumAmountRowsNis(dueLast30.noProformaRows, last30, converter),
+    sumAmountRowsNis(dueLast30.unsentRows, last30, converter),
+    sumAmountRowsNis(dueLast30.sentRows, last30, converter),
+    sumAmountRowsNis(dueThisYear.noProformaRows, ytd, converter),
+    sumAmountRowsNis(dueThisYear.unsentRows, ytd, converter),
+    sumAmountRowsNis(dueThisYear.sentRows, ytd, converter),
+  ]);
+
   return {
     expensesThisMonthNis,
     expensesMarketingNis: marketingExpenseTotal(totals),
     expensesSalariesNis: totals.salaries || 0,
     overdueUnpaidCount: overdueNew + overdueLegacy,
+    overdueUnpaidNis,
     dueTodayCount: dueTodayNew + dueTodayLegacy,
+    dueTodayNis,
     signedMissingPaymentPlanCount,
     dueUnsentProformaCount: dueLast30.unsent,
+    dueUnsentProformaNis,
     dueSentProformaCount: dueLast30.sent,
+    dueSentProformaNis,
     dueNoProformaCount: dueLast30.noProforma,
+    dueNoProformaNis,
+    dueNoProformaThisYearCount: dueThisYear.noProforma,
+    dueNoProformaThisYearNis,
+    dueUnsentProformaThisYearCount: dueThisYear.unsent,
+    dueUnsentProformaThisYearNis,
+    dueSentProformaThisYearCount: dueThisYear.sent,
+    dueSentProformaThisYearNis,
     dueNext7DaysCount: dueNext7New + dueNext7Legacy,
+    dueNext7DaysNis,
     readyToPayUnpaidCount: readyNew + readyLegacy,
+    readyToPayUnpaidNis,
     pendingWithProformaCount: pendingWithProforma,
+    pendingWithProformaNis,
     pendingWithoutProformaCount: pendingWithoutProformaNew + pendingWithoutProformaLegacy,
+    pendingWithoutProformaNis,
     collectedTodayCount: collectedTodayNew + collectedTodayLegacy,
+    collectedTodayNis,
     collectedThisMonthCount: collectedNew + collectedLegacy,
     asOf: today,
   };
@@ -621,20 +719,107 @@ async function withBoiNisTotals<T extends { amountValue: number }>(
   range: { from: string; to: string },
   dateFor: (row: T) => string | null | undefined,
   currencyFor: (row: T) => CurrencyInput,
+  converter?: BoiDateRateConverter,
 ): Promise<Array<T & { amountNis: number }>> {
   if (!rows.length) return [];
-  const converter = await createBoiDateRateConverter({
-    dateWindow: { from: shiftIsoDate(range.from, -14), to: range.to },
-  });
+  const boi =
+    converter ??
+    (await createBoiDateRateConverter({
+      dateWindow: { from: shiftIsoDate(range.from, -14), to: range.to },
+    }));
   return Promise.all(
     rows.map(async (row) => {
       const amount = Number(row.amountValue) || 0;
       const amountNis = amount
-        ? await converter.toNis(amount, currencyFor(row), dateFor(row) || range.to)
+        ? await boi.toNis(amount, currencyFor(row), dateFor(row) || range.to)
         : 0;
       return { ...row, amountNis };
     }),
   );
+}
+
+async function sumAmountRowsNis(
+  rows: Array<{ amountValue: number; currency?: CurrencyInput; dueDate?: string | null; asOf?: string | null }>,
+  range: { from: string; to: string },
+  converter?: BoiDateRateConverter,
+): Promise<number> {
+  if (!rows.length) return 0;
+  const withNis = await withBoiNisTotals(
+    rows.map((row) => ({
+      amountValue: Number(row.amountValue) || 0,
+      currency: row.currency ?? null,
+      asOf: row.asOf || row.dueDate || null,
+    })),
+    range,
+    (row) => row.asOf,
+    (row) => row.currency,
+    converter,
+  );
+  return withNis.reduce((sum, row) => sum + (Number(row.amountNis) || 0), 0);
+}
+
+type PlanValueFilter = {
+  unpaidOnly?: boolean;
+  dueOn?: string;
+  dueBefore?: string;
+  dueFrom?: string;
+  dueTo?: string;
+  paidFrom?: string;
+  paidTo?: string;
+  readyToPay?: boolean;
+  withProforma?: boolean;
+};
+
+async function fetchNewPlanValueRows(opts: PlanValueFilter): Promise<Array<{ amountValue: number; currency: CurrencyInput; asOf: string | null }>> {
+  const rows = await fetchAllPaged<any>((from, to) => {
+    let query = supabase
+      .from('payment_plans')
+      .select('value, value_vat, currency, currency_id, due_date, paid_at, paid, cancel_date, proforma, ready_to_pay')
+      .is('cancel_date', null);
+    if (opts.unpaidOnly) query = query.or('paid.is.null,paid.eq.false');
+    if (opts.dueOn) query = query.eq('due_date', opts.dueOn);
+    if (opts.dueBefore) query = query.lt('due_date', opts.dueBefore);
+    if (opts.dueFrom) query = query.gte('due_date', opts.dueFrom);
+    if (opts.dueTo) query = query.lte('due_date', opts.dueTo);
+    if (opts.paidFrom && opts.paidTo) {
+      query = query.eq('paid', true).gte('paid_at', opts.paidFrom).lte('paid_at', `${opts.paidTo}T23:59:59`);
+    }
+    if (opts.readyToPay === true) query = query.eq('ready_to_pay', true);
+    if (opts.withProforma === true) query = query.not('proforma', 'is', null);
+    else if (opts.withProforma === false) query = query.is('proforma', null);
+    return query.range(from, to);
+  }).catch(() => []);
+
+  return rows.map((row) => ({
+    amountValue: parseMoney(row.value) + parseMoney(row.value_vat),
+    currency: row.currency ?? row.currency_id ?? null,
+    asOf: opts.paidFrom ? row.paid_at || row.due_date : row.due_date,
+  }));
+}
+
+async function fetchLegacyPlanValueRows(opts: PlanValueFilter): Promise<Array<{ amountValue: number; currency: CurrencyInput; asOf: string | null }>> {
+  const rows = await fetchAllPaged<any>((from, to) => {
+    let query = supabase
+      .from('finances_paymentplanrow')
+      .select('value, value_base, vat_value, currency_id, due_date, actual_date, cancel_date, ready_to_pay')
+      .is('cancel_date', null);
+    if (opts.unpaidOnly) query = query.is('actual_date', null);
+    if (opts.dueOn) query = query.eq('due_date', opts.dueOn);
+    if (opts.dueBefore) query = query.lt('due_date', opts.dueBefore);
+    if (opts.dueFrom) query = query.gte('due_date', opts.dueFrom);
+    if (opts.dueTo) query = query.lte('due_date', opts.dueTo);
+    if (opts.paidFrom && opts.paidTo) {
+      query = query.not('actual_date', 'is', null).gte('actual_date', opts.paidFrom).lte('actual_date', opts.paidTo);
+    }
+    if (opts.readyToPay === true) query = query.eq('ready_to_pay', true);
+    return query.range(from, to);
+  }).catch(() => []);
+
+  return rows.map((row) => ({
+    amountValue: parseMoney(row.value) || parseMoney(row.value_base) + parseMoney(row.vat_value),
+    currency: row.currency_id ?? null,
+    asOf: opts.paidFrom ? row.actual_date || row.due_date : row.due_date,
+  }));
 }
 
 function toAmountParts(

@@ -20,8 +20,10 @@ import {
 import { usePersistedFilters } from '../hooks/usePersistedState';
 import {
   buildCollectionDueFiltersForFocus,
+  isFinanceYearDueFocus,
   type FinanceCollectionFocusId,
 } from '../lib/financeCollectionFocus';
+import { yearToDateRange } from '../lib/paymentRequestEmail';
 
 const CollectionDueReport = ({
   focusPreset = null,
@@ -2592,7 +2594,7 @@ const CollectionDueReport = ({
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        next.delete('focus');
+        if (!isFinanceYearDueFocus(focusPreset)) next.delete('focus');
         return next;
       },
       { replace: true },
@@ -3561,13 +3563,26 @@ const CollectionDueReport = ({
             </select>
           </div>
         </div>
-        <div className="mt-4 flex items-center gap-4">
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             className="btn btn-primary"
             onClick={handleSearch}
             disabled={loading}
           >
             {loading ? 'Loading...' : 'Show'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-outline"
+            disabled={loading}
+            onClick={() => {
+              const ytd = yearToDateRange();
+              setFilters((prev) => ({ ...prev, ...ytd }));
+              filtersRef.current = { ...filtersRef.current, ...ytd };
+              void handleSearch(ytd);
+            }}
+          >
+            This year
           </button>
           {searchPerformed && (
             <div className="bg-green-500 text-white px-4 py-2 rounded-lg">

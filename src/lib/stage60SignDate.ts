@@ -69,6 +69,7 @@ export const resolveStage60SignTimestamp = (record: { date?: string | null; cdat
 export async function fetchStage60RecordsInRange(
   fromDate?: string,
   toDate?: string,
+  signal?: AbortSignal,
 ): Promise<Stage60Record[]> {
   const { startIso, endIso } = computeDateBounds(fromDate, toDate);
   const anyCalendarFilter = Boolean(fromDate || toDate);
@@ -80,21 +81,28 @@ export async function fetchStage60RecordsInRange(
   const wideEndIso =
     anyCalendarFilter && rangeDayHi ? toEndOfDayIso(addCalendarDays(rangeDayHi, 1)) : endIso;
 
-  if (anyCalendarFilter && wideStartIso && wideEndIso) {
-    const qDate = supabase
-      .from('leads_leadstage')
-      .select(STAGE60_SELECT)
-      .eq('stage', 60)
-      .gte('date', wideStartIso)
-      .lte('date', wideEndIso);
+  const withSignal = <T extends { abortSignal: (s: AbortSignal) => T }>(query: T): T =>
+    signal ? query.abortSignal(signal) : query;
 
-    const qCdateWhenDateNull = supabase
-      .from('leads_leadstage')
-      .select(STAGE60_SELECT)
-      .eq('stage', 60)
-      .is('date', null)
-      .gte('cdate', wideStartIso)
-      .lte('cdate', wideEndIso);
+  if (anyCalendarFilter && wideStartIso && wideEndIso) {
+    const qDate = withSignal(
+      supabase
+        .from('leads_leadstage')
+        .select(STAGE60_SELECT)
+        .eq('stage', 60)
+        .gte('date', wideStartIso)
+        .lte('date', wideEndIso),
+    );
+
+    const qCdateWhenDateNull = withSignal(
+      supabase
+        .from('leads_leadstage')
+        .select(STAGE60_SELECT)
+        .eq('stage', 60)
+        .is('date', null)
+        .gte('cdate', wideStartIso)
+        .lte('cdate', wideEndIso),
+    );
 
     const [resDate, resCdate] = await Promise.all([qDate, qCdateWhenDateNull]);
 
@@ -112,7 +120,7 @@ export async function fetchStage60RecordsInRange(
     );
   }
 
-  let query = supabase.from('leads_leadstage').select(STAGE60_SELECT).eq('stage', 60);
+  let query = withSignal(supabase.from('leads_leadstage').select(STAGE60_SELECT).eq('stage', 60));
   if (startIso) query = query.gte('date', startIso);
   if (endIso) query = query.lte('date', endIso);
   const { data, error } = await query;

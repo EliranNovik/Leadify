@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { UserGroupIcon, DocumentTextIcon, CurrencyDollarIcon, BriefcaseIcon, XMarkIcon, ArrowPathIcon, MagnifyingGlassIcon, Squares2X2Icon, Bars3Icon, UserPlusIcon, QueueListIcon, ArrowLeftIcon, PauseCircleIcon } from '@heroicons/react/24/outline';
 import { tryAdvanceClientSignedToHandlerSet } from '../lib/advanceClientSignedToHandlerSet';
 import { convertToNIS } from '../lib/currencyConversion';
+import { fetchStageNames, getStageName, getStageColour, getSoftStageBadgeStyle } from '../lib/stageUtils';
 import { isDepartmentManagerBonusesRole, isHandlerBonusesRole } from '../lib/employeeLeadReporting';
 import LeadDetailsModal from '../components/LeadDetailsModal';
 import AssignMultipleLeadsModal from '../components/AssignMultipleLeadsModal';

@@ -32,6 +32,7 @@ import {
   ReceiptRefundIcon,
   EnvelopeIcon,
   BriefcaseIcon,
+  DocumentMagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -119,6 +120,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: ClipboardDocumentListIcon, label: 'Lead time report', path: '/lead-time-report' },
   // { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
+  { icon: DocumentMagnifyingGlassIcon, label: 'Smart Scan', path: '/smart-scan' },
   // { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
   { icon: EnvelopeIcon, label: 'Email Leads', path: '/email-leads' },
@@ -162,6 +164,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: ClipboardDocumentListIcon, label: 'Lead time report', path: '/lead-time-report' },
   // { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
+  { icon: DocumentMagnifyingGlassIcon, label: 'Smart Scan', path: '/smart-scan' },
   // { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
   { icon: EnvelopeIcon, label: 'Email Leads', path: '/email-leads' },

@@ -44,6 +44,13 @@ export function last7DaysRange(from = new Date()): { from: string; to: string } 
   return { from: isoDateLocal(start), to: isoDateLocal(end) };
 }
 
+/** Inclusive local calendar range from 1 January of the current year through today. */
+export function yearToDateRange(from = new Date()): { from: string; to: string } {
+  const end = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const start = new Date(end.getFullYear(), 0, 1);
+  return { from: isoDateLocal(start), to: isoDateLocal(end) };
+}
+
 async function fetchAllPaged<T>(
   runPage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
 ): Promise<T[]> {
@@ -61,10 +68,11 @@ async function fetchAllPaged<T>(
   return rows;
 }
 
-export async function fetchAllStage60Records(): Promise<Stage60Record[]> {
-  return fetchAllPaged<Stage60Record>((from, to) =>
-    supabase.from('leads_leadstage').select(STAGE60_SELECT).eq('stage', 60).range(from, to),
-  );
+export async function fetchAllStage60Records(signal?: AbortSignal): Promise<Stage60Record[]> {
+  return fetchAllPaged<Stage60Record>((from, to) => {
+    const query = supabase.from('leads_leadstage').select(STAGE60_SELECT).eq('stage', 60).range(from, to);
+    return signal ? query.abortSignal(signal) : query;
+  });
 }
 
 function hasProformaValue(value: unknown): boolean {
@@ -123,14 +131,53 @@ function contactKey(id: string | number | null | undefined): string | null {
   return raw || null;
 }
 
+const LOOKUP_CONCURRENCY = 8;
+const EMAIL_PER_LEAD_LIMIT = 80;
+const EMAIL_LOOKUP_TIMEOUT_MS = 4000;
+
+let templateNamesCache: Promise<string[]> | null = null;
+
 async function fetchPaymentRequestTemplateNames(): Promise<string[]> {
-  const { data } = await supabase
-    .from('misc_emailtemplate')
-    .select('id, name')
-    .in('id', [...PAYMENT_REQUEST_EMAIL_TEMPLATE_IDS]);
-  return (data || [])
-    .map((row) => String(row.name || '').trim())
-    .filter((name) => name.length >= 4);
+  if (!templateNamesCache) {
+    templateNamesCache = (async () => {
+      const { data } = await supabase
+        .from('misc_emailtemplate')
+        .select('id, name')
+        .in('id', [...PAYMENT_REQUEST_EMAIL_TEMPLATE_IDS]);
+      return (data || [])
+        .map((row) => String(row.name || '').trim())
+        .filter((name) => name.length >= 4);
+    })();
+  }
+  return templateNamesCache;
+}
+
+function subjectMatchesPaymentRequest(subject: unknown, names: string[]): boolean {
+  const value = String(subject || '').toLowerCase();
+  if (!value) return false;
+  return names.some((name) => value.includes(name.toLowerCase()));
+}
+
+async function runChunks<T>(
+  items: T[],
+  chunkSize: number,
+  worker: (chunk: T[]) => Promise<void>,
+): Promise<void> {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    if (chunk.length) chunks.push(chunk);
+  }
+  if (!chunks.length) return;
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(LOOKUP_CONCURRENCY, chunks.length) }, async () => {
+      while (next < chunks.length) {
+        const chunk = chunks[next++];
+        await worker(chunk);
+      }
+    }),
+  );
 }
 
 type EmailLeadHit = {
@@ -209,9 +256,7 @@ async function fetchLeadKeysWithPaymentRequestWhatsApp(
   foundContacts: Set<string>,
 ): Promise<void> {
   const runChunked = async (ids: Array<string | number>, column: 'lead_id' | 'legacy_id' | 'contact_id') => {
-    for (let i = 0; i < ids.length; i += 200) {
-      const chunk = ids.slice(i, i + 200);
-      if (!chunk.length) continue;
+    await runChunks(ids, 100, async (chunk) => {
       try {
         const { data, error } = await supabase
           .from('whatsapp_messages')
@@ -224,62 +269,61 @@ async function fetchLeadKeysWithPaymentRequestWhatsApp(
       } catch (err) {
         console.warn(`Payment request WhatsApp lookup (${column}) failed:`, err);
       }
-    }
+    });
   };
 
-  await runChunked(newIds, 'lead_id');
-  await runChunked(
-    legacyIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
-    'legacy_id',
-  );
-  await runChunked(
-    contactIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
-    'contact_id',
-  );
+  await Promise.all([
+    runChunked(newIds, 'lead_id'),
+    runChunked(
+      legacyIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+      'legacy_id',
+    ),
+    runChunked(
+      contactIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+      'contact_id',
+    ),
+  ]);
 }
 
-async function queryOutgoingPaymentRequestEmails(
+async function queryOutgoingPaymentRequestEmailsForId(
   column: 'client_id' | 'legacy_id' | 'contact_id',
-  chunk: Array<string | number>,
-  subjectOr: string,
-): Promise<EmailLeadHit[]> {
-  const hits: EmailLeadHit[] = [];
+  id: string | number,
+  names: string[],
+): Promise<EmailLeadHit | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EMAIL_LOOKUP_TIMEOUT_MS);
   try {
     const { data, error } = await supabase
       .from('emails')
-      .select('client_id, legacy_id, contact_id, template_id')
-      .eq('direction', 'outgoing')
-      .in('template_id', [...PAYMENT_REQUEST_EMAIL_TEMPLATE_IDS])
-      .in(column, chunk);
+      .select('client_id, legacy_id, contact_id, subject, direction')
+      .eq(column, id)
+      .order('sent_at', { ascending: false })
+      .limit(EMAIL_PER_LEAD_LIMIT)
+      .abortSignal(controller.signal);
     if (error) throw error;
-    hits.push(...((data || []) as EmailLeadHit[]));
+    const hit = ((data || []) as Array<EmailLeadHit & { subject?: string | null; direction?: string | null }>).find(
+      (row) =>
+        String(row.direction || '').toLowerCase() === 'outgoing' &&
+        subjectMatchesPaymentRequest(row.subject, names),
+    );
+    return hit ?? null;
   } catch (err) {
-    console.warn(`Payment request email template lookup (${column}) failed:`, err);
-  }
-
-  // Graph-sent invoices do not store emails.template_id — always match template subjects too.
-  if (subjectOr) {
-    try {
-      const { data, error } = await supabase
-        .from('emails')
-        .select('client_id, legacy_id, contact_id, subject')
-        .eq('direction', 'outgoing')
-        .or(subjectOr)
-        .in(column, chunk);
-      if (error) throw error;
-      hits.push(...((data || []) as EmailLeadHit[]));
-    } catch (err) {
+    const aborted =
+      (err instanceof DOMException && err.name === 'AbortError') ||
+      (typeof err === 'object' && err != null && 'name' in err && (err as { name?: string }).name === 'AbortError');
+    if (!aborted) {
       console.warn(`Payment request email subject lookup (${column}) failed:`, err);
     }
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
-
-  return hits;
 }
 
 /**
  * Leads that already received the proforma payment request by email (179 / 180)
- * or WhatsApp (40 / 41). Email matches template_id when present, and always also
- * matches outgoing subject (Graph sends do not persist template_id).
+ * or WhatsApp (40 / 41). Outgoing Graph emails are matched by template subject
+ * (`emails` has no template_id). WhatsApp uses template_id 40 / 41.
  * Legacy sub-leads also match the parent master_id and the payment-row contact.
  */
 export async function fetchLeadKeysWithPaymentRequestEmail(
@@ -306,26 +350,35 @@ export async function fetchLeadKeysWithPaymentRequestEmail(
   ];
 
   const names = await fetchPaymentRequestTemplateNames();
-  const subjectOr = names.map((name) => `subject.ilike.%${name.replace(/[%(),]/g, '')}%`).join(',');
-
-  const runChunked = async (ids: Array<string | number>, column: 'client_id' | 'legacy_id' | 'contact_id') => {
-    for (let i = 0; i < ids.length; i += 200) {
-      const chunk = ids.slice(i, i + 200);
-      if (!chunk.length) continue;
-      addEmailHits(await queryOutgoingPaymentRequestEmails(column, chunk, subjectOr), foundLeadKeys, foundContacts);
-    }
-  };
-
-  await runChunked(newIds, 'client_id');
-  await runChunked(
-    legacyIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
-    'legacy_id',
-  );
-  await runChunked(
-    contactIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
-    'contact_id',
-  );
   await fetchLeadKeysWithPaymentRequestWhatsApp(newIds, legacyIds, contactIds, foundLeadKeys, foundContacts);
+
+  if (names.length) {
+    const pendingNew = newIds.filter((id) => !foundLeadKeys.has(emailLeadKey('new', id)));
+    const pendingLegacy = legacyIds.filter((id) => !foundLeadKeys.has(emailLeadKey('legacy', id)));
+    const pendingContacts = contactIds.filter((id) => !foundContacts.has(id));
+
+    const runIdLookups = async (
+      ids: Array<string | number>,
+      column: 'client_id' | 'legacy_id' | 'contact_id',
+    ) => {
+      await runChunks(ids, 1, async ([id]) => {
+        const hit = await queryOutgoingPaymentRequestEmailsForId(column, id, names);
+        if (hit) addEmailHits([hit], foundLeadKeys, foundContacts);
+      });
+    };
+
+    await Promise.all([
+      runIdLookups(pendingNew, 'client_id'),
+      runIdLookups(
+        pendingLegacy.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+        'legacy_id',
+      ),
+      runIdLookups(
+        pendingContacts.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+        'contact_id',
+      ),
+    ]);
+  }
 
   for (const key of enriched) {
     const self = emailLeadKey(key.kind, key.id);
@@ -398,7 +451,15 @@ type DueCollectionRow = {
   orderCode: string;
   hasProforma: boolean;
   invoiceSent: boolean;
+  amountValue: number;
+  currency: string | number | null;
+  dueDate: string | null;
 };
+
+function parsePlanMoney(value: unknown): number {
+  const n = Number(String(value ?? '').replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
 
 function normalizeDueOrderCode(order: string | number | null | undefined): string {
   if (order == null) return '';
@@ -472,15 +533,14 @@ async function fetchLegacyProformaMaps(legacyLeadIds: number[]): Promise<{
   return { byPpr, leadLevel };
 }
 
-/** Unpaid due rows in the last 30 days, using Collection proforma + invoice-sent rules. */
-async function fetchDueUnpaidRowsLast30Days(): Promise<DueCollectionRow[]> {
-  const { from, to } = last30DaysRange();
+/** Unpaid due rows in a date range, using Collection proforma + invoice-sent rules. */
+async function fetchDueUnpaidRowsInRange(from: string, to: string): Promise<DueCollectionRow[]> {
   const [modern, legacy] = await Promise.all([
     fetchAllPaged<any>((fromIdx, toIdx) =>
       supabase
         .from('payment_plans')
         .select(
-          'id, lead_id, paid, paid_at, proforma, ready_to_pay, due_date, cancel_date, payment_order, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at',
+          'id, lead_id, paid, paid_at, proforma, ready_to_pay, due_date, cancel_date, payment_order, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, value, value_vat, currency, currency_id',
         )
         .is('cancel_date', null)
         .eq('ready_to_pay', true)
@@ -494,7 +554,7 @@ async function fetchDueUnpaidRowsLast30Days(): Promise<DueCollectionRow[]> {
       supabase
         .from('finances_paymentplanrow')
         .select(
-          'id, lead_id, client_id, actual_date, due_date, cancel_date, order, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at',
+          'id, lead_id, client_id, actual_date, due_date, cancel_date, order, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, value, value_base, vat_value, currency_id',
         )
         .is('cancel_date', null)
         .not('due_date', 'is', null)
@@ -517,6 +577,9 @@ async function fetchDueUnpaidRowsLast30Days(): Promise<DueCollectionRow[]> {
       orderCode: normalizeDueOrderCode(row.payment_order),
       hasProforma: hasProformaValue(row.proforma),
       invoiceSent: rowHasInvoiceSentFlag(row),
+      amountValue: parsePlanMoney(row.value) + parsePlanMoney(row.value_vat),
+      currency: row.currency ?? row.currency_id ?? null,
+      dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null,
     });
   }
 
@@ -538,6 +601,9 @@ async function fetchDueUnpaidRowsLast30Days(): Promise<DueCollectionRow[]> {
       orderCode: normalizeDueOrderCode(row.order),
       hasProforma: legacyRowHasProforma(row, byPpr, leadLevel),
       invoiceSent: rowHasInvoiceSentFlag(row),
+      amountValue: parsePlanMoney(row.value) || parsePlanMoney(row.value_base) + parsePlanMoney(row.vat_value),
+      currency: row.currency_id ?? null,
+      dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null,
     });
   }
 
@@ -558,17 +624,45 @@ function legacyRowHasProforma(
   return leadLevel.has(`${leadId}_any`);
 }
 
+export type DueLast30DayAmountRow = {
+  amountValue: number;
+  currency: string | number | null;
+  dueDate: string | null;
+};
+
 export type DueLast30DayFocusCounts = {
   noProforma: number;
   unsent: number;
   sent: number;
+  noProformaRows: DueLast30DayAmountRow[];
+  unsentRows: DueLast30DayAmountRow[];
+  sentRows: DueLast30DayAmountRow[];
 };
 
-/** Shared last-30-days due counts that match Collection filters (filter first, then one row per contact). */
-export async function countDueLast30DayFocus(): Promise<DueLast30DayFocusCounts> {
-  const empty: DueLast30DayFocusCounts = { noProforma: 0, unsent: 0, sent: 0 };
+function toAmountRow(row: {
+  amountValue?: number;
+  currency?: string | number | null;
+  dueDate?: string | null;
+}): DueLast30DayAmountRow {
+  return {
+    amountValue: Number(row.amountValue) || 0,
+    currency: row.currency ?? null,
+    dueDate: row.dueDate ?? null,
+  };
+}
+
+/** Shared due counts that match Collection filters (filter first, then one row per contact). */
+export async function countDueFocusInRange(range: { from: string; to: string }): Promise<DueLast30DayFocusCounts> {
+  const empty: DueLast30DayFocusCounts = {
+    noProforma: 0,
+    unsent: 0,
+    sent: 0,
+    noProformaRows: [],
+    unsentRows: [],
+    sentRows: [],
+  };
   try {
-    const rows = await fetchDueUnpaidRowsLast30Days();
+    const rows = await fetchDueUnpaidRowsInRange(range.from, range.to);
     const marked = await applyInvoiceSentFromPaymentRequest(
       rows.map((row) => ({
         leadId: row.kind === 'legacy' ? `legacy_${row.leadId}` : row.leadId,
@@ -578,18 +672,33 @@ export async function countDueLast30DayFocus(): Promise<DueLast30DayFocusCounts>
         hasProforma: row.hasProforma,
         invoiceSent: row.invoiceSent,
         orderCode: row.orderCode,
+        amountValue: row.amountValue,
+        currency: row.currency,
+        dueDate: row.dueDate,
       })),
     );
 
+    const noProformaRows = dedupeDueRowsByContact(marked.filter((row) => !row.hasProforma)).map(toAmountRow);
+    const unsentRows = dedupeDueRowsByContact(marked.filter((row) => row.hasProforma && !row.invoiceSent)).map(toAmountRow);
+    const sentRows = dedupeDueRowsByContact(marked.filter((row) => row.hasProforma && row.invoiceSent)).map(toAmountRow);
+
     return {
-      noProforma: dedupeDueRowsByContact(marked.filter((row) => !row.hasProforma)).length,
-      unsent: dedupeDueRowsByContact(marked.filter((row) => row.hasProforma && !row.invoiceSent)).length,
-      sent: dedupeDueRowsByContact(marked.filter((row) => row.hasProforma && row.invoiceSent)).length,
+      noProforma: noProformaRows.length,
+      unsent: unsentRows.length,
+      sent: sentRows.length,
+      noProformaRows,
+      unsentRows,
+      sentRows,
     };
   } catch (err) {
-    console.warn('countDueLast30DayFocus:', err);
+    console.warn('countDueFocusInRange:', err);
     return empty;
   }
+}
+
+/** Shared last-30-days due counts that match Collection filters (filter first, then one row per contact). */
+export async function countDueLast30DayFocus(): Promise<DueLast30DayFocusCounts> {
+  return countDueFocusInRange(last30DaysRange());
 }
 
 /** Due unpaid rows in the last 30 days with a due date and no proforma created. */

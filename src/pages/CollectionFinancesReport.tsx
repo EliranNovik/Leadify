@@ -40,10 +40,10 @@ import type { ContactInfo } from '../lib/contactHelpers';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import {
   convertToNISWithMeta,
+  createBoiDateRateConverter,
   getBoiCoverageStartDate,
   getJerusalemTodayIsoDate,
-  loadBoiExchangeRatesAsOf,
-  loadBoiExchangeRatesForDate,
+  toDateOnlyKey,
 } from '../lib/boiCurrencyConversion';
 import {
   applyLockedChargeTotalIfMatching,
@@ -270,6 +270,17 @@ const orderOptions: { value: string; label: string }[] = [
   { value: '99', label: 'Expense (no VAT)' },
 ];
 
+function shiftIsoDate(iso: string, days: number): string {
+  const [year, month, day] = iso.split('-').map(Number);
+  if (!year || !month || !day) return iso;
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + days);
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export const formatCurrency = (value: number, currency: string) => {
   const normalized = currency === '₪' ? 'ILS' : currency === '€' ? 'EUR' : currency === '$' ? 'USD' : currency?.length === 3 ? currency : 'ILS';
   const locale = normalized === 'USD' ? 'en-US' : 'en-GB';
@@ -420,6 +431,7 @@ type SavedCollectionView = {
   showClientColumn: boolean;
   showHandlerColumn: boolean;
   showNotesColumn: boolean;
+  showTaxReceiptColumn: boolean;
   displayFilter: DisplayFilter;
   savedAt: string;
 };
@@ -456,11 +468,10 @@ function getWeekDateRange(): Pick<Filters, 'fromDate' | 'toDate'> {
   return { fromDate: isoDateLocal(monday), toDate: isoDateLocal(sunday) };
 }
 
-function getMonthDateRange(): Pick<Filters, 'fromDate' | 'toDate'> {
+function getYearDateRange(): Pick<Filters, 'fromDate' | 'toDate'> {
   const now = new Date();
-  const first = new Date(now.getFullYear(), now.getMonth(), 1);
-  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  return { fromDate: isoDateLocal(first), toDate: isoDateLocal(last) };
+  const first = new Date(now.getFullYear(), 0, 1);
+  return { fromDate: isoDateLocal(first), toDate: isoDateLocal(now) };
 }
 
 function loadSavedViews(): SavedCollectionView[] {
@@ -581,6 +592,25 @@ const SortableTableHeader: React.FC<{
     </button>
   </th>
 );
+
+function FilterBox({
+  label,
+  children,
+}: {
+  label?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="relative">
+      {label ? (
+        <span className="pointer-events-none absolute -top-2 left-2.5 z-10 bg-white px-1 text-[11px] font-medium leading-none text-gray-500">
+          {label}
+        </span>
+      ) : null}
+      {children}
+    </div>
+  );
+}
 
 function escapeIlikePattern(value: string): string {
   return value.replace(/[%_\\]/g, '\\$&');
@@ -781,236 +811,6 @@ function applyPaymentDateRangeToQuery(
   return query;
 }
 
-/** Temporary debug target — contact filtered out of Collection Finances report. */
-const DEBUG_CONTACT_NAME = 'Daniel Granot';
-const DEBUG_CONTACT_EXPECTED_DUE = '2026-05-28';
-
-function nameMatchesDebugContact(name: string | null | undefined): boolean {
-  if (!name) return false;
-  const n = name.toLowerCase();
-  return n.includes('daniel') && n.includes('granot');
-}
-
-function rowMatchesDebugContact(row: Partial<PaymentRow>): boolean {
-  return nameMatchesDebugContact(row.clientName) || nameMatchesDebugContact(row.leadName);
-}
-
-function summarizeRowForDebug(row: Partial<PaymentRow>) {
-  return {
-    id: row.id,
-    leadId: row.leadId,
-    clientId: row.clientId,
-    leadName: row.leadName,
-    clientName: row.clientName,
-    dueDate: row.dueDate,
-    planDate: row.planDate,
-    collectedDate: row.collectedDate,
-    collected: row.collected,
-    hasProforma: row.hasProforma,
-    readyToPay: row.readyToPay,
-    orderCode: row.orderCode,
-    mainCategoryId: row.mainCategoryId,
-    currencyId: row.currencyId,
-    leadType: row.leadType,
-    caseNumber: row.caseNumber,
-  };
-}
-
-function getCollectionRowFilterReason(row: PaymentRow, filters: Filters): string | null {
-  if (filters.due === 'due_only') {
-    if (row.leadType === 'legacy' && !row.dueDate) {
-      return 'due_only: legacy row has no due_date (filtered even if plan date matches)';
-    }
-    if (row.leadType === 'new' && row.readyToPay !== true) {
-      return `due_only: new row ready_to_pay=${String(row.readyToPay)} (must be true)`;
-    }
-  }
-  if (Array.isArray(filters.categoryId) && filters.categoryId.length > 0) {
-    if (!row.mainCategoryId || !filters.categoryId.includes(row.mainCategoryId)) {
-      return `category: row mainCategoryId=${row.mainCategoryId ?? 'null'}, filter=${filters.categoryId.join(',')}`;
-    }
-  }
-  if (Array.isArray(filters.collected) && filters.collected.length > 0) {
-    if (!rowMatchesCollectedFilter(row, filters.collected)) {
-      return `collected: filter=[${filters.collected.join(',')}], row collected=${row.collected}, hasProforma=${row.hasProforma}, invoiceSent=${row.invoiceSent}`;
-    }
-  }
-  if (Array.isArray(filters.order) && filters.order.length > 0) {
-    if (!row.orderCode || !filters.order.includes(row.orderCode)) {
-      return `order: row orderCode=${row.orderCode ?? 'null'}, filter=${filters.order.join(',')}`;
-    }
-  }
-  if (Array.isArray(filters.currencyId) && filters.currencyId.length > 0) {
-    const rowCurrencyId = row.currencyId != null ? String(row.currencyId) : null;
-    if (!rowCurrencyId || !filters.currencyId.includes(rowCurrencyId)) {
-      return `currency: row currencyId=${rowCurrencyId ?? 'null'}, filter=${filters.currencyId.join(',')}`;
-    }
-  }
-  if (hasPaymentDateFilter(filters)) {
-    if (!row.collectedDate) {
-      return `payment date: no collectedDate/paid_at (filter ${filters.paymentFromDate ?? ''} – ${filters.paymentToDate ?? ''})`;
-    }
-    const paymentDateStr = paymentDateForFilter(row.collectedDate);
-    if (!paymentDateStr || !dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
-      return `payment date: collectedDate=${paymentDateStr ?? row.collectedDate} outside ${filters.paymentFromDate ?? ''} – ${filters.paymentToDate ?? ''}`;
-    }
-  } else if (filters.fromDate || filters.toDate) {
-    const usesPlanDate = filters.due === 'ignore' && row.leadType === 'legacy';
-    const dateToCheck = usesPlanDate ? row.planDate : row.dueDate;
-    const dateColumn = usesPlanDate ? 'planDate (legacy date column)' : 'dueDate';
-    if (!dateToCheck) {
-      return `due/plan date: missing ${dateColumn} (due=${filters.due}, legacy=${row.leadType === 'legacy'})`;
-    }
-    const dateStr = dateToCheck.split('T')[0];
-    if (!dateInRange(dateStr, filters.fromDate, filters.toDate)) {
-      return `${dateColumn}: ${dateStr} outside filter ${filters.fromDate} – ${filters.toDate} (legacy ignore uses plan date, not due_date)`;
-    }
-  }
-  return null;
-}
-
-function explainDbDateFilterForLegacyPlan(plan: { date?: string | null; due_date?: string | null }, filters: Filters): string {
-  if (hasPaymentDateFilter(filters)) {
-    return `DB filters actual_date (payment date), not due_date=${plan.due_date ?? 'null'}`;
-  }
-  if (!filters.fromDate && !filters.toDate) return 'No date filter on DB query';
-  if (filters.due === 'due_only') {
-    const inRange = plan.due_date && dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate);
-    return `DB due_only: due_date=${plan.due_date ?? 'null'}, inRange=${inRange}, filter=${filters.fromDate}–${filters.toDate}`;
-  }
-  const planDateInRange = plan.date && dateInRange(String(plan.date).split('T')[0], filters.fromDate, filters.toDate);
-  const dueDateInRange = plan.due_date && dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate);
-  return `DB ignore: filters legacy "date" column=${plan.date ?? 'null'} inRange=${planDateInRange}; due_date=${plan.due_date ?? 'null'} inRange=${dueDateInRange} (NOT used for DB when due=ignore)`;
-}
-
-function logDanielGranotDebug(phase: string, payload: unknown) {
-  console.log(`🔍 [Daniel Granot debug] ${phase}`, payload);
-}
-
-async function debugDanielGranotDbLookup(filters: Filters): Promise<void> {
-  logDanielGranotDebug('DB lookup — row missing from report; searching contacts and payment plans', {
-    filters: {
-      fromDate: filters.fromDate,
-      toDate: filters.toDate,
-      paymentFromDate: filters.paymentFromDate,
-      paymentToDate: filters.paymentToDate,
-      due: filters.due,
-      collected: filters.collected,
-      categoryId: filters.categoryId,
-      order: filters.order,
-      currencyId: filters.currencyId,
-    },
-    expectedDueDate: DEBUG_CONTACT_EXPECTED_DUE,
-  });
-
-  const { data: contacts, error: contactsError } = await supabase
-    .from('leads_contact')
-    .select('id, name, lead_id')
-    .ilike('name', '%Daniel%Granot%');
-  if (contactsError) {
-    logDanielGranotDebug('Contact search error', contactsError);
-    return;
-  }
-  logDanielGranotDebug('Matching contacts in leads_contact', contacts ?? []);
-
-  const contactIds = (contacts ?? []).map((c) => c.id).filter((id) => id != null);
-  if (contactIds.length === 0) {
-    const { data: modernByName } = await supabase
-      .from('payment_plans')
-      .select('id, lead_id, client_name, due_date, paid_at, paid, cancel_date, ready_to_pay')
-      .is('cancel_date', null)
-      .ilike('client_name', '%Daniel%Granot%');
-    logDanielGranotDebug('No leads_contact match — modern payment_plans by client_name', modernByName ?? []);
-    return;
-  }
-
-  const { data: legacyPlans, error: legacyError } = await supabase
-    .from('finances_paymentplanrow')
-    .select('id, lead_id, client_id, date, due_date, actual_date, cancel_date, ready_to_pay, order, value')
-    .in('client_id', contactIds)
-    .is('cancel_date', null);
-  if (legacyError) {
-    logDanielGranotDebug('Legacy plan search error', legacyError);
-  } else {
-    logDanielGranotDebug(
-      'Legacy finances_paymentplanrow rows (unfiltered by date)',
-      (legacyPlans ?? []).map((plan) => ({
-        ...plan,
-        dbDateFilterExplanation: explainDbDateFilterForLegacyPlan(plan, filters),
-        wouldPassClientDueFilter:
-          !filters.fromDate && !filters.toDate
-            ? true
-            : (() => {
-                const dateToCheck = filters.due === 'ignore' ? plan.date : plan.due_date;
-                return dateToCheck
-                  ? dateInRange(String(dateToCheck).split('T')[0], filters.fromDate, filters.toDate)
-                  : false;
-              })(),
-      })),
-    );
-  }
-
-  const leadIds = [...new Set((contacts ?? []).map((c) => c.lead_id).filter(Boolean))];
-  if (leadIds.length > 0) {
-    const { data: modernPlans } = await supabase
-      .from('payment_plans')
-      .select('id, lead_id, client_name, due_date, paid_at, paid, cancel_date, ready_to_pay')
-      .in('lead_id', leadIds)
-      .is('cancel_date', null);
-    logDanielGranotDebug(
-      'Modern payment_plans for contact lead_id(s) (unfiltered by date)',
-      (modernPlans ?? []).map((plan) => ({
-        ...plan,
-        dueDateInFilter: plan.due_date
-          ? dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate)
-          : false,
-        dbUsesDueDate: !hasPaymentDateFilter(filters),
-      })),
-    );
-  }
-}
-
-function traceDanielGranotInRows(phase: string, rows: PaymentRow[]) {
-  const matches = rows.filter(rowMatchesDebugContact);
-  logDanielGranotDebug(`${phase}: ${matches.length} row(s)`, matches.map(summarizeRowForDebug));
-  return matches;
-}
-
-function traceDanielGranotFilterPass(phase: string, rows: PaymentRow[], filters: Filters) {
-  const matches = rows.filter(rowMatchesDebugContact);
-  if (matches.length === 0) return [];
-  matches.forEach((row) => {
-    const reason = getCollectionRowFilterReason(row, filters);
-    if (reason) {
-      logDanielGranotDebug(`${phase}: FILTERED OUT`, { row: summarizeRowForDebug(row), reason });
-    } else {
-      logDanielGranotDebug(`${phase}: passes client filters`, summarizeRowForDebug(row));
-    }
-  });
-  return matches;
-}
-
-function traceDanielGranotDedup(
-  filtered: PaymentRow[],
-  rowsToSet: PaymentRow[],
-  filters: Filters,
-) {
-  const before = filtered.filter(rowMatchesDebugContact);
-  const after = rowsToSet.filter(rowMatchesDebugContact);
-  if (before.length === 0) return;
-  if (before.length > after.length) {
-    const orderRank: Record<string, number> = { '9': 3, '5': 2, '1': 1, '90': 0, '99': 0 };
-    logDanielGranotDebug('Removed by per-contact deduplication (due_only)', {
-      before: before.map((row) => ({
-        ...summarizeRowForDebug(row),
-        orderRank: orderRank[row.orderCode ?? ''] ?? -1,
-      })),
-      kept: after.map(summarizeRowForDebug),
-      dedupKey: before.map((row) => (row.clientId != null ? `${row.leadId}_${row.clientId}` : row.leadId)),
-    });
-  }
-}
-
 // Reports list for search functionality
 type ReportItem = {
   label: string;
@@ -1172,6 +972,8 @@ const HandlerAvatar: React.FC<{
       alt={displayName}
       className="w-8 h-8 rounded-full object-cover shrink-0"
       title={displayName}
+      loading="lazy"
+      decoding="async"
       onError={() => setImageError(true)}
     />
   );
@@ -1232,9 +1034,20 @@ import type { CollectionFinancesRailBridge } from '../components/finance/collect
 import {
   buildCollectionFiltersForFocus,
   collectionDisplayFilterForFocus,
+  isFinanceYearDueFocus,
   type FinanceCollectionFocusId,
 } from '../lib/financeCollectionFocus';
-import { applyInvoiceSentFromPaymentRequest, filterPaymentRowsByProformaEmail } from '../lib/paymentRequestEmail';
+import { applyInvoiceSentFromPaymentRequest } from '../lib/paymentRequestEmail';
+
+const COLLECTION_QUICK_FOCUSES: {
+  id: FinanceCollectionFocusId;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: 'due-no-proforma', label: 'Last 30 due without proforma', icon: DocumentTextIcon },
+  { id: 'due-unsent-proforma', label: 'Last 30 due proforma not sent', icon: PaperAirplaneIcon },
+  { id: 'due-sent-proforma', label: 'Last 30 due pending, proforma sent', icon: CheckCircleIcon },
+];
 
 const CollectionFinancesReport: React.FC<{
   /** Hide the local action rail (used inside Finance Management). */
@@ -1261,6 +1074,7 @@ const CollectionFinancesReport: React.FC<{
   >(() => new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [quickFocusId, setQuickFocusId] = useState<FinanceCollectionFocusId | null>(focusPreset ?? null);
   const [handlerOptions, setHandlerOptions] = useState<{ id: number; name: string }[]>([]);
   const [handlerEmployees, setHandlerEmployees] = useState<HandlerEmployee[]>([]);
   const [handlerEdit, setHandlerEdit] = useState<{ rowId: string; value: string } | null>(null);
@@ -1309,6 +1123,11 @@ const CollectionFinancesReport: React.FC<{
   const [showNotesColumn, setShowNotesColumn] = usePersistedState<boolean>(
     'collectionFinancesReport_showNotesColumn',
     true,
+    { storage: 'sessionStorage' },
+  );
+  const [showTaxReceiptColumn, setShowTaxReceiptColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showTaxReceiptColumn',
+    false,
     { storage: 'sessionStorage' },
   );
   const [displayFilter, setDisplayFilter] = usePersistedState<DisplayFilter>(
@@ -1567,10 +1386,11 @@ const CollectionFinancesReport: React.FC<{
   }, [rowSearchQuery]);
 
   const tableColumnCount = useMemo(() => {
-    let count = 9;
+    let count = 8;
     if (showClientColumn) count += 1;
     if (showNisColumn) count += 1;
     if (showProformaDateColumn) count += 1;
+    if (showTaxReceiptColumn) count += 1;
     if (showPaidDateColumn) count += 1;
     if (showHandlerColumn) count += 1;
     if (showNotesColumn) count += 1;
@@ -1579,6 +1399,7 @@ const CollectionFinancesReport: React.FC<{
     showClientColumn,
     showNisColumn,
     showProformaDateColumn,
+    showTaxReceiptColumn,
     showPaidDateColumn,
     showHandlerColumn,
     showNotesColumn,
@@ -1682,230 +1503,50 @@ const loadPayments = async ({
       setError(null);
     }
     try {
-      console.log(`🔍 [loadPayments] Starting with filters:`, activeFilters);
       const [modern, legacy] = await Promise.all([
         fetchModernPayments(activeFilters),
         fetchLegacyPayments(activeFilters),
       ]);
-      console.log(`✅ [loadPayments] Fetched ${modern.length} modern payments, ${legacy.length} legacy payments`);
-      traceDanielGranotInRows('After fetch (modern)', modern);
-      traceDanielGranotInRows('After fetch (legacy)', legacy);
       
-      // Debug: Check for lead 168080 only (sublead 54977/2) — match by leadId, not caseNumber "54977"
-      const is168080 = (row: PaymentRow) => row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080';
-      const modern168080 = modern.filter(is168080);
-      const legacy168080 = legacy.filter(is168080);
-      console.log(`🔍 [loadPayments] Lead 168080 only (54977/2): modern=${modern168080.length}, legacy=${legacy168080.length}. If both 0, this lead has no payment rows in DB.`, {
-        modern: modern168080.map((p: any) => ({ id: p.id, leadId: p.leadId, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })),
-        legacy: legacy168080.map((p: any) => ({ id: p.id, leadId: p.leadId, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })),
-      });
-      
-      // Debug: Check for lead 199849 in modern payments
-      const modern199849 = modern.filter((row) => 
-        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
-      );
-      console.log(`🔍 [loadPayments] Modern payments for 199849:`, modern199849.length, modern199849.map((p: any) => ({
-        id: p.id,
-        leadId: p.leadId,
-        caseNumber: p.caseNumber,
-        dueDate: p.dueDate,
-        collectedDate: p.collectedDate,
-        collected: p.collected,
-        categoryId: p.mainCategoryId,
-        orderCode: p.orderCode,
-      })));
-      
-      // Debug: Check for lead 199849 in legacy payments
-      const legacy199849 = legacy.filter((row) => 
-        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
-      );
-      console.log(`🔍 [loadPayments] Legacy payments for 199849:`, legacy199849.length, legacy199849.map((p: any) => ({
-        id: p.id,
-        leadId: p.leadId,
-        caseNumber: p.caseNumber,
-        dueDate: p.dueDate,
-        collectedDate: p.collectedDate,
-        collected: p.collected,
-        categoryId: p.mainCategoryId,
-        orderCode: p.orderCode,
-      })));
-      
-      // Debug: Check for lead 155026 in modern payments
-      const modern155026 = modern.filter((row) => 
-        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
-      );
-      console.log(`🔍 [loadPayments] Modern payments for 155026:`, modern155026.length, modern155026.map((p: any) => ({
-        id: p.id,
-        leadId: p.leadId,
-        caseNumber: p.caseNumber,
-        dueDate: p.dueDate,
-        collectedDate: p.collectedDate,
-        collected: p.collected,
-        categoryId: p.mainCategoryId,
-        orderCode: p.orderCode,
-        hasProforma: p.hasProforma,
-      })));
-      
-      // Debug: Check for lead 155026 in legacy payments
-      const legacy155026 = legacy.filter((row) => 
-        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
-      );
-      console.log(`🔍 [loadPayments] Legacy payments for 155026:`, legacy155026.length, legacy155026.map((p: any) => ({
-        id: p.id,
-        leadId: p.leadId,
-        caseNumber: p.caseNumber,
-        dueDate: p.dueDate,
-        collectedDate: p.collectedDate,
-        collected: p.collected,
-        categoryId: p.mainCategoryId,
-        orderCode: p.orderCode,
-        hasProforma: p.hasProforma,
-      })));
-      
-      const combined = await applyInvoiceSentFromPaymentRequest([...modern, ...legacy]);
-      const combined168080 = combined.filter((row) =>
-        row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080'
-      );
-      console.log(`🔍 [loadPayments] Lead 168080 in combined (before client filter):`, combined168080.length, combined168080.length === 0 ? '— No payment rows for 168080 in DB.' : combined168080.map((p: any) => ({ id: p.id, leadId: p.leadId, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })));
-      
-      const combined199849 = combined.filter((row) => 
-        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
-      );
-      console.log(`🔍 [loadPayments] Combined payments for 199849:`, combined199849.length);
-      
-      // Debug: Check for lead 155026 in combined payments
-      const combined155026 = combined.filter((row) => 
-        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
-      );
-      console.log(`🔍 [loadPayments] Combined payments for 155026:`, combined155026.length, combined155026.map((p: any) => ({
-        id: p.id,
-        leadId: p.leadId,
-        caseNumber: p.caseNumber,
-        dueDate: p.dueDate,
-        collectedDate: p.collectedDate,
-        collected: p.collected,
-        categoryId: p.mainCategoryId,
-        orderCode: p.orderCode,
-        hasProforma: p.hasProforma,
-        leadType: p.leadType,
-      })));
-      
-      // Note: For legacy leads, hasProforma is already correctly set in fetchLegacyPayments
-      // based on proformaDate (which matches by lead_id + client_id)
-      // So we don't need to override it here with fetchLegacyProformaStatus
-      const withProforma = combined;
-      const beforeFiltering = withProforma.length;
-      const filtered = withProforma.filter((row) => {
-        const is168080 = row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080';
-        const isDanielGranot = rowMatchesDebugContact(row);
-        // Due date included: legacy = only if due_date is not null; new = only if ready_to_pay is true.
-        // Ignore = no extra filter (show all rows).
+      const combined = [...modern, ...legacy];
+      const preFiltered = combined.filter((row) => {
         if (activeFilters.due === 'due_only') {
-          if (row.leadType === 'legacy' && !row.dueDate) {
-            if (isDanielGranot) logDanielGranotDebug('Client filter: due_only — legacy missing due_date', summarizeRowForDebug(row));
-            return false;
-          }
-          if (row.leadType === 'new' && row.readyToPay !== true) {
-            if (isDanielGranot) logDanielGranotDebug('Client filter: due_only — new ready_to_pay not true', summarizeRowForDebug(row));
-            return false;
-          }
+          if (row.leadType === 'legacy' && !row.dueDate) return false;
+          if (row.leadType === 'new' && row.readyToPay !== true) return false;
         }
-        // Category filter (multi-select)
         if (Array.isArray(activeFilters.categoryId) && activeFilters.categoryId.length > 0) {
-          if (!row.mainCategoryId || !activeFilters.categoryId.includes(row.mainCategoryId)) {
-            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by category: mainCategoryId=${row.mainCategoryId}, filter=${activeFilters.categoryId}`);
-            if (isDanielGranot) logDanielGranotDebug('Client filter: category', { row: summarizeRowForDebug(row), filter: activeFilters.categoryId });
-            return false;
-          }
+          if (!row.mainCategoryId || !activeFilters.categoryId.includes(row.mainCategoryId)) return false;
         }
-        
-        // Collected filter (multi-select)
-        if (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) {
-          const matchesFilter = rowMatchesCollectedFilter(row, activeFilters.collected);
-          
-          if (!matchesFilter) {
-            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by collected: row.collected=${row.collected}, row.hasProforma=${row.hasProforma}, filter=${activeFilters.collected?.join(',')}`);
-            if (isDanielGranot) logDanielGranotDebug('Client filter: collected', { row: summarizeRowForDebug(row), filter: activeFilters.collected });
-            return false;
-          }
-        }
-        
-        // Order filter (multi-select)
         if (Array.isArray(activeFilters.order) && activeFilters.order.length > 0) {
-          if (!row.orderCode || !activeFilters.order.includes(row.orderCode)) {
-            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by order: orderCode=${row.orderCode}, filter=${activeFilters.order?.join(',')}`);
-            if (isDanielGranot) logDanielGranotDebug('Client filter: order', { row: summarizeRowForDebug(row), filter: activeFilters.order });
-            return false;
-          }
+          if (!row.orderCode || !activeFilters.order.includes(row.orderCode)) return false;
         }
-
-        // Currency filter (multi-select, by payment row currency_id)
         if (Array.isArray(activeFilters.currencyId) && activeFilters.currencyId.length > 0) {
           const rowCurrencyId = row.currencyId != null ? String(row.currencyId) : null;
-          if (!rowCurrencyId || !activeFilters.currencyId.includes(rowCurrencyId)) {
-            if (isDanielGranot) logDanielGranotDebug('Client filter: currency', { row: summarizeRowForDebug(row), filter: activeFilters.currencyId });
-            return false;
-          }
+          if (!rowCurrencyId || !activeFilters.currencyId.includes(rowCurrencyId)) return false;
         }
-
-        // Payment date filter takes precedence over due/plan date when set.
         if (hasPaymentDateFilter(activeFilters)) {
-          if (!row.collectedDate) {
-            if (isDanielGranot) logDanielGranotDebug('Client filter: payment date — no collectedDate', summarizeRowForDebug(row));
-            return false;
-          }
+          if (!row.collectedDate) return false;
           const paymentDateStr = paymentDateForFilter(row.collectedDate);
           if (!paymentDateStr || !dateInRange(paymentDateStr, activeFilters.paymentFromDate ?? '', activeFilters.paymentToDate ?? '')) {
-            if (isDanielGranot) {
-              logDanielGranotDebug('Client filter: payment date out of range', {
-                row: summarizeRowForDebug(row),
-                paymentDateStr,
-                filter: { from: activeFilters.paymentFromDate, to: activeFilters.paymentToDate },
-              });
-            }
             return false;
           }
         } else if (activeFilters.fromDate || activeFilters.toDate) {
-          // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Use dateInRange so cross-year (e.g. Nov–Mar) is handled.
           const dateToCheck = activeFilters.due === 'ignore' && row.leadType === 'legacy' ? row.planDate : row.dueDate;
-          const dateColumnLabel = activeFilters.due === 'ignore' && row.leadType === 'legacy' ? 'planDate (legacy date column)' : 'dueDate';
-          if (!dateToCheck) {
-            if (isDanielGranot) {
-              logDanielGranotDebug('Client filter: missing date for range check', {
-                row: summarizeRowForDebug(row),
-                dateColumnLabel,
-                dueMode: activeFilters.due,
-                note: 'Legacy + Due=Ignore uses plan date column, not due_date — if due is 28/05/2026 but plan date differs, row is excluded',
-              });
-            }
-            return false;
-          }
+          if (!dateToCheck) return false;
           const dateStr = dateToCheck.split('T')[0];
-          if (!dateInRange(dateStr, activeFilters.fromDate, activeFilters.toDate)) {
-            if (isDanielGranot) {
-              logDanielGranotDebug('Client filter: date out of range', {
-                row: summarizeRowForDebug(row),
-                dateColumnLabel,
-                dateStr,
-                filter: { from: activeFilters.fromDate, to: activeFilters.toDate },
-                expectedDue: DEBUG_CONTACT_EXPECTED_DUE,
-                dueDateMatchesFilter: row.dueDate ? dateInRange(row.dueDate.split('T')[0], activeFilters.fromDate, activeFilters.toDate) : false,
-                planDateMatchesFilter: row.planDate ? dateInRange(row.planDate.split('T')[0], activeFilters.fromDate, activeFilters.toDate) : false,
-              });
-            }
-            return false;
-          }
+          if (!dateInRange(dateStr, activeFilters.fromDate, activeFilters.toDate)) return false;
         }
-
-        if (isDanielGranot) logDanielGranotDebug('Client filter: row PASSES all filters', summarizeRowForDebug(row));
-        
         return true;
       });
 
-      traceDanielGranotFilterPass('Before dedup (combined)', withProforma, filters);
+      const withInvoiceSent = await applyInvoiceSentFromPaymentRequest(preFiltered);
+      const filtered = withInvoiceSent.filter((row) => {
+        if (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) {
+          if (!rowMatchesCollectedFilter(row, activeFilters.collected)) return false;
+        }
+        return true;
+      });
 
-      // When "Due date included", show one row per contact: the one whose due_date is in range and has the highest order (Final > Intermediate > First).
-      // This fixes legacy where both Intermediate (date in range) and Final (due_date in range) can match — we show the row that matches due_date, i.e. Final.
       let rowsToSet = filtered;
       if (activeFilters.due === 'due_only' && (activeFilters.fromDate || activeFilters.toDate) && !hasPaymentDateFilter(activeFilters)) {
         const orderRank: Record<string, number> = { '9': 3, '5': 2, '1': 1, '90': 0, '99': 0 };
@@ -1918,83 +1559,8 @@ const loadPayments = async ({
           if (!existing || rank > existingRank) byContact.set(key, row);
         }
         rowsToSet = Array.from(byContact.values());
-        console.log(`✅ [loadPayments] After per-contact deduplication (Due date included): ${rowsToSet.length} rows`);
       }
-      traceDanielGranotDedup(filtered, rowsToSet, filters);
-      traceDanielGranotInRows('After client filter + dedup (final)', rowsToSet);
 
-      console.log(`✅ [loadPayments] After client-side filtering: ${rowsToSet.length} plans (was ${beforeFiltering})`);
-      
-      const filtered168080 = rowsToSet.filter((row) =>
-        row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080'
-      );
-      console.log(`🔍 [loadPayments] Lead 168080 after filtering:`, filtered168080.length, filtered168080.length === 0 && combined168080.length > 0 ? 'FILTERED OUT - see logs above for reason' : filtered168080.length === 0 ? '(no rows for 168080 in DB)' : '', filtered168080.map((p: any) => ({ id: p.id, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })));
-      
-      // Debug: Check for lead 199849 after filtering
-      const plansFor199849AfterFilter = rowsToSet.filter((row) => 
-        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
-      );
-      console.log(`🔍 [loadPayments] Filtered plans for 199849:`, plansFor199849AfterFilter.length, plansFor199849AfterFilter.map((p: any) => ({
-        id: p.id,
-        leadId: p.leadId,
-        caseNumber: p.caseNumber,
-        dueDate: p.dueDate,
-        collectedDate: p.collectedDate,
-        collected: p.collected,
-        categoryId: p.mainCategoryId,
-        orderCode: p.orderCode,
-        hasProforma: p.hasProforma,
-      })));
-      
-      // Debug: Check for lead 155026 after filtering
-      const plansFor155026AfterFilter = rowsToSet.filter((row) => 
-        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
-      );
-      console.log(`🔍 [loadPayments] Filtered plans for 155026:`, plansFor155026AfterFilter.length, plansFor155026AfterFilter.map((p: any) => ({
-        id: p.id,
-        leadId: p.leadId,
-        caseNumber: p.caseNumber,
-        dueDate: p.dueDate,
-        collectedDate: p.collectedDate,
-        collected: p.collected,
-        categoryId: p.mainCategoryId,
-        orderCode: p.orderCode,
-        hasProforma: p.hasProforma,
-        leadType: p.leadType,
-      })));
-      
-      // Debug: Check why 199849 might have been filtered out
-      const beforeFilter199849 = withProforma.filter((row) => 
-        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
-      );
-      if (beforeFilter199849.length > 0 && plansFor199849AfterFilter.length === 0) {
-        console.log(`❌ [loadPayments] 199849 was filtered out! Before filter:`, beforeFilter199849[0]);
-        console.log(`🔍 [loadPayments] Filter reasons:`, {
-          categoryFilter: activeFilters.categoryId ? `Category must be ${activeFilters.categoryId}, got ${beforeFilter199849[0].mainCategoryId}` : 'No category filter',
-          collectedFilter: (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) ? `Collected filter: ${activeFilters.collected.join(',')}, row collected: ${beforeFilter199849[0].collected}, hasProforma: ${beforeFilter199849[0].hasProforma}` : 'No collected filter',
-          orderFilter: activeFilters.order ? `Order must be ${activeFilters.order}, got ${beforeFilter199849[0].orderCode}` : 'No order filter',
-        });
-      }
-      
-      // Debug: Check why 155026 might have been filtered out
-      const beforeFilter155026 = withProforma.filter((row) => 
-        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
-      );
-      if (beforeFilter155026.length > 0 && plansFor155026AfterFilter.length === 0) {
-        console.log(`❌ [loadPayments] 155026 was filtered out! Before filter:`, beforeFilter155026[0]);
-        console.log(`🔍 [loadPayments] Filter reasons for 155026:`, {
-          categoryFilter: activeFilters.categoryId ? `Category must be ${activeFilters.categoryId}, got ${beforeFilter155026[0].mainCategoryId}` : 'No category filter',
-          collectedFilter: (Array.isArray(activeFilters.collected) && activeFilters.collected.length > 0) ? `Collected filter: ${activeFilters.collected.join(',')}, row collected: ${beforeFilter155026[0].collected}, hasProforma: ${beforeFilter155026[0].hasProforma}` : 'No collected filter',
-          orderFilter: activeFilters.order ? `Order must be ${activeFilters.order}, got ${beforeFilter155026[0].orderCode}` : 'No order filter',
-          dueDate: beforeFilter155026[0].dueDate,
-          collectedDate: beforeFilter155026[0].collectedDate,
-          dateRange: `fromDate: ${activeFilters.fromDate}, toDate: ${activeFilters.toDate}`,
-        });
-      } else if (beforeFilter155026.length === 0) {
-        console.log(`❌ [loadPayments] 155026 was NOT found in combined payments before filtering!`);
-        console.log(`🔍 [loadPayments] This means it was filtered out during fetchModernPayments or fetchLegacyPayments`);
-      }
-      
       rowsToSet.sort((a, b) => {
         const aDate = a.collectedDate || a.dueDate || '';
         const bDate = b.collectedDate || b.dueDate || '';
@@ -2003,43 +1569,9 @@ const loadPayments = async ({
 
       const emailMode = activeFilters.proformaEmail || 'any';
       if (emailMode !== 'any' && !collectedAlreadyEncodesInvoiceSent(activeFilters.collected)) {
-        rowsToSet = await filterPaymentRowsByProformaEmail(rowsToSet, emailMode);
-      }
-      
-      // Debug: Final check before setting rows
-      const final199849 = rowsToSet.filter((row) =>
-        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
-      );
-      console.log(`🔍 [loadPayments] Final rows to set: ${rowsToSet.length} total, ${final199849.length} for 199849`);
-      if (final199849.length > 0) {
-        console.log(`✅ [loadPayments] Payment plan for 199849 WILL BE SET:`, final199849[0]);
-      } else {
-        console.log(`❌ [loadPayments] Payment plan for 199849 WILL NOT BE SET`);
-      }
-      
-      // Debug: Final check for 155026 before setting rows
-      const final155026 = rowsToSet.filter((row) =>
-        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
-      );
-      console.log(`🔍 [loadPayments] Final rows to set: ${rowsToSet.length} total, ${final155026.length} for 155026`);
-      if (final155026.length > 0) {
-        console.log(`✅ [loadPayments] Payment plan for 155026 WILL BE SET:`, final155026[0]);
-      } else {
-        console.log(`❌ [loadPayments] Payment plan for 155026 WILL NOT BE SET`);
+        rowsToSet = rowsToSet.filter((row) => (emailMode === 'sent' ? Boolean(row.invoiceSent) : !row.invoiceSent));
       }
 
-      const finalDanielGranot = rowsToSet.filter(rowMatchesDebugContact);
-      if (finalDanielGranot.length === 0) {
-        logDanielGranotDebug('NOT in final results', {
-          inModernFetch: modern.filter(rowMatchesDebugContact).length,
-          inLegacyFetch: legacy.filter(rowMatchesDebugContact).length,
-          inCombinedBeforeFilter: withProforma.filter(rowMatchesDebugContact).length,
-          activeFilters: activeFilters,
-        });
-      } else {
-        logDanielGranotDebug('IN final results', finalDanielGranot.map(summarizeRowForDebug));
-      }
-      
       setRows(rowsToSet);
     } catch (err) {
       console.error(err);
@@ -2060,6 +1592,18 @@ const loadPayments = async ({
   loadPaymentsRef.current = loadPayments;
   const focusHandledRef = useRef<string | null>(null);
 
+  const applyQuickFocus = useCallback(
+    (focus: FinanceCollectionFocusId) => {
+      const nextFilters = buildCollectionFiltersForFocus(focus) as Filters;
+      setQuickFocusId(focus);
+      setFilters(nextFilters);
+      setDisplayFilter(collectionDisplayFilterForFocus(focus));
+      setRowSearchQuery('');
+      void loadPaymentsRef.current({ silent: false, filterOverride: nextFilters });
+    },
+    [setFilters, setDisplayFilter, setRowSearchQuery],
+  );
+
   // Apply Finance dashboard Attention focus: set filters and load matching rows immediately.
   useEffect(() => {
     if (!focusPreset) {
@@ -2073,10 +1617,11 @@ const loadPayments = async ({
     const nextDisplay = collectionDisplayFilterForFocus(focusPreset);
     setFilters(nextFilters);
     setDisplayFilter(nextDisplay);
+    setQuickFocusId(focusPreset);
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        next.delete('focus');
+        if (!isFinanceYearDueFocus(focusPreset)) next.delete('focus');
         return next;
       },
       { replace: true },
@@ -2140,60 +1685,81 @@ const loadPayments = async ({
 
       try {
         const boiStart = await getBoiCoverageStartDate();
-        const todaySnap = await loadBoiExchangeRatesForDate(getJerusalemTodayIsoDate());
-        const planIds = nisSourceRows
-          .map((row) => parsePaymentPlanIdFromCollectionRowId(row.id))
-          .filter((id): id is number => id != null);
-        const lockedByPlan = await fetchPaymentPlanExchangeContexts(planIds);
+        const todayIso = getJerusalemTodayIsoDate();
+        const dateKeys = nisSourceRows
+          .flatMap((row) => [toDateOnlyKey(row.collectedDate), toDateOnlyKey(row.dueDate), toDateOnlyKey(row.planDate)])
+          .filter((key): key is string => Boolean(key));
+        const windowFrom = dateKeys.length
+          ? dateKeys.reduce((earliest, key) => (key < earliest ? key : earliest))
+          : todayIso;
+        const windowTo = dateKeys.length
+          ? dateKeys.reduce((latest, key) => (key > latest ? key : latest), todayIso)
+          : todayIso;
+        const [converter, lockedByPlan] = await Promise.all([
+          createBoiDateRateConverter({
+            dateWindow: {
+              from: shiftIsoDate(windowFrom, -14),
+              to: windowTo > todayIso ? windowTo : todayIso,
+            },
+          }),
+          fetchPaymentPlanExchangeContexts(
+            nisSourceRows
+              .map((row) => parsePaymentPlanIdFromCollectionRowId(row.id))
+              .filter((id): id is number => id != null),
+          ),
+        ]);
 
-        const entries = await Promise.all(
-          nisSourceRows.map(async (row): Promise<[string, RowNisAmounts]> => {
-            const currencyInput = row.currencyId != null ? row.currencyId : row.currency;
-            const isCollected = Boolean(row.collected);
-            const dateOnly = (row.collectedDate || '').slice(0, 10);
-            const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
-            const exchangeCtx = planId != null ? lockedByPlan.get(planId) ?? null : null;
-            const locked = exchangeCtx?.pelecardCharge ?? null;
-
-            let snap = todaySnap;
-            let rateDate: string | null = snap?.rateDate ? String(snap.rateDate).slice(0, 10) : null;
-
-            if (
-              isCollected &&
-              row.collectedDate &&
-              boiStart &&
-              dateOnly &&
-              /^\d{4}-\d{2}-\d{2}$/.test(dateOnly) &&
-              dateOnly >= boiStart
-            ) {
-              const asOf = resolvePaymentBoiAsOf(true, row.collectedDate, exchangeCtx);
-              snap = await loadBoiExchangeRatesAsOf(asOf);
-              rateDate = snap?.rateDate ? String(snap.rateDate).slice(0, 10) : dateOnly;
-            }
-
-            const valueConv = convertToNISWithMeta(row.value, currencyInput, snap);
-            const vatConv = convertToNISWithMeta(row.vat, currencyInput, snap);
-            const usedLegacyFallback = Boolean(valueConv.usedLegacyFallback || vatConv.usedLegacyFallback);
-            const amounts = applyLockedChargeTotalIfMatching(
-              locked,
-              snap,
-              valueConv.amountNIS,
-              vatConv.amountNIS,
-              valueConv.amountNIS + vatConv.amountNIS,
-            );
-
-            return [
-              row.id,
-              {
-                valueNis: amounts.subtotalNis,
-                vatNis: amounts.vatNis,
-                totalNis: amounts.totalNis,
-                rateSource: usedLegacyFallback ? 'legacy' : 'boi',
-                rateDate: usedLegacyFallback ? null : rateDate,
-              },
-            ];
+        const todaySnap = await converter.snapshot(todayIso);
+        const snapByAsOf = new Map<string, typeof todaySnap>([[todayIso, todaySnap]]);
+        const asOfKeys = new Set<string>();
+        for (const row of nisSourceRows) {
+          if (!row.collected || !row.collectedDate) continue;
+          const dateOnly = toDateOnlyKey(row.collectedDate);
+          if (!dateOnly || !boiStart || dateOnly < boiStart) continue;
+          const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
+          const exchangeCtx = planId != null ? lockedByPlan.get(planId) ?? null : null;
+          asOfKeys.add(resolvePaymentBoiAsOf(true, row.collectedDate, exchangeCtx));
+        }
+        await Promise.all(
+          [...asOfKeys].map(async (asOf) => {
+            if (!snapByAsOf.has(asOf)) snapByAsOf.set(asOf, await converter.snapshot(asOf));
           }),
         );
+
+        const entries: Array<[string, RowNisAmounts]> = nisSourceRows.map((row) => {
+          const currencyInput = row.currencyId != null ? row.currencyId : row.currency;
+          const dateOnly = toDateOnlyKey(row.collectedDate);
+          const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
+          const exchangeCtx = planId != null ? lockedByPlan.get(planId) ?? null : null;
+          const locked = exchangeCtx?.pelecardCharge ?? null;
+          const asOf =
+            row.collected && dateOnly && boiStart && dateOnly >= boiStart
+              ? resolvePaymentBoiAsOf(true, row.collectedDate, exchangeCtx)
+              : todayIso;
+          const snap = snapByAsOf.get(asOf) ?? todaySnap;
+          const rateDate = snap?.rateDate ? String(snap.rateDate).slice(0, 10) : dateOnly;
+          const valueConv = convertToNISWithMeta(row.value, currencyInput, snap);
+          const vatConv = convertToNISWithMeta(row.vat, currencyInput, snap);
+          const usedLegacyFallback = Boolean(valueConv.usedLegacyFallback || vatConv.usedLegacyFallback);
+          const amounts = applyLockedChargeTotalIfMatching(
+            locked,
+            snap,
+            valueConv.amountNIS,
+            vatConv.amountNIS,
+            valueConv.amountNIS + vatConv.amountNIS,
+          );
+
+          return [
+            row.id,
+            {
+              valueNis: amounts.subtotalNis,
+              vatNis: amounts.vatNis,
+              totalNis: amounts.totalNis,
+              rateSource: usedLegacyFallback ? 'legacy' : 'boi',
+              rateDate: usedLegacyFallback ? null : rateDate,
+            },
+          ];
+        });
 
         if (!cancelled) setNisByRowId(Object.fromEntries(entries));
       } catch (e) {
@@ -2212,7 +1778,7 @@ const loadPayments = async ({
     let cancelled = false;
 
     const loadTaxReceipts = async () => {
-      if (!nisSourceRows.length) {
+      if (!showTaxReceiptColumn || !nisSourceRows.length) {
         setTaxReceiptByPlanId(new Map());
         return;
       }
@@ -2252,7 +1818,7 @@ const loadPayments = async ({
     return () => {
       cancelled = true;
     };
-  }, [nisSourceRows]);
+  }, [nisSourceRows, showTaxReceiptColumn]);
 
   const totals = useMemo(() => {
     let estimatedWithVat = 0;
@@ -2311,7 +1877,9 @@ const loadPayments = async ({
         if (showProformaDateColumn) {
           rowData['Proforma Date'] = formatRowDate(row.proformaDate);
         }
-        rowData['Tax receipt'] = taxReceiptExportLabel(row, taxReceiptByPlanId);
+        if (showTaxReceiptColumn) {
+          rowData['Tax receipt'] = taxReceiptExportLabel(row, taxReceiptByPlanId);
+        }
         if (showPaidDateColumn) {
           rowData['Paid Date'] = formatRowDate(row.collectedDate);
         }
@@ -2343,6 +1911,7 @@ const loadPayments = async ({
     showPaidDateColumn,
     showNisColumn,
     showProformaDateColumn,
+    showTaxReceiptColumn,
     showClientColumn,
     showHandlerColumn,
     showNotesColumn,
@@ -2688,6 +2257,7 @@ const loadPayments = async ({
       showClientColumn,
       showHandlerColumn,
       showNotesColumn,
+      showTaxReceiptColumn,
       displayFilter,
       savedAt: new Date().toISOString(),
     };
@@ -2705,6 +2275,7 @@ const loadPayments = async ({
     showClientColumn,
     showHandlerColumn,
     showNotesColumn,
+    showTaxReceiptColumn,
     displayFilter,
     closeSettingsMenu,
   ]);
@@ -2718,6 +2289,7 @@ const loadPayments = async ({
       setShowClientColumn(view.showClientColumn ?? true);
       setShowHandlerColumn(view.showHandlerColumn ?? true);
       setShowNotesColumn(view.showNotesColumn);
+      setShowTaxReceiptColumn(view.showTaxReceiptColumn ?? false);
       setDisplayFilter(view.displayFilter);
       closeSettingsMenu();
       void loadPaymentsRef.current();
@@ -2731,6 +2303,7 @@ const loadPayments = async ({
       setShowClientColumn,
       setShowHandlerColumn,
       setShowNotesColumn,
+      setShowTaxReceiptColumn,
       setDisplayFilter,
       closeSettingsMenu,
     ],
@@ -2808,6 +2381,9 @@ const loadPayments = async ({
       toggleItem('col-proforma', 'Proforma date column', ViewColumnsIcon, showProformaDateColumn, () =>
         setShowProformaDateColumn((v) => !v),
       ),
+      toggleItem('col-tax-receipt', 'Tax receipt column', ViewColumnsIcon, showTaxReceiptColumn, () =>
+        setShowTaxReceiptColumn((v) => !v),
+      ),
       toggleItem('col-notes', 'Notes column', ViewColumnsIcon, showNotesColumn, () =>
         setShowNotesColumn((v) => !v),
       ),
@@ -2837,6 +2413,12 @@ const loadPayments = async ({
         label: 'This month',
         icon: CalendarDaysIcon,
         onClick: () => applyDateRange(getMonthDateRange()),
+      },
+      {
+        id: 'date-year',
+        label: 'This year',
+        icon: CalendarDaysIcon,
+        onClick: () => applyDateRange(getYearDateRange()),
       },
     ]);
 
@@ -2882,12 +2464,14 @@ const loadPayments = async ({
     setShowNotesColumn,
     setShowPaidDateColumn,
     setShowProformaDateColumn,
+    setShowTaxReceiptColumn,
     showClientColumn,
     showHandlerColumn,
     showNisColumn,
     showNotesColumn,
     showPaidDateColumn,
     showProformaDateColumn,
+    showTaxReceiptColumn,
     visibleRows.length,
   ]);
 
@@ -3397,21 +2981,18 @@ const loadPayments = async ({
             : 'card bg-base-100 shadow-lg p-6 relative'
         }
       >
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Due from date:</span></label>
-            <input type="date" className="input input-bordered" value={filters.fromDate} onChange={(e) => handleFilterChange('fromDate', e.target.value)} disabled={hasPaymentDateFilter(filters)} />
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Due to date:</span></label>
-            <input type="date" className="input input-bordered" value={filters.toDate} onChange={(e) => handleFilterChange('toDate', e.target.value)} disabled={hasPaymentDateFilter(filters)} />
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Collected:</span></label>
+        <div className="grid grid-cols-1 gap-x-3 gap-y-5 pt-2 md:grid-cols-3 lg:grid-cols-6">
+          <FilterBox label="Due from date">
+            <input type="date" className="input input-bordered h-12 min-h-12 w-full" value={filters.fromDate} onChange={(e) => handleFilterChange('fromDate', e.target.value)} disabled={hasPaymentDateFilter(filters)} />
+          </FilterBox>
+          <FilterBox label="Due to date">
+            <input type="date" className="input input-bordered h-12 min-h-12 w-full" value={filters.toDate} onChange={(e) => handleFilterChange('toDate', e.target.value)} disabled={hasPaymentDateFilter(filters)} />
+          </FilterBox>
+          <FilterBox label="Collected">
             <div className={`dropdown dropdown-bottom w-full ${showCollectedDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between touch-manipulation"
+                className="btn btn-outline h-12 min-h-12 w-full justify-between touch-manipulation"
                 onTouchStart={(e) => {
                   e.stopPropagation();
                   dropdownTouchHandledRef.current = Date.now();
@@ -3489,13 +3070,12 @@ const loadPayments = async ({
                 </ul>
               )}
             </div>
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Category:</span></label>
+          </FilterBox>
+          <FilterBox label="Category">
             <div className={`dropdown dropdown-bottom w-full ${showCategoryDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between touch-manipulation"
+                className="btn btn-outline h-12 min-h-12 w-full justify-between touch-manipulation"
                 onTouchStart={(e) => {
                   e.stopPropagation();
                   dropdownTouchHandledRef.current = Date.now();
@@ -3561,13 +3141,12 @@ const loadPayments = async ({
                 </div>
               )}
             </div>
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Order:</span></label>
+          </FilterBox>
+          <FilterBox label="Order">
             <div className={`dropdown dropdown-bottom w-full ${showOrderDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between touch-manipulation"
+                className="btn btn-outline h-12 min-h-12 w-full justify-between touch-manipulation"
                 onTouchStart={(e) => {
                   e.stopPropagation();
                   dropdownTouchHandledRef.current = Date.now();
@@ -3645,13 +3224,12 @@ const loadPayments = async ({
                 </ul>
               )}
             </div>
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Currency:</span></label>
+          </FilterBox>
+          <FilterBox label="Currency">
             <div className={`dropdown dropdown-bottom w-full ${showCurrencyDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between touch-manipulation"
+                className="btn btn-outline h-12 min-h-12 w-full justify-between touch-manipulation"
                 onTouchStart={(e) => {
                   e.stopPropagation();
                   dropdownTouchHandledRef.current = Date.now();
@@ -3719,19 +3297,17 @@ const loadPayments = async ({
                 </div>
               )}
             </div>
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Due:</span></label>
-            <select className="select select-bordered" value={filters.due} onChange={(e) => handleFilterChange('due', e.target.value as Filters['due'])}>
+          </FilterBox>
+          <FilterBox label="Due">
+            <select className="select select-bordered h-12 min-h-12 w-full" value={filters.due} onChange={(e) => handleFilterChange('due', e.target.value as Filters['due'])}>
               {dueOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Payment request sent:</span></label>
+          </FilterBox>
+          <FilterBox label="Payment request sent">
             <select
-              className="select select-bordered"
+              className="select select-bordered h-12 min-h-12 w-full"
               value={filters.proformaEmail || 'any'}
               onChange={(e) => handleFilterChange('proformaEmail', e.target.value)}
             >
@@ -3739,27 +3315,24 @@ const loadPayments = async ({
               <option value="not_sent">Not sent (email or WhatsApp)</option>
               <option value="sent">Sent (email or WhatsApp)</option>
             </select>
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Payment from:</span></label>
+          </FilterBox>
+          <FilterBox label="Payment from">
             <input
               type="date"
-              className="input input-bordered"
+              className="input input-bordered h-12 min-h-12 w-full"
               value={filters.paymentFromDate ?? ''}
               onChange={(e) => handleFilterChange('paymentFromDate', e.target.value)}
             />
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">Payment to:</span></label>
+          </FilterBox>
+          <FilterBox label="Payment to">
             <input
               type="date"
-              className="input input-bordered"
+              className="input input-bordered h-12 min-h-12 w-full"
               value={filters.paymentToDate ?? ''}
               onChange={(e) => handleFilterChange('paymentToDate', e.target.value)}
             />
-          </div>
-          <div className="form-control">
-            <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
+          </FilterBox>
+          <div className="flex h-12 items-center">
             <button
               type="button"
               className="btn btn-ghost btn-circle h-12 min-h-12 w-12 border border-gray-300 text-gray-600 hover:border-gray-400 hover:bg-gray-100 disabled:opacity-40"
@@ -3771,64 +3344,84 @@ const loadPayments = async ({
               <XMarkIcon className="h-6 w-6" />
             </button>
           </div>
-          <div className="form-control md:col-span-2">
-            <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
-            <div className="flex items-center gap-2">
-              <div className="relative min-w-0 flex-1">
-                <MagnifyingGlassIcon
-                  className="pointer-events-none absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-gray-400"
-                  aria-hidden
-                />
-                <input
-                  type="search"
-                  className={`input input-bordered h-12 min-h-12 w-full rounded-full pl-11 ${
-                    rowSearchQuery || searchLoading ? 'pr-11' : 'pr-4'
-                  }`}
-                  placeholder="Search..."
-                  value={rowSearchQuery}
-                  onChange={(e) => setRowSearchQuery(e.target.value)}
-                  aria-label="Search"
-                />
-                {searchLoading ? (
-                  <ArrowPathIcon
-                    className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-gray-400"
-                    aria-hidden
-                  />
-                ) : rowSearchQuery ? (
-                  <button
-                    type="button"
-                    onClick={() => setRowSearchQuery('')}
-                    className="absolute right-3 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                    aria-label="Clear search"
-                  >
-                    <XMarkIcon className="h-4 w-4" />
-                  </button>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                className="btn btn-primary h-12 min-h-12 shrink-0 rounded-full px-6"
-                onClick={() => loadPayments()}
-                disabled={loading}
-              >
-                {loading ? <ArrowPathIcon className="h-5 w-5 animate-spin" /> : 'Show'}
-              </button>
-            </div>
-            {error ? <span className="text-error mt-1 text-sm">{error}</span> : null}
-          </div>
         </div>
       </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="relative w-full max-w-sm">
+            <MagnifyingGlassIcon
+              className="pointer-events-none absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-gray-400"
+              aria-hidden
+            />
+            <input
+              type="search"
+              className={`input input-bordered h-12 min-h-12 w-full rounded-full bg-white pl-11 ${
+                rowSearchQuery || searchLoading ? 'pr-11' : 'pr-4'
+              }`}
+              placeholder="Search..."
+              value={rowSearchQuery}
+              onChange={(e) => setRowSearchQuery(e.target.value)}
+              aria-label="Search"
+            />
+            {searchLoading ? (
+              <ArrowPathIcon
+                className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-gray-400"
+                aria-hidden
+              />
+            ) : rowSearchQuery ? (
+              <button
+                type="button"
+                onClick={() => setRowSearchQuery('')}
+                className="absolute right-3 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                aria-label="Clear search"
+              >
+                <XMarkIcon className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary h-12 min-h-12 shrink-0 rounded-full px-6"
+            onClick={() => loadPayments()}
+            disabled={loading}
+          >
+            {loading ? <ArrowPathIcon className="h-5 w-5 animate-spin" /> : 'Show'}
+          </button>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <span className="shrink-0 text-sm font-semibold text-gray-600">Quick actions</span>
+          {COLLECTION_QUICK_FOCUSES.map((item) => {
+            const active = quickFocusId === item.id;
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => applyQuickFocus(item.id)}
+                disabled={loading}
+                className={`flex h-12 min-h-12 max-w-[11.5rem] shrink-0 items-center gap-2 rounded-xl border px-2.5 text-left text-[11px] font-semibold leading-tight shadow-sm ${
+                  active
+                    ? 'border-blue-500 bg-blue-50 text-blue-800'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                <Icon className="h-7 w-7 shrink-0 text-gray-400" aria-hidden />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {error ? <span className="text-error text-sm">{error}</span> : null}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="relative bg-white p-5 rounded-[18px]">
           <ChartBarIcon
-            className="absolute right-4 top-4 h-10 w-10 text-blue-200"
+            className="absolute right-4 top-3 h-16 w-16 text-blue-200"
             aria-hidden
           />
-          <p className={`text-sm font-medium pr-12 ${hideSideRail ? 'text-blue-600' : 'text-primary'}`}>
-            Total Estimated
-          </p>
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mt-1">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 pr-20">
             <p className="text-3xl font-bold tabular-nums text-blue-800">
               {nisReady ? formatCurrency(totals.estimatedWithVat, '₪') : 'Calculating…'}
             </p>
@@ -3838,11 +3431,13 @@ const loadPayments = async ({
               </p>
             ) : null}
           </div>
+          <p className={`mt-1 text-sm font-medium ${hideSideRail ? 'text-blue-600' : 'text-primary'}`}>
+            Total Estimated
+          </p>
         </div>
         <div className="relative bg-white p-5 rounded-[18px]">
-          <CheckCircleIcon className="absolute right-4 top-4 h-10 w-10 text-emerald-200" aria-hidden />
-          <p className="text-sm text-emerald-600 font-medium pr-12">Total Collected</p>
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mt-1">
+          <BanknotesIcon className="absolute right-4 top-3 h-16 w-16 text-emerald-200" aria-hidden />
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 pr-20">
             <p className="text-3xl font-bold text-emerald-800 tabular-nums">
               {nisReady ? formatCurrency(totals.collectedWithVat, '₪') : 'Calculating…'}
             </p>
@@ -3852,13 +3447,14 @@ const loadPayments = async ({
               </p>
             ) : null}
           </div>
+          <p className="mt-1 text-sm font-medium text-emerald-600">Total Collected</p>
         </div>
       </div>
 
-      <div className="w-full overflow-x-auto">
-        <table className="table w-full text-sm">
+      <div className="overflow-x-auto">
+        <table className="table w-full border-separate border-spacing-0 bg-transparent text-sm [&_thead]:bg-transparent [&_thead_tr]:bg-transparent [&_th]:bg-transparent [&_th]:border-b-0">
             <thead>
-              <tr className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+              <tr className="bg-transparent text-sm font-semibold uppercase tracking-wider text-gray-500">
                 <th className="w-10">
                   <input
                     type="checkbox"
@@ -3893,7 +3489,7 @@ const loadPayments = async ({
                     onClick={() => toggleSort('proformaDate')}
                   />
                 ) : null}
-                <th>Tax receipt</th>
+                {showTaxReceiptColumn ? <th>Tax receipt</th> : null}
                 {showPaidDateColumn ? (
                   <SortableTableHeader
                     label="Paid Date"
@@ -3908,7 +3504,7 @@ const loadPayments = async ({
                 {showNotesColumn ? <th className="w-20 max-w-[5.5rem]">Notes</th> : null}
               </tr>
             </thead>
-            <tbody>
+            <tbody className="[&_td]:bg-white [&_tr:hover_td]:bg-gray-50 [&>tr:first-child>td:first-child]:rounded-tl-2xl [&>tr:first-child>td:last-child]:rounded-tr-2xl [&>tr:last-child>td:first-child]:rounded-bl-2xl [&>tr:last-child>td:last-child]:rounded-br-2xl">
               {visibleRows.length === 0 && !loading && !searchLoading && (
                 <tr>
                   <td colSpan={tableColumnCount} className="text-center py-6 text-gray-500">
@@ -3927,53 +3523,9 @@ const loadPayments = async ({
                   </td>
                 </tr>
               )}
-              {(() => {
-                // Debug: Check rows for 199849 in render
-                const rowsFor199849 = rows.filter((row) => 
-                  row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
-                );
-                if (rowsFor199849.length > 0) {
-                  console.log(`✅ [RENDER] Found ${rowsFor199849.length} rows for 199849 in render:`, rowsFor199849.map((r: any) => ({
-                    id: r.id,
-                    leadId: r.leadId,
-                    leadName: r.leadName,
-                    caseNumber: r.caseNumber,
-                    dueDate: r.dueDate,
-                    collectedDate: r.collectedDate,
-                    collected: r.collected,
-                    categoryId: r.mainCategoryId,
-                    orderCode: r.orderCode,
-                  })));
-                } else {
-                  console.log(`❌ [RENDER] No rows for 199849 in render. Total rows: ${rows.length}`);
-                }
-                
-                // Debug: Check rows for 155026 in render
-                const rowsFor155026 = rows.filter((row) => 
-                  row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
-                );
-                if (rowsFor155026.length > 0) {
-                  console.log(`✅ [RENDER] Found ${rowsFor155026.length} rows for 155026 in render:`, rowsFor155026.map((r: any) => ({
-                    id: r.id,
-                    leadId: r.leadId,
-                    leadName: r.leadName,
-                    caseNumber: r.caseNumber,
-                    dueDate: r.dueDate,
-                    collectedDate: r.collectedDate,
-                    collected: r.collected,
-                    categoryId: r.mainCategoryId,
-                    orderCode: r.orderCode,
-                    hasProforma: r.hasProforma,
-                    leadType: r.leadType,
-                  })));
-                } else {
-                  console.log(`❌ [RENDER] No rows for 155026 in render. Total rows: ${rows.length}`);
-                }
-                return null;
-              })()}
               {!(searchLoading && isRowSearchActive) &&
                 sortedVisibleRows.map((row) => (
-                <tr key={row.id}>
+                <tr key={row.id} className="hover:bg-gray-50">
                   <td>
                     <input
                       type="checkbox"
@@ -3986,7 +3538,7 @@ const loadPayments = async ({
                   <td>
                     <Link
                       to={buildLeadLink(row)}
-                      className={hideSideRail ? 'link text-blue-600 hover:text-blue-700' : 'link link-primary'}
+                      className={hideSideRail ? 'text-blue-600 no-underline hover:text-blue-700' : 'text-primary no-underline hover:text-primary/80'}
                     >
                       {row.leadName}
                     </Link>
@@ -4010,7 +3562,7 @@ const loadPayments = async ({
                     <span className="inline-flex items-center gap-1.5">
                       {row.collected ? (
                         <span className="inline-flex items-center gap-1.5 text-green-600 font-semibold">
-                          <CheckCircleIcon className="w-5 h-5" />
+                          <CheckCircleIcon className="h-6 w-6 shrink-0" />
                           {row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma'}
                           <InvoiceAutomationBadge row={row} />
                         </span>
@@ -4019,19 +3571,19 @@ const loadPayments = async ({
                           className="inline-flex items-center gap-1.5 text-indigo-600 font-semibold"
                           title={invoiceSentTooltip(row)}
                         >
-                          <PaperAirplaneIcon className="w-5 h-5" />
+                          <PaperAirplaneIcon className="h-6 w-6 shrink-0" />
                           Pending (Proforma sent)
                           <InvoiceAutomationBadge row={row} />
                         </span>
                       ) : row.hasProforma ? (
                         <span className="inline-flex items-center gap-1.5 text-yellow-600 font-semibold">
-                          <ExclamationTriangleIcon className="w-5 h-5" />
+                          <ExclamationTriangleIcon className="h-6 w-6 shrink-0" />
                           Pending (Proforma)
                           <InvoiceAutomationBadge row={row} />
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-red-600 font-semibold">
-                          <XCircleIcon className="w-5 h-5" />
+                          <XCircleIcon className="h-6 w-6 shrink-0" />
                           Pending
                           <InvoiceAutomationBadge row={row} />
                         </span>
@@ -4050,9 +3602,11 @@ const loadPayments = async ({
                       {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
                     </td>
                   ) : null}
+                  {showTaxReceiptColumn ? (
                   <td>
                     <CollectionTaxReceiptCell row={row} taxReceiptByPlanId={taxReceiptByPlanId} />
                   </td>
+                  ) : null}
                   {showPaidDateColumn ? (
                     <td>
                       {row.collectedDate ? new Date(row.collectedDate).toLocaleDateString() : '—'}
@@ -4092,14 +3646,16 @@ const loadPayments = async ({
                             name={row.handlerName || '—'}
                           />
                         ) : null}
-                        <span>{row.handlerName || '—'}</span>
-                        <button
-                          className="btn btn-ghost btn-xs"
-                          onClick={() => setHandlerEdit({ rowId: row.id, value: row.handlerId ? row.handlerId.toString() : '' })}
-                          aria-label="Edit handler"
-                        >
-                          <PencilSquareIcon className="w-4 h-4" />
-                        </button>
+                        <span className="group/handler inline-flex min-w-0 items-center gap-1">
+                          <span>{row.handlerName || '—'}</span>
+                          <button
+                            className="btn btn-ghost btn-xs opacity-0 pointer-events-none transition-opacity group-hover/handler:opacity-100 group-hover/handler:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                            onClick={() => setHandlerEdit({ rowId: row.id, value: row.handlerId ? row.handlerId.toString() : '' })}
+                            aria-label="Edit handler"
+                          >
+                            <PencilSquareIcon className="w-4 h-4" />
+                          </button>
+                        </span>
                       </div>
                     )}
                   </td>
@@ -4125,82 +3681,6 @@ const loadPayments = async ({
             </tbody>
           </table>
       </div>
-
-      <style>{`
-        .collection-finances-shell table {
-          background: transparent !important;
-          border: none !important;
-          box-shadow: none !important;
-          border-collapse: separate !important;
-          border-spacing: 0 10px !important;
-        }
-
-        .collection-finances-shell .table tbody tr:hover {
-          background-color: transparent !important;
-        }
-        html.dark .collection-finances-shell .table tbody tr:hover {
-          background-color: transparent !important;
-        }
-
-        .collection-finances-shell table tbody tr {
-          background: transparent !important;
-          border-radius: 18px !important;
-          overflow: hidden !important;
-          box-shadow: none !important;
-        }
-
-        .collection-finances-shell table tbody tr:hover {
-          box-shadow: none !important;
-        }
-
-        .collection-finances-shell table tbody td {
-          border: none !important;
-          border-bottom: none !important;
-          background: #ffffff !important;
-          box-shadow: none !important;
-          vertical-align: middle;
-        }
-
-        .collection-finances-shell table tbody td:first-child {
-          border-top-left-radius: 18px !important;
-          border-bottom-left-radius: 18px !important;
-          padding-left: 1.1rem !important;
-        }
-
-        .collection-finances-shell table tbody td:last-child {
-          border-top-right-radius: 18px !important;
-          border-bottom-right-radius: 18px !important;
-          padding-right: 1.1rem !important;
-        }
-
-        .collection-finances-shell table tbody tr:hover td {
-          background: #f1f5f9 !important;
-        }
-
-        html.dark .collection-finances-shell table tbody tr {
-          box-shadow: none !important;
-        }
-
-        html.dark .collection-finances-shell table tbody tr:hover {
-          box-shadow: none !important;
-        }
-
-        html.dark .collection-finances-shell table tbody td {
-          background: rgba(255, 255, 255, 0.06) !important;
-        }
-
-        html.dark .collection-finances-shell table tbody tr:hover td {
-          background: rgba(255, 255, 255, 0.10) !important;
-        }
-
-        .collection-finances-shell table thead,
-        .collection-finances-shell table thead tr,
-        .collection-finances-shell table thead th {
-          background-color: transparent !important;
-          background-image: none !important;
-          border-bottom: none !important;
-        }
-      `}</style>
       </div>
     </div>
   );
@@ -4209,7 +3689,6 @@ const loadPayments = async ({
 export default CollectionFinancesReport;
 
 async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope): Promise<PaymentRow[]> {
-  console.log(`🔍 [fetchModernPayments] Starting with filters:`, filters);
   let query = supabase
     .from('payment_plans')
     .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, ready_to_pay_by, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at');
@@ -4234,9 +3713,6 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
   if (!scope?.modernLeadIds?.length) {
     if (filters.due === 'due_only') {
       query = query.not('due_date', 'is', null).eq('ready_to_pay', true);
-      console.log(`🔍 [fetchModernPayments] Due date included: due_date range + ready_to_pay = true`);
-    } else {
-      console.log(`🔍 [fetchModernPayments] Ignore: all rows in due_date range (no ready_to_pay filter)`);
     }
     if (collectedIsUnpaidOnly(filters.collected) && !hasPaymentDateFilter(filters)) {
       query = query.not('paid', 'eq', true).is('paid_at', null);
@@ -4254,86 +3730,6 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
     if (!page || page.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }
-  
-  console.log(`✅ [fetchModernPayments] Fetched ${data?.length || 0} payment plans from database (paginated)`);
-  const danielGranotRawModern = (data || []).filter((plan: any) => nameMatchesDebugContact(plan.client_name));
-  if (danielGranotRawModern.length > 0) {
-    logDanielGranotDebug('fetchModernPayments — raw rows after DB query', danielGranotRawModern.map((plan: any) => ({
-      id: plan.id,
-      lead_id: plan.lead_id,
-      client_name: plan.client_name,
-      due_date: plan.due_date,
-      paid_at: plan.paid_at,
-      ready_to_pay: plan.ready_to_pay,
-      dueDateInFilter: plan.due_date
-        ? dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate)
-        : false,
-    })));
-  } else if (!hasPaymentDateFilter(filters) && (filters.fromDate || filters.toDate)) {
-    logDanielGranotDebug('fetchModernPayments — NOT in DB result (likely excluded by due_date DB filter)', {
-      filter: { from: filters.fromDate, to: filters.toDate, due: filters.due },
-    });
-  }
-  console.log(`🔍 [fetchModernPayments] Query filters applied:`, {
-    due: filters.due,
-    fromDate: filters.fromDate,
-    toDate: filters.toDate,
-    ready_to_pay: filters.due === 'due_only' ? true : undefined,
-    cancel_date: 'null',
-  });
-  
-  // Debug: Check for lead 168080 in raw data (modern = leads table)
-  const raw168080 = (data || []).filter((plan: any) =>
-    plan.lead_id?.toString() === '168080' || plan.lead_id === 168080
-  );
-  console.log(`🔍 [fetchModernPayments] Raw payment plans for 168080 (modern/leads):`, raw168080.length, raw168080.map((p: any) => ({ id: p.id, lead_id: p.lead_id, due_date: p.due_date, paid_at: p.paid_at, paid: p.paid, proforma: p.proforma ? '(set)' : null })));
-  
-  // Debug: Check for lead 155026 in raw data BEFORE any filtering
-  const raw155026BeforeFilter = (data || []).filter((plan: any) =>
-    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026
-  );
-  console.log(`🔍 [fetchModernPayments] Raw payment plans for 155026 (BEFORE date filtering):`, raw155026BeforeFilter.length, raw155026BeforeFilter.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    due_date: p.due_date,
-    paid_at: p.paid_at,
-    paid: p.paid,
-    cancel_date: p.cancel_date,
-    ready_to_pay: p.ready_to_pay,
-    value: p.value,
-    currency: p.currency,
-  })));
-  
-  // Debug: Check for lead 199849 in raw data
-  const raw199849 = (data || []).filter((plan: any) => 
-    plan.lead_id?.toString() === '199849' || plan.lead_id === 199849
-  );
-  console.log(`🔍 [fetchModernPayments] Raw payment plans for 199849:`, raw199849.length, raw199849.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    due_date: p.due_date,
-    paid_at: p.paid_at,
-    paid: p.paid,
-    cancel_date: p.cancel_date,
-    ready_to_pay: p.ready_to_pay,
-    value: p.value,
-  })));
-  
-  // Debug: Check for lead 155026 in raw data
-  const raw155026 = (data || []).filter((plan: any) => 
-    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026
-  );
-  console.log(`🔍 [fetchModernPayments] Raw payment plans for 155026:`, raw155026.length, raw155026.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    due_date: p.due_date,
-    paid_at: p.paid_at,
-    paid: p.paid,
-    cancel_date: p.cancel_date,
-    ready_to_pay: p.ready_to_pay,
-    value: p.value,
-    currency: p.currency,
-  })));
 
   // Rows are already filtered by query (date range on due_date; due_only adds ready_to_pay). No extra filtering.
   let dateFilteredPlans = data || [];
@@ -4346,29 +3742,7 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
   } else if (proformaHint === 'without') {
     dateFilteredPlans = dateFilteredPlans.filter((plan: any) => !hasProformaValue(plan.proforma));
   }
-  
-  // Debug: Check for lead 199849 after date filtering
-  const dateFiltered199849 = dateFilteredPlans.filter((plan: any) => 
-    plan.lead_id?.toString() === '199849' || plan.lead_id === 199849
-  );
-  console.log(`🔍 [fetchModernPayments] Date-filtered plans for 199849:`, dateFiltered199849.length);
-  
-  // Debug: Check for lead 155026 after date filtering
-  const dateFiltered155026 = dateFilteredPlans.filter((plan: any) => 
-    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026
-  );
-  console.log(`🔍 [fetchModernPayments] Date-filtered plans for 155026:`, dateFiltered155026.length, dateFiltered155026.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    due_date: p.due_date,
-    paid_at: p.paid_at,
-    paid: p.paid,
-    cancel_date: p.cancel_date,
-    ready_to_pay: p.ready_to_pay,
-    value: p.value,
-    currency: p.currency,
-  })));
-  
+
   const leadIds = Array.from(new Set(dateFilteredPlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
   const [leadMeta, sentByNames] = await Promise.all([
     fetchLeadMetadata(leadIds, false),
@@ -4394,18 +3768,6 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
     const hasProforma = hasProformaValue(plan.proforma);
     const paidAt = normalizeDate(plan.paid_at);
     const dueDate = normalizeDate(plan.due_date);
-
-    if (nameMatchesDebugContact(plan.client_name) || nameMatchesDebugContact(meta?.contactName) || nameMatchesDebugContact(meta?.leadName)) {
-      logDanielGranotDebug('fetchModernPayments — mapped PaymentRow', {
-        planId: plan.id,
-        lead_id: plan.lead_id,
-        client_name: plan.client_name,
-        due_date: plan.due_date,
-        dueDate,
-        paid_at: plan.paid_at,
-        ready_to_pay: plan.ready_to_pay,
-      });
-    }
     
     // Extract createdAt from proforma JSON for new leads
     let proformaDate: string | null = null;
@@ -4545,8 +3907,6 @@ async function fetchLegacyProformaDateMaps(leadIds: string[]): Promise<{
 }
 
 async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope): Promise<PaymentRow[]> {
-  console.log('🔍 [fetchLegacyPayments] Starting fetch with filters:', filters);
-  
   let query = supabase
     .from('finances_paymentplanrow')
     .select(
@@ -4560,7 +3920,6 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
     query = query.in('lead_id', scope.legacyLeadIds);
   } else if (hasPaymentDateFilter(filters)) {
     query = applyPaymentDateRangeToQuery(query, filters, 'actual_date');
-    console.log(`🔍 [fetchLegacyPayments] Payment date filter on actual_date`);
   } else if (filters.fromDate || filters.toDate) {
     // Legacy: Ignore = show ALL rows (date range on date column when set; due_date can be NULL).
     // When fromDate > toDate (e.g. Nov–Mar), treat as cross-year: date >= fromDate OR date <= toDate.
@@ -4572,7 +3931,6 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
         if (filters.fromDate) query = query.gte('due_date', filters.fromDate);
         if (filters.toDate) query = query.lte('due_date', filters.toDate);
       }
-      console.log(`🔍 [fetchLegacyPayments] Due date included: due_date not null + due_date range`);
     } else {
       if (isCrossYearRange(filters.fromDate, filters.toDate)) {
         query = query.or(`date.gte.${filters.fromDate},date.lte.${filters.toDate}`);
@@ -4580,14 +3938,13 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
         if (filters.fromDate) query = query.gte('date', filters.fromDate);
         if (filters.toDate) query = query.lte('date', filters.toDate);
       }
-      console.log(`🔍 [fetchLegacyPayments] Ignore: all rows in date column range (due_date can be null)`);
     }
     if (collectedIsUnpaidOnly(filters.collected) && !hasPaymentDateFilter(filters)) {
       query = query.is('actual_date', null);
     }
   }
 
-  // Supabase returns max 1000 rows by default; paginate to fetch all so no leads (e.g. 168080) are missed
+  // Supabase returns max 1000 rows by default; paginate to fetch all
   const PAGE_SIZE = 1000;
   let data: any[] = [];
   let offset = 0;
@@ -4601,98 +3958,13 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
     if (!page || page.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }
-  
-  console.log(`✅ [fetchLegacyPayments] Fetched ${data?.length || 0} payment plans from database (paginated)`);
-  console.log(`🔍 [fetchLegacyPayments] Query filters applied:`, {
-    due: filters.due,
-    fromDate: filters.fromDate,
-    toDate: filters.toDate,
-    due_date_not_null: filters.due === 'due_only' ? true : undefined,
-    cancel_date: 'null',
-  });
-  console.log('🔍 [fetchLegacyPayments] Sample payment plans:', data?.slice(0, 3).map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    client_id: p.client_id,
-    date: p.date,
-    due_date: p.due_date,
-    cancel_date: p.cancel_date,
-    actual_date: p.actual_date,
-  })));
-  
-  // Debug: Check for lead 168080 in raw data (legacy = leads_lead / finances_paymentplanrow)
-  const raw168080 = (data || []).filter((plan: any) =>
-    plan.lead_id?.toString() === '168080' || plan.lead_id === 168080 || plan.client_id?.toString() === '168080' || plan.client_id === 168080
-  );
-  console.log(`🔍 [fetchLegacyPayments] Raw payment plans for 168080 (legacy):`, raw168080.length, raw168080.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    client_id: p.client_id,
-    due_date: p.due_date,
-    actual_date: p.actual_date,
-    cancel_date: p.cancel_date,
-  })));
-  
-  // Debug: Check for lead 155026 in raw data BEFORE any filtering
-  const raw155026BeforeFilter = (data || []).filter((plan: any) =>
-    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026 || plan.client_id?.toString() === '155026' || plan.client_id === 155026
-  );
-  console.log(`🔍 [fetchLegacyPayments] Raw payment plans for 155026 (BEFORE filtering):`, raw155026BeforeFilter.length, raw155026BeforeFilter.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    client_id: p.client_id,
-    date: p.date,
-    due_date: p.due_date,
-    value: p.value,
-    value_base: p.value_base,
-    cancel_date: p.cancel_date,
-    actual_date: p.actual_date,
-    ready_to_pay: p.ready_to_pay,
-    currency_id: p.currency_id,
-  })));
 
   // Rows already filtered by query (date range on date or due_date; due_only adds ready_to_pay)
   let activePlans = data || [];
   if (collectedIsUnpaidOnly(filters.collected) && !hasPaymentDateFilter(filters)) {
     activePlans = activePlans.filter((plan: any) => !plan.actual_date);
   }
-  
-  console.log(`✅ [fetchLegacyPayments] Active plans: ${activePlans.length}`);
-  
-  // Debug: Check for lead 199849 specifically
-  const plansFor199849 = activePlans.filter((plan: any) => 
-    plan.lead_id?.toString() === '199849' || plan.lead_id === 199849 || plan.client_id?.toString() === '199849' || plan.client_id === 199849
-  );
-  console.log(`🔍 [fetchLegacyPayments] Payment plans for lead/client 199849:`, plansFor199849.length, plansFor199849.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    client_id: p.client_id,
-    date: p.date,
-    due_date: p.due_date,
-    value: p.value,
-    cancel_date: p.cancel_date,
-    actual_date: p.actual_date,
-    ready_to_pay: p.ready_to_pay,
-  })));
-  
-  // Debug: Check for lead 155026 specifically
-  const plansFor155026 = activePlans.filter((plan: any) => 
-    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026 || plan.client_id?.toString() === '155026' || plan.client_id === 155026
-  );
-  console.log(`🔍 [fetchLegacyPayments] Payment plans for lead/client 155026:`, plansFor155026.length, plansFor155026.map((p: any) => ({
-    id: p.id,
-    lead_id: p.lead_id,
-    client_id: p.client_id,
-    date: p.date,
-    due_date: p.due_date,
-    value: p.value,
-    value_base: p.value_base,
-    cancel_date: p.cancel_date,
-    actual_date: p.actual_date,
-    ready_to_pay: p.ready_to_pay,
-    currency_id: p.currency_id,
-  })));
-  
+
   // Collect lead_ids for metadata fetching (client_id is a contact_id, not a lead_id)
   const allLeadIds = new Set<string>();
   const allClientIds = new Set<number>();
@@ -4703,10 +3975,6 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
     if (clientId && !Number.isNaN(clientId)) allClientIds.add(clientId);
   });
   const leadIds = Array.from(allLeadIds);
-  console.log(`🔍 [fetchLegacyPayments] Unique lead_ids found:`, leadIds.slice(0, 10), `(total: ${leadIds.length})`);
-  console.log(`🔍 [fetchLegacyPayments] Unique client_ids (contact_ids) found:`, Array.from(allClientIds).slice(0, 10), `(total: ${allClientIds.size})`);
-  console.log(`🔍 [fetchLegacyPayments] Checking if 199849 is in lead IDs:`, leadIds.includes('199849'));
-  console.log(`🔍 [fetchLegacyPayments] Checking if 155026 is in lead IDs:`, leadIds.includes('155026'));
   
   const { proformaDateMap, leadLevelProformaMap } = await fetchLegacyProformaDateMaps(leadIds);
   const proformaHint = collectedProformaHint(filters.collected);
@@ -4736,35 +4004,6 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
         .filter((id): id is number => id != null),
     ),
   ]);
-  console.log(`✅ [fetchLegacyPayments] Fetched metadata for ${leadMeta.size} leads`);
-  console.log(`🔍 [fetchLegacyPayments] Metadata for 199849:`, leadMeta.get('199849'));
-  console.log(`🔍 [fetchLegacyPayments] Metadata for 155026:`, leadMeta.get('155026'));
-  console.log(`✅ [fetchLegacyPayments] Fetched ${contactMap.size} contact names for client_ids`);
-
-  const danielGranotContactIds = Array.from(contactMap.entries())
-    .filter(([, contact]) => nameMatchesDebugContact(contact.name))
-    .map(([id]) => id);
-  const danielGranotLegacyRaw = activePlans.filter((plan: any) =>
-    danielGranotContactIds.includes(Number(plan.client_id)),
-  );
-  if (danielGranotLegacyRaw.length > 0) {
-    logDanielGranotDebug('fetchLegacyPayments — raw rows after DB query', danielGranotLegacyRaw.map((plan: any) => ({
-      id: plan.id,
-      lead_id: plan.lead_id,
-      client_id: plan.client_id,
-      contactName: contactMap.get(Number(plan.client_id))?.name,
-      date: plan.date,
-      due_date: plan.due_date,
-      actual_date: plan.actual_date,
-      ready_to_pay: plan.ready_to_pay,
-      dbDateFilterExplanation: explainDbDateFilterForLegacyPlan(plan, filters),
-    })));
-  } else if (!hasPaymentDateFilter(filters) && (filters.fromDate || filters.toDate)) {
-    logDanielGranotDebug('fetchLegacyPayments — NOT in DB result (likely excluded by date/due_date DB filter)', {
-      filter: { from: filters.fromDate, to: filters.toDate, due: filters.due },
-      hint: 'When Due=Ignore, legacy DB filters "date" column not due_date — due 28/05/2026 may differ from plan date',
-    });
-  }
 
   // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
   return activePlans
@@ -4806,77 +4045,9 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
     
     // Determine if there's a proforma for this specific payment row
     const hasProforma = proformaDate !== null;
-    
-    if (leadIdKey === '168080') {
-      console.log(`🔍 [fetchLegacyPayments] Row for 168080: planId=${plan.id}, leadIdKey=${leadIdKey}, clientId=${clientId}, paymentRowId=${paymentRowId}, proformaDate=${proformaDate}, hasProforma=${hasProforma}, actualDate=${actualDate}, collected=${Boolean(actualDate)}`);
-    }
-    
-    // Debug for 199849
-    if ((leadIdKey === '199849' || plan.lead_id === 199849)) {
-      console.log(`✅ [fetchLegacyPayments] Processing payment plan for 199849:`, {
-        planId: plan.id,
-        lead_id: plan.lead_id,
-        client_id: plan.client_id,
-        contactName,
-        metaFound: !!meta,
-        leadName: meta?.leadName,
-        caseNumber: meta?.caseNumber,
-        value,
-        dueDate,
-        actualDate,
-        proformaDate,
-        hasProforma,
-        collected: Boolean(actualDate),
-      });
-    }
-    
-    // Debug for 155026
-    if ((leadIdKey === '155026' || plan.lead_id === 155026)) {
-      console.log(`✅ [fetchLegacyPayments] Processing payment plan for 155026:`, {
-        planId: plan.id,
-        lead_id: plan.lead_id,
-        client_id: plan.client_id,
-        contactName,
-        metaFound: !!meta,
-        leadName: meta?.leadName,
-        caseNumber: meta?.caseNumber,
-        value,
-        value_base: plan.value_base,
-        dueDate,
-        date: plan.date,
-        actualDate,
-        proformaDate,
-        hasProforma,
-        collected: Boolean(actualDate),
-        cancel_date: plan.cancel_date,
-        ready_to_pay: plan.ready_to_pay,
-        currency_id: plan.currency_id,
-        filters: {
-          fromDate: filters.fromDate,
-          toDate: filters.toDate,
-          due: filters.due,
-        },
-      });
-    }
 
     // Legacy: planDate = "date" column (used for date filter when Due = Ignore)
     const planDate = normalizeDate(plan.date);
-
-    if (nameMatchesDebugContact(contactName)) {
-      logDanielGranotDebug('fetchLegacyPayments — mapped PaymentRow', {
-        planId: plan.id,
-        lead_id: plan.lead_id,
-        client_id: plan.client_id,
-        contactName,
-        dateColumn: plan.date,
-        due_date: plan.due_date,
-        dueDate,
-        planDate,
-        actualDate,
-        ready_to_pay: plan.ready_to_pay,
-        dbDateFilterExplanation: explainDbDateFilterForLegacyPlan(plan, filters),
-      });
-    }
     // Always use lead_id metadata for lead information (leadName, caseNumber, etc.)
     // Use contact name from client_id (contact_id) for clientName field
     return {

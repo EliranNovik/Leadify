@@ -22,6 +22,7 @@ import FinanceAllExpensesTab from '../components/finance/FinanceAllExpensesTab';
 import FinanceExpensesTab from '../components/finance/FinanceExpensesTab';
 import type { CollectionFinancesRailBridge } from '../components/finance/collectionFinancesRailBridge';
 import {
+  isFinanceYearDueFocus,
   parseFinanceCollectionFocus,
   type FinanceCollectionFocusId,
 } from '../lib/financeCollectionFocus';
@@ -168,7 +169,12 @@ const FinanceManagementPage: React.FC = () => {
         (prev) => {
           const next = new URLSearchParams(prev);
           next.set('tab', tab);
-          if (focus) next.set('focus', focus);
+          const existingFocus = parseFinanceCollectionFocus(prev.get('focus'));
+          const keepYearFocus =
+            isFinanceYearDueFocus(existingFocus) &&
+            (tab === 'collection' || tab === 'collection-due' || tab === 'signed');
+          const nextFocus = focus ?? (keepYearFocus ? existingFocus : null);
+          if (nextFocus) next.set('focus', nextFocus);
           else next.delete('focus');
           return next;
         },

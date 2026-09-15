@@ -1,0 +1,2 @@
+# Backend / service-role calls this with Bearer + optional x-smart-scan-secret.
+verify_jwt = false

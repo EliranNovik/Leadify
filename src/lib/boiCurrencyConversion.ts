@@ -703,6 +703,7 @@ export type BoiDateRateConverter = {
    * @param asOfInput - full ISO timestamp, or YYYY-MM-DD (Jerusalem noon on that day)
    */
   toNis: (amount: number, currency: CurrencyInput, asOfInput: string | null) => Promise<number>;
+  snapshot: (asOfInput: string | null) => Promise<BoiRatesSnapshot>;
 };
 
 /** Load every published BOI rate_date in [fromDate, toDate] in one (paged) query. */
@@ -848,5 +849,6 @@ export async function createBoiDateRateConverter(
       const snap = await getSnap(asOfInput);
       return convertToNISWithMeta(amount, currency, snap).amountNIS;
     },
+    snapshot: getSnap,
   };
 }

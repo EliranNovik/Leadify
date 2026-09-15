@@ -6,10 +6,12 @@ import { supabase } from '../lib/supabase';
 import { getCurrencySymbol } from '../lib/currencyConversion';
 import {
   createBoiDateRateConverter,
+  getJerusalemTodayIsoDate,
 } from '../lib/boiCurrencyConversion';
-import { fetchAllStage60Records, last30DaysRange } from '../lib/paymentRequestEmail';
+import { fetchAllStage60Records, last30DaysRange, yearToDateRange } from '../lib/paymentRequestEmail';
 import type { FinanceCollectionFocusId } from '../lib/financeCollectionFocus';
-import { computeDateBounds, fetchStage60RecordsInRange } from '../lib/stage60SignDate';
+import { isFinanceYearDueFocus } from '../lib/financeCollectionFocus';
+import { addCalendarDays, fetchStage60RecordsInRange, toSignCalendarDateKey } from '../lib/stage60SignDate';
 import { fetchStageNames, getStageName, areStagesEquivalent } from '../lib/stageUtils';
 import { usePersistedFilters } from '../hooks/usePersistedState';
 import {
@@ -380,6 +382,225 @@ type SignedSalesReportPageProps = {
   focusPreset?: FinanceCollectionFocusId | null;
 };
 
+function FilterBox({
+  label,
+  children,
+  boxRef,
+}: {
+  label: string;
+  children: React.ReactNode;
+  boxRef?: React.Ref<HTMLDivElement>;
+}) {
+  return (
+    <div className="relative" ref={boxRef}>
+      <span className="pointer-events-none absolute -top-2 left-2.5 z-10 bg-white px-1 text-[11px] font-medium leading-none text-gray-500">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function StylishSpinner({
+  size = 'lg',
+  tone = 'brand',
+}: {
+  size?: 'sm' | 'lg';
+  tone?: 'brand' | 'onPrimary';
+}) {
+  const dim = size === 'lg' ? 'h-20 w-20' : 'h-6 w-6';
+  const border = size === 'lg' ? 'border-[3.5px]' : 'border-2';
+  const track = tone === 'onPrimary' ? 'border-white/30' : 'border-indigo-100';
+  const spin =
+    tone === 'onPrimary'
+      ? 'border-transparent border-t-white border-r-white/80'
+      : 'border-transparent border-t-indigo-500 border-r-violet-500';
+
+  return (
+    <span className={`relative inline-flex ${dim}`} aria-hidden>
+      <span className={`absolute inset-0 rounded-full ${border} ${track}`} />
+      <span className={`absolute inset-0 rounded-full ${border} ${spin} animate-spin`} />
+      {size === 'lg' ? (
+        <span className="absolute inset-3 rounded-full bg-gradient-to-br from-indigo-500/15 via-violet-500/10 to-blue-500/15 animate-pulse" />
+      ) : null}
+    </span>
+  );
+}
+
+const IN_CHUNK = 120;
+
+const NEW_LEAD_SELECT = `
+  id,
+  lead_number,
+  manual_id,
+  name,
+  created_at,
+  category,
+  category_id,
+  source_id,
+  language_id,
+  stage,
+  date_signed,
+  currency_id,
+  scheduler,
+  manager,
+  closer,
+  expert,
+  handler,
+  balance,
+  balance_currency,
+  proposal_total,
+  proposal_currency,
+  subcontractor_fee,
+  language,
+  misc_category!category_id(
+    id,
+    name,
+    misc_maincategory!parent_id(
+      id,
+      name
+    )
+  ),
+  misc_leadsource!fk_leads_source_id(id, name),
+  misc_language!fk_leads_language_id(id, name)
+`;
+
+const LEGACY_LEAD_SELECT = `
+  id,
+  lead_number,
+  manual_id,
+  master_id,
+  name,
+  stage,
+  cdate,
+  case_handler_id,
+  closer_id,
+  expert_id,
+  meeting_scheduler_id,
+  meeting_manager_id,
+  meeting_lawyer_id,
+  total,
+  total_base,
+  currency_id,
+  meeting_total_currency_id,
+  subcontractor_fee,
+  category,
+  category_id,
+  language_id,
+  status,
+  accounting_currencies!leads_lead_currency_id_fkey (
+    id,
+    iso_code,
+    name
+  ),
+  misc_category!category_id (
+    id,
+    name,
+    misc_maincategory!parent_id (
+      id,
+      name
+    )
+  ),
+  misc_language!leads_lead_language_id_fkey (
+    id,
+    name
+  ),
+  scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+  manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+  closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+  expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+  handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
+`;
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { name?: string; message?: string; code?: string };
+  return err.name === 'AbortError' || err.code === '20' || /aborted/i.test(String(err.message || ''));
+}
+
+async function fetchRowsByIds<T>(
+  table: string,
+  column: string,
+  ids: Array<string | number>,
+  select: string,
+  signal?: AbortSignal,
+): Promise<T[]> {
+  if (ids.length === 0) return [];
+  const chunks: Array<Array<string | number>> = [];
+  for (let i = 0; i < ids.length; i += IN_CHUNK) chunks.push(ids.slice(i, i + IN_CHUNK));
+  const pages = await Promise.all(
+    chunks.map(async (chunk) => {
+      const query: any = supabase.from(table).select(select).in(column, chunk);
+      const { data, error } = await (signal ? query.abortSignal(signal) : query);
+      if (error) throw error;
+      return (data || []) as T[];
+    }),
+  );
+  return pages.flat();
+}
+
+async function fetchActivePaymentPlanLeadIds(
+  table: string,
+  ids: Array<string | number>,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const chunks: Array<Array<string | number>> = [];
+  for (let i = 0; i < ids.length; i += IN_CHUNK) chunks.push(ids.slice(i, i + IN_CHUNK));
+  const pages = await Promise.all(
+    chunks.map(async (chunk) => {
+      const query: any = supabase.from(table).select('lead_id').in('lead_id', chunk).is('cancel_date', null);
+      const { data, error } = await (signal ? query.abortSignal(signal) : query);
+      if (error) throw error;
+      return (data || []) as Array<{ lead_id?: string | number | null }>;
+    }),
+  );
+  return pages.flat().map((row) => String(row.lead_id ?? '')).filter(Boolean);
+}
+
+async function buildLegacyLeadSuffixMap(legacyLeadsData: any[], signal?: AbortSignal): Promise<Map<number, number>> {
+  const uniqueMasterIds = Array.from(
+    new Set(
+      legacyLeadsData
+        .map((lead) => (lead.master_id && String(lead.master_id).trim() !== '' ? Number(lead.master_id) : NaN))
+        .filter((id) => Number.isFinite(id)),
+    ),
+  );
+  const leadSuffixMap = new Map<number, number>();
+  if (uniqueMasterIds.length === 0) return leadSuffixMap;
+
+  const subLeads = await fetchRowsByIds<{ id: number; master_id: number }>(
+    'leads_lead',
+    'master_id',
+    uniqueMasterIds,
+    'id, master_id',
+    signal,
+  );
+  const byMaster = new Map<number, number[]>();
+  for (const row of subLeads) {
+    const masterId = Number(row.master_id);
+    const leadId = Number(row.id);
+    if (!Number.isFinite(masterId) || !Number.isFinite(leadId)) continue;
+    const list = byMaster.get(masterId) || [];
+    list.push(leadId);
+    byMaster.set(masterId, list);
+  }
+  for (const ids of byMaster.values()) {
+    ids.sort((a, b) => a - b);
+    ids.forEach((id, index) => leadSuffixMap.set(id, index + 2));
+  }
+  return leadSuffixMap;
+}
+
+function formatLegacyLeadNumber(lead: any, leadSuffixMap: Map<number, number>): string {
+  const masterId = lead.master_id;
+  const leadId = String(lead.id);
+  if (!masterId || String(masterId).trim() === '') return leadId;
+  const suffix = leadSuffixMap.get(lead.id);
+  if (suffix !== undefined) return `${masterId}/${suffix}`;
+  return `${masterId}/?`;
+}
+
 const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
   embedded = false,
   focusPreset = null,
@@ -427,6 +648,8 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
   const employeeFilterRef = useRef<HTMLDivElement | null>(null);
   const categoryFilterRef = useRef<HTMLDivElement | null>(null);
   const languageFilterRef = useRef<HTMLDivElement | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const searchGenRef = useRef(0);
 
   const employeeOptionLabels = useMemo(() => {
     const labels = employees.map(emp => emp.display_name || '').filter(Boolean);
@@ -708,18 +931,18 @@ const SignedSalesReportPage: React.FC<SignedSalesReportPageProps> = ({
       // Use consistent "---" string for all unassigned roles
       const displayText = currentDisplay && currentDisplay.trim() !== '' ? currentDisplay : '---';
       return (
-        <div className="flex items-center gap-2">
+        <span className="group/role inline-flex min-w-0 items-center gap-1">
           <span>{displayText}</span>
           <button
             type="button"
-            className="btn btn-ghost btn-xs"
+            className="btn btn-ghost btn-xs opacity-0 pointer-events-none transition-opacity group-hover/role:opacity-100 group-hover/role:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
             onClick={() => startRoleEdit(row, role)}
             title={`Change ${roleConfig[role].label}`}
             disabled={isSavingRole}
           >
             <PencilSquareIcon className="w-4 h-4" />
           </button>
-        </div>
+        </span>
       );
     }
 
@@ -1124,6 +1347,12 @@ const resolveLegacyLanguage = (lead: any) => {
   };
 
   const handleSearch = async (override?: Partial<FiltersState>) => {
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    const searchGen = ++searchGenRef.current;
+    const { signal } = controller;
+
     setIsLoading(true);
     setSearchPerformed(true);
     setErrorMessage(null);
@@ -1133,23 +1362,31 @@ const resolveLegacyLanguage = (lead: any) => {
       const employeeFilterName = activeFilters.employee;
       const fromDate = activeFilters.fromDate;
       const toDate = activeFilters.toDate;
-      const categoryFilter = activeFilters.category;
-      const languageFilter = activeFilters.language;
       const paymentPlanFilter = activeFilters.paymentPlan || 'all';
-      const { startIso, endIso } = computeDateBounds(fromDate, toDate);
       const anyCalendarFilter = Boolean(fromDate || toDate);
+      const categoryNeedle = normalizeString(activeFilters.category || '');
+      const languageNeedle = normalizeString(activeFilters.language || '');
+      const matchCategory = (categoryValue: string) => {
+        if (!categoryNeedle) return true;
+        const normalizedValue = normalizeString(categoryValue);
+        const mainCategoryMatch = normalizedValue.match(/^([^›]+)/);
+        const mainCategory = mainCategoryMatch ? mainCategoryMatch[1].trim() : normalizedValue;
+        return mainCategory === categoryNeedle;
+      };
+      const matchLanguage = (languageValue: string) => {
+        if (!languageNeedle) return true;
+        return normalizeString(languageValue) === languageNeedle;
+      };
 
-      let allStage60Records: any[] = [];
+      const allStage60Records = anyCalendarFilter
+        ? await fetchStage60RecordsInRange(fromDate || undefined, toDate || undefined, signal)
+        : await fetchAllStage60Records(signal);
 
-      if (anyCalendarFilter) {
-        allStage60Records = await fetchStage60RecordsInRange(fromDate || undefined, toDate || undefined);
-        console.log(
-          `[SignedSalesReport] Stage 60: ${allStage60Records.length} rows after Jerusalem-calendar filter (${fromDate} … ${toDate})`,
-        );
-      } else {
-        allStage60Records = await fetchAllStage60Records();
-      }
+      if (signal.aborted || searchGen !== searchGenRef.current) return;
 
+      console.log(
+        `[SignedSalesReport] Stage 60: ${allStage60Records.length} rows after Jerusalem-calendar filter (${fromDate} … ${toDate})`,
+      );
       console.log(`✅ Fetched ${allStage60Records.length} stage 60 records for signed-sales query`);
 
       // Separate legacy and new leads, and track sign dates (use date from stage 60 record)
@@ -1194,206 +1431,81 @@ const resolveLegacyLanguage = (lead: any) => {
 
       console.log(`✅ Found ${legacyLeadIdsSet.size} legacy leads and ${newLeadIdsSet.size} new leads with stage 60`);
 
-      // Fetch new leads data (include all leads, active and inactive)
-      let newLeads: any[] = [];
       const allNewLeadIds = Array.from(newLeadIdsSet).filter(Boolean);
-      if (allNewLeadIds.length > 0) {
-        const { data: newLeadsResponse, error: newLeadsError } = await supabase
-          .from('leads')
-          .select(
-            `
-              id,
-              lead_number,
-              manual_id,
-              name,
-              created_at,
-              category,
-              category_id,
-              source_id,
-              language_id,
-              stage,
-              date_signed,
-              currency_id,
-              scheduler,
-              manager,
-              closer,
-              expert,
-              handler,
-              balance,
-              balance_currency,
-              proposal_total,
-              proposal_currency,
-              subcontractor_fee,
-              language,
-              misc_category!category_id(
-                id,
-                name,
-                misc_maincategory!parent_id(
-                  id,
-                  name
-                )
-              ),
-              misc_leadsource!fk_leads_source_id(id, name),
-              misc_language!fk_leads_language_id(id, name)
-            `
-          )
-          .in('id', allNewLeadIds)
-
-        if (newLeadsError) {
-          console.error('Failed to load new leads:', newLeadsError);
-          throw newLeadsError;
-        }
-
-        newLeads = newLeadsResponse || [];
-        console.log(`✅ Loaded ${newLeads.length} new leads`);
-      }
-
-      // Fetch legacy leads data (only active leads: status = 0)
-      let legacyLeadsData: any[] = [];
       const allLegacyLeadIds = Array.from(legacyLeadIdsSet);
 
-      if (allLegacyLeadIds.length > 0) {
-        const { data: legacyLeadsResponse, error: legacyLeadsError } = await supabase
-          .from('leads_lead')
-          .select(
-            `
-              id,
-              lead_number,
-              manual_id,
-              master_id,
-              name,
-              stage,
-              cdate,
-              case_handler_id,
-              closer_id,
-              expert_id,
-              meeting_scheduler_id,
-              meeting_manager_id,
-              meeting_lawyer_id,
-              total,
-              total_base,
-              currency_id,
-              meeting_total_currency_id,
-              subcontractor_fee,
-              category,
-              category_id,
-              language_id,
-              status,
-              accounting_currencies!leads_lead_currency_id_fkey (
-                id,
-                iso_code,
-                name
-              ),
-              misc_category!category_id (
-                id,
-                name,
-                misc_maincategory!parent_id (
-                  id,
-                  name
-                )
-              ),
-              misc_language!leads_lead_language_id_fkey (
-                id,
-                name
-              ),
-              scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
-              manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
-              closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
-              expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
-              handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
-            `
-          )
-          .in('id', allLegacyLeadIds)
-
-        if (legacyLeadsError) {
-          console.error('Failed to load legacy leads:', legacyLeadsError);
-          throw legacyLeadsError;
-        }
-
-        legacyLeadsData = legacyLeadsResponse || [];
-        console.log(`✅ Loaded ${legacyLeadsData.length} legacy leads`);
-
-        // Calculate sublead suffixes for legacy leads with master_id
-        // Collect all unique master_ids from the fetched leads
-        const uniqueMasterIds = new Set<number>();
-        legacyLeadsData.forEach(lead => {
-          if (lead.master_id && String(lead.master_id).trim() !== '') {
-            uniqueMasterIds.add(Number(lead.master_id));
-          }
-        });
-        
-        // Query all subleads for each master_id to calculate correct suffixes
-        const leadSuffixMap = new Map<number, number>(); // lead.id -> suffix
-        if (uniqueMasterIds.size > 0) {
-          const masterIdArray = Array.from(uniqueMasterIds);
-          for (const masterId of masterIdArray) {
-            const { data: allSubLeads } = await supabase
-              .from('leads_lead')
-              .select('id')
-              .eq('master_id', masterId)
-              .not('master_id', 'is', null)
-              .order('id', { ascending: true });
-            
-            if (allSubLeads && allSubLeads.length > 0) {
-              allSubLeads.forEach((subLead, index) => {
-                // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
-                leadSuffixMap.set(subLead.id, index + 2);
-              });
-            }
-          }
-        }
-        
-        // Helper function to format legacy lead number (same logic as Clients.tsx)
-        const formatLegacyLeadNumber = (lead: any): string => {
-          const masterId = lead.master_id;
-          const leadId = String(lead.id);
-          
-          // If master_id is null/empty, it's a master lead - return just the ID
-          if (!masterId || String(masterId).trim() === '') {
-            return leadId;
-          }
-          
-          // If master_id exists, it's a sub-lead - use calculated suffix
-          const suffix = leadSuffixMap.get(lead.id);
-          if (suffix !== undefined) {
-            return `${masterId}/${suffix}`;
-          }
-          
-          // Fallback if suffix not found (shouldn't happen, but just in case)
-          return `${masterId}/?`;
-        };
-        
-        // Store the formatted lead number for use in mapping
-        (legacyLeadsData as any[]).forEach((lead: any) => {
-          (lead as any)._formattedLeadNumber = formatLegacyLeadNumber(lead);
-        });
+      let windowFrom = fromDate || toDate || '';
+      let windowTo = toDate || fromDate || '';
+      for (const record of allStage60Records || []) {
+        const key = toSignCalendarDateKey(record.date || record.cdate);
+        if (!key) continue;
+        if (!windowFrom || key < windowFrom) windowFrom = key;
+        if (!windowTo || key > windowTo) windowTo = key;
       }
+      if (!windowFrom) windowFrom = getJerusalemTodayIsoDate();
+      if (!windowTo) windowTo = getJerusalemTodayIsoDate();
 
-      try {
-        const feeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
-          newLeadIds: (newLeads || []).map((l: any) => l.id),
-          legacyLeadIds: (legacyLeadsData || []).map((l: any) => l.id),
-        });
-        applySubcontractorFeeTotalsToLeads(newLeads || [], feeMaps, 'new');
-        applySubcontractorFeeTotalsToLeads(legacyLeadsData || [], feeMaps, 'legacy');
-      } catch (err) {
-        console.warn('[SignedSalesReport] fee-table totals fetch failed; using lead.subcontractor_fee', err);
+      const [
+        newLeads,
+        legacyLeadsRaw,
+        feeMapsResult,
+        newPaymentPlanIds,
+        legacyPaymentPlanIds,
+        boiConverter,
+      ] = await Promise.all([
+        fetchRowsByIds<any>('leads', 'id', allNewLeadIds, NEW_LEAD_SELECT, signal),
+        (async () => {
+          const data = await fetchRowsByIds<any>('leads_lead', 'id', allLegacyLeadIds, LEGACY_LEAD_SELECT, signal);
+          const suffixMap = await buildLegacyLeadSuffixMap(data, signal);
+          data.forEach((lead: any) => {
+            lead._formattedLeadNumber = formatLegacyLeadNumber(lead, suffixMap);
+          });
+          return data;
+        })(),
+        fetchSubcontractorFeeTotalsByLeadIds({
+          newLeadIds: allNewLeadIds,
+          legacyLeadIds: allLegacyLeadIds,
+        }).catch((err) => {
+          console.warn('[SignedSalesReport] fee-table totals fetch failed; using lead.subcontractor_fee', err);
+          return null;
+        }),
+        fetchActivePaymentPlanLeadIds('payment_plans', allNewLeadIds, signal),
+        fetchActivePaymentPlanLeadIds(
+          'finances_paymentplanrow',
+          allLegacyLeadIds.map((id) => String(id)),
+          signal,
+        ),
+        createBoiDateRateConverter({
+          dateWindow: {
+            from: addCalendarDays(windowFrom, -14),
+            to: windowTo,
+          },
+        }),
+      ]);
+
+      if (signal.aborted || searchGen !== searchGenRef.current) return;
+
+      const legacyLeadsData = legacyLeadsRaw || [];
+      console.log(`✅ Loaded ${newLeads.length} new leads`);
+      console.log(`✅ Loaded ${legacyLeadsData.length} legacy leads`);
+
+      if (feeMapsResult) {
+        applySubcontractorFeeTotalsToLeads(newLeads || [], feeMapsResult, 'new');
+        applySubcontractorFeeTotalsToLeads(legacyLeadsData, feeMapsResult, 'legacy');
       }
 
       const filteredNewLeads = (newLeads || [])
         .filter(lead => matchesEmployeeFilterNewLead(lead, employeeFilterName))
-        .filter(lead => matchesCategoryFilter(resolveCategoryName(lead.category, lead.category_id, lead.misc_category)))
-        .filter(lead => matchesLanguageFilter(lead.language || ''));
+        .filter(lead => matchCategory(resolveCategoryName(lead.category, lead.category_id, lead.misc_category)))
+        .filter(lead => matchLanguage(lead.language || ''));
 
       // BOI as-of conversion (sign date — rate available at that moment, not calendar lookup after sync)
-      const boiConverter = await createBoiDateRateConverter();
       const toNis = async (amount: number, currency: string | number, signDate: string | null) => {
         const asOfInput = signDate ? signDate.slice(0, 10) : null;
         return boiConverter.toNis(amount, currency, asOfInput);
       };
 
-      const newLeadRows: SignedLeadRow[] = [];
-      for (const lead of filteredNewLeads) {
+      const newLeadRows: SignedLeadRow[] = await Promise.all(filteredNewLeads.map(async (lead) => {
         const balanceAmount = parseNumericAmount(lead.balance);
         const proposalAmount = parseNumericAmount(lead.proposal_total);
         const rawAmount = balanceAmount || proposalAmount || 0;
@@ -1414,7 +1526,7 @@ const resolveLegacyLanguage = (lead: any) => {
         const expertDisplay = resolveEmployeeDisplayValue(lead.expert);
         const handlerDisplay = resolveEmployeeDisplayValue(lead.handler);
 
-        newLeadRows.push({
+        return {
           id: String(lead.id),
           leadType: 'new',
           leadNumber: lead.lead_number || lead.manual_id || lead.id,
@@ -1444,16 +1556,15 @@ const resolveLegacyLanguage = (lead: any) => {
           totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
           subcontractorFee,
           subcontractorFeeNIS,
-        });
-      }
+        };
+      }));
 
-      const legacyLeads = (legacyLeadsData || []).filter(lead => matchesEmployeeFilterLegacyLead(lead, employeeFilterName));
+      const legacyLeads = (legacyLeadsData || [])
+        .filter(lead => matchesEmployeeFilterLegacyLead(lead, employeeFilterName))
+        .filter(l => matchCategory(resolveLegacyCategory(l, categoryNameToDataMap)))
+        .filter(l => matchLanguage(resolveLegacyLanguage(l)));
 
-      const legacyLeadRows: SignedLeadRow[] = [];
-      for (const lead of legacyLeads.filter(l => matchesCategoryFilter(resolveLegacyCategory(l, categoryNameToDataMap))).filter(l => {
-        const languageName = resolveLegacyLanguage(l);
-        return matchesLanguageFilter(languageName);
-      })) {
+      const legacyLeadRows: SignedLeadRow[] = await Promise.all(legacyLeads.map(async (lead) => {
         const currencyId = lead.currency_id;
         const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
         let resolvedAmount = 0;
@@ -1487,7 +1598,7 @@ const resolveLegacyLanguage = (lead: any) => {
         const formattedLeadNumber = (lead as any)._formattedLeadNumber || String(lead.id);
         const legacyLeadNumber = formattedLeadNumber;
 
-        legacyLeadRows.push({
+        return {
           id: `legacy-${lead.id}`,
           leadType: 'legacy',
           leadNumber: legacyLeadNumber,
@@ -1513,8 +1624,8 @@ const resolveLegacyLanguage = (lead: any) => {
           totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
           subcontractorFee,
           subcontractorFeeNIS,
-        });
-      }
+        };
+      }));
 
       // Combine rows and ensure no duplicates (by lead identifier)
       const combinedRowsMap = new Map<string, SignedLeadRow>();
@@ -1536,47 +1647,12 @@ const resolveLegacyLanguage = (lead: any) => {
         return bTime - aTime;
       });
 
-      // Check for payment plans for all leads
-      const newLeadIds = combinedRows.filter(row => row.leadType === 'new').map(row => row.id);
-      const legacyLeadIds = combinedRows.filter(row => row.leadType === 'legacy').map(row => row.id.replace('legacy-', ''));
-
-      // Fetch payment plans for new leads
       const leadsWithPaymentPlans = new Set<string>();
-      if (newLeadIds.length > 0) {
-        const { data: newPaymentPlans, error: newPaymentError } = await supabase
-          .from('payment_plans')
-          .select('lead_id')
-          .in('lead_id', newLeadIds)
-          .is('cancel_date', null);
-        
-        if (!newPaymentError && newPaymentPlans) {
-          newPaymentPlans.forEach(plan => {
-            if (plan.lead_id) {
-              leadsWithPaymentPlans.add(String(plan.lead_id));
-            }
-          });
-        }
-      }
-
-      // Fetch payment plans for legacy leads
-      if (legacyLeadIds.length > 0) {
-        const legacyLeadIdsAsStrings = legacyLeadIds.map(id => String(id));
-        const { data: legacyPaymentPlans, error: legacyPaymentError } = await supabase
-          .from('finances_paymentplanrow')
-          .select('lead_id')
-          .in('lead_id', legacyLeadIdsAsStrings)
-          .is('cancel_date', null);
-        
-        if (!legacyPaymentError && legacyPaymentPlans) {
-          legacyPaymentPlans.forEach(plan => {
-            if (plan.lead_id) {
-              // Add both string and number versions to handle type mismatches
-              leadsWithPaymentPlans.add(`legacy-${plan.lead_id}`);
-              leadsWithPaymentPlans.add(`legacy-${String(plan.lead_id)}`);
-            }
-          });
-        }
-      }
+      newPaymentPlanIds.forEach((id) => leadsWithPaymentPlans.add(String(id)));
+      legacyPaymentPlanIds.forEach((id) => {
+        leadsWithPaymentPlans.add(`legacy-${id}`);
+        leadsWithPaymentPlans.add(`legacy-${String(id)}`);
+      });
 
       // Update rows with hasPaymentPlan flag
       combinedRows = combinedRows.map(row => ({
@@ -1591,13 +1667,15 @@ const resolveLegacyLanguage = (lead: any) => {
       }
 
       console.log(`✅ Final result: ${combinedRows.length} unique signed leads (${newLeadRows.length} new + ${legacyLeadRows.length} legacy)`);
+      if (searchGen !== searchGenRef.current) return;
       setRows(combinedRows);
     } catch (error: any) {
+      if (signal.aborted || isAbortError(error) || searchGen !== searchGenRef.current) return;
       console.error('Failed to build Signed Sales Report:', error);
       setErrorMessage(error.message || 'Failed to fetch signed agreements. Please try again.');
       setRows([]);
     } finally {
-      setIsLoading(false);
+      if (searchGen === searchGenRef.current) setIsLoading(false);
     }
   };
 
@@ -1605,8 +1683,12 @@ const resolveLegacyLanguage = (lead: any) => {
   handleSearchRef.current = handleSearch;
   const signedFocusHandledRef = useRef<string | null>(null);
 
+  useEffect(() => () => {
+    searchAbortRef.current?.abort();
+  }, []);
+
   useEffect(() => {
-    if (focusPreset !== 'signed-missing-plan') {
+    if (focusPreset !== 'signed-missing-plan' && !isFinanceYearDueFocus(focusPreset)) {
       signedFocusHandledRef.current = null;
       return;
     }
@@ -1614,19 +1696,29 @@ const resolveLegacyLanguage = (lead: any) => {
     if (signedFocusHandledRef.current === focusPreset) return;
     signedFocusHandledRef.current = focusPreset;
     const last30 = last30DaysRange();
-    const next: FiltersState = {
-      fromDate: last30.from,
-      toDate: last30.to,
-      category: '',
-      employee: '',
-      language: '',
-      paymentPlan: 'missing',
-    };
+    const ytd = yearToDateRange();
+    const next: FiltersState = isFinanceYearDueFocus(focusPreset)
+      ? {
+          fromDate: ytd.from,
+          toDate: ytd.to,
+          category: '',
+          employee: '',
+          language: '',
+          paymentPlan: 'all',
+        }
+      : {
+          fromDate: last30.from,
+          toDate: last30.to,
+          category: '',
+          employee: '',
+          language: '',
+          paymentPlan: 'missing',
+        };
     setFilters(next);
     setSearchParams(
       (prev) => {
         const params = new URLSearchParams(prev);
-        params.delete('focus');
+        if (!isFinanceYearDueFocus(focusPreset)) params.delete('focus');
         return params;
       },
       { replace: true },
@@ -1757,37 +1849,28 @@ const resolveLegacyLanguage = (lead: any) => {
 
       <div className="card bg-base-100 shadow-none border border-base-200">
         <div className="card-body space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
-            <div className="form-control">
-              <label className="label">
-                <span className="label-text font-medium">From date</span>
-              </label>
+          <div className="grid grid-cols-1 gap-x-3 gap-y-5 pt-2 md:grid-cols-6">
+            <FilterBox label="From date">
               <input
                 type="date"
-                className="input input-bordered"
+                className="input input-bordered h-12 min-h-12 w-full"
                 value={filters.fromDate}
                 onChange={e => handleFilterChange('fromDate', e.target.value)}
               />
-            </div>
+            </FilterBox>
 
-            <div className="form-control">
-              <label className="label">
-                <span className="label-text font-medium">To date</span>
-              </label>
+            <FilterBox label="To date">
               <input
                 type="date"
-                className="input input-bordered"
+                className="input input-bordered h-12 min-h-12 w-full"
                 value={filters.toDate}
                 onChange={e => handleFilterChange('toDate', e.target.value)}
               />
-            </div>
+            </FilterBox>
 
-            <div className="form-control">
-              <label className="label">
-                <span className="label-text font-medium">Payment plan</span>
-              </label>
+            <FilterBox label="Payment plan">
               <select
-                className="select select-bordered"
+                className="select select-bordered h-12 min-h-12 w-full"
                 value={filters.paymentPlan || 'all'}
                 onChange={(e) =>
                   handleFilterChange('paymentPlan', e.target.value as FiltersState['paymentPlan'])
@@ -1797,16 +1880,13 @@ const resolveLegacyLanguage = (lead: any) => {
                 <option value="missing">Missing payment plan</option>
                 <option value="has">Has payment plan</option>
               </select>
-            </div>
+            </FilterBox>
 
-            <div className="form-control" ref={employeeFilterRef}>
-              <label className="label">
-                <span className="label-text font-medium">Employee</span>
-              </label>
+            <FilterBox label="Employee" boxRef={employeeFilterRef}>
               <div className="relative">
                 <input
                   type="text"
-                  className="input input-bordered bg-white text-black pr-10"
+                  className="input input-bordered h-12 min-h-12 w-full bg-white text-black pr-10"
                   value={filters.employee}
                   placeholder="All"
                   onFocus={() => setFilterDropdownOpen(prev => ({ ...prev, employee: true }))}
@@ -1852,16 +1932,13 @@ const resolveLegacyLanguage = (lead: any) => {
                   </div>
                 )}
               </div>
-            </div>
+            </FilterBox>
 
-            <div className="form-control" ref={categoryFilterRef}>
-              <label className="label">
-                <span className="label-text font-medium">Category</span>
-              </label>
+            <FilterBox label="Category" boxRef={categoryFilterRef}>
               <div className="relative">
                 <input
                   type="text"
-                  className="input input-bordered bg-white text-black pr-10"
+                  className="input input-bordered h-12 min-h-12 w-full bg-white text-black pr-10"
                   value={filters.category}
                   placeholder="All"
                   onFocus={() => setFilterDropdownOpen(prev => ({ ...prev, category: true }))}
@@ -1907,16 +1984,13 @@ const resolveLegacyLanguage = (lead: any) => {
                   </div>
                 )}
               </div>
-            </div>
+            </FilterBox>
 
-            <div className="form-control" ref={languageFilterRef}>
-              <label className="label">
-                <span className="label-text font-medium">Language</span>
-              </label>
+            <FilterBox label="Language" boxRef={languageFilterRef}>
               <div className="relative">
                 <input
                   type="text"
-                  className="input input-bordered bg-white text-black pr-10"
+                  className="input input-bordered h-12 min-h-12 w-full bg-white text-black pr-10"
                   value={filters.language}
                   placeholder="All"
                   onFocus={() => setFilterDropdownOpen(prev => ({ ...prev, language: true }))}
@@ -1962,7 +2036,7 @@ const resolveLegacyLanguage = (lead: any) => {
                   </div>
                 )}
               </div>
-            </div>
+            </FilterBox>
           </div>
 
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -1979,13 +2053,27 @@ const resolveLegacyLanguage = (lead: any) => {
                 {sortedRows.length}
               </span>
             </div>
-            <div className="flex justify-end md:w-auto shrink-0">
+            <div className="flex justify-end gap-2 md:w-auto shrink-0">
               <button
-                className="btn btn-primary px-10"
+                type="button"
+                className="btn btn-ghost h-12 min-h-12 px-6"
+                disabled={isLoading}
+                onClick={() => {
+                  const ytd = yearToDateRange();
+                  setFilters((prev) => ({ ...prev, ...ytd }));
+                  void handleSearch(ytd);
+                }}
+              >
+                This year
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-11 min-w-[7.5rem] items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-blue-500 px-8 text-base font-bold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={handleSearch}
                 disabled={isLoading}
+                aria-busy={isLoading}
               >
-                {isLoading ? 'Loading...' : 'Show'}
+                {isLoading ? <StylishSpinner size="sm" tone="onPrimary" /> : 'Show'}
               </button>
             </div>
           </div>
@@ -2005,18 +2093,19 @@ const resolveLegacyLanguage = (lead: any) => {
           }`}
         >
           {isLoading ? (
-            <div className="py-12 flex justify-center">
-              <span className="loading loading-spinner loading-lg text-primary" />
+            <div className="flex flex-col items-center justify-center gap-4 py-20" role="status" aria-live="polite">
+              <StylishSpinner size="lg" />
+              <span className="text-sm font-medium tracking-wide text-gray-500">Loading signed sales</span>
             </div>
           ) : sortedRows.length === 0 ? (
             <div className="py-12 text-center text-gray-500">
               No signed agreements found for the selected filters.
             </div>
           ) : (
-            <div className="w-full overflow-x-auto">
-              <table className="table w-full text-sm">
+            <div className="overflow-x-auto">
+              <table className="table w-full border-separate border-spacing-0 bg-transparent text-sm [&_thead]:bg-transparent [&_thead_tr]:bg-transparent [&_th]:bg-transparent [&_th]:border-b-0">
                 <thead>
-                  <tr className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  <tr className="bg-transparent text-sm font-semibold uppercase tracking-wider text-gray-500">
                     <th>Lead</th>
                     <th>C. Date</th>
                     <th>Category</th>
@@ -2037,45 +2126,45 @@ const resolveLegacyLanguage = (lead: any) => {
                     <th>Total (₪)</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="[&_td]:bg-white [&_tr:hover_td]:bg-gray-50 [&>tr:first-child>td:first-child]:rounded-tl-2xl [&>tr:first-child>td:last-child]:rounded-tr-2xl [&>tr:last-child>td:first-child]:rounded-bl-2xl [&>tr:last-child>td:last-child]:rounded-br-2xl">
                   {sortedRows.map(row => (
                     <tr key={`${row.leadType}-${row.id}`}>
                       <td>
                         <div className="flex flex-col">
                           <Link
                             to={`/clients/${encodeURIComponent(row.leadIdentifier)}`}
-                            className="text-xs md:text-sm font-semibold text-primary hover:underline"
+                            className="font-semibold text-primary no-underline hover:text-primary/80"
                           >
                             {row.leadNumber}
                           </Link>
-                          <span className="text-[10px] md:text-xs text-gray-500">{row.leadName}</span>
+                          <span className="text-xs text-gray-500">{row.leadName}</span>
                         </div>
                       </td>
-                      <td className="text-xs md:text-sm">{formatDate(row.createdDate)}</td>
-                      <td className="max-w-[220px] text-xs md:text-sm">
+                      <td>{formatDate(row.createdDate)}</td>
+                      <td className="max-w-[220px]">
                         <span className="block line-clamp-2 break-words">{row.category}</span>
                       </td>
-                      <td className="text-xs md:text-sm font-semibold text-black">{formatStageLabel(row.stage)}</td>
-                      <td className="text-xs md:text-sm">
-                        <div className="flex items-center gap-1.5">
-                          <span>{formatDate(row.signDate)}</span>
-                          {!row.hasPaymentPlan && (
-                            <span
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white"
-                              title="No payment plan"
-                            >
-                              <ExclamationTriangleIcon className="h-3 w-3 shrink-0" aria-hidden />
-                            </span>
-                          )}
+                      <td className="font-semibold text-black">{formatStageLabel(row.stage)}</td>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <span className="min-w-[6.75rem] tabular-nums">{formatDate(row.signDate)}</span>
+                          <span
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
+                            title={!row.hasPaymentPlan ? 'No payment plan' : undefined}
+                          >
+                            {!row.hasPaymentPlan ? (
+                              <ExclamationTriangleIcon className="h-6 w-6 text-red-500" aria-hidden />
+                            ) : null}
+                          </span>
                         </div>
                       </td>
-                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'scheduler')}</td>
-                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'manager')}</td>
-                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'closer')}</td>
-                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'expert')}</td>
-                      <td className="text-xs md:text-sm">{renderRoleCell(row, 'handler')}</td>
-                      <td className="text-xs md:text-sm">{row.totalOriginalDisplay}</td>
-                      <td className="text-xs md:text-sm">
+                      <td>{renderRoleCell(row, 'scheduler')}</td>
+                      <td>{renderRoleCell(row, 'manager')}</td>
+                      <td>{renderRoleCell(row, 'closer')}</td>
+                      <td>{renderRoleCell(row, 'expert')}</td>
+                      <td>{renderRoleCell(row, 'handler')}</td>
+                      <td>{row.totalOriginalDisplay}</td>
+                      <td>
                         {(() => {
                           const totalAfterFee = (row.totalNIS || 0) - (row.subcontractorFeeNIS || 0);
                           const feeDisplay = row.subcontractorFeeNIS && row.subcontractorFeeNIS > 0 
@@ -2090,82 +2179,6 @@ const resolveLegacyLanguage = (lead: any) => {
               </table>
             </div>
           )}
-
-          <style>{`
-            .collection-finances-shell table {
-              background: transparent !important;
-              border: none !important;
-              box-shadow: none !important;
-              border-collapse: separate !important;
-              border-spacing: 0 10px !important;
-            }
-
-            .collection-finances-shell .table tbody tr:hover {
-              background-color: transparent !important;
-            }
-            html.dark .collection-finances-shell .table tbody tr:hover {
-              background-color: transparent !important;
-            }
-
-            .collection-finances-shell table tbody tr {
-              background: transparent !important;
-              border-radius: 18px !important;
-              overflow: hidden !important;
-              box-shadow: none !important;
-            }
-
-            .collection-finances-shell table tbody tr:hover {
-              box-shadow: none !important;
-            }
-
-            .collection-finances-shell table tbody td {
-              border: none !important;
-              border-bottom: none !important;
-              background: #ffffff !important;
-              box-shadow: none !important;
-              vertical-align: middle;
-            }
-
-            .collection-finances-shell table tbody td:first-child {
-              border-top-left-radius: 18px !important;
-              border-bottom-left-radius: 18px !important;
-              padding-left: 1.1rem !important;
-            }
-
-            .collection-finances-shell table tbody td:last-child {
-              border-top-right-radius: 18px !important;
-              border-bottom-right-radius: 18px !important;
-              padding-right: 1.1rem !important;
-            }
-
-            .collection-finances-shell table tbody tr:hover td {
-              background: #f1f5f9 !important;
-            }
-
-            html.dark .collection-finances-shell table tbody tr {
-              box-shadow: none !important;
-            }
-
-            html.dark .collection-finances-shell table tbody tr:hover {
-              box-shadow: none !important;
-            }
-
-            html.dark .collection-finances-shell table tbody td {
-              background: rgba(255, 255, 255, 0.06) !important;
-            }
-
-            html.dark .collection-finances-shell table tbody tr:hover td {
-              background: rgba(255, 255, 255, 0.10) !important;
-            }
-
-            .collection-finances-shell table thead,
-            .collection-finances-shell table thead tr,
-            .collection-finances-shell table thead th {
-              background-color: transparent !important;
-              background-image: none !important;
-              border-bottom: none !important;
-            }
-          `}</style>
         </div>
       )}
     </div>

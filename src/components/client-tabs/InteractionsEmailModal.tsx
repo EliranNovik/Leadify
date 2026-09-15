@@ -849,16 +849,14 @@ export function InteractionsEmailModal({
                           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-80" />
                           {mailboxStatus.connected ? 'Connected' : 'Disconnected'}
                         </span>
-                        {!mailboxStatus.connected && (
-                          <button
-                            type="button"
-                            className="btn btn-primary btn-xs shrink-0 px-2"
-                            onClick={handleMailboxConnect}
-                            disabled={isMailboxLoading || !userId}
-                          >
-                            Connect
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          className={`btn btn-xs shrink-0 px-2 ${mailboxStatus.connected ? 'btn-ghost' : 'btn-primary'}`}
+                          onClick={handleMailboxConnect}
+                          disabled={isMailboxLoading || !userId}
+                        >
+                          {mailboxStatus.connected ? 'Reconnect' : 'Connect'}
+                        </button>
                       </>
                     )}
                     <button

@@ -16,6 +16,7 @@ const whatsappRoutes = require('./src/routes/whatsappRoutes');
 const onecomRoutes = require('./src/routes/onecomRoutes');
 const authRoutes = require('./src/routes/authRoutes');
 const emailRoutes = require('./src/routes/emailRoutes');
+const smartScanRoutes = require('./src/routes/smartScanRoutes');
 const priceOfferRoutes = require('./src/routes/priceOfferRoutes');
 const syncRoutes = require('./src/routes/syncRoutes');
 const pushNotificationRoutes = require('./src/routes/pushNotificationRoutes');
@@ -29,6 +30,7 @@ const clockInKioskRoutes = require('./src/routes/clockInKioskRoutes');
 const kioskRoutes = require('./src/routes/kioskRoutes');
 const walletPassRoutes = require('./src/routes/walletPassRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
+const { startScanCenterInboxScheduler } = require('./src/services/scanCenterInboxScheduler');
 const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
 const { startBoiExchangeRatesScheduler } = require('./src/services/boiExchangeRatesScheduler');
 const { startGoogleSheetsConversionSyncScheduler } = require('./src/services/googleSheetsConversionSyncScheduler');
@@ -417,6 +419,7 @@ app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/onecom', onecomRoutes);
 app.use('/api', authRoutes);
 app.use('/api', emailRoutes);
+app.use('/api', smartScanRoutes);
 app.use('/api', priceOfferRoutes);
 app.use('/api', syncRoutes);
 app.use('/api', pushNotificationRoutes);
@@ -518,6 +521,7 @@ server.listen(PORT, () => {
 
   // Email fetching scheduler enabled - fetches emails every 5 minutes
   startMailboxSyncScheduler();
+  startScanCenterInboxScheduler();
   startMeetingNotificationScheduler();
   startBoiExchangeRatesScheduler();
   startGoogleSheetsConversionSyncScheduler();

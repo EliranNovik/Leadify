@@ -1,4 +1,4 @@
-import { last7DaysRange, last30DaysRange } from './paymentRequestEmail';
+import { last7DaysRange, last30DaysRange, yearToDateRange } from './paymentRequestEmail';
 
 /** Focus presets from Finance dashboard → Collection / Collection Due auto-filters. */
 
@@ -15,7 +15,10 @@ export type FinanceCollectionFocusId =
   | 'due-sent-proforma'
   | 'due-no-proforma'
   | 'due-invoice-instructions'
-  | 'collected-this-month';
+  | 'collected-this-month'
+  | 'due-no-proforma-year'
+  | 'due-unsent-proforma-year'
+  | 'due-sent-proforma-year';
 
 export type FinanceCollectionFocusTab = 'collection' | 'collection-due' | 'signed';
 
@@ -70,10 +73,23 @@ export function parseFinanceCollectionFocus(raw: string | null | undefined): Fin
     case 'due-no-proforma':
     case 'due-invoice-instructions':
     case 'collected-this-month':
+    case 'due-no-proforma-year':
+    case 'due-unsent-proforma-year':
+    case 'due-sent-proforma-year':
       return raw;
     default:
       return null;
   }
+}
+
+export function isFinanceYearDueFocus(
+  focus: FinanceCollectionFocusId | null | undefined,
+): focus is 'due-no-proforma-year' | 'due-unsent-proforma-year' | 'due-sent-proforma-year' {
+  return (
+    focus === 'due-no-proforma-year' ||
+    focus === 'due-unsent-proforma-year' ||
+    focus === 'due-sent-proforma-year'
+  );
 }
 
 export function financeFocusDefaultTab(focus: FinanceCollectionFocusId): FinanceCollectionFocusTab {
@@ -201,6 +217,37 @@ export function buildCollectionFiltersForFocus(focus: FinanceCollectionFocusId):
         due: 'due_only',
       };
     }
+    case 'due-unsent-proforma-year': {
+      const ytd = yearToDateRange(today);
+      return {
+        ...base,
+        fromDate: ytd.from,
+        toDate: ytd.to,
+        collected: ['no_with_proforma'],
+        due: 'due_only',
+        proformaEmail: 'not_sent',
+      };
+    }
+    case 'due-sent-proforma-year': {
+      const ytd = yearToDateRange(today);
+      return {
+        ...base,
+        fromDate: ytd.from,
+        toDate: ytd.to,
+        collected: ['no_with_proforma_sent'],
+        due: 'due_only',
+      };
+    }
+    case 'due-no-proforma-year': {
+      const ytd = yearToDateRange(today);
+      return {
+        ...base,
+        fromDate: ytd.from,
+        toDate: ytd.to,
+        collected: ['no_without_proforma'],
+        due: 'due_only',
+      };
+    }
     case 'due-invoice-instructions': {
       const last7 = last7DaysRange(today);
       return {
@@ -262,6 +309,12 @@ export function buildCollectionDueFiltersForFocus(
       const last30 = last30DaysRange(today);
       return { ...base, fromDate: last30.from, toDate: last30.to };
     }
+    case 'due-no-proforma-year':
+    case 'due-unsent-proforma-year':
+    case 'due-sent-proforma-year': {
+      const ytd = yearToDateRange(today);
+      return { ...base, fromDate: ytd.from, toDate: ytd.to };
+    }
     default:
       return null;
   }
@@ -270,7 +323,13 @@ export function buildCollectionDueFiltersForFocus(
 export function collectionDisplayFilterForFocus(
   focus: FinanceCollectionFocusId,
 ): 'all' | 'uncollected' | 'with_proforma' {
-  if (focus === 'pending-proforma' || focus === 'due-unsent-proforma' || focus === 'due-sent-proforma') {
+  if (
+    focus === 'pending-proforma' ||
+    focus === 'due-unsent-proforma' ||
+    focus === 'due-sent-proforma' ||
+    focus === 'due-unsent-proforma-year' ||
+    focus === 'due-sent-proforma-year'
+  ) {
     return 'with_proforma';
   }
   if (
@@ -280,6 +339,7 @@ export function collectionDisplayFilterForFocus(
     focus === 'ready' ||
     focus === 'pending-no-proforma' ||
     focus === 'due-no-proforma' ||
+    focus === 'due-no-proforma-year' ||
     focus === 'due-invoice-instructions'
   ) {
     return 'uncollected';

@@ -7184,7 +7184,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                       >
                         {isMailboxLoading ? 'Syncing...' : 'Sync emails'}
                       </button>
-                      {!mailboxStatus.connected && (
+                      {!mailboxStatus.connected ? (
                         <button
                           type="button"
                           className="btn btn-sm btn-primary"
@@ -7192,6 +7192,15 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                           disabled={isMailboxLoading || !userId}
                         >
                           Connect mailbox
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline"
+                          onClick={handleMailboxConnect}
+                          disabled={isMailboxLoading || !userId}
+                        >
+                          Reconnect mailbox
                         </button>
                       )}
                     </div>

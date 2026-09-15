@@ -44,7 +44,7 @@ const GRAPH_REDIRECT_URI = resolveEnv(
 
 const GRAPH_SCOPES = (
   resolveEnv('GRAPH_SCOPES', 'MS_GRAPH_SCOPES') ||
-  'offline_access Mail.Read Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared OnlineMeetings.ReadWrite'
+  'offline_access Mail.Read Mail.Read.Shared Mail.ReadWrite.Shared Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared OnlineMeetings.ReadWrite'
 ).split(/\s+/);
 
 if (!GRAPH_CLIENT_ID || !GRAPH_CLIENT_SECRET || !GRAPH_TENANT_ID || !GRAPH_REDIRECT_URI) {

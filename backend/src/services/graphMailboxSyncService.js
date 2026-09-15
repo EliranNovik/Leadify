@@ -4,6 +4,15 @@ const graphAuthService = require('./graphAuthService');
 const supabase = require('../config/supabase');
 const pushNotificationService = require('./pushNotificationService');
 const emailAttachmentStorage = require('./emailAttachmentStorageService');
+const smartScanClassifyService = require('./smartScanClassifyService');
+const {
+  SCAN_CENTER_EMAIL,
+  SCAN_CENTER_ALIASES,
+  SCAN_CENTER_DELEGATE_EMAILS,
+  isScanCenterMailbox,
+  involvesScanCenter,
+  ensureScanCenterRecipient,
+} = require('../lib/scanCenterMailbox');
 
 const EMAIL_HEADERS_TABLE = process.env.EMAIL_HEADERS_TABLE || 'emails';
 const EMAIL_CONTACTS_TABLE = process.env.EMAIL_CONTACTS_TABLE || 'email_contacts';
@@ -519,8 +528,9 @@ function disableMessageIdLookups(reason) {
   );
 }
 
-async function findEmailRowByMessageId(messageId) {
-  if (!messageId || skipMessageIdLookups) return null;
+async function findEmailRowByMessageId(messageId, options = {}) {
+  if (!messageId) return null;
+  if (skipMessageIdLookups && !options.force) return null;
   if (emailRowRpcAvailable) {
     const { data, error } = await supabase.rpc('email_row_for_message', { p_message_id: messageId });
     if (!error) {
@@ -585,6 +595,8 @@ async function insertMailboxEmailRow(row) {
         return { id: null, error };
       }
       console.warn('⚠️ insert_mailbox_email RPC error, trying table insert:', error.message || error);
+      const existing = await findEmailRowByMessageId(row.message_id, { force: true });
+      if (existing?.id) return { id: existing.id, error: null, duplicate: true };
     }
   }
 
@@ -1233,10 +1245,210 @@ class GraphMailboxSyncService {
     return { inbox, sent };
   }
 
+  listScanCenterDelegateTokens(connected = []) {
+    const fallbackIds = new Set(
+      [process.env.SCAN_CENTER_MAILBOX_USER_ID, process.env.PAYMENT_CONFIRMATION_MAILBOX_USER_ID]
+        .map((id) => String(id || '').trim())
+        .filter(Boolean)
+    );
+    const preferredMailboxes = new Set(SCAN_CENTER_DELEGATE_EMAILS);
+    const rank = (token) => {
+      if (isScanCenterMailbox(token.mailbox_address)) return 0;
+      if (preferredMailboxes.has(normalise(token.mailbox_address))) return 1;
+      if (fallbackIds.has(String(token.user_id))) return 2;
+      return 3;
+    };
+    const seen = new Set();
+    return [...connected]
+      .filter((token) => token?.user_id)
+      .sort((a, b) => rank(a) - rank(b))
+      .filter((token) => {
+        const key = String(token.user_id);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 8);
+  }
+
+  async resolveScanCenterAccess() {
+    const all = await mailboxTokenService.getAllTokens();
+    const connected = (all || []).filter(
+      (token) =>
+        token?.user_id &&
+        token.status !== mailboxTokenService.STATUS_NEEDS_RECONNECT
+    );
+    const token = this.listScanCenterDelegateTokens(connected)[0];
+    if (!token) return null;
+    return {
+      userId: token.user_id,
+      mailboxAddress: SCAN_CENTER_EMAIL,
+      token,
+      direct: isScanCenterMailbox(token.mailbox_address),
+    };
+  }
+
+  async fetchScanCenterInboxSnapshot(accessToken) {
+    const top = Math.max(20, parseInt(process.env.SCAN_CENTER_INBOX_TOP || '80', 10) || 80);
+    let lastStatus = null;
+    let lastError = '';
+    for (const address of SCAN_CENTER_ALIASES) {
+      const urls = [
+        `${GRAPH_BASE_URL}/users/${encodeURIComponent(address)}/mailFolders/inbox/messages?$select=${DELTA_MESSAGE_SELECT}&$top=${top}`,
+        `${GRAPH_BASE_URL}/users/${encodeURIComponent(address)}/mailFolders('Inbox')/messages?$select=${DELTA_MESSAGE_SELECT}&$top=${top}`,
+      ];
+      for (const snapshotUrl of urls) {
+        const snapshotResponse = await fetch(snapshotUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Prefer: 'outlook.body-preview="text"',
+          },
+        });
+        lastStatus = snapshotResponse.status;
+        if (!snapshotResponse.ok) {
+          lastError = await snapshotResponse.text();
+          continue;
+        }
+        const snapshotJson = await snapshotResponse.json();
+        const messages = Array.isArray(snapshotJson.value) ? snapshotJson.value : [];
+        console.log(
+          `📬 Scan Center snapshot ${address} status=200 count=${messages.length} hasAttachments=${
+            messages.filter((msg) => msg?.hasAttachments).length
+          }`
+        );
+        return {
+          ok: true,
+          status: 200,
+          address,
+          messages,
+        };
+      }
+      if (lastStatus && lastStatus !== 200) {
+        console.warn(
+          `⚠️  Scan Center inbox snapshot failed for ${address}:`,
+          lastStatus,
+          String(lastError).slice(0, 300)
+        );
+      }
+    }
+    return { ok: false, status: lastStatus, error: lastError, messages: [] };
+  }
+
+  async loadScanCenterInbox(options = {}) {
+    const all = await mailboxTokenService.getAllTokens();
+    const connected = (all || []).filter(
+      (token) =>
+        token?.user_id &&
+        token.status !== mailboxTokenService.STATUS_NEEDS_RECONNECT
+    );
+    const candidates = this.listScanCenterDelegateTokens(connected);
+    if (!candidates.length) {
+      return {
+        emails: [],
+        synced: false,
+        warning: `Connect ${SCAN_CENTER_EMAIL} as a mailbox, or connect a member mailbox (for example Eliran or Irina) in the CRM.`,
+      };
+    }
+
+    let lastStatus = null;
+    let reachableEmpty = false;
+    let reachableMailbox = SCAN_CENTER_EMAIL;
+    for (const token of candidates) {
+      const { accessToken } = await graphAuthService.getAccessTokenForUser(token.user_id);
+      if (!accessToken) continue;
+
+      const snapshot = await this.fetchScanCenterInboxSnapshot(accessToken);
+      lastStatus = snapshot.status;
+      try {
+        const payload = JSON.parse(Buffer.from(String(accessToken).split('.')[1], 'base64url').toString('utf8'));
+        console.log(
+          `📬 Scan Center token mailbox=${token.mailbox_address || token.user_id} scp=${payload.scp || payload.roles || 'none'}`
+        );
+      } catch {
+        // ignore malformed tokens
+      }
+      if (!snapshot.ok) continue;
+
+      if (!snapshot.messages.length) {
+        reachableEmpty = true;
+        reachableMailbox = snapshot.address || SCAN_CENTER_EMAIL;
+        console.log(
+          `📭 Scan Center inbox empty via ${token.mailbox_address || token.user_id}; trying next connected mailbox`
+        );
+        continue;
+      }
+
+      const persist = await this.persistMessages(
+        token.user_id,
+        snapshot.address || SCAN_CENTER_EMAIL,
+        snapshot.messages,
+        accessToken,
+        {
+          skipFullBodies: true,
+          awaitAttachments: options.persistAttachments !== false,
+        }
+      );
+
+      return {
+        emails: persist.emails || [],
+        synced: true,
+        mailbox: snapshot.address || SCAN_CENTER_EMAIL,
+        accessToken,
+      };
+    }
+
+    if (reachableEmpty) {
+      return {
+        emails: [],
+        synced: true,
+        mailbox: reachableMailbox,
+        warning: `No documents in ${reachableMailbox} yet.`,
+      };
+    }
+
+    return {
+      emails: [],
+      synced: false,
+      warning: `Graph could not read ${SCAN_CENTER_EMAIL} (${lastStatus || 'no token'}). Wait up to 60 minutes after granting Full Access, then make sure Eliran or Irina has connected their mailbox in the CRM.`,
+    };
+  }
+
+  async syncScanCenterMailbox(options = {}) {
+    const loaded = await this.loadScanCenterInbox({ persistAttachments: options.persistAttachments !== false });
+    return {
+      synced: Boolean(loaded.synced),
+      mailbox: SCAN_CENTER_EMAIL,
+      warning: loaded.warning,
+      accessToken: loaded.accessToken,
+      emails: loaded.emails || [],
+    };
+  }
+
   async syncAllMailboxes(options = {}) {
     const tokens = await mailboxTokenService.getAllTokens();
+    const alreadyScanCenter = (tokens || []).some((token) => isScanCenterMailbox(token?.mailbox_address));
     if (!tokens.length) {
-      return { processed: 0, successful: 0, failed: 0 };
+      try {
+        const scan = await this.syncScanCenterMailbox({ trigger: options.trigger || 'scheduler' });
+        return {
+          processed: scan.synced ? 1 : 0,
+          successful: scan.synced ? 1 : 0,
+          failed: scan.synced ? 0 : 1,
+          details: [
+            {
+              mailbox: SCAN_CENTER_EMAIL,
+              ...(scan.synced ? { summary: { synced: true, mailbox: SCAN_CENTER_EMAIL } } : { error: scan.warning }),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          processed: 1,
+          successful: 0,
+          failed: 1,
+          details: [{ mailbox: SCAN_CENTER_EMAIL, error: error.message || 'Unknown error' }],
+        };
+      }
     }
 
     const results = await tokens.reduce(
@@ -1280,8 +1492,26 @@ class GraphMailboxSyncService {
       Promise.resolve({ successful: 0, failed: 0, details: [] })
     );
 
+    if (!alreadyScanCenter) {
+      try {
+        const scan = await this.syncScanCenterMailbox({ trigger: options.trigger || 'scheduler' });
+        if (scan.synced) {
+          results.successful += 1;
+          results.details.push({ mailbox: SCAN_CENTER_EMAIL, summary: { synced: true, mailbox: SCAN_CENTER_EMAIL } });
+        } else if (scan.warning) {
+          results.details.push({ mailbox: SCAN_CENTER_EMAIL, error: scan.warning });
+        }
+      } catch (error) {
+        results.failed += 1;
+        results.details.push({
+          mailbox: SCAN_CENTER_EMAIL,
+          error: error.message || 'Unknown error',
+        });
+      }
+    }
+
     return {
-      processed: tokens.length,
+      processed: tokens.length + (alreadyScanCenter ? 0 : 1),
       ...results,
     };
   }
@@ -1602,6 +1832,23 @@ class GraphMailboxSyncService {
         : [];
       const hasExternalRecipient = recipientAddresses.some((addr) => addr && !isLawofficeDomain(addr));
 
+      // Scanner PDFs land in Scan Center (or from scan@) with no lead match.
+      if (involvesScanCenter({ senderEmail, recipientList, mailboxAddress })) {
+        const matches = preferContactMatches(collectMatchesForEmailRow(row, leadMappings));
+        const primary = primaryMatchFrom(matches);
+        prepared.push({
+          row: {
+            ...row,
+            recipient_list: ensureScanCenterRecipient(recipientList, mailboxAddress),
+            client_id: primary?.clientId || null,
+            legacy_id: primary?.legacyId || null,
+            contact_id: primary?.contactId || null,
+          },
+          contactIds: contactIdsFromMatches(matches),
+        });
+        continue;
+      }
+
       // Keep website/newsletter blocks unless a non-office client is on To/Cc.
       if (senderEmail && shouldFilterEmail(senderEmail) && !hasExternalRecipient) {
         console.log(
@@ -1672,7 +1919,31 @@ class GraphMailboxSyncService {
     let errorCount = 0;
     const insertedForBodies = [];
 
+    const scanCenterPersist = isScanCenterMailbox(mailboxAddress);
+    const removedRefs = scanCenterPersist
+      ? await smartScanClassifyService.loadRemovedRefs()
+      : { attachmentIds: new Set(), messageIds: new Set() };
     for (const item of toInsert) {
+      if (scanCenterPersist && item.row.message_id && removedRefs.messageIds.has(String(item.row.message_id))) {
+        const existingRemoved = await findEmailRowByMessageId(item.row.message_id, { force: true });
+        if (existingRemoved?.id) {
+          duplicatesSkipped += 1;
+          insertedForBodies.push({ ...item.row, id: existingRemoved.id, _backfillAttachments: true });
+          await linkEmailContacts(existingRemoved.id, item.contactIds);
+          continue;
+        }
+        duplicatesSkipped += 1;
+        continue;
+      }
+      if (scanCenterPersist) {
+        const existing = await findEmailRowByMessageId(item.row.message_id, { force: true });
+        if (existing?.id) {
+          duplicatesSkipped += 1;
+          insertedForBodies.push({ ...item.row, id: existing.id, _backfillAttachments: true });
+          await linkEmailContacts(existing.id, item.contactIds);
+          continue;
+        }
+      }
       const result = await insertMailboxEmailRow(item.row);
       if (result.id && !result.error) {
         if (result.duplicate) {
@@ -1698,6 +1969,7 @@ class GraphMailboxSyncService {
 
     const newLeadEmails = toInsert
       .filter((item) => !item.row.client_id && !item.row.legacy_id)
+      .filter((item) => !isScanCenterMailbox(mailboxAddress))
       .filter((item) => (item.row.recipient_list || '').toLowerCase().includes(OFFICE_EMAIL))
       .map((item) => item.row);
 
@@ -1730,13 +2002,23 @@ class GraphMailboxSyncService {
 
     if (accessToken && insertedForBodies.length) {
       if (!options.skipFullBodies) {
-        this.fetchFullBodiesForMessages(userId, mailboxAddress, insertedForBodies, accessToken).catch((err) => {
-          console.error('⚠️  Error fetching full email bodies:', err.message || err);
-        });
+        const pending = this.fetchFullBodiesForMessages(userId, mailboxAddress, insertedForBodies, accessToken);
+        if (options.awaitAttachments) {
+          await pending;
+        } else {
+          pending.catch((err) => {
+            console.error('⚠️  Error fetching full email bodies:', err.message || err);
+          });
+        }
       } else {
-        this.persistAttachmentsForMessages(mailboxAddress, insertedForBodies, accessToken).catch((err) => {
-          console.error('⚠️  Error persisting email attachments:', err.message || err);
-        });
+        const pending = this.persistAttachmentsForMessages(mailboxAddress, insertedForBodies, accessToken);
+        if (options.awaitAttachments) {
+          await pending;
+        } else {
+          pending.catch((err) => {
+            console.error('⚠️  Error persisting email attachments:', err.message || err);
+          });
+        }
       }
     }
 
@@ -1747,6 +2029,7 @@ class GraphMailboxSyncService {
       inserted: insertedCount,
       skipped: filteredOut + duplicatesSkipped + errorCount,
       trackedCount: 0,
+      emails: insertedForBodies,
     };
   }
 
@@ -1769,8 +2052,10 @@ class GraphMailboxSyncService {
       return stored;
     }
 
+    const removedRefs = await smartScanClassifyService.loadRemovedRefs();
     const metas = [];
     for (const att of graphAttachments) {
+      if (removedRefs.attachmentIds.has(String(att.id))) continue;
       const already = storedIds.has(String(att.id));
       if (already) {
         metas.push(stored.find((row) => String(row.id) === String(att.id)));

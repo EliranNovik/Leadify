@@ -31,6 +31,7 @@ import {
   fetchFinanceLastPaymentsToday,
   fetchFinanceManagementOverview,
   fetchFinancePaymentTrend,
+  formatNis,
   resolveFinanceDateRange,
   type FinanceDateRange,
   type FinanceFailedPaymentRow,
@@ -73,16 +74,32 @@ const EMPTY: FinanceOverviewSnapshot = {
   expensesMarketingNis: 0,
   expensesSalariesNis: 0,
   overdueUnpaidCount: 0,
+  overdueUnpaidNis: 0,
   dueTodayCount: 0,
+  dueTodayNis: 0,
   signedMissingPaymentPlanCount: 0,
   dueUnsentProformaCount: 0,
+  dueUnsentProformaNis: 0,
   dueSentProformaCount: 0,
+  dueSentProformaNis: 0,
   dueNoProformaCount: 0,
+  dueNoProformaNis: 0,
+  dueNoProformaThisYearCount: 0,
+  dueNoProformaThisYearNis: 0,
+  dueUnsentProformaThisYearCount: 0,
+  dueUnsentProformaThisYearNis: 0,
+  dueSentProformaThisYearCount: 0,
+  dueSentProformaThisYearNis: 0,
   dueNext7DaysCount: 0,
+  dueNext7DaysNis: 0,
   readyToPayUnpaidCount: 0,
+  readyToPayUnpaidNis: 0,
   pendingWithProformaCount: 0,
+  pendingWithProformaNis: 0,
   pendingWithoutProformaCount: 0,
+  pendingWithoutProformaNis: 0,
   collectedTodayCount: 0,
+  collectedTodayNis: 0,
   collectedThisMonthCount: 0,
   asOf: '',
 };
@@ -97,6 +114,7 @@ type AttentionItem = {
   label: string;
   hint: string;
   value: number;
+  amountNis?: number;
   tone: 'danger' | 'warn' | 'info' | 'success' | 'neutral';
   icon: React.ElementType;
 };
@@ -164,6 +182,11 @@ function formatNisTotal(rows: Array<{ amountNis?: number }>): string {
   }, 0);
   if (total <= 0) return '';
   return `₪${Math.round(total).toLocaleString('en-US')}`;
+}
+
+function formatKpiNis(value: number | undefined, loading: boolean): string {
+  if (loading || value == null || !Number.isFinite(value) || value <= 0) return '';
+  return formatNis(value);
 }
 
 function formatAttemptTime(iso: string | null | undefined): string {
@@ -1070,6 +1093,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       label: 'Overdue unpaid',
       hint: 'Past due in the last 30 days, still unpaid',
       value: snapshot.overdueUnpaidCount,
+      amountNis: snapshot.overdueUnpaidNis,
       tone: 'danger',
       icon: ExclamationTriangleIcon,
     },
@@ -1078,6 +1102,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       label: 'Due today',
       hint: 'Unpaid rows due today',
       value: snapshot.dueTodayCount,
+      amountNis: snapshot.dueTodayNis,
       tone: 'warn',
       icon: CalendarDaysIcon,
     },
@@ -1086,6 +1111,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       label: 'Due next 7 days',
       hint: 'Unpaid due tomorrow through +7 days',
       value: snapshot.dueNext7DaysCount,
+      amountNis: snapshot.dueNext7DaysNis,
       tone: 'info',
       icon: ClockIcon,
     },
@@ -1094,6 +1120,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       label: 'Ready to pay',
       hint: 'Marked ready to pay, unpaid · last 30 days',
       value: snapshot.readyToPayUnpaidCount,
+      amountNis: snapshot.readyToPayUnpaidNis,
       tone: 'info',
       icon: BoltIcon,
     },
@@ -1102,6 +1129,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       label: 'Pending + proforma',
       hint: 'Unpaid with a proforma · last 30 days',
       value: snapshot.pendingWithProformaCount,
+      amountNis: snapshot.pendingWithProformaNis,
       tone: 'neutral',
       icon: DocumentTextIcon,
     },
@@ -1110,6 +1138,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       label: 'Pending, no proforma',
       hint: 'Unpaid without a proforma · last 30 days',
       value: snapshot.pendingWithoutProformaCount,
+      amountNis: snapshot.pendingWithoutProformaNis,
       tone: 'warn',
       icon: DocumentTextIcon,
     },
@@ -1118,6 +1147,7 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       label: 'Collected today',
       hint: 'Marked paid today',
       value: snapshot.collectedTodayCount,
+      amountNis: snapshot.collectedTodayNis,
       tone: 'success',
       icon: BanknotesIcon,
     },
@@ -1132,37 +1162,63 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
       id: 'signed-missing-plan',
       label: 'Signed, missing payment plan',
       value: loading ? '—' : String(snapshot.signedMissingPaymentPlanCount),
+      amount: '',
       icon: ClipboardDocumentCheckIcon,
       onClick: () => onOpenTab('signed', 'signed-missing-plan'),
       hint: 'No payment plan · last 30 days',
       gradient: 'bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500',
+      year: null as
+        | {
+            focus: FinanceCollectionFocusId;
+            count: string;
+            amount: string;
+          }
+        | null,
     },
     {
       id: 'due-no-proforma',
       label: 'Due last 30 days, no proforma',
       value: loading ? '—' : String(snapshot.dueNoProformaCount),
+      amount: formatKpiNis(snapshot.dueNoProformaNis, loading),
       icon: DocumentTextIcon,
       onClick: () => onOpenTab('collection', 'due-no-proforma'),
       hint: 'Due date set, no proforma created',
       gradient: 'bg-gradient-to-tr from-pink-500 via-rose-500 to-orange-500',
+      year: {
+        focus: 'due-no-proforma-year' as const,
+        count: loading ? '—' : String(snapshot.dueNoProformaThisYearCount),
+        amount: formatKpiNis(snapshot.dueNoProformaThisYearNis, loading),
+      },
     },
     {
       id: 'due-unsent-proforma',
       label: 'Due last 30 days, proforma not sent',
       value: loading ? '—' : String(snapshot.dueUnsentProformaCount),
+      amount: formatKpiNis(snapshot.dueUnsentProformaNis, loading),
       icon: PaperAirplaneIcon,
       onClick: () => onOpenTab('collection', 'due-unsent-proforma'),
       hint: 'Proforma on file, not sent by email or WhatsApp',
       gradient: 'bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-500',
+      year: {
+        focus: 'due-unsent-proforma-year' as const,
+        count: loading ? '—' : String(snapshot.dueUnsentProformaThisYearCount),
+        amount: formatKpiNis(snapshot.dueUnsentProformaThisYearNis, loading),
+      },
     },
     {
       id: 'due-sent-proforma',
       label: 'Due last 30 days, pending (proforma sent)',
       value: loading ? '—' : String(snapshot.dueSentProformaCount),
+      amount: formatKpiNis(snapshot.dueSentProformaNis, loading),
       icon: CheckCircleIcon,
       onClick: () => onOpenTab('collection', 'due-sent-proforma'),
       hint: 'Proforma already sent · still unpaid',
       gradient: 'bg-gradient-to-tr from-teal-600 via-emerald-500 to-green-500',
+      year: {
+        focus: 'due-sent-proforma-year' as const,
+        count: loading ? '—' : String(snapshot.dueSentProformaThisYearCount),
+        amount: formatKpiNis(snapshot.dueSentProformaThisYearNis, loading),
+      },
     },
   ];
 
@@ -1313,26 +1369,52 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
         {kpiCards.map((card) => {
           const Icon = card.icon;
           return (
-            <button
-              key={card.id}
-              type="button"
-              onClick={card.onClick}
-              className={`${card.gradient} flex min-h-[7rem] flex-col justify-between rounded-2xl p-4 text-left text-white shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-2xl`}
-              title={card.hint}
-            >
-              <div className="flex w-full items-start justify-between gap-3">
-                <p className="text-4xl md:text-5xl font-bold leading-none tracking-tight">{card.value}</p>
-                <div className="ml-auto shrink-0 rounded-full bg-white/20 p-3.5">
-                  <Icon className="h-9 w-9 md:h-10 md:w-10" />
+            <div key={card.id} className={`${card.gradient} flex min-h-[7rem] flex-col overflow-hidden rounded-2xl text-white shadow-xl`}>
+              <button
+                type="button"
+                onClick={card.onClick}
+                className="flex min-h-[7rem] flex-1 flex-col justify-between p-4 text-left transition hover:bg-white/10"
+                title={card.hint}
+              >
+                <div className="flex w-full items-start justify-between gap-3">
+                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <p className="text-4xl md:text-5xl font-bold leading-none tracking-tight">{card.value}</p>
+                    {card.amount ? (
+                      <p className="text-sm md:text-base font-semibold tabular-nums text-white/85" dir="ltr">
+                        {card.amount}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="ml-auto shrink-0 rounded-full bg-white/20 p-3.5">
+                    <Icon className="h-9 w-9 md:h-10 md:w-10" />
+                  </div>
                 </div>
-              </div>
-              <div className="min-w-0 mt-2">
-                <p className="text-base md:text-lg font-semibold leading-snug">{card.label}</p>
-                <p className="mt-0.5 truncate text-xs text-white/80" title={card.hint}>
-                  {card.hint}
-                </p>
-              </div>
-            </button>
+                <div className="min-w-0 mt-2">
+                  <p className="text-base md:text-lg font-semibold leading-snug">{card.label}</p>
+                  <p className="mt-0.5 truncate text-xs text-white/80" title={card.hint}>
+                    {card.hint}
+                  </p>
+                </div>
+              </button>
+              {card.year ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenTab('collection', card.year!.focus)}
+                  className="flex items-baseline justify-between gap-2 border-t border-white/20 bg-black/15 px-4 py-2.5 text-left transition hover:bg-black/25"
+                  title="Same filter from 1 January through today"
+                >
+                  <span className="text-sm font-semibold">This year</span>
+                  <span className="flex min-w-0 flex-wrap items-baseline justify-end gap-x-2">
+                    <span className="text-lg font-bold tabular-nums leading-none">{card.year.count}</span>
+                    {card.year.amount ? (
+                      <span className="text-xs font-semibold tabular-nums text-white/85" dir="ltr">
+                        {card.year.amount}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              ) : null}
+            </div>
           );
         })}
       </div>
@@ -1682,8 +1764,15 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
                       {financeFocusDefaultTab(item.id) === 'collection-due' ? 'Due' : 'Collection'}
                     </span>
                   </div>
-                  <div className={`mt-2.5 text-2xl font-bold tabular-nums leading-none ${tone.value}`}>
-                    {loading ? '—' : item.value.toLocaleString()}
+                  <div className={`mt-2.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 ${tone.value}`}>
+                    <span className="text-2xl font-bold tabular-nums leading-none">
+                      {loading ? '—' : item.value.toLocaleString()}
+                    </span>
+                    {!loading && formatKpiNis(item.amountNis, false) ? (
+                      <span className="text-sm font-semibold tabular-nums opacity-80" dir="ltr">
+                        {formatKpiNis(item.amountNis, false)}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="mt-1.5 text-sm font-semibold text-gray-800">{item.label}</div>
                   <p className="mt-0.5 text-xs leading-snug text-gray-500">{item.hint}</p>
