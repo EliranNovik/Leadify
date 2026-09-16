@@ -84,6 +84,24 @@ const smartScanController = {
     }
   },
 
+  async splitCaseDocument(req, res) {
+    try {
+      const caseDocumentId = String(req.body?.caseDocumentId || req.params?.caseDocumentId || '').trim();
+      if (!caseDocumentId) {
+        return res.status(400).json({ success: false, error: 'caseDocumentId is required' });
+      }
+      const data = await smartScanInboxService.splitCaseDocument(caseDocumentId);
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.status(200).json({ success: true, ...data });
+    } catch (error) {
+      console.error('❌ Smart Scan split failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to separate scan into documents',
+      });
+    }
+  },
+
   async approve(req, res) {
     try {
       const id = String(req.body?.id || req.params?.id || '').trim();

@@ -169,7 +169,10 @@ import {
   resolveEmailDeleteFilter,
 } from '../../lib/interactions/emailComposeActions';
 import { INTERACTIONS_TIMELINE_INVALIDATE_EVENT } from '../../lib/interactionsTimelineInvalidation';
-import { processWhatsAppTemplateMessage } from '../../lib/interactions/whatsappTimeline';
+import {
+  processWhatsAppTemplateMessage,
+  dedupeWhatsAppTimelineRows,
+} from '../../lib/interactions/whatsappTimeline';
 import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
 import {
   bodyHasContractLink,
@@ -1164,6 +1167,7 @@ function shouldKeepExistingTimeline(prev: Interaction[], next: Interaction[]): b
   const prevWa = countTimelineChannelRows(prev, 'whatsapp');
   const nextWa = countTimelineChannelRows(next, 'whatsapp');
   if (prevWa > 0 && nextWa === 0) return true;
+  if (nextWa > 0 && nextWa < prevWa) return false;
 
   const prevEmail = countTimelineChannelRows(prev, 'email');
   const nextEmail = countTimelineChannelRows(next, 'email');
@@ -2963,7 +2967,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     const filtered = interactions.filter((interaction: any) =>
       emailInteractionVisibleOnTimeline(interaction),
     );
-    let next = dedupeTimelineEmailLikeRows(filtered);
+    let next = dedupeWhatsAppTimelineRows(dedupeTimelineEmailLikeRows(filtered));
 
     if (timelineDirectionFilter === 'incoming') {
       next = next.filter((row) => row.direction === 'in');
@@ -4500,19 +4504,41 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   let query = supabase
                     .from('whatsapp_messages')
                     .select(
-                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id, media_url, media_id, message_type, media_filename, media_mime_type, caption, whatsapp_message_id'
+                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, lead_id, legacy_id, phone_number, template_id, media_url, media_id, message_type, media_filename, media_mime_type, caption, whatsapp_message_id'
                     )
                     .limit(FETCH_BATCH_SIZE);
                   if (isLegacyLead) {
-                    if (legacyId !== null) {
-                      query = query.eq('legacy_id', legacyId);
-                    } else {
+                    if (legacyId === null) {
                       return { data: [], error: null };
                     }
+                    query = query.eq('legacy_id', legacyId);
                   } else {
                     query = query.eq('lead_id', client.id);
                   }
-                  const { data, error } = await query.order('sent_at', { ascending: false });
+                  let { data, error } = await query.order('sent_at', { ascending: false });
+                  if (!error && (data?.length ?? 0) === 0) {
+                    const contactIds = contactsForFetch
+                      .map((c: any) => Number(c?.id))
+                      .filter((id: number) => Number.isFinite(id) && id > 0)
+                      .slice(0, 20);
+                    if (contactIds.length) {
+                      const byContact = await supabase
+                        .from('whatsapp_messages')
+                        .select(
+                          'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, lead_id, legacy_id, phone_number, template_id, media_url, media_id, message_type, media_filename, media_mime_type, caption, whatsapp_message_id'
+                        )
+                        .in('contact_id', contactIds)
+                        .limit(FETCH_BATCH_SIZE)
+                        .order('sent_at', { ascending: false });
+                      data = (byContact.data || []).filter((row: any) => {
+                        if (isLegacyLead) {
+                          return Number(row.legacy_id) === Number(legacyId);
+                        }
+                        return String(row.lead_id || '') === String(client.id);
+                      });
+                      error = byContact.error;
+                    }
+                  }
                   return { data: data || [], error };
                 } catch (err) {
                   return { data: [], error: err };
@@ -4540,6 +4566,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
         const [whatsAppDbMessages, callLogInteractions, legacyInteractions] = [
           // Process WhatsApp messages
+          dedupeWhatsAppTimelineRows(
           (whatsAppResult.data || []).map((msg: any) => {
             // Ensure sent_at exists and is valid
             const sentAt = msg.sent_at || msg.created_at || new Date().toISOString();
@@ -4586,6 +4613,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               status: msg.whatsapp_status || 'sent',
               error_message: msg.error_message,
               contact_id: msg.contact_id || null,
+              lead_id: msg.lead_id || null,
+              legacy_id: msg.legacy_id || null,
               phone_number: msg.phone_number || null,
               template_id: msg.template_id || null,
               media_url: msg.media_url || null,
@@ -4594,8 +4623,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               media_filename: msg.media_filename || null,
               media_mime_type: msg.media_mime_type || null,
               caption: msg.caption || null,
+              whatsapp_message_id: msg.whatsapp_message_id || null,
             };
           }).filter((msg: any) => msg !== null),
+          ),
 
           // Process call logs
           callLogsResult.data?.map((callLog: any) => {
@@ -5457,7 +5488,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
         }
 
-        const uniqueInteractions = dedupeTimelineEmailLikeRows(interactionsAfterLegacyManualDedup);
+        const uniqueInteractions = dedupeWhatsAppTimelineRows(
+          dedupeTimelineEmailLikeRows(interactionsAfterLegacyManualDedup),
+        );
 
         interactionsDevLog(`📊 [InteractionsTab] After email/manual cross-source dedupe for lead ${clientLeadId}:`, {
           leadId: clientLeadId,

@@ -24,6 +24,7 @@ const SCAN_CENTER_DELEGATE_EMAILS = [
 ];
 
 const SCAN_CENTER_SCANNER_NAME = 'Scan Center';
+const SCAN_CENTER_CLIENT_STATE_PREFIX = 'scan-center:';
 
 function normaliseEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -35,6 +36,24 @@ function isScanCenterAddress(email) {
 
 function isScanCenterMailbox(mailboxAddress) {
   return isScanCenterAddress(mailboxAddress);
+}
+
+function scanCenterClientState(userId) {
+  const id = String(userId || '').trim();
+  return id ? `${SCAN_CENTER_CLIENT_STATE_PREFIX}${id}` : '';
+}
+
+function parseScanCenterClientState(value) {
+  const raw = String(value || '').trim();
+  if (!raw.startsWith(SCAN_CENTER_CLIENT_STATE_PREFIX)) return null;
+  const id = raw.slice(SCAN_CENTER_CLIENT_STATE_PREFIX.length).trim();
+  return id || null;
+}
+
+function isScanCenterGraphResource(resource) {
+  const raw = decodeURIComponent(String(resource || '')).toLowerCase();
+  if (!raw) return false;
+  return SCAN_CENTER_ALIASES.some((addr) => addr && raw.includes(addr));
 }
 
 function involvesScanCenter({ senderEmail, recipientList, mailboxAddress } = {}) {
@@ -76,9 +95,13 @@ module.exports = {
   SCAN_CENTER_ALIASES,
   SCAN_CENTER_DELEGATE_EMAILS,
   SCAN_CENTER_SCANNER_NAME,
+  SCAN_CENTER_CLIENT_STATE_PREFIX,
   normaliseEmail,
   isScanCenterMailbox,
   isScanCenterAddress,
+  scanCenterClientState,
+  parseScanCenterClientState,
+  isScanCenterGraphResource,
   involvesScanCenter,
   ensureScanCenterRecipient,
   isHiddenScanAttachment,

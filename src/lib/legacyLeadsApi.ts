@@ -180,6 +180,15 @@ function applyNameSearchFilter(
   return qb.or(nameOr);
 }
 
+function applyEmailSearchFilter(
+  qb: { ilike: (column: string, pattern: string) => any },
+  emailQuery: string,
+) {
+  const q = lower(emailQuery).replace(/%/g, "").trim();
+  // Contains match (not .or()) so dots/@ in the address cannot break PostgREST filters.
+  return qb.ilike("email", `%${q}%`);
+}
+
 /** Match partial emails while typing — only when query has @ or domain-ish shape. */
 function buildProgressiveEmailOrFilter(rawQuery: string): string {
   const q = lower(rawQuery).replace(/%/g, "").trim();
@@ -601,12 +610,15 @@ export function warmHeaderLeadSearch(): Promise<void> {
   headerSearchWarmAt = now;
   headerSearchWarmPromise = (async () => {
     try {
-      await supabase.rpc("search_leads_header_warm");
-      await supabase.rpc("search_leads_header", {
-        p_query: "zz",
-        p_limit: 1,
-        p_variants: ["zz"],
-      });
+      // Cheap LIMIT-1 table touch only. Do not run search_leads_header('zz') here —
+      // that path often hits the 4s statement_timeout (HTTP 500) and contends with
+      // inbox / dashboard queries on the same page load.
+      const { error } = await supabase.rpc("search_leads_header_warm");
+      if (error) {
+        headerSearchWarmPromise = null;
+        headerSearchWarmAt = 0;
+        return;
+      }
       lastHeaderSearchSuccessAt = Date.now();
     } catch {
       headerSearchWarmPromise = null;
@@ -720,7 +732,7 @@ async function searchNewLeads(intent: SearchIntent, opts: ResolvedSearchOptions)
       }
     }
   } else if (intent.kind === "email") {
-    qb = qb.ilike("email", `${intent.email}%`);
+    qb = applyEmailSearchFilter(qb, intent.email);
   } else if (intent.kind === "phone") {
     const cond = buildPhoneOr(intent.digits, intent.raw);
     if (!cond) return [];
@@ -760,7 +772,7 @@ async function searchLegacyLeads(intent: SearchIntent, opts: ResolvedSearchOptio
   let qb = supabase.from("leads_lead").select(LEGACY_LEAD_SEARCH_SELECT);
 
   if (intent.kind === "email") {
-    qb = qb.ilike("email", `${intent.email}%`);
+    qb = applyEmailSearchFilter(qb, intent.email);
   } else if (intent.kind === "phone") {
     const cond = buildPhoneOr(intent.digits, intent.raw);
     if (!cond) return [];
@@ -803,9 +815,12 @@ async function searchContacts(intent: SearchIntent, opts: ResolvedSearchOptions)
   let qb = supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id, portal_profile_image_path");
 
   if (intent.kind === "email") {
-    // Use prefix matching instead of contains to avoid matching middle of emails
-    // This prevents matches like "john123@example.com" when searching "john@example.com"
-    qb = qb.ilike("email", `${intent.email}%`);
+    qb = supabase
+      .from("leads_contact")
+      .select(
+        "id, name, email, phone, mobile, newlead_id, portal_profile_image_path, lead_leadcontact(contact_id, newlead_id, lead_id, main)",
+      );
+    qb = applyEmailSearchFilter(qb, intent.email);
   } else if (intent.kind === "phone") {
     const cond = buildPhoneOr(intent.digits, intent.raw);
     if (!cond) return [];
@@ -828,15 +843,22 @@ async function searchContacts(intent: SearchIntent, opts: ResolvedSearchOptions)
   );
   const executeTime = performance.now() - executeStartTime;
 
-  if (error) {
-    return [];
+  if ((!error && data) || intent.kind !== "email") {
+    if (error) return [];
+    return data || [];
   }
 
-  if (!data) {
-    return [];
-  }
+  const retry = await withTimeout(
+    applyEmailSearchFilter(
+      supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id, portal_profile_image_path"),
+      intent.email,
+    ).limit(opts.contactsLimit),
+    opts.timeoutMs,
+    "contacts email retry timeout",
+  ).catch((err) => ({ data: [], error: err }));
 
-  return data;
+  if (retry.error || !retry.data) return [];
+  return retry.data;
 }
 
 /**
@@ -1266,7 +1288,7 @@ function scoreResult(intent: SearchIntent, r: CombinedLead): number {
   if (intent.kind === "email") {
     if (email === qRaw) s += 100;
     else if (email.startsWith(qRaw)) s += 70;
-    // Removed includes() check - it was too lenient and matched emails with different letters/numbers
+    else if (qRaw.includes("@") && email.includes(qRaw)) s += 50;
   } else if (intent.kind === "lead") {
     const q = lower(intent.raw);
     const qNoPrefix = lower(stripLeadPrefix(intent.raw));
@@ -1357,7 +1379,7 @@ function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
 
   // For email: mark as fuzzy if not exact match or starts-with match
   // Removed includes() check - it was too lenient
-  if (intent.kind === "email") return !(em === q || em.startsWith(q));
+  if (intent.kind === "email") return !(em === q || em.startsWith(q) || em.includes(q));
   if (intent.kind === "lead") {
     const qNo = lower(stripLeadPrefix(intent.raw));
     const ldNo = lower(stripLeadPrefix(String(r.lead_number || "")));
@@ -1466,8 +1488,10 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
         : [];
 
     const cachedRows = getCachedHeaderSearch(rpcQuery, nameVariants);
+    const cachedEmptyEmail = intent.kind === "email" && cachedRows != null && cachedRows.length === 0;
     if (
       cachedRows != null &&
+      !cachedEmptyEmail &&
       !((skipHeaderRpcForPhone || leadMayBePhone || nameTokens.length >= 2) && cachedRows.length === 0)
     ) {
       const finalized = finalize(cachedRows);
@@ -1482,7 +1506,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       lastHeaderSearchSuccessAt > 0 &&
       Date.now() - lastHeaderSearchSuccessAt < HEADER_SEARCH_COLD_AFTER_MS;
 
-    if (!skipHeaderRpcForPhone && !leadMayBePhone && nameTokens.length < 2) {
+    if (!skipHeaderRpcForPhone && !leadMayBePhone && nameTokens.length < 2 && intent.kind !== "email") {
       const rpcBudget = isWarm
         ? Math.min(opts.timeoutMs, 1200)
         : HEADER_RPC_BUDGET_MS;
@@ -1520,12 +1544,18 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       !signal?.aborted &&
       (rpcRows == null || rpcRows.length === 0);
 
+    const emailNeedsFallback =
+      intent.kind === "email" &&
+      !signal?.aborted &&
+      (rpcRows == null || rpcRows.length === 0);
+
     const isSubleadQuery =
       intent.kind === "lead" && intent.raw.includes("/") && intent.master != null;
 
     if (
       !phoneNeedsFallback &&
       !leadNeedsPhoneFallback &&
+      !emailNeedsFallback &&
       rpcRows != null &&
       !(isSubleadQuery && rpcRows.length === 0)
     ) {
@@ -1687,21 +1717,68 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
       newRows = newRowsResult;
       contactRows = contactRowsResult;
 
+      const nestedRels: any[] = [];
+      contactRows.forEach((c: any) => {
+        const links = Array.isArray(c?.lead_leadcontact)
+          ? c.lead_leadcontact
+          : c?.lead_leadcontact
+            ? [c.lead_leadcontact]
+            : [];
+        links.forEach((link: any) => {
+          if (!link) return;
+          nestedRels.push({
+            contact_id: link.contact_id ?? c.id,
+            newlead_id: link.newlead_id ?? null,
+            lead_id: link.lead_id ?? null,
+            main: link.main,
+          });
+        });
+      });
+
       // Junction to collect legacy and extra new leads for found contacts
-      const contactIds = contactRows.map((c) => c.id).filter(Boolean);
+      const contactIds = Array.from(
+        new Set(
+          contactRows
+            .map((c) => c.id)
+            .filter((id) => id != null)
+            .flatMap((id) => {
+              const n = Number(id);
+              return Number.isFinite(n) ? [n] : [id];
+            }),
+        ),
+      );
+      let junctionRels: any[] = [];
       if (contactIds.length) {
-        const { data, error } = await withTimeout(
+        const { data } = await withTimeout(
           supabase
             .from("lead_leadcontact")
             .select("contact_id, newlead_id, lead_id, main")
             .in("contact_id", contactIds)
-            .limit(150), // Reduced from 300 for faster queries
+            .limit(150),
           opts.timeoutMs,
           "junction search timeout",
-        ).catch((err) => {
-          return { data: [] as any[], error: err };
+        ).catch(() => ({ data: [] as any[] }));
+        junctionRels = data || [];
+      }
+      rels = [...nestedRels, ...junctionRels];
+      if (intent.kind === "email" && contactRows.length > 0 && rels.length === 0) {
+        const retryIds = contactRows.map((c) => c.id).filter((id) => id != null).slice(0, 8);
+        const extra = await Promise.all(
+          retryIds.map((id) =>
+            withTimeout(
+              supabase
+                .from("lead_leadcontact")
+                .select("contact_id, newlead_id, lead_id, main")
+                .eq("contact_id", id)
+                .limit(20),
+              opts.timeoutMs,
+              "email junction eq timeout",
+            ).catch(() => ({ data: [] as any[] })),
+          ),
+        );
+        extra.forEach((res: any) => {
+          if (res?.data) rels.push(...res.data);
         });
-        rels = data || [];
       }
     }
 
@@ -1735,7 +1812,9 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
           : Promise.resolve([]),
         missingLegacyIds.length > 0
           ? fetchLegacyLeadsByIds(
-              missingLegacyIds.filter((x) => typeof x === "number"),
+              missingLegacyIds
+                .map((x) => Number(x))
+                .filter((id) => Number.isFinite(id) && id > 0),
               opts,
             )
           : Promise.resolve([]),
@@ -1932,7 +2011,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
           }
 
           if (rel.lead_id != null) {
-            const legacy = legacyMap.get(rel.lead_id);
+            const legacy = legacyMap.get(Number(rel.lead_id)) || legacyMap.get(rel.lead_id);
             const formattedNumber = legacy?.formattedLeadNumber;
             const r = legacy ? mapLegacyLeadRow(legacy, formattedNumber) : mapLegacyLeadRow({ id: rel.lead_id });
             // attach contact data for display

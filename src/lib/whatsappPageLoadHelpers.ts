@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { messageSenderKeys, staffSenderKeys, type ConversationStaffActor } from './staffConversationMatch';
 
 export const WHATSAPP_MESSAGE_INDEX_SELECT =
-  'lead_id, contact_id, legacy_id, phone_number, sent_at, direction, is_read, message, message_type, caption, voice_note, media_filename';
+  'lead_id, contact_id, legacy_id, phone_number, sent_at, direction, is_read, message, message_type, caption, voice_note, media_filename, sender_id, sender_name';
 
 export type WhatsAppMessagePreviewFields = {
   message?: string | null;
@@ -35,47 +36,24 @@ export function formatWhatsAppMessagePreview(msg: WhatsAppMessagePreviewFields):
   return text;
 }
 
-const MESSAGE_PAGE_SIZE = 1000;
-/** Cap the RPC-timeout fallback so we never scan the entire whatsapp_messages table. */
-const MESSAGE_INDEX_MAX_PAGES = 8;
+const MESSAGE_INDEX_FALLBACK_LIMIT = 2000;
 
-/** Paginated lightweight index for building the conversation list (not full message bodies). */
+/** Lightweight recent-message index when the conversation-summary RPC is unavailable. */
 export async function fetchWhatsAppMessageIndex(
   client: SupabaseClient,
 ): Promise<any[]> {
-  const rows: any[] = [];
-  let page = 0;
-  let hasMore = true;
+  const { data, error } = await client
+    .from('whatsapp_messages')
+    .select(WHATSAPP_MESSAGE_INDEX_SELECT)
+    .order('sent_at', { ascending: false })
+    .limit(MESSAGE_INDEX_FALLBACK_LIMIT);
 
-  while (hasMore && page < MESSAGE_INDEX_MAX_PAGES) {
-    const { data, error } = await client
-      .from('whatsapp_messages')
-      .select(WHATSAPP_MESSAGE_INDEX_SELECT)
-      .range(page * MESSAGE_PAGE_SIZE, (page + 1) * MESSAGE_PAGE_SIZE - 1)
-      .order('sent_at', { ascending: false });
-
-    if (error) {
-      console.error('WhatsApp: message index page error', page, error);
-      break;
-    }
-
-    if (!data?.length) {
-      hasMore = false;
-      break;
-    }
-
-    rows.push(...data);
-    hasMore = data.length >= MESSAGE_PAGE_SIZE;
-    page += 1;
+  if (error) {
+    console.error('WhatsApp: message index fallback error', error);
+    return [];
   }
 
-  if (hasMore) {
-    console.warn(
-      `WhatsApp: message index fallback stopped after ${rows.length} recent rows (RPC unavailable)`,
-    );
-  }
-
-  return rows;
+  return data || [];
 }
 
 /** tenants_employee.id is numeric — never pass legacy text/slug role values to .in('id', …). */
@@ -132,6 +110,15 @@ export type WhatsAppConversationSummaryRow = {
 export type WhatsAppConversationEmployeeFilter = {
   employeeId?: number | null;
   employeeName?: string | null;
+  newLeadIds?: string[];
+  legacyIds?: number[];
+  contactIds?: number[];
+};
+
+export type WhatsAppOutgoingParticipation = {
+  leadIds: Set<string>;
+  contactIds: Set<number>;
+  legacyIds: Set<number>;
 };
 
 export type WhatsAppConversationIndexState = {
@@ -150,6 +137,7 @@ export type WhatsAppConversationIndexState = {
   lastPreviewByLegacyId: Map<number, WhatsAppLastMessagePreviewEntry>;
   /** DB sort order from whatsapp_conversation_summary (lower = higher in sidebar). */
   sortRankByEntityKey: Map<string, number>;
+  outgoingBySenderKey: Map<string, WhatsAppOutgoingParticipation>;
 };
 
 export function conversationSummaryEntityKey(entityType: string, entityId: string): string {
@@ -391,6 +379,7 @@ export function emptyConversationIndexState(): WhatsAppConversationIndexState {
     lastPreviewByContactId: new Map(),
     lastPreviewByLegacyId: new Map(),
     sortRankByEntityKey: new Map(),
+    outgoingBySenderKey: new Map(),
   };
 }
 
@@ -445,9 +434,82 @@ function setPreviewFromSummary(
   }
 }
 
+function emptyOutgoingParticipation(): WhatsAppOutgoingParticipation {
+  return {
+    leadIds: new Set(),
+    contactIds: new Set(),
+    legacyIds: new Set(),
+  };
+}
+
+function recordOutgoingParticipation(state: WhatsAppConversationIndexState, msg: any) {
+  if (String(msg?.direction || '').toLowerCase() !== 'out') return;
+  for (const key of messageSenderKeys(msg.sender_id, msg.sender_name)) {
+    let bucket = state.outgoingBySenderKey.get(key);
+    if (!bucket) {
+      bucket = emptyOutgoingParticipation();
+      state.outgoingBySenderKey.set(key, bucket);
+    }
+    if (msg.lead_id) bucket.leadIds.add(String(msg.lead_id));
+    const contactId = Number(msg.contact_id);
+    if (!Number.isNaN(contactId) && msg.contact_id != null && msg.contact_id !== '') {
+      bucket.contactIds.add(contactId);
+    }
+    const legacyId = Number(msg.legacy_id);
+    if (!Number.isNaN(legacyId) && msg.legacy_id != null && msg.legacy_id !== '') {
+      bucket.legacyIds.add(legacyId);
+    }
+  }
+}
+
+export function mergeOutgoingParticipation(
+  target: WhatsAppConversationIndexState,
+  source: WhatsAppConversationIndexState,
+) {
+  source.outgoingBySenderKey.forEach((bucket, key) => {
+    let dest = target.outgoingBySenderKey.get(key);
+    if (!dest) {
+      dest = emptyOutgoingParticipation();
+      target.outgoingBySenderKey.set(key, dest);
+    }
+    bucket.leadIds.forEach((id) => dest.leadIds.add(id));
+    bucket.contactIds.forEach((id) => dest.contactIds.add(id));
+    bucket.legacyIds.forEach((id) => dest.legacyIds.add(id));
+  });
+}
+
+export function participationForActor(
+  state: WhatsAppConversationIndexState | null | undefined,
+  actor: ConversationStaffActor,
+): WhatsAppOutgoingParticipation {
+  const out = emptyOutgoingParticipation();
+  if (!state) return out;
+  for (const key of staffSenderKeys(actor)) {
+    const bucket = state.outgoingBySenderKey.get(key);
+    if (!bucket) continue;
+    bucket.leadIds.forEach((id) => out.leadIds.add(id));
+    bucket.contactIds.forEach((id) => out.contactIds.add(id));
+    bucket.legacyIds.forEach((id) => out.legacyIds.add(id));
+  }
+  return out;
+}
+
+export function leadIdIsParticipated(participation: WhatsAppOutgoingParticipation, leadId: unknown): boolean {
+  const raw = String(leadId || '').trim();
+  if (!raw) return false;
+  if (participation.leadIds.has(raw)) return true;
+  const normalized = normalizeUuidKey(raw);
+  if (!normalized) return false;
+  for (const id of participation.leadIds) {
+    if (normalizeUuidKey(id) === normalized) return true;
+  }
+  return false;
+}
+
 export function applyMessageRowsToIndexState(messages: any[]): WhatsAppConversationIndexState {
   const state = emptyConversationIndexState();
   for (const msg of messages) {
+    recordOutgoingParticipation(state, msg);
     const sentAt = msg.sent_at ? String(msg.sent_at) : '';
     if (msg.lead_id) {
       const id = String(msg.lead_id);
@@ -573,16 +635,34 @@ export async function fetchWhatsAppConversationSummary(
       ? Number(employeeFilter.employeeId)
       : null;
   const employeeName = (employeeFilter?.employeeName || '').trim() || null;
+  const newLeadIds = (employeeFilter?.newLeadIds || [])
+    .map((id) => {
+      const raw = String(id).trim();
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) return raw;
+      const hex = raw.replace(/-/g, '');
+      if (!/^[0-9a-f]{32}$/i.test(hex)) return '';
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    })
+    .filter(Boolean);
+  const legacyIds = [...new Set((employeeFilter?.legacyIds || []).filter((n) => Number.isFinite(n)))];
+  const contactIds = [...new Set((employeeFilter?.contactIds || []).filter((n) => Number.isFinite(n) && n > 0))];
+  const hasIds = newLeadIds.length + legacyIds.length + contactIds.length > 0;
 
   const controller = new AbortController();
-  const abortTimer = setTimeout(() => controller.abort(), 5000);
+  const abortTimer = setTimeout(() => controller.abort(), 8000);
   try {
+    const params: Record<string, unknown> = {
+      p_employee_id: employeeId,
+      p_employee_name: employeeName,
+    };
+    if (hasIds) {
+      params.p_new_lead_ids = newLeadIds;
+      params.p_legacy_ids = legacyIds;
+      params.p_contact_ids = contactIds;
+    }
     const { data, error } = await client.rpc(
       'whatsapp_conversation_summary',
-      {
-        p_employee_id: employeeId,
-        p_employee_name: employeeName,
-      },
+      params,
       { abortSignal: controller.signal },
     );
     if (error) {

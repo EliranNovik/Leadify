@@ -1,11 +1,23 @@
 const supabase = require('../config/supabase');
-const { classifySmartScanDocument } = require('./smartScanAiRunner');
+const {
+  classifySmartScanDocument,
+  splitPdf,
+  normalizeRanges,
+  buildFilename,
+  normalizeType,
+} = require('./smartScanAiRunner');
 
 const TABLE = 'smart_scan_documents';
 const REMOVED_TABLE = 'smart_scan_removed';
 
+// Narrow on purpose: matching bare "relation" / "does not exist" also hides not-null and
+// missing-column errors, which then look like an empty queue instead of a failure.
 function tableMissing(error) {
-  return /does not exist|relation|Could not find the table/i.test(String(error?.message || error || ''));
+  const code = String(error?.code || '');
+  if (code === '42P01' || code === 'PGRST205') return true;
+  return /Could not find the table|relation "[^"]+" does not exist/i.test(
+    String(error?.message || error || '')
+  );
 }
 
 function nowIso() {
@@ -745,20 +757,91 @@ async function attachToSequenceOfEventsSubEffort(identity, classificationId, des
   }
 }
 
+async function removePathFromSequenceOfEvents(identity, classificationId, destPath) {
+  if (!identity?.newLeadId && !identity?.legacyLeadId) return;
+  let query = supabase
+    .from('lead_sub_efforts')
+    .select('id, document_url, sub_efforts ( id, name, case_document_classification_id )')
+    .order('created_at', { ascending: true })
+    .limit(80);
+  if (identity.legacyLeadId) query = query.eq('legacy_lead_id', identity.legacyLeadId);
+  else query = query.eq('new_lead_id', identity.newLeadId);
+  const { data, error } = await query;
+  if (error || !data?.length) return;
+  const soe =
+    data.find((row) => {
+      const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
+      return String(se?.case_document_classification_id || '') === String(classificationId);
+    }) ||
+    data.find((row) => {
+      const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
+      return String(se?.name || '').trim().toLowerCase() === 'sequence of events';
+    });
+  if (!soe) return;
+  const items = normalizeSubEffortDocs(soe.document_url).filter(
+    (item) => String(item?.path || '').trim() !== String(destPath || '').trim(),
+  );
+  await supabase
+    .from('lead_sub_efforts')
+    .update({ document_url: items, updated_by: 'Smart Scan', updated_at: nowIso() })
+    .eq('id', soe.id);
+}
+
+async function resolveScanSourceRow(row) {
+  if (!row?.parent_id) return row;
+  const { data, error } = await supabase.from(TABLE).select('*').eq('id', row.parent_id).maybeSingle();
+  if (error) throw new Error(error.message || 'Failed to load original scan');
+  return data || row;
+}
+
+async function markScanFamilyAssigned(sourceRow, lead, aiRaw, activityLabel) {
+  const fields = {
+    status: 'completed',
+    classification_status:
+      sourceRow.classification_status === 'processing' ? 'classified' : sourceRow.classification_status,
+    lead_match_status: 'matched',
+    issue: null,
+    ai_raw: aiRaw,
+  };
+  await patchDocument(sourceRow, fields, activityLabel);
+  const { data: children } = await supabase.from(TABLE).select('*').eq('parent_id', sourceRow.id);
+  for (const child of children || []) {
+    await patchDocument(
+      child,
+      {
+        status: 'completed',
+        lead_match_status: 'matched',
+        issue: null,
+        ai_raw: {
+          ...asAiRaw(child),
+          assignedLead: lead,
+          leadAssignedBy: aiRaw.leadAssignedBy,
+          caseDocumentId: aiRaw.caseDocumentId,
+          caseDocumentPath: aiRaw.caseDocumentPath,
+          savedLeadNumber: aiRaw.savedLeadNumber,
+          combinedScan: true,
+        },
+      },
+      activityLabel,
+    );
+  }
+}
+
 async function saveScanToLeadCaseDocuments(row, lead) {
+  const source = await resolveScanSourceRow(row);
   const identity = await resolveLeadIdentity(lead);
   if (!identity.leadNumber) throw new Error('Lead number is required');
 
-  const raw = asAiRaw(row);
-  if (raw.caseDocumentPath && raw.savedLeadNumber === identity.leadNumber) {
+  const raw = asAiRaw(source);
+  if (raw.caseDocumentPath && raw.savedLeadNumber === identity.leadNumber && !raw.caseDocumentSplit) {
     const classificationId = await resolveSequenceOfEventsClassificationId();
     if (classificationId) {
       await attachToSequenceOfEventsSubEffort(
         identity,
         classificationId,
         raw.caseDocumentPath,
-        row.suggested_filename || row.original_filename || 'scan.pdf',
-        row.content_type || 'application/pdf',
+        source.original_filename || source.suggested_filename || 'scan.pdf',
+        source.content_type || 'application/pdf',
       );
     }
     return raw;
@@ -769,17 +852,25 @@ async function saveScanToLeadCaseDocuments(row, lead) {
     throw new Error('Sequence of Events is not configured in case document categories');
   }
 
-  const copied = await copyScanFileToCaseDocuments(row, identity.leadNumber);
-  const documentTypeId = await resolveLeadCaseDocumentTypeId(
-    row.document_type || row.suggested_document_type,
+  const copied = await copyScanFileToCaseDocuments(
+    {
+      ...source,
+      suggested_filename: source.original_filename || source.suggested_filename || 'scan.pdf',
+    },
+    identity.leadNumber,
   );
+  const aiDocs = Array.isArray(raw.documents) ? raw.documents : [];
+  const documentTypeId =
+    aiDocs.length <= 1
+      ? await resolveLeadCaseDocumentTypeId(source.document_type || source.suggested_document_type)
+      : null;
 
   const { data: inserted, error: insErr } = await supabase
     .from('lead_case_documents')
     .insert({
       lead_number: identity.leadNumber,
       onedrive_subfolder: CLIENT_HEADER_FOLDER,
-      onedrive_item_id: null,
+      onedrive_item_id: `smart-scan-combined:${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       storage_path: copied.destPath,
       file_name: copied.fileName,
       file_size: copied.fileSize,
@@ -815,7 +906,197 @@ async function saveScanToLeadCaseDocuments(row, lead) {
   raw.caseDocumentPath = copied.destPath;
   raw.caseDocumentId = inserted?.id || null;
   raw.savedLeadNumber = identity.leadNumber;
+  raw.combinedScan = true;
+  raw.caseDocumentSplit = false;
   return raw;
+}
+
+async function findScanByCaseDocumentId(caseDocumentId) {
+  const id = String(caseDocumentId || '').trim();
+  if (!id) return null;
+  const matchesId = (row) => {
+    const raw = asAiRaw(row);
+    if (String(raw.caseDocumentId || '') === id) return true;
+    return Array.isArray(raw.caseDocumentIds) && raw.caseDocumentIds.some((value) => String(value) === id);
+  };
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('*')
+    .filter('ai_raw->>caseDocumentId', 'eq', id)
+    .limit(20);
+  const rows = !error && Array.isArray(data) ? data.filter(matchesId) : [];
+  if (rows.length) return rows.find((row) => !row.parent_id) || rows[0];
+
+  const { data: fallback, error: fallbackError } = await supabase
+    .from(TABLE)
+    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(400);
+  if (fallbackError) return null;
+  const matches = (fallback || []).filter(matchesId);
+  return matches.find((row) => !row.parent_id) || matches[0] || null;
+}
+
+async function pdfPageCount(buffer) {
+  try {
+    const { PDFDocument } = require('pdf-lib');
+    const pdf = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    return Math.max(1, pdf.getPageCount());
+  } catch {
+    return 1;
+  }
+}
+
+async function splitLeadCaseDocument(caseDocumentId) {
+  const id = String(caseDocumentId || '').trim();
+  if (!id) throw new Error('Document is required');
+
+  const { data: caseDoc, error } = await supabase.from('lead_case_documents').select('*').eq('id', id).maybeSingle();
+  if (error || !caseDoc) throw new Error(error?.message || 'Document not found');
+
+  let scan = await findScanByCaseDocumentId(id);
+  if (scan) scan = await resolveScanSourceRow(scan);
+  if (!scan) throw new Error('Could not find the original scan to separate');
+  if (asAiRaw(scan).caseDocumentSplit) {
+    throw new Error('This scan is already separated into documents');
+  }
+
+  const { data: blob, error: dlErr } = await supabase.storage
+    .from(CASE_DOCUMENTS_BUCKET)
+    .download(caseDoc.storage_path);
+  if (dlErr || !blob) throw new Error(dlErr?.message || 'Failed to download scan');
+  const buffer = Buffer.from(await blob.arrayBuffer());
+  const pageCount = Number(scan?.page_count) || (await pdfPageCount(buffer));
+
+  let aiDocs = scan && Array.isArray(asAiRaw(scan).documents) ? asAiRaw(scan).documents : [];
+  let ranges = normalizeRanges(aiDocs, pageCount);
+  if (scan && aiDocs.length <= 1) {
+    await classifySmartScanDocument(scan.id);
+    const refreshed = await findDocument({ documentId: scan.id });
+    if (refreshed) {
+      scan = refreshed;
+      aiDocs = Array.isArray(asAiRaw(refreshed).documents) ? asAiRaw(refreshed).documents : [];
+      ranges = normalizeRanges(aiDocs, Number(refreshed.page_count) || pageCount);
+    }
+  }
+  if (ranges.length <= 1) {
+    throw new Error('AI found only one document in this scan');
+  }
+
+  const leadNumber = String(caseDoc.lead_number || '').trim();
+  if (!leadNumber) throw new Error('Lead number is required');
+
+  const stamp = Date.now();
+  const insertedIds = [];
+  const insertedPaths = [];
+  try {
+    for (let i = 0; i < ranges.length; i += 1) {
+      const doc = ranges[i];
+      const documentType = normalizeType(doc.documentType);
+      const fileName = buildFilename({ ...doc, documentType });
+      const bytes = await splitPdf(buffer, doc.pageStart, doc.pageEnd);
+      const destPath = `case-documents/${safePathSegment(leadNumber)}/${CLIENT_HEADER_FOLDER}/${stamp}_${i + 1}_${fileName}`;
+      const { error: upErr } = await supabase.storage.from(CASE_DOCUMENTS_BUCKET).upload(destPath, bytes, {
+        contentType: 'application/pdf',
+        upsert: false,
+      });
+      if (upErr) throw new Error(upErr.message || 'Failed to save split PDF');
+      insertedPaths.push({ destPath, fileName });
+
+      const documentTypeId = await resolveLeadCaseDocumentTypeId(documentType);
+      const { data: inserted, error: insErr } = await supabase
+        .from('lead_case_documents')
+        .insert({
+          lead_number: leadNumber,
+          onedrive_subfolder: caseDoc.onedrive_subfolder || CLIENT_HEADER_FOLDER,
+          onedrive_item_id: null,
+          storage_path: destPath,
+          file_name: fileName,
+          file_size: bytes.length,
+          mime_type: 'application/pdf',
+          classification_id: caseDoc.classification_id,
+          uploaded_by: 'Smart Scan',
+          ai_summary_status: 'pending',
+          contact_id: null,
+          document_type_id: documentTypeId,
+        })
+        .select('id')
+        .single();
+      if (insErr) throw new Error(insErr.message || 'Failed to save split document');
+      insertedIds.push(inserted.id);
+      if (inserted?.id) {
+        void supabase.functions
+          .invoke('case-document-summarize', { body: { documentId: inserted.id } })
+          .catch(() => undefined);
+      }
+    }
+  } catch (splitError) {
+    if (insertedIds.length) {
+      await supabase.from('lead_case_documents').delete().in('id', insertedIds).catch(() => undefined);
+    }
+    if (insertedPaths.length) {
+      await supabase.storage
+        .from(CASE_DOCUMENTS_BUCKET)
+        .remove(insertedPaths.map((part) => part.destPath))
+        .catch(() => undefined);
+    }
+    throw splitError;
+  }
+
+  const identity = await resolveLeadIdentity({
+    leadNumber,
+    name: 'Unknown',
+  }).catch(() => ({
+    leadNumber,
+    newLeadId: null,
+    legacyLeadId: /^\d+$/.test(leadNumber) ? Number(leadNumber) : null,
+  }));
+  const classificationId = caseDoc.classification_id || (await resolveSequenceOfEventsClassificationId());
+  if (classificationId && (identity.newLeadId || identity.legacyLeadId)) {
+    await removePathFromSequenceOfEvents(identity, classificationId, caseDoc.storage_path);
+    for (const part of insertedPaths) {
+      await attachToSequenceOfEventsSubEffort(
+        identity,
+        classificationId,
+        part.destPath,
+        part.fileName,
+        'application/pdf',
+      );
+    }
+  }
+
+  await supabase.from('lead_case_documents').delete().eq('id', caseDoc.id);
+  await supabase.storage.from(CASE_DOCUMENTS_BUCKET).remove([caseDoc.storage_path]).catch(() => undefined);
+
+  if (scan) {
+    const nextRaw = {
+      ...asAiRaw(scan),
+      caseDocumentSplit: true,
+      combinedScan: false,
+      caseDocumentId: insertedIds[0] || null,
+      caseDocumentIds: insertedIds,
+      caseDocumentPath: insertedPaths[0]?.destPath || null,
+    };
+    await patchDocument(scan, { ai_raw: nextRaw }, `Separated scan into ${ranges.length} PDFs`);
+    const { data: children } = await supabase.from(TABLE).select('*').eq('parent_id', scan.id);
+    for (const child of children || []) {
+      await patchDocument(
+        child,
+        {
+          ai_raw: {
+            ...asAiRaw(child),
+            caseDocumentSplit: true,
+            combinedScan: false,
+            caseDocumentId: insertedIds[0] || null,
+            caseDocumentIds: insertedIds,
+          },
+        },
+        `Separated scan into ${ranges.length} PDFs`,
+      );
+    }
+  }
+
+  return { success: true, count: ranges.length, documentIds: insertedIds };
 }
 
 async function assignLeadByItemId(id, leadInput) {
@@ -823,20 +1104,15 @@ async function assignLeadByItemId(id, leadInput) {
   if (!row) throw new Error('Scan not found');
   const lead = sanitizeLeadRef(leadInput);
   if (!lead) throw new Error('Lead is required');
-  const aiRaw = await saveScanToLeadCaseDocuments(row, lead);
+  const source = await resolveScanSourceRow(row);
+  const aiRaw = await saveScanToLeadCaseDocuments(source, lead);
   aiRaw.assignedLead = lead;
   aiRaw.leadAssignedBy = 'user';
   aiRaw.leadMatchApplied = true;
-  return patchDocument(
-    row,
-    {
-      status: 'completed',
-      classification_status:
-        row.classification_status === 'processing' ? 'classified' : row.classification_status,
-      lead_match_status: 'matched',
-      issue: null,
-      ai_raw: aiRaw,
-    },
+  return markScanFamilyAssigned(
+    source,
+    lead,
+    aiRaw,
     `Lead assigned: ${lead.leadNumber} — ${lead.name}`,
   );
 }
@@ -844,39 +1120,59 @@ async function assignLeadByItemId(id, leadInput) {
 async function approveByItemId(id) {
   const row = await findDocument(parseItemRef(id));
   if (!row) throw new Error('Scan not found');
-  const aiRaw = asAiRaw(row);
+  const source = await resolveScanSourceRow(row);
+  const aiRaw = asAiRaw(source);
   const lead = sanitizeLeadRef(aiRaw.assignedLead || aiRaw.suggestedLead);
   if (!lead) throw new Error('No AI lead match to approve');
-  const savedRaw = await saveScanToLeadCaseDocuments(row, lead);
+  const savedRaw = await saveScanToLeadCaseDocuments(source, lead);
   savedRaw.assignedLead = lead;
   savedRaw.leadAssignedBy = savedRaw.leadAssignedBy === 'user' ? 'user' : 'ai';
   savedRaw.approvedAt = nowIso();
   savedRaw.leadMatchApplied = true;
-  return patchDocument(
-    row,
-    {
-      status: 'completed',
-      classification_status: 'classified',
-      lead_match_status: 'matched',
-      issue: null,
-      ai_raw: savedRaw,
-    },
+  return markScanFamilyAssigned(
+    source,
+    lead,
+    savedRaw,
     `Approved AI lead match: ${lead.leadNumber} — ${lead.name}`,
   );
 }
 
-async function listQueueItems() {
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(400);
-  if (error) {
+function isStatementTimeout(error) {
+  return (
+    String(error?.code || '') === '57014' ||
+    /statement timeout/i.test(String(error?.message || error?.details || ''))
+  );
+}
+
+async function loadQueueRows() {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(400);
+    if (!error) return data || [];
     if (tableMissing(error)) return [];
+    if (attempt < 2 && isStatementTimeout(error)) {
+      console.warn('⚠️  Smart Scan queue read timed out, retrying once');
+      await sleep(400);
+      continue;
+    }
     throw new Error(error.message || 'Failed to load Smart Scan queue');
   }
+  return [];
+}
 
-  const documents = await enrichDocumentsWithLeadMatches(data || [], { persist: true, force: false });
+async function listQueueItems() {
+  const rows = await loadQueueRows();
+
+  // Lead matching is a nice-to-have; a slow leads query must not empty the queue.
+  let documents = rows;
+  try {
+    documents = await enrichDocumentsWithLeadMatches(rows, { persist: true, force: false });
+  } catch (error) {
+    console.warn('⚠️  Smart Scan lead matching skipped:', error.message || error);
+  }
   const visible = visibleQueue(documents);
   const childrenByParent = new Map();
   for (const row of documents) {
@@ -1187,6 +1483,7 @@ module.exports = {
   processByItemId,
   assignLeadByItemId,
   approveByItemId,
+  splitLeadCaseDocument,
   removeByItemId,
   loadRemovedRefs,
   findDocument,

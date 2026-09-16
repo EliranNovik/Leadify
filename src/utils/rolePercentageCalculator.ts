@@ -149,6 +149,14 @@ export function employeeHasAnySalesRoleOnNewLead(
   const idM = resolveIdForNewLeadRoleMatch(employeeId);
 
   if (lead.closer && newLeadFieldMatchesEmployee(lead.closer, idM, name)) return true;
+  if (
+    lead.closer_id != null &&
+    lead.closer_id !== '' &&
+    idM !== NO_EMPLOYEE_ID_SENTINEL &&
+    Number(lead.closer_id) === idM
+  ) {
+    return true;
+  }
   if (lead.scheduler && newLeadFieldMatchesEmployee(lead.scheduler, idM, name)) return true;
 
   if (lead.handler && newLeadFieldMatchesEmployee(lead.handler, idM, name)) return true;

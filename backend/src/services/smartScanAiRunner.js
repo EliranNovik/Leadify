@@ -29,6 +29,7 @@ const ALLOWED_TYPES = [
   'Translation',
   'Naturalization Certificate',
   'Military Records',
+  'Dissolution Hearing Summons',
   'Other',
   'Unknown',
 ];
@@ -100,6 +101,9 @@ function matchHebrewDocumentType(raw) {
   if (/תעודת\s*גירושין/.test(text)) return 'Divorce Certificate';
   if (/ייפוי\s*כוח/.test(text)) return 'Power of Attorney';
   if (/דרכון/.test(text)) return 'Passport';
+  if (/זימון\s*לדיון|בקשת\s*פירוק|פירוק\s*העמותה|רשות\s*התאגידים/.test(text)) {
+    return 'Dissolution Hearing Summons';
+  }
   return null;
 }
 
@@ -142,6 +146,10 @@ function normalizeType(value) {
     translation: 'Translation',
     naturalization: 'Naturalization Certificate',
     military: 'Military Records',
+    dissolutionhearingsummons: 'Dissolution Hearing Summons',
+    dissolutionsummons: 'Dissolution Hearing Summons',
+    windingupsummons: 'Dissolution Hearing Summons',
+    corporationsauthoritysummons: 'Dissolution Hearing Summons',
     other: 'Other',
   };
   return aliases[compact] || 'Other';
@@ -249,6 +257,7 @@ function classifyPrompt(fileName, pageCount) {
     'Read Hebrew, Arabic, and English titles. Common Israeli documents:',
     'תמצית רישום / תמצית רישום ממרשם האוכלוסין / Ministry of Interior population extract = Population Registry Extract (not Unknown, not Other).',
     'תעודת זהות = ID Card Copy. תעודת לידה = Birth Certificate. תעודת נישואין = Marriage Certificate. תעודת פטירה = Death Certificate. תעודת גירושין = Divorce Certificate. דרכון = Passport. ייפוי כוח = Power of Attorney.',
+    'רשות התאגידים / Israeli Corporations Authority / יחידת אכיפה ובקרה letter titled זימון לדיון or בקשת פירוק (association or company winding-up hearing summons) = Dissolution Hearing Summons (not Other, not Contract, not Unknown). Use the letter date as documentDate. Put hearing date, court, case number, and association/company name in summary.',
     'suggestedFilename: PersonName_DocumentType_YYYY-MM-DD.pdf using underscores. Use undated if no date.',
     'confidence is 0 to 1. Set splitUncertain true if boundaries are unclear.',
     'Return JSON only, no markdown:',
@@ -450,7 +459,6 @@ async function classifySmartScanDocument(documentId) {
   }
 
   let documents = normalizeRanges(ai.documents, pageCount);
-  const shouldSplit = Boolean(PDFDocument) && isPdfMime(mime, fileName) && documents.length > 1 && pageCount > 1;
   await deleteChildren(src.id);
 
   const shared = {
@@ -464,120 +472,58 @@ async function classifySmartScanDocument(documentId) {
     ignored: false,
   };
 
-  if (!shouldSplit) {
-    const doc = documents[0];
-    const documentType = normalizeType(doc.documentType);
-    const issue = issueFor(doc, ai.splitUncertain, 1);
-    const statuses = statusFor(issue);
-    const suggestedFilename = buildFilename({ ...doc, documentType });
-    await supabase
-      .from(TABLE)
-      .update({
-        ...shared,
-        parent_id: null,
-        page_count: pageCount,
-        page_start: 1,
-        page_end: pageCount,
-        split_index: null,
-        document_type: documentType,
-        suggested_document_type: documentType,
-        title: doc.title || documentType,
-        suggested_filename: suggestedFilename,
-        detected_person_name: doc.detectedPersonName,
-        detected_country: doc.detectedCountry,
-        document_date: doc.documentDate,
-        expiry_date: doc.expiryDate,
-        summary: doc.summary || ai.notes || null,
-        confidence: doc.confidence,
-        issue,
-        status: statuses.status,
-        classification_status: statuses.classificationStatus,
-        activity: pushActivity(
-          src.activity,
-          `AI classified as ${documentType} (${Math.round(doc.confidence * 100)}%) — ${suggestedFilename}`,
-        ),
-      })
-      .eq('id', src.id);
-
-    return {
-      success: true,
-      documentId: src.id,
-      split: false,
-      documentType,
-      suggestedFilename,
-    };
-  }
-
-  const childPayloads = [];
-  for (let index = 0; index < documents.length; index += 1) {
-    const doc = documents[index];
-    const documentType = normalizeType(doc.documentType);
-    const suggestedFilename = buildFilename({ ...doc, documentType });
-    const issue = issueFor(doc, ai.splitUncertain, documents.length);
-    const statuses = statusFor(issue);
-    const pages = doc.pageEnd - doc.pageStart + 1;
-    const splitBytes = await splitPdf(buffer, doc.pageStart, doc.pageEnd);
-    const storagePath = `smart-scan/${src.source_email_id}/${src.id}/${index + 1}-${safeFileName(suggestedFilename)}`;
-    await uploadPdf(storagePath, splitBytes);
-    childPayloads.push({
+  const doc = documents[0];
+  const documentType = documents.length > 1 ? 'Unknown' : normalizeType(doc.documentType);
+  const issue = issueFor(doc, ai.splitUncertain, documents.length);
+  const statuses = statusFor(issue);
+  const suggestedFilename = fileName;
+  const classifiedLabel =
+    documents.length > 1
+      ? `AI found ${documents.length} documents — kept as one scan (${Math.round((doc.confidence || 0) * 100)}%)`
+      : `AI classified as ${documentType} (${Math.round((doc.confidence || 0) * 100)}%) — ${buildFilename({ ...doc, documentType })}`;
+  await supabase
+    .from(TABLE)
+    .update({
       ...shared,
-      parent_id: src.id,
-      storage_path: storagePath,
-      content_type: 'application/pdf',
-      page_count: pages,
-      page_start: doc.pageStart,
-      page_end: doc.pageEnd,
-      split_index: index + 1,
+      parent_id: null,
+      page_count: pageCount,
+      page_start: 1,
+      page_end: pageCount,
+      split_index: null,
       document_type: documentType,
-      suggested_document_type: documentType,
-      title: doc.title || documentType,
+      suggested_document_type: documents.length > 1 ? 'Unknown' : documentType,
+      title: documents.length > 1 ? `Scan (${documents.length} documents)` : doc.title || documentType,
       suggested_filename: suggestedFilename,
       detected_person_name: doc.detectedPersonName,
       detected_country: doc.detectedCountry,
       document_date: doc.documentDate,
       expiry_date: doc.expiryDate,
-      summary: doc.summary || null,
+      summary:
+        documents.length > 1
+          ? [ai.notes, doc.summary].filter(Boolean).join(' — ') || `${documents.length} documents in this scan`
+          : doc.summary || ai.notes || null,
       confidence: doc.confidence,
       issue,
       status: statuses.status,
       classification_status: statuses.classificationStatus,
-      activity: [
-        { at: nowIso(), label: `Split from ${fileName} pages ${doc.pageStart}–${doc.pageEnd}` },
-        { at: nowIso(), label: `AI classified as ${documentType} (${Math.round(doc.confidence * 100)}%) — ${suggestedFilename}` },
-      ],
-    });
-  }
-
-  const { error: insertErr } = await supabase.from(TABLE).insert(childPayloads);
-  if (insertErr) throw new Error(insertErr.message || 'Failed to save split documents');
-
-  await supabase
-    .from(TABLE)
-    .update({
-      ...shared,
-      ignored: true,
-      page_count: pageCount,
-      page_start: 1,
-      page_end: pageCount,
-      document_type: 'Unknown',
-      suggested_document_type: 'Unknown',
-      title: `Split into ${documents.length} documents`,
-      suggested_filename: fileName,
-      summary: ai.notes || `Split into ${documents.length} documents`,
-      confidence: null,
-      issue: ai.splitUncertain ? 'document_split_uncertain' : null,
-      status: 'completed',
-      classification_status: 'classified',
-      activity: pushActivity(src.activity, `AI split scan into ${documents.length} PDFs`),
+      activity: pushActivity(src.activity, classifiedLabel),
     })
     .eq('id', src.id);
 
   return {
     success: true,
     documentId: src.id,
-    split: true,
-    count: documents.length,
+    split: false,
+    documentCount: documents.length,
+    documentType,
+    suggestedFilename,
   };
 }
 
-module.exports = { classifySmartScanDocument };
+module.exports = {
+  classifySmartScanDocument,
+  splitPdf,
+  normalizeRanges,
+  buildFilename,
+  normalizeType,
+};

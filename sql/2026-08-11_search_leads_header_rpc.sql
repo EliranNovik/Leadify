@@ -184,7 +184,10 @@ BEGIN
             NULL::text AS portal_profile_image_path,
             95 AS match_score
           FROM public.leads l
-          WHERE l.email IS NOT NULL AND lower(l.email) LIKE v_prefix
+          WHERE l.email IS NOT NULL AND (
+            lower(btrim(l.email)) LIKE v_prefix
+            OR lower(l.email) LIKE ('%' || v_lower || '%')
+          )
           ORDER BY l.created_at DESC NULLS LAST
           LIMIT v_limit
         )
@@ -200,7 +203,10 @@ BEGIN
             ll.cdate, ll.status::text, ll.master_id::text, ll.category_id::text,
             'legacy', false, NULL::text, NULL::boolean, NULL::text, NULL::text, 95
           FROM public.leads_lead ll
-          WHERE ll.email IS NOT NULL AND lower(ll.email) LIKE v_prefix
+          WHERE ll.email IS NOT NULL AND (
+            lower(btrim(ll.email)) LIKE v_prefix
+            OR lower(ll.email) LIKE ('%' || v_lower || '%')
+          )
           ORDER BY ll.cdate DESC NULLS LAST
           LIMIT v_limit
         )
@@ -229,7 +235,10 @@ BEGIN
             88
           FROM (
             SELECT id FROM public.leads_contact
-            WHERE email IS NOT NULL AND lower(email) LIKE v_prefix
+            WHERE email IS NOT NULL AND (
+              lower(btrim(email)) LIKE v_prefix
+              OR lower(email) LIKE ('%' || v_lower || '%')
+            )
             LIMIT (v_limit * 2)
           ) hit
           JOIN public.leads_contact lc ON lc.id = hit.id

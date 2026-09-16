@@ -133,3 +133,4 @@ export const LazyClockInEntryPage = lazy(() => import('../pages/ClockInEntryPage
 export const LazyInternalMeetingDocumentsPage = lazy(() => import('../pages/InternalMeetingDocumentsPage'));
 export const LazyRmqAiControlPage = lazy(() => import('../pages/RmqAiControlPage'));
 export const LazySmartScanPage = lazy(() => import('../pages/SmartScanPage'));
+export const LazyCommunicationsInboxPage = lazy(() => import('../pages/CommunicationsInboxPage'));

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { createPortal } from 'react-dom';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
@@ -11,8 +10,6 @@ import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
 import {
   fetchWhatsAppTemplates,
-  filterActiveTemplates,
-  filterTemplates,
   type WhatsAppTemplate,
 } from '../lib/whatsappTemplates';
 import {
@@ -51,14 +48,18 @@ import {
   WhatsAppTemplateMenuItem,
   WhatsAppWindowLockBanner,
   whatsAppComposerLocked,
+  whatsAppComposerTextDisabled,
   whatsAppLockedPlaceholder,
-  whatsAppSendSuccessToast,
+  whatsAppSendBlockedByWindow,
+  whatsAppSendResultToast,
+  whatsAppDispatchSucceeded,
   PEX_TEMPLATES_UNAVAILABLE,
   PEX_TEMPLATES_UNAVAILABLE_SHORT,
   resolveWhatsAppOutgoingSenderUi,
 } from '../lib/pexWhatsAppChat';
+import { collectWhatsAppPhoneVariants, canonicalWhatsAppPhone, whatsAppPhonesMatch } from '../lib/whatsappPhone';
 import { AI_AGENT_DISPLAY_NAME } from '../lib/aiAgentMailbox';
-import TemplateOptionCard from '../components/whatsapp/TemplateOptionCard';
+import WhatsAppTemplatePicker from '../components/whatsapp/WhatsAppTemplatePicker';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
 import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
 import {
@@ -333,13 +334,17 @@ const WhatsAppLeadsPage: React.FC = () => {
           setShowMobileDropdown(false);
         }
       }
+
+      if (showTemplateSelector && mobileToolsRef.current && !mobileToolsRef.current.contains(target)) {
+        setShowTemplateSelector(false);
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEmojiPickerOpen, showMobileDropdown]);
+  }, [isEmojiPickerOpen, showMobileDropdown, showTemplateSelector]);
 
   // Fetch employees
   useEffect(() => {
@@ -459,41 +464,6 @@ const WhatsAppLeadsPage: React.FC = () => {
     );
   };
 
-  // Helper function to normalize language codes (en and en_US both become 'en')
-  const normalizeLanguage = (lang: string | undefined | null): string => {
-    if (!lang) return 'en';
-    const normalized = lang.toLowerCase();
-    if (normalized === 'en_us' || normalized === 'en') return 'en';
-    return normalized;
-  };
-
-  // Helper function to get display name for language
-  const getLanguageDisplayName = (lang: string): string => {
-    const normalized = normalizeLanguage(lang);
-    const langMap: { [key: string]: string } = {
-      'en': 'English',
-      'he': 'Hebrew',
-      'fr': 'French',
-      'ar': 'Arabic',
-      'ru': 'Russian',
-      'es': 'Spanish',
-      'de': 'German',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'zh': 'Chinese',
-      'ja': 'Japanese',
-      'ko': 'Korean',
-      'tr': 'Turkish',
-      'pl': 'Polish',
-      'nl': 'Dutch',
-      'sv': 'Swedish',
-      'da': 'Danish',
-      'no': 'Norwegian',
-      'fi': 'Finnish',
-    };
-    return langMap[normalized] || lang.toUpperCase();
-  };
-
   // Fetch WhatsApp templates
   useEffect(() => {
     const loadTemplates = async () => {
@@ -553,36 +523,33 @@ const WhatsAppLeadsPage: React.FC = () => {
         return;
       }
 
-      if (!leadMap.has(phoneNumber)) {
-        // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
-        const isConnected = !!message.lead_id || !!message.legacy_id;
+      const groupKey = canonicalWhatsAppPhone(phoneNumber) || phoneNumber;
 
-        // Count unread messages (messages that are not read or is_read is null/false)
+      if (!leadMap.has(groupKey)) {
+        const isConnected = !!message.lead_id || !!message.legacy_id;
         const isUnread = !message.is_read || message.is_read === false;
 
-        leadMap.set(phoneNumber, {
+        leadMap.set(groupKey, {
           ...message,
-          phone_number: phoneNumber,
+          phone_number: groupKey,
           is_connected: isConnected,
           message_count: 1,
           unread_count: isUnread ? 1 : 0,
           last_message_at: message.sent_at
         });
       } else {
-        const existingLead = leadMap.get(phoneNumber)!;
+        const existingLead = leadMap.get(groupKey)!;
         existingLead.message_count += 1;
 
-        // Increment unread count if this message is unread
         const isUnread = !message.is_read || message.is_read === false;
         if (isUnread) {
           existingLead.unread_count = (existingLead.unread_count || 0) + 1;
         }
 
-        // Keep the most recent message as the main message (but preserve phone_number)
         if (new Date(message.sent_at) > new Date(existingLead.last_message_at)) {
           const updatedLead = {
             ...message,
-            phone_number: phoneNumber,
+            phone_number: groupKey,
             message_count: existingLead.message_count,
             unread_count: existingLead.unread_count,
             last_message_at: message.sent_at
@@ -695,17 +662,10 @@ const WhatsAppLeadsPage: React.FC = () => {
     if (phoneParam && leads.length > 0 && !selectedLead) {
       // Try to find the lead by phone number
       const normalizedPhoneParam = decodeURIComponent(phoneParam);
-      const matchingLead = leads.find(lead => {
-        // Try exact match first
-        if (lead.phone_number === normalizedPhoneParam) return true;
-        // Try matching with extracted phone number variations
+      const matchingLead = leads.find((lead) => {
+        if (whatsAppPhonesMatch(lead.phone_number, normalizedPhoneParam)) return true;
         const extracted = extractPhoneNumber(lead.sender_name) || extractPhoneFromMessage(lead.message);
-        if (extracted === normalizedPhoneParam) return true;
-        // Try partial match (in case of formatting differences)
-        if (lead.phone_number && normalizedPhoneParam &&
-          (lead.phone_number.includes(normalizedPhoneParam) || normalizedPhoneParam.includes(lead.phone_number))) {
-          return true;
-        }
+        if (extracted && whatsAppPhonesMatch(extracted, normalizedPhoneParam)) return true;
         return false;
       });
 
@@ -761,10 +721,11 @@ const WhatsAppLeadsPage: React.FC = () => {
 
         // CRITICAL: Only fetch messages by exact phone_number match
         // Do NOT query by sender_name to avoid mixing messages from different numbers
+        const phones = collectWhatsAppPhoneVariants([selectedLead.phone_number]);
         const { data, error } = await supabase
           .from('whatsapp_messages')
           .select('*')
-          .eq('phone_number', selectedLead.phone_number)
+          .in('phone_number', phones.length ? phones : [selectedLead.phone_number])
           .order('sent_at', { ascending: true });
 
         console.log('🔍 Query results:', {
@@ -1341,7 +1302,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       const result = await response.json();
 
-      if (!response.ok) {
+      if (!whatsAppDispatchSucceeded(response.ok, result)) {
         setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
         throw new Error(result.error || 'Failed to send message');
       }
@@ -1373,7 +1334,10 @@ const WhatsAppLeadsPage: React.FC = () => {
           const { data: uniqueMessages } = await supabase
             .from('whatsapp_messages')
             .select('*')
-            .eq('phone_number', selectedLead.phone_number)
+            .in(
+              'phone_number',
+              collectWhatsAppPhoneVariants([selectedLead.phone_number]),
+            )
             .order('sent_at', { ascending: true });
 
           // Process template messages for display
@@ -1455,7 +1419,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
 
-      toast.success(whatsAppSendSuccessToast(result.via));
+      toast.success(whatsAppSendResultToast(result));
     } catch (error) {
       console.error('Error sending message:', error);
       toast.error('Failed to send message: ' + (error as Error).message);
@@ -1575,7 +1539,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       const result = await response.json();
 
-      if (!response.ok) {
+      if (!whatsAppDispatchSucceeded(response.ok, result)) {
         throw new Error(result.error || 'Failed to send media');
       }
 
@@ -1669,7 +1633,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           lead_id: newLead.id,
           legacy_id: null // Clear legacy_id since this is a new lead
         })
-        .eq('phone_number', lead.phone_number); // Exact match only, no wildcards
+        .in('phone_number', collectWhatsAppPhoneVariants([lead.phone_number]));
 
       if (updateError) {
         console.error('Error linking messages to lead:', updateError);
@@ -1783,7 +1747,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       const { data: messagesData, error: messagesError } = await supabase
         .from('whatsapp_messages')
         .select('lead_id, legacy_id, contact_id')
-        .eq('phone_number', selectedLead.phone_number)
+        .in('phone_number', collectWhatsAppPhoneVariants([selectedLead.phone_number]))
         .or('lead_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
 
       if (messagesError) {
@@ -2183,7 +2147,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           lead_id: insertedSubLead.id,
           legacy_id: null
         })
-        .eq('phone_number', selectedLead.phone_number); // Exact match only, no wildcards
+        .in('phone_number', collectWhatsAppPhoneVariants([selectedLead.phone_number]));
 
       if (updateError) {
         console.error('Error linking messages to sublead:', updateError);
@@ -2392,7 +2356,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           lead_id: isLegacyLead ? null : targetLeadId,
           legacy_id: isLegacyLead ? targetLeadId : null
         })
-        .eq('phone_number', selectedLead.phone_number); // Exact match only, no wildcards
+        .in('phone_number', collectWhatsAppPhoneVariants([selectedLead.phone_number]));
 
       if (updateError) {
         console.error('Error linking messages to lead:', updateError);
@@ -3675,7 +3639,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                     ? {
                         flex: '1 1 auto',
                         paddingTop: 80,
-                        paddingBottom: showTemplateSelector ? '240px' : '120px',
+                        paddingBottom: '120px',
                         WebkitOverflowScrolling: 'touch',
                         overflowX: 'hidden',
                         maxWidth: '100%',
@@ -4043,309 +4007,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                     }`}
                   style={isMobile ? { zIndex: 50, position: 'sticky', bottom: 0, paddingBottom: `calc(30px + env(safe-area-inset-bottom))` } : { overflow: 'visible' }}
                 >
-                  {/* Template Dropdown - Mobile (portaled so it opens above everything) */}
-                  {showTemplateSelector && isMobile && createPortal(
-                    <>
-                      <div
-                        className="fixed inset-0 bg-black/50 z-[9998]"
-                        onClick={() => setShowTemplateSelector(false)}
-                      />
-                      <div
-                        className="pointer-events-auto fixed inset-0 z-[9999] overflow-hidden flex flex-col"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="bg-white h-full flex flex-col overflow-hidden">
-                          <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <FaWhatsapp className="w-5 h-5 text-white" />
-                                <h3 className="text-base font-bold text-white">Select Template</h3>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setShowTemplateSelector(false);
-                                }}
-                                className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5 z-50"
-                                aria-label="Close template selector"
-                              >
-                                <XMarkIcon className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
-                            <div className="mb-4 flex gap-2 flex-shrink-0">
-                              <input
-                                type="text"
-                                placeholder="Search templates..."
-                                value={templateSearchTerm}
-                                onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                                className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
-                              />
-                              <select
-                                value={selectedLanguage}
-                                onChange={(e) => setSelectedLanguage(e.target.value)}
-                                className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
-                              >
-                                <option value="">All</option>
-                                {Array.from(new Set(filterActiveTemplates(templates).map(t => normalizeLanguage(t.language))))
-                                  .sort()
-                                  .map(lang => (
-                                    <option key={lang} value={lang}>
-                                      {getLanguageDisplayName(lang)}
-                                    </option>
-                                  ))}
-                              </select>
-                            </div>
-                            <div className="space-y-3 flex-1 overflow-y-auto">
-                              {isLoadingTemplates ? (
-                                <div className="text-center text-gray-500 py-4">
-                                  <div className="loading loading-spinner loading-sm"></div>
-                                  <span className="ml-2">Loading templates...</span>
-                                </div>
-                              ) : (() => {
-                                let filtered = filterTemplates(templates, templateSearchTerm);
-                                if (selectedLanguage) {
-                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                                }
-                                return filtered;
-                              })().length === 0 ? (
-                                <div className="text-center text-gray-500 py-4 text-sm">
-                                  {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
-                                </div>
-                              ) : (() => {
-                                let filtered = filterTemplates(templates, templateSearchTerm);
-                                if (selectedLanguage) {
-                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                                }
-                                return filtered;
-                              })().map((template) => (
-                                <TemplateOptionCard
-                                  key={template.id}
-                                  template={template}
-                                  isSelected={selectedTemplate?.id === template.id}
-                                  onClick={() => {
-                                    if (template.active !== 't') {
-                                      toast.error('Template pending approval');
-                                      return;
-                                    }
-                                    setSelectedTemplate(template);
-                                    setShowTemplateSelector(false);
-                                    setTemplateSearchTerm('');
-                                    setSelectedLanguage('');
-                                    if (template.params === '0') {
-                                      setNewMessage(template.content || '');
-                                      if (textareaRef.current) {
-                                        setTimeout(() => {
-                                          if (textareaRef.current) {
-                                            textareaRef.current.style.height = 'auto';
-                                            const maxHeight = isMobile ? 300 : 400;
-                                            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-                                          }
-                                        }, 0);
-                                      }
-                                    } else {
-                                      setNewMessage('');
-                                    }
-                                  }}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </>,
-                    document.body
-                  )}
-
-                  {/* Template Dropdown - Desktop (portaled and centered so it's never clipped) */}
-                  {!isMobile && showTemplateSelector && createPortal(
-                    <>
-                      <div className="fixed inset-0 bg-black/50 z-[9998]" onClick={() => setShowTemplateSelector(false)} />
-                      <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 pointer-events-none">
-                        <div
-                        className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] w-full max-h-[calc(100vh-120px)] flex flex-col pointer-events-auto"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <FaWhatsapp className="w-6 h-6 text-white" />
-                              <h3 className="text-lg font-bold text-white">Select Template</h3>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => setShowTemplateSelector(false)}
-                              className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-2"
-                            >
-                              <XMarkIcon className="w-5 h-5" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
-                          <div className="mb-5 flex gap-3 flex-shrink-0">
-                            <input
-                              type="text"
-                              placeholder="Search templates..."
-                              value={templateSearchTerm}
-                              onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                              className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
-                            />
-                            <select
-                              value={selectedLanguage}
-                              onChange={(e) => setSelectedLanguage(e.target.value)}
-                              className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
-                            >
-                              <option value="">All Languages</option>
-                              {Array.from(new Set(filterActiveTemplates(templates).map(t => normalizeLanguage(t.language))))
-                                .sort()
-                                .map(lang => (
-                                  <option key={lang} value={lang}>
-                                    {getLanguageDisplayName(lang)}
-                                  </option>
-                                ))}
-                            </select>
-                          </div>
-                          <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
-                            {isLoadingTemplates ? (
-                              <div className="text-center text-gray-500 py-4">
-                                <div className="loading loading-spinner loading-sm"></div>
-                                <span className="ml-2">Loading templates...</span>
-                              </div>
-                            ) : (() => {
-                              let filtered = filterTemplates(templates, templateSearchTerm);
-                              if (selectedLanguage) {
-                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                              }
-                              return filtered;
-                            })().length === 0 ? (
-                              <div className="text-center text-gray-500 py-4 text-sm">
-                                {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
-                              </div>
-                            ) : (() => {
-                              let filtered = filterTemplates(templates, templateSearchTerm);
-                              if (selectedLanguage) {
-                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                              }
-                              return filtered;
-                            })().map((template) => (
-                              <TemplateOptionCard
-                                key={template.id}
-                                template={template}
-                                isSelected={selectedTemplate?.id === template.id}
-                                onClick={() => {
-                                  if (template.active !== 't') {
-                                    toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
-                                    return;
-                                  }
-                                  setSelectedTemplate(template);
-                                  setShowTemplateSelector(false);
-                                  setTemplateSearchTerm('');
-                                  setSelectedLanguage('');
-                                  setNewMessage(template.content || '');
-
-                                  if (textareaRef.current) {
-                                    setTimeout(() => {
-                                      if (textareaRef.current) {
-                                        textareaRef.current.style.height = 'auto';
-                                        const maxHeight = 400;
-                                        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-                                      }
-                                    }, 0);
-                                  }
-                                }}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    </>,
-                    document.body
-                  )}
-
-                  {/* AI Suggestions Dropdown */}
-                  {showAISuggestions && (
-                    <div className={`${isMobile ? 'absolute bottom-full left-0 right-0 mb-2 p-3 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto' : 'px-4 pt-3 pb-2'}`}>
-                      <div className={`${isMobile ? 'flex items-center justify-between mb-2' : 'p-3 bg-gray-50 rounded-lg border'}`}>
-                        <div className="text-sm font-semibold text-gray-900">
-                          {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowAISuggestions(false);
-                            setAiSuggestions([]);
-                          }}
-                          className="btn btn-ghost btn-xs"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="space-y-2">
-                        {isLoadingAI ? (
-                          <div className="text-center text-gray-500 py-4">
-                            <div className="loading loading-spinner loading-sm"></div>
-                            <span className="ml-2">Getting AI suggestions...</span>
-                          </div>
-                        ) : (
-                          <div
-                            className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
-                            onClick={() => applyAISuggestion(aiSuggestions[0])}
-                          >
-                            <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Voice Recorder */}
-                  {showVoiceRecorder && (
-                    <div className="w-full mb-2">
-                      <VoiceMessageRecorder
-                        onRecorded={(audioBlob) => {
-                          // Convert blob to File and set as selectedFile
-                          // Use the MIME type from the recorder (should be audio/ogg if supported)
-                          const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
-                          const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
-                          const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
-
-                          // Set as selectedFile so the regular send button can handle it
-                          setSelectedFile(audioFile);
-
-                          // Close the recorder UI
-                          setShowVoiceRecorder(false);
-
-                          // Automatically send the voice message
-                          handleSendMedia(audioFile);
-                        }}
-                        onCancel={() => {
-                          setShowVoiceRecorder(false);
-                        }}
-                        className="w-full"
-                      />
-                    </div>
-                  )}
-
-                  {isPexChat && (
-                    <div className={isMobile ? 'px-3 pt-2' : 'px-3 pt-1'}>
-                      <WhatsAppPexComposerHint />
-                    </div>
-                  )}
-                  {isLocked && (
-                    <div className={isMobile ? 'px-3 pt-2' : 'px-3 pt-1'}>
-                      <WhatsAppWindowLockBanner
-                        isPex={isPexChat}
-                        windowLocked={isLocked}
-                        adminUnlocked={pexAdminBypass}
-                        className=""
-                      />
-                    </div>
-                  )}
                   {/* Input Form */}
                   <form onSubmit={handleSendMessage} className={`flex items-center ${isMobile ? 'p-3' : 'px-3 py-2'}`}>
                     <div className="relative space-y-2 pointer-events-auto" style={{ overflow: 'visible', flex: 1, minWidth: 0 }}>
@@ -4354,7 +4015,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                         <div className="relative flex-shrink-0" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
                           <button
                             type="button"
-                            onClick={() => setShowMobileDropdown(!showMobileDropdown)}
+                            onClick={() => {
+                              setShowMobileDropdown(!showMobileDropdown);
+                              setShowTemplateSelector(false);
+                            }}
                             className={`${WHATSAPP_COMPOSER_TOOLS_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
                             title={inputLocked ? (isPexChat ? PEX_TEMPLATES_UNAVAILABLE_SHORT : 'Messaging window expired — use templates') : 'Message tools'}
                           >
@@ -4447,6 +4111,46 @@ const WhatsAppLeadsPage: React.FC = () => {
                             </div>
                           )}
 
+                          {showTemplateSelector && (
+                            <div className="absolute left-0 bottom-[calc(100%+8px)] z-[10000] w-[min(26rem,calc(100vw-1.5rem))] pointer-events-auto">
+                              <WhatsAppTemplatePicker
+                                templates={templates}
+                                selectedTemplate={selectedTemplate}
+                                searchTerm={templateSearchTerm}
+                                onSearchChange={setTemplateSearchTerm}
+                                selectedLanguage={selectedLanguage}
+                                onLanguageChange={setSelectedLanguage}
+                                isLoading={isLoadingTemplates}
+                                onClose={() => setShowTemplateSelector(false)}
+                                onSelect={(template) => {
+                                  if (template.active !== 't') {
+                                    toast.error('Template pending approval');
+                                    return;
+                                  }
+                                  setSelectedTemplate(template);
+                                  setShowTemplateSelector(false);
+                                  setTemplateSearchTerm('');
+                                  setSelectedLanguage('');
+                                  if (template.params === '0') {
+                                    setNewMessage(template.content || '');
+                                    if (textareaRef.current) {
+                                      setTimeout(() => {
+                                        if (textareaRef.current) {
+                                          textareaRef.current.style.height = 'auto';
+                                          const maxHeight = isMobile ? 300 : 400;
+                                          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+                                        }
+                                      }, 0);
+                                    }
+                                  } else {
+                                    setNewMessage('');
+                                  }
+                                }}
+                                className="max-h-[min(24rem,60vh)]"
+                              />
+                            </div>
+                          )}
+
                           {/* Mobile Emoji Picker */}
                           {isEmojiPickerOpen && !inputLocked && (
                             <div className="absolute left-0 z-[9999] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
@@ -4484,14 +4188,22 @@ const WhatsAppLeadsPage: React.FC = () => {
                               // Reset to normal height when blurred
                             }
                           }}
-                            placeholder={inputLocked ? whatsAppLockedPlaceholder(isPexChat, false) : 'Type a message...'}
+                            placeholder={
+                              selectedTemplate
+                                ? selectedTemplate.params === '1'
+                                  ? `Parameter for: ${selectedTemplate.title}`
+                                  : `Template: ${selectedTemplate.title}`
+                                : inputLocked
+                                  ? whatsAppLockedPlaceholder(isPexChat, false)
+                                  : 'Type a message...'
+                            }
                           className={`${WHATSAPP_COMPOSER_TEXTAREA_CLASS} ${isMobile ? '' : 'text-sm'}`}
                           rows={1}
-                          disabled={inputLocked || sending}
+                          disabled={sending || whatsAppComposerTextDisabled(inputLocked, selectedTemplate)}
                           style={{
                             backgroundColor: 'transparent',
                             maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : isMobile ? '128px' : '96px',
-                            cursor: inputLocked || selectedTemplate ? 'not-allowed' : 'text',
+                            cursor: whatsAppComposerTextDisabled(inputLocked, selectedTemplate) || (selectedTemplate && selectedTemplate.params !== '1') ? 'not-allowed' : 'text',
                             minHeight: isMobile ? '40px' : '36px',
                           }}
                         />
@@ -4513,10 +4225,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                               handleSendMessage(syntheticEvent);
                             }
                           }}
-                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia || inputLocked}
+                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia || whatsAppSendBlockedByWindow(inputLocked, selectedTemplate, isPexChat)}
                           className={`${WHATSAPP_COMPOSER_SEND_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
                           style={{ background: '#000000', borderColor: 'transparent' }}
-                          title={selectedFile ? 'Send media' : 'Send message'}
+                          title={selectedFile ? 'Send media' : selectedTemplate ? 'Send template' : 'Send message'}
                         >
                           {sending || uploadingMedia ? (
                             <div className="loading loading-spinner loading-sm"></div>

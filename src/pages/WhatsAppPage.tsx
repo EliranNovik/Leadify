@@ -6,8 +6,8 @@ import { toast } from 'react-hot-toast';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
-import { fetchWhatsAppTemplates, filterTemplates, testDatabaseAccess, refreshTemplatesFromAPI, type WhatsAppTemplate } from '../lib/whatsappTemplates';
-import TemplateOptionCard from '../components/whatsapp/TemplateOptionCard';
+import { fetchWhatsAppTemplates, testDatabaseAccess, refreshTemplatesFromAPI, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import WhatsAppTemplatePicker from '../components/whatsapp/WhatsAppTemplatePicker';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
 import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
 import { fetchLeadContacts } from '../lib/contactHelpers';
@@ -35,9 +35,11 @@ import {
   type WhatsAppReadFilter,
   parseNumericEmployeeIds,
   sameNewLeadId,
+  mergeOutgoingParticipation,
   type WhatsAppConversationEmployeeFilter,
   type WhatsAppConversationIndexState,
 } from '../lib/whatsappPageLoadHelpers';
+import { fetchAssignedLeads } from '../lib/communicationsInbox';
 import {
   WHATSAPP_CHAT_MESSAGE_PAGE_SIZE,
   buildWhatsAppThreadQuery,
@@ -45,6 +47,7 @@ import {
   fetchWhatsAppThreadNewerThan,
   fetchWhatsAppThreadPage,
 } from '../lib/whatsappChatMessages';
+import { whatsAppPhoneMatchesSearch } from '../lib/whatsappPhone';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
   WHATSAPP_OUTGOING_EDIT_TEXTAREA_CLASS,
@@ -93,6 +96,7 @@ import {
   ShareIcon,
   ChatBubbleLeftRightIcon,
   InboxIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
@@ -110,8 +114,11 @@ import {
   WhatsAppTemplateMenuItem,
   WhatsAppWindowLockBanner,
   whatsAppComposerLocked,
+  whatsAppComposerTextDisabled,
   whatsAppLockedPlaceholder,
-  whatsAppSendSuccessToast,
+  whatsAppSendBlockedByWindow,
+  whatsAppSendResultToast,
+  whatsAppDispatchSucceeded,
   PEX_TEMPLATES_UNAVAILABLE,
   resolveWhatsAppOutgoingSenderUi,
 } from '../lib/pexWhatsAppChat';
@@ -141,7 +148,7 @@ if (typeof window !== 'undefined') {
 }
 
 /** Increment when My Contacts filtering or cache rules change — forces a fresh list vs sessionStorage. */
-const WHATSAPP_MY_CONTACTS_CACHE_SIG_VERSION = 9;
+const WHATSAPP_MY_CONTACTS_CACHE_SIG_VERSION = 12;
 const WHATSAPP_MY_CONTACTS_SIG_STORAGE_KEY = 'whatsapp_my_contacts_list_sig_v1';
 
 interface Client {
@@ -536,7 +543,25 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     if (conversationIndexPromiseRef.current) {
       return conversationIndexPromiseRef.current;
     }
-    const promise = loadWhatsAppConversationIndexState(supabase, whatsappConversationFilter)
+    const promise = (async () => {
+      let filter = whatsappConversationFilter;
+      if (filter) {
+        const assigned = await fetchAssignedLeads({
+          employeeId: filter.employeeId ?? null,
+          displayName: filter.employeeName || '',
+        });
+        const newLeadIds = Array.from(assigned.newById.keys());
+        const legacyIds = Array.from(assigned.legacyById.keys());
+        const contactIds = await fetchContactIdsLinkedToLeads(supabase, newLeadIds, legacyIds);
+        filter = { ...filter, newLeadIds, legacyIds, contactIds };
+        logWa('My Contacts: role IDs for conversation RPC', {
+          newLeads: newLeadIds.length,
+          legacyLeads: legacyIds.length,
+          contacts: contactIds.length,
+        });
+      }
+      return loadWhatsAppConversationIndexState(supabase, filter);
+    })()
       .then((idx) => {
         conversationIndexRef.current = idx;
         setConversationIndexReady(true);
@@ -1473,6 +1498,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   useEffect(() => {
     const USERS_WITH_EMPLOYEE = `
       id,
+      auth_id,
       full_name,
       email,
       employee_id,
@@ -1538,7 +1564,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       }
 
       if (userRow) {
-        applyUserRow(userRow);
+        applyUserRow({ ...userRow, auth_id: userRow.auth_id || user.id });
         return;
       }
 
@@ -1632,6 +1658,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         (currentUserFullName != null && String(currentUserFullName).trim() !== '');
 
       // My Contacts list is role-filtered: invalidate session list when user identity or filter logic version changes.
+      let skipMyContactsCache = false;
       if (showMyContactsOnly && userReadyForMyContacts) {
         try {
           const wantSig = `${WHATSAPP_MY_CONTACTS_CACHE_SIG_VERSION}|${String(currentUserEmployeeId ?? '')}|${String((currentUserFullName || '').trim()).toLowerCase()}`;
@@ -1642,15 +1669,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             setMyContactsClients([]);
             hasInitialDataRef.current = false;
             setHasInitialData(false);
+            skipMyContactsCache = true;
           }
         } catch {
           /* ignore */
         }
       }
 
-      // IMMEDIATELY check sessionStorage for cached data and set loading to false if found
-      // This prevents the spinner from showing even briefly
-      const hasCachedDataDirect = getHasCachedData();
+      const hasCachedDataDirect = !skipMyContactsCache && getHasCachedData();
       if (hasCachedDataDirect) {
         setLoading(false);
       }
@@ -1670,7 +1696,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       });
 
       // If we have cached data (either from React state or directly from sessionStorage), use it immediately
-      if (hasCachedDataDirect || currentClients.length > 0) {
+      if (!skipMyContactsCache && (hasCachedDataDirect || currentClients.length > 0)) {
         logWa(`✅ Using cached WhatsApp data for ${showMyContactsOnly ? 'My Contacts' : 'All Contacts'} tab:`, {
           clientsCount: currentClients.length,
           messagesCount: allMessages.length,
@@ -1935,13 +1961,48 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           employeeId: currentUserEmployeeId,
           employeeName: (currentUserFullName || '').trim(),
         };
+        const assignedNewIds = new Set<string>();
+        const assignedLegacyIds = new Set<number>();
+        if (showMyContactsOnly) {
+          const assigned = await fetchAssignedLeads({
+            employeeId: currentUserEmployeeId,
+            displayName: currentUserFullName || '',
+          });
+          for (const id of assigned.newById.keys()) {
+            assignedNewIds.add(id);
+            uniqueLeadIds.add(id);
+            if (!newLeadIds.includes(id)) newLeadIds.push(id);
+          }
+          for (const id of assigned.legacyById.keys()) {
+            assignedLegacyIds.add(id);
+            uniqueLegacyIds.add(String(id));
+          }
+          logWa('My Contacts: assigned role leads', {
+            newLeads: assigned.newById.size,
+            legacyLeads: assigned.legacyById.size,
+          });
+        }
+
+        const contactParentRels = await fetchLeadLeadContactByContactIdsBatched(Array.from(uniqueContactIds));
+        for (const rel of contactParentRels) {
+          if (rel?.newlead_id) {
+            const id = String(rel.newlead_id);
+            uniqueLeadIds.add(id);
+            if (!newLeadIds.includes(id)) newLeadIds.push(id);
+          }
+          if (rel?.lead_id != null && rel.lead_id !== '') {
+            uniqueLegacyIds.add(String(rel.lead_id));
+          }
+        }
 
         const passesMyContactsLeadBundle = (newRow: any, legacyById: Map<number, any>) => {
           if (!showMyContactsOnly) return true;
+          if (newRow?.id != null && assignedNewIds.has(String(newRow.id))) return true;
           if (!roleMatchParams.employeeId && !roleMatchParams.employeeName) return true;
           const legRaw = newRow?.legacy_lead_id;
           const legNum = legRaw != null && legRaw !== '' ? Number(legRaw) : NaN;
           const legacyRow = !Number.isNaN(legNum) ? legacyById.get(legNum) ?? null : null;
+          if (legacyRow?.id != null && assignedLegacyIds.has(Number(legacyRow.id))) return true;
           return employeeHasAnySalesRoleOnLeadBundle(
             newRow,
             legacyRow,
@@ -2021,6 +2082,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
           const legacyRowsForList = showMyContactsOnly
             ? legacyLeads.filter((row: any) =>
+                assignedLegacyIds.has(Number(row.id)) ||
                 employeeHasAnySalesRoleOnLegacyLead(
                   row,
                   currentUserEmployeeId,
@@ -2068,8 +2130,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             newIdsForContacts,
             legacyIdsForContacts,
           );
-          contactIdsArray = linked.filter((id) => uniqueContactIds.has(id));
-          logWa('My Contacts: scoped contact ids', contactIdsArray.length, 'of', uniqueContactIds.size);
+          const allowedContacts = new Set<number>(linked);
+          contactIdsArray = Array.from(
+            new Set([
+              ...Array.from(uniqueContactIds).filter((id) => allowedContacts.has(id)),
+              ...linked,
+            ]),
+          );
+          logWa('My Contacts: scoped contact ids', contactIdsArray.length, 'of', uniqueContactIds.size, 'linked', linked.length);
         } else {
           contactIdsArray = Array.from(uniqueContactIds);
         }
@@ -2167,6 +2235,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 if (rawLegacyContactLeads.length > 0) {
                   legacyLeadsForContacts = showMyContactsOnly
                     ? rawLegacyContactLeads.filter((row: any) =>
+                        assignedLegacyIds.has(Number(row.id)) ||
                         employeeHasAnySalesRoleOnLegacyLead(
                           row,
                           currentUserEmployeeId,
@@ -2484,10 +2553,175 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             }
           });
           applyFallbackSortRanks(cur);
+          mergeOutgoingParticipation(cur, delta);
           bumpConversationIndex();
         }
 
         setAllMessages((prev) => (prev.length ? [...prev, ...newMessages] : prev));
+
+        const currentList = showMyContactsOnly ? myContactsClients : allContactsClients;
+        const knownContacts = new Set(
+          currentList.map((c) => c.contact_id).filter((id) => id != null).map((id) => Number(id)),
+        );
+        const knownLeads = new Set(
+          currentList.filter((c) => !c.isContact && c.lead_type !== 'legacy').map((c) => String(c.id)),
+        );
+        const knownLegacy = new Set(
+          currentList
+            .filter((c) => c.lead_type === 'legacy' || String(c.id).startsWith('legacy_'))
+            .map((c) => Number(String(c.id).replace('legacy_', '')))
+            .filter((n) => !Number.isNaN(n)),
+        );
+        const missingLeadIds = [
+          ...new Set(
+            newMessages
+              .map((msg) => (msg.lead_id ? String(msg.lead_id) : ''))
+              .filter((id) => id && !knownLeads.has(id)),
+          ),
+        ];
+        const missingContactIds = [
+          ...new Set(
+            newMessages
+              .map((msg) => Number(msg.contact_id))
+              .filter((id) => Number.isFinite(id) && id > 0 && !knownContacts.has(id)),
+          ),
+        ];
+        const missingLegacyIds = [
+          ...new Set(
+            newMessages
+              .map((msg) => Number(msg.legacy_id))
+              .filter((id) => Number.isFinite(id) && id > 0 && !knownLegacy.has(id) && !knownLeads.has(String(id))),
+          ),
+        ];
+
+        const added: Client[] = [];
+        const roleName = (currentUserFullName || '').trim();
+
+        if (missingLeadIds.length > 0) {
+          const { data: leads } = await supabase
+            .from('leads')
+            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, expert_id, case_handler_id, meeting_lawyer_id, lawyer, meeting_manager_id, retainer_handler_id, meeting_collection_id, marketing_officer_id, wa_window_expires_at')
+            .in('id', missingLeadIds);
+          for (const lead of leads || []) {
+            const keep =
+              !showMyContactsOnly ||
+              employeeHasAnySalesRoleOnLeadBundle(lead, null, currentUserEmployeeId, roleName);
+            if (!keep) continue;
+            added.push({
+              ...lead,
+              id: String(lead.id),
+              lead_number: String(lead.lead_number || lead.id),
+              lead_type: 'new',
+              isContact: false,
+            });
+          }
+        }
+
+        if (missingContactIds.length > 0) {
+          const { data: contacts } = await supabase
+            .from('leads_contact')
+            .select('id, name, email, phone, mobile, whatsapp_profile_picture_url')
+            .in('id', missingContactIds);
+          let allowedContactIds = new Set<number>();
+          if (!showMyContactsOnly) {
+            allowedContactIds = new Set(missingContactIds);
+          } else {
+            const { data: rels } = await supabase
+              .from('lead_leadcontact')
+              .select('contact_id, newlead_id, lead_id')
+              .in('contact_id', missingContactIds);
+            const parentNewIds = [...new Set((rels || []).map((r: any) => r?.newlead_id).filter(Boolean).map(String))];
+            const parentLegacyIds = [
+              ...new Set(
+                (rels || [])
+                  .map((r: any) => Number(r?.lead_id))
+                  .filter((n: number) => Number.isFinite(n) && n > 0),
+              ),
+            ];
+            const parentNewById = new Map<string, any>();
+            const parentLegacyById = new Map<number, any>();
+            if (parentNewIds.length > 0) {
+              const { data: parentLeads } = await supabase
+                .from('leads')
+                .select('id, closer, scheduler, handler, manager, helper, expert, expert_id, case_handler_id, meeting_lawyer_id, lawyer, meeting_manager_id, retainer_handler_id, meeting_collection_id, marketing_officer_id')
+                .in('id', parentNewIds);
+              for (const row of parentLeads || []) parentNewById.set(String(row.id), row);
+            }
+            if (parentLegacyIds.length > 0) {
+              const { data: parentLegacy } = await supabase
+                .from('leads_lead')
+                .select('id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, retainer_handler_id, meeting_collection_id, marketing_officer_id')
+                .in('id', parentLegacyIds);
+              for (const row of parentLegacy || []) parentLegacyById.set(Number(row.id), row);
+            }
+            for (const rel of rels || []) {
+              const cid = Number(rel?.contact_id);
+              if (!Number.isFinite(cid)) continue;
+              const newRow = rel?.newlead_id ? parentNewById.get(String(rel.newlead_id)) : null;
+              const legacyRow = rel?.lead_id != null ? parentLegacyById.get(Number(rel.lead_id)) : null;
+              if (employeeHasAnySalesRoleOnLeadBundle(newRow, legacyRow, currentUserEmployeeId, roleName)) {
+                allowedContactIds.add(cid);
+              }
+            }
+          }
+          for (const contact of contacts || []) {
+            if (!allowedContactIds.has(Number(contact.id))) continue;
+            added.push({
+              id: `contact_${contact.id}`,
+              contact_id: Number(contact.id),
+              lead_number: `Contact ${contact.id}`,
+              name: contact.name || '',
+              email: contact.email || '',
+              phone: contact.phone || '',
+              mobile: contact.mobile || '',
+              isContact: true,
+              whatsapp_profile_picture_url: contact.whatsapp_profile_picture_url || null,
+            });
+          }
+        }
+
+        if (missingLegacyIds.length > 0) {
+          const { data: legacyRows } = await supabase
+            .from('leads_lead')
+            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
+            .in('id', missingLegacyIds);
+          for (const lead of legacyRows || []) {
+            const keep =
+              !showMyContactsOnly ||
+              employeeHasAnySalesRoleOnLegacyLead(lead, currentUserEmployeeId, roleName);
+            if (!keep) continue;
+            added.push({
+              id: `legacy_${lead.id}`,
+              lead_number: String(lead.lead_number || lead.id),
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
+              topic: lead.topic || '',
+              status: lead.status ? String(lead.status) : '',
+              stage: lead.stage ? String(lead.stage) : '',
+              lead_type: 'legacy',
+              isContact: false,
+              closer_id: lead.closer_id || null,
+              meeting_scheduler_id: lead.meeting_scheduler_id || null,
+              meeting_manager_id: lead.meeting_manager_id || null,
+              meeting_lawyer_id: lead.meeting_lawyer_id || null,
+              expert_id: lead.expert_id || null,
+              case_handler_id: lead.case_handler_id || null,
+            });
+          }
+        }
+
+        if (added.length > 0) {
+          const idx = conversationIndexRef.current;
+          const merge = (prev: Client[]) => {
+            const seen = new Set(prev.map((c) => `${c.id}:${c.contact_id ?? ''}`));
+            const next = [...added.filter((c) => !seen.has(`${c.id}:${c.contact_id ?? ''}`)), ...prev];
+            return sortClientsForSidebar(next, idx);
+          };
+          if (showMyContactsOnly) setMyContactsClients(merge);
+          else setAllContactsClients(merge);
+        }
 
         // If a client is selected and the new messages are for that client, update messages
         const currentSelectedClient = showMyContactsOnly ? myContactsSelectedClient : allContactsSelectedClient;
@@ -2523,6 +2757,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     showMyContactsOnly,
     myContactsSelectedClient,
     allContactsSelectedClient,
+    myContactsClients,
+    allContactsClients,
+    currentUserEmployeeId,
+    currentUserFullName,
     setAllMessages,
     setMyContactsMessages,
     setAllContactsMessages,
@@ -2732,8 +2970,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
           let legacyQuery = supabase
             .from('leads_leadinteractions')
-            .select(`id, cdate, date, time, content, description, creator_id, direction, kind,
-              creator_employee:tenants_employee!leads_leadinteractions_creator_id_fkey(id, display_name, official_name)`)
+            .select('id, cdate, date, time, content, description, creator_id, direction, kind')
             .eq('lead_id', legacyId)
             .eq('kind', 'w')
             .order('cdate', { ascending: false })
@@ -3263,6 +3500,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
   const [isFirstLoad, setIsFirstLoad] = useState(false);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  const [headerRolesExpanded, setHeaderRolesExpanded] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate | null>(null);
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [templateSearchTerm, setTemplateSearchTerm] = useState('');
@@ -3275,40 +3513,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     setSelectedTemplate(null);
   }, [isPexChat]);
 
-  // Helper function to normalize language codes (en and en_US both become 'en')
-  const normalizeLanguage = (lang: string | undefined | null): string => {
-    if (!lang) return 'en';
-    const normalized = lang.toLowerCase();
-    if (normalized === 'en_us' || normalized === 'en') return 'en';
-    return normalized;
-  };
-
-  // Helper function to get display name for language
-  const getLanguageDisplayName = (lang: string): string => {
-    const normalized = normalizeLanguage(lang);
-    const langMap: { [key: string]: string } = {
-      'en': 'English',
-      'he': 'Hebrew',
-      'fr': 'French',
-      'ar': 'Arabic',
-      'ru': 'Russian',
-      'es': 'Spanish',
-      'de': 'German',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'zh': 'Chinese',
-      'ja': 'Japanese',
-      'ko': 'Korean',
-      'tr': 'Turkish',
-      'pl': 'Polish',
-      'nl': 'Dutch',
-      'sv': 'Swedish',
-      'da': 'Danish',
-      'no': 'Norwegian',
-      'fi': 'Finnish',
-    };
-    return langMap[normalized] || lang.toUpperCase();
-  };
+  useEffect(() => {
+    setHeaderRolesExpanded(false);
+  }, [selectedClient?.id]);
 
   // AI suggestions state
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -3552,6 +3759,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     if (!dataReady) return;
 
     const list = showMyContactsOnly ? myContactsClients : allContactsClients;
+    const otherList = showMyContactsOnly ? allContactsClients : myContactsClients;
     const clearUrlParams = () => {
       setSearchParams(
         (prev) => {
@@ -3566,19 +3774,43 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       pendingOpenFromUrlRef.current = null;
     };
 
-    if (!list.length) {
+    const client =
+      findWhatsAppClientByUrlTarget(list, pending) ||
+      findWhatsAppClientByUrlTarget(otherList, pending);
+
+    if (!list.length && !otherList.length && !pending.leadId && !pending.legacyId) {
       urlConversationHandledRef.current = true;
       toast.error('WhatsApp list is empty — open the WhatsApp page and refresh, or switch tabs.');
       clearUrlParams();
       return;
     }
 
-    const client = findWhatsAppClientByUrlTarget(list, pending);
     urlConversationHandledRef.current = true;
     if (!client) {
+      if (pending.leadId || pending.legacyId) {
+        const legacy = Boolean(pending.legacyId);
+        const rawId = legacy
+          ? String(pending.legacyId).replace(/^legacy_/i, '')
+          : String(pending.leadId);
+        void openClientConversation({
+          id: legacy ? `legacy_${rawId}` : rawId,
+          lead_number: rawId,
+          name: '',
+          phone: '',
+          lead_type: legacy ? 'legacy' : 'new',
+          isContact: false,
+        } as Client).finally(() => {
+          clearUrlParams();
+        });
+        return;
+      }
       toast.error('This conversation is not in the current list. Try "All contacts" or refresh.');
       clearUrlParams();
       return;
+    }
+
+    if (client && showMyContactsOnly && !list.includes(client) && otherList.includes(client)) {
+      setShowMyContactsOnly(false);
     }
 
     void openClientConversation(client).finally(() => {
@@ -3592,9 +3824,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     showMyContactsOnly,
     openClientConversation,
     setSearchParams,
+    setShowMyContactsOnly,
   ]);
-
-  const filteredTemplates = filterTemplates(templates, templateSearchTerm);
 
   const handleTemplateSelect = (template: WhatsAppTemplate) => {
     if (template.active !== 't') {
@@ -3606,6 +3837,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     setShowTemplateSelector(false);
     setShowMobileDropdown(false);
     setTemplateSearchTerm('');
+    setSelectedLanguage('');
 
     if (template.params === '0') {
       setNewMessage(template.content || '');
@@ -3694,11 +3926,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
       }
 
-      // Close template selector if clicking outside
-      if (showTemplateSelector && templateSelectorRef.current && !templateSelectorRef.current.contains(target)) {
-        // Don't close if clicking on the template button itself
-        if (!target.closest('button') || !target.closest('button')?.textContent?.includes('Template')) {
-          setShowTemplateSelector(false);
+      if (
+        showTemplateSelector &&
+        !templateSelectorRef.current?.contains(target) &&
+        !desktopToolsRef.current?.contains(target) &&
+        !mobileToolsRef.current?.contains(target)
+      ) {
+        setShowTemplateSelector(false);
+      }
+
+      if (headerRolesExpanded) {
+        const rolesTarget = target as HTMLElement;
+        if (!rolesTarget.closest('[data-header-roles]')) {
+          setHeaderRolesExpanded(false);
         }
       }
 
@@ -3715,7 +3955,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEmojiPickerOpen, showMobileDropdown, showDesktopTools, showSidePanelSettingsMenu, isMobile, isInputFocused, showTemplateSelector]);
+  }, [isEmojiPickerOpen, showMobileDropdown, showDesktopTools, showSidePanelSettingsMenu, isMobile, isInputFocused, showTemplateSelector, headerRolesExpanded]);
 
   // Handle search input changes - now only filters fetched clients (no API calls)
   // Removed the searchLeads API call - search now only filters through existing clients
@@ -4195,7 +4435,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       const result = await response.json();
       console.log('📥 Response body:', JSON.stringify(result, null, 2));
 
-      if (!response.ok) {
+      if (!whatsAppDispatchSucceeded(response.ok, result)) {
         console.error('❌ API request failed:', {
           status: response.status,
           statusText: response.statusText,
@@ -4213,7 +4453,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       console.log('✅ API request successful. Message ID:', result.messageId);
 
       // Immediately after sending, fetch the message from database to verify template_id was saved
-      if (result.messageId) {
+      if (result.messageId && result.saved !== false) {
         console.log('🔍 Verifying template_id was saved in database...');
         setTimeout(async () => {
           try {
@@ -4313,7 +4553,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       }
       // Stage evaluation is handled automatically by database triggers
 
-      toast.success(whatsAppSendSuccessToast(result.via));
+      toast.success(whatsAppSendResultToast(result));
     } catch (error) {
       console.error('Error sending message:', error);
 
@@ -4942,8 +5182,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           client.name.toLowerCase().includes(term) ||
           client.lead_number.toLowerCase().includes(term) ||
           (client.email && client.email.toLowerCase().includes(term)) ||
-          (client.phone && client.phone.includes(term)) ||
-          (client.mobile && client.mobile.includes(term)),
+          whatsAppPhoneMatchesSearch(client.phone, term) ||
+          whatsAppPhoneMatchesSearch(client.mobile, term),
       );
     }
 
@@ -5283,7 +5523,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       const result = await response.json();
 
-      if (!response.ok) {
+      if (!whatsAppDispatchSucceeded(response.ok, result)) {
         throw new Error(result.error || 'Failed to send media');
       }
 
@@ -5450,97 +5690,113 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       return field || '---';
     };
     return (
-      <div className="flex items-center gap-3 lg:gap-4 min-w-0 overflow-hidden">
-        <div className="flex items-center gap-2">
-          <EmployeeAvatar
-            employeeId={getEmployeeIdFromRole(client.closer, isLegacy, 'closer_id', client)}
-            size="sm"
-          />
-          <div className="flex flex-col">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Closer</span>
-            <span className="text-sm font-semibold text-gray-700">
-              {roleName(client.closer, client.closer_id)}
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <EmployeeAvatar
-            employeeId={getEmployeeIdFromRole(client.scheduler, isLegacy, 'meeting_scheduler_id', client)}
-            size="sm"
-          />
-          <div className="flex flex-col">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Scheduler</span>
-            <span className="text-sm font-semibold text-gray-700">
-              {roleName(client.scheduler, client.meeting_scheduler_id)}
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <EmployeeAvatar
-            employeeId={(() => {
-              if (isLegacy) return client.case_handler_id || null;
-              if (client.case_handler_id) return client.case_handler_id;
-              return getEmployeeIdFromRole(client.handler, false, undefined, client);
-            })()}
-            size="sm"
-          />
-          <div className="flex flex-col">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Handler</span>
-            <span className="text-sm font-semibold text-gray-700">
-              {(() => {
-                if (isLegacy && client.case_handler_id) return getEmployeeDisplayName(client.case_handler_id);
-                if (client.case_handler_id) return getEmployeeDisplayName(client.case_handler_id);
-                if (client.handler && /^\d+$/.test(String(client.handler).trim())) {
-                  return getEmployeeDisplayName(Number(client.handler));
-                }
-                return client.handler || '---';
+      <div className="flex items-center gap-3 lg:gap-4 min-w-0 overflow-visible">
+        <div className="relative" data-header-roles>
+          <button
+            type="button"
+            onClick={() => setHeaderRolesExpanded((open) => !open)}
+            className="flex items-center gap-2 rounded-lg px-1.5 py-0.5 hover:bg-white/50 transition-colors"
+            aria-expanded={headerRolesExpanded}
+            title="Show roles and deal details"
+          >
+            <EmployeeAvatar
+              employeeId={(() => {
+                if (isLegacy) return client.case_handler_id || null;
+                if (client.case_handler_id) return client.case_handler_id;
+                return getEmployeeIdFromRole(client.handler, false, undefined, client);
               })()}
-            </span>
-          </div>
+              size="sm"
+            />
+            <div className="flex flex-col items-start">
+              <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Handler</span>
+              <span className="text-sm font-semibold text-gray-700">
+                {(() => {
+                  if (isLegacy && client.case_handler_id) return getEmployeeDisplayName(client.case_handler_id);
+                  if (client.case_handler_id) return getEmployeeDisplayName(client.case_handler_id);
+                  if (client.handler && /^\d+$/.test(String(client.handler).trim())) {
+                    return getEmployeeDisplayName(Number(client.handler));
+                  }
+                  return client.handler || '---';
+                })()}
+              </span>
+            </div>
+            <ChevronDownIcon
+              className={`w-4 h-4 text-gray-400 transition-transform ${headerRolesExpanded ? 'rotate-180' : ''}`}
+            />
+          </button>
+          {headerRolesExpanded && (
+            <div className="absolute top-full left-0 mt-2 z-50 min-w-[18rem] rounded-2xl bg-white/95 backdrop-blur-md shadow-lg p-3">
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <EmployeeAvatar
+                    employeeId={getEmployeeIdFromRole(client.closer, isLegacy, 'closer_id', client)}
+                    size="sm"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Closer</span>
+                    <span className="text-sm font-semibold text-gray-700">
+                      {roleName(client.closer, client.closer_id)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <EmployeeAvatar
+                    employeeId={getEmployeeIdFromRole(client.scheduler, isLegacy, 'meeting_scheduler_id', client)}
+                    size="sm"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Scheduler</span>
+                    <span className="text-sm font-semibold text-gray-700">
+                      {roleName(client.scheduler, client.meeting_scheduler_id)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <EmployeeAvatar
+                    employeeId={getEmployeeIdFromRole(client.expert, isLegacy, 'expert_id', client)}
+                    size="sm"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Expert</span>
+                    <span className="text-sm font-semibold text-gray-700">
+                      {roleName(client.expert, client.expert_id)}
+                    </span>
+                  </div>
+                </div>
+                {(client.probability || client.balance || client.next_followup || client.potential_applicants) && (
+                  <div className="flex flex-wrap items-center gap-4 pt-2 border-t border-gray-100">
+                    {client.probability ? (
+                      <div className="flex flex-col">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Probability</span>
+                        <span className="text-sm font-semibold text-gray-900">{client.probability}%</span>
+                      </div>
+                    ) : null}
+                    {client.balance ? (
+                      <div className="flex flex-col">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Balance</span>
+                        <span className="text-sm font-semibold text-gray-900">${client.balance.toLocaleString()}</span>
+                      </div>
+                    ) : null}
+                    {client.next_followup ? (
+                      <div className="flex flex-col">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Follow-up</span>
+                        <span className="text-sm font-semibold text-gray-700">
+                          {new Date(client.next_followup).toLocaleDateString()}
+                        </span>
+                      </div>
+                    ) : null}
+                    {client.potential_applicants ? (
+                      <div className="flex flex-col">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Applicants</span>
+                        <span className="text-sm font-semibold text-purple-600">{client.potential_applicants}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-2">
-          <EmployeeAvatar
-            employeeId={getEmployeeIdFromRole(client.expert, isLegacy, 'expert_id', client)}
-            size="sm"
-          />
-          <div className="flex flex-col">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Expert</span>
-            <span className="text-sm font-semibold text-gray-700">
-              {roleName(client.expert, client.expert_id)}
-            </span>
-          </div>
-        </div>
-        {(client.next_followup || client.probability || client.balance || client.potential_applicants) && (
-          <>
-            <div className="w-px h-6 bg-gray-300 flex-shrink-0" />
-            {client.next_followup && (
-              <div className="flex flex-col items-center flex-shrink-0">
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Follow-up</span>
-                <span className="text-sm font-semibold text-gray-700">
-                  {new Date(client.next_followup).toLocaleDateString()}
-                </span>
-              </div>
-            )}
-            {client.probability && (
-              <div className="flex flex-col items-center flex-shrink-0">
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Probability</span>
-                <span className="text-sm font-semibold text-gray-900">{client.probability}%</span>
-              </div>
-            )}
-            {client.balance && (
-              <div className="flex flex-col items-center flex-shrink-0">
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Balance</span>
-                <span className="text-sm font-semibold text-gray-900">${client.balance.toLocaleString()}</span>
-              </div>
-            )}
-            {client.potential_applicants && (
-              <div className="flex flex-col items-center flex-shrink-0">
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Applicants</span>
-                <span className="text-sm font-semibold text-purple-600">{client.potential_applicants}</span>
-              </div>
-            )}
-          </>
-        )}
       </div>
     );
   };
@@ -6041,10 +6297,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 {!isMobile && (
                   <div
                     ref={chatHeaderRef}
-                    className={`absolute top-0 inset-x-0 z-40 flex flex-col ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}
+                    className={`absolute top-0 inset-x-0 z-40 flex flex-col overflow-visible ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}
                   >
                     <div className="flex items-center justify-between gap-2 px-3 py-1.5 min-w-0">
-                      <div className="flex items-center min-w-0 flex-1 overflow-x-auto">
+                      <div className="flex items-center min-w-0 flex-1 overflow-visible">
                         {renderSelectedClientLeadToolbar(selectedClient)}
                       </div>
                       <div className="flex items-center gap-2 md:gap-3 flex-shrink-0 min-w-0">
@@ -6116,7 +6372,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 {isMobile && (
                   <div
                     ref={chatHeaderRef}
-                    className={`absolute top-0 inset-x-0 z-40 flex flex-col ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}
+                    className={`absolute top-0 inset-x-0 z-40 flex flex-col overflow-visible ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}
                   >
                     <div className="flex items-center px-2 py-1.5 relative">
                       {/* Left Side - Back Button, Avatar, and Name */}
@@ -6221,7 +6477,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     ? {
                         flex: '1 1 auto',
                         paddingTop: chatHeaderHeight + 16,
-                        paddingBottom: showTemplateSelector ? '300px' : (inputLocked ? '280px' : '200px'),
+                        paddingBottom: inputLocked ? '280px' : '200px',
                         WebkitOverflowScrolling: 'touch',
                         overflowX: 'hidden',
                         maxWidth: '100%',
@@ -6793,7 +7049,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       <div className="relative self-end" ref={desktopToolsRef} style={{ overflow: 'visible' }}>
                         <button
                           type="button"
-                          onClick={() => setShowDesktopTools(prev => !prev)}
+                          onClick={() => {
+                            setShowDesktopTools((prev) => !prev);
+                            setShowTemplateSelector(false);
+                          }}
                           disabled={sending || uploadingMedia}
                           className={`${WHATSAPP_COMPOSER_TOOLS_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
                           title="Message tools"
@@ -6871,6 +7130,35 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             </button>
                           </div>
                         )}
+
+                        {showTemplateSelector && (
+                          <div
+                            ref={templateSelectorRef}
+                            className="absolute left-0 bottom-[calc(100%+8px)] z-[10000] w-[min(26rem,calc(100vw-2rem))] pointer-events-auto"
+                          >
+                            {isLocked && (
+                              <div className="mb-2">
+                                <WhatsAppWindowLockBanner
+                                  isPex={isPexChat}
+                                  windowLocked={isLocked}
+                                  adminUnlocked={pexAdminBypass}
+                                />
+                              </div>
+                            )}
+                            <WhatsAppTemplatePicker
+                              templates={templates}
+                              selectedTemplate={selectedTemplate}
+                              searchTerm={templateSearchTerm}
+                              onSearchChange={setTemplateSearchTerm}
+                              selectedLanguage={selectedLanguage}
+                              onLanguageChange={setSelectedLanguage}
+                              isLoading={isLoadingTemplates}
+                              onClose={() => setShowTemplateSelector(false)}
+                              onSelect={handleTemplateSelect}
+                              className="max-h-[min(26rem,calc(100vh-8rem))]"
+                            />
+                          </div>
+                        )}
                       </div>
 
                       {isEmojiPickerOpen && (
@@ -6908,20 +7196,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           // Let Enter create new lines
                         }}
                         placeholder={
-                          inputLocked
-                            ? whatsAppLockedPlaceholder(isPexChat, messages.length === 0)
-                            : selectedFile
-                              ? "Add a caption..."
-                              : selectedTemplate
-                                ? selectedTemplate.params === '1'
-                                  ? `Parameter for: ${selectedTemplate.title}`
-                                  : `Template: ${selectedTemplate.title}`
+                          selectedTemplate
+                            ? selectedTemplate.params === '1'
+                              ? `Parameter for: ${selectedTemplate.title}`
+                              : `Template: ${selectedTemplate.title}`
+                            : inputLocked
+                              ? whatsAppLockedPlaceholder(isPexChat, messages.length === 0)
+                              : selectedFile
+                                ? "Add a caption..."
                                 : "Type a message..."
                         }
                         className={WHATSAPP_COMPOSER_TEXTAREA_CLASS}
                         rows={1}
-                        readOnly={!!selectedTemplate}
-                        disabled={sending || uploadingMedia || inputLocked}
+                        readOnly={!!selectedTemplate && selectedTemplate.params !== '1'}
+                        disabled={sending || uploadingMedia || whatsAppComposerTextDisabled(inputLocked, selectedTemplate)}
                         style={{
                           backgroundColor: 'transparent',
                           maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
@@ -6947,10 +7235,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             handleSendMessage(syntheticEvent);
                           }
                         }}
-                        disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia || inputLocked}
+                        disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia || whatsAppSendBlockedByWindow(inputLocked, selectedTemplate, isPexChat)}
                         className={`${WHATSAPP_COMPOSER_SEND_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
                         style={{ background: '#000000', borderColor: 'transparent' }}
-                        title={selectedFile ? 'Send media' : 'Send message'}
+                        title={selectedFile ? 'Send media' : selectedTemplate ? 'Send template' : 'Send message'}
                       >
                         {sending || uploadingMedia ? (
                           <div className="loading loading-spinner loading-sm"></div>
@@ -6961,131 +7249,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       </div>
                       )}
                     </div>
-
-                    {/* Template Dropdown - Desktop */}
-                    {showTemplateSelector && (
-                      <div
-                        ref={templateSelectorRef}
-                        className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]"
-                        style={{
-                          overflow: 'visible',
-                          maxHeight: 'calc(100vh - 120px)', // Account for header and input area
-                          // Ensure it doesn't get cut off at the top on smaller screens
-                          transform: 'translateY(0)',
-                          top: 'auto',
-                          bottom: '100%'
-                        }}
-                      >
-                        {/* Lock Message - Above template modal when open */}
-                        {isLocked && (
-                          <WhatsAppWindowLockBanner
-                            isPex={isPexChat}
-                            windowLocked={isLocked}
-                            adminUnlocked={pexAdminBypass}
-                          />
-                        )}
-                        <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
-                          {/* Header with gradient background */}
-                          <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <FaWhatsapp className="w-6 h-6 text-white" />
-                                <h3 className="text-lg font-bold text-white">Select Template</h3>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => setShowTemplateSelector(false)}
-                                className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-2"
-                              >
-                                <XMarkIcon className="w-5 h-5" />
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Content */}
-                          <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
-                            <div className="mb-5 flex gap-3 flex-shrink-0">
-                              <input
-                                type="text"
-                                placeholder="Search templates..."
-                                value={templateSearchTerm}
-                                onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                                className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
-                              />
-                              <select
-                                value={selectedLanguage}
-                                onChange={(e) => setSelectedLanguage(e.target.value)}
-                                className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
-                              >
-                                <option value="">All Languages</option>
-                                {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
-                                  .sort()
-                                  .map(lang => (
-                                    <option key={lang} value={lang}>
-                                      {getLanguageDisplayName(lang)}
-                                    </option>
-                                  ))}
-                              </select>
-                            </div>
-
-                            <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
-                              {isLoadingTemplates ? (
-                                <div className="text-center text-gray-500 py-4">
-                                  <div className="loading loading-spinner loading-sm"></div>
-                                  <span className="ml-2">Loading templates...</span>
-                                </div>
-                              ) : (() => {
-                                let filtered = filterTemplates(templates, templateSearchTerm);
-                                if (selectedLanguage) {
-                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                                }
-                                return filtered;
-                              })().length === 0 ? (
-                                <div className="text-center text-gray-500 py-4 text-sm">
-                                  {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
-                                </div>
-                              ) : (() => {
-                                let filtered = filterTemplates(templates, templateSearchTerm);
-                                if (selectedLanguage) {
-                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                                }
-                                return filtered;
-                              })().map((template) => (
-                                <TemplateOptionCard
-                                  key={template.id}
-                                  template={template}
-                                  isSelected={selectedTemplate?.id === template.id}
-                                  onClick={() => {
-                                    if (template.active !== 't') {
-                                      toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
-                                      return;
-                                    }
-                                    setSelectedTemplate(template);
-                                    setShowTemplateSelector(false);
-                                    setTemplateSearchTerm('');
-                                    setSelectedLanguage('');
-                                    // Always set template content in input field
-                                    setNewMessage(template.content || '');
-
-                                    // Expand textarea for desktop when template is inserted
-                                    if (textareaRef.current) {
-                                      setTimeout(() => {
-                                        if (textareaRef.current) {
-                                          textareaRef.current.style.height = 'auto';
-                                          const maxHeight = 400; // Desktop max height
-                                          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-                                        }
-                                      }, 0);
-                                    }
-                                  }}
-                                />
-                              ))
-                              }
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
 
                     {/* AI Suggestions Dropdown - Desktop */}
                     {showAISuggestions && (
@@ -7210,7 +7373,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         <div className="relative" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
                           <button
                             type="button"
-                            onClick={() => setShowMobileDropdown(!showMobileDropdown)}
+                            onClick={() => {
+                              setShowMobileDropdown((prev) => !prev);
+                              setShowTemplateSelector(false);
+                            }}
                             className={`${WHATSAPP_COMPOSER_TOOLS_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
                             title="Message tools"
                           >
@@ -7287,6 +7453,25 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               </button>
                             </div>
                           )}
+                          {showTemplateSelector && (
+                            <div
+                              ref={templateSelectorRef}
+                              className="absolute left-0 bottom-[calc(100%+8px)] z-[10000] w-[min(26rem,calc(100vw-1.5rem))] pointer-events-auto"
+                            >
+                              <WhatsAppTemplatePicker
+                                templates={templates}
+                                selectedTemplate={selectedTemplate}
+                                searchTerm={templateSearchTerm}
+                                onSearchChange={setTemplateSearchTerm}
+                                selectedLanguage={selectedLanguage}
+                                onLanguageChange={setSelectedLanguage}
+                                isLoading={isLoadingTemplates}
+                                onClose={() => setShowTemplateSelector(false)}
+                                onSelect={handleTemplateSelect}
+                                className="max-h-[min(24rem,60vh)]"
+                              />
+                            </div>
+                          )}
                         </div>
 
                         <textarea
@@ -7325,20 +7510,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             // Let Enter create new lines
                           }}
                           placeholder={
-                            inputLocked
-                              ? whatsAppLockedPlaceholder(isPexChat, messages.length === 0)
-                              : selectedFile
-                                ? "Add a caption..."
-                                : selectedTemplate
-                                  ? selectedTemplate.params === '1'
-                                    ? `Parameter for: ${selectedTemplate.title}`
-                                    : `Template: ${selectedTemplate.title}`
+                            selectedTemplate
+                              ? selectedTemplate.params === '1'
+                                ? `Parameter for: ${selectedTemplate.title}`
+                                : `Template: ${selectedTemplate.title}`
+                              : inputLocked
+                                ? whatsAppLockedPlaceholder(isPexChat, messages.length === 0)
+                                : selectedFile
+                                  ? "Add a caption..."
                                   : "Type a message..."
                           }
                           className={`${WHATSAPP_COMPOSER_TEXTAREA_CLASS} text-sm`}
                           rows={1}
-                          readOnly={!!selectedTemplate}
-                          disabled={sending || uploadingMedia || inputLocked}
+                          readOnly={!!selectedTemplate && selectedTemplate.params !== '1'}
+                          disabled={sending || uploadingMedia || whatsAppComposerTextDisabled(inputLocked, selectedTemplate)}
                           style={{
                             lineHeight: '1.4',
                             backgroundColor: 'transparent',
@@ -7365,10 +7550,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               handleSendMessage(syntheticEvent);
                             }
                           }}
-                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia || inputLocked}
+                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia || whatsAppSendBlockedByWindow(inputLocked, selectedTemplate, isPexChat)}
                           className={`${WHATSAPP_COMPOSER_SEND_BTN_CLASS} w-10 h-10 min-h-10 min-w-10`}
                           style={{ background: '#000000', borderColor: 'transparent' }}
-                          title={selectedFile ? 'Send media' : 'Send message'}
+                          title={selectedFile ? 'Send media' : selectedTemplate ? 'Send template' : 'Send message'}
                         >
                           {sending || uploadingMedia ? (
                             <div className="loading loading-spinner loading-sm"></div>
@@ -7397,144 +7582,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           />
                         </div>
                       )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Template Dropdown - Mobile (rendered outside hidden container) */}
-                {showTemplateSelector && isMobile && (
-                  <div
-                    className="fixed inset-0 z-[9999] flex items-end justify-center p-4"
-                    onClick={(e) => {
-                      // Only close if clicking directly on the backdrop, not on the modal content
-                      if (e.target === e.currentTarget) {
-                        setShowTemplateSelector(false);
-                      }
-                    }}
-                  >
-                    {/* Backdrop */}
-                    <div
-                      className="fixed inset-0 bg-black/50 z-[9998]"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowTemplateSelector(false);
-                      }}
-                    />
-                    <div
-                      ref={templateSelectorRef}
-                      className="relative z-[9999] w-full max-w-md h-[90vh] overflow-hidden pointer-events-auto flex flex-col rounded-t-2xl shadow-2xl"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        // Prevent clicks inside modal from closing anything
-                      }}
-                    >
-                      <div className="bg-white h-full flex flex-col overflow-hidden rounded-t-2xl">
-                        {/* Header with gradient background */}
-                        <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <FaWhatsapp className="w-5 h-5 text-white" />
-                              <h3 className="text-base font-bold text-white">Select Template</h3>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                e.nativeEvent.stopImmediatePropagation();
-                                setShowTemplateSelector(false);
-                              }}
-                              className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5 z-50 relative"
-                              aria-label="Close template selector"
-                            >
-                              <XMarkIcon className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Content */}
-                        <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
-                          {/* Search Input */}
-                          <div className="mb-4 flex gap-2 flex-shrink-0">
-                            <input
-                              type="text"
-                              placeholder="Search templates..."
-                              value={templateSearchTerm}
-                              onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                              className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
-                            />
-                            <select
-                              value={selectedLanguage}
-                              onChange={(e) => setSelectedLanguage(e.target.value)}
-                              className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
-                            >
-                              <option value="">All</option>
-                              {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
-                                .sort()
-                                .map(lang => (
-                                  <option key={lang} value={lang}>
-                                    {getLanguageDisplayName(lang)}
-                                  </option>
-                                ))}
-                            </select>
-                          </div>
-
-                          {/* Templates List */}
-                          <div className="space-y-3 flex-1 overflow-y-auto">
-                            {isLoadingTemplates ? (
-                              <div className="text-center text-gray-500 py-4">
-                                <div className="loading loading-spinner loading-sm"></div>
-                                <span className="ml-2">Loading...</span>
-                              </div>
-                            ) : (() => {
-                              let filtered = filterTemplates(templates, templateSearchTerm);
-                              if (selectedLanguage) {
-                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                              }
-                              return filtered;
-                            })().length === 0 ? (
-                              <div className="text-center text-gray-500 py-4 text-sm">
-                                {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
-                              </div>
-                            ) : (() => {
-                              let filtered = filterTemplates(templates, templateSearchTerm);
-                              if (selectedLanguage) {
-                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                              }
-                              return filtered;
-                            })().map((template) => (
-                              <TemplateOptionCard
-                                key={template.id}
-                                template={template}
-                                isSelected={selectedTemplate?.id === template.id}
-                                onClick={() => {
-                                  if (template.active !== 't') {
-                                    toast.error('Template pending approval');
-                                    return;
-                                  }
-                                  setSelectedTemplate(template);
-                                  setShowTemplateSelector(false);
-                                  setTemplateSearchTerm('');
-                                  setSelectedLanguage('');
-                                  // Always set template content in input field
-                                  setNewMessage(template.content || '');
-
-                                  // Expand textarea on mobile when template is applied
-                                  if (isMobile && textareaRef.current) {
-                                    setTimeout(() => {
-                                      if (textareaRef.current) {
-                                        textareaRef.current.style.height = 'auto';
-                                        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
-                                      }
-                                    }, 0);
-                                  }
-                                }}
-                              />
-                            ))
-                            }
-                          </div>
-                        </div>
-                      </div>
                     </div>
                   </div>
                 )}

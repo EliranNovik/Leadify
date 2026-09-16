@@ -14,6 +14,7 @@ import {
   SparklesIcon,
   TrashIcon,
   PencilSquareIcon,
+  ScissorsIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import {
@@ -36,6 +37,7 @@ import { toast } from 'react-hot-toast';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerModal';
 import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
+import { splitScanCaseDocument } from '../lib/smartScan/scanCenterInbox';
 import { expandLeadCaseDocumentLeadNumbers } from '../lib/leadCaseDocumentKeys';
 import {
   EMAIL_ATTACHMENTS_STORAGE_BUCKET,
@@ -69,6 +71,9 @@ interface Document {
   /** Resolved from `lead_case_documents.uploaded_by` + `users` / employee photo. */
   uploadedByName?: string | null;
   uploadedByPhotoUrl?: string | null;
+  /** Raw `lead_case_documents.uploaded_by` key (e.g. `Smart Scan`). */
+  uploadedByKey?: string | null;
+  onedriveItemId?: string | null;
   /** AI summary from `lead_case_documents.ai_summary` (edge function `case-document-summarize`). */
   aiSummary?: string | null;
   aiSummaryStatus?: CaseDocumentAiSummaryStatus | null;
@@ -100,6 +105,7 @@ type LeadCaseDocRow = {
   mime_type: string | null;
   classification_id?: string | null;
   uploaded_by: string | null;
+  onedrive_item_id?: string | null;
   created_at: string;
   ai_summary: string | null;
   ai_summary_status: string | null;
@@ -123,7 +129,18 @@ function mergeCachedCaseDocMeta(
     aiSummary: r.ai_summary ?? null,
     aiSummaryStatus: parseAiSummaryStatus(r.ai_summary_status),
     aiSummaryError: r.ai_summary_error ?? null,
+    uploadedByKey: r.uploaded_by?.trim() || cached.uploadedByKey || null,
+    onedriveItemId: r.onedrive_item_id?.trim() || cached.onedriveItemId || null,
   };
+}
+
+function canSeparateSmartScanPdf(doc: Document): boolean {
+  if (doc.source !== 'case' || !doc.caseDocDbId) return false;
+  if (String(doc.uploadedByKey || '').trim() !== 'Smart Scan') return false;
+  if (!String(doc.onedriveItemId || '').startsWith('smart-scan-combined:')) return false;
+  const type = String(doc.fileType || '').toLowerCase();
+  const name = String(doc.name || '').toLowerCase();
+  return type.includes('pdf') || name.endsWith('.pdf');
 }
 
 interface CaseClassificationRow {
@@ -298,21 +315,26 @@ type DocumentRowActionMenuProps = {
   doc: Document;
   isDownloading: boolean;
   isDeleting: boolean;
+  isSeparating?: boolean;
   onPreview: (d: Document) => void;
   onDownload: (d: Document) => void;
   onDelete: (d: Document) => void;
+  onSeparate?: (d: Document) => void;
 };
 
 function DocumentRowActionMenu({
   doc,
   isDownloading,
   isDeleting,
+  isSeparating = false,
   onPreview,
   onDownload,
   onDelete,
+  onSeparate,
 }: DocumentRowActionMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const canSeparate = Boolean(onSeparate) && canSeparateSmartScanPdf(doc);
 
   useEffect(() => {
     if (!open) return;
@@ -342,9 +364,27 @@ function DocumentRowActionMenu({
   return (
     <div
       ref={rootRef}
-      className="relative shrink-0 self-center md:self-stretch md:flex md:items-center"
+      className="relative flex shrink-0 items-center gap-2 self-center md:self-stretch md:items-center"
       onClick={(e) => e.stopPropagation()}
     >
+      {canSeparate ? (
+        <button
+          type="button"
+          className="btn btn-ghost btn-xs hidden h-8 min-h-0 gap-1 border border-sky-200 bg-sky-50 px-2.5 font-medium text-sky-800 hover:bg-sky-100 md:inline-flex dark:border-sky-800/60 dark:bg-sky-950/40 dark:text-sky-200"
+          title="Separate this scan into individual PDFs"
+          aria-label={`Separate ${doc.name} into documents`}
+          disabled={isSeparating}
+          onClick={() => void onSeparate?.(doc)}
+        >
+          {isSeparating ? (
+            <span className="loading loading-spinner loading-xs" />
+          ) : (
+            <ScissorsIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          )}
+          {isSeparating ? 'Separating…' : 'Separate into documents'}
+        </button>
+      ) : null}
+
       {/* Desktop: dark action strip — view / share / download / delete */}
       <div
         className="hidden h-full min-h-[2.75rem] shrink-0 items-center rounded-lg bg-gray-700 px-1 shadow-inner md:flex dark:bg-gray-900"
@@ -474,6 +514,28 @@ function DocumentRowActionMenu({
                 Download
               </button>
             </li>
+            {canSeparate ? (
+              <li>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 text-sm"
+                  role="menuitem"
+                  disabled={isSeparating}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setOpen(false);
+                    void onSeparate?.(doc);
+                  }}
+                >
+                  {isSeparating ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <ScissorsIcon className="h-4 w-4 shrink-0" />
+                  )}
+                  {isSeparating ? 'Separating…' : 'Separate into documents'}
+                </button>
+              </li>
+            ) : null}
             {doc.source !== 'email' ? (
               <li>
                 <button
@@ -766,6 +828,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const documentsRef = useRef<Document[]>([]);
   const [downloading, setDownloading] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<string[]>([]);
+  const [separating, setSeparating] = useState<string[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [classifications, setClassifications] = useState<CaseClassificationRow[]>([]);
@@ -1206,6 +1269,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               lastModified: r.created_at,
               uploadedByName: resolved?.name ?? rawUploader ?? null,
               uploadedByPhotoUrl: resolved?.photoUrl ?? null,
+              uploadedByKey: rawUploader,
+              onedriveItemId: r.onedrive_item_id?.trim() || null,
               aiSummary: r.ai_summary,
               aiSummaryStatus: parseAiSummaryStatus(r.ai_summary_status),
               aiSummaryError: r.ai_summary_error,
@@ -1240,7 +1305,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       let query = supabase
         .from('lead_case_documents')
         .select(
-          'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
+          'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, onedrive_item_id, created_at, ai_summary, ai_summary_status, ai_summary_error',
         )
         .in('lead_number', numberKeys)
         .not('storage_path', 'is', null);
@@ -1279,7 +1344,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         const { data: rootRows, error: rootErr } = await supabase
           .from('lead_case_documents')
           .select(
-            'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
+            'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, onedrive_item_id, created_at, ai_summary, ai_summary_status, ai_summary_error',
           )
           .in('lead_number', numberKeys)
           .is('onedrive_subfolder', null)
@@ -1318,7 +1383,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           const { data: portalRows, error: portalErr } = await supabase
             .from('lead_case_documents')
             .select(
-              'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
+              'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, onedrive_item_id, created_at, ai_summary, ai_summary_status, ai_summary_error',
             )
             .in('lead_number', numberKeys)
             .is('onedrive_subfolder', null)
@@ -1393,6 +1458,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             caseClassificationLabel: cid ? idToLabel.get(cid) ?? null : null,
             uploadedByName: resolved?.name ?? rawUploader ?? null,
             uploadedByPhotoUrl: resolved?.photoUrl ?? null,
+            uploadedByKey: rawUploader,
+            onedriveItemId: r.onedrive_item_id?.trim() || null,
             aiSummary: r.ai_summary ?? null,
             aiSummaryStatus: parseAiSummaryStatus(r.ai_summary_status),
             aiSummaryError: r.ai_summary_error ?? null,
@@ -1838,6 +1905,39 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       toast.error(String(e?.message || 'Failed to delete'));
     } finally {
       setDeleting((prev) => prev.filter((id) => id !== doc.id));
+    }
+  };
+
+  const handleSeparateScan = async (doc: Document) => {
+    if (isStaffMeetingDocs) return;
+    const caseDocumentId = String(doc.caseDocDbId || '').trim();
+    if (!caseDocumentId || separating.includes(doc.id) || !canSeparateSmartScanPdf(doc)) return;
+    const ok = window.confirm(
+      `Separate "${doc.name}" into individual PDFs using AI document detection? The combined scan will be replaced.`,
+    );
+    if (!ok) return;
+
+    setSeparating((prev) => [...prev, doc.id]);
+    const toastId = toast.loading('Separating scan into documents…');
+    try {
+      const result = await splitScanCaseDocument(caseDocumentId);
+      const key = documentCacheKey();
+      if (key) documentsCacheRef.current.delete(key);
+      setSummaryModalDoc((prev) => (prev?.id === doc.id ? null : prev));
+      setPreviewIndex((prevIdx) => {
+        if (prevIdx === null) return null;
+        return documents[prevIdx]?.id === doc.id ? null : prevIdx;
+      });
+      await fetchDocuments();
+      toast.success(
+        result.count > 1 ? `Separated into ${result.count} documents` : 'Separated into documents',
+        { id: toastId },
+      );
+    } catch (e: any) {
+      console.error('Separate scan:', e);
+      toast.error(String(e?.message || 'Failed to separate scan into documents'), { id: toastId });
+    } finally {
+      setSeparating((prev) => prev.filter((id) => id !== doc.id));
     }
   };
 
@@ -2426,9 +2526,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                                 doc={doc}
                                 isDownloading={isDownloading}
                                 isDeleting={deleting.includes(doc.id)}
+                                isSeparating={separating.includes(doc.id)}
                                 onPreview={handlePreview}
                                 onDownload={handleDownload}
                                 onDelete={handleDeleteDocument}
+                                onSeparate={handleSeparateScan}
                               />
                             </div>
                           );
@@ -2516,9 +2618,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                       doc={doc}
                       isDownloading={isDownloading}
                       isDeleting={deleting.includes(doc.id)}
+                      isSeparating={separating.includes(doc.id)}
                       onPreview={handlePreview}
                       onDownload={handleDownload}
                       onDelete={handleDeleteDocument}
+                      onSeparate={handleSeparateScan}
                     />
                   </div>
                 );

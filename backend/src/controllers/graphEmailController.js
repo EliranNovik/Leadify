@@ -1,5 +1,6 @@
 const graphMailboxSyncService = require('../services/graphMailboxSyncService');
 const graphNotificationService = require('../services/graphNotificationService');
+const { parseScanCenterClientState, isScanCenterGraphResource } = require('../lib/scanCenterMailbox');
 
 const graphEmailController = {
   async syncEmails(req, res) {
@@ -119,15 +120,35 @@ const graphEmailController = {
       }
 
       console.log(`📨 Processing ${notifications.length} notification(s)`);
+      const scanSubIds = await graphMailboxSyncService.listScanCenterSubscriptionIds().catch(() => new Set());
 
       for (const notification of notifications) {
         const userId = notification?.clientState;
+        const scanDelegateId = parseScanCenterClientState(userId);
+        const scanResource = isScanCenterGraphResource(notification?.resource);
+        const scanSubscription = Boolean(
+          notification?.subscriptionId && scanSubIds.has(String(notification.subscriptionId))
+        );
+        if (scanDelegateId || scanResource || scanSubscription) {
+          console.log(`✅ Processing Scan Center Graph notification`, {
+            subscriptionId: notification?.subscriptionId,
+            resource: notification?.resource,
+            changeType: notification?.changeType,
+          });
+          graphNotificationService.enqueueScanCenterSync({
+            subscriptionId: notification?.subscriptionId,
+            resource: notification?.resource,
+            changeType: notification?.changeType,
+          });
+          if (scanDelegateId || !userId) continue;
+        }
         if (!userId) {
           console.warn('⚠️  Graph notification missing clientState. Notification ignored.', {
             notification: JSON.stringify(notification),
           });
           continue;
         }
+        if (parseScanCenterClientState(userId)) continue;
 
         console.log(`✅ Processing Graph webhook notification for user ${userId}`, {
           subscriptionId: notification?.subscriptionId,

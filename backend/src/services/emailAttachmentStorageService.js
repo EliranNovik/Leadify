@@ -4,8 +4,50 @@ const TABLE = process.env.EMAIL_ATTACHMENTS_TABLE || 'email_attachments';
 const BUCKET = process.env.EMAIL_ATTACHMENTS_BUCKET || 'email-attachments';
 const MAX_BYTES = Number.parseInt(process.env.EMAIL_ATTACHMENT_MAX_BYTES || '', 10) || 25 * 1024 * 1024;
 
-const tableMissing = (error) =>
-  /does not exist|relation|Could not find the table/i.test(String(error?.message || error || ''));
+// Keep this narrow: a broad match swallows real errors (not-null violations mention
+// "relation", missing columns mention "does not exist") and the sync then looks healthy.
+const tableMissing = (error) => {
+  const code = String(error?.code || '');
+  if (code === '42P01' || code === 'PGRST205') return true;
+  return /Could not find the table|relation "[^"]+" does not exist/i.test(
+    String(error?.message || error || '')
+  );
+};
+
+const columnMissing = (error) => {
+  const code = String(error?.code || '');
+  if (code === 'PGRST204' || code === '42703') return true;
+  return /Could not find the '[^']+' column|column "[^"]+" (of relation "[^"]+" )?does not exist/i.test(
+    String(error?.message || error || '')
+  );
+};
+
+// Older databases created email_attachments with NOT NULL attachment_id / file_name.
+// Write them alongside the current columns; drop them if this DB never had them.
+let legacyColumnsSupported = null;
+
+function withLegacyColumns(payload) {
+  if (legacyColumnsSupported === false) return payload;
+  return {
+    ...payload,
+    attachment_id: payload.graph_attachment_id,
+    file_name: payload.name,
+  };
+}
+
+async function writeAttachmentRow(existingId, payload) {
+  const run = (row) =>
+    existingId
+      ? supabase.from(TABLE).update(row).eq('id', existingId)
+      : supabase.from(TABLE).insert(row);
+
+  const first = await run(withLegacyColumns(payload));
+  if (!first.error || legacyColumnsSupported === false) return first;
+  if (!columnMissing(first.error)) return first;
+
+  legacyColumnsSupported = false;
+  return run(payload);
+}
 
 const safeSegment = (value, max = 80) =>
   String(value || 'file')
@@ -147,11 +189,12 @@ async function saveAttachmentBuffer({ emailId, messageId, attachment, buffer }) 
   };
 
   const existing = await findStoredRow(emailId, attachment.id);
-  const { error: dbError } = existing?.id
-    ? await supabase.from(TABLE).update(payload).eq('id', existing.id)
-    : await supabase.from(TABLE).insert(payload);
+  const { error: dbError } = await writeAttachmentRow(existing?.id || null, payload);
   if (dbError && !tableMissing(dbError)) {
-    console.warn('⚠️  email_attachments save failed:', dbError.message || dbError);
+    console.warn(
+      `⚠️  email_attachments save failed for email ${emailId} (${attachment.name || attachment.id}):`,
+      dbError.message || dbError
+    );
   }
 
   return toMeta(attachment, { storage_path: path, size: buffer.length });

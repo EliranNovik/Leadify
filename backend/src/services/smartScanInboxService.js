@@ -12,6 +12,28 @@ const {
 const EMAIL_HEADERS_TABLE = process.env.EMAIL_HEADERS_TABLE || 'emails';
 const EMAIL_ATTACHMENTS_TABLE = process.env.EMAIL_ATTACHMENTS_TABLE || 'email_attachments';
 
+// Attachment bytes cost a full Graph download, so do not retry a mail that stored nothing
+// on every sync cycle.
+const BACKFILL_RETRY_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.SCAN_CENTER_BACKFILL_RETRY_MS || '', 10) || 10 * 60_000
+);
+const backfillAttempts = new Map();
+
+function shouldRetryBackfill(emailId) {
+  const key = Number(emailId);
+  const now = Date.now();
+  const last = backfillAttempts.get(key) || 0;
+  if (now - last < BACKFILL_RETRY_MS) return false;
+  if (backfillAttempts.size > 500) {
+    for (const [id, at] of backfillAttempts) {
+      if (now - at >= BACKFILL_RETRY_MS) backfillAttempts.delete(id);
+    }
+  }
+  backfillAttempts.set(key, now);
+  return true;
+}
+
 async function listAttachmentsForEmails(emailIds = []) {
   const ids = [...new Set(emailIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))];
   if (!ids.length) return [];
@@ -152,9 +174,21 @@ async function listInbox({ sync = true } = {}) {
   let emails = (loaded.emails || []).filter((row) => row?.id);
   let attachments = emails.length ? await listAttachmentsForEmails(emails.map((row) => row.id)) : [];
 
-  if (emails.length && loaded.accessToken && !attachments.some((row) => isScanDocumentAttachment(row))) {
-    for (const email of emails) {
-      if (!email.message_id) continue;
+  // Backfill per email: one older email that already has a stored file must not stop a
+  // newly scanned one from being fetched.
+  if (emails.length && loaded.accessToken) {
+    const withAttachments = new Set(attachments.map((row) => Number(row.email_id)));
+    const removedRefs = await smartScanClassifyService.loadRemovedRefs();
+    const pending = emails.filter(
+      (email) =>
+        email.message_id &&
+        !withAttachments.has(Number(email.id)) &&
+        !removedRefs.messageIds.has(String(email.message_id)) &&
+        shouldRetryBackfill(email.id)
+    );
+
+    const metaAttachments = [];
+    for (const email of pending) {
       try {
         const metas = await graphMailboxSyncService.persistGraphAttachmentsForEmail({
           emailId: email.id,
@@ -162,8 +196,9 @@ async function listInbox({ sync = true } = {}) {
           accessToken: loaded.accessToken,
           mailboxAddress: loaded.mailbox || SCAN_CENTER_EMAIL,
         });
-        if (!attachments.length && Array.isArray(metas) && metas.length) {
-          attachments = metas.map((meta) => ({
+        for (const meta of Array.isArray(metas) ? metas : []) {
+          if (!meta?.id) continue;
+          metaAttachments.push({
             email_id: email.id,
             graph_attachment_id: meta.id,
             name: meta.name,
@@ -171,14 +206,19 @@ async function listInbox({ sync = true } = {}) {
             is_inline: Boolean(meta.isInline || meta.is_inline),
             storage_path: meta.storage_path || null,
             created_at: email.sent_at,
-          }));
+          });
         }
       } catch (error) {
         console.warn(`⚠️  Scan Center attachment backfill failed for email ${email.id}:`, error.message || error);
       }
     }
-    const stored = await listAttachmentsForEmails(emails.map((row) => row.id));
-    if (stored.length) attachments = stored;
+
+    if (pending.length) {
+      const stored = await listAttachmentsForEmails(emails.map((row) => row.id));
+      ({ emails, attachments } = mergeEmailAttachmentSet(emails, stored.length ? stored : attachments, {
+        attachments: metaAttachments,
+      }));
+    }
   }
 
   if (!attachments.length) {
@@ -272,6 +312,10 @@ async function approveItem(id) {
   return smartScanClassifyService.approveByItemId(id);
 }
 
+async function splitCaseDocument(caseDocumentId) {
+  return smartScanClassifyService.splitLeadCaseDocument(caseDocumentId);
+}
+
 async function removeItem(id) {
   return smartScanClassifyService.removeByItemId(id);
 }
@@ -286,6 +330,7 @@ module.exports = {
   processItem,
   assignLead,
   approveItem,
+  splitCaseDocument,
   removeItem,
   downloadScanDocument,
 };

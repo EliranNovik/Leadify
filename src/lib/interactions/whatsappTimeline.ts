@@ -88,3 +88,68 @@ export function processWhatsAppTemplateMessage(
 
   return processedMessage;
 }
+
+function isWhatsAppTimelineRow(row: Record<string, any>): boolean {
+  const kind = String(row.kind || '');
+  return kind === 'whatsapp' || kind === 'whatsapp_manual';
+}
+
+function whatsappTimelineSoftKey(row: Record<string, any>): string[] {
+  const direction = String(row.direction || '');
+  const content = String(row.content || row.message || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  const keys: string[] = [];
+  const ts = Date.parse(String(row.raw_date || row.sent_at || ''));
+  if (Number.isFinite(ts)) {
+    keys.push(`${direction}|m:${Math.floor(ts / 60000)}|${content}`);
+    const dateObj = new Date(ts);
+    const displayDate = `${dateObj.getDate().toString().padStart(2, '0')} ${dateObj.toLocaleString('en', { month: 'short' })} ${dateObj.getFullYear()}`;
+    const displayTime = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    keys.push(`${direction}|${displayDate}|${displayTime}|${content}`);
+  }
+  const date = String(row.date || '').trim();
+  const time = String(row.time || '').trim();
+  if (date && time && content) keys.push(`${direction}|${date}|${time}|${content}`);
+  return keys;
+}
+
+function whatsappTimelineKeys(row: Record<string, any>): string[] {
+  const keys: string[] = [];
+  const wamid = String(row.whatsapp_message_id || '').trim();
+  if (wamid) keys.push(`w:${wamid}`);
+  for (const soft of whatsappTimelineSoftKey(row)) keys.push(`s:${soft}`);
+  return keys;
+}
+
+function whatsappTimelineRichness(row: Record<string, any>): number {
+  return (String(row.whatsapp_message_id || '').trim() ? 2 : 0) + (row.editable === true ? 0 : 1);
+}
+
+/** One inbound event can exist on several leads; a timeline must show it once. */
+export function dedupeWhatsAppTimelineRows<T extends Record<string, any>>(rows: T[]): T[] {
+  if (!Array.isArray(rows) || rows.length <= 1) return rows || [];
+
+  const keepByKey = new Map<string, number>();
+  rows.forEach((row, index) => {
+    if (!isWhatsAppTimelineRow(row)) return;
+    const keys = whatsappTimelineKeys(row);
+    const existing = keys.map((key) => keepByKey.get(key)).find((idx) => idx != null);
+    if (existing == null) {
+      keys.forEach((key) => keepByKey.set(key, index));
+      return;
+    }
+    if (whatsappTimelineRichness(row) > whatsappTimelineRichness(rows[existing])) {
+      whatsappTimelineKeys(rows[existing]).forEach((key) => keepByKey.delete(key));
+      keys.forEach((key) => keepByKey.set(key, index));
+      return;
+    }
+    keys.forEach((key) => {
+      if (!keepByKey.has(key)) keepByKey.set(key, existing);
+    });
+  });
+
+  const keep = new Set(keepByKey.values());
+  return rows.filter((row, index) => !isWhatsAppTimelineRow(row) || keep.has(index));
+}

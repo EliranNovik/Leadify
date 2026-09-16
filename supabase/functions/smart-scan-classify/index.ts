@@ -30,6 +30,7 @@ const ALLOWED_TYPES = [
   'Translation',
   'Naturalization Certificate',
   'Military Records',
+  'Dissolution Hearing Summons',
   'Other',
   'Unknown',
 ] as const;
@@ -138,6 +139,9 @@ function matchHebrewDocumentType(raw: string): AllowedType | null {
   if (/תעודת\s*גירושין/.test(raw)) return 'Divorce Certificate';
   if (/ייפוי\s*כוח/.test(raw)) return 'Power of Attorney';
   if (/דרכון/.test(raw)) return 'Passport';
+  if (/זימון\s*לדיון|בקשת\s*פירוק|פירוק\s*העמותה|רשות\s*התאגידים/.test(raw)) {
+    return 'Dissolution Hearing Summons';
+  }
   return null;
 }
 
@@ -180,6 +184,10 @@ function normalizeType(value: string | null | undefined): AllowedType {
     translation: 'Translation',
     naturalization: 'Naturalization Certificate',
     military: 'Military Records',
+    dissolutionhearingsummons: 'Dissolution Hearing Summons',
+    dissolutionsummons: 'Dissolution Hearing Summons',
+    windingupsummons: 'Dissolution Hearing Summons',
+    corporationsauthoritysummons: 'Dissolution Hearing Summons',
     other: 'Other',
   };
   return aliases[compact] || 'Other';
@@ -292,6 +300,7 @@ function classifyPrompt(fileName: string, pageCount: number) {
     'Read Hebrew, Arabic, and English titles. Common Israeli documents:',
     'תמצית רישום / תמצית רישום ממרשם האוכלוסין / Ministry of Interior population extract = Population Registry Extract (not Unknown, not Other).',
     'תעודת זהות = ID Card Copy. תעודת לידה = Birth Certificate. תעודת נישואין = Marriage Certificate. תעודת פטירה = Death Certificate. תעודת גירושין = Divorce Certificate. דרכון = Passport. ייפוי כוח = Power of Attorney.',
+    'רשות התאגידים / Israeli Corporations Authority / יחידת אכיפה ובקרה letter titled זימון לדיון or בקשת פירוק (association or company winding-up hearing summons) = Dissolution Hearing Summons (not Other, not Contract, not Unknown). Use the letter date as documentDate. Put hearing date, court, case number, and association/company name in summary.',
     'suggestedFilename: PersonName_DocumentType_YYYY-MM-DD.pdf using underscores. Use undated if no date.',
     'confidence is 0 to 1. Set splitUncertain true if boundaries are unclear.',
     'Return JSON only, no markdown:',

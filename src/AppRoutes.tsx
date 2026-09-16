@@ -5,6 +5,7 @@ import {
   LazyAdminPage,
   LazyCalendarPage,
   LazyClients,
+  LazyCommunicationsInboxPage,
   LazyCreateNewLead,
   LazyCTIPopupPage,
   LazyDashboard,
@@ -70,6 +71,7 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
       <Route path="/admin" element={<RouteSuspense><LazyAdminPage /></RouteSuspense>} />
       <Route path="/teams" element={<RouteSuspense><LazyTeamsPage /></RouteSuspense>} />
       <Route path="/whatsapp" element={<RouteSuspense><LazyWhatsAppPage /></RouteSuspense>} />
+      <Route path="/communications" element={<RouteSuspense><LazyCommunicationsInboxPage /></RouteSuspense>} />
       <Route path="/proforma/:id" element={<RouteSuspense><LazyProformaViewPage /></RouteSuspense>} />
       <Route path="/reports" element={<RouteSuspense><LazyReportsPage /></RouteSuspense>} />
       <Route path="/sales/signed" element={<RouteSuspense><LazySignedSalesReportPage /></RouteSuspense>} />

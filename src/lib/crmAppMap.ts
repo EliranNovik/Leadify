@@ -154,6 +154,14 @@ export const CRM_APP_MAP: CrmAppPlace[] = [
     keywords: ['manage handlers', 'handler admin'],
   },
   {
+    id: 'communications',
+    title: 'Communications inbox',
+    path: '/communications',
+    how: 'Sidebar → Communications',
+    section: 'Inbox',
+    keywords: ['inbox', 'messages', 'new messages', 'needs reply', 'unread', 'whatsapp', 'email'],
+  },
+  {
     id: 'whatsapp-leads',
     title: 'WhatsApp leads',
     path: '/whatsapp-leads',

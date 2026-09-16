@@ -26,6 +26,16 @@ function isPhoneLikeQuery(query: string): boolean {
   return looksLikePhoneSearchQuery(query);
 }
 
+function isEmailLikeQuery(query: string): boolean {
+  return query.trim().includes('@');
+}
+
+function emailFieldMatchesQuery(email: string | null | undefined, q: string): boolean {
+  const value = String(email || '').trim().toLowerCase();
+  if (!value || !q) return false;
+  return value.includes(q) || value.startsWith(q) || q.startsWith(value);
+}
+
 /** Wait until 4 digits before searching 0… / 5… (same idea as minLength 2 for names). */
 function isPartialPhonePrefix(query: string): boolean {
   const t = query.trim();
@@ -40,6 +50,7 @@ function filterLeadsForQuery(rows: CombinedLead[], query: string): CombinedLead[
   if (!q) return [];
   const qDigits = phoneDigitsOnly(query);
   const phoneQuery = isPhoneLikeQuery(query);
+  const emailQuery = isEmailLikeQuery(query);
 
   return rows.filter((lead) => {
     if (phoneQuery && qDigits.length >= 4) {
@@ -47,6 +58,9 @@ function filterLeadsForQuery(rows: CombinedLead[], query: string): CombinedLead[
         phoneDigitsPrefixMatch(lead.phone || '', qDigits) ||
         phoneDigitsPrefixMatch(lead.mobile || '', qDigits)
       );
+    }
+    if (emailQuery) {
+      return emailFieldMatchesQuery(lead.email, q);
     }
     const hay = [
       lead.name,
@@ -127,9 +141,12 @@ function rememberPrefix(q: string, rows: CombinedLead[]) {
 function instantFromPrefixCache(query: string): CombinedLead[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
+  const queryIsEmail = isEmailLikeQuery(q);
   let best: CombinedLead[] = [];
   let bestLen = -1;
   for (const entry of prefixCache) {
+    // Name hits (often missing legacy contact emails) must not drive email queries.
+    if (queryIsEmail !== isEmailLikeQuery(entry.q)) continue;
     if (q.startsWith(entry.q) && entry.q.length > bestLen) {
       const narrowed = filterLeadsForQuery(entry.rows, query);
       if (narrowed.length > 0) {
@@ -198,18 +215,39 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
   const applyRows = useCallback((fetchedQuery: string, rows: CombinedLead[]) => {
     const current = queryRef.current;
     const fetched = fetchedQuery.trim();
-    lastFetchedQueryRef.current = fetched;
     rememberPrefix(fetched, rows);
-    const forCurrent =
-      current && current !== fetched ? filterLeadsForQuery(rows, current) : rows;
+
+    const currentEmail = isEmailLikeQuery(current);
+    const fetchedEmail = isEmailLikeQuery(fetched);
+
+    if (current && fetched && current !== fetched) {
+      // A slower name search must not replace the in-progress email query.
+      if (currentEmail && !fetchedEmail) return;
+
+      const matching = filterLeadsForQuery(rows, current);
+      if (matching.length === 0) return;
+
+      const instant = instantHitsForQuery(current);
+      const merged = mergeInstantHits(matching, instant);
+      resultsRef.current = merged;
+      if (current.toLowerCase().startsWith(fetched.toLowerCase()) && currentEmail === fetchedEmail) {
+        lastFetchedQueryRef.current = fetched;
+      }
+      setResults(merged);
+      return;
+    }
+
+    lastFetchedQueryRef.current = fetched;
     const instant = current ? instantHitsForQuery(current) : [];
-    const merged = mergeInstantHits(forCurrent.length > 0 ? forCurrent : rows, instant);
+    const merged = mergeInstantHits(rows, instant);
     if (merged.length > 0) {
+      resultsRef.current = merged;
       setResults(merged);
       return;
     }
     const keep = filterLeadsForQuery(resultsRef.current, current || fetched);
     if (keep.length > 0) {
+      resultsRef.current = keep;
       setResults(keep);
       return;
     }
@@ -217,6 +255,7 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       emptySettleRef.current = null;
       if (queryRef.current !== (current || fetched)) return;
       if (pendingQueryRef.current !== (current || fetched)) return;
+      resultsRef.current = [];
       setResults([]);
     }, 180);
   }, []);
@@ -255,13 +294,12 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
           const data = await searchLeads(q, {
             limit: q.length <= 2 ? Math.min(limit, 12) : limit,
             signal: controller?.signal,
-            timeoutMs: q.length <= 2 ? 900 : 1500,
+            timeoutMs: isEmailLikeQuery(q) ? 2800 : q.length <= 2 ? 900 : 1500,
           });
           if (controller?.signal.aborted) {
             if (pendingQueryRef.current !== q) continue;
             break;
           }
-          lastFetchedQueryRef.current = q;
           const next = dedupeLeadContactSearchResults(data, q);
           applyRows(q, next);
         } catch (e) {
@@ -320,21 +358,35 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       return;
     }
 
+    const prevQ = lastFetchedQueryRef.current.trim().toLowerCase();
+    const nextQ = trimmedQuery.toLowerCase();
+    const queryIsEmail = isEmailLikeQuery(nextQ);
+    const prevIsEmail = isEmailLikeQuery(prevQ);
+    const crossedIntoEmail = queryIsEmail && !prevIsEmail;
+
     const instant = instantHitsForQuery(trimmedQuery);
-    if (instant.length > 0) {
+    if (instant.length > 0 && !crossedIntoEmail) {
+      resultsRef.current = instant;
       setResults(instant);
       setLoading(false);
     }
 
-    const prevQ = lastFetchedQueryRef.current.trim().toLowerCase();
-    const nextQ = trimmedQuery.toLowerCase();
     const prior = resultsRef.current.length > 0 ? resultsRef.current : instant;
 
-    if (prior.length > 0 && (prevQ || instant.length > 0)) {
+    if (crossedIntoEmail) {
+      if (instant.length > 0) {
+        resultsRef.current = instant;
+        setResults(instant);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+    } else if (prior.length > 0 && (prevQ || instant.length > 0)) {
       if (!prevQ || nextQ.startsWith(prevQ) || prevQ.startsWith(nextQ) || isPhoneLikeQuery(trimmedQuery)) {
         const narrowed = filterLeadsForQuery(prior, trimmedQuery);
         const shown = mergeInstantHits(narrowed, instant);
         if (shown.length > 0) {
+          resultsRef.current = shown;
           setResults(shown);
           setLoading(false);
         } else if (instant.length === 0) {
@@ -345,7 +397,11 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       setLoading(true);
     }
 
-    const waitMs = instant.length > 0 || resultsRef.current.length > 0 ? debounceMs : 0;
+    const waitMs = queryIsEmail
+      ? Math.max(debounceMs, 90)
+      : instant.length > 0 || resultsRef.current.length > 0
+        ? debounceMs
+        : 0;
     debounceRef.current = window.setTimeout(() => {
       void refresh(trimmedQuery);
     }, waitMs);

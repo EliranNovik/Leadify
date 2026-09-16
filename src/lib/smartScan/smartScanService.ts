@@ -135,9 +135,7 @@ export function computeSmartScanKpis(items: SmartScanItem[]): SmartScanKpis {
   const today = startOfToday().getTime();
   const visible = items.filter((item) => !item.ignored);
   return {
-    scannedToday: visible.filter(
-      (item) => new Date(item.createdAt).getTime() >= today && scanQueueBucket(item) !== 'history',
-    ).length,
+    scannedToday: visible.filter((item) => new Date(item.createdAt).getTime() >= today).length,
     matched: visible.filter((item) => scanQueueBucket(item) === 'matched').length,
     unmatched: visible.filter((item) => scanQueueBucket(item) === 'unmatched').length,
     processing: visible.filter((item) => scanQueueBucket(item) === 'processing').length,

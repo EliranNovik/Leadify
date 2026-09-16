@@ -87,25 +87,36 @@ function groupIssueLabel(items: SmartScanItem[]): string {
   return '—';
 }
 
+function groupOriginalFilename(items: SmartScanItem[]): string | undefined {
+  const names = [...new Set(items.map((item) => String(item.originalFilename || '').trim()).filter(Boolean))];
+  return names[0];
+}
+
 function ScanDocumentCell({
   label,
   item,
   showPart,
+  filename,
 }: {
   label: string;
   item?: SmartScanItem;
   showPart?: boolean;
+  filename?: string;
 }) {
+  const file = filename || item?.originalFilename;
   return (
-    <p className="flex flex-wrap items-baseline gap-x-2 text-base font-medium text-gray-800">
-      <span>{label}</span>
-      {showPart && item?.splitCount && item.splitIndex ? (
-        <span className="text-sm font-medium text-sky-700">
-          Part {item.splitIndex}/{item.splitCount}
-          {item.pageStart && item.pageEnd ? ` · p.${item.pageStart}–${item.pageEnd}` : ''}
-        </span>
-      ) : null}
-    </p>
+    <div className="min-w-[8rem]">
+      <p className="flex flex-wrap items-baseline gap-x-2 text-base font-medium text-gray-800">
+        <span>{label}</span>
+        {showPart && item?.splitCount && item.splitIndex ? (
+          <span className="text-sm font-medium text-sky-700">
+            Part {item.splitIndex}/{item.splitCount}
+            {item.pageStart && item.pageEnd ? ` · p.${item.pageStart}–${item.pageEnd}` : ''}
+          </span>
+        ) : null}
+      </p>
+      {file ? <p className="text-xs text-gray-500">{file}</p> : null}
+    </div>
   );
 }
 
@@ -351,6 +362,7 @@ export function SmartScanTable({
                           leadNumber: rowItem.lead?.leadNumber || 'No lead',
                         };
                     const docLabel = collapsed ? scanGroupDocumentLabel(group.items) : scanDocumentTypeLabel(rowItem);
+                    const filename = collapsed ? groupOriginalFilename(group.items) : rowItem.originalFilename;
                     const pages = collapsed ? scanGroupPageCount(group.items) : rowItem.pageCount;
                     const confidence = collapsed ? scanGroupConfidence(group.items) : rowItem.confidence;
                     const issue = collapsed
@@ -384,7 +396,7 @@ export function SmartScanTable({
                           <ScanLeadCell name={lead.name} leadNumber={lead.leadNumber} status={status} />
                         </td>
                         <td>
-                          <ScanDocumentCell label={docLabel} item={rowItem} showPart={!collapsed} />
+                          <ScanDocumentCell label={docLabel} item={rowItem} showPart={!collapsed} filename={filename} />
                         </td>
                         <td className="text-base tabular-nums text-gray-700">{pages}</td>
                         <td>

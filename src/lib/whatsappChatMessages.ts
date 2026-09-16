@@ -1,4 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  canonicalWhatsAppPhone,
+  collectWhatsAppPhoneVariants,
+  whatsAppPhonesMatch,
+} from './whatsappPhone';
 
 export const WHATSAPP_CHAT_MESSAGE_PAGE_SIZE = 20;
 
@@ -9,9 +14,49 @@ export type WhatsAppThreadPageQuery = {
   leadId?: string | null;
   legacyId?: number | null;
   contactId?: number | null;
+  phones?: string[];
   beforeSentAt?: string | null;
   limit?: number;
 };
+
+function looksLikeUuid(value: unknown): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    String(value || '').trim(),
+  );
+}
+
+function applyThreadIdentityFilter(q: any, query: WhatsAppThreadPageQuery) {
+  if (query.leadId && query.contactId != null) {
+    return q.eq('lead_id', query.leadId).eq('contact_id', query.contactId);
+  }
+  if (query.legacyId != null && !Number.isNaN(query.legacyId) && query.contactId != null) {
+    return q.eq('legacy_id', query.legacyId).eq('contact_id', query.contactId);
+  }
+
+  const parts: string[] = [];
+  if (query.leadId) parts.push(`lead_id.eq.${query.leadId}`);
+  if (query.legacyId != null && !Number.isNaN(query.legacyId)) {
+    parts.push(`legacy_id.eq.${query.legacyId}`);
+  }
+  if (query.contactId != null) parts.push(`contact_id.eq.${query.contactId}`);
+  const phones = [...new Set((query.phones || []).map((p) => String(p).trim()).filter(Boolean))];
+  // Never OR phone with lead identity: copies on other leads that share the number
+  // would all appear in this thread.
+  if (parts.length === 0 && phones.length) {
+    return q.in('phone_number', phones);
+  }
+  if (parts.length === 1) {
+    if (query.leadId && parts[0].startsWith('lead_id.eq.')) return q.eq('lead_id', query.leadId);
+    if (query.legacyId != null && parts[0].startsWith('legacy_id.eq.')) {
+      return q.eq('legacy_id', query.legacyId);
+    }
+    if (query.contactId != null && parts[0].startsWith('contact_id.eq.')) {
+      return q.eq('contact_id', query.contactId);
+    }
+  }
+  if (parts.length > 1) return q.or(parts.join(','));
+  return q;
+}
 
 /** Resolve DB filters for chat pagination (newest page first; older pages via beforeSentAt). */
 export function buildWhatsAppThreadQuery(
@@ -21,31 +66,39 @@ export function buildWhatsAppThreadQuery(
     contact_id?: number | null;
     lead_id?: unknown;
     lead_type?: string;
+    phone?: string | null;
+    mobile?: string | null;
   },
-  opts?: { beforeSentAt?: string | null; limit?: number },
+  opts?: { beforeSentAt?: string | null; limit?: number; extraPhones?: Array<string | null | undefined> },
 ): WhatsAppThreadPageQuery {
   const isLegacy =
     client.lead_type === 'legacy' || String(client.id ?? '').startsWith('legacy_');
+  const phones = collectWhatsAppPhoneVariants([
+    client.phone,
+    client.mobile,
+    ...(opts?.extraPhones || []),
+  ]);
 
   if (client.isContact && client.contact_id != null) {
-    const leadIdForQuery = client.lead_id;
-    const legacyIdForContact =
-      isLegacy && leadIdForQuery
-        ? Number(String(leadIdForQuery).replace('legacy_', ''))
-        : NaN;
+    const leadIdRaw = String(client.lead_id ?? '').replace(/^legacy_/i, '').trim();
+    const uuidLead = looksLikeUuid(leadIdRaw);
+    const legacyNum = Number(leadIdRaw);
+    const useLegacy = !uuidLead && Number.isFinite(legacyNum) && isLegacy;
     return {
-      leadId: isLegacy || Number.isNaN(legacyIdForContact) ? null : String(leadIdForQuery),
-      legacyId: !Number.isNaN(legacyIdForContact) ? legacyIdForContact : null,
+      leadId: uuidLead ? leadIdRaw : !useLegacy && leadIdRaw ? leadIdRaw : null,
+      legacyId: useLegacy ? legacyNum : null,
       contactId: Number(client.contact_id),
+      phones,
       beforeSentAt: opts?.beforeSentAt ?? null,
       limit: opts?.limit,
     };
   }
 
   if (isLegacy) {
-    const legacyId = Number(String(client.id).replace('legacy_', ''));
+    const legacyId = Number(String(client.id).replace(/^legacy_/i, ''));
     return {
       legacyId: Number.isNaN(legacyId) ? null : legacyId,
+      phones,
       beforeSentAt: opts?.beforeSentAt ?? null,
       limit: opts?.limit,
     };
@@ -53,6 +106,7 @@ export function buildWhatsAppThreadQuery(
 
   return {
     leadId: String(client.id ?? ''),
+    phones,
     beforeSentAt: opts?.beforeSentAt ?? null,
     limit: opts?.limit,
   };
@@ -73,17 +127,7 @@ export async function fetchWhatsAppThreadPage(
   const pageSize = query.limit ?? WHATSAPP_CHAT_MESSAGE_PAGE_SIZE;
   const fetchLimit = pageSize + 1;
 
-  let q = client.from('whatsapp_messages').select('*');
-
-  if (query.legacyId != null && !Number.isNaN(query.legacyId)) {
-    q = q.eq('legacy_id', query.legacyId);
-  } else if (query.leadId) {
-    q = q.eq('lead_id', query.leadId);
-  }
-
-  if (query.contactId != null) {
-    q = q.eq('contact_id', query.contactId);
-  }
+  let q = applyThreadIdentityFilter(client.from('whatsapp_messages').select('*'), query);
 
   if (query.beforeSentAt) {
     q = q.lt('sent_at', query.beforeSentAt);
@@ -103,7 +147,7 @@ export async function fetchWhatsAppThreadPage(
 }
 
 export function normalizePhoneDigits(phone: string): string {
-  return phone ? phone.replace(/\D/g, '') : '';
+  return canonicalWhatsAppPhone(phone) || String(phone || '').replace(/\D/g, '');
 }
 
 export function messageMatchesContactPhones(
@@ -112,21 +156,13 @@ export function messageMatchesContactPhones(
   normalizedContactPhone: string,
   normalizedContactMobile: string,
 ): boolean {
-  if (msg.contact_id != null && Number(msg.contact_id) === contactId) {
+  if (msg.contact_id != null && Number(msg.contact_id) === Number(contactId)) {
     return true;
   }
   if (!msg.phone_number) return false;
-  const normalizedMsgPhone = normalizePhoneDigits(msg.phone_number);
-  const endsMatch = (a: string, b: string) =>
-    a &&
-    b &&
-    ((a.length >= 8 && b.length >= 8 && (a.endsWith(b.slice(-8)) || b.endsWith(a.slice(-8)))) ||
-      (a.length >= 4 && b.length >= 4 && (a.endsWith(b.slice(-4)) || b.endsWith(a.slice(-4)))) ||
-      a === b);
-
   return (
-    endsMatch(normalizedMsgPhone, normalizedContactPhone) ||
-    endsMatch(normalizedMsgPhone, normalizedContactMobile)
+    whatsAppPhonesMatch(msg.phone_number, normalizedContactPhone) ||
+    whatsAppPhonesMatch(msg.phone_number, normalizedContactMobile)
   );
 }
 
@@ -148,12 +184,13 @@ export async function fetchWhatsAppContactThreadPage(
   const pageSize = params.limit ?? WHATSAPP_CHAT_MESSAGE_PAGE_SIZE;
   const fetchLimit = pageSize + 1;
 
-  let q = client.from('whatsapp_messages').select('*').eq('contact_id', params.contactId);
-  if (params.legacyId != null && !Number.isNaN(params.legacyId)) {
-    q = q.eq('legacy_id', params.legacyId);
-  } else if (params.leadId) {
-    q = q.eq('lead_id', params.leadId);
-  }
+  let q = client.from('whatsapp_messages').select('*');
+  q = applyThreadIdentityFilter(q, {
+    leadId: params.leadId,
+    legacyId: params.legacyId,
+    contactId: params.contactId,
+    phones: collectWhatsAppPhoneVariants([params.contactPhone, params.contactMobile]),
+  });
   if (params.beforeSentAt) {
     q = q.lt('sent_at', params.beforeSentAt);
   }
@@ -168,11 +205,11 @@ export async function fetchWhatsAppContactThreadPage(
 
   const dbLimit = pageSize + CONTACT_PHONE_MATCH_BUFFER + 1;
   let fallbackQ = client.from('whatsapp_messages').select('*');
-  if (params.legacyId != null && !Number.isNaN(params.legacyId)) {
-    fallbackQ = fallbackQ.eq('legacy_id', params.legacyId);
-  } else if (params.leadId) {
-    fallbackQ = fallbackQ.eq('lead_id', params.leadId);
-  }
+  fallbackQ = applyThreadIdentityFilter(fallbackQ, {
+    leadId: params.leadId,
+    legacyId: params.legacyId,
+    phones: collectWhatsAppPhoneVariants([params.contactPhone, params.contactMobile]),
+  });
   if (params.beforeSentAt) {
     fallbackQ = fallbackQ.lt('sent_at', params.beforeSentAt);
   }
@@ -199,17 +236,7 @@ export async function fetchWhatsAppThreadNewerThan(
   client: SupabaseClient,
   query: WhatsAppThreadPageQuery & { afterSentAt: string },
 ): Promise<any[]> {
-  let q = client.from('whatsapp_messages').select('*');
-
-  if (query.legacyId != null && !Number.isNaN(query.legacyId)) {
-    q = q.eq('legacy_id', query.legacyId);
-  } else if (query.leadId) {
-    q = q.eq('lead_id', query.leadId);
-  }
-
-  if (query.contactId != null) {
-    q = q.eq('contact_id', query.contactId);
-  }
+  let q = applyThreadIdentityFilter(client.from('whatsapp_messages').select('*'), query);
 
   const { data, error } = await q
     .gt('sent_at', query.afterSentAt)

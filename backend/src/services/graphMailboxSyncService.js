@@ -654,7 +654,17 @@ async function patchMailboxEmailBody(id, patch) {
 }
 
 const parseFolderDeltaState = (raw) => {
-  const empty = { inbox: null, sent: null, sentSubId: null, sentSubExp: null };
+  const empty = {
+    inbox: null,
+    sent: null,
+    sentSubId: null,
+    sentSubExp: null,
+    scanInbox: null,
+    scanSubId: null,
+    scanSubExp: null,
+    scanMailbox: null,
+    scanClientState: null,
+  };
   if (!raw || typeof raw !== 'string') return empty;
   const trimmed = raw.trim();
   if (!trimmed.startsWith('{')) {
@@ -668,6 +678,11 @@ const parseFolderDeltaState = (raw) => {
       sent: parsed.sent || parsed.sentDelta || null,
       sentSubId: parsed.sentSubId || null,
       sentSubExp: parsed.sentSubExp || null,
+      scanInbox: parsed.scanInbox || parsed.scanInboxDelta || null,
+      scanSubId: parsed.scanSubId || null,
+      scanSubExp: parsed.scanSubExp || null,
+      scanMailbox: parsed.scanMailbox || null,
+      scanClientState: parsed.scanClientState || null,
     };
   } catch {
     return empty;
@@ -680,7 +695,25 @@ const serializeFolderDeltaState = (state = {}) =>
     sent: state.sent || null,
     sentSubId: state.sentSubId || null,
     sentSubExp: state.sentSubExp || null,
+    scanInbox: state.scanInbox || null,
+    scanSubId: state.scanSubId || null,
+    scanSubExp: state.scanSubExp || null,
+    scanMailbox: state.scanMailbox || null,
+    scanClientState: state.scanClientState || null,
   });
+
+const deltaLinkIsForMailbox = (deltaLink, mailboxAddress) => {
+  if (!deltaLink || !mailboxAddress) return false;
+  try {
+    const userPart = decodeURIComponent(
+      String(deltaLink).toLowerCase().match(/\/users\/([^/?]+)/)?.[1] || ''
+    );
+    if (!userPart.includes('@')) return true;
+    return userPart === String(mailboxAddress).trim().toLowerCase();
+  } catch {
+    return true;
+  }
+};
 
 const mergeGraphMessages = (base = [], extra = []) => {
   const seen = new Set(base.map((m) => m?.id).filter(Boolean));
@@ -696,7 +729,7 @@ const mergeGraphMessages = (base = [], extra = []) => {
 const fetchRecentMessagesSnapshot = async ({ accessToken, mailboxAddress, top = 25, folder = 'Inbox' }) => {
   try {
     const folderName = folder === 'SentItems' ? 'SentItems' : 'Inbox';
-    const url = `${GRAPH_BASE_URL}/users/${mailboxAddress}/mailFolders('${folderName}')/messages?$orderby=receivedDateTime desc&$select=id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId&$top=${top}`;
+    const url = `${GRAPH_BASE_URL}/users/${encodeURIComponent(mailboxAddress)}/mailFolders('${folderName}')/messages?$orderby=receivedDateTime desc&$select=id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId&$top=${top}`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -945,6 +978,11 @@ class GraphMailboxSyncService {
       sent: sentDelta.nextDeltaLink || folderState.sent,
       sentSubId: folderState.sentSubId,
       sentSubExp: folderState.sentSubExp,
+      scanInbox: folderState.scanInbox,
+      scanSubId: folderState.scanSubId,
+      scanSubExp: folderState.scanSubExp,
+      scanMailbox: folderState.scanMailbox,
+      scanClientState: folderState.scanClientState,
     };
 
     await mailboxStateService.upsertState(resolvedUserId, {
@@ -1215,6 +1253,161 @@ class GraphMailboxSyncService {
     return { created: true, subscriptionId: json.id, expirationDateTime: expiry };
   }
 
+  async persistScanCenterFolderState(delegateUserId, patch = {}) {
+    const latest = parseFolderDeltaState((await mailboxStateService.getState(delegateUserId))?.delta_link);
+    await mailboxStateService.upsertState(delegateUserId, {
+      delta_link: serializeFolderDeltaState({ ...latest, ...patch }),
+    });
+    return { ...latest, ...patch };
+  }
+
+  /**
+   * Graph change notifications on scancenter@ Inbox. Uses a delegate mailbox token
+   * (Eliran / Irina) with Full Access. clientState is the delegate CRM user id so
+   * production webhooks do not try to sync a fake `scan-center:` user. The handler
+   * matches subscriptionId against mailbox_state.scanSubId.
+   */
+  async ensureScanCenterInboxSubscription(delegateUserId, accessToken, scanMailboxAddress) {
+    if (!WEBHOOK_URL) {
+      return { skipped: true, reason: 'GRAPH_WEBHOOK_NOTIFICATION_URL not set' };
+    }
+    if (!delegateUserId || !accessToken) {
+      return { skipped: true, reason: 'missing_parameters' };
+    }
+    const mailboxAddress = String(scanMailboxAddress || SCAN_CENTER_EMAIL).trim().toLowerCase() || SCAN_CENTER_EMAIL;
+    const clientState = String(delegateUserId).trim();
+    if (!clientState) {
+      return { skipped: true, reason: 'missing_parameters' };
+    }
+
+    const state = parseFolderDeltaState((await mailboxStateService.getState(delegateUserId))?.delta_link);
+    const now = Date.now();
+    const subId = state.scanSubId || null;
+    const subExpMs = state.scanSubExp ? new Date(state.scanSubExp).getTime() : 0;
+    const mailboxUnchanged = String(state.scanMailbox || '').trim().toLowerCase() === mailboxAddress;
+    const clientStateUnchanged = String(state.scanClientState || '').trim() === clientState;
+
+    if (
+      subId &&
+      mailboxUnchanged &&
+      clientStateUnchanged &&
+      subExpMs > now + GRAPH_SUBSCRIPTION_RENEW_BEFORE_MS
+    ) {
+      return { skipped: true, reason: 'subscription_valid', expiry: state.scanSubExp };
+    }
+
+    if (subId && mailboxUnchanged && clientStateUnchanged && subExpMs > now) {
+      try {
+        const newExp = this.nextMailSubscriptionExpiryIso();
+        const res = await fetch(`${GRAPH_BASE_URL}/subscriptions/${encodeURIComponent(subId)}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expirationDateTime: newExp }),
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          throw new Error(text || `PATCH ${res.status}`);
+        }
+        let json = {};
+        if (text) {
+          try {
+            json = JSON.parse(text);
+          } catch {
+            json = {};
+          }
+        }
+        const expiry = json.expirationDateTime || newExp;
+        await this.persistScanCenterFolderState(delegateUserId, {
+          scanSubId: json.id || subId,
+          scanSubExp: expiry,
+          scanMailbox: mailboxAddress,
+          scanClientState: clientState,
+        });
+        console.log(`🔔 Extended Scan Center Graph subscription until ${expiry}`);
+        return { renewed: true, subscriptionId: json.id || subId, expirationDateTime: expiry };
+      } catch (patchErr) {
+        console.warn(`⚠️ Scan Center subscription PATCH failed, recreating:`, patchErr.message || patchErr);
+        await this.deleteGraphMailSubscription(accessToken, subId).catch(() => {});
+        await this.persistScanCenterFolderState(delegateUserId, {
+          scanSubId: null,
+          scanSubExp: null,
+          scanClientState: null,
+        });
+      }
+    } else if (subId) {
+      await this.deleteGraphMailSubscription(accessToken, subId).catch(() => {});
+      await this.persistScanCenterFolderState(delegateUserId, {
+        scanSubId: null,
+        scanSubExp: null,
+      });
+    }
+
+    const expirationDateTime = this.nextMailSubscriptionExpiryIso();
+    const resource = `users/${encodeURIComponent(mailboxAddress)}/mailFolders('Inbox')/messages`;
+    const body = {
+      changeType: 'created,updated',
+      notificationUrl: WEBHOOK_URL,
+      resource,
+      expirationDateTime,
+      clientState,
+    };
+
+    const res = await fetch(`${GRAPH_BASE_URL}/subscriptions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Create Scan Center subscription failed (${res.status}): ${text.slice(0, 500)}`);
+    }
+    const json = JSON.parse(text);
+    const expiry = json.expirationDateTime || expirationDateTime;
+    await this.persistScanCenterFolderState(delegateUserId, {
+      scanSubId: json.id,
+      scanSubExp: expiry,
+      scanMailbox: mailboxAddress,
+      scanClientState: clientState,
+    });
+    console.log(
+      `🔔 Created Scan Center Graph subscription on ${mailboxAddress} until ${expiry}`
+    );
+    return { created: true, subscriptionId: json.id, expirationDateTime: expiry, mailbox: mailboxAddress };
+  }
+
+  async ensureScanCenterPush() {
+    const access = await this.resolveScanCenterAccess();
+    if (!access?.userId) {
+      return { skipped: true, reason: 'no_delegate_mailbox' };
+    }
+    const { accessToken } = await graphAuthService.getAccessTokenForUser(access.userId);
+    if (!accessToken) {
+      return { skipped: true, reason: 'no_access_token' };
+    }
+    return this.ensureScanCenterInboxSubscription(
+      access.userId,
+      accessToken,
+      access.mailboxAddress || SCAN_CENTER_EMAIL
+    );
+  }
+
+  async listScanCenterSubscriptionIds() {
+    const all = await mailboxTokenService.getAllTokens();
+    const connected = (all || []).filter((token) => token?.user_id);
+    const ids = new Set();
+    for (const token of this.listScanCenterDelegateTokens(connected).slice(0, 3)) {
+      const state = parseFolderDeltaState((await mailboxStateService.getState(token.user_id))?.delta_link);
+      if (state.scanSubId) ids.add(String(state.scanSubId));
+    }
+    return ids;
+  }
+
   /** Ensure webhook subscription only (no mail fetch). Used after OAuth connect from the client. */
   async ensureSubscriptionForUser(userId) {
     const tokenRecord = await mailboxTokenService.getTokenByUserId(userId);
@@ -1242,7 +1435,22 @@ class GraphMailboxSyncService {
       console.warn(`⚠️ Sent Items subscription after connect failed:`, err.message || err);
       return { skipped: true, reason: err.message || 'sent_subscription_failed' };
     });
-    return { inbox, sent };
+    let scan = { skipped: true, reason: 'not_delegate' };
+    const preferred = new Set(SCAN_CENTER_DELEGATE_EMAILS);
+    if (
+      isScanCenterMailbox(tokenRecord.mailbox_address) ||
+      preferred.has(normalise(tokenRecord.mailbox_address))
+    ) {
+      scan = await this.ensureScanCenterInboxSubscription(
+        resolvedUserId,
+        accessToken,
+        SCAN_CENTER_EMAIL
+      ).catch((err) => {
+        console.warn(`⚠️ Scan Center subscription after connect failed:`, err.message || err);
+        return { skipped: true, reason: err.message || 'scan_subscription_failed' };
+      });
+    }
+    return { inbox, sent, scan };
   }
 
   listScanCenterDelegateTokens(connected = []) {
@@ -1357,8 +1565,6 @@ class GraphMailboxSyncService {
       const { accessToken } = await graphAuthService.getAccessTokenForUser(token.user_id);
       if (!accessToken) continue;
 
-      const snapshot = await this.fetchScanCenterInboxSnapshot(accessToken);
-      lastStatus = snapshot.status;
       try {
         const payload = JSON.parse(Buffer.from(String(accessToken).split('.')[1], 'base64url').toString('utf8'));
         console.log(
@@ -1367,32 +1573,96 @@ class GraphMailboxSyncService {
       } catch {
         // ignore malformed tokens
       }
-      if (!snapshot.ok) continue;
 
-      if (!snapshot.messages.length) {
+      const folderState = parseFolderDeltaState((await mailboxStateService.getState(token.user_id))?.delta_link);
+      const preferredMailbox =
+        String(folderState.scanMailbox || '').trim().toLowerCase() || SCAN_CENTER_EMAIL;
+
+      let mailboxAddress = preferredMailbox;
+      let messages = [];
+      const scanDeltaLink = deltaLinkIsForMailbox(folderState.scanInbox, mailboxAddress)
+        ? folderState.scanInbox
+        : null;
+      let nextScanDelta = scanDeltaLink;
+      let usedDelta = false;
+
+      try {
+        const delta = await this.fetchFolderDelta({
+          accessToken,
+          mailboxAddress,
+          folder: 'Inbox',
+          deltaLink: scanDeltaLink,
+        });
+        lastStatus = 200;
+        usedDelta = true;
+        nextScanDelta = delta.nextDeltaLink || scanDeltaLink;
+        const recent = await fetchRecentMessagesSnapshot({
+          accessToken,
+          mailboxAddress,
+          top: 20,
+          folder: 'Inbox',
+        });
+        messages = mergeGraphMessages(delta.messages, recent);
+        console.log(
+          `📬 Scan Center delta ${mailboxAddress}: changes=${delta.messages.length} snapshot=+${Math.max(
+            0,
+            messages.length - delta.messages.length
+          )} total=${messages.length}`
+        );
+      } catch (deltaError) {
+        console.warn(
+          `⚠️  Scan Center delta failed for ${mailboxAddress}, falling back to inbox snapshot:`,
+          deltaError.message || deltaError
+        );
+        const snapshot = await this.fetchScanCenterInboxSnapshot(accessToken);
+        lastStatus = snapshot.status;
+        if (!snapshot.ok) continue;
+        mailboxAddress = snapshot.address || SCAN_CENTER_EMAIL;
+        messages = snapshot.messages || [];
+      }
+
+      this.ensureScanCenterInboxSubscription(token.user_id, accessToken, mailboxAddress).catch((subErr) => {
+        console.warn(`⚠️  Scan Center Graph subscription ensure failed:`, subErr.message || subErr);
+      });
+
+      if (!messages.length) {
         reachableEmpty = true;
-        reachableMailbox = snapshot.address || SCAN_CENTER_EMAIL;
+        reachableMailbox = mailboxAddress;
+        if (usedDelta) {
+          await this.persistScanCenterFolderState(token.user_id, {
+            scanInbox: nextScanDelta,
+            scanMailbox: mailboxAddress,
+          });
+          return {
+            emails: [],
+            synced: true,
+            mailbox: mailboxAddress,
+            accessToken,
+            warning: `No documents in ${mailboxAddress} yet.`,
+          };
+        }
         console.log(
           `📭 Scan Center inbox empty via ${token.mailbox_address || token.user_id}; trying next connected mailbox`
         );
         continue;
       }
 
-      const persist = await this.persistMessages(
-        token.user_id,
-        snapshot.address || SCAN_CENTER_EMAIL,
-        snapshot.messages,
-        accessToken,
-        {
-          skipFullBodies: true,
-          awaitAttachments: options.persistAttachments !== false,
-        }
-      );
+      const persist = await this.persistMessages(token.user_id, mailboxAddress, messages, accessToken, {
+        skipFullBodies: true,
+        awaitAttachments: options.persistAttachments !== false,
+      });
+
+      if (usedDelta) {
+        await this.persistScanCenterFolderState(token.user_id, {
+          scanInbox: nextScanDelta,
+          scanMailbox: mailboxAddress,
+        });
+      }
 
       return {
         emails: persist.emails || [],
         synced: true,
-        mailbox: snapshot.address || SCAN_CENTER_EMAIL,
+        mailbox: mailboxAddress,
         accessToken,
       };
     }
@@ -1615,6 +1885,18 @@ class GraphMailboxSyncService {
       }
     }
 
+    try {
+      const scan = await this.ensureScanCenterPush();
+      acc.details.push({ mailbox: SCAN_CENTER_EMAIL, scan });
+    } catch (error) {
+      acc.failed += 1;
+      acc.details.push({
+        mailbox: SCAN_CENTER_EMAIL,
+        status: 'failed',
+        error: error.message || 'Unknown error',
+      });
+    }
+
     return {
       processed: tokens.length,
       ...acc,
@@ -1668,7 +1950,7 @@ class GraphMailboxSyncService {
     let url = deltaLink || initialUrl;
     const messages = [];
     let nextLink = null;
-    let retried410 = false;
+    let retriedRestart = false;
     let pages = 0;
 
     while (url && pages < MAX_DELTA_PAGES) {
@@ -1680,24 +1962,22 @@ class GraphMailboxSyncService {
         },
       });
 
-      if (response.status === 410) {
+      if (!response.ok) {
         const errorText = await response.text();
-        if (!retried410) {
+        const canRestart =
+          !retriedRestart &&
+          (response.status === 410 || (Boolean(deltaLink) && url === deltaLink));
+        if (canRestart) {
           console.warn(
-            `⚠️ Graph ${folderName} delta returned 410; restarting that folder once. ${errorText.slice(0, 240)}`
+            `⚠️ Graph ${folderName} delta returned ${response.status}; restarting that folder once. ${errorText.slice(0, 240)}`
           );
-          retried410 = true;
+          retriedRestart = true;
           messages.length = 0;
           nextLink = null;
           url = initialUrl;
           pages = 0;
           continue;
         }
-        throw new Error(`Graph ${folderName} delta request failed (${response.status}): ${errorText}`);
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text();
         throw new Error(`Graph ${folderName} delta request failed (${response.status}): ${errorText}`);
       }
 
@@ -1714,7 +1994,7 @@ class GraphMailboxSyncService {
         }
       } else {
         url = null;
-        nextLink = json['@odata.deltaLink'] || (retried410 ? null : deltaLink);
+        nextLink = json['@odata.deltaLink'] || (retriedRestart ? null : deltaLink);
       }
     }
 
@@ -1927,8 +2207,8 @@ class GraphMailboxSyncService {
       if (scanCenterPersist && item.row.message_id && removedRefs.messageIds.has(String(item.row.message_id))) {
         const existingRemoved = await findEmailRowByMessageId(item.row.message_id, { force: true });
         if (existingRemoved?.id) {
+          // Scan was deleted on purpose: keep the email row but never re-download its bytes.
           duplicatesSkipped += 1;
-          insertedForBodies.push({ ...item.row, id: existingRemoved.id, _backfillAttachments: true });
           await linkEmailContacts(existingRemoved.id, item.contactIds);
           continue;
         }

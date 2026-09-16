@@ -139,9 +139,12 @@ export default function SmartScanPage() {
         return;
       }
       applyRows(rows);
+      setError(null);
     } catch (err) {
       console.error(err);
-      if (!silent) setError("We couldn't load scanned documents from scancenter@lawoffice.org.il.");
+      if (!silent || allItemsRef.current.length === 0) {
+        setError("We couldn't load scanned documents from scancenter@lawoffice.org.il.");
+      }
     } finally {
       inflightRef.current = false;
       if (!silent) setLoading(false);
@@ -162,27 +165,9 @@ export default function SmartScanPage() {
     channelName: 'smart-scan-documents',
     tables: [{ table: 'smart_scan_documents', event: '*' }],
     onChange: () => load(true),
-    debounceMs: 1200,
-    refreshOnFocus: false,
+    debounceMs: 400,
+    refreshOnFocus: true,
   });
-
-  useEffect(() => {
-    const queueTick = () => {
-      if (document.visibilityState !== 'visible') return;
-      void load(true);
-    };
-    const queueTimer = window.setInterval(queueTick, 12000);
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible') return;
-      void smartScanService.requestBackgroundSync();
-      void load(true);
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearInterval(queueTimer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [load]);
 
   const replaceItem = (next: SmartScanItem) => {
     setAllItems((prev) => prev.map((row) => (row.id === next.id ? next : row)));
@@ -269,13 +254,18 @@ export default function SmartScanPage() {
     (filters.datePreset && filters.datePreset !== 'all') ||
     (filters.status && filters.status !== 'all');
 
-  const emptyMessage = !loading && allItems.length === 0
-    ? 'No documents in scancenter@lawoffice.org.il yet. Scan a file and press Refresh.'
-    : !loading && tab === 'unmatched' && visibleItems.length === 0 && !hasSearchOrFilter
-      ? 'No unmatched scans.'
-      : !loading && tab === 'history' && visibleItems.length === 0 && !hasSearchOrFilter
-        ? 'No assigned documents in history yet.'
-        : 'No scanned documents match these filters.';
+  const emptyMessage =
+    !loading && allItems.length === 0
+      ? 'No documents in scancenter@lawoffice.org.il yet. Scan a file and press Refresh.'
+      : !loading && tab === 'unmatched' && visibleItems.length === 0 && !hasSearchOrFilter
+        ? 'No unmatched scans.'
+        : !loading && tab === 'matched' && visibleItems.length === 0 && !hasSearchOrFilter
+          ? 'No matched scans waiting for approval.'
+          : !loading && tab === 'history' && visibleItems.length === 0 && !hasSearchOrFilter
+            ? 'No assigned documents in history yet.'
+            : !loading && tab === 'all' && tabCounts.history > 0 && visibleItems.length === 0 && !hasSearchOrFilter
+              ? `Assigned documents are under History (${tabCounts.history}).`
+              : 'No scanned documents match these filters.';
 
   const openDrawer = (item: SmartScanItem, assign = false, group?: SmartScanItem[]) => {
     const merged = Boolean(group && group.length > 1);
@@ -416,7 +406,7 @@ export default function SmartScanPage() {
           onClear={() => setSelectedIds(new Set())}
         />
 
-        {error ? (
+        {error && visibleItems.length === 0 ? (
           <div className="rounded-2xl border border-rose-200 bg-white px-6 py-12 text-center shadow-sm">
             <p className="text-sm text-gray-800">{error}</p>
             <button type="button" className="btn btn-sm mt-4 rounded-xl" onClick={() => void refresh()}>

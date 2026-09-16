@@ -1,8 +1,19 @@
 const smartScanInboxService = require('./smartScanInboxService');
+const graphMailboxSyncService = require('./graphMailboxSyncService');
 
 const SCHEDULER_ENABLED =
   String(process.env.ENABLE_SCAN_CENTER_SYNC_SCHEDULER || 'true').toLowerCase() !== 'false';
-const INTERVAL_SECONDS = Number(process.env.SCAN_CENTER_SYNC_INTERVAL_SECONDS || '20');
+const WEBHOOK_URL = String(process.env.GRAPH_WEBHOOK_NOTIFICATION_URL || '').trim();
+
+function resolveIntervalMs() {
+  const minutes = Number.parseInt(process.env.SCAN_CENTER_SYNC_INTERVAL_MINUTES || '', 10);
+  if (Number.isFinite(minutes) && minutes > 0) return minutes * 60 * 1000;
+  const seconds = Number.parseInt(process.env.SCAN_CENTER_SYNC_INTERVAL_SECONDS || '', 10);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  // Graph delta poll is the live fetch. Shared-mailbox webhooks often land on the
+  // public Render URL, not this process, so do not wait 30 minutes between cycles.
+  return 20 * 1000;
+}
 
 let schedulerHandle = null;
 let isRunning = false;
@@ -19,6 +30,18 @@ async function runSyncCycle(trigger = 'scheduled') {
   if (isRunning) return { skipped: true };
   isRunning = true;
   try {
+    if (trigger !== 'webhook') {
+      const push = await graphMailboxSyncService.ensureScanCenterPush().catch((error) => {
+        console.warn('⚠️  Scan Center Graph subscription ensure failed:', error.message || error);
+        return null;
+      });
+      if (push && !push.skipped) {
+        console.log(
+          `🔔 Scan Center Graph push ${push.created ? 'created' : push.renewed ? 'renewed' : 'ready'}`
+        );
+      }
+    }
+
     const data = await smartScanInboxService.listInbox({ sync: true });
     const items = data?.items || [];
     const next = fingerprint(items);
@@ -44,15 +67,33 @@ function startScanCenterInboxScheduler() {
     return;
   }
 
-  const seconds = Number.isFinite(INTERVAL_SECONDS) && INTERVAL_SECONDS > 0 ? INTERVAL_SECONDS : 20;
-  console.log(`⏰ Scan Center auto-fetch starting: interval=${seconds}s`);
+  const intervalMs = resolveIntervalMs();
+  const intervalLabel =
+    intervalMs >= 60_000
+      ? `${Math.round(intervalMs / 60_000)}m`
+      : `${Math.round(intervalMs / 1000)}s`;
+  let webhookHost = '';
+  try {
+    webhookHost = WEBHOOK_URL ? new URL(WEBHOOK_URL).host : '';
+  } catch {
+    webhookHost = WEBHOOK_URL;
+  }
+  if (WEBHOOK_URL) {
+    console.log(
+      `⏰ Scan Center auto-fetch: Graph delta every ${intervalLabel}; webhook host=${webhookHost}`
+    );
+  } else {
+    console.log(
+      `⏰ Scan Center auto-fetch: GRAPH_WEBHOOK_NOTIFICATION_URL unset, polling every ${intervalLabel}`
+    );
+  }
 
   setTimeout(() => {
     void runSyncCycle('initial');
   }, 8 * 1000);
   schedulerHandle = setInterval(() => {
     void runSyncCycle('interval');
-  }, seconds * 1000);
+  }, intervalMs);
 }
 
 function stopScanCenterInboxScheduler() {

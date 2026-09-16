@@ -108,6 +108,21 @@ export async function assignScanCenterLead(id: string, lead: SmartScanItem['lead
   }
 }
 
+export async function splitScanCaseDocument(caseDocumentId: string): Promise<{ count: number }> {
+  const url = buildBackendApiUrlObject('/api/smart-scan/split-case-document');
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ caseDocumentId }),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.success === false) {
+    throw new Error(payload?.error || 'Failed to separate scan into documents');
+  }
+  return { count: Number(payload?.count) || 0 };
+}
+
 export async function approveScanCenterItem(id: string): Promise<void> {
   const url = buildBackendApiUrlObject('/api/smart-scan/approve');
   const response = await fetch(url.toString(), {

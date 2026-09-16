@@ -62,7 +62,7 @@ import CompactAvailabilityCalendar, { CompactAvailabilityCalendarRef } from './C
 import SickDaysDocumentUploadModal from './SickDaysDocumentUploadModal';
 import MyContribution from './MyContribution';
 import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
-import { employeeHasAnySalesRoleOnLeadBundle } from '../utils/rolePercentageCalculator';
+import { fetchInboxCounts, type InboxCounts } from '../lib/communicationsInbox';
 import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { getValidTeamsLink as getValidMeetingJoinLink } from '../lib/meetingJoinLink';
@@ -683,9 +683,7 @@ const Dashboard: React.FC = () => {
   // State for summary numbers
   const [meetingsToday, setMeetingsToday] = useState(0);
   const [overdueFollowups, setOverdueFollowups] = useState(0);
-  const [latestMessages, setLatestMessages] = useState<any[]>([]);
-  /** Superuser only: latest messages across all leads (no role filter). */
-  const [latestMessagesAllLeads, setLatestMessagesAllLeads] = useState<any[]>([]);
+  const [inboxCounts, setInboxCounts] = useState<InboxCounts>({ needsReply: 0, unread: 0, waiting: 0 });
   const [dashboardIsSuperuser, setDashboardIsSuperuser] = useState(false);
 
   // State for expanded sections
@@ -695,7 +693,6 @@ const Dashboard: React.FC = () => {
   const reportWelcomeReady = useReportDashboardWelcomeReady();
   const [leads, setLeads] = useState<any[]>([]);
   const [meetings, setMeetings] = useState<any[]>([]);
-  const [messages, setMessages] = useState<any[]>([]);
   const [isUnavailableEmployeesModalOpen, setIsUnavailableEmployeesModalOpen] = useState(false);
   const [isMyAvailabilityModalOpen, setIsMyAvailabilityModalOpen] = useState(false);
   const [isSickDaysUploadModalOpen, setIsSickDaysUploadModalOpen] = useState(false);
@@ -775,6 +772,7 @@ const Dashboard: React.FC = () => {
   const [scoreboardRefreshToken, setScoreboardRefreshToken] = useState(0);
   const [teamAvailabilityRefreshToken, setTeamAvailabilityRefreshToken] = useState(0);
   const dashboardLastResumeRef = useRef(0);
+  const refreshDashboardInboxRef = useRef<() => void>(() => {});
 
   useRefetchOnVisible({
     enabled: location.pathname === '/' || location.pathname === '/dashboard',
@@ -783,6 +781,7 @@ const Dashboard: React.FC = () => {
     onRefetch: () => {
       setScoreboardRefreshToken((t) => t + 1);
       setTeamAvailabilityRefreshToken((t) => t + 1);
+      refreshDashboardInboxRef.current();
     },
   });
 
@@ -2607,305 +2606,37 @@ const Dashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, [todayMeetings]);
 
-  const refreshDashboardMessages = useCallback(async () => {
-    const resetEmpty = () => {
-      setLatestMessages([]);
-      setLatestMessagesAllLeads([]);
-      setDashboardIsSuperuser(false);
-    };
-
+  const refreshDashboardInbox = useCallback(async () => {
     try {
       const user = await resolveDashboardAuthUser();
       if (!user) {
-        resetEmpty();
+        setInboxCounts({ needsReply: 0, unread: 0, waiting: 0 });
+        setDashboardIsSuperuser(false);
         return;
       }
 
-      let { data: userRow, error: userRowError } = await supabase
-        .from('users')
-        .select(`
-          id,
-          is_superuser,
-          employee_id,
-          full_name,
-          tenants_employee!employee_id(
-            id,
-            display_name
-          )
-        `)
-        .eq('auth_id', user.id)
-        .maybeSingle();
-
-      if ((!userRow || userRowError) && user.email) {
-        const retry = await supabase
+      const [{ data: userRow }, counts] = await Promise.all([
+        supabase
           .from('users')
-          .select(`
-            id,
-            is_superuser,
-            employee_id,
-            full_name,
-            tenants_employee!employee_id(
-              id,
-              display_name
-            )
-          `)
-          .eq('email', user.email)
-          .maybeSingle();
-        userRow = retry.data;
-        userRowError = retry.error;
-      }
-
-      if (userRowError || !userRow) {
-        resetEmpty();
-        return;
-      }
-
-      const superuserStatus =
-        userRow.is_superuser === true ||
-        userRow.is_superuser === 'true' ||
-        userRow.is_superuser === 1;
-      setDashboardIsSuperuser(superuserStatus);
-
-      const empData = Array.isArray(userRow.tenants_employee)
-        ? userRow.tenants_employee[0]
-        : userRow.tenants_employee;
-      const displayName = String(empData?.display_name || userRow.full_name || '').trim();
-      const employeeId =
-        userRow.employee_id != null && userRow.employee_id !== ''
-          ? Number(userRow.employee_id)
-          : null;
-
-      const sevenDaysAgo = new Date();
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-      const since = sevenDaysAgo.toISOString();
-      const emailFetchLimit = 50;
-      // Unread + role filter shrinks the list; fetch more so "My contacts" can still fill the widget.
-      const whatsappFetchLimit = 120;
-
-      const LEADS_DASHBOARD_ROLE_SELECT = `
-            id,
-            closer,
-            scheduler,
-            handler,
-            case_handler_id,
-            manager,
-            expert,
-            expert_id,
-            helper,
-            meeting_lawyer_id,
-            lawyer,
-            retainer_handler_id,
-            meeting_collection_id,
-            marketing_officer_id,
-            meeting_manager_id
-          `;
-
-      const LEGACY_DASHBOARD_ROLE_SELECT = `
-              id,
-              closer_id,
-              meeting_scheduler_id,
-              meeting_manager_id,
-              meeting_lawyer_id,
-              case_handler_id,
-              expert_id,
-              retainer_handler_id,
-              meeting_collection_id,
-              marketing_officer_id
-            `;
-
-      const fetchDashboardLeadsByIdsBatched = async (ids: string[]): Promise<any[]> => {
-        const uniq = [...new Set(ids.map((x) => String(x).trim()).filter(Boolean))];
-        const CHUNK = 80;
-        const merged: any[] = [];
-        const seen = new Set<string>();
-        for (let i = 0; i < uniq.length; i += CHUNK) {
-          const chunk = uniq.slice(i, i + CHUNK);
-          const { data, error } = await supabase
-            .from('leads')
-            .select(LEADS_DASHBOARD_ROLE_SELECT)
-            .in('id', chunk);
-          if (error) {
-            console.error('Dashboard inbox: batched leads fetch error', error);
-            continue;
-          }
-          for (const row of data || []) {
-            const k = String((row as any).id);
-            if (k && !seen.has(k)) {
-              seen.add(k);
-              merged.push(row);
-            }
-          }
-        }
-        return merged;
-      };
-
-      const fetchDashboardLegacyByIdsBatched = async (idNums: number[]): Promise<any[]> => {
-        const uniq = [...new Set(idNums.filter((n) => !Number.isNaN(n)))];
-        const CHUNK = 120;
-        const merged: any[] = [];
-        for (let i = 0; i < uniq.length; i += CHUNK) {
-          const chunk = uniq.slice(i, i + CHUNK);
-          const { data, error } = await supabase
-            .from('leads_lead')
-            .select(LEGACY_DASHBOARD_ROLE_SELECT)
-            .in('id', chunk);
-          if (error) {
-            console.error('Dashboard inbox: batched legacy leads fetch error', error);
-            continue;
-          }
-          if (data) merged.push(...data);
-        }
-        return merged;
-      };
-
-      const [{ data: recentEmails }, { data: recentWhatsApp }] = await Promise.all([
-        supabase
-          .from('emails')
-          .select(
-            'id, message_id, client_id, sender_name, sender_email, subject, body_preview, sent_at, direction',
-          )
-          .eq('direction', 'incoming')
-          .gte('sent_at', since)
-          .order('sent_at', { ascending: false })
-          .limit(emailFetchLimit),
-        supabase
-          .from('whatsapp_messages')
-          .select(`
-            id,
-            lead_id,
-            sender_name,
-            message,
-            sent_at,
-            direction,
-            is_read,
-            leads:lead_id (
-              id,
-              name,
-              lead_number,
-              email
-            )
-          `)
-          .eq('direction', 'in')
-          .or('is_read.is.null,is_read.eq.false')
-          .gte('sent_at', since)
-          .order('sent_at', { ascending: false })
-          .limit(whatsappFetchLimit),
+          .select('is_superuser')
+          .eq('auth_id', user.id)
+          .maybeSingle(),
+        fetchInboxCounts(),
       ]);
 
-      const allMessages: any[] = [];
-
-      if (recentEmails) {
-        const emailClientIds = [
-          ...new Set(
-            recentEmails
-              .map((email: any) => email.client_id)
-              .filter(Boolean)
-              .map((id: any) => String(id)),
-          ),
-        ];
-        const emailLeadsById = new Map<string, { name?: string; lead_number?: string }>();
-        if (emailClientIds.length > 0) {
-          const { data: emailLeadRows } = await supabase
-            .from('leads')
-            .select('id, name, lead_number')
-            .in('id', emailClientIds);
-          (emailLeadRows || []).forEach((row: any) => {
-            if (row?.id != null) emailLeadsById.set(String(row.id), row);
-          });
-        }
-
-        recentEmails.forEach((email: any) => {
-          const lead = email.client_id ? emailLeadsById.get(String(email.client_id)) : null;
-          if (!lead) return;
-          allMessages.push({
-            id: email.message_id,
-            type: 'email',
-            client_name: lead.name,
-            lead_number: lead.lead_number,
-            content: email.subject || email.body_preview || 'Email received',
-            sender: email.sender_name || email.sender_email,
-            created_at: email.sent_at,
-            client_id: email.client_id,
-            direction: email.direction,
-          });
-        });
-      }
-
-      if (recentWhatsApp) {
-        recentWhatsApp.forEach((msg) => {
-          if (msg.leads && typeof msg.leads === 'object' && 'name' in msg.leads) {
-            const leads = msg.leads as any;
-            allMessages.push({
-              id: msg.id,
-              type: 'whatsapp',
-              client_name: leads.name,
-              lead_number: leads.lead_number,
-              content: msg.message,
-              sender: msg.sender_name || 'Client',
-              created_at: msg.sent_at,
-              client_id: msg.lead_id,
-              direction: msg.direction,
-            });
-          }
-        });
-      }
-
-      const sortedAll = allMessages.sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
-
-      const leadIds = [...new Set(sortedAll.map((m) => m.client_id).filter(Boolean).map((id) => String(id)))];
-      const leadsMap = new Map<string, any>();
-      const legacyMap = new Map<number, any>();
-
-      if (leadIds.length > 0) {
-        const leadsRows = await fetchDashboardLeadsByIdsBatched(leadIds);
-
-        for (const row of leadsRows || []) {
-          if (row?.id != null) leadsMap.set(String(row.id), row);
-        }
-
-        // Optional FK on some DBs; omit from select when column missing (WhatsAppPage pattern).
-        const legacyIds = [
-          ...new Set(
-            (leadsRows || [])
-              .map((r: any) => r.legacy_lead_id)
-              .filter((x: any) => x != null && x !== '')
-              .map((x: any) => Number(x))
-              .filter((n: number) => !Number.isNaN(n))
-          ),
-        ];
-
-        if (legacyIds.length > 0) {
-          const legacyRows = await fetchDashboardLegacyByIdsBatched(legacyIds);
-          for (const lr of legacyRows || []) {
-            if (lr?.id != null) legacyMap.set(Number(lr.id), lr);
-          }
-        }
-      }
-
-      const messageHasMyRole = (msg: any) => {
-        const lid = msg.client_id;
-        if (lid == null || lid === '') return false;
-        const newLead = leadsMap.get(String(lid));
-        if (!newLead) return false;
-        const legRaw = (newLead as any).legacy_lead_id;
-        const legNum = legRaw != null && legRaw !== '' ? Number(legRaw) : NaN;
-        const legacyRow =
-          !Number.isNaN(legNum) && legacyMap.has(legNum) ? legacyMap.get(legNum) : null;
-        return employeeHasAnySalesRoleOnLeadBundle(newLead, legacyRow, employeeId, displayName);
-      };
-
-      const myContactsMessages = sortedAll.filter(messageHasMyRole).slice(0, 5);
-      const allLeadsTop = sortedAll.slice(0, 5);
-
-      setLatestMessages(myContactsMessages);
-      setLatestMessagesAllLeads(superuserStatus ? allLeadsTop : []);
+      const superuserStatus =
+        userRow?.is_superuser === true ||
+        userRow?.is_superuser === 'true' ||
+        userRow?.is_superuser === 1;
+      setDashboardIsSuperuser(Boolean(superuserStatus));
+      setInboxCounts(counts);
     } catch {
-      setLatestMessages([]);
-      setLatestMessagesAllLeads([]);
+      setInboxCounts({ needsReply: 0, unread: 0, waiting: 0 });
     }
   }, [resolveDashboardAuthUser]);
+  refreshDashboardInboxRef.current = () => {
+    void refreshDashboardInbox();
+  };
 
   // Update meetingsToday count when todayMeetings changes
   useEffect(() => {
@@ -2960,8 +2691,8 @@ const Dashboard: React.FC = () => {
         setOverdueFollowups(0);
       }
     })();
-    void refreshDashboardMessages();
-  }, [refreshDashboardMessages]);
+    void refreshDashboardInbox();
+  }, [refreshDashboardInbox]);
 
   useEffect(() => {
     if (!dashboardIsSuperuser && isTeamStatusModalOpen) {
@@ -7119,68 +6850,7 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const messageBadgeCount = dashboardIsSuperuser ? latestMessagesAllLeads.length : latestMessages.length;
-  const messageBadgeLabel = messageBadgeCount > 99 ? '99+' : String(messageBadgeCount);
-
-  const renderDashboardInboxCard = (message: any, keyPrefix: string) => (
-    <div
-      key={`${keyPrefix}-${message.type}-${String(message.id)}`}
-      className="bg-gradient-to-r from-white to-gray-50 rounded-xl p-5 shadow-lg border border-gray-100 hover:shadow-xl hover:scale-[1.02] transition-all duration-300 cursor-pointer group"
-      onClick={() => {
-        if (message.type === 'whatsapp' && message.client_id) {
-          const tab = keyPrefix === 'all' ? 'all' : 'my';
-          navigate(`/whatsapp?tab=${tab}&leadId=${encodeURIComponent(String(message.client_id))}`);
-          return;
-        }
-        if (message.client_id && message.lead_number != null && message.lead_number !== '') {
-          navigate(
-            `/clients/${encodeURIComponent(String(message.lead_number))}?tab=interactions`
-          );
-        }
-      }}
-    >
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <span
-            className={`text-xs px-3 py-1.5 rounded-full font-medium shadow-sm animate-pulse ${
-              message.type === 'email'
-                ? isAltTheme
-                  ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-600 text-white'
-                  : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
-                : isAltTheme
-                  ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-400 text-white'
-                  : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white'
-            }`}
-          >
-            {message.type === 'email' ? 'Email' : 'WhatsApp'}
-          </span>
-          <span className="font-bold text-gray-900 text-lg">{message.client_name}</span>
-          {message.lead_number && (
-            <span className="text-sm text-gray-600 font-medium">#{message.lead_number}</span>
-          )}
-        </div>
-        <span className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
-          {new Date(message.created_at).toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-          })}
-        </span>
-      </div>
-      <p className="text-gray-700 text-sm line-clamp-2 mb-4 leading-relaxed">{message.content}</p>
-      <div className="flex items-center justify-between pt-3 border-t border-gray-100">
-        <span className="text-xs text-gray-600 font-medium">From: {message.sender}</span>
-        <span
-          className={`text-xs font-medium transition-colors ${
-            isAltTheme ? 'text-green-600 group-hover:text-green-700' : 'text-primary group-hover:text-primary/80'
-          }`}
-        >
-          View conversation →
-        </span>
-      </div>
-    </div>
-  );
+  const unreadBadgeLabel = inboxCounts.unread > 99 ? '99+' : String(inboxCounts.unread);
 
   const postLoginWelcomeActive = hasDashboardWelcomePending();
 
@@ -7369,14 +7039,14 @@ const Dashboard: React.FC = () => {
           </svg>
         </div>
 
-        {/* New Messages */}
+        {/* Communication inbox */}
         <div
           className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
             isDark2Theme
               ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
               : `bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-500 to-lime-400' : 'from-blue-500 via-cyan-500 to-teal-400'} text-white`
           }`}
-          onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}
+          onClick={() => navigate('/communications')}
         >
           <div className="flex items-center gap-2 md:gap-4">
             <div
@@ -7392,16 +7062,18 @@ const Dashboard: React.FC = () => {
               <div
                 className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
               >
-                {latestMessages.length}
+                {inboxCounts.needsReply}
               </div>
               <div
                 className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
               >
-                New Messages
+                Needs reply
+              </div>
+              <div className={`mt-1 text-[11px] ${isDark2Theme ? 'text-base-content/60' : 'text-white/75'}`}>
+                Unread {inboxCounts.unread} · Waiting {inboxCounts.waiting}
               </div>
             </div>
           </div>
-          {/* SVG Circle Placeholder */}
           <svg
             className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${isDark2Theme ? 'text-base-content/35' : 'text-white/40'}`}
             fill="none"
@@ -7411,7 +7083,7 @@ const Dashboard: React.FC = () => {
           >
             <circle cx="16" cy="16" r="12" />
             <text x="16" y="21" textAnchor="middle" fontSize="10" fill="currentColor" opacity="0.7">
-              {messageBadgeLabel}
+              {unreadBadgeLabel}
             </text>
           </svg>
         </div>
@@ -8190,61 +7862,6 @@ const Dashboard: React.FC = () => {
               </>
             );
           })()}
-        </div>
-      )}
-      {expanded === 'messages' && (
-        <div className="glass-card mt-4 animate-fade-in">
-          <div className="space-y-4">
-            <h3 className="text-xl font-bold text-gray-900 mb-1">Latest Messages</h3>
-            {dashboardIsSuperuser ? (
-              <p className="text-sm text-gray-500 mb-4">
-               
-              </p>
-            ) : null}
-            <div
-              className={
-                dashboardIsSuperuser ? 'grid grid-cols-1 lg:grid-cols-2 gap-6 items-start' : 'space-y-3'
-              }
-            >
-              {dashboardIsSuperuser ? (
-                <div className="space-y-3 min-w-0">
-                  <h4 className="text-sm font-semibold text-gray-800">All leads</h4>
-                  <div className="space-y-3">
-                    {latestMessagesAllLeads.map((message) => renderDashboardInboxCard(message, 'all'))}
-                  </div>
-                  {latestMessagesAllLeads.length === 0 && (
-                    <div className="text-center py-6 text-gray-500 text-sm">No recent messages in the last 7 days</div>
-                  )}
-                </div>
-              ) : null}
-              <div className="space-y-3 min-w-0">
-                {dashboardIsSuperuser ? (
-                  <h4 className="text-sm font-semibold text-gray-800">My contacts</h4>
-                ) : null}
-                <div className="space-y-3">
-                  {latestMessages.map((message) => renderDashboardInboxCard(message, 'mine'))}
-                </div>
-                {latestMessages.length === 0 && (
-                  <div className="text-center py-8 text-gray-500">
-                    {dashboardIsSuperuser
-                      ? 'No recent messages for leads where you have a saved role'
-                      : 'No new messages in the last 7 days for leads where you have a saved role'}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="flex justify-center mt-4">
-              <button
-                type="button"
-                className="btn btn-outline btn-primary"
-                onClick={() => {
-                  void refreshDashboardMessages();
-                }}
-              >
-                Refresh Messages
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

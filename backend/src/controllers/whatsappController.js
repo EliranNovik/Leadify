@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const pushNotificationService = require('../services/pushNotificationService');
 const pexCrmChatWebhookService = require('../services/pexCrmChatWebhookService');
+const { canonicalWhatsAppPhone, digitsOnlyPhone } = require('../lib/whatsappPhone');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -63,10 +64,153 @@ function sanitizeWhatsAppTemplateVariableText(text) {
   return s;
 }
 
+function isStatementTimeoutError(error) {
+  const msg = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
+  const code = String(error?.code || '');
+  return code === '57014' || msg.includes('statement timeout') || msg.includes('canceling statement');
+}
+
+function rpcMissing(error) {
+  const msg = String(error?.message || '').toLowerCase();
+  return msg.includes('could not find the function') || msg.includes('schema cache');
+}
+
+function normalizeInsertedRows(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (typeof data === 'object') return [data];
+  return [];
+}
+
+/**
+ * Persist a WhatsApp row without blocking on stage-eval / MV triggers.
+ * Prefers insert_whatsapp_message (skips triggers). Falls back to table insert.
+ */
+async function insertWhatsAppMessage(messageData) {
+  const payload = { p_row: messageData };
+  let rpcData = null;
+  let rpcError = null;
+
+  ({ data: rpcData, error: rpcError } = await supabase.rpc('insert_whatsapp_message', payload));
+  if (rpcError && rpcMissing(rpcError)) {
+    ({ data: rpcData, error: rpcError } = await supabase.rpc('insert_whatsapp_outgoing', payload));
+  }
+
+  if (!rpcError && rpcData) {
+    return { data: normalizeInsertedRows(rpcData), error: null };
+  }
+
+  if (rpcError && !rpcMissing(rpcError) && !isStatementTimeoutError(rpcError)) {
+    console.warn('insert_whatsapp_message RPC failed, falling back to table insert:', rpcError.message);
+  } else if (rpcError && isStatementTimeoutError(rpcError)) {
+    console.warn('insert_whatsapp_message RPC timed out, falling back to table insert:', rpcError.message);
+  }
+
+  const { data, error } = await supabase
+    .from('whatsapp_messages')
+    .insert([messageData])
+    .select('id, template_id, whatsapp_message_id');
+
+  return { data: normalizeInsertedRows(data), error };
+}
+
+async function insertWhatsAppMessageRows(rows) {
+  const inserted = [];
+  let lastError = null;
+  for (const row of rows) {
+    const result = await insertWhatsAppMessage(row);
+    if (result.error) {
+      lastError = result.error;
+      console.error('Error saving WhatsApp row:', {
+        phoneNumber: row.phone_number,
+        leadId: row.lead_id,
+        contactId: row.contact_id,
+        direction: row.direction,
+        error: result.error,
+      });
+      continue;
+    }
+    inserted.push(...result.data);
+  }
+  if (inserted.length === 0 && lastError) {
+    return { data: [], error: lastError };
+  }
+  return { data: inserted, error: null };
+}
+
+async function insertOutgoingWhatsAppMessage(messageData) {
+  return insertWhatsAppMessage(messageData);
+}
+
+function withTimeout(promise, ms, fallback) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        resolve({ data: [], error });
+      },
+    );
+  });
+}
+
+/** Don't hold the Send response for the 8s DB statement timeout. */
+async function insertOutgoingWhatsAppMessageBounded(messageData, waitMs = 2500) {
+  const savePromise = insertOutgoingWhatsAppMessage(messageData);
+  const raced = await withTimeout(savePromise, waitMs, {
+    data: [],
+    error: {
+      message: 'save-wait-timeout',
+      details: 'canceling statement due to statement timeout',
+    },
+  });
+
+  if (raced?.error?.message === 'save-wait-timeout') {
+    savePromise
+      .then((result) => {
+        if (result.error) {
+          console.error('Background WhatsApp save failed:', result.error);
+        } else {
+          console.log('Background WhatsApp save completed:', result.data?.[0]?.id);
+        }
+      })
+      .catch((err) => console.error('Background WhatsApp save rejected:', err));
+  }
+
+  return raced;
+}
+
+function respondWhatsAppSent(res, responseData, insertResult) {
+  const { data, error } = insertResult;
+  if (error) {
+    console.error('❌ Error saving outgoing message after WhatsApp dispatch:', error);
+    return res.status(200).json({
+      ...responseData,
+      saved: false,
+      saveError: error.message,
+      warning:
+        'Message was sent on WhatsApp but the CRM save timed out. Refresh if it does not appear.',
+    });
+  }
+
+  const row = data?.[0];
+  if (row?.id) {
+    responseData.rowId = row.id;
+  }
+  return res.status(200).json({
+    ...responseData,
+    saved: true,
+  });
+}
+
 // Helper utilities
 const normalizePhone = (phone) => {
   if (!phone || phone === null || phone === '') return '';
-  return phone.replace(/\D/g, '');
+  return canonicalWhatsAppPhone(phone) || digitsOnlyPhone(phone);
 };
 
 const parseAdditionalPhones = (value) => {
@@ -548,38 +692,36 @@ const handleWebhook = async (req, res) => {
     });
     
     if (body.object === 'whatsapp_business_account') {
-      const entry = body.entry[0];
-      const changes = entry.changes[0];
-      const value = changes.value;
-      
-      // Log webhook value structure
-      console.log('🔍 Webhook value structure:', {
-        hasMessages: !!value.messages,
-        messagesLength: value.messages?.length,
-        hasContacts: !!value.contacts,
-        contactsLength: value.contacts?.length,
-        hasStatuses: !!value.statuses,
-        statusesLength: value.statuses?.length
-      });
-      
-      if (value.messages && value.messages.length > 0) {
-        const message = value.messages[0];
-        const contacts = value.contacts || [];
-        
-        // Log contacts for debugging
-        if (contacts.length > 0) {
-          console.log('🔍 Webhook contacts:', contacts.map(c => ({
-            wa_id: c.wa_id,
-            profileName: c.profile?.name
-          })));
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
+          const value = change.value || {};
+
+          console.log('🔍 Webhook value structure:', {
+            hasMessages: !!value.messages,
+            messagesLength: value.messages?.length,
+            hasContacts: !!value.contacts,
+            contactsLength: value.contacts?.length,
+            hasStatuses: !!value.statuses,
+            statusesLength: value.statuses?.length,
+            from: value.messages?.map((m) => m.from) || [],
+          });
+
+          const contacts = value.contacts || [];
+          if (contacts.length > 0) {
+            console.log('🔍 Webhook contacts:', contacts.map((c) => ({
+              wa_id: c.wa_id,
+              profileName: c.profile?.name,
+            })));
+          }
+
+          for (const message of value.messages || []) {
+            await processIncomingMessage(message, contacts);
+          }
+
+          for (const status of value.statuses || []) {
+            await updateMessageStatus(status);
+          }
         }
-        
-        await processIncomingMessage(message, contacts);
-      }
-      
-      if (value.statuses && value.statuses.length > 0) {
-        const status = value.statuses[0];
-        await updateMessageStatus(status);
       }
     }
     
@@ -592,6 +734,7 @@ const handleWebhook = async (req, res) => {
 
 // Process incoming message
 const processIncomingMessage = async (message, webhookContacts = []) => {
+  let inboundSaved = false;
   try {
     const {
       from: phoneNumber,
@@ -634,16 +777,24 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
 
     // Create multiple variations of the incoming phone number
     const incomingNormalized = normalizePhone(phoneNumber);
+    const extraTrunkZero =
+      incomingNormalized.startsWith('972') && incomingNormalized.length >= 12
+        ? `9720${incomingNormalized.slice(3)}`
+        : '';
     const incomingVariations = [
       incomingNormalized,
-      incomingNormalized.replace(/^972/, ''), // Remove country code
-      incomingNormalized.replace(/^00972/, ''), // Remove 00972 prefix
-      incomingNormalized.replace(/^0/, ''), // Remove leading 0
-      `972${incomingNormalized.replace(/^972/, '')}`, // Add country code
-      `0${incomingNormalized.replace(/^0/, '')}`, // Add leading 0
-      incomingNormalized.replace(/^972/, '0'), // Replace 972 with 0
-      incomingNormalized.replace(/^0/, '972'), // Replace 0 with 972
-    ];
+      digitsOnlyPhone(phoneNumber),
+      phoneNumber,
+      incomingNormalized.replace(/^972/, ''),
+      incomingNormalized.replace(/^00972/, ''),
+      incomingNormalized.replace(/^0/, ''),
+      `972${incomingNormalized.replace(/^972/, '')}`,
+      `0${incomingNormalized.replace(/^0/, '')}`,
+      incomingNormalized.replace(/^972/, '0'),
+      incomingNormalized.replace(/^0/, '972'),
+      extraTrunkZero,
+      incomingNormalized ? `+${incomingNormalized}` : '',
+    ].filter(Boolean);
     
 
     
@@ -656,13 +807,12 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       .not('phone', 'eq', '');
     
     if (allLeadsError) {
-      console.error('Error fetching leads:', allLeadsError);
-      return;
+      console.error('Error fetching leads (continuing so the inbound row still saves):', allLeadsError);
     }
     
     // Find ALL matching leads by normalized phone number comparison
     const matchingLeads = [];
-    for (const potentialLead of allLeads) {
+    for (const potentialLead of allLeads || []) {
       const leadPhoneNormalized = normalizePhone(potentialLead.phone);
       const leadMobileNormalized = normalizePhone(potentialLead.mobile);
       
@@ -968,17 +1118,17 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
 
     // Log summary of all matches found
     console.log(`📊 Match Summary for ${phoneNumber}:`, {
-      directLeads: matchingLeads.filter(ml => {
-        // Check if this lead was found directly (not through contacts)
-        // We can't easily distinguish, but we'll log the total
-        return true;
-      }).length,
       totalMatchingLeads: matchingLeads.length,
       matchingContacts: matchingContacts.length,
       newLeads: matchingLeads.filter(ml => ml.type === 'new').length,
       legacyLeads: matchingLeads.filter(ml => ml.type === 'legacy').length,
       leadIds: matchingLeads.map(ml => `${ml.type}:${ml.data.id}`).join(', ')
     });
+    if (matchingLeads.length > 3) {
+      console.warn(
+        `⚠️ Phone ${phoneNumber} matched ${matchingLeads.length} leads; inbound insert will write multiple rows`,
+      );
+    }
 
     // Determine the best sender name to use
     let senderName;
@@ -1260,120 +1410,106 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       baseMessageData.message_type = 'text';
     }
 
-    // Create message records for all matching leads and contacts
+    // One inbound event → one row per matching lead/contact. The UI must filter by
+    // that lead so each case shows its own copy, not every copy for the phone.
     const messagesToInsert = [];
-    
+    const seenLeadKeys = new Set();
+
     if (matchingLeads.length === 0 && matchingContacts.length === 0) {
-      // Unknown lead - save one record with no lead_id/legacy_id/contact_id
       messagesToInsert.push({
         ...baseMessageData,
         lead_id: null,
         legacy_id: null,
-        contact_id: null
+        contact_id: null,
       });
     } else {
-      // For each matching lead, create a message record
       for (const matchingLead of matchingLeads) {
         if (matchingLead.type === 'new') {
+          const key = `new:${matchingLead.data.id}`;
+          if (seenLeadKeys.has(key)) continue;
+          seenLeadKeys.add(key);
           messagesToInsert.push({
             ...baseMessageData,
             lead_id: matchingLead.data.id,
             legacy_id: null,
-            contact_id: null // Will be updated if contact matches
+            contact_id: null,
           });
         } else {
+          const key = `legacy:${matchingLead.data.id}`;
+          if (seenLeadKeys.has(key)) continue;
+          seenLeadKeys.add(key);
           messagesToInsert.push({
             ...baseMessageData,
             lead_id: null,
             legacy_id: matchingLead.data.id,
-            contact_id: null // Will be updated if contact matches
+            contact_id: null,
           });
         }
       }
-      
-      // For each matching contact, create a message record (if not already created for its lead)
+
       for (const contactWithLeads of matchingContactsWithLeads) {
         const contactId = contactWithLeads.contactId;
-        const contactLinks = contactWithLeads.contactLinks;
-        
-        // Check if we already have a message for this contact's leads
+        const contactLinks = contactWithLeads.contactLinks || [];
+
         for (const link of contactLinks) {
-          let alreadyExists = false;
-          
           if (link.newlead_id) {
-            alreadyExists = messagesToInsert.some(msg => msg.lead_id === link.newlead_id);
-            if (!alreadyExists) {
+            const existingMsg = messagesToInsert.find((msg) => msg.lead_id === link.newlead_id);
+            if (existingMsg) {
+              existingMsg.contact_id = contactId;
+            } else {
+              const key = `new:${link.newlead_id}`;
+              if (seenLeadKeys.has(key)) continue;
+              seenLeadKeys.add(key);
               messagesToInsert.push({
                 ...baseMessageData,
                 lead_id: link.newlead_id,
                 legacy_id: null,
-                contact_id: contactId
+                contact_id: contactId,
               });
-            } else {
-              // Update existing message to include contact_id
-              const existingMsg = messagesToInsert.find(msg => msg.lead_id === link.newlead_id);
-              if (existingMsg) {
-                existingMsg.contact_id = contactId;
-              }
             }
           }
-          
+
           if (link.lead_id) {
-            alreadyExists = messagesToInsert.some(msg => msg.legacy_id === link.lead_id);
-            if (!alreadyExists) {
+            const existingMsg = messagesToInsert.find((msg) => msg.legacy_id === link.lead_id);
+            if (existingMsg) {
+              existingMsg.contact_id = contactId;
+            } else {
+              const key = `legacy:${link.lead_id}`;
+              if (seenLeadKeys.has(key)) continue;
+              seenLeadKeys.add(key);
               messagesToInsert.push({
                 ...baseMessageData,
                 lead_id: null,
                 legacy_id: link.lead_id,
-                contact_id: contactId
+                contact_id: contactId,
               });
-            } else {
-              // Update existing message to include contact_id
-              const existingMsg = messagesToInsert.find(msg => msg.legacy_id === link.lead_id);
-              if (existingMsg) {
-                existingMsg.contact_id = contactId;
-              }
-            }
-          }
-        }
-        
-        // Also handle contact's direct newlead_id
-        if (contactWithLeads.contactId && !contactLinks.some(link => link.newlead_id)) {
-          // Check if contact has a direct newlead_id that we haven't handled
-          const { data: contactData } = await supabase
-            .from('leads_contact')
-            .select('newlead_id')
-            .eq('id', contactWithLeads.contactId)
-            .maybeSingle();
-          
-          if (contactData?.newlead_id) {
-            const alreadyExists = messagesToInsert.some(msg => msg.lead_id === contactData.newlead_id);
-            if (!alreadyExists) {
-              messagesToInsert.push({
-                ...baseMessageData,
-                lead_id: contactData.newlead_id,
-                legacy_id: null,
-                contact_id: contactId
-              });
-            } else {
-              const existingMsg = messagesToInsert.find(msg => msg.lead_id === contactData.newlead_id);
-              if (existingMsg) {
-                existingMsg.contact_id = contactId;
-              }
             }
           }
         }
       }
     }
 
-    // Save all messages to database
-    const { error: insertError } = await supabase
-      .from('whatsapp_messages')
-      .insert(messagesToInsert);
+    // Save all messages to database (skip stage-eval triggers that time out on busy leads)
+    let { data: insertedRows, error: insertError } = await insertWhatsAppMessageRows(messagesToInsert);
+    if (!insertedRows.length && messagesToInsert.some((row) => row.lead_id || row.legacy_id)) {
+      console.warn(
+        'Inbound WhatsApp insert with lead_id failed (often statement_timeout on stage eval). Retrying one unmatched row.',
+        insertError,
+      );
+      ({ data: insertedRows, error: insertError } = await insertWhatsAppMessageRows([
+        {
+          ...baseMessageData,
+          lead_id: null,
+          legacy_id: null,
+          contact_id: matchingContacts[0] || null,
+        },
+      ]));
+    }
 
-    if (insertError) {
+    if (!insertedRows.length) {
       console.error('Error saving incoming message:', insertError);
     } else {
+      inboundSaved = true;
       // Log all saved messages
       const newLeadsCount = messagesToInsert.filter(msg => msg.lead_id).length;
       const legacyLeadsCount = messagesToInsert.filter(msg => msg.legacy_id).length;
@@ -1609,6 +1745,34 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
 
   } catch (error) {
     console.error('Error processing incoming message:', error);
+    if (!inboundSaved && message?.from) {
+      try {
+        const fallback = await insertWhatsAppMessage({
+          phone_number: message.from,
+          sender_name: message.from,
+          direction: 'in',
+          message:
+            message.text?.body ||
+            `[WhatsApp message type: ${message.type || 'unknown'}]`,
+          sent_at: message.timestamp
+            ? new Date(parseInt(message.timestamp, 10) * 1000).toISOString()
+            : new Date().toISOString(),
+          whatsapp_message_id: message.id || null,
+          whatsapp_status: 'delivered',
+          message_type: 'text',
+          whatsapp_timestamp: message.timestamp
+            ? new Date(parseInt(message.timestamp, 10) * 1000).toISOString()
+            : new Date().toISOString(),
+        });
+        if (fallback.error) {
+          console.error('Emergency inbound WhatsApp save failed:', fallback.error);
+        } else {
+          console.log('🛟 Emergency-saved inbound WhatsApp row for', message.from);
+        }
+      } catch (fallbackError) {
+        console.error('Emergency inbound WhatsApp save failed:', fallbackError);
+      }
+    }
   }
 };
 
@@ -2219,28 +2383,25 @@ const sendMessage = async (req, res) => {
     console.log('💾 Template ID value:', messageData.template_id, '(type:', typeof messageData.template_id, ')');
     console.log('💾 Final Template ID variable:', finalTemplateId, '(type:', typeof finalTemplateId, ')');
     
-    const { data: insertedData, error: insertError } = await supabase
-      .from('whatsapp_messages')
-      .insert([messageData])
-      .select('id, template_id, whatsapp_message_id'); // Select back the inserted data to verify template_id was saved
+    const insertResult = await insertOutgoingWhatsAppMessageBounded(messageData);
+    const insertedData = insertResult.data;
 
-    if (insertError) {
+    if (insertResult.error) {
       console.error('❌ ===== INSERT ERROR =====');
-      console.error('❌ Error saving outgoing message:', insertError);
-      console.error('❌ Error details:', JSON.stringify(insertError, null, 2));
+      console.error('❌ Error saving outgoing message:', insertResult.error);
+      console.error('❌ Error details:', JSON.stringify(insertResult.error, null, 2));
       console.error('❌ Message data that failed:', JSON.stringify(messageData, null, 2));
-      return res.status(500).json({ error: 'Failed to save message', details: insertError.message });
+      return respondWhatsAppSent(res, responseData, insertResult);
     }
 
-    // Verify template_id was saved correctly
     console.log('✅ ===== INSERT RESULT =====');
     console.log('✅ Inserted data returned:', JSON.stringify(insertedData, null, 2));
-    
+
     if (insertedData && insertedData.length > 0) {
       const savedMessage = insertedData[0];
       console.log(`✅ Message saved successfully. ID: ${savedMessage.id}, WhatsApp Message ID: ${savedMessage.whatsapp_message_id}`);
       console.log(`✅ Template ID saved in database: ${savedMessage.template_id} (expected: ${finalTemplateId})`);
-      
+
       if (isTemplate && finalTemplateId !== null) {
         if (savedMessage.template_id === null || savedMessage.template_id === undefined) {
           console.error(`❌ CRITICAL ERROR: Template ID is NULL in database but should be ${finalTemplateId}!`);
@@ -2264,7 +2425,7 @@ const sendMessage = async (req, res) => {
     }
 
     console.log('✅ Message sent successfully:', responseData);
-    res.json(responseData);
+    return respondWhatsAppSent(res, responseData, insertResult);
 
   } catch (error) {
     console.error('Error sending message:', error);
@@ -2441,14 +2602,12 @@ const sendMedia = async (req, res) => {
       voice_note: req.body.voiceNote || false // Store voice note flag
     };
 
-    const { data: insertedMedia, error: insertError } = await supabase
-      .from('whatsapp_messages')
-      .insert([messageData])
-      .select('id');
+    const insertResult = await insertOutgoingWhatsAppMessageBounded(messageData);
+    const insertedMedia = insertResult.data;
 
-    if (insertError) {
-      console.error('Error saving outgoing media message:', insertError);
-      return res.status(500).json({ error: 'Failed to save message' });
+    if (insertResult.error) {
+      console.error('Error saving outgoing media message:', insertResult.error);
+      return respondWhatsAppSent(res, responseData, insertResult);
     }
 
     if (routeViaPex && insertedMedia?.[0]?.id) {
@@ -2456,7 +2615,7 @@ const sendMedia = async (req, res) => {
       await pexCrmChatWebhookService.notifyWhatsAppRow(insertedMedia[0].id);
     }
 
-    res.json(responseData);
+    return respondWhatsAppSent(res, responseData, insertResult);
 
   } catch (error) {
     console.error('Error sending media message:', error);

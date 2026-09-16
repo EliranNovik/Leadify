@@ -1,4 +1,5 @@
 const graphMailboxSyncService = require('./graphMailboxSyncService');
+const { parseScanCenterClientState } = require('../lib/scanCenterMailbox');
 
 /**
  * Lightweight in-memory queue that coalesces webhook notifications per user.
@@ -6,12 +7,15 @@ const graphMailboxSyncService = require('./graphMailboxSyncService');
  * quick succession, so we keep a short-lived buffer and run at most one sync
  * per user at a time.
  */
+const SCAN_CENTER_QUEUE_KEY = 'scan-center';
+
 class GraphNotificationService {
   constructor() {
     this.pendingUsers = new Set();
     this.activeUsers = new Set();
     this.flushTimer = null;
     this.defaultDebounceMs = Number(process.env.GRAPH_WEBHOOK_DEBOUNCE_MS || 3000);
+    this.scanCenterDebounceMs = Number(process.env.SCAN_CENTER_WEBHOOK_DEBOUNCE_MS || 800);
   }
 
   /**
@@ -31,10 +35,22 @@ class GraphNotificationService {
       console.log(`⏳ Graph webhook coalescing additional event for user ${key}`);
     }
     this.pendingUsers.add(key);
-    this._scheduleFlush();
+    this._scheduleFlush(this.defaultDebounceMs);
   }
 
-  _scheduleFlush() {
+  enqueueScanCenterSync(meta = {}) {
+    const key = SCAN_CENTER_QUEUE_KEY;
+    if (!this.pendingUsers.has(key) && !this.activeUsers.has(key)) {
+      console.log('📨 Graph webhook queued Scan Center delta fetch', meta);
+    } else {
+      console.log('⏳ Graph webhook coalescing additional Scan Center event');
+    }
+    this.pendingUsers.add(key);
+    this._scheduleFlush(this.scanCenterDebounceMs);
+  }
+
+  _scheduleFlush(ms = this.defaultDebounceMs) {
+    const delay = Math.max(200, Number(ms) || this.defaultDebounceMs);
     if (this.flushTimer) {
       return;
     }
@@ -43,7 +59,7 @@ class GraphNotificationService {
       this._flushQueue().catch((err) =>
         console.error('❌ Graph notification queue flush failed:', err)
       );
-    }, this.defaultDebounceMs);
+    }, delay);
   }
 
   async _flushQueue() {
@@ -73,6 +89,13 @@ class GraphNotificationService {
 
   async _runUserSync(userId) {
     try {
+      if (userId === SCAN_CENTER_QUEUE_KEY || parseScanCenterClientState(userId)) {
+        const scanCenterInboxScheduler = require('./scanCenterInboxScheduler');
+        console.log('🔄 Starting webhook-triggered Scan Center delta fetch...');
+        const summary = await scanCenterInboxScheduler.runSyncCycle('webhook');
+        console.log('✅ Scan Center webhook fetch completed:', summary);
+        return summary;
+      }
       console.log(`🔄 Starting webhook-triggered sync for user ${userId}...`);
       // Webhook-triggered syncs are still enabled (only periodic scheduler is disabled)
       const summary = await graphMailboxSyncService.syncMailboxForUser(userId, { trigger: 'webhook' });

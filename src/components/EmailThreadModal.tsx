@@ -2295,6 +2295,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [filteredAllContacts, setFilteredAllContacts] = useState<Contact[]>([]);
 
   useEffect(() => {
+    if (!isOpen) return;
     console.log(`🔄 [EmailThreadModal] useEffect for filteredAllContacts triggered, allContacts.length: ${allContacts.length}`);
 
     // Debug: Check allContacts for @lawoffice.org.il BEFORE filtering
@@ -2377,7 +2378,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       console.log(`✅ [EmailThreadModal] Setting filteredAllContacts with ${finalFiltered.length} contacts (with search: "${searchAllContacts}")`);
       setFilteredAllContacts(finalFiltered);
     }
-  }, [searchAllContacts, allContacts]);
+  }, [isOpen, searchAllContacts, allContacts]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;

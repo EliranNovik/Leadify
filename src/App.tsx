@@ -50,6 +50,7 @@ import {
   LazyCollectionDueReportPage,
   LazyCollectionFinancesReport,
   LazyCollectionPage,
+  LazyCommunicationsInboxPage,
   LazyContactPage,
   LazyContactBridgePage,
   LazyDuplicateContactsPage,
@@ -1198,6 +1199,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/scheduler-tool" element={<RouteSuspense><LazySchedulerToolPage /></RouteSuspense>} />
                     <Route path="/whatsapp" element={<RouteSuspense><LazyWhatsAppPage /></RouteSuspense>} />
                     <Route path="/smart-scan" element={<RouteSuspense><LazySmartScanPage /></RouteSuspense>} />
+                    <Route path="/communications" element={<RouteSuspense><LazyCommunicationsInboxPage /></RouteSuspense>} />
                     <Route path="/whatsapp-leads" element={<RouteSuspense><LazyWhatsAppLeadsPage /></RouteSuspense>} />
                     <Route path="/email-leads" element={<RouteSuspense><LazyEmailThreadLeadPage /></RouteSuspense>} />
                     <Route path="/collection" element={<RouteSuspense><LazyCollectionPage /></RouteSuspense>} />

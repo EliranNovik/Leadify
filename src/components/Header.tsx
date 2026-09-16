@@ -716,6 +716,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       { label: 'Employee Performance', path: '/employee-performance' },
       { label: 'Documents', path: '/documents' },
       { label: 'Smart Scan', path: '/smart-scan', keywords: ['scan', 'scanner', 'documents', 'qr'] },
+      { label: 'Communications', path: '/communications', keywords: ['inbox', 'messages', 'needs reply', 'unread'] },
       { label: 'WhatsApp Leads', path: '/whatsapp-leads', keywords: ['whatsapp', 'wa'] },
       { label: 'Email Leads', path: '/email-leads', keywords: ['email', 'mail'] },
       { label: 'Calls Ledger', path: '/calls-ledger', keywords: ['calls', 'phone'] },

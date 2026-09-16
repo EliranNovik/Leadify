@@ -95,6 +95,38 @@ export function whatsAppSendSuccessToast(via?: string | null): string {
   return via === 'pex' ? 'Reply saved — PEX will send it' : 'Message sent via WhatsApp!';
 }
 
+type WhatsAppSendApiResult = {
+  error?: string;
+  details?: string | null;
+  code?: string;
+  messageId?: string;
+  saved?: boolean;
+  warning?: string;
+  via?: string | null;
+};
+
+/** Meta already accepted the message; CRM insert timed out (57014) after send. */
+export function whatsAppSendSaveTimedOut(result?: WhatsAppSendApiResult | null): boolean {
+  const error = String(result?.error || '');
+  const details = String(result?.details || result?.warning || '');
+  return (
+    error === 'Failed to save message' &&
+    /timeout|canceling statement/i.test(details)
+  );
+}
+
+/** HTTP 200, or WhatsApp sent and only the CRM save timed out. */
+export function whatsAppDispatchSucceeded(
+  responseOk: boolean,
+  result?: WhatsAppSendApiResult | null,
+): boolean {
+  return responseOk || whatsAppSendSaveTimedOut(result);
+}
+
+export function whatsAppSendResultToast(result?: WhatsAppSendApiResult | null): string {
+  return whatsAppSendSuccessToast(result?.via);
+}
+
 export function WhatsAppChannelBadge({
   isPex,
   compact = false,
@@ -137,6 +169,30 @@ export function whatsAppWindowLockLabel(isPex: boolean): string {
 
 export function whatsAppComposerLocked(windowLocked: boolean, adminUnlocked: boolean): boolean {
   return windowLocked && !adminUnlocked;
+}
+
+export function templateNeedsParamInput(template: { params?: string | number | null } | null | undefined): boolean {
+  return String(template?.params ?? '') === '1';
+}
+
+/** Free-text stays locked; an approved template can still be sent after the 24h window. */
+export function whatsAppSendBlockedByWindow(
+  inputLocked: boolean,
+  selectedTemplate: unknown,
+  isPexChat = false,
+): boolean {
+  if (!inputLocked) return false;
+  if (isPexChat) return true;
+  return !selectedTemplate;
+}
+
+/** Lock typing in the composer, except when a template still needs a parameter. */
+export function whatsAppComposerTextDisabled(
+  inputLocked: boolean,
+  selectedTemplate: { params?: string | number | null } | null | undefined,
+): boolean {
+  if (templateNeedsParamInput(selectedTemplate)) return false;
+  return inputLocked;
 }
 
 export function WhatsAppWindowLockBanner({
