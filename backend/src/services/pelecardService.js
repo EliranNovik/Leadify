@@ -127,11 +127,26 @@ function parseHttpsUrl(raw, label) {
   }
 }
 
+function isUnusableCheckoutCssHost(url) {
+  if (!url || isLocalUrl(url)) return true;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    // Custom domain serves the CRM SPA; Pelecard ignores this CssURL and keeps variant-en-1.
+    return host === 'rainmakerqueen.org' || host === 'www.rainmakerqueen.org';
+  } catch {
+    return true;
+  }
+}
+
 function withCheckoutCssFile(url, cssVersion) {
   if (!url) return null;
   const trimmed = String(url).trim().replace(/\/$/, '');
   if (!trimmed) return null;
   const cssPath = /\.css(\?|$)/i.test(trimmed) ? trimmed : `${trimmed}/pelecard-checkout.css`;
+  if (isUnusableCheckoutCssHost(cssPath)) {
+    console.warn(`[Pelecard] CssURL host cannot be used for hosted checkout: ${cssPath}`);
+    return null;
+  }
   const publicUrl = parsePublicHttpsUrl(cssPath, 'Pelecard CssURL');
   return publicUrl ? appendCssVersion(publicUrl, cssVersion) : null;
 }

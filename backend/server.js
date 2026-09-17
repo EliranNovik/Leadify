@@ -437,6 +437,8 @@ app.use('/api', adminImpersonationRoutes);
 
 // Pelecard hosted checkout theme (must be publicly reachable HTTPS for CssURL)
 app.get('/pelecard-checkout.css', (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Cache-Control', 'public, max-age=300');
   res.type('text/css');
   res.sendFile(path.join(__dirname, '../public/pelecard-checkout.css'));
 });
