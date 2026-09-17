@@ -30,7 +30,20 @@ function assertCredentials(config) {
 }
 
 function isLocalUrl(url) {
-  return /localhost|127\.0\.0\.1/i.test(url || '');
+  return /localhost|127\.0\.0\.1|::1|(?:^|[/.])local(?:[:/]|$)/i.test(url || '');
+}
+
+/** Pelecard fetches CssURL/LogoURL from their servers — localhost and HTTP never work. */
+function parsePublicHttpsUrl(raw, label) {
+  const parsed = parseHttpsUrl(raw, label);
+  if (!parsed) return null;
+  if (isLocalUrl(parsed)) {
+    console.warn(
+      `[Pelecard] ${label} points at localhost; Pelecard cannot fetch it. Ignoring.`,
+    );
+    return null;
+  }
+  return parsed;
 }
 
 function appendCssVersion(url, version) {
@@ -114,26 +127,46 @@ function parseHttpsUrl(raw, label) {
   }
 }
 
-/** Pelecard fetches CssURL from their servers — localhost URLs never work. */
+function withCheckoutCssFile(url, cssVersion) {
+  if (!url) return null;
+  const trimmed = String(url).trim().replace(/\/$/, '');
+  if (!trimmed) return null;
+  const cssPath = /\.css(\?|$)/i.test(trimmed) ? trimmed : `${trimmed}/pelecard-checkout.css`;
+  const publicUrl = parsePublicHttpsUrl(cssPath, 'Pelecard CssURL');
+  return publicUrl ? appendCssVersion(publicUrl, cssVersion) : null;
+}
+
+/**
+ * Branded checkout CSS (`public/pelecard-checkout.css`).
+ * Never send localhost — Pelecard's servers fetch CssURL, so that yields the default grey form.
+ * rainmakerqueen.org does not serve /public files; prefer the backend URL or Render.
+ */
 function resolvePelecardCssUrl(config) {
   const language = normalizeCheckoutLanguage(process.env.PELECARD_CHECKOUT_LANGUAGE);
   const cssVariant = parsePelecardCssVariant(process.env.PELECARD_CSS_VARIANT);
-
-  // Built-in gateway themes (recommended — external custom URLs need Pelecard whitelist)
-  if (cssVariant !== null || process.env.PELECARD_USE_BUILTIN_CSS === 'true') {
-    const variant = cssVariant ?? 4;
-    return buildBuiltinPelecardCssUrl(config.baseUrl, language, variant);
-  }
-
   const cssVersion = (process.env.PELECARD_CSS_VERSION || '11').trim();
-  const explicit = parseHttpsUrl(process.env.PELECARD_CSS_URL, 'PELECARD_CSS_URL');
-  if (explicit) {
-    const cssPath = explicit.endsWith('.css') ? explicit : `${explicit}/pelecard-checkout.css`;
-    return appendCssVersion(cssPath, cssVersion);
+
+  if (process.env.PELECARD_USE_BUILTIN_CSS === 'true') {
+    return buildBuiltinPelecardCssUrl(config.baseUrl, language, cssVariant ?? 4);
   }
 
-  // Default: variant 4 (cleaner layout than legacy variant-en-1)
-  return buildBuiltinPelecardCssUrl(config.baseUrl, language, 4);
+  const explicit = withCheckoutCssFile(process.env.PELECARD_CSS_URL, cssVersion);
+  if (explicit) return explicit;
+
+  const backendCss = withCheckoutCssFile(
+    `${String(config.backendPublicUrl || '').replace(/\/$/, '')}/pelecard-checkout.css`,
+    cssVersion,
+  );
+  if (backendCss) return backendCss;
+
+  const appCss = withCheckoutCssFile(
+    `${cssBaseFromAppPublicUrl(config.appPublicUrl)}/pelecard-checkout.css`,
+    cssVersion,
+  );
+  if (appCss) return appCss;
+
+  // Last resort: Pelecard built-in theme (not our branded frame).
+  return buildBuiltinPelecardCssUrl(config.baseUrl, language, cssVariant ?? 4);
 }
 
 function paymentPageUsesRequestedCss(html, cssUrl) {
@@ -211,6 +244,7 @@ function getCheckoutCssDebugInfo(profile = 'production') {
     appPublicUrl: config.appPublicUrl,
     backendPublicUrl: config.backendPublicUrl,
     explicitCssUrl: (process.env.PELECARD_CSS_URL || '').trim() || null,
+    cssUrlIsLocalhost: isLocalUrl(process.env.PELECARD_CSS_URL || ''),
     cssVersion: (process.env.PELECARD_CSS_VERSION || '11').trim(),
     terminal: config.terminal || null,
     cssUrlSupportNote: builtin
@@ -335,7 +369,7 @@ function buildEcommerceInitFields() {
 function buildCheckoutDisplayOptions(config, payment) {
   const cssUrl = resolvePelecardCssUrl(config);
   console.info('[Pelecard] Checkout CssURL:', cssUrl);
-  const logoUrl = (process.env.PELECARD_LOGO_URL || '').trim();
+  const logoUrl = parsePublicHttpsUrl(process.env.PELECARD_LOGO_URL, 'PELECARD_LOGO_URL');
 
   const topText = (process.env.PELECARD_TOP_TEXT || '').trim().slice(0, 200);
 
@@ -500,22 +534,13 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
   }
 
   const cssUrl = resolvePelecardCssUrl(config);
-  const cssApplied = await verifyCssAppliedOnPaymentPage(paymentUrl, cssUrl);
-  if (!cssApplied && isExternalCustomCssUrl(cssUrl)) {
-    console.warn(
-      `[Pelecard] External CssURL was sent (${cssUrl}) but checkout still uses default CSS. ` +
-        `Use PELECARD_CSS_VARIANT=4 for Pelecard built-in themes, or ask Pelecard to whitelist your URL.`,
-    );
-  } else if (!cssApplied) {
-    console.warn(
-      `[Pelecard] Requested CssURL (${cssUrl}) was not found on the checkout page — try another PELECARD_CSS_VARIANT.`,
-    );
-  }
+  // Do not GET paymentUrl here. Some terminals treat the first load as consuming
+  // the hosted page (error 10003 "Request has expired") before the customer iframe opens.
 
   return {
     paymentUrl,
     cssUrl,
-    cssApplied,
+    cssApplied: null,
     confirmationKey: data.ConfirmationKey || data.confirmationKey || null,
     paramX: paymentRef,
     rawResponse: data,

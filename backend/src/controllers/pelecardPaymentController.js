@@ -143,6 +143,7 @@ async function createPaymentSession(req, res) {
         ...(sessionRate != null ? { rate: sessionRate } : {}),
         pelecard_raw_response: {
           init: session.rawResponse,
+          cssUrl: session.cssUrl || null,
           pelecardCharge: session.charge,
           paramX: session.paramX,
           initParamX: session.paramX,

@@ -66,7 +66,27 @@ function canReusePelecardSession(payment, profile, options = {}) {
     return false;
   }
 
+  const { resolvePelecardCssUrl, getConfig } = require('../services/pelecardService');
+  const currentCss = String(resolvePelecardCssUrl(getConfig(requestedProfile)) || '')
+    .split('?')[0]
+    .toLowerCase();
+  const storedCss = String(initCssUrlFromRaw(raw) || '')
+    .split('?')[0]
+    .toLowerCase();
+  if (storedCss && /localhost|127\.0\.0\.1/i.test(storedCss)) return false;
+  if (currentCss && !storedCss) return false;
+  if (currentCss && storedCss && currentCss !== storedCss) return false;
+
   return true;
+}
+
+function initCssUrlFromRaw(raw) {
+  if (!raw || typeof raw !== 'object') return '';
+  const top = String(raw.cssUrl || raw.CssURL || '').trim();
+  if (top) return top;
+  const init = raw.init;
+  if (!init || typeof init !== 'object') return '';
+  return String(init.CssURL || init.cssUrl || init.CSSURL || '').trim();
 }
 
 function buildReusedSessionResponse(payment, paymentId, profile) {
