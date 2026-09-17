@@ -152,35 +152,36 @@ function withCheckoutCssFile(url, cssVersion) {
 }
 
 /**
- * Branded checkout CSS (`public/pelecard-checkout.css`).
- * Never send localhost — Pelecard's servers fetch CssURL, so that yields the default grey form.
- * rainmakerqueen.org does not serve /public files; prefer the backend URL or Render.
+ * Stylesheet Pelecard will actually apply on the hosted iframe.
+ *
+ * This terminal ignores external CssURL (rainmakerqueen.org / Render) and then
+ * falls back to default variant-en-1 (grey "Payment By Credit Card").
+ * Built-in gateway CSS on pelecard.biz is the only URL they load.
+ * Set PELECARD_USE_CUSTOM_CHECKOUT_CSS=true only if Pelecard has whitelisted that host.
  */
 function resolvePelecardCssUrl(config) {
   const language = normalizeCheckoutLanguage(process.env.PELECARD_CHECKOUT_LANGUAGE);
   const cssVariant = parsePelecardCssVariant(process.env.PELECARD_CSS_VARIANT);
   const cssVersion = (process.env.PELECARD_CSS_VERSION || '11').trim();
+  const wantCustom = process.env.PELECARD_USE_CUSTOM_CHECKOUT_CSS === 'true';
 
-  if (process.env.PELECARD_USE_BUILTIN_CSS === 'true') {
-    return buildBuiltinPelecardCssUrl(config.baseUrl, language, cssVariant ?? 4);
+  if (wantCustom) {
+    const explicit = withCheckoutCssFile(process.env.PELECARD_CSS_URL, cssVersion);
+    if (explicit) return explicit;
+
+    const backendCss = withCheckoutCssFile(
+      `${String(config.backendPublicUrl || '').replace(/\/$/, '')}/pelecard-checkout.css`,
+      cssVersion,
+    );
+    if (backendCss) return backendCss;
+
+    const appCss = withCheckoutCssFile(
+      `${cssBaseFromAppPublicUrl(config.appPublicUrl)}/pelecard-checkout.css`,
+      cssVersion,
+    );
+    if (appCss) return appCss;
   }
 
-  const explicit = withCheckoutCssFile(process.env.PELECARD_CSS_URL, cssVersion);
-  if (explicit) return explicit;
-
-  const backendCss = withCheckoutCssFile(
-    `${String(config.backendPublicUrl || '').replace(/\/$/, '')}/pelecard-checkout.css`,
-    cssVersion,
-  );
-  if (backendCss) return backendCss;
-
-  const appCss = withCheckoutCssFile(
-    `${cssBaseFromAppPublicUrl(config.appPublicUrl)}/pelecard-checkout.css`,
-    cssVersion,
-  );
-  if (appCss) return appCss;
-
-  // Last resort: Pelecard built-in theme (not our branded frame).
   return buildBuiltinPelecardCssUrl(config.baseUrl, language, cssVariant ?? 4);
 }
 
@@ -263,8 +264,8 @@ function getCheckoutCssDebugInfo(profile = 'production') {
     cssVersion: (process.env.PELECARD_CSS_VERSION || '11').trim(),
     terminal: config.terminal || null,
     cssUrlSupportNote: builtin
-      ? 'Using Pelecard gateway CSS (variant). Set PELECARD_CSS_VARIANT=1–4 and PELECARD_CHECKOUT_LANGUAGE=en|he. English: variants 1 and 4 only.'
-      : 'External CssURL requires Pelecard to whitelist your domain. Prefer PELECARD_CSS_VARIANT=4 instead.',
+      ? 'Using Pelecard gateway CSS (variant-en-4 unless PELECARD_CSS_VARIANT is set). External CssURL is ignored on this terminal and falls back to default variant-en-1.'
+      : 'External CssURL requires Pelecard to whitelist your domain. This terminal currently ignores it.',
     note: 'Create a new payment session after CSS changes. CssURL is baked into the iframe at init time.',
   };
 }
