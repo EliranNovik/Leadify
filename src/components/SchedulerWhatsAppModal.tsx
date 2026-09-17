@@ -41,11 +41,15 @@ import {
   WHATSAPP_CHAT_THREAD_BG_CLASS,
   WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS,
   WHATSAPP_CHAT_BUBBLE_META_CLASS,
+  WHATSAPP_BUBBLE_TEXT_CLASS,
   whatsAppChatBubbleAlignClass,
   WHATSAPP_COMPOSER_FIELD_CLASS,
   WHATSAPP_COMPOSER_TEXTAREA_CLASS,
   WHATSAPP_COMPOSER_TOOLS_BTN_CLASS,
   WHATSAPP_COMPOSER_SEND_BTN_CLASS,
+  growWhatsAppComposerTextarea,
+  whatsAppComposerDir,
+  whatsAppComposerMaxHeightPx,
   WHATSAPP_READ_RECEIPT_COLOR,
   WHATSAPP_SENT_RECEIPT_COLOR,
   type WhatsAppMessageLinkStyle,
@@ -207,28 +211,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // Expand textarea when template or AI content is added (both desktop and mobile)
   useEffect(() => {
-    if (textareaRef.current) {
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-          // Use larger max height when template is present (400px for both, or 300px for mobile without template)
-          // If template is cleared, reset to regular height
-          if (selectedTemplate && selectedTemplate.params === '0') {
-            const maxHeight = 400;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-          } else if (aiSuggestions.length > 0 || newMessage.length > 100) {
-            const maxHeight = isMobile ? 300 : 200;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-          } else {
-            // Reset to regular height when template is cleared and no long content
-            const regularHeight = isMobile ? 200 : 200;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
-          }
-        }
-      }, 0);
-    }
+    growWhatsAppComposerTextarea(textareaRef.current, {
+      minPx: 40,
+      maxPx: whatsAppComposerMaxHeightPx(selectedTemplate),
+    });
   }, [newMessage, selectedTemplate, aiSuggestions, isMobile]);
 
   // Handle click outside to reset input focus on mobile and close dropdowns
@@ -740,6 +727,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             target={href.startsWith('mailto:') ? undefined : '_blank'}
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
+            dir="ltr"
             style={{
               color: whatsAppMessageLinkColor(linkStyle),
               wordBreak: 'break-all',
@@ -750,6 +738,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               display: 'inline',
               fontWeight: whatsAppMessageLinkFontWeight(linkStyle),
               lineBreak: 'anywhere',
+              unicodeBidi: 'isolate',
             }}
           >
             {displayText}
@@ -1720,11 +1709,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
       if (textareaRef.current) {
         setTimeout(() => {
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-            const regularHeight = isMobile ? 200 : 200;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
-          }
+          growWhatsAppComposerTextarea(textareaRef.current, {
+            minPx: 40,
+            maxPx: whatsAppComposerMaxHeightPx(null),
+          });
         }, 0);
       }
 
@@ -1970,15 +1958,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     setNewMessage(suggestion);
     setShowAISuggestions(false);
     setAiSuggestions([]);
-    // Expand textarea on mobile when AI suggestion is applied
-    if (isMobile && textareaRef.current) {
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
-        }
-      }, 0);
-    }
   };
 
   // Handlers
@@ -2213,7 +2192,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         {/* Caption for images */}
                         {message.message_type === 'image' && message.caption && (
                           <p
-                            className="text-base break-words mt-1"
+                            className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base mt-1`}
+                            dir={whatsAppComposerDir(message.caption || '')}
                             style={{
                               wordBreak: 'break-word',
                               overflowWrap: 'break-word',
@@ -2261,10 +2241,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       >
                         {message.message_type === 'text' && (
                           <p
-                            className="inline break-words whitespace-pre-wrap text-[17px] leading-snug"
-                            dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                            className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-[17px] leading-snug`}
+                            dir={whatsAppComposerDir(message.message || '')}
                             style={{
-                              textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                               wordBreak: 'break-word',
                               overflowWrap: 'anywhere',
                               overflow: 'visible',
@@ -2325,7 +2304,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                             />
                             {message.caption && (
                               <p
-                                className="text-base break-words mt-2"
+                                className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base mt-2`}
+                                dir={whatsAppComposerDir(message.caption || '')}
                                 style={{
                                   wordBreak: 'break-word',
                                   overflowWrap: 'break-word',
@@ -2341,7 +2321,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                             )}
                             {!message.caption && message.message && (
                               <p
-                                className="text-base break-words mt-2"
+                                className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base mt-2`}
+                                dir={whatsAppComposerDir(message.message || '')}
                                 style={{
                                   wordBreak: 'break-word',
                                   overflowWrap: 'break-word',
@@ -2358,7 +2339,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           </div>
                         )}
 
-                        {/* Message status and time — sits next to the last line of text */}
+                        {/* Timestamp — bottom-right of the bubble */}
                         <div className={WHATSAPP_CHAT_BUBBLE_META_CLASS}>
                             <span>
                               {new Date(message.sent_at).toLocaleTimeString([], {
@@ -2579,15 +2560,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       setSelectedLanguage('');
                       if (template.params === '0') {
                         setNewMessage(template.content || '');
-                        if (textareaRef.current) {
-                          setTimeout(() => {
-                            if (textareaRef.current) {
-                              textareaRef.current.style.height = 'auto';
-                              const maxHeight = isMobile ? 300 : 400;
-                              textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-                            }
-                          }, 0);
-                        }
                       } else {
                         setNewMessage('');
                       }
@@ -2621,10 +2593,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               value={newMessage}
               onChange={(e) => {
                 setNewMessage(e.target.value);
-                const textarea = e.target;
-                textarea.style.height = 'auto';
-                const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+                growWhatsAppComposerTextarea(e.target, {
+                  minPx: 40,
+                  maxPx: whatsAppComposerMaxHeightPx(selectedTemplate),
+                });
               }}
               onKeyDown={(e) => {
                 // Let Enter create new lines
@@ -2641,13 +2613,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       : "Type a message..."
               }
               className={WHATSAPP_COMPOSER_TEXTAREA_CLASS}
+              dir={whatsAppComposerDir(newMessage)}
               rows={1}
               disabled={sending || uploadingMedia || whatsAppComposerTextDisabled(inputLocked, selectedTemplate)}
               style={{
                 backgroundColor: 'transparent',
-                maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
-                minHeight: isMobile ? '40px' : '40px',
-                ...(isMobile && !newMessage ? { height: '40px' } : {})
+                maxHeight: `${whatsAppComposerMaxHeightPx(selectedTemplate)}px`,
+                minHeight: '40px',
               }}
             />
 

@@ -29,19 +29,22 @@ export const WHATSAPP_CHAT_THREAD_BG_CLASS = 'bg-gray-100';
 
 /**
  * Incoming and outgoing bubbles share the same max width.
- * `w-fit` keeps short messages compact so the time sits next to the text
- * instead of across an empty row.
+ * Column layout keeps the timestamp on its own row at the bottom-right.
  */
 export const WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS =
-  'w-fit max-w-[min(85%,28rem)] box-border overflow-hidden';
+  'flex flex-col w-fit max-w-[min(85%,28rem)] box-border overflow-hidden';
 
 export function whatsAppChatBubbleAlignClass(direction: 'in' | 'out'): string {
   return direction === 'out' ? 'self-end ml-auto' : 'self-start';
 }
 
-/** Time + ticks — floats to the last line, next to the text. */
+/** Time + ticks — always physical bottom-right, even when the message is RTL. */
 export const WHATSAPP_CHAT_BUBBLE_META_CLASS =
-  'float-right ml-2 mt-0.5 inline-flex items-center gap-0.5 text-[11px] leading-none whitespace-nowrap opacity-70';
+  'mt-1 ml-auto flex items-center justify-end gap-0.5 text-[11px] leading-none whitespace-nowrap opacity-70 shrink-0 [direction:ltr]';
+
+/** Message body — block so Hebrew `dir`/`text-start` actually align the text. */
+export const WHATSAPP_BUBBLE_TEXT_CLASS =
+  'block w-full max-w-full min-w-0 break-words whitespace-pre-wrap text-start [unicode-bidi:plaintext]';
 
 export type WhatsAppMessageLinkStyle = 'default' | 'neon' | 'outgoing';
 
@@ -63,7 +66,40 @@ export const WHATSAPP_COMPOSER_FIELD_CLASS =
   'flex items-end w-full min-w-0 rounded-2xl border border-white/40 bg-white/90 shadow-[0_2px_8px_rgba(0,0,0,0.08)] backdrop-blur-md px-1 py-1 gap-1';
 
 export const WHATSAPP_COMPOSER_TEXTAREA_CLASS =
-  'textarea flex-1 min-w-0 resize-none border-0 bg-transparent shadow-none focus:outline-none focus:border-0 focus:shadow-none px-1 py-2 min-h-0';
+  'textarea flex-1 min-w-0 resize-none overflow-hidden border-0 bg-transparent shadow-none focus:outline-none focus:border-0 focus:shadow-none px-1 py-2 min-h-0 h-auto leading-normal text-start [unicode-bidi:plaintext]';
+
+export const WHATSAPP_COMPOSER_MIN_HEIGHT_PX = 40;
+export const WHATSAPP_COMPOSER_MAX_HEIGHT_PX = 280;
+
+const HEBREW_CHAR = /[\u0590-\u05FF]/;
+
+export function whatsAppTextContainsHebrew(text: string): boolean {
+  return HEBREW_CHAR.test(text || '');
+}
+
+export function whatsAppComposerDir(text: string): 'rtl' | 'ltr' | 'auto' {
+  if (!text?.trim()) return 'auto';
+  return whatsAppTextContainsHebrew(text) ? 'rtl' : 'ltr';
+}
+
+export function whatsAppComposerMaxHeightPx(selectedTemplate?: { params?: string } | null): number {
+  if (selectedTemplate && selectedTemplate.params === '0') return 400;
+  return WHATSAPP_COMPOSER_MAX_HEIGHT_PX;
+}
+
+export function growWhatsAppComposerTextarea(
+  el: HTMLTextAreaElement | null,
+  options?: { minPx?: number; maxPx?: number },
+): void {
+  if (!el) return;
+  const minPx = options?.minPx ?? WHATSAPP_COMPOSER_MIN_HEIGHT_PX;
+  const maxPx = options?.maxPx ?? WHATSAPP_COMPOSER_MAX_HEIGHT_PX;
+  el.style.height = 'auto';
+  const contentHeight = el.scrollHeight;
+  const next = Math.min(Math.max(contentHeight, minPx), maxPx);
+  el.style.height = `${next}px`;
+  el.style.overflowY = contentHeight > maxPx ? 'auto' : 'hidden';
+}
 
 export const WHATSAPP_COMPOSER_TOOLS_BTN_CLASS =
   'btn btn-circle border border-gray-200 bg-white text-gray-700 hover:bg-white hover:border-gray-300 shadow-sm flex-shrink-0 disabled:opacity-50';

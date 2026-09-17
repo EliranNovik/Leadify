@@ -58,11 +58,15 @@ import {
   WHATSAPP_CHAT_THREAD_BG_CLASS,
   WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS,
   WHATSAPP_CHAT_BUBBLE_META_CLASS,
+  WHATSAPP_BUBBLE_TEXT_CLASS,
   whatsAppChatBubbleAlignClass,
   WHATSAPP_COMPOSER_FIELD_CLASS,
   WHATSAPP_COMPOSER_TEXTAREA_CLASS,
   WHATSAPP_COMPOSER_TOOLS_BTN_CLASS,
   WHATSAPP_COMPOSER_SEND_BTN_CLASS,
+  growWhatsAppComposerTextarea,
+  whatsAppComposerDir,
+  whatsAppComposerMaxHeightPx,
   WHATSAPP_READ_RECEIPT_COLOR,
   WHATSAPP_SENT_RECEIPT_COLOR,
   type WhatsAppMessageLinkStyle,
@@ -915,6 +919,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             target={href.startsWith('mailto:') ? undefined : '_blank'}
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
+            dir="ltr"
             style={{
               color: whatsAppMessageLinkColor(linkStyle),
               wordBreak: 'break-all',
@@ -925,6 +930,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               display: 'inline',
               fontWeight: whatsAppMessageLinkFontWeight(linkStyle),
               lineBreak: 'anywhere',
+              unicodeBidi: 'isolate',
             }}
           >
             {displayText}
@@ -3854,15 +3860,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     if (template.params === '0') {
       setNewMessage(template.content || '');
 
-      // Expand textarea for both mobile and desktop when template is inserted
       if (textareaRef.current) {
         setTimeout(() => {
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-            // Use larger max height when template is present (400px for desktop, 300px for mobile)
-            const maxHeight = isMobile ? 300 : 400;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-          }
+          growWhatsAppComposerTextarea(textareaRef.current, {
+            minPx: isMobile ? 48 : 40,
+            maxPx: whatsAppComposerMaxHeightPx(template),
+          });
         }, 0);
       }
     } else {
@@ -3880,28 +3883,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     setIsFirstLoad(false);
   }, [messages, loadingMessages, shouldAutoScroll, scrollChatToBottom]);
 
-  // Expand textarea when template or AI content is added (both desktop and mobile)
   useEffect(() => {
-    if (textareaRef.current) {
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-          // Use larger max height when template is present (400px for both, or 300px for mobile without template)
-          // If template is cleared, reset to regular height
-          if (selectedTemplate && selectedTemplate.params === '0') {
-            const maxHeight = 400;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-          } else if (aiSuggestions.length > 0 || newMessage.length > 100) {
-            const maxHeight = isMobile ? 300 : 200;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-          } else {
-            // Reset to regular height when template is cleared and no long content
-            const regularHeight = isMobile ? 200 : 200;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
-          }
-        }
-      }, 0);
-    }
+    growWhatsAppComposerTextarea(textareaRef.current, {
+      minPx: isMobile ? 48 : 40,
+      maxPx: whatsAppComposerMaxHeightPx(selectedTemplate),
+    });
   }, [newMessage, selectedTemplate, aiSuggestions, isMobile]);
 
   // Handle click outside to close emoji picker, dropdowns, and reset input focus
@@ -4547,14 +4533,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       setNewMessage('');
       setSelectedTemplate(null); // Clear template selection after sending
 
-      // Reset textarea height to regular size after sending
       if (textareaRef.current) {
         setTimeout(() => {
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-            const regularHeight = isMobile ? 200 : 200;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
-          }
+          growWhatsAppComposerTextarea(textareaRef.current, {
+            minPx: isMobile ? 48 : 40,
+            maxPx: whatsAppComposerMaxHeightPx(null),
+          });
         }, 0);
       }
 
@@ -4623,14 +4607,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 setNewMessage('');
                 setSelectedTemplate(null); // Clear template selection
 
-                // Reset textarea height to regular size after sending
                 if (textareaRef.current) {
                   setTimeout(() => {
-                    if (textareaRef.current) {
-                      textareaRef.current.style.height = 'auto';
-                      const regularHeight = isMobile ? 200 : 200;
-                      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
-                    }
+                    growWhatsAppComposerTextarea(textareaRef.current, {
+                      minPx: isMobile ? 48 : 40,
+                      maxPx: whatsAppComposerMaxHeightPx(null),
+                    });
                   }, 0);
                 }
 
@@ -5299,15 +5281,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     setNewMessage(suggestion);
     setShowAISuggestions(false);
     setAiSuggestions([]);
-    // Expand textarea on mobile when AI suggestion is applied
-    if (isMobile && textareaRef.current) {
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
-        }
-      }, 0);
-    }
   };
 
   // Handle edit message
@@ -6605,10 +6578,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                   {/* Caption for images */}
                                   {message.message_type === 'image' && message.caption && (
                                     <p
-                                      className="text-[17px] leading-snug break-words mt-1"
-                                      dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                      className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-[17px] leading-snug mt-1`}
+                                      dir={whatsAppComposerDir(message.caption || '')}
                                       style={{
-                                        textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                                         wordBreak: 'break-word',
                                         overflowWrap: 'break-word',
                                         overflow: 'visible',
@@ -6659,14 +6631,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                       value={editMessageText}
                                       onChange={(e) => {
                                         setEditMessageText(e.target.value);
-                                        // Auto-resize the textarea
-                                        e.target.style.height = 'auto';
-                                        e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                                        growWhatsAppComposerTextarea(e.target, { minPx: 20, maxPx: 200 });
                                       }}
-                                      className={`w-full bg-transparent border-none outline-none resize-none overflow-y-auto ${message.direction === 'out'
+                                      className={`w-full bg-transparent border-none outline-none resize-none overflow-y-auto text-start [unicode-bidi:plaintext] ${message.direction === 'out'
                                         ? WHATSAPP_OUTGOING_EDIT_TEXTAREA_CLASS
                                         : 'text-gray-900 placeholder-gray-500'
                                         }`}
+                                      dir={whatsAppComposerDir(editMessageText)}
                                       autoFocus
                                       style={{
                                         minHeight: '20px',
@@ -6690,13 +6661,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                       {/* Message content based on type */}
                                       {message.message_type === 'text' && (
                                         <p
-                                          className="inline break-words whitespace-pre-wrap text-[17px] leading-snug"
-                                          dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                          className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-[17px] leading-snug`}
+                                          dir={whatsAppComposerDir(message.message || '')}
                                           style={{
-                                            textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                                             wordBreak: 'break-word',
                                             overflowWrap: 'anywhere',
-                                            hyphens: 'auto',
                                             overflow: 'visible',
                                             maxWidth: '100%',
                                             minWidth: 0,
@@ -6831,10 +6800,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                                       {message.caption && (
                                         <p
-                                          className="text-base break-words mt-2"
-                                          dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                          className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base mt-2`}
+                                          dir={whatsAppComposerDir(message.caption || '')}
                                           style={{
-                                            textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                                             wordBreak: 'break-word',
                                             overflowWrap: 'break-word',
                                             overflow: 'visible',
@@ -6871,7 +6839,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                       />
                                       {message.caption && (
                                         <p
-                                          className="text-base break-words mt-2"
+                                          className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base mt-2`}
+                                          dir={whatsAppComposerDir(message.caption || '')}
                                           style={{
                                             wordBreak: 'break-word',
                                             overflowWrap: 'break-word',
@@ -6887,7 +6856,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                       )}
                                       {!message.caption && message.message && message.message !== 'Voice message' && (
                                         <p
-                                          className="text-base break-words mt-2"
+                                          className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base mt-2`}
+                                          dir={whatsAppComposerDir(message.message || '')}
                                           style={{
                                             wordBreak: 'break-word',
                                             overflowWrap: 'break-word',
@@ -6935,10 +6905,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                       )}
                                       {message.caption && (
                                         <p
-                                          className="text-base break-words"
-                                          dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                          className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base`}
+                                          dir={whatsAppComposerDir(message.caption || '')}
                                           style={{
-                                            textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                                             wordBreak: 'break-word',
                                             overflowWrap: 'break-word',
                                             overflow: 'visible',
@@ -6976,7 +6945,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     </div>
                                   )}
 
-                                  {/* Message status and time — sits next to the last line of text */}
+                                  {/* Timestamp — bottom-right of the bubble */}
                                   <div className={WHATSAPP_CHAT_BUBBLE_META_CLASS}>
                                       <span>
                                         {new Date(message.sent_at).toLocaleTimeString([], {
@@ -7192,11 +7161,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         onChange={(e) => {
                           if (selectedTemplate) return; // Prevent changes when template is selected
                           setNewMessage(e.target.value);
-                          const textarea = e.target;
-                          textarea.style.height = 'auto';
-                          // Use larger max height when template is present
-                          const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                          textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+                          growWhatsAppComposerTextarea(e.target, {
+                            minPx: isMobile ? 48 : 40,
+                            maxPx: whatsAppComposerMaxHeightPx(selectedTemplate),
+                          });
                         }}
                         onKeyDown={(e) => {
                           if (selectedTemplate) return; // Prevent changes when template is selected
@@ -7214,15 +7182,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 : "Type a message..."
                         }
                         className={WHATSAPP_COMPOSER_TEXTAREA_CLASS}
+                        dir={whatsAppComposerDir(newMessage)}
                         rows={1}
                         readOnly={!!selectedTemplate && selectedTemplate.params !== '1'}
                         disabled={sending || uploadingMedia || whatsAppComposerTextDisabled(inputLocked, selectedTemplate)}
                         style={{
                           backgroundColor: 'transparent',
-                          maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
+                          maxHeight: `${whatsAppComposerMaxHeightPx(selectedTemplate)}px`,
                           cursor: selectedTemplate ? 'not-allowed' : 'text',
                           minHeight: isMobile ? '48px' : '40px',
-                          ...(isMobile && !newMessage ? { height: '48px' } : {})
                         }}
                       />
 
@@ -7487,30 +7455,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           onChange={(e) => {
                             if (selectedTemplate) return; // Prevent changes when template is selected
                             setNewMessage(e.target.value);
-                            const textarea = e.target;
-                            textarea.style.height = 'auto';
-                            // Use larger max height when template is present
-                            const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : (isInputFocused || aiSuggestions.length > 0 ? 300 : 200);
-                            const calculatedHeight = Math.min(textarea.scrollHeight, maxHeight);
-                            const minHeight = isMobile ? 40 : 36;
-                            textarea.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
+                            growWhatsAppComposerTextarea(e.target, {
+                              minPx: isMobile ? 40 : 36,
+                              maxPx: whatsAppComposerMaxHeightPx(selectedTemplate),
+                            });
                           }}
                           onFocus={(e) => {
                             if (selectedTemplate) return; // Prevent focus changes when template is selected
                             setIsInputFocused(true);
-                            e.target.style.height = 'auto';
-                            const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 300;
-                            const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
-                            const minHeight = isMobile ? 40 : 36;
-                            e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
+                            growWhatsAppComposerTextarea(e.target, {
+                              minPx: isMobile ? 40 : 36,
+                              maxPx: whatsAppComposerMaxHeightPx(selectedTemplate),
+                            });
                           }}
-                          onBlur={(e) => {
+                          onBlur={() => {
                             setIsInputFocused(false);
-                            e.target.style.height = 'auto';
-                            const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                            const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
-                            const minHeight = isMobile ? 40 : 36;
-                            e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
                           }}
                           onKeyDown={(e) => {
                             if (selectedTemplate) return; // Prevent changes when template is selected
@@ -7528,16 +7487,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                   : "Type a message..."
                           }
                           className={`${WHATSAPP_COMPOSER_TEXTAREA_CLASS} text-sm`}
+                          dir={whatsAppComposerDir(newMessage)}
                           rows={1}
                           readOnly={!!selectedTemplate && selectedTemplate.params !== '1'}
                           disabled={sending || uploadingMedia || whatsAppComposerTextDisabled(inputLocked, selectedTemplate)}
                           style={{
                             lineHeight: '1.4',
                             backgroundColor: 'transparent',
-                            maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px',
+                            maxHeight: `${whatsAppComposerMaxHeightPx(selectedTemplate)}px`,
                             cursor: selectedTemplate ? 'not-allowed' : 'text',
                             minHeight: isMobile ? '40px' : '36px',
-                            height: isMobile && !newMessage && !selectedTemplate ? '40px' : 'auto'
                           }}
                         />
 
