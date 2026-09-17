@@ -5,6 +5,15 @@ import {
   parseLegacyLeadNumericId,
 } from './paymentLinkLeadRef';
 import { insertPaymentLinkRecord } from './paymentLinkQueries';
+import {
+  applyCheckoutSnapshotToPaymentLink,
+  buildPaymentLinkDescription,
+  fetchPaymentPlanCheckoutSnapshot,
+  paymentLinkMatchesSnapshot,
+  roundPaymentMoney,
+  type PaymentPlanCheckoutSnapshot,
+} from './paymentLinkPlanSnapshot';
+import { paymentOrderLabel } from './paymentPlanOrderLabel';
 
 type PaymentLinkRow = {
   secure_token?: string | null;
@@ -59,6 +68,16 @@ type LiveCheckoutLinkRow = {
   secure_token?: string | null;
   status?: string | null;
   expires_at?: string | null;
+  amount?: number | null;
+  vat_amount?: number | null;
+  total_amount?: number | null;
+  description?: string | null;
+  currency?: string | null;
+  client_id?: string | null;
+  legacy_id?: number | null;
+  is_legacy_payment_plan?: boolean | null;
+  pelecard_status_code?: string | null;
+  pelecard_raw_response?: { openFinancePending?: boolean } | null;
 };
 
 /** Unpaid links that a client can still pay on the original URL. */
@@ -69,18 +88,40 @@ export function isLiveCheckoutPaymentLink(row: LiveCheckoutLinkRow): boolean {
   return status !== 'paid';
 }
 
-/** Latest unpaid checkout link for a payment plan row. */
+function isOpenFinancePendingLink(row: LiveCheckoutLinkRow): boolean {
+  if ((row.status || '').toLowerCase() !== 'processing') return false;
+  if (row.pelecard_raw_response?.openFinancePending === true) return true;
+  return String(row.pelecard_status_code || '').trim() === '665';
+}
+
+/** Latest unpaid checkout link for a payment plan row (same lead + legacy flag). */
 export async function findLatestLivePaymentLink(options: {
   paymentPlanId: number;
   excludeToken?: string | null;
+  isLegacyPaymentPlan?: boolean;
+  clientId?: string | null;
+  legacyId?: number | null;
 }): Promise<LiveCheckoutLinkRow | null> {
-  const { data, error } = await supabase
+  let query = supabase
     .from('payment_links')
-    .select('id, secure_token, status, expires_at, created_at')
+    .select(
+      'id, secure_token, status, expires_at, created_at, amount, vat_amount, total_amount, description, currency, client_id, legacy_id, is_legacy_payment_plan, pelecard_status_code, pelecard_raw_response',
+    )
     .eq('payment_plan_id', options.paymentPlanId)
     .in('status', ['pending', 'processing', 'failed', 'cancelled', 'expired'])
     .order('created_at', { ascending: false })
     .limit(20);
+
+  if (options.isLegacyPaymentPlan != null) {
+    query = query.eq('is_legacy_payment_plan', options.isLegacyPaymentPlan);
+  }
+  if (options.legacyId != null) {
+    query = query.eq('legacy_id', options.legacyId);
+  } else if (options.clientId) {
+    query = query.eq('client_id', options.clientId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error('[payment-link] findLatestLivePaymentLink:', error);
@@ -112,15 +153,23 @@ export async function resolveProformaPaymentLinkUrl(options: {
   paymentPlanId?: string | number | null;
   /** Lead id — UUID for new leads, numeric or legacy_123 for legacy */
   leadClientId?: string | number | null;
+  isLegacyPaymentPlan?: boolean;
 }): Promise<string | null> {
   const { paymentPlanId, leadClientId } = options;
+  const hasPlanId = paymentPlanId != null && paymentPlanId !== '';
 
-  if (paymentPlanId != null && paymentPlanId !== '') {
-    const { data, error } = await supabase
+  if (hasPlanId) {
+    let query = supabase
       .from('payment_links')
-      .select('secure_token, status, expires_at, created_at')
+      .select('secure_token, status, expires_at, created_at, payment_plan_id')
       .eq('payment_plan_id', paymentPlanId)
       .order('created_at', { ascending: false });
+
+    if (options.isLegacyPaymentPlan != null) {
+      query = query.eq('is_legacy_payment_plan', options.isLegacyPaymentPlan);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('[proforma] payment_links by payment_plan_id:', error);
@@ -130,33 +179,29 @@ export async function resolveProformaPaymentLinkUrl(options: {
     }
   }
 
-  if (leadClientId != null && leadClientId !== '') {
-    const legacyId = parseLegacyLeadNumericId(leadClientId);
-    let query = supabase
-      .from('payment_links')
-      .select('secure_token, status, expires_at, created_at, payment_plan_id')
-      .order('created_at', { ascending: false })
-      .limit(30);
+  // Never fall back to another installment when a plan row id was specified.
+  if (hasPlanId) return null;
+  if (leadClientId == null || leadClientId === '') return null;
 
-    if (legacyId != null) {
-      query = query.eq('legacy_id', legacyId);
-    } else {
-      query = query.eq('client_id', String(leadClientId));
-    }
+  const legacyId = parseLegacyLeadNumericId(leadClientId);
+  let query = supabase
+    .from('payment_links')
+    .select('secure_token, status, expires_at, created_at, payment_plan_id')
+    .order('created_at', { ascending: false })
+    .limit(30);
 
-    if (paymentPlanId != null && paymentPlanId !== '') {
-      query = query.eq('payment_plan_id', paymentPlanId);
-    }
-
-    const { data, error } = await query;
-    if (error) {
-      console.error('[proforma] payment_links by lead ref:', error);
-      return null;
-    }
-    return pickBestPaymentLinkUrl(data);
+  if (legacyId != null) {
+    query = query.eq('legacy_id', legacyId);
+  } else {
+    query = query.eq('client_id', String(leadClientId));
   }
 
-  return null;
+  const { data, error } = await query;
+  if (error) {
+    console.error('[proforma] payment_links by lead ref:', error);
+    return null;
+  }
+  return pickBestPaymentLinkUrl(data);
 }
 
 /** Resolve `/payment/:token` for the invoice payment plan row (PaymentPage route). */
@@ -174,17 +219,62 @@ export type EnsureProformaPaymentLinkInput = {
   leadClientId: string | number;
   leadType?: string | null;
   isLegacyPaymentPlan?: boolean;
-  value: number;
-  valueVat: number;
-  currency: string;
-  order: string;
+  value?: number;
+  valueVat?: number;
+  currency?: string;
+  order?: string;
   clientName: string;
   leadNumber: string;
   /** Contact id from payment plan row (for per-contact payment history). */
   planContactId?: number | null;
 };
 
-/** Create a pending payment link when none exists yet (e.g. right after proforma creation). */
+function snapshotFromEnsureInput(
+  options: EnsureProformaPaymentLinkInput,
+): PaymentPlanCheckoutSnapshot {
+  const amount = roundPaymentMoney(Number(options.value) || 0);
+  const vatAmount = roundPaymentMoney(Number(options.valueVat) || 0);
+  return {
+    amount,
+    vatAmount,
+    totalAmount: roundPaymentMoney(amount + vatAmount),
+    orderLabel: paymentOrderLabel(options.order) || options.order || 'Payment',
+    currency: options.currency || '₪',
+    paid: false,
+  };
+}
+
+async function persistLiveLinkSnapshot(
+  existing: LiveCheckoutLinkRow,
+  snapshot: PaymentPlanCheckoutSnapshot,
+  description: string,
+): Promise<void> {
+  const updates: Record<string, unknown> = {
+    expires_at: paymentLinkExpiresAtIso(),
+  };
+
+  if (!paymentLinkMatchesSnapshot(existing, snapshot, description) && !isOpenFinancePendingLink(existing)) {
+    const next = applyCheckoutSnapshotToPaymentLink(existing, snapshot, description);
+    updates.amount = next.amount;
+    updates.vat_amount = next.vat_amount;
+    updates.total_amount = next.total_amount;
+    updates.currency = next.currency;
+    updates.description = next.description;
+    updates.pelecard_session_url = null;
+    updates.pelecard_confirmation_key = null;
+    const status = (existing.status || 'pending').toLowerCase();
+    if (status === 'processing' || status === 'failed' || status === 'cancelled' || status === 'expired') {
+      updates.status = 'pending';
+    }
+  }
+
+  const { error } = await supabase.from('payment_links').update(updates).eq('id', existing.id);
+  if (error) {
+    console.error('[ensureProformaPaymentLink] update live link failed:', error);
+  }
+}
+
+/** Create or refresh a pending payment link from the Finances installment row. */
 export async function ensureProformaPaymentLink(
   options: EnsureProformaPaymentLinkInput,
 ): Promise<{ url: string | null; created: boolean }> {
@@ -194,12 +284,40 @@ export async function ensureProformaPaymentLink(
     return { url: null, created: false };
   }
 
-  const existing = await findLatestLivePaymentLink({ paymentPlanId: planRowId });
+  const isLegacyPaymentPlan =
+    options.isLegacyPaymentPlan ?? isLegacyLeadRef(options.leadType, options.leadClientId);
+  const leadRef = buildPaymentLinkLeadRef({
+    leadId: options.leadClientId,
+    leadType: options.leadType,
+    isLegacyPaymentPlan,
+  });
+  const dbSnapshot = await fetchPaymentPlanCheckoutSnapshot(planRowId, isLegacyPaymentPlan);
+  const inputSnapshot = snapshotFromEnsureInput(options);
+  const snapshot =
+    dbSnapshot && (dbSnapshot.totalAmount > 0 || inputSnapshot.totalAmount <= 0)
+      ? dbSnapshot
+      : inputSnapshot;
+  const description = buildPaymentLinkDescription(
+    snapshot.orderLabel,
+    options.clientName,
+    options.leadNumber,
+  );
+
+  let existing = await findLatestLivePaymentLink({
+    paymentPlanId: planRowId,
+    isLegacyPaymentPlan,
+    clientId: leadRef.client_id,
+    legacyId: leadRef.legacy_id ?? null,
+  });
+  if (!existing) {
+    existing = await findLatestLivePaymentLink({
+      paymentPlanId: planRowId,
+      clientId: leadRef.client_id,
+      legacyId: leadRef.legacy_id ?? null,
+    });
+  }
   if (existing?.secure_token?.trim()) {
-    await supabase
-      .from('payment_links')
-      .update({ expires_at: paymentLinkExpiresAtIso() })
-      .eq('id', existing.id);
+    await persistLiveLinkSnapshot(existing, snapshot, description);
     return { url: buildPaymentLinkPublicUrl(existing.secure_token.trim()), created: false };
   }
 
@@ -209,15 +327,14 @@ export async function ensureProformaPaymentLink(
     paymentPlanId: planRowId,
     leadId: options.leadClientId,
     leadType: options.leadType,
-    isLegacyPaymentPlan:
-      options.isLegacyPaymentPlan ?? isLegacyLeadRef(options.leadType, options.leadClientId),
+    isLegacyPaymentPlan,
     planContactId: options.planContactId ?? null,
     secureToken,
-    amount: options.value,
-    vatAmount: options.valueVat,
-    totalAmount: options.value + options.valueVat,
-    currency: options.currency || '₪',
-    description: `${options.order} - ${options.clientName} (#${options.leadNumber})`,
+    amount: snapshot.amount,
+    vatAmount: snapshot.vatAmount,
+    totalAmount: snapshot.totalAmount,
+    currency: snapshot.currency || '₪',
+    description,
     expiresAt: paymentLinkExpiresAtIso(),
   });
 
@@ -227,6 +344,39 @@ export async function ensureProformaPaymentLink(
   }
 
   return { url: buildPaymentLinkPublicUrl(secureToken), created: true };
+}
+
+/** Ensure the public payment URL for an invoice send matches this installment row. */
+export async function ensurePaymentLinkUrlForInvoice(options: {
+  paymentPlanId?: string | number | null;
+  leadId?: string | number | null;
+  isLegacyLead?: boolean;
+  kind?: 'legacy' | 'new';
+  clientName: string;
+  leadNumber: string;
+  contactId?: string | number | null;
+}): Promise<string | null> {
+  const isLegacy = options.kind === 'legacy' || Boolean(options.isLegacyLead);
+  if (options.paymentPlanId != null && options.paymentPlanId !== '' && options.leadId != null && options.leadId !== '') {
+    const ensured = await ensureProformaPaymentLink({
+      paymentPlanId: options.paymentPlanId,
+      leadClientId: options.leadId,
+      leadType: isLegacy ? 'legacy' : 'new',
+      isLegacyPaymentPlan: isLegacy,
+      clientName: options.clientName,
+      leadNumber: options.leadNumber,
+      planContactId:
+        options.contactId != null && options.contactId !== ''
+          ? Number(options.contactId)
+          : null,
+    });
+    if (ensured.url) return ensured.url;
+  }
+  return resolveProformaPaymentLinkUrl({
+    paymentPlanId: options.paymentPlanId,
+    leadClientId: options.leadId,
+    isLegacyPaymentPlan: options.kind === 'legacy' || options.isLegacyLead ? true : undefined,
+  });
 }
 
 /** Token for `/payment/:token` — reuses a live pending/processing link instead of minting a new one. */

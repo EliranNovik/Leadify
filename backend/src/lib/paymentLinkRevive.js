@@ -3,6 +3,8 @@
  * Date expiry / cancel / fail must not force the office to mint a new token.
  */
 
+const { syncUnpaidPaymentLinkToPlan } = require('./paymentLinkPlanSnapshot');
+
 const PAYMENT_LINK_TTL_DAYS = 180;
 const RETRYABLE_STATUSES = new Set(['pending', 'processing', 'failed', 'cancelled', 'expired']);
 
@@ -48,10 +50,10 @@ async function reviveUnpaidPaymentLink(supabase, payment) {
   const { error } = await supabase.from('payment_links').update(updates).eq('id', payment.id);
   if (error) {
     console.error('[payment-link] revive unpaid link failed', error);
-    return payment;
+    return syncUnpaidPaymentLinkToPlan(supabase, payment);
   }
 
-  return { ...payment, ...updates };
+  return syncUnpaidPaymentLinkToPlan(supabase, { ...payment, ...updates });
 }
 
 module.exports = {

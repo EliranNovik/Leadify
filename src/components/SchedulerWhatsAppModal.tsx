@@ -29,6 +29,8 @@ import VoiceMessagePlayer from './whatsapp/VoiceMessagePlayer';
 import VoiceMessageRecorder from './whatsapp/VoiceMessageRecorder';
 import WhatsAppAvatar from './whatsapp/WhatsAppAvatar';
 import { collectWhatsAppPhoneVariants, whatsAppPhonesMatch } from '../lib/whatsappPhone';
+import { fetchWhatsAppRowsPaged } from '../lib/whatsappChatMessages';
+import { useRealtimeRefresh } from '../hooks/useRealtimeRefresh';
 import { useNavigate } from 'react-router-dom';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
@@ -36,6 +38,10 @@ import {
   WHATSAPP_OUTGOING_TEXT_COLOR,
   WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS,
   WHATSAPP_CHAT_HEADER_GLASS_CLASS,
+  WHATSAPP_CHAT_THREAD_BG_CLASS,
+  WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS,
+  WHATSAPP_CHAT_BUBBLE_META_CLASS,
+  whatsAppChatBubbleAlignClass,
   WHATSAPP_COMPOSER_FIELD_CLASS,
   WHATSAPP_COMPOSER_TEXTAREA_CLASS,
   WHATSAPP_COMPOSER_TOOLS_BTN_CLASS,
@@ -130,6 +136,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   }, [isOpen, propSelectedContact, hideContactSelector]);
   const [newMessage, setNewMessage] = useState('');
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
+  const [waRealtimeNonce, setWaRealtimeNonce] = useState(0);
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
@@ -476,7 +483,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         } else {
           msgQuery = msgQuery.eq('lead_id', client.id);
         }
-        const { data: allMsgs } = await msgQuery.order('sent_at', { ascending: true });
+        const { data: allMsgs } = await msgQuery.order('sent_at', { ascending: false }).limit(800);
         if (cancelled) return;
 
         const normalizePhone = (phone: string) => (phone || '').replace(/\D/g, '');
@@ -924,22 +931,20 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const renderMessageStatus = (message?: WhatsAppMessage | { whatsapp_status?: string; whatsapp_message_id?: string; error_message?: string }) => {
     if (!message) return null;
 
-    const status = typeof message === 'string' ? message : message.whatsapp_status;
     const whatsappMessageId = typeof message === 'object' ? message.whatsapp_message_id : undefined;
     const errorMessage = typeof message === 'object' ? message.error_message : undefined;
-
-    if (!status) return null;
+    const status = (typeof message === 'string' ? message : message.whatsapp_status) || (whatsappMessageId ? 'delivered' : 'sent');
 
     // Special case: If status is "failed" but whatsapp_message_id exists,
-    // it means WhatsApp accepted the message, so it was actually delivered
     // but DB status update failed. Show as "delivered" (will be auto-fixed in background).
     // Don't show "failed" in UI if message was actually sent.
     const effectiveStatus = (status === 'failed' && whatsappMessageId) ? 'delivered' : status;
 
-    const baseClasses = "w-7 h-7";
+    const baseClasses = "w-3.5 h-3.5";
 
     switch (effectiveStatus) {
       case 'sent':
+      case 'pending':
         return (
           <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_SENT_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -953,7 +958,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_READ_RECEIPT_COLOR }}>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -1042,6 +1047,28 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     return hoursPassed > 24;
   };
 
+  useRealtimeRefresh({
+    channelName: `scheduler-whatsapp-${client?.id || 'none'}`,
+    enabled: Boolean(isOpen && client?.id),
+    debounceMs: 300,
+    tables: [
+      {
+        table: 'whatsapp_messages',
+        match: (payload) => {
+          const row = (payload.new || payload.old) as Record<string, unknown> | null;
+          if (!row || !client?.id) return false;
+          const isLegacyLead = client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+          if (isLegacyLead) {
+            const legacyId = parseInt(String(client.id).replace('legacy_', ''), 10);
+            return Number(row.legacy_id) === legacyId;
+          }
+          return String(row.lead_id || '') === String(client.id);
+        },
+      },
+    ],
+    onChange: () => setWaRealtimeNonce((n) => n + 1),
+  });
+
   // Fetch messages
   useEffect(() => {
     const fetchMessages = async (isPolling = false) => {
@@ -1095,7 +1122,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         });
 
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-        let query = supabase.from('whatsapp_messages').select('*');
 
         // If we have a selected contact (from propSelectedContact or selectedContactId), filter by contact's phone number
         // IMPORTANT: If propSelectedContact is provided, we MUST use it and not fall back to client
@@ -1126,14 +1152,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               client?.mobile,
             ]);
 
+            let allMessages: any[] = [];
             if (isLegacyLead) {
               const legacyId = parseInt(client.id.replace('legacy_', ''));
-              query = query.eq('legacy_id', legacyId);
+              allMessages = await fetchWhatsAppRowsPaged(supabase, { legacyId });
             } else {
-              query = query.eq('lead_id', client.id);
+              allMessages = await fetchWhatsAppRowsPaged(supabase, { leadId: String(client.id) });
             }
-
-            const { data: allMessages, error: allError } = await query.order('sent_at', { ascending: true });
 
             const matchesThread = (msg: any) => {
               if (contactId && Number(msg.contact_id) === Number(contactId)) return true;
@@ -1143,24 +1168,24 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               return false;
             };
 
-            let filteredMessages = !allError && allMessages ? allMessages.filter(matchesThread) : [];
+            let filteredMessages = allMessages.filter(matchesThread);
 
             if (filteredMessages.length === 0 && phones.length > 0) {
-              let byPhoneQuery = supabase
-                .from('whatsapp_messages')
-                .select('*')
-                .in('phone_number', phones);
               if (isLegacyLead) {
                 const legacyId = parseInt(client.id.replace('legacy_', ''));
-                if (!Number.isNaN(legacyId)) byPhoneQuery = byPhoneQuery.eq('legacy_id', legacyId);
+                filteredMessages = await fetchWhatsAppRowsPaged(supabase, {
+                  legacyId: Number.isNaN(legacyId) ? null : legacyId,
+                  phones,
+                });
               } else {
-                byPhoneQuery = byPhoneQuery.eq('lead_id', client.id);
+                filteredMessages = await fetchWhatsAppRowsPaged(supabase, {
+                  leadId: String(client.id),
+                  phones,
+                });
               }
-              const { data: byPhone } = await byPhoneQuery.order('sent_at', { ascending: true });
-              filteredMessages = byPhone || [];
             }
 
-            if (!allError || filteredMessages.length > 0) {
+            if (filteredMessages.length > 0 || allMessages) {
               console.log(
                 `📱 Filtered ${filteredMessages.length} messages for contact ${selectedContact.name} (phone: ${contactPhone})`,
               );
@@ -1208,12 +1233,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             interactions = fallback.data as any[] | null;
             if (fallback.error) {
               console.error('Error fetching legacy interactions:', fallback.error);
-              query = query.eq('legacy_id', legacyId);
-              const { data, error } = await query.order('sent_at', { ascending: true });
-              if (error) {
-                console.error('Error fetching messages:', error);
-                return;
-              }
+              const data = await fetchWhatsAppRowsPaged(supabase, { legacyId });
               const processedMessages = (data || []).map(processTemplateMessage);
               setMessages((prevMessages) =>
                 applyWhatsAppFetchedMessages(processedMessages, prevMessages, isPolling),
@@ -1310,33 +1330,16 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             applyWhatsAppFetchedMessages(processedMessages, prevMessages, isPolling),
           );
           return;
-        } else {
-          query = query.eq('lead_id', client.id);
         }
 
-        const { data, error } = await query.order('sent_at', { ascending: true });
-
-        if (error) {
-          console.error('Error fetching messages:', error);
-          return;
-        }
-
-        let rows = data || [];
+        let rows = await fetchWhatsAppRowsPaged(supabase, { leadId: String(client.id) });
         if (rows.length === 0) {
           const phones = collectWhatsAppPhoneVariants([client?.phone, client?.mobile]);
           if (phones.length) {
-            let byPhoneQuery = supabase
-              .from('whatsapp_messages')
-              .select('*')
-              .in('phone_number', phones);
-            if (isLegacyLead) {
-              const legacyId = parseInt(client.id.replace('legacy_', ''));
-              if (!Number.isNaN(legacyId)) byPhoneQuery = byPhoneQuery.eq('legacy_id', legacyId);
-            } else {
-              byPhoneQuery = byPhoneQuery.eq('lead_id', client.id);
-            }
-            const { data: byPhone } = await byPhoneQuery.order('sent_at', { ascending: true });
-            rows = byPhone || [];
+            rows = await fetchWhatsAppRowsPaged(supabase, {
+              leadId: String(client.id),
+              phones,
+            });
           }
         }
 
@@ -1407,7 +1410,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         clearInterval(interval);
       };
     }
-  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact, hideContactSelector, activeContactOverride]);
+  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact, hideContactSelector, activeContactOverride, waRealtimeNonce]);
 
   // Auto-fix message statuses when messages are loaded (if status is "failed" but whatsapp_message_id exists)
   useEffect(() => {
@@ -2008,7 +2011,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const clientLocked = lastIncomingMessage ? isClientLocked(lastIncomingMessage.sent_at) : false;
 
   return createPortal(
-    <div className="fixed inset-0 bg-gray-50 z-[9999] overflow-hidden">
+    <div className={`fixed inset-0 ${WHATSAPP_CHAT_THREAD_BG_CLASS} z-[9999] overflow-hidden`}>
       <div className="h-full flex">
         {/* Left contacts sidebar (WhatsApp-page style) — lists all of the lead's contacts */}
         {showContactSidebar && !isMobile && (
@@ -2077,7 +2080,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             </div>
           </div>
         )}
-      <div className="h-full flex-1 min-w-0 flex flex-col relative bg-gray-50">
+      <div className={`h-full flex-1 min-w-0 flex flex-col relative ${WHATSAPP_CHAT_THREAD_BG_CLASS}`}>
         {/* Header */}
         <div className={`absolute top-0 inset-x-0 z-40 flex items-center justify-between px-3 py-1.5 ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}>
           <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -2185,7 +2188,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
                     {/* Image or Emoji-only messages - render outside bubble */}
                     {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
-                      <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                      <div className={`flex flex-col ${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(message.direction)}`}>
                         {/* Image content */}
                         {message.message_type === 'image' && message.media_url && (
                           <div className="relative">
@@ -2226,7 +2229,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         )}
 
                         {/* Timestamp and read receipts at bottom of image/emoji */}
-                        <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                        <div className="flex items-center justify-end gap-1 mt-1">
                           <span className="text-xs text-gray-500">
                             {new Date(message.sent_at).toLocaleTimeString([], {
                               hour: '2-digit',
@@ -2242,7 +2245,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       </div>
                     ) : (
                       <div
-                        className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm ${message.direction === 'out'
+                        className={`group ${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(message.direction)} rounded-2xl px-3 py-2 shadow-sm ${message.direction === 'out'
                           ? WHATSAPP_OUTGOING_BUBBLE_CLASS
                           : 'bg-white text-gray-900'
                           }`}
@@ -2250,8 +2253,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           wordBreak: 'break-word',
                           overflowWrap: 'anywhere',
                           overflow: 'visible',
-                          minWidth: 0,
-                          maxWidth: '100%',
                           height: 'auto',
                           ...(message.direction === 'out'
                             ? { background: WHATSAPP_OUTGOING_MESSAGE_GRADIENT }
@@ -2260,7 +2261,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       >
                         {message.message_type === 'text' && (
                           <p
-                            className="break-words whitespace-pre-wrap text-[17px] leading-snug"
+                            className="inline break-words whitespace-pre-wrap text-[17px] leading-snug"
                             dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                             style={{
                               textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
@@ -2357,9 +2358,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           </div>
                         )}
 
-                        {/* Message status and time */}
-                        <div className="flex items-center justify-between mt-1">
-                          <div className="flex items-center gap-1 text-sm opacity-80">
+                        {/* Message status and time — sits next to the last line of text */}
+                        <div className={WHATSAPP_CHAT_BUBBLE_META_CLASS}>
                             <span>
                               {new Date(message.sent_at).toLocaleTimeString([], {
                                 hour: '2-digit',
@@ -2371,7 +2371,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                                 {renderMessageStatus(message)}
                               </span>
                             )}
-                          </div>
                         </div>
                       </div>
                     )}

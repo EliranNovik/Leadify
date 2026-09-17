@@ -27,7 +27,9 @@ export function buildPaymentLinkLeadRef(options: {
   leadType?: string | null;
   isLegacyPaymentPlan?: boolean;
 }): PaymentLinkLeadRef {
-  const { leadId, leadType, isLegacyPaymentPlan = true } = options;
+  const { leadId, leadType } = options;
+  const isLegacyLead = isLegacyLeadRef(leadType, leadId);
+  const isLegacyPaymentPlan = options.isLegacyPaymentPlan ?? isLegacyLead;
 
   if (isLegacyLeadRef(leadType, leadId)) {
     const legacyId = parseLegacyLeadNumericId(leadId);
@@ -41,7 +43,10 @@ export function buildPaymentLinkLeadRef(options: {
     };
   }
 
-  return { client_id: String(leadId) };
+  return {
+    client_id: String(leadId),
+    is_legacy_payment_plan: isLegacyPaymentPlan,
+  };
 }
 
 export function isLegacyPaymentLinkRow(row: {

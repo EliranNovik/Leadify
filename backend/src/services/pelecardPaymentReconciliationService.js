@@ -8,6 +8,7 @@ const pelecardService = require('./pelecardService');
 const { profileFromPayment } = require('../lib/pelecardProfiles');
 const { rateFromPelecardRawResponse } = require('../lib/paymentLinkExchangeRate');
 const { chargeAmountFromPayment } = require('./paymentChargeAmountService');
+const { syncUnpaidPaymentLinkToPlan } = require('../lib/paymentLinkPlanSnapshot');
 const { sendPaymentConfirmationEmail } = require('./paymentConfirmationEmailService');
 const { extractPelecardCustomerId, extractTransactionClassification } = require('../lib/pelecardTransactionFields');
 const {
@@ -110,7 +111,8 @@ async function fetchPaymentByToken(secureToken) {
 
   if (error) throw error;
   if (!data) return null;
-  return enrichPaymentRow(data);
+  const enriched = await enrichPaymentRow(data);
+  return syncUnpaidPaymentLinkToPlan(supabase, enriched);
 }
 
 /**
@@ -290,7 +292,7 @@ async function enrichPaymentRow(data) {
     const { data: legacyPlan } = await supabase
       .from('finances_paymentplanrow')
       .select(`
-        id, order, currency_id, actual_date, client_id,
+        id, order, currency_id, actual_date, client_id, value, vat_value, date,
         accounting_currencies!finances_paymentplanrow_currency_id_fkey (name, iso_code)
       `)
       .eq('id', enriched.payment_plan_id)
@@ -299,7 +301,7 @@ async function enrichPaymentRow(data) {
   } else if (enriched.payment_plan_id) {
     const { data: planRow } = await supabase
       .from('payment_plans')
-      .select('payment_order, currency, currency_id, client_id, paid, paid_at')
+      .select('payment_order, currency, currency_id, client_id, paid, paid_at, value, value_vat, due_date')
       .eq('id', enriched.payment_plan_id)
       .maybeSingle();
     if (planRow) enriched = { ...enriched, payment_plans: planRow };
@@ -714,6 +716,18 @@ async function handleSessionExpired(payment, callbackData) {
     payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
       ? payment.pelecard_raw_response
       : {};
+  const createdMs = Date.parse(previousRaw.sessionCreatedAt || '') || 0;
+  const sessionAgeMs = createdMs ? Date.now() - createdMs : Number.POSITIVE_INFINITY;
+  // Unmounting the old iframe (or a delayed ErrorURL) often posts 301 after Try again
+  // already minted a new hosted page. Do not kill that new checkout.
+  if (previousRaw.sessionExpired === false && createdMs && sessionAgeMs < 2 * 60 * 1000) {
+    console.info('[Pelecard] Ignoring stale 301/302 for freshly minted checkout', {
+      paymentId: payment.secure_token,
+      sessionAgeMs,
+    });
+    return { ignored: true };
+  }
+
   const { statusCode, transactionId } = extractPelecardMeta(callbackData);
 
   const { error } = await supabase
@@ -724,6 +738,7 @@ async function handleSessionExpired(payment, callbackData) {
       pelecard_raw_response: {
         ...previousRaw,
         callback: callbackData,
+        callbackReceivedAt: new Date().toISOString(),
         sessionExpired: true,
         openFinancePending: false,
       },
@@ -732,6 +747,7 @@ async function handleSessionExpired(payment, callbackData) {
     .eq('id', payment.id);
 
   if (error) logSupabaseError('session expired reset to pending failed', error);
+  return { ignored: false };
 }
 
 /** Retry payment_plans / legacy row when link is paid but plan was not updated. */
@@ -852,6 +868,11 @@ async function tryReconcilePaymentLink(payment, options = {}) {
       },
     );
     return fetchPaymentByToken(full.secure_token);
+  }
+
+  const resolvedCode = String(verifyResult.resolvedStatusCode || '').trim();
+  if (isSessionExpiredCode(resolvedCode) && full.pelecard_raw_response?.sessionExpired === false) {
+    return full;
   }
 
   // Keep last GetTransaction payload for ops debugging

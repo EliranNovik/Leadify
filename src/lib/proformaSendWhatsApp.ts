@@ -11,7 +11,7 @@ import {
   ensureNewProformaPublicToken,
   type ProformaLinkKind,
 } from './proformaPublicLink';
-import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
+import { ensurePaymentLinkUrlForInvoice } from './proformaPaymentLink';
 import {
   generateParamsFromDefinitions,
   getTemplateParamDefinitions,
@@ -230,9 +230,14 @@ export async function sendProformaInvoiceWhatsApp(
   const paymentPlanId =
     input.paymentPlanId ?? (input.kind === 'new' ? input.recordId : null);
   const paymentLinkUrl =
-    (await resolveProformaPaymentLinkUrl({
+    (await ensurePaymentLinkUrlForInvoice({
       paymentPlanId,
-      leadClientId: input.leadId,
+      leadId: input.leadId,
+      isLegacyLead: input.isLegacyLead,
+      kind: input.kind,
+      clientName: input.clientName,
+      leadNumber: input.leadNumber,
+      contactId: input.contactId,
     })) || '';
 
   const proformaContext: ProformaWhatsAppParamContext = {

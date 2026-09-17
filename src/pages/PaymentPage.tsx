@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession, fetchBillingContact, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
-import { isPelecardSessionExpiredCode } from '../lib/pelecardErrors';
 import PelecardCheckoutFrame from '../components/PelecardCheckoutFrame';
 import PaymentSummaryCard, {
   type PaymentSummaryData,
@@ -32,6 +31,12 @@ import {
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 import { normalizePaymentLinkAmounts } from '../lib/paymentPageUtils';
+import { paymentOrderLabel } from '../lib/paymentPlanOrderLabel';
+import {
+  applyCheckoutSnapshotToPaymentLink,
+  checkoutSnapshotFromLegacyPlanRow,
+  checkoutSnapshotFromNewPlanRow,
+} from '../lib/paymentLinkPlanSnapshot';
 
 const PAGE_BG_STYLE: React.CSSProperties = {
   background: '#f3f4f6',
@@ -157,18 +162,24 @@ interface PaymentLink {
     };
   } | null;
   payment_plans?: {
-    payment_order?: string;
+    payment_order?: string | number | null;
     currency?: string | null;
     currency_id?: number | string | null;
     client_id?: number | string | null;
     paid?: boolean | null;
     paid_at?: string | null;
+    value?: number | string | null;
+    value_vat?: number | string | null;
+    due_date?: string | null;
   };
   legacy_payment_plan?: {
     order?: number | string | null;
     currency_id?: number | string | null;
     client_id?: number | string | null;
     actual_date?: string | null;
+    value?: number | string | null;
+    vat_value?: number | string | null;
+    date?: string | null;
     accounting_currencies?: { name?: string | null; iso_code?: string | null } | null;
   } | null;
 }
@@ -181,40 +192,14 @@ function isLegacyPlanPaid(plan: PaymentLink['legacy_payment_plan']): boolean {
   return Boolean(plan?.actual_date);
 }
 
-function paymentOrderLabel(order: number | string | null | undefined): string {
-  if (order == null || order === '') return 'Payment';
-  if (typeof order === 'string') {
-    const lower = order.toLowerCase();
-    if (
-      lower.includes('first') ||
-      lower.includes('intermediate') ||
-      lower.includes('final') ||
-      lower.includes('single') ||
-      lower.includes('expense')
-    ) {
-      return order;
-    }
-    const num = parseInt(order, 10);
-    if (!Number.isNaN(num)) order = num;
-    else return order;
-  }
-  if (typeof order === 'number') {
-    switch (order) {
-      case 1:
-        return 'First Payment';
-      case 5:
-        return 'Intermediate Payment';
-      case 9:
-        return 'Final Payment';
-      case 90:
-        return 'Single Payment';
-      case 99:
-        return 'Expense (no VAT)';
-      default:
-        return 'Payment';
-    }
-  }
-  return 'Payment';
+function overlayCheckoutFromPlanRow(link: PaymentLink): PaymentLink {
+  if (isPaymentComplete(link)) return link;
+  const snapshot = isLegacyPaymentLink(link)
+    ? checkoutSnapshotFromLegacyPlanRow(link.legacy_payment_plan)
+    : checkoutSnapshotFromNewPlanRow(link.payment_plans);
+  if (!snapshot || snapshot.paid) return link;
+  if (snapshot.totalAmount <= 0 && (Number(link.total_amount) || 0) > 0) return link;
+  return applyCheckoutSnapshotToPaymentLink(link, snapshot);
 }
 
 function getCurrencySymbol(currency: string | undefined) {
@@ -369,6 +354,9 @@ const PaymentPage: React.FC<{
               client_id,
               currency_id,
               actual_date,
+              value,
+              vat_value,
+              date,
               accounting_currencies!finances_paymentplanrow_currency_id_fkey (
                 name,
                 iso_code
@@ -393,7 +381,7 @@ const PaymentPage: React.FC<{
         } else if (enriched.payment_plan_id) {
           const { data: planRow, error: planError } = await supabase
             .from('payment_plans')
-            .select('payment_order, currency, currency_id, client_id, paid, paid_at')
+            .select('payment_order, currency, currency_id, client_id, paid, paid_at, value, value_vat, due_date')
             .eq('id', enriched.payment_plan_id)
             .maybeSingle();
 
@@ -453,13 +441,14 @@ const PaymentPage: React.FC<{
         }
 
         const paymentComplete = isPaymentComplete(enriched);
+        const checkoutLink = overlayCheckoutFromPlanRow(enriched);
 
         if (paymentComplete) {
           setPaymentLink(enriched);
           return;
         }
 
-        setPaymentLink(enriched);
+        setPaymentLink(checkoutLink);
       } catch (error) {
         console.error('Error:', error);
         toast.error('Failed to load payment information');
@@ -636,7 +625,7 @@ const PaymentPage: React.FC<{
   }, [token, canPay]);
 
   useEffect(() => {
-    if (!token || !paymentUrl || sessionLoading || !canPay) return;
+    if (!token || !paymentUrl || sessionLoading || !canPay || checkoutSessionExpired) return;
 
     let cancelled = false;
     let failedStreak = 0;
@@ -647,11 +636,9 @@ const PaymentPage: React.FC<{
       const expiryBelongsToThisIframe =
         Number.isFinite(sessionCreatedMs) &&
         sessionCreatedMs >= sessionStartedAtRef.current - 2000;
-      // A leftover 301 from the previous form must not kill a new checkout.
-      if (
-        expiryBelongsToThisIframe &&
-        (data.sessionExpired || isPelecardSessionExpiredCode(data.pelecard_status_code))
-      ) {
+      // Trust the backend hosted-session flag only. A leftover Pelecard 301 from the
+      // previous iframe must not hide a checkout that was just minted via Try again.
+      if (expiryBelongsToThisIframe && data.sessionExpired) {
         failedStreak = 0;
         setCheckoutSessionExpired(true);
         return;
@@ -696,7 +683,7 @@ const PaymentPage: React.FC<{
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [token, paymentUrl, sessionLoading, canPay, navigate, kioskMode, onKioskComplete]);
+  }, [token, paymentUrl, sessionLoading, canPay, checkoutSessionExpired, navigate, kioskMode, onKioskComplete]);
 
   /** Mobile: start at summary; avoid restored scroll hiding it. */
   useEffect(() => {
@@ -707,9 +694,9 @@ const PaymentPage: React.FC<{
   const summaryData = useMemo(() => {
     if (!paymentLink) return null;
     const serviceLabel =
-      paymentLink.description?.split(' - ')[0]?.trim() ||
       paymentOrderLabel(paymentLink.payment_plans?.payment_order) ||
       paymentOrderLabel(paymentLink.legacy_payment_plan?.order) ||
+      paymentLink.description?.split(' - ')[0]?.trim() ||
       'Payment';
     const amounts = normalizePaymentLinkAmounts({
       subtotal: Number(paymentLink.amount) || 0,

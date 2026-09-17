@@ -7,6 +7,8 @@ import {
   XCircleIcon,
 } from '@heroicons/react/24/outline';
 import { fetchPaymentStatus, type PaymentStatusResponse } from '../lib/pelecardPaymentApi';
+import CheckoutSessionExpiredCard from '../components/payment/CheckoutSessionExpiredCard';
+import PortalFooter from './portal/components/PortalFooter';
 import {
   getPelecardFailureCopy,
   getPelecardCancelledCopy,
@@ -327,7 +329,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     !showWaitingTimeout &&
     !backendPaid &&
     !showCancelled &&
-    (sessionExpired || variant === 'failed' || variant === 'success');
+    !sessionExpired &&
+    (variant === 'failed' || variant === 'success');
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
@@ -338,8 +341,14 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const total = statusData?.total_amount;
   const currency = statusData?.currency;
 
+  const showExpiredScreen = sessionExpired && !backendPaid && !showConfirming;
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-violet-50">
+    <div
+      className={`min-h-screen flex flex-col ${
+        showExpiredScreen ? 'bg-gray-100' : 'bg-gradient-to-br from-slate-50 to-violet-50'
+      }`}
+    >
       <div className="w-full py-6 flex justify-center items-center">
         <span
           className="text-3xl font-extrabold tracking-tight"
@@ -349,7 +358,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
         </span>
       </div>
 
-      <div className="flex flex-col items-center justify-center px-4 pb-12">
+      <div className="flex flex-1 flex-col items-center justify-center px-4 pb-12">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full">
           {showConfirming ? (
             <div className="flex flex-col items-center gap-4 py-8">
@@ -449,6 +458,10 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
                 </Link>
               )}
             </div>
+          ) : sessionExpired ? (
+            <CheckoutSessionExpiredCard
+              retryHref={paymentId ? `/payment/${paymentId}?fresh=1` : undefined}
+            />
           ) : showFailed ? (
             <div className="text-center">
               <ExclamationCircleIcon className="w-16 h-16 text-amber-500 mx-auto mb-4" />
@@ -473,6 +486,9 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
           ) : null}
         </div>
       </div>
+      {showExpiredScreen ? (
+        <PortalFooter tone="gray" logoSrc="/DPL-LOGO1.png" className="max-lg:!mt-10 lg:!mt-0" />
+      ) : null}
     </div>
   );
 };

@@ -47,6 +47,7 @@ import {
   fetchWhatsAppThreadNewerThan,
   fetchWhatsAppThreadPage,
 } from '../lib/whatsappChatMessages';
+import { useRealtimeRefresh } from '../hooks/useRealtimeRefresh';
 import { whatsAppPhoneMatchesSearch } from '../lib/whatsappPhone';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
@@ -54,6 +55,10 @@ import {
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
   WHATSAPP_OUTGOING_TEXT_COLOR,
   WHATSAPP_CHAT_HEADER_GLASS_CLASS,
+  WHATSAPP_CHAT_THREAD_BG_CLASS,
+  WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS,
+  WHATSAPP_CHAT_BUBBLE_META_CLASS,
+  whatsAppChatBubbleAlignClass,
   WHATSAPP_COMPOSER_FIELD_CLASS,
   WHATSAPP_COMPOSER_TEXTAREA_CLASS,
   WHATSAPP_COMPOSER_TOOLS_BTN_CLASS,
@@ -1370,21 +1375,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const renderMessageStatus = (message?: WhatsAppMessage | { whatsapp_status?: string; whatsapp_message_id?: string; error_message?: string }, readColor?: string) => {
     if (!message) return null;
 
-    const status = message.whatsapp_status;
     const whatsappMessageId = message.whatsapp_message_id;
-
-    if (!status) return null;
+    const status = message.whatsapp_status || (whatsappMessageId ? 'delivered' : 'sent');
 
     // Special case: If status is "failed" but whatsapp_message_id exists,
-    // it means WhatsApp accepted the message, so it was actually delivered
     // but DB status update failed. Show as "delivered" (will be auto-fixed in background).
     // Don't show "failed" in UI if message was actually sent.
     const effectiveStatus = (status === 'failed' && whatsappMessageId) ? 'delivered' : status;
 
-    const baseClasses = "w-7 h-7";
+    const baseClasses = "w-3.5 h-3.5";
 
     switch (effectiveStatus) {
       case 'sent':
+      case 'pending':
         return (
           <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_SENT_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -1398,7 +1401,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -2779,6 +2782,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
     return () => clearInterval(intervalId);
   }, [fetchNewMessagesOnly, showMyContactsOnly, myContactsClients.length, allContactsClients.length, allMessages.length]);
+
+  useRealtimeRefresh({
+    channelName: 'whatsapp-clients-page',
+    debounceMs: 300,
+    tables: [{ table: 'whatsapp_messages' }],
+    onChange: () => {
+      void fetchNewMessagesOnly();
+    },
+  });
 
 
   // Handle tab switch - restore state for the newly selected tab
@@ -6284,7 +6296,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-50 min-h-0 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col ${WHATSAPP_CHAT_THREAD_BG_CLASS} min-h-0 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
             {selectedClient ? (
               <div
                 className={`flex flex-1 min-h-0 min-w-0 w-full ${
@@ -6553,7 +6565,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                               {/* Image or Emoji-only messages - render outside bubble */}
                               {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
-                                <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                                <div className={`flex flex-col ${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(message.direction)}`}>
                                   {/* Image content */}
                                   {message.message_type === 'image' && message.media_url && (
                                     <div
@@ -6611,7 +6623,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                   )}
 
                                   {/* Timestamp and read receipts at bottom of image/emoji */}
-                                  <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                                  <div className="flex items-center justify-end gap-1 mt-1">
                                     <span className="text-xs text-gray-500">
                                       {new Date(message.sent_at).toLocaleTimeString([], {
                                         hour: '2-digit',
@@ -6627,7 +6639,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 </div>
                               ) : (
                                 <div
-                                  className={`group ${message.direction === 'out' ? 'max-w-[80%] md:max-w-[65%]' : 'max-w-[80%] md:max-w-[65%]'} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
+                                  className={`group ${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(message.direction)} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
                                     ? WHATSAPP_OUTGOING_BUBBLE_CLASS
                                     : 'bg-white text-gray-900'
                                     }`}
@@ -6635,7 +6647,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     wordBreak: 'break-word',
                                     overflowWrap: 'break-word',
                                     overflow: 'visible',
-                                    minWidth: 0,
                                     height: 'auto',
                                     ...(message.direction === 'out'
                                       ? { background: WHATSAPP_OUTGOING_MESSAGE_GRADIENT }
@@ -6679,7 +6690,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                       {/* Message content based on type */}
                                       {message.message_type === 'text' && (
                                         <p
-                                          className="break-words whitespace-pre-wrap text-[17px] leading-snug"
+                                          className="inline break-words whitespace-pre-wrap text-[17px] leading-snug"
                                           dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                                           style={{
                                             textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
@@ -6965,9 +6976,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     </div>
                                   )}
 
-                                  {/* Message status and time — align with the message's reading direction */}
-                                  <div className={`flex items-center -mt-1 ${/[\u0590-\u05FF]/.test(message.message || message.caption || '') ? 'justify-end' : 'justify-start'}`}>
-                                    <div className="flex items-center gap-1 text-sm opacity-80">
+                                  {/* Message status and time — sits next to the last line of text */}
+                                  <div className={WHATSAPP_CHAT_BUBBLE_META_CLASS}>
                                       <span>
                                         {new Date(message.sent_at).toLocaleTimeString([], {
                                           hour: '2-digit',
@@ -6989,9 +6999,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                           (deleted by {userCache[(message as any).deleted_by] || '...'})
                                         </span>
                                       )}
-                                    </div>
-
-                                    {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
                                   </div>
                                 </div>
                               )}

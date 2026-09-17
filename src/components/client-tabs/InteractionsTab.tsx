@@ -42,6 +42,7 @@ import {
 import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
+import { fetchWhatsAppRowsPaged } from '../../lib/whatsappChatMessages';
 import { fetchAiMessageSuggestion } from '../../lib/aiMessageSuggestion';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { toast } from 'react-hot-toast';
@@ -3885,58 +3886,36 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   useEffect(() => {
     async function fetchWhatsAppMessages() {
       if (!client?.id) return;
-      
+
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      let query = supabase.from('whatsapp_messages').select('*');
-      
-      if (isLegacyLead) {
-        const legacyId = parseInt(client.id.replace('legacy_', ''));
-        query = query.eq('legacy_id', legacyId);
-      } else {
-        query = query.eq('lead_id', client.id);
-      }
-      
-      const { data, error } = await query.order('sent_at', { ascending: true });
-      if (!error && data) {
-        setWhatsAppMessages(data);
-      } else {
-        setWhatsAppMessages([]);
-      }
+      const data = isLegacyLead
+        ? await fetchWhatsAppRowsPaged(supabase, {
+            legacyId: parseInt(client.id.replace('legacy_', ''), 10),
+          })
+        : await fetchWhatsAppRowsPaged(supabase, { leadId: String(client.id) });
+      setWhatsAppMessages(data);
     }
     if (isWhatsAppOpen) {
       fetchWhatsAppMessages();
     }
   }, [isWhatsAppOpen, client.id]);
 
-  // 3. Periodically check status of pending messages
+  // 3. Periodically check for new inbound / status updates while the modal is open
   useEffect(() => {
     if (!isWhatsAppOpen || !client?.id) return;
 
     const interval = setInterval(async () => {
-      // Check if there are any pending messages
-      const hasPendingMessages = whatsAppMessages.some(msg => msg.whatsapp_status === 'pending');
-      
-      if (hasPendingMessages) {
-        // Refetch messages to get updated statuses
-        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-        let query = supabase.from('whatsapp_messages').select('*');
-        
-        if (isLegacyLead) {
-          const legacyId = parseInt(client.id.replace('legacy_', ''));
-          query = query.eq('legacy_id', legacyId);
-        } else {
-          query = query.eq('lead_id', client.id);
-        }
-        
-        const { data, error } = await query.order('sent_at', { ascending: true });
-        if (!error && data) {
-          setWhatsAppMessages(data);
-        }
-      }
-    }, 5000); // Check every 5 seconds
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const data = isLegacyLead
+        ? await fetchWhatsAppRowsPaged(supabase, {
+            legacyId: parseInt(client.id.replace('legacy_', ''), 10),
+          })
+        : await fetchWhatsAppRowsPaged(supabase, { leadId: String(client.id) });
+      setWhatsAppMessages(data);
+    }, 5000);
 
     return () => clearInterval(interval);
-  }, [isWhatsAppOpen, client.id, whatsAppMessages]);
+  }, [isWhatsAppOpen, client.id]);
 
   // 3. On send, save to DB and refetch messages
   const handleSendWhatsApp = async (e: React.FormEvent) => {

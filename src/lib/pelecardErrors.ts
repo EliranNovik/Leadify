@@ -77,14 +77,9 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
 
   if (isPelecardSessionExpiredCode(code)) {
     return {
-      title: 'Checkout session expired',
-      explanation:
-        'The secure payment form timed out. No payment was taken. This happens if the page sat open too long before you entered card details, or if it was open in more than one tab.',
-      actions: [
-        'Close any other tabs or windows with this payment link.',
-        'Use only one browser window to complete the payment.',
-        'Click “Try again” below and enter your card details in the new form.',
-      ],
+      title: 'Session expired',
+      explanation: 'This checkout expired for security reasons.',
+      actions: [],
     };
   }
 

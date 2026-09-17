@@ -9,7 +9,7 @@ import {
   ensureNewProformaPublicToken,
   type ProformaLinkKind,
 } from './proformaPublicLink';
-import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
+import { ensurePaymentLinkUrlForInvoice } from './proformaPaymentLink';
 import { getMailboxStatus, sendEmailViaBackend } from './mailboxApi';
 import { convertBodyToHtml } from './emailBodyHtml';
 import { buildOutgoingHtmlWithSignature } from './emailSignature';
@@ -289,9 +289,14 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
     input.paymentPlanId ??
     (input.kind === 'new' ? input.recordId : null);
   const paymentLinkUrl =
-    (await resolveProformaPaymentLinkUrl({
+    (await ensurePaymentLinkUrlForInvoice({
       paymentPlanId,
-      leadClientId: input.leadId,
+      leadId: input.leadId,
+      isLegacyLead: input.isLegacyLead,
+      kind: input.kind,
+      clientName: input.clientName,
+      leadNumber: input.leadNumber,
+      contactId: input.contactId,
     })) || '';
 
   const language = input.language ?? 'en';

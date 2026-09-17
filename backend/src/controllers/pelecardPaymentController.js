@@ -128,11 +128,6 @@ async function createPaymentSession(req, res) {
         ? Number(session.charge.rateToIls)
         : null;
 
-    const previousRaw =
-      payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
-        ? payment.pelecard_raw_response
-        : {};
-
     const { error: updateError } = await supabase
       .from('payment_links')
       .update({
@@ -147,7 +142,6 @@ async function createPaymentSession(req, res) {
         pelecard_voucher_id: null,
         ...(sessionRate != null ? { rate: sessionRate } : {}),
         pelecard_raw_response: {
-          ...previousRaw,
           init: session.rawResponse,
           pelecardCharge: session.charge,
           paramX: session.paramX,
@@ -423,7 +417,13 @@ async function handlePelecardReturn(req, res, outcome) {
     }
 
     if (reconciliation.isSessionExpiredCode(statusCode)) {
-      await reconciliation.handleSessionExpired(payment, data);
+      const expired = await reconciliation.handleSessionExpired(payment, data);
+      if (expired?.ignored) {
+        if (req.method === 'POST') {
+          return res.status(200).send('OK');
+        }
+        return res.redirect(appRedirect(`/payment/${encodeURIComponent(secureToken)}`, {}, redirectProfile));
+      }
       return res.redirect(
         appRedirect('/payment/failed', {
           ...failedRedirectQuery,

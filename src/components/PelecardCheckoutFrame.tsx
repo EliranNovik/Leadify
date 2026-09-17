@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowPathIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline';
 import { paymentFormErrorCopy } from '../lib/paymentPageUtils';
-import { getPelecardFailureCopy } from '../lib/pelecardErrors';
+import CheckoutSessionExpiredCard from './payment/CheckoutSessionExpiredCard';
 
 /** Pelecard hosted iframes die in ~15–20 minutes. Overlay only after that — not after idle of a few minutes. */
 const IFRAME_EXPIRE_MS = 15 * 60 * 1000;
@@ -179,7 +179,6 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   const showIframeLoading = paymentUrl && !iframeLoaded && !loading && !error;
   const errCopy = paymentFormErrorCopy(error);
   const showExpiredOverlay = Boolean(paymentUrl && !loading && !error && (sessionExpired || timedOut));
-  const expiredCopy = getPelecardFailureCopy({ statusCode: '301' });
 
   if (error) {
     console.error('[Pelecard] Payment form error:', error);
@@ -219,27 +218,8 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 
       {showExpiredOverlay && (
         <div className="flex items-center justify-center py-10 px-4 sm:px-6 lg:flex-1">
-          <div className="text-center max-w-md bg-gray-50 border border-gray-100 rounded-2xl px-6 py-8 w-full">
-            <ExclamationCircleIcon className="w-12 h-12 text-amber-500 mx-auto mb-3" />
-            <p className="text-xl font-semibold text-gray-900">{expiredCopy.title}</p>
-            <p className="text-sm text-gray-600 mt-3 leading-relaxed">{expiredCopy.explanation}</p>
-            {expiredCopy.actions.length > 0 && (
-              <ul className="text-sm text-gray-600 text-left mt-4 space-y-2 list-disc pl-5">
-                {expiredCopy.actions.map((action) => (
-                  <li key={action}>{action}</li>
-                ))}
-              </ul>
-            )}
-            {onRetry && (
-              <button
-                type="button"
-                className="btn btn-primary mt-6 h-14 min-h-14 w-full rounded-xl text-base font-semibold gap-2"
-                onClick={onRetry}
-              >
-                <ArrowPathIcon className="w-5 h-5" />
-                Try again
-              </button>
-            )}
+          <div className="w-full max-w-[22rem] rounded-[1.75rem] border border-gray-100/80 bg-white px-7 py-9 shadow-[0_18px_50px_-28px_rgba(15,23,42,0.35)]">
+            <CheckoutSessionExpiredCard onRetry={onRetry} />
           </div>
         </div>
       )}

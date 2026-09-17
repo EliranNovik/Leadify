@@ -45,6 +45,51 @@ export function canonicalWhatsAppPhone(phone: string | null | undefined): string
   return digits;
 }
 
+/**
+ * Display spellings CRM often stores with dashes/spaces, e.g. `+97254-9760006`
+ * or `054-9760006`. Canonical-digit `.in()` queries miss these.
+ */
+function israeliFormattedPhoneVariants(canonical: string): string[] {
+  if (!canonical.startsWith('972') || canonical.length < 11) return [];
+  const national = canonical.slice(3);
+  const local = `0${national}`;
+  const variants: string[] = [];
+  const push = (...vals: string[]) => {
+    for (const value of vals) {
+      if (value) variants.push(value);
+    }
+  };
+
+  if (local.length >= 4) {
+    push(`${local.slice(0, 3)}-${local.slice(3)}`);
+  }
+  if (local.length === 10) {
+    push(`${local.slice(0, 3)}-${local.slice(3, 6)}-${local.slice(6)}`);
+  }
+  if (national.length >= 3) {
+    const ndc = national.slice(0, 2);
+    const rest = national.slice(2);
+    push(
+      `+972${ndc}-${rest}`,
+      `972${ndc}-${rest}`,
+      `+972-${ndc}-${rest}`,
+      `972-${ndc}-${rest}`,
+      `+972 ${ndc}-${rest}`,
+      `+972 ${ndc} ${rest}`,
+    );
+  }
+
+  return variants;
+}
+
+/** Last 7 digits: survives hyphens in values like `+97254-9760006` (last-8 would not). */
+export function whatsAppPhoneLookupNeedle(phone: string | null | undefined): string {
+  const canonical = canonicalWhatsAppPhone(phone);
+  if (canonical.length >= 7) return canonical.slice(-7);
+  const digits = digitsOnlyPhone(phone);
+  return digits.length >= 7 ? digits.slice(-7) : digits;
+}
+
 /** Spellings this number may have been saved as on `whatsapp_messages.phone_number`. */
 export function whatsAppPhoneVariants(phone: string | null | undefined): string[] {
   const canonical = canonicalWhatsAppPhone(phone);
@@ -54,7 +99,15 @@ export function whatsAppPhoneVariants(phone: string | null | undefined): string[
   const raw = String(phone || '').trim();
   return [
     ...new Set(
-      [canonical, `+${canonical}`, local, extraZero, raw, digitsOnlyPhone(raw)].filter(Boolean),
+      [
+        canonical,
+        `+${canonical}`,
+        local,
+        extraZero,
+        raw,
+        digitsOnlyPhone(raw),
+        ...israeliFormattedPhoneVariants(canonical),
+      ].filter(Boolean),
     ),
   ];
 }

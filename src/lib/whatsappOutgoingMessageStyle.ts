@@ -24,6 +24,25 @@ export const WHATSAPP_OUTGOING_EDIT_TEXTAREA_CLASS =
 export const WHATSAPP_CHAT_HEADER_GLASS_CLASS =
   'bg-white/50 backdrop-blur-xl supports-[backdrop-filter]:bg-white/35 border-b border-white/40 shadow-[0_8px_24px_rgba(15,23,42,0.06)]';
 
+/** Message list pane — one step darker than the surrounding chrome. */
+export const WHATSAPP_CHAT_THREAD_BG_CLASS = 'bg-gray-100';
+
+/**
+ * Incoming and outgoing bubbles share the same max width.
+ * `w-fit` keeps short messages compact so the time sits next to the text
+ * instead of across an empty row.
+ */
+export const WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS =
+  'w-fit max-w-[min(85%,28rem)] box-border overflow-hidden';
+
+export function whatsAppChatBubbleAlignClass(direction: 'in' | 'out'): string {
+  return direction === 'out' ? 'self-end ml-auto' : 'self-start';
+}
+
+/** Time + ticks — floats to the last line, next to the text. */
+export const WHATSAPP_CHAT_BUBBLE_META_CLASS =
+  'float-right ml-2 mt-0.5 inline-flex items-center gap-0.5 text-[11px] leading-none whitespace-nowrap opacity-70';
+
 export type WhatsAppMessageLinkStyle = 'default' | 'neon' | 'outgoing';
 
 export function whatsAppMessageLinkColor(style: WhatsAppMessageLinkStyle): string {

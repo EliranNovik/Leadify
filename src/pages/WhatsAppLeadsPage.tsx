@@ -30,6 +30,10 @@ import {
   WHATSAPP_OUTGOING_TEXT_COLOR,
   WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS,
   WHATSAPP_CHAT_HEADER_GLASS_CLASS,
+  WHATSAPP_CHAT_THREAD_BG_CLASS,
+  WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS,
+  WHATSAPP_CHAT_BUBBLE_META_CLASS,
+  whatsAppChatBubbleAlignClass,
   WHATSAPP_COMPOSER_FIELD_CLASS,
   WHATSAPP_COMPOSER_TEXTAREA_CLASS,
   WHATSAPP_COMPOSER_TOOLS_BTN_CLASS,
@@ -58,6 +62,12 @@ import {
   resolveWhatsAppOutgoingSenderUi,
 } from '../lib/pexWhatsAppChat';
 import { collectWhatsAppPhoneVariants, canonicalWhatsAppPhone, whatsAppPhonesMatch } from '../lib/whatsappPhone';
+import { fetchLeadContacts } from '../lib/contactHelpers';
+import {
+  findWhatsAppMessagesMatchingPhone,
+  linkUnconnectedWhatsAppMessagesToLead,
+} from '../lib/whatsappChatMessages';
+import { useRealtimeRefresh } from '../hooks/useRealtimeRefresh';
 import { AI_AGENT_DISPLAY_NAME } from '../lib/aiAgentMailbox';
 import WhatsAppTemplatePicker from '../components/whatsapp/WhatsAppTemplatePicker';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
@@ -121,6 +131,8 @@ interface WhatsAppLead {
   whatsapp_timestamp?: string;
   error_message?: string;
   phone_number?: string;
+  /** Original `whatsapp_messages.phone_number` before canonical grouping (may include dashes). */
+  stored_phone_number?: string;
   is_connected: boolean;
   message_count: number;
   unread_count?: number;
@@ -141,16 +153,75 @@ const resolveWhatsAppMediaUrl = (mediaRef?: string | null) => {
   return buildApiUrl(`/api/whatsapp/media/${mediaRef}`);
 };
 
-/** Chat bubble width — capped so long messages don't span the full panel */
+const UNCONNECTED_INBOUND_PAGE = 1000;
+const UNCONNECTED_INBOUND_MAX = 8000;
+const LEAD_THREAD_MAX = 4000;
+
+/** PostgREST defaults to 1000 rows. Fan-out copies of connected chats fill that window. */
+async function fetchUnconnectedWhatsAppInbound(): Promise<any[]> {
+  const rows: any[] = [];
+  for (let from = 0; from < UNCONNECTED_INBOUND_MAX; from += UNCONNECTED_INBOUND_PAGE) {
+    const to = from + UNCONNECTED_INBOUND_PAGE - 1;
+    const { data, error } = await supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('direction', 'in')
+      .is('lead_id', null)
+      .is('legacy_id', null)
+      .not('phone_number', 'is', null)
+      .neq('phone_number', '')
+      .order('sent_at', { ascending: false })
+      .range(from, to);
+    if (error) throw error;
+    const batch = data || [];
+    rows.push(...batch);
+    if (batch.length < UNCONNECTED_INBOUND_PAGE) break;
+  }
+  return rows;
+}
+
+function dedupeWhatsAppLeadThreadRows(rows: any[]): any[] {
+  const ranked = [...rows].sort((a, b) => {
+    const aOpen = !a?.lead_id && !a?.legacy_id ? 0 : 1;
+    const bOpen = !b?.lead_id && !b?.legacy_id ? 0 : 1;
+    if (aOpen !== bOpen) return aOpen - bOpen;
+    return Number(a?.id || 0) - Number(b?.id || 0);
+  });
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const row of ranked) {
+    const wamid = String(row?.whatsapp_message_id || '').trim();
+    const key = wamid ? `w:${wamid}` : `id:${row?.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+async function fetchWhatsAppLeadThreadByPhone(
+  phone: string,
+  extraPhones?: Array<string | null | undefined>,
+): Promise<any[]> {
+  const rows = await findWhatsAppMessagesMatchingPhone(supabase, phone, {
+    extraPhones,
+    select: '*',
+    maxRows: LEAD_THREAD_MAX,
+  });
+  rows.sort((a, b) => new Date(b?.sent_at || 0).getTime() - new Date(a?.sent_at || 0).getTime());
+  return dedupeWhatsAppLeadThreadRows(rows);
+}
+
+function extraPhonesForWhatsAppLead(lead: Pick<WhatsAppLead, 'stored_phone_number'> | null | undefined) {
+  return lead?.stored_phone_number ? [lead.stored_phone_number] : [];
+}
+
+/** Chat bubble width — incoming and outgoing share one size. */
 const getMessageBubbleWidthClass = (direction: 'in' | 'out') =>
-  direction === 'out'
-    ? 'w-fit max-w-[min(85%,28rem)] self-end'
-    : 'w-fit max-w-[min(85%,28rem)] self-start';
+  `${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(direction)}`;
 
 const getMessageMediaWidthClass = (direction: 'in' | 'out') =>
-  direction === 'out'
-    ? 'w-fit max-w-xs sm:max-w-sm md:max-w-md self-end ml-auto'
-    : 'w-fit max-w-xs sm:max-w-sm md:max-w-md self-start';
+  `${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(direction)}`;
 
 const leadMatchesReadFilter = (lead: WhatsAppLead, filter: WhatsAppReadFilter): boolean => {
   if (filter === 'all') return true;
@@ -205,6 +276,8 @@ const WhatsAppLeadsPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const leadsListRef = useRef<HTMLDivElement>(null);
+  const selectedLeadPhoneRef = useRef<string | null>(null);
+  selectedLeadPhoneRef.current = selectedLead?.phone_number || null;
   const mobileToolsRef = useRef<HTMLDivElement>(null);
 
   // Media modal state
@@ -532,6 +605,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         leadMap.set(groupKey, {
           ...message,
           phone_number: groupKey,
+          stored_phone_number: phoneNumber,
           is_connected: isConnected,
           message_count: 1,
           unread_count: isUnread ? 1 : 0,
@@ -550,6 +624,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           const updatedLead = {
             ...message,
             phone_number: groupKey,
+            stored_phone_number: phoneNumber,
             message_count: existingLead.message_count,
             unread_count: existingLead.unread_count,
             last_message_at: message.sent_at
@@ -574,67 +649,12 @@ const WhatsAppLeadsPage: React.FC = () => {
         }
         console.log('🔍 Fetching WhatsApp leads...');
 
-        // Get all incoming WhatsApp messages, including read status
-        const { data: incomingMessages, error } = await supabase
-          .from('whatsapp_messages')
-          .select('*')
-          .eq('direction', 'in')
-          .order('sent_at', { ascending: false });
+        const incomingMessages = await fetchUnconnectedWhatsAppInbound();
 
-        if (error) {
-          console.error('Error fetching WhatsApp messages:', error);
-          if (showLoading) {
-            toast.error('Failed to load WhatsApp leads');
-          }
-          return;
-        }
-
-        const unconnectedLeads = processMessagesToLeads(incomingMessages || []);
+        const unconnectedLeads = processMessagesToLeads(incomingMessages);
 
         console.log('📊 Unconnected leads found:', unconnectedLeads.length);
-
-        if (showLoading) {
-          // Initial load - replace all leads
-          setLeads(unconnectedLeads);
-        } else {
-          // Polling refresh - merge intelligently without resetting
-          setLeads(prevLeads => {
-            // Create a map of existing leads by phone number
-            const existingLeadsMap = new Map<string, WhatsAppLead>();
-            prevLeads.forEach(lead => {
-              if (lead.phone_number) {
-                existingLeadsMap.set(lead.phone_number, lead);
-              }
-            });
-
-            // Merge new/updated leads with existing ones
-            const mergedLeads: WhatsAppLead[] = [];
-            const processedPhoneNumbers = new Set<string>();
-
-            // First, add all new/updated leads (sorted by date)
-            unconnectedLeads.forEach(newLead => {
-              const phoneNumber = newLead.phone_number;
-              if (phoneNumber) {
-                processedPhoneNumbers.add(phoneNumber);
-                mergedLeads.push(newLead);
-              }
-            });
-
-            // Then, add existing leads that weren't in the new data (they might have been connected)
-            prevLeads.forEach(existingLead => {
-              if (existingLead.phone_number && !processedPhoneNumbers.has(existingLead.phone_number)) {
-                mergedLeads.push(existingLead);
-              }
-            });
-
-            // Sort by last_message_at (descending - most recent first)
-            mergedLeads.sort((a, b) =>
-              new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
-            );
-
-            return mergedLeads;
-          });
-        }
+        setLeads(unconnectedLeads);
 
       } catch (error) {
         console.error('Error fetching WhatsApp leads:', error);
@@ -648,13 +668,47 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
     };
 
-    // Initial load with loading screen
     fetchWhatsAppLeads(true);
 
-    // Set up polling to refresh every 30 seconds (without loading screen)
-    const interval = setInterval(() => fetchWhatsAppLeads(false), 30000);
+    const interval = setInterval(() => fetchWhatsAppLeads(false), 15000);
     return () => clearInterval(interval);
   }, []);
+
+  useRealtimeRefresh({
+    channelName: 'whatsapp-leads-page',
+    debounceMs: 300,
+    tables: [
+      {
+        table: 'whatsapp_messages',
+        match: (payload) => {
+          const row = (payload.new || payload.old) as Record<string, unknown> | null;
+          if (!row) return false;
+          const unmatched = row.lead_id == null && row.legacy_id == null;
+          if (unmatched) return true;
+          const selectedPhone = selectedLeadPhoneRef.current;
+          if (selectedPhone && row.phone_number) {
+            return whatsAppPhonesMatch(String(row.phone_number), selectedPhone);
+          }
+          return false;
+        },
+      },
+    ],
+    onChange: async () => {
+      try {
+        const incomingMessages = await fetchUnconnectedWhatsAppInbound();
+        setLeads(processMessagesToLeads(incomingMessages));
+        const phone = selectedLeadPhoneRef.current;
+        if (!phone) return;
+        const uniqueMessages = await fetchWhatsAppLeadThreadByPhone(phone);
+        const processedMessages = sortWhatsAppMessagesBySentAt(
+          (uniqueMessages || []).map(processTemplateMessage),
+        );
+        setMessages((prev) => applyWhatsAppFetchedMessages(processedMessages, prev, true));
+      } catch (error) {
+        console.error('WhatsApp leads realtime refresh failed:', error);
+      }
+    },
+  });
 
   // Auto-select lead from URL parameter (when navigating from bell icon)
   useEffect(() => {
@@ -707,37 +761,27 @@ const WhatsAppLeadsPage: React.FC = () => {
 
   // Fetch messages for selected lead
   useEffect(() => {
-    const fetchMessages = async () => {
+    const fetchMessages = async (showSwitching = true) => {
       if (!selectedLead) {
         setMessages([]);
         setIsSwitchingChat(false);
         return;
       }
 
-      setIsSwitchingChat(true);
+      if (showSwitching) setIsSwitchingChat(true);
 
       try {
         console.log('🔄 Fetching messages for lead:', selectedLead.phone_number);
 
-        // CRITICAL: Only fetch messages by exact phone_number match
-        // Do NOT query by sender_name to avoid mixing messages from different numbers
-        const phones = collectWhatsAppPhoneVariants([selectedLead.phone_number]);
-        const { data, error } = await supabase
-          .from('whatsapp_messages')
-          .select('*')
-          .in('phone_number', phones.length ? phones : [selectedLead.phone_number])
-          .order('sent_at', { ascending: true });
+        const data = await fetchWhatsAppLeadThreadByPhone(
+          selectedLead.phone_number,
+          extraPhonesForWhatsAppLead(selectedLead),
+        );
 
         console.log('🔍 Query results:', {
           phoneNumber: selectedLead.phone_number,
           messagesCount: data?.length || 0
         });
-
-        if (error) {
-          console.error('Error fetching messages:', error);
-          toast.error('Failed to load messages');
-          return;
-        }
 
         console.log('📨 Messages fetched for lead:', data?.length || 0);
 
@@ -778,12 +822,12 @@ const WhatsAppLeadsPage: React.FC = () => {
           })
         );
 
-        // Process template messages for display
-        const processedMessages = messagesWithSenderNames.map(processTemplateMessage);
+        const processedMessages = sortWhatsAppMessagesBySentAt(
+          messagesWithSenderNames.map(processTemplateMessage),
+        );
         setMessages(processedMessages);
-        setIsSwitchingChat(false);
+        if (showSwitching) setIsSwitchingChat(false);
 
-        // Mark incoming messages as read when viewing the conversation
         if (currentUser && data && data.length > 0) {
           const incomingMessageIds = data
             .filter(msg => msg.direction === 'in' && (!msg.is_read || msg.is_read === false))
@@ -811,19 +855,24 @@ const WhatsAppLeadsPage: React.FC = () => {
           }
         }
 
-        // Auto-scroll to bottom
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
+        if (showSwitching) {
+          setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }, 100);
+        }
 
       } catch (error) {
         console.error('Error fetching messages:', error);
-        toast.error('Failed to load messages');
-        setIsSwitchingChat(false);
+        if (showSwitching) {
+          toast.error('Failed to load messages');
+          setIsSwitchingChat(false);
+        }
       }
     };
 
-    fetchMessages();
+    fetchMessages(true);
+    const interval = setInterval(() => fetchMessages(false), 15000);
+    return () => clearInterval(interval);
   }, [selectedLead]);
 
   const isPexChat = useMemo(
@@ -1330,18 +1379,13 @@ const WhatsAppLeadsPage: React.FC = () => {
         if (!selectedLead) return;
 
         try {
-          // CRITICAL: Only fetch by exact phone_number match to avoid mixing messages
-          const { data: uniqueMessages } = await supabase
-            .from('whatsapp_messages')
-            .select('*')
-            .in(
-              'phone_number',
-              collectWhatsAppPhoneVariants([selectedLead.phone_number]),
-            )
-            .order('sent_at', { ascending: true });
-
-          // Process template messages for display
-          const processedMessages = (uniqueMessages || []).map(processTemplateMessage);
+          const uniqueMessages = await fetchWhatsAppLeadThreadByPhone(
+            selectedLead.phone_number,
+            extraPhonesForWhatsAppLead(selectedLead),
+          );
+          const processedMessages = sortWhatsAppMessagesBySentAt(
+            (uniqueMessages || []).map(processTemplateMessage),
+          );
 
           setMessages((prevMessages) =>
             applyWhatsAppFetchedMessages(processedMessages, prevMessages, true),
@@ -1359,14 +1403,8 @@ const WhatsAppLeadsPage: React.FC = () => {
         // This will ensure the lock icon updates immediately when a new message arrives
         const refreshLeads = async () => {
           try {
-            const { data: incomingMessages } = await supabase
-              .from('whatsapp_messages')
-              .select('*')
-              .eq('direction', 'in')
-              .order('sent_at', { ascending: false });
-
-            if (incomingMessages) {
-              const unconnectedLeads = processMessagesToLeads(incomingMessages);
+            const incomingMessages = await fetchUnconnectedWhatsAppInbound();
+            const unconnectedLeads = processMessagesToLeads(incomingMessages);
 
               // Merge intelligently without resetting (same as polling)
               setLeads(prevLeads => {
@@ -1396,7 +1434,6 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                 return mergedLeads;
               });
-            }
           } catch (error) {
             console.error('Error refreshing leads:', error);
           }
@@ -1626,20 +1663,24 @@ const WhatsAppLeadsPage: React.FC = () => {
       console.log('✅ Created new lead:', newLead);
 
       // Update the WhatsApp messages to link them to the new lead
-      // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
-      const { error: updateError } = await supabase
-        .from('whatsapp_messages')
-        .update({
+      const linkResult = await linkUnconnectedWhatsAppMessagesToLead(
+        supabase,
+        lead.phone_number || '',
+        {
           lead_id: newLead.id,
-          legacy_id: null // Clear legacy_id since this is a new lead
-        })
-        .in('phone_number', collectWhatsAppPhoneVariants([lead.phone_number]));
+          legacy_id: null,
+        },
+        extraPhonesForWhatsAppLead(lead),
+      );
 
-      if (updateError) {
-        console.error('Error linking messages to lead:', updateError);
-        // Don't fail the whole process, just log the error
-      } else {
-        console.log('✅ Linked WhatsApp messages to new lead');
+      if (linkResult.error) {
+        console.error('Error linking messages to lead:', linkResult.error);
+        toast.error(`Lead ${newLead.lead_number} created, but WhatsApp messages could not be linked`);
+        return;
+      }
+      if (linkResult.updated === 0) {
+        toast.error(`Lead ${newLead.lead_number} created, but no WhatsApp messages matched this phone number`);
+        return;
       }
 
       toast.success(`Lead ${newLead.lead_number} created successfully!`);
@@ -1743,19 +1784,10 @@ const WhatsAppLeadsPage: React.FC = () => {
 
     setIsLoadingConnections(true);
     try {
-      // Fetch WhatsApp messages with this phone number that are connected to leads/contacts
-      const { data: messagesData, error: messagesError } = await supabase
-        .from('whatsapp_messages')
-        .select('lead_id, legacy_id, contact_id')
-        .in('phone_number', collectWhatsAppPhoneVariants([selectedLead.phone_number]))
-        .or('lead_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
-
-      if (messagesError) {
-        console.error('Error fetching connected WhatsApp messages:', messagesError);
-        setConnectedLeads([]);
-        setConnectedContacts([]);
-        return;
-      }
+      const messagesData = await findWhatsAppMessagesMatchingPhone(supabase, selectedLead.phone_number, {
+        extraPhones: extraPhonesForWhatsAppLead(selectedLead),
+        select: 'id, phone_number, lead_id, legacy_id, contact_id',
+      });
 
       const clientIds = new Set<string>();
       const legacyIds = new Set<number>();
@@ -1887,14 +1919,16 @@ const WhatsAppLeadsPage: React.FC = () => {
     } finally {
       setIsLoadingConnections(false);
     }
-  }, [selectedLead?.phone_number]);
+  }, [selectedLead?.phone_number, selectedLead?.stored_phone_number]);
 
   // Check connections for all leads in the list
   const checkConnectionsForAllLeads = useCallback(async (leadsList: WhatsAppLead[]) => {
     if (!leadsList || leadsList.length === 0) return;
 
     try {
-      const phoneNumbers = leadsList.map(lead => lead.phone_number).filter(Boolean);
+      const phoneNumbers = collectWhatsAppPhoneVariants(
+        leadsList.flatMap((lead) => [lead.phone_number, lead.stored_phone_number]),
+      );
       if (phoneNumbers.length === 0) return;
 
       const { data: messagesData, error: messagesError } = await supabase
@@ -1909,28 +1943,19 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       const newConnectionsMap = new Map<string, boolean>();
+      const connectedMessages = (messagesData || []).filter(
+        (message: any) => message.lead_id || message.legacy_id || message.contact_id,
+      );
 
-      const messagesByPhone = new Map<string, any[]>();
-      (messagesData || []).forEach((message: any) => {
-        const phone = message.phone_number?.toLowerCase();
-        if (phone) {
-          if (!messagesByPhone.has(phone)) {
-            messagesByPhone.set(phone, []);
-          }
-          messagesByPhone.get(phone)!.push(message);
-        }
-      });
-
-      leadsList.forEach(lead => {
-        const normalizedPhone = lead.phone_number?.toLowerCase();
-        if (!normalizedPhone) {
+      leadsList.forEach((lead) => {
+        if (!lead.phone_number) {
           newConnectionsMap.set(String(lead.id), false);
           return;
         }
-
-        const messages = messagesByPhone.get(normalizedPhone) || [];
-        const hasConnections = messages.some((message: any) =>
-          message.lead_id || message.legacy_id || message.contact_id
+        const hasConnections = connectedMessages.some(
+          (message: any) =>
+            whatsAppPhonesMatch(message.phone_number, lead.phone_number) ||
+            whatsAppPhonesMatch(message.phone_number, lead.stored_phone_number),
         );
         newConnectionsMap.set(String(lead.id), hasConnections);
       });
@@ -2140,17 +2165,24 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Update WhatsApp messages to link them to the sublead
-      // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
-      const { error: updateError } = await supabase
-        .from('whatsapp_messages')
-        .update({
+      const linkResult = await linkUnconnectedWhatsAppMessagesToLead(
+        supabase,
+        selectedLead.phone_number || '',
+        {
           lead_id: insertedSubLead.id,
-          legacy_id: null
-        })
-        .in('phone_number', collectWhatsAppPhoneVariants([selectedLead.phone_number]));
+          legacy_id: null,
+        },
+        extraPhonesForWhatsAppLead(selectedLead),
+      );
 
-      if (updateError) {
-        console.error('Error linking messages to sublead:', updateError);
+      if (linkResult.error) {
+        console.error('Error linking messages to sublead:', linkResult.error);
+        toast.error(`Sublead ${subLeadNumber} created, but WhatsApp messages could not be linked`);
+        return;
+      }
+      if (linkResult.updated === 0) {
+        toast.error(`Sublead ${subLeadNumber} created, but no WhatsApp messages matched this phone number`);
+        return;
       }
 
       toast.success(`Sublead ${subLeadNumber} created successfully!`);
@@ -2183,10 +2215,19 @@ const WhatsAppLeadsPage: React.FC = () => {
       const leadName = selectedLead.sender_name?.trim() || selectedLead.phone_number || 'WhatsApp Contact';
       const targetLeadId = targetLead.id;
       const isLegacyLead = targetLead.isLegacy;
+      const phonesToMatch = [selectedLead.phone_number, selectedLead.stored_phone_number].filter(Boolean) as string[];
+      const existingContacts = await fetchLeadContacts(targetLeadId, Boolean(isLegacyLead));
+      const existingContact = existingContacts.find((contact) =>
+        phonesToMatch.some(
+          (phone) =>
+            whatsAppPhonesMatch(contact.phone, phone) || whatsAppPhonesMatch(contact.mobile, phone),
+        ),
+      );
+      let contactIdToLink: number | null = existingContact?.id ?? null;
 
       // For legacy leads, create contact without lead_id/newlead_id, then link via lead_leadcontact
       // For new leads, use newlead_id in leads_contact and newlead_id in lead_leadcontact
-      if (isLegacyLead) {
+      if (!contactIdToLink && isLegacyLead) {
         // Get the next available contact ID
         const { data: maxContactId } = await supabase
           .from('leads_contact')
@@ -2290,7 +2331,9 @@ const WhatsAppLeadsPage: React.FC = () => {
           toast.error('Failed to link contact to lead');
           return;
         }
-      } else {
+
+        contactIdToLink = finalContactId;
+      } else if (!contactIdToLink) {
         // For new leads
         const { data: maxContactId } = await supabase
           .from('leads_contact')
@@ -2346,20 +2389,29 @@ const WhatsAppLeadsPage: React.FC = () => {
           toast.error('Failed to link contact to lead');
           return;
         }
+
+        contactIdToLink = newContactId;
       }
 
-      // Update WhatsApp messages to link them to the target lead
-      // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
-      const { error: updateError } = await supabase
-        .from('whatsapp_messages')
-        .update({
+      const linkResult = await linkUnconnectedWhatsAppMessagesToLead(
+        supabase,
+        selectedLead.phone_number || '',
+        {
           lead_id: isLegacyLead ? null : targetLeadId,
-          legacy_id: isLegacyLead ? targetLeadId : null
-        })
-        .in('phone_number', collectWhatsAppPhoneVariants([selectedLead.phone_number]));
+          legacy_id: isLegacyLead ? targetLeadId : null,
+          contact_id: contactIdToLink,
+        },
+        extraPhonesForWhatsAppLead(selectedLead),
+      );
 
-      if (updateError) {
-        console.error('Error linking messages to lead:', updateError);
+      if (linkResult.error) {
+        console.error('Error linking messages to lead:', linkResult.error);
+        toast.error('Contact saved, but WhatsApp messages could not be linked');
+        return;
+      }
+      if (linkResult.updated === 0) {
+        toast.error('No WhatsApp messages matched this phone number — the chat was not assigned');
+        return;
       }
 
       toast.success(`Contact added to lead ${targetLead.lead_number} successfully!`);
@@ -2632,21 +2684,19 @@ const WhatsAppLeadsPage: React.FC = () => {
   const renderMessageStatus = (message?: any, readColor?: string) => {
     if (!message) return null;
 
-    const status = message.whatsapp_status;
     const whatsappMessageId = message.whatsapp_message_id;
-
-    if (!status) return null;
+    const status = message.whatsapp_status || (whatsappMessageId ? 'delivered' : 'sent');
 
     // Special case: If status is "failed" but whatsapp_message_id exists,
-    // it means WhatsApp accepted the message, so it was actually delivered
     // but DB status update failed. Show as "delivered" (will be auto-fixed in background).
     // Don't show "failed" in UI if message was actually sent.
     const effectiveStatus = (status === 'failed' && whatsappMessageId) ? 'delivered' : status;
 
-    const baseClasses = "w-7 h-7";
+    const baseClasses = "w-3.5 h-3.5";
 
     switch (effectiveStatus) {
       case 'sent':
+      case 'pending':
         return (
           <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_SENT_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -2660,7 +2710,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -3540,7 +3590,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-50 relative min-h-0 ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col ${WHATSAPP_CHAT_THREAD_BG_CLASS} relative min-h-0 ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
             {selectedLead ? (
               <div
                 className={`flex flex-1 min-h-0 min-w-0 w-full ${
@@ -3777,7 +3827,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 )}
 
                                 {/* Timestamp and read receipts at bottom of image/emoji */}
-                                <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                                <div className="flex items-center justify-end gap-1 mt-1">
                                   <span className="text-xs text-gray-500">
                                     {new Date(message.sent_at).toLocaleTimeString([], {
                                       hour: '2-digit',
@@ -3839,7 +3889,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                     {/* Text message - only show if no media */}
                                     {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
                                       <p
-                                        className="text-[17px] leading-snug break-words whitespace-pre-wrap"
+                                        className="inline text-[17px] leading-snug break-words whitespace-pre-wrap"
                                         dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                                         style={{
                                           textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
@@ -3966,8 +4016,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   </div>
                                 )}
 
-                                <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                                  <span className="text-xs text-gray-500">
+                                <div className={WHATSAPP_CHAT_BUBBLE_META_CLASS}>
+                                  <span>
                                     {new Date(message.sent_at).toLocaleTimeString([], {
                                       hour: '2-digit',
                                       minute: '2-digit'

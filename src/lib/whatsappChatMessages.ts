@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   canonicalWhatsAppPhone,
   collectWhatsAppPhoneVariants,
+  whatsAppPhoneLookupNeedle,
   whatsAppPhonesMatch,
 } from './whatsappPhone';
 
@@ -229,6 +230,164 @@ export async function fetchWhatsAppContactThreadPage(
   const hasMore = (fallback.data?.length ?? 0) >= dbLimit || matched.length > pageSize;
   const page = matched.slice(0, pageSize);
   return { rows: [...page].reverse(), hasMore };
+}
+
+const LEAD_THREAD_PAGE = 1000;
+const LEAD_THREAD_MAX = 4000;
+
+/**
+ * Load a lead/legacy thread newest-first in pages.
+ * PostgREST defaults to 1000 rows; ordering ascending returns the oldest slice and hides new messages.
+ */
+export async function fetchWhatsAppRowsPaged(
+  client: SupabaseClient,
+  opts: {
+    leadId?: string | null;
+    legacyId?: number | null;
+    phones?: string[] | null;
+    pageSize?: number;
+    maxRows?: number;
+  },
+): Promise<any[]> {
+  const pageSize = opts.pageSize ?? LEAD_THREAD_PAGE;
+  const maxRows = opts.maxRows ?? LEAD_THREAD_MAX;
+  const phones = [...new Set((opts.phones || []).map((p) => String(p).trim()).filter(Boolean))];
+  const rows: any[] = [];
+
+  for (let from = 0; from < maxRows; from += pageSize) {
+    let q = client.from('whatsapp_messages').select('*');
+    if (opts.leadId) q = q.eq('lead_id', opts.leadId);
+    else if (opts.legacyId != null && !Number.isNaN(Number(opts.legacyId))) {
+      q = q.eq('legacy_id', opts.legacyId);
+    }
+    if (phones.length) q = q.in('phone_number', phones);
+    if (!opts.leadId && (opts.legacyId == null || Number.isNaN(Number(opts.legacyId))) && !phones.length) {
+      break;
+    }
+
+    const { data, error } = await q
+      .order('sent_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) {
+      console.error('WhatsApp: paged thread fetch error', error);
+      break;
+    }
+    const batch = data || [];
+    rows.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+
+  return [...rows].reverse();
+}
+
+const PHONE_MATCH_PAGE = 1000;
+
+function applyUnconnectedFilter(q: any, unconnectedOnly?: boolean) {
+  if (!unconnectedOnly) return q;
+  return q.is('lead_id', null).is('legacy_id', null);
+}
+
+/**
+ * Find WhatsApp rows for a phone even when the stored value has dashes/spaces.
+ * Combines variant `.in()` with a last-7 `ilike`, then confirms with `whatsAppPhonesMatch`.
+ */
+export async function findWhatsAppMessagesMatchingPhone(
+  client: SupabaseClient,
+  phone: string,
+  opts?: {
+    extraPhones?: Array<string | null | undefined>;
+    unconnectedOnly?: boolean;
+    select?: string;
+    maxRows?: number;
+  },
+): Promise<any[]> {
+  const select = opts?.select || 'id, phone_number, lead_id, legacy_id, contact_id';
+  const maxRows = opts?.maxRows ?? 4000;
+  const extraPhones = opts?.extraPhones || [];
+  const variants = collectWhatsAppPhoneVariants([phone, ...extraPhones]);
+  const needle = whatsAppPhoneLookupNeedle(phone);
+  const byId = new Map<number, any>();
+
+  const ingest = (batch: any[] | null | undefined) => {
+    for (const row of batch || []) {
+      const id = Number(row?.id);
+      if (!Number.isFinite(id) || id <= 0 || byId.has(id)) continue;
+      const stored = row?.phone_number;
+      const matches =
+        whatsAppPhonesMatch(stored, phone) ||
+        extraPhones.some((candidate) => whatsAppPhonesMatch(stored, candidate));
+      if (!matches) continue;
+      byId.set(id, row);
+    }
+  };
+
+  const fetchRange = async (build: () => any) => {
+    for (let from = 0; from < maxRows; from += PHONE_MATCH_PAGE) {
+      const { data, error } = await build().range(from, from + PHONE_MATCH_PAGE - 1);
+      if (error) {
+        console.error('WhatsApp: phone match fetch error', error);
+        break;
+      }
+      const batch = data || [];
+      ingest(batch);
+      if (batch.length < PHONE_MATCH_PAGE) break;
+    }
+  };
+
+  for (let i = 0; i < variants.length; i += 50) {
+    const chunk = variants.slice(i, i + 50);
+    await fetchRange(() =>
+      applyUnconnectedFilter(
+        client.from('whatsapp_messages').select(select).in('phone_number', chunk),
+        opts?.unconnectedOnly,
+      ),
+    );
+  }
+
+  if (needle.length >= 6) {
+    await fetchRange(() =>
+      applyUnconnectedFilter(
+        client.from('whatsapp_messages').select(select).ilike('phone_number', `%${needle}%`),
+        opts?.unconnectedOnly,
+      ),
+    );
+  }
+
+  return Array.from(byId.values());
+}
+
+export async function linkUnconnectedWhatsAppMessagesToLead(
+  client: SupabaseClient,
+  phone: string,
+  patch: {
+    lead_id?: string | null;
+    legacy_id?: number | null;
+    contact_id?: number | null;
+  },
+  extraPhones?: Array<string | null | undefined>,
+): Promise<{ updated: number; ids: number[]; error?: string }> {
+  const rows = await findWhatsAppMessagesMatchingPhone(client, phone, {
+    extraPhones,
+    unconnectedOnly: true,
+    select: 'id, phone_number, lead_id, legacy_id, contact_id',
+  });
+  const ids = [...new Set(rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0))];
+  if (!ids.length) return { updated: 0, ids: [] };
+
+  let updated = 0;
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const { data, error } = await client
+      .from('whatsapp_messages')
+      .update(patch)
+      .in('id', chunk)
+      .select('id');
+    if (error) {
+      return { updated, ids: ids.slice(0, updated), error: error.message };
+    }
+    updated += (data || []).length;
+  }
+  return { updated, ids };
 }
 
 /** Poll only messages newer than the newest loaded message in the open chat. */

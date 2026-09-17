@@ -1886,11 +1886,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       try {
         const { data, error } = await supabase
           .from('whatsapp_messages')
-          .select('*')
+          .select('id, phone_number, sender_name, message, caption, message_type, voice_note, sent_at, lead_id, legacy_id')
           .eq('direction', 'in')
+          .is('lead_id', null)
+          .is('legacy_id', null)
           .or('is_read.is.null,is_read.eq.false')
           .order('sent_at', { ascending: false })
-          .limit(50); // Get more messages to properly filter
+          .limit(50);
 
         if (error) {
           console.error('Error fetching WhatsApp leads messages:', error);
@@ -1989,11 +1991,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     try {
       // If user is superuser, count all unread messages
       if (isSuperUser) {
-        const { data, error } = await supabase
+        const { count, error } = await supabase
           .from('whatsapp_messages')
-          .select('id')
+          .select('id', { count: 'exact', head: true })
           .eq('direction', 'in')
-          .or('is_read.is.null,is_read.eq.false');
+          .or('is_read.is.null,is_read.eq.false')
+          .or('lead_id.not.is.null,legacy_id.not.is.null');
 
         if (error) {
           console.error('Error fetching WhatsApp clients unread count:', error);
@@ -2001,7 +2004,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           return;
         }
 
-        setWhatsappClientsUnreadCount(data?.length || 0);
+        setWhatsappClientsUnreadCount(count || 0);
         return;
       }
 
@@ -2013,17 +2016,29 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
 
       // Fetch all unread WhatsApp messages with lead_id, contact_id, and legacy_id
-      const { data: whatsappMessages, error: whatsappError } = await supabase
-        .from('whatsapp_messages')
-        .select('id, lead_id, contact_id, legacy_id')
-        .eq('direction', 'in')
-        .or('is_read.is.null,is_read.eq.false');
+      const unreadRows: Array<{ id: unknown; lead_id: unknown; contact_id: unknown; legacy_id: unknown }> = [];
+      const unreadPage = 1000;
+      for (let from = 0; from < 5000; from += unreadPage) {
+        const { data, error } = await supabase
+          .from('whatsapp_messages')
+          .select('id, lead_id, contact_id, legacy_id')
+          .eq('direction', 'in')
+          .or('is_read.is.null,is_read.eq.false')
+          .or('lead_id.not.is.null,legacy_id.not.is.null')
+          .range(from, from + unreadPage - 1);
 
-      if (whatsappError) {
-        console.error('Error fetching WhatsApp clients unread count:', whatsappError);
-        setWhatsappClientsUnreadCount(0);
-        return;
+        if (error) {
+          console.error('Error fetching WhatsApp clients unread count:', error);
+          setWhatsappClientsUnreadCount(0);
+          return;
+        }
+
+        const batch = data || [];
+        unreadRows.push(...batch);
+        if (batch.length < unreadPage) break;
       }
+
+      const whatsappMessages = unreadRows;
 
       if (!whatsappMessages || whatsappMessages.length === 0) {
         setWhatsappClientsUnreadCount(0);

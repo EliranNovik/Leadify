@@ -6,7 +6,12 @@ const fs = require('fs');
 const path = require('path');
 const pushNotificationService = require('../services/pushNotificationService');
 const pexCrmChatWebhookService = require('../services/pexCrmChatWebhookService');
-const { canonicalWhatsAppPhone, digitsOnlyPhone } = require('../lib/whatsappPhone');
+const {
+  canonicalWhatsAppPhone,
+  digitsOnlyPhone,
+  collectWhatsAppPhoneVariants,
+  whatsAppPhoneLookupNeedle,
+} = require('../lib/whatsappPhone');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -135,7 +140,9 @@ async function insertWhatsAppMessageRows(rows) {
   if (inserted.length === 0 && lastError) {
     return { data: [], error: lastError };
   }
-  return { data: inserted, error: null };
+  // Partial fan-out: return the error so Meta retries. Duplicate handling skips
+  // identities that already exist and inserts the rest.
+  return { data: inserted, error: lastError };
 }
 
 async function insertOutgoingWhatsAppMessage(messageData) {
@@ -212,6 +219,69 @@ const normalizePhone = (phone) => {
   if (!phone || phone === null || phone === '') return '';
   return canonicalWhatsAppPhone(phone) || digitsOnlyPhone(phone);
 };
+
+const NEW_LEAD_MATCH_SELECT =
+  'id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id';
+const LEGACY_LEAD_MATCH_SELECT =
+  'id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id';
+
+function leadPhonesMatchIncoming(lead, incomingNormalized, incomingVariations) {
+  const np = normalizePhone(lead?.phone);
+  const nm = normalizePhone(lead?.mobile);
+  if (incomingNormalized && (np === incomingNormalized || nm === incomingNormalized)) return true;
+  return (incomingVariations || []).some((variation) => {
+    const nv = normalizePhone(variation);
+    return (np && (np === variation || np === nv)) || (nm && (nm === variation || nm === nv));
+  });
+}
+
+async function findMatchingLeadsForInboundPhone(incomingNormalized, incomingVariations) {
+  const matchingLeads = [];
+  const seen = new Set();
+  const push = (type, data) => {
+    if (!data?.id) return;
+    const key = `${type}:${data.id}`;
+    if (seen.has(key)) return;
+    if (!leadPhonesMatchIncoming(data, incomingNormalized, incomingVariations)) return;
+    seen.add(key);
+    matchingLeads.push({ type, data });
+  };
+
+  const values = [...new Set([
+    ...(incomingVariations || []),
+    incomingNormalized,
+    ...collectWhatsAppPhoneVariants([incomingNormalized, ...(incomingVariations || [])]),
+  ].filter(Boolean))];
+  if (values.length) {
+    const [{ data: byPhone }, { data: byMobile }, { data: legPhone }, { data: legMobile }] = await Promise.all([
+      supabase.from('leads').select(NEW_LEAD_MATCH_SELECT).in('phone', values),
+      supabase.from('leads').select(NEW_LEAD_MATCH_SELECT).in('mobile', values),
+      supabase.from('leads_lead').select(LEGACY_LEAD_MATCH_SELECT).in('phone', values),
+      supabase.from('leads_lead').select(LEGACY_LEAD_MATCH_SELECT).in('mobile', values),
+    ]);
+    (byPhone || []).forEach((lead) => push('new', lead));
+    (byMobile || []).forEach((lead) => push('new', lead));
+    (legPhone || []).forEach((lead) => push('legacy', lead));
+    (legMobile || []).forEach((lead) => push('legacy', lead));
+  }
+
+  if (matchingLeads.length === 0 && incomingNormalized && incomingNormalized.length >= 7) {
+    const last8Digits = incomingNormalized.length >= 8 ? incomingNormalized.slice(-8) : '';
+    const last7Digits = whatsAppPhoneLookupNeedle(incomingNormalized);
+    const needles = [...new Set([last8Digits, last7Digits].filter((n) => n && n.length >= 6))];
+    const orFilter = needles
+      .flatMap((needle) => [`phone.ilike.%${needle}%`, `mobile.ilike.%${needle}%`])
+      .join(',');
+    const [{ data: newLeadsByLast8 }, { data: legacyLeadsByLast8 }] = await Promise.all([
+      supabase.from('leads').select(NEW_LEAD_MATCH_SELECT).or(orFilter),
+      supabase.from('leads_lead').select(LEGACY_LEAD_MATCH_SELECT).or(orFilter),
+    ]);
+    (newLeadsByLast8 || []).forEach((lead) => push('new', lead));
+    (legacyLeadsByLast8 || []).forEach((lead) => push('legacy', lead));
+  }
+
+  return matchingLeads;
+}
 
 const parseAdditionalPhones = (value) => {
   if (!value) return [];
@@ -399,6 +469,7 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
     const rawSearchValues = Array.from(new Set(
       incomingVariations
         .concat([phoneNumber])
+        .concat(collectWhatsAppPhoneVariants([phoneNumber, incomingNormalized, ...incomingVariations]))
         .filter(Boolean)
     ));
 
@@ -443,25 +514,36 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
     let directNewLeadMatch = null;
     let directLegacyLeadMatch = null;
 
-    // If no exact matches found, try partial matching using last 8 digits
-    // This handles cases like 972507825939 vs 9720507825939 (both end with same 8 digits)
-    if (!contactCandidatesMap.size && incomingNormalized && incomingNormalized.length >= 8) {
-      const last8Digits = incomingNormalized.slice(-8);
+    // If no exact matches found, try last 8 then last 7 (dashed Israeli numbers)
+    if (!contactCandidatesMap.size && incomingNormalized && incomingNormalized.length >= 7) {
+      const last8Digits = incomingNormalized.length >= 8 ? incomingNormalized.slice(-8) : '';
+      const last7Digits = whatsAppPhoneLookupNeedle(incomingNormalized);
+      const needles = [...new Set([last8Digits, last7Digits].filter((n) => n && n.length >= 6))];
+      const contactOrFilter = needles
+        .flatMap((needle) => [
+          `phone.ilike.%${needle}%`,
+          `mobile.ilike.%${needle}%`,
+          `additional_phones.ilike.%${needle}%`,
+        ])
+        .join(',');
+      const leadOrFilter = needles
+        .flatMap((needle) => [`phone.ilike.%${needle}%`, `mobile.ilike.%${needle}%`])
+        .join(',');
       
-      // Search in leads_contact table with last 8 digits
+      // Search in leads_contact table with last 8 / last 7 digits
       // This will find contacts that match, and we'll use lead_leadcontact to find associated leads
       const { data: contactPartialMatches } = await supabase
         .from('leads_contact')
         .select(contactSelectColumns)
-        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+        .or(contactOrFilter);
       if (contactPartialMatches) addContacts(contactPartialMatches);
       
       // Also search via lead_leadcontact junction table to find leads associated with matching contacts
-      // First, find all contacts matching last 8 digits
+      // First, find all contacts matching last 8 / last 7 digits
       const { data: matchingContactsByLast8 } = await supabase
         .from('leads_contact')
         .select('id')
-        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+        .or(contactOrFilter);
       
       if (matchingContactsByLast8 && matchingContactsByLast8.length > 0) {
         const matchingContactIds = matchingContactsByLast8.map(c => c.id);
@@ -517,7 +599,7 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
         const { data: newLeadsMatches } = await supabase
           .from('leads')
           .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
-          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`)
+          .or(leadOrFilter)
           .limit(1);
         
         if (newLeadsMatches && newLeadsMatches.length > 0) {
@@ -546,7 +628,7 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
         const { data: legacyLeadsMatches } = await supabase
           .from('leads_lead')
           .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
-          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`)
+          .or(leadOrFilter)
           .limit(1);
         
         if (legacyLeadsMatches && legacyLeadsMatches.length > 0) {
@@ -691,6 +773,7 @@ const handleWebhook = async (req, res) => {
       entryLength: body.entry?.length
     });
     
+    let persistFailed = false;
     if (body.object === 'whatsapp_business_account') {
       for (const entry of body.entry || []) {
         for (const change of entry.changes || []) {
@@ -715,7 +798,8 @@ const handleWebhook = async (req, res) => {
           }
 
           for (const message of value.messages || []) {
-            await processIncomingMessage(message, contacts);
+            const saved = await processIncomingMessage(message, contacts);
+            if (saved === false) persistFailed = true;
           }
 
           for (const status of value.statuses || []) {
@@ -725,6 +809,10 @@ const handleWebhook = async (req, res) => {
       }
     }
     
+    if (persistFailed) {
+      console.error('❌ Inbound WhatsApp persist failed; returning 500 so Meta retries');
+      return res.status(500).json({ error: 'Failed to persist inbound WhatsApp message' });
+    }
     res.sendStatus(200);
   } catch (error) {
     console.error('❌ Error handling webhook:', error);
@@ -755,17 +843,21 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       errors,
     } = message;
 
-    // Check for duplicate messages early to avoid unnecessary processing
+    // Existing copies of this Meta id (fan-out writes one row per lead). Skip those
+    // identities later; do not abort the whole webhook or remaining leads never save.
+    const existingIdentityKeys = new Set();
     if (whatsappMessageId) {
       const { data: existingMessages, error: checkError } = await supabase
         .from('whatsapp_messages')
-        .select('id, whatsapp_message_id')
-        .eq('whatsapp_message_id', whatsappMessageId)
-        .limit(1);
-      
-      if (!checkError && existingMessages && existingMessages.length > 0) {
-        console.log(`⚠️ Duplicate message detected: whatsapp_message_id ${whatsappMessageId} already exists. Skipping.`);
-        return; // Exit early to prevent duplicate processing
+        .select('id, lead_id, legacy_id')
+        .eq('whatsapp_message_id', whatsappMessageId);
+
+      if (!checkError && existingMessages) {
+        for (const row of existingMessages) {
+          if (row.lead_id) existingIdentityKeys.add(`new:${row.lead_id}`);
+          else if (row.legacy_id) existingIdentityKeys.add(`legacy:${row.legacy_id}`);
+          else existingIdentityKeys.add('unmatched');
+        }
       }
     }
 
@@ -794,98 +886,12 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       incomingNormalized.replace(/^0/, '972'),
       extraTrunkZero,
       incomingNormalized ? `+${incomingNormalized}` : '',
+      ...collectWhatsAppPhoneVariants([phoneNumber, incomingNormalized]),
     ].filter(Boolean);
     
 
     
-    // Get all leads and find by normalized phone number
-    // Include both text role fields (scheduler, closer, handler) and numeric role fields (meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id)
-    const { data: allLeads, error: allLeadsError } = await supabase
-      .from('leads')
-      .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
-      .not('phone', 'is', null)
-      .not('phone', 'eq', '');
-    
-    if (allLeadsError) {
-      console.error('Error fetching leads (continuing so the inbound row still saves):', allLeadsError);
-    }
-    
-    // Find ALL matching leads by normalized phone number comparison
-    const matchingLeads = [];
-    for (const potentialLead of allLeads || []) {
-      const leadPhoneNormalized = normalizePhone(potentialLead.phone);
-      const leadMobileNormalized = normalizePhone(potentialLead.mobile);
-      
-      // Check if any variation matches
-      let foundMatch = false;
-      
-      for (const variation of incomingVariations) {
-        if (leadPhoneNormalized === variation || leadMobileNormalized === variation) {
-          foundMatch = true;
-          break;
-        }
-      }
-      
-      if (foundMatch) {
-        matchingLeads.push({ type: 'new', data: potentialLead });
-      }
-    }
-
-    // Also check legacy leads
-    const { data: allLegacyLeads, error: allLegacyLeadsError } = await supabase
-      .from('leads_lead')
-      .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
-      .not('phone', 'is', null)
-      .not('phone', 'eq', '');
-    
-    if (!allLegacyLeadsError && allLegacyLeads) {
-      for (const potentialLegacyLead of allLegacyLeads) {
-        const leadPhoneNormalized = normalizePhone(potentialLegacyLead.phone || '');
-        const leadMobileNormalized = normalizePhone(potentialLegacyLead.mobile || '');
-        
-        let foundMatch = false;
-        for (const variation of incomingVariations) {
-          if (leadPhoneNormalized === variation || leadMobileNormalized === variation) {
-            foundMatch = true;
-            break;
-          }
-        }
-        
-        if (foundMatch) {
-          matchingLeads.push({ type: 'legacy', data: potentialLegacyLead });
-        }
-      }
-    }
-
-    // If no exact matches found, try partial matching using last 8 digits
-    // This handles cases like 972507825939 vs 9720507825939 (both end with same 8 digits)
-    if (matchingLeads.length === 0 && incomingNormalized && incomingNormalized.length >= 8) {
-      const last8Digits = incomingNormalized.slice(-8);
-      
-      // Search in new leads using last 8 digits
-      const { data: newLeadsByLast8 } = await supabase
-        .from('leads')
-        .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
-        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`);
-      
-      if (newLeadsByLast8 && newLeadsByLast8.length > 0) {
-        newLeadsByLast8.forEach(lead => {
-          matchingLeads.push({ type: 'new', data: lead });
-        });
-      }
-      
-      // Search in legacy leads using last 8 digits
-      const { data: legacyLeadsByLast8 } = await supabase
-        .from('leads_lead')
-        .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
-        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`);
-      
-      if (legacyLeadsByLast8 && legacyLeadsByLast8.length > 0) {
-        legacyLeadsByLast8.forEach(lead => {
-          matchingLeads.push({ type: 'legacy', data: lead });
-        });
-      }
-    }
+    const matchingLeads = await findMatchingLeadsForInboundPhone(incomingNormalized, incomingVariations);
 
     // Find ALL matching contacts and their associated leads
     const matchingContacts = [];
@@ -917,87 +923,39 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     });
     
-    // If no exact contact matches found, try partial matching using last 8 digits
-    if (allContactsMap.size === 0 && incomingNormalized && incomingNormalized.length >= 8) {
-      const last8Digits = incomingNormalized.slice(-8);
+    // If no exact contact matches found, try last 8 then last 7 (dashed Israeli numbers)
+    if (allContactsMap.size === 0 && incomingNormalized && incomingNormalized.length >= 7) {
+      const last8Digits = incomingNormalized.length >= 8 ? incomingNormalized.slice(-8) : '';
+      const last7Digits = whatsAppPhoneLookupNeedle(incomingNormalized);
+      const needles = [...new Set([last8Digits, last7Digits].filter((n) => n && n.length >= 6))];
+      const contactOrFilter = needles
+        .flatMap((needle) => [
+          `phone.ilike.%${needle}%`,
+          `mobile.ilike.%${needle}%`,
+          `additional_phones.ilike.%${needle}%`,
+        ])
+        .join(',');
       
-      // Search in leads_contact table with last 8 digits
+      // Search in leads_contact table with last 8 / last 7 digits
       const { data: contactPartialMatches } = await supabase
         .from('leads_contact')
         .select('id, name, phone, mobile, additional_phones, newlead_id, lead_leadcontact(lead_id, newlead_id, main)')
-        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+        .or(contactOrFilter);
       
       if (contactPartialMatches) {
         contactPartialMatches.forEach(contact => {
-          if (!allContactsMap.has(contact.id)) {
+          const contactPhones = [
+            contact.phone,
+            contact.mobile,
+            ...parseAdditionalPhones(contact.additional_phones || ''),
+          ].filter(Boolean);
+          const hasCanonicalMatch = contactPhones.some((number) =>
+            incomingVariations.some((variation) => normalizePhone(variation) === normalizePhone(number)),
+          );
+          if (hasCanonicalMatch && !allContactsMap.has(contact.id)) {
             allContactsMap.set(contact.id, contact);
           }
         });
-      }
-      
-      // Also search via lead_leadcontact junction table to find leads associated with matching contacts
-      // First, find all contacts matching last 8 digits
-      const { data: matchingContactsByLast8 } = await supabase
-        .from('leads_contact')
-        .select('id')
-        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
-      
-      if (matchingContactsByLast8 && matchingContactsByLast8.length > 0) {
-        const matchingContactIds = matchingContactsByLast8.map(c => c.id);
-        
-        // Find all leads (new and legacy) linked to these contacts via lead_leadcontact
-        const { data: linkedLeadsViaContacts } = await supabase
-          .from('lead_leadcontact')
-          .select('newlead_id, lead_id')
-          .in('contact_id', matchingContactIds);
-        
-        if (linkedLeadsViaContacts && linkedLeadsViaContacts.length > 0) {
-          // Get unique new lead IDs
-          const newLeadIds = [...new Set(linkedLeadsViaContacts
-            .filter(ll => ll.newlead_id)
-            .map(ll => ll.newlead_id)
-          )];
-          
-          // Get unique legacy lead IDs
-          const legacyLeadIds = [...new Set(linkedLeadsViaContacts
-            .filter(ll => ll.lead_id)
-            .map(ll => ll.lead_id)
-          )];
-          
-          // Fetch the actual new leads and add to matchingLeads if not already there
-          if (newLeadIds.length > 0) {
-            const { data: newLeadsFromContacts } = await supabase
-              .from('leads')
-              .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
-              .in('id', newLeadIds);
-            
-            if (newLeadsFromContacts && newLeadsFromContacts.length > 0) {
-              newLeadsFromContacts.forEach(lead => {
-                const alreadyExists = matchingLeads.some(ml => ml.type === 'new' && ml.data.id === lead.id);
-                if (!alreadyExists) {
-                  matchingLeads.push({ type: 'new', data: lead });
-                }
-              });
-            }
-          }
-          
-          // Fetch the actual legacy leads and add to matchingLeads if not already there
-          if (legacyLeadIds.length > 0) {
-            const { data: legacyLeadsFromContacts } = await supabase
-              .from('leads_lead')
-              .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
-              .in('id', legacyLeadIds);
-            
-            if (legacyLeadsFromContacts && legacyLeadsFromContacts.length > 0) {
-              legacyLeadsFromContacts.forEach(lead => {
-                const alreadyExists = matchingLeads.some(ml => ml.type === 'legacy' && ml.data.id === lead.id);
-                if (!alreadyExists) {
-                  matchingLeads.push({ type: 'legacy', data: lead });
-                }
-              });
-            }
-          }
-        }
       }
     }
 
@@ -1188,7 +1146,8 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       media_size: null,
       caption: null,
       profile_picture_url: profilePictureUrl || null, // Store profile picture URL from webhook
-      voice_note: false // Will be set for voice notes
+      voice_note: false, // Will be set for voice notes
+      is_read: false,
     };
 
     const isUnknownLeadMessage = matchingLeads.length === 0;
@@ -1489,6 +1448,34 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     }
 
+    if (messagesToInsert.length === 0) {
+      messagesToInsert.push({
+        ...baseMessageData,
+        lead_id: null,
+        legacy_id: null,
+        contact_id: matchingContacts[0] || null,
+      });
+    }
+
+    for (let i = messagesToInsert.length - 1; i >= 0; i--) {
+      const row = messagesToInsert[i];
+      const key = row.lead_id
+        ? `new:${row.lead_id}`
+        : row.legacy_id
+          ? `legacy:${row.legacy_id}`
+          : 'unmatched';
+      if (existingIdentityKeys.has(key)) {
+        messagesToInsert.splice(i, 1);
+      }
+    }
+
+    if (messagesToInsert.length === 0 && existingIdentityKeys.size > 0) {
+      console.log(
+        `⚠️ Duplicate message detected: whatsapp_message_id ${whatsappMessageId} already saved for all matching leads. Skipping.`,
+      );
+      return true;
+    }
+
     // Save all messages to database (skip stage-eval triggers that time out on busy leads)
     let { data: insertedRows, error: insertError } = await insertWhatsAppMessageRows(messagesToInsert);
     if (!insertedRows.length && messagesToInsert.some((row) => row.lead_id || row.legacy_id)) {
@@ -1508,8 +1495,14 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
 
     if (!insertedRows.length) {
       console.error('Error saving incoming message:', insertError);
-    } else {
-      inboundSaved = true;
+      return false;
+    }
+
+    inboundSaved = true;
+    if (insertError) {
+      console.error('Inbound WhatsApp saved only partially; returning failure so Meta retries:', insertError);
+      return false;
+    }
       // Log all saved messages
       const newLeadsCount = messagesToInsert.filter(msg => msg.lead_id).length;
       const legacyLeadsCount = messagesToInsert.filter(msg => msg.legacy_id).length;
@@ -1741,8 +1734,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
           console.error('Error sending push notification for WhatsApp message:', notificationError);
         }
       });
-    }
-
+    return true;
   } catch (error) {
     console.error('Error processing incoming message:', error);
     if (!inboundSaved && message?.from) {
@@ -1763,16 +1755,20 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
           whatsapp_timestamp: message.timestamp
             ? new Date(parseInt(message.timestamp, 10) * 1000).toISOString()
             : new Date().toISOString(),
+          is_read: false,
         });
         if (fallback.error) {
           console.error('Emergency inbound WhatsApp save failed:', fallback.error);
-        } else {
-          console.log('🛟 Emergency-saved inbound WhatsApp row for', message.from);
+          return false;
         }
+        console.log('🛟 Emergency-saved inbound WhatsApp row for', message.from);
+        return true;
       } catch (fallbackError) {
         console.error('Emergency inbound WhatsApp save failed:', fallbackError);
+        return false;
       }
     }
+    return false;
   }
 };
 

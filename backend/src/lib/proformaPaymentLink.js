@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
 const { getPublicAppOrigin } = require('./proformaPublicLink');
+const { syncUnpaidPaymentLinkToPlan } = require('./paymentLinkPlanSnapshot');
 
 function parseLegacyLeadNumericId(leadClientId) {
   if (leadClientId == null || leadClientId === '') return null;
@@ -35,14 +36,20 @@ async function resolveProformaPaymentLinkUrl({ paymentPlanId, leadClientId }) {
   if (paymentPlanId != null && paymentPlanId !== '') {
     const { data, error } = await supabase
       .from('payment_links')
-      .select('secure_token, status, expires_at, created_at')
+      .select('*')
       .eq('payment_plan_id', paymentPlanId)
       .order('created_at', { ascending: false });
 
     if (!error) {
-      const url = pickBestPaymentLinkUrl(data);
-      if (url) return url;
+      const usable = (data || []).filter(isLinkUsable);
+      const pending = usable.find((r) => String(r.status || '').toLowerCase() === 'pending');
+      const chosen = pending || usable[0];
+      if (chosen?.secure_token) {
+        const synced = await syncUnpaidPaymentLinkToPlan(supabase, chosen);
+        return buildPaymentLinkPublicUrl(synced?.secure_token || chosen.secure_token);
+      }
     }
+    return null;
   }
 
   if (leadClientId == null || leadClientId === '') return null;
@@ -58,10 +65,6 @@ async function resolveProformaPaymentLinkUrl({ paymentPlanId, leadClientId }) {
     query = query.eq('legacy_id', legacyId);
   } else {
     query = query.eq('client_id', String(leadClientId));
-  }
-
-  if (paymentPlanId != null && paymentPlanId !== '') {
-    query = query.eq('payment_plan_id', paymentPlanId);
   }
 
   const { data, error } = await query;
